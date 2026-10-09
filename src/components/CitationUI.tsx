@@ -2,10 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 import { createPortal } from "react-dom";
 import { MessageCircleMore, Quote, X } from "lucide-react";
 import {
+  CITATION_MAX_COMMENT_LENGTH,
   CITATION_MAX_QUOTE_LENGTH,
   citationAttachment,
+  withCitationComment,
   type CitationAttachment,
 } from "@/lib/citations";
+import { sendsMessage, useSendKey } from "@/lib/send-key";
 import { addToPromptChord, captureCitationSelection, citationTabShortcut, isAddToPromptShortcut } from "@/lib/citations-dom";
 import { isMacPlatform } from "@/lib/keyboard-shortcuts";
 import { t } from "@/lib/i18n";
@@ -37,6 +40,85 @@ function focusComposer(): void {
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
   });
+}
+
+
+export function CitationEditor({
+  citation,
+  point,
+  onSave,
+  onCancel,
+}: {
+  citation: CitationAttachment;
+  point?: Point;
+  onSave: (citation: CitationAttachment) => void;
+  onCancel: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [comment, setComment] = useState(citation.comment ?? "");
+  const sendKey = useSendKey();
+  const tooLong = comment.length > CITATION_MAX_COMMENT_LENGTH;
+  useLayoutEffect(() => {
+    const update = () => {
+      const editor = ref.current;
+      if (!editor) return;
+      const input = point ? null : document.querySelector<HTMLTextAreaElement>('[data-tour="composer"] textarea');
+      const rect = input?.getBoundingClientRect();
+      place(editor, point ?? {
+        left: rect ? rect.left + (rect.width - editor.offsetWidth) / 2 : 8,
+        top: rect ? rect.top - editor.offsetHeight - 8 : 8,
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [point]);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  return createPortal(
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label="Comment on citation"
+      className="fixed z-50 w-[min(28rem,calc(100vw-1rem))] rounded-xl border border-hairline/50 bg-panel p-3 text-ink shadow-2xl"
+      style={point}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          onCancel();
+        }
+      }}
+    >
+      <div className="mb-2 max-h-36 overflow-auto rounded-lg border border-hairline/30 bg-inset px-3 py-2">
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">Quoted message</div>
+        <pre dir="auto" className="whitespace-pre-wrap break-words font-sans text-[12px] leading-relaxed">{citation.quote}</pre>
+      </div>
+      <textarea
+        ref={inputRef}
+        dir="auto"
+        value={comment}
+        rows={3}
+        aria-label="Comment on selected text"
+        aria-invalid={tooLong || undefined}
+        placeholder="Add an optional comment…"
+        onChange={(event) => setComment(event.target.value)}
+        onKeyDown={(event) => {
+          if (sendsMessage(event.nativeEvent, sendKey)) {
+            event.preventDefault();
+            if (!tooLong) onSave(withCitationComment(citation, comment));
+          }
+        }}
+        className="w-full resize-none rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] outline-none focus:border-accent"
+      />
+      {tooLong && <p role="status" className="mt-1 text-[11px] text-danger">Comments can contain up to {CITATION_MAX_COMMENT_LENGTH.toLocaleString()} characters.</p>}
+      <div className="mt-2 flex justify-end gap-2">
+        <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-[12px] text-ink-secondary hover:bg-raised">Cancel</button>
+        <button type="button" disabled={tooLong} onClick={() => onSave(withCitationComment(citation, comment))} className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-40">Save</button>
+      </div>
+    </div>,
+    document.body,
+  );
 }
 
 /** The floating "Add to prompt" pill over selected message text. Clicking
@@ -207,16 +289,19 @@ export function ComposerQuoteChip({ citation, onRemove }: { citation: CitationAt
 
 export function CitationBadge({
   citation,
+  onChange,
   onRemove,
   onNavigate,
 }: {
   citation: CitationAttachment;
+  onChange?: (citation: CitationAttachment) => void;
   onRemove?: () => void;
   onNavigate?: () => Promise<boolean>;
 }) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const detailsRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const rect = triggerRef.current?.getBoundingClientRect();
   const point = { left: rect?.left ?? 8, top: (rect?.bottom ?? 8) + 6 };
@@ -237,6 +322,13 @@ export function CitationBadge({
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, [open]);
+  if (editing && onChange) {
+    return <CitationEditor
+      citation={citation}
+      onCancel={() => { setEditing(false); restoreTriggerFocus(); }}
+      onSave={(next) => { onChange(next); setEditing(false); restoreTriggerFocus(); }}
+    />;
+  }
   return (
     <span className="relative inline-flex max-w-full items-center gap-1">
       <button
@@ -275,6 +367,7 @@ export function CitationBadge({
           {unavailable && <p role="status" className="mt-2 text-[11px] text-warning">Source unavailable or changed. The saved quote is still available.</p>}
           <div className="mt-3 flex justify-end gap-2">
             {onNavigate && <button type="button" onClick={() => { void onNavigate().then((found) => { setUnavailable(!found); if (found) setOpen(false); }); }} className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] hover:bg-raised">Go to source</button>}
+            {onChange && <button type="button" onClick={() => { setOpen(false); setEditing(true); }} className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] hover:bg-raised">Edit comment</button>}
             <button type="button" onClick={() => { setOpen(false); restoreTriggerFocus(); }} className="rounded-lg bg-accent px-3 py-1.5 text-[12px] text-white">Close</button>
           </div>
         </div>,

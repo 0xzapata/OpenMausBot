@@ -166,7 +166,10 @@ describe("the add to prompt pill", () => {
     const pill = document.body.querySelector<HTMLButtonElement>("[data-add-to-prompt]")!;
     expect(pill.disabled).toBe(true);
     expect(pill.textContent).toContain("Shorten selection");
-    const event = new KeyboardEvent("keydown", { key: "l", code: "KeyL", ctrlKey: true, metaKey: true, bubbles: true, cancelable: true });
+    // the chord itself is valid, so only the length limit can let it through
+    const mac = navigator.userAgent.includes("Mac");
+    const event = new KeyboardEvent("keydown", { key: "l", code: "KeyL", ctrlKey: !mac, metaKey: mac, bubbles: true, cancelable: true });
+    expect(isAddToPromptShortcut(event, mac)).toBe(true);
     act(() => { document.dispatchEvent(event); });
     expect(event.defaultPrevented).toBe(false);
     expect(onAdd).not.toHaveBeenCalled();

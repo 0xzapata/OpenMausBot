@@ -1185,8 +1185,6 @@ export function Composer({
               onClearReply();
               return;
             }
-              return;
-            }
             // an empty composer + ArrowUp = edit your last message (like a chat app)
             if (e.key === "ArrowUp" && !hasContent && onEditLast) {
               e.preventDefault();
