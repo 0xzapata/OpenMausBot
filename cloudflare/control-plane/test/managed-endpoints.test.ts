@@ -1114,6 +1114,46 @@ describe("managed companion endpoints", () => {
     vi.restoreAllMocks();
   });
 
+  it("gives an endpoint its owner released back behind the same hostname", async () => {
+    const cloudflare = new FakeCloudflare();
+    const worker = createWorker(cloudflare.fetch);
+    const owner = await signIn(worker, "managed-release@example.com");
+    const installation = await createInstallation(worker, owner.token, "managed-release");
+    const endpoint = () => call(worker, "/v1/installations/self/endpoint", {
+      method: "POST",
+      token: installation.credential,
+    });
+    const first = await endpoint();
+    expect(first.status).toBe(200);
+    const firstPayload = await first.json<{ endpoint: { hostname: string; url: string } }>();
+    const firstTunnel = [...cloudflare.tunnels.values()][0];
+    if (!firstTunnel) throw new Error("fake tunnel missing");
+
+    // The desktop gives the address back once nothing needs it.
+    expect((await call(worker, "/v1/installations/self/endpoint", {
+      method: "DELETE",
+      token: installation.credential,
+    })).status).toBe(204);
+    expect(cloudflare.tunnels.size).toBe(0);
+    expect(cloudflare.dns.size).toBe(0);
+    await expect((await call(worker, "/v1/installations/self/endpoint", {
+      token: installation.credential,
+    })).json()).resolves.toEqual({ endpoint: null });
+
+    // The next pairing asks again: a new tunnel behind the same hostname.
+    const again = await endpoint();
+    expect(again.status).toBe(200);
+    const againPayload = await again.json<{ connectorToken: string; endpoint: { url: string } }>();
+    expect(againPayload.endpoint.url).toBe(firstPayload.endpoint.url);
+    expect(againPayload.connectorToken).toBe(CONNECTOR_TOKEN);
+    const secondTunnel = [...cloudflare.tunnels.values()][0];
+    expect(secondTunnel?.id).toBeDefined();
+    expect(secondTunnel?.id).not.toBe(firstTunnel.id);
+    expect(cloudflare.dns.get(firstPayload.endpoint.hostname)).toMatchObject({
+      content: `${secondTunnel?.id}.cfargotunnel.com`,
+    });
+  });
+
   it("retains metadata and refuses to delete a repurposed DNS record", async () => {
     const cloudflare = new FakeCloudflare();
     const worker = createWorker(cloudflare.fetch);

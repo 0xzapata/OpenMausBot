@@ -199,6 +199,20 @@ export function phonePairingGate(
   }
 }
 
+/** The desktop holds an HTTPS address only while something needs it, so
+ * automatic pairing that is waiting for one asks for it: the person is
+ * pairing now. Explicit Wi-Fi and Tailscale pairing never do. */
+export function shouldPrepareSecureAddress(
+  routeMode: CompanionPairingRouteMode,
+  gate: PhonePairingGate,
+  account: CompanionAccountState | null,
+): boolean {
+  return routeMode === "automatic"
+    && gate === "wait"
+    && account?.available === true
+    && (account.status === "ready" || account.status === "connecting");
+}
+
 export function newlyPairedDevice<T extends { id: string; name: string }>(
   baselineDeviceIds: string[],
   devices: T[],

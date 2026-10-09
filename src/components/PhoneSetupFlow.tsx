@@ -51,6 +51,7 @@ import {
   queuePhonePairingAttempt,
   releasePhonePairingAttempt,
   shouldArmPhoneSetupProvisioningTimeout,
+  shouldPrepareSecureAddress,
   startNonOverlappingPhoneSetupPoll,
   type PhoneSetupPhase,
   type PhonePairingAttemptLock,
@@ -422,6 +423,14 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
         const gate = phonePairingGate(accountOverride ?? account, started, explicitRoute);
         if (gate !== "open") {
           setProvisioning(gate === "wait" || gate === "start");
+          // The address is created now, under the spinner; the QR opens on
+          // the next refresh, or the account shows why it could not be.
+          const remote = companionAccountBridge();
+          if (remote?.prepare && shouldPrepareSecureAddress(routeMode, gate, accountOverride ?? account)) {
+            const prepare = remote.prepare;
+            const next = await mutateCompanionBridgeState(companionMutationEpoch, () => prepare());
+            if (isCurrent()) setAccount(next);
+          }
           return;
         }
         if (explicitRoute && !companionPairingRoute(started, routeMode)) {

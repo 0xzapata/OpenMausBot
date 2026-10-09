@@ -18,6 +18,7 @@ import {
   MANAGED_COMPANION_ENDPOINT_FIELD,
   MANAGED_COMPANION_ORIGIN_VERSION,
   MANAGED_COMPANION_ORIGIN_VERSION_FIELD,
+  MANAGED_COMPANION_RELEASE_AT_FIELD,
   MANAGED_COMPANION_TOKEN_FIELD,
 } from "./managed-companion-tunnel.mjs";
 
@@ -290,7 +291,7 @@ test("a reclaimed endpoint is re-provisioned at restart and a full provider retr
     const full = await service.restore();
     assert.deepEqual(routeFailures, []);
     assert.equal(full.status, "error");
-    assert.match(full.message, /^Secure HTTPS links are temporarily full\. Pair on this Wi-Fi or with Tailscale for now; we'll retry automatically\./);
+    assert.match(full.message, /^Secure HTTPS links are temporarily full\. Try again in 10 minutes, or pair on this Wi-Fi or with Tailscale\./);
     assert.match(full.message, new RegExp(`Reference: ${REQUEST_ID}`));
     // The old connector token is kept until a replacement exists.
     assert.equal(document[MANAGED_COMPANION_TOKEN_FIELD], OLD_CONNECTOR_TOKEN);
@@ -311,6 +312,194 @@ test("a reclaimed endpoint is re-provisioned at restart and a full provider retr
     assert.equal(count("GET /v1/installations/self/endpoint"), 1);
     assert.equal(count("POST /v1/installations/self/endpoint"), 2);
     service.dispose();
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("on demand, an address nothing needs is given back and comes back the same over real HTTP", { timeout: 15_000 }, async () => {
+  const identity = { name: "Fixture computer", platform: "darwin", appVersion: "1.2.3" };
+  const installation = { id: INSTALLATION_ID, clientInstanceId: CLIENT_ID, ...identity };
+  const credentialExpiresAt = Date.now() + 86_400_000;
+  const HOUR_MS = 60 * 60_000;
+  const calls = [];
+  const routeFailures = [];
+  let installationCreated = false;
+  // Like the control plane: one hostname per installation for life. A DELETE
+  // removes the tunnel and leaves the row "deleted"; the next POST makes a
+  // new tunnel behind the same hostname.
+  let row = null;
+  let tunnels = 0;
+  let baseURL;
+  let document = {};
+  let clock = 1_700_000_000_000;
+  let need = false;
+  const activations = [];
+  const stops = [];
+
+  const reply = (response, status, body, headers = {}) => {
+    response.writeHead(status, { "content-type": "application/json", "x-request-id": REQUEST_ID, ...headers });
+    response.end(body === undefined ? undefined : JSON.stringify(body));
+  };
+  const route = async (request, response) => {
+    const key = `${request.method} ${request.url}`;
+    calls.push(key);
+    let rawBody = "";
+    for await (const chunk of request) rawBody += chunk;
+    const body = rawBody ? JSON.parse(rawBody) : null;
+    const expectedBearer = request.url.startsWith("/v1/installations/self")
+      ? `Bearer ${INSTALLATION_CREDENTIAL}`
+      : request.url.startsWith("/v1/") ? `Bearer ${ACCOUNT_TOKEN}` : undefined;
+    assert.equal(request.headers.authorization, expectedBearer, `unexpected bearer for ${key}`);
+    switch (key) {
+      case "GET /healthz":
+        return reply(response, 200, { ok: true, service: "openmausbot-control-plane" });
+      case "POST /api/auth/email-otp/send-verification-otp":
+        return reply(response, 200, { success: true });
+      case "POST /api/auth/sign-in/email-otp":
+        assert.equal(body.email, EMAIL);
+        return reply(response, 200, { user: { id: "fixture-user", email: EMAIL } }, {
+          "set-auth-token": ACCOUNT_TOKEN,
+        });
+      case "GET /v1/installations":
+        return reply(response, 200, { installations: installationCreated ? [installation] : [] });
+      case "POST /v1/installations":
+        assert.equal(installationCreated, false, "must not register another installation");
+        installationCreated = true;
+        return reply(response, 201, { installation, credential: INSTALLATION_CREDENTIAL, credentialExpiresAt });
+      case "GET /v1/installations/self":
+        assert.equal(installationCreated, true);
+        return reply(response, 200, { installation, credentialExpiresAt });
+      case "POST /v1/installations/self/endpoint":
+        tunnels += 1;
+        row = { url: ENDPOINT, status: "ready" };
+        return reply(response, 200, {
+          endpoint: { ...row, hostname: new URL(ENDPOINT).hostname },
+          connectorToken: `fixture-connector-${tunnels}.${"d".repeat(80)}`,
+        });
+      case "GET /v1/installations/self/endpoint":
+        return reply(response, 200, { endpoint: row?.status === "ready" ? row : null });
+      case "DELETE /v1/installations/self/endpoint":
+        if (row) row = { ...row, status: "deleted" };
+        return reply(response, 204);
+      default:
+        assert.fail(`unexpected fixture request: ${key}`);
+    }
+  };
+  const server = createServer((request, response) => {
+    route(request, response).catch((error) => {
+      routeFailures.push(error);
+      reply(response, 500, { error: "fixture_route_failed" });
+    });
+  });
+
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    baseURL = `http://127.0.0.1:${server.address().port}`;
+    // Each call is one launch of the desktop app on the same saved document.
+    const launch = () => createCompanionAccountService({
+      client: createControlPlaneClient({ baseURL, timeoutMs: 2_000 }),
+      readCredentials: () => structuredClone(document),
+      updateCredentials: async (derive) => {
+        document = structuredClone(await derive(structuredClone(document)));
+        return structuredClone(document);
+      },
+      identity,
+      newClientInstanceId: () => CLIENT_ID,
+      onDemand: true,
+      autoRecover: true,
+      managedEndpointNeeded: async () => need,
+      companionIsOn: () => true,
+      managedConnectionState: () => ({ status: "ready", ready: true }),
+      activatePersistedEndpoint: async () => {
+        activations.push(document[MANAGED_COMPANION_TOKEN_FIELD]);
+        return { status: "ready", ready: true };
+      },
+      stopManagedEndpoint: async () => {
+        stops.push(document[MANAGED_COMPANION_ENDPOINT_FIELD]);
+      },
+      now: () => clock,
+      random: () => 0.5,
+      setTimer: () => 0,
+      clearTimer: () => {},
+    });
+    const count = (key) => calls.filter((call) => call === key).length;
+
+    // 1. Signing in creates the address H.
+    const first = launch();
+    await first.requestCode(EMAIL);
+    assert.deepEqual(await first.verifyCode(EMAIL, "12345678"), {
+      available: true, status: "ready", email: EMAIL, endpoint: ENDPOINT,
+    });
+    assert.equal(document[MANAGED_COMPANION_ENDPOINT_FIELD], ENDPOINT);
+    assert.equal(count("POST /v1/installations/self/endpoint"), 1);
+
+    // 2. Nothing is paired. A later launch plans the release; the one after
+    // the grace period gives the address back, connector first.
+    clock += 2 * HOUR_MS;
+    await launch().restore();
+    assert.equal(document[MANAGED_COMPANION_RELEASE_AT_FIELD], clock + 2.5 * HOUR_MS);
+    assert.equal(count("DELETE /v1/installations/self/endpoint"), 0);
+    clock += 3 * HOUR_MS;
+    assert.deepEqual(await launch().restore(), { available: true, status: "ready", email: EMAIL });
+    assert.equal(count("DELETE /v1/installations/self/endpoint"), 1);
+    assert.deepEqual(stops, [ENDPOINT]);
+    for (const field of [
+      MANAGED_COMPANION_ENDPOINT_FIELD,
+      MANAGED_COMPANION_TOKEN_FIELD,
+      MANAGED_COMPANION_ORIGIN_VERSION_FIELD,
+      MANAGED_COMPANION_RELEASE_AT_FIELD,
+    ]) {
+      assert.equal(Object.hasOwn(document, field), false, `${field} must be forgotten`);
+    }
+    const client = createControlPlaneClient({ baseURL, timeoutMs: 2_000 });
+    assert.equal(await client.getEndpoint(INSTALLATION_CREDENTIAL), null);
+
+    // 3. The next pairing asks again and gets the same address, with a new
+    // connector, and no sign-in or new installation.
+    const pairing = launch();
+    await pairing.restore();
+    const mark = calls.length;
+    assert.deepEqual(await pairing.prepare(), { available: true, status: "ready", email: EMAIL, endpoint: ENDPOINT });
+    assert.deepEqual(calls.slice(mark).filter((call) => call !== "GET /healthz"), [
+      "GET /v1/installations/self",
+      "POST /v1/installations/self/endpoint",
+    ]);
+    assert.equal(document[MANAGED_COMPANION_ENDPOINT_FIELD], ENDPOINT);
+    assert.equal(document[MANAGED_COMPANION_TOKEN_FIELD], `fixture-connector-2.${"d".repeat(80)}`);
+    assert.deepEqual(activations, [
+      `fixture-connector-1.${"d".repeat(80)}`,
+      `fixture-connector-2.${"d".repeat(80)}`,
+    ]);
+
+    // 4. A phone paired this time: it keeps the address through later launches.
+    need = true;
+    clock += 30 * 24 * HOUR_MS;
+    await launch().restore();
+    assert.equal(count("DELETE /v1/installations/self/endpoint"), 1);
+    assert.equal(document[MANAGED_COMPANION_ENDPOINT_FIELD], ENDPOINT);
+
+    // 5. Removed again, a launch with no address never asks for one.
+    need = false;
+    await launch().restore();
+    clock += 5 * HOUR_MS;
+    await launch().restore();
+    assert.equal(count("DELETE /v1/installations/self/endpoint"), 2);
+    assert.equal(Object.hasOwn(document, MANAGED_COMPANION_ENDPOINT_FIELD), false);
+    const posts = count("POST /v1/installations/self/endpoint");
+    await launch().restore();
+    clock += 24 * HOUR_MS;
+    await launch().restore();
+    assert.equal(count("POST /v1/installations/self/endpoint"), posts);
+
+    assert.deepEqual(routeFailures, []);
+    assert.equal(count("POST /api/auth/sign-in/email-otp"), 1);
+    assert.equal(count("POST /v1/installations"), 1);
+    for (const secret of [ACCOUNT_TOKEN, INSTALLATION_CREDENTIAL]) {
+      assert.ok(!JSON.stringify(await launch().state()).includes(secret), "public state must not expose fixture secrets");
+    }
   } finally {
     server.closeAllConnections();
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
