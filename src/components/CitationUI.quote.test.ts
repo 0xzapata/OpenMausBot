@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComposerQuoteChip, CitationSelectionToolbar, quoteLineDirection } from "./CitationUI";
 import { MentionTextarea } from "./MentionTextarea";
-import { citationAttachment, type CitationAttachment } from "@/lib/citations";
+import { CITATION_MAX_QUOTE_LENGTH, citationAttachment, type CitationAttachment } from "@/lib/citations";
 import { addToPromptChord, isAddToPromptShortcut, removesQuoteChip } from "@/lib/citations-dom";
 import { SHORTCUT_GROUPS } from "@/lib/keyboard-shortcuts";
 
@@ -113,14 +113,14 @@ describe("the add to prompt shortcut", () => {
 });
 
 describe("the add to prompt pill", () => {
-  function selectMessage() {
+  function selectMessage(body = quote, end = 18) {
     const viewport = document.createElement("div");
-    viewport.innerHTML = `<div data-citation-source="m-1" data-citation-owner-type="bot" data-citation-owner="bot-1" data-citation-thread="thread-1"><p>${quote}</p></div>`;
+    viewport.innerHTML = `<div data-citation-source="m-1" data-citation-owner-type="bot" data-citation-owner="bot-1" data-citation-thread="thread-1"><p>${body}</p></div>`;
     document.body.append(viewport);
     const text = viewport.querySelector("p")!.firstChild!;
     const range = document.createRange();
     range.setStart(text, 0);
-    range.setEnd(text, 18);
+    range.setEnd(text, end);
     const selection = window.getSelection()!;
     selection.removeAllRanges();
     selection.addRange(range);
@@ -155,6 +155,21 @@ describe("the add to prompt pill", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(onAdd).toHaveBeenCalledTimes(1);
     expect(document.body.querySelector("[data-add-to-prompt]")).toBeNull();
+  });
+
+  it("leaves the shortcut alone when the selection is over the limit", () => {
+    const long = "word ".repeat(Math.ceil(CITATION_MAX_QUOTE_LENGTH / 5) + 10).trim();
+    const viewport = selectMessage(long, long.length);
+    const onAdd = vi.fn();
+    mount(createElement(CitationSelectionToolbar, { viewportRef: { current: viewport }, onAdd }));
+    act(() => { document.dispatchEvent(new Event("selectionchange")); });
+    const pill = document.body.querySelector<HTMLButtonElement>("[data-add-to-prompt]")!;
+    expect(pill.disabled).toBe(true);
+    expect(pill.textContent).toContain("Shorten selection");
+    const event = new KeyboardEvent("keydown", { key: "l", code: "KeyL", ctrlKey: true, metaKey: true, bubbles: true, cancelable: true });
+    act(() => { document.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
+    expect(onAdd).not.toHaveBeenCalled();
   });
 
   it("does not take the shortcut when nothing is selected", () => {

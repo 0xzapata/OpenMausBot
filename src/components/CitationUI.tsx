@@ -99,7 +99,9 @@ export function CitationSelectionToolbar({
     viewportRef.current?.addEventListener("keyup", update);
     const onKey = (event: KeyboardEvent) => {
       if (!captured) return;
-      if (isAddToPromptShortcut(event, isMac)) {
+      // a selection over the limit cannot be added, so the key keeps its
+      // usual meaning instead of doing nothing
+      if (isAddToPromptShortcut(event, isMac) && captured.citation.quote.length <= CITATION_MAX_QUOTE_LENGTH) {
         event.preventDefault();
         event.stopPropagation();
         addRef.current();
@@ -182,15 +184,16 @@ export function ComposerQuoteChip({ citation, onRemove }: { citation: CitationAt
       title={title}
       className="group/quote inline-flex h-7 min-w-0 max-w-[min(12rem,70%)] shrink items-center gap-1.5 rounded-lg px-1.5 text-[14px] text-ink-secondary transition-colors hover:bg-raised hover:text-ink focus-within:bg-raised"
     >
-      {/* the x takes the icon's place on hover or focus, so the chip keeps
-          its width and the caret stays right after it */}
+      {/* the x takes the icon's place on hover or focus (always on a touch
+          screen), so the chip keeps its width and the caret stays right
+          after it */}
       <span className="relative flex size-4 shrink-0 items-center justify-center">
-        <MessageCircleMore size={15} aria-hidden="true" className="transition-opacity group-focus-within/quote:opacity-0 group-hover/quote:opacity-0" />
+        <MessageCircleMore size={15} aria-hidden="true" className="transition-opacity group-focus-within/quote:opacity-0 group-hover/quote:opacity-0 touch:opacity-0" />
         <button
           type="button"
           onClick={onRemove}
           aria-label={t("citation.remove", { quote: flat.slice(0, 60) })}
-          className="absolute inset-[-2px] flex items-center justify-center rounded-full text-ink opacity-0 transition-opacity hover:bg-control focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus/60 group-hover/quote:opacity-100"
+          className="absolute inset-[-2px] flex items-center justify-center rounded-full text-ink opacity-0 transition-opacity hover:bg-control focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus/60 group-hover/quote:opacity-100 touch:opacity-100"
         >
           <X size={13} aria-hidden="true" />
         </button>
