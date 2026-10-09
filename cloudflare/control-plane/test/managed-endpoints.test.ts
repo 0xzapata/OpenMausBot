@@ -1154,6 +1154,42 @@ describe("managed companion endpoints", () => {
     });
   });
 
+  it("refuses an endpoint while its owner's give-back is pending, until a DELETE finishes it", async () => {
+    const cloudflare = new FakeCloudflare();
+    const worker = createWorker(cloudflare.fetch);
+    const owner = await signIn(worker, "managed-release-pending@example.com");
+    const installation = await createInstallation(worker, owner.token, "managed-release-pending");
+    const endpoint = (method: "DELETE" | "POST") => call(worker, "/v1/installations/self/endpoint", {
+      method,
+      token: installation.credential,
+    });
+    const first = await endpoint("POST");
+    expect(first.status).toBe(200);
+    const firstPayload = await first.json<{ endpoint: { url: string } }>();
+
+    // The give-back half fails at Cloudflare and is left for the sweep.
+    cloudflare.failures.add("delete_tunnel");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const pending = await endpoint("DELETE");
+    expect(pending.status).toBe(503);
+    await expect(pending.json()).resolves.toEqual({ error: "endpoint_cleanup_pending" });
+
+    // Meanwhile no address is made for it (the desktop finishes the removal
+    // first: companion-account-service.mjs finishPendingRelease).
+    cloudflare.failures.clear();
+    const refused = await endpoint("POST");
+    expect(refused.status).toBe(409);
+    await expect(refused.json()).resolves.toEqual({ error: "endpoint_busy" });
+
+    expect((await endpoint("DELETE")).status).toBe(204);
+    const again = await endpoint("POST");
+    expect(again.status).toBe(200);
+    await expect(again.json<{ endpoint: { url: string } }>()).resolves.toMatchObject({
+      endpoint: { url: firstPayload.endpoint.url },
+    });
+    vi.restoreAllMocks();
+  });
+
   it("retains metadata and refuses to delete a repurposed DNS record", async () => {
     const cloudflare = new FakeCloudflare();
     const worker = createWorker(cloudflare.fetch);

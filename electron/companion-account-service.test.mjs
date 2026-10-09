@@ -7,6 +7,7 @@ import {
   COMPANION_ACCOUNT_TOKEN_FIELD,
   COMPANION_ACCOUNT_USER_ID_FIELD,
   COMPANION_CLIENT_INSTANCE_FIELD,
+  COMPANION_ENDPOINT_RELEASE_PENDING_FIELD,
   COMPANION_INSTALLATION_CREDENTIAL_FIELD,
   COMPANION_INSTALLATION_EXPIRY_FIELD,
   COMPANION_INSTALLATION_ID_FIELD,
@@ -1546,8 +1547,9 @@ describe("Companion account on demand", () => {
       expect(f.store.read()).toEqual(initial);
       expect(f.store.writes).toHaveLength(0);
       // Remote access off asks nothing: a check-in would keep an unused
-      // tunnel from the control plane's reclaim. On, it checks as before.
-      expect(f.client.getEndpoint).toHaveBeenCalledTimes(on ? 5 : 0);
+      // tunnel from the control plane's reclaim. On, every check asks; at
+      // launch the companion may still be starting, so that one waits.
+      expect(f.client.getEndpoint).toHaveBeenCalledTimes(on ? 4 : 0);
       f.service.dispose();
     }
   });
@@ -1658,11 +1660,12 @@ describe("Companion account on demand", () => {
       for (const field of ADDRESS_FIELDS) expect(f.store.read()).not.toHaveProperty(field);
       f.service.dispose();
     }
-    // The control plane finishes a half-done removal itself; a rejected
-    // credential cannot remove anything (the idle reclaim takes what is left).
-    for (const error of [
-      new ControlPlaneError("endpoint_cleanup_pending", 503),
-      new ControlPlaneError("unauthorized", 401),
+    // The control plane finishes a half-done removal itself (remembered, so
+    // the next request finishes it first); a rejected credential cannot
+    // remove anything (the idle reclaim takes what is left).
+    for (const [error, pending] of [
+      [new ControlPlaneError("endpoint_cleanup_pending", 503), true],
+      [new ControlPlaneError("unauthorized", 401), false],
     ]) {
       const f = onDemandFixture({
         initial: signedCredentials(due),
@@ -1672,6 +1675,7 @@ describe("Companion account on demand", () => {
       await f.service.restore();
 
       for (const field of ADDRESS_FIELDS) expect(f.store.read()).not.toHaveProperty(field);
+      expect(f.store.read()[COMPANION_ENDPOINT_RELEASE_PENDING_FIELD]).toBe(pending ? true : undefined);
       expect(f.activatePersistedEndpoint).not.toHaveBeenCalled();
       f.service.dispose();
     }
@@ -1895,5 +1899,183 @@ describe("Companion account on demand", () => {
     await f.service.restore();
     expect(f.store.read()[MANAGED_COMPANION_RELEASE_AT_FIELD]).toBe(LAUNCH_AT + 2.5 * HOUR_MS);
     f.service.dispose();
+  });
+
+  it("leaves can't tell at launch to the first check, so nothing re-creates a tunnel nobody needs", async () => {
+    // Remote access on and the address saved, but the tunnel was reclaimed
+    // while the computer was off; the companion is still starting.
+    for (const need of [false, true]) {
+      const f = onDemandFixture({
+        client: readyClient({
+          getEndpoint: vi.fn(async () => null),
+          ensureEndpoint: vi.fn(async () => ({ endpoint: { url: ENDPOINT }, connectorToken: RECLAIMED_TOKEN })),
+        }),
+      });
+      f.companion.need = null;
+      f.companion.connection = { status: "starting", ready: false };
+
+      await expect(f.service.restore()).resolves.toMatchObject({ status: "connecting", endpoint: ENDPOINT });
+      for (const call of ["getEndpoint", "ensureEndpoint", "deleteEndpoint"]) {
+        expect(f.client[call]).not.toHaveBeenCalled();
+      }
+      expect(f.store.writes).toHaveLength(0);
+
+      // Two minutes on the companion answers, and the connector cannot
+      // reach the removed tunnel.
+      f.companion.need = need;
+      f.companion.connection = { status: "retrying", ready: false };
+      f.clock.now += 2 * 60_000;
+      await f.watchdog();
+      expect(f.client.getEndpoint).toHaveBeenCalledOnce();
+      if (need) {
+        // A paired device: repaired behind the same address.
+        expect(f.client.ensureEndpoint).toHaveBeenCalledOnce();
+        expect(f.client.deleteEndpoint).not.toHaveBeenCalled();
+        expect(f.store.read()[MANAGED_COMPANION_TOKEN_FIELD]).toBe(RECLAIMED_TOKEN);
+      } else {
+        // Nothing paired: given back, never re-created.
+        expect(f.client.ensureEndpoint).not.toHaveBeenCalled();
+        expect(f.client.deleteEndpoint).toHaveBeenCalledOnce();
+        for (const field of ADDRESS_FIELDS) expect(f.store.read()).not.toHaveProperty(field);
+      }
+      f.service.dispose();
+    }
+  });
+
+  it("finishes a removal the control plane left pending before asking for the address again", async () => {
+    const pending = new ControlPlaneError("endpoint_cleanup_pending", 503);
+    // The give-back DELETE half fails; so does the one the next pairing
+    // sends first, and the control plane refuses the address meanwhile.
+    const deleteEndpoint = vi.fn()
+      .mockRejectedValueOnce(pending)
+      .mockRejectedValueOnce(pending)
+      .mockResolvedValue(undefined);
+    const ensureEndpoint = vi.fn()
+      .mockRejectedValueOnce(new ControlPlaneError("endpoint_busy", 409, "", 2_000))
+      .mockResolvedValue({ endpoint: { url: ENDPOINT }, connectorToken: RECLAIMED_TOKEN });
+    const f = onDemandFixture({
+      initial: signedCredentials({ [MANAGED_COMPANION_RELEASE_AT_FIELD]: LAUNCH_AT - 1 }),
+      client: readyClient({ deleteEndpoint, ensureEndpoint }),
+    });
+
+    await f.service.restore();
+    expect(deleteEndpoint).toHaveBeenCalledOnce();
+    expect(f.store.read()[COMPANION_ENDPOINT_RELEASE_PENDING_FIELD]).toBe(true);
+
+    // The person pairs: the DELETE goes first, and when it cannot finish
+    // the refusal is what they see, retried for them.
+    await expect(f.service.prepare()).resolves.toMatchObject({
+      status: "error",
+      message: "The secure connection is still being prepared. Try again in a moment.",
+    });
+    expect(deleteEndpoint).toHaveBeenCalledTimes(2);
+    expect(deleteEndpoint.mock.invocationCallOrder[1]).toBeLessThan(ensureEndpoint.mock.invocationCallOrder[0]);
+    expect(f.store.read()[COMPANION_ENDPOINT_RELEASE_PENDING_FIELD]).toBe(true);
+    expect(f.retries()).toHaveLength(1);
+
+    // The retry finishes the removal, then gets the same address back.
+    f.clock.now += 10 * 60_000;
+    await f.retryTimer();
+    expect(deleteEndpoint).toHaveBeenCalledTimes(3);
+    expect(deleteEndpoint.mock.invocationCallOrder[2]).toBeLessThan(ensureEndpoint.mock.invocationCallOrder[1]);
+    expect(ensureEndpoint).toHaveBeenCalledTimes(2);
+    expect(f.store.read()).toMatchObject({
+      [MANAGED_COMPANION_ENDPOINT_FIELD]: ENDPOINT,
+      [MANAGED_COMPANION_TOKEN_FIELD]: RECLAIMED_TOKEN,
+    });
+    expect(f.store.read()).not.toHaveProperty(COMPANION_ENDPOINT_RELEASE_PENDING_FIELD);
+    await expect(f.service.state()).resolves.toMatchObject({ status: "ready", endpoint: ENDPOINT });
+
+    // Nothing pending: the next request sends no DELETE first.
+    await f.service.retry();
+    expect(deleteEndpoint).toHaveBeenCalledTimes(3);
+    f.service.dispose();
+
+    // Finished, but no address is free right now: nothing is pending any
+    // more, so the retry goes straight to asking.
+    const full = onDemandFixture({
+      initial: { ...signedInWithoutAddress(), [COMPANION_ENDPOINT_RELEASE_PENDING_FIELD]: true },
+      client: readyClient({
+        ensureEndpoint: vi.fn(async () => { throw new ControlPlaneError("endpoint_capacity", 503, "", 600_000); }),
+      }),
+    });
+    await expect(full.service.prepare()).resolves.toMatchObject({ status: "error" });
+    expect(full.client.deleteEndpoint).toHaveBeenCalledOnce();
+    expect(full.store.read()).not.toHaveProperty(COMPANION_ENDPOINT_RELEASE_PENDING_FIELD);
+    full.clock.now += 10 * 60_000;
+    await full.retryTimer();
+    expect(full.client.ensureEndpoint).toHaveBeenCalledTimes(2);
+    expect(full.client.deleteEndpoint).toHaveBeenCalledOnce();
+    full.service.dispose();
+
+    // A finishing DELETE the control plane rejects (the credential expired)
+    // changes nothing; once an address is saved, nothing is pending.
+    const rejected = onDemandFixture({
+      initial: { ...signedInWithoutAddress(), [COMPANION_ENDPOINT_RELEASE_PENDING_FIELD]: true },
+      client: readyClient({ deleteEndpoint: vi.fn(async () => { throw new ControlPlaneError("unauthorized", 401); }) }),
+    });
+    await expect(rejected.service.prepare()).resolves.toMatchObject({ status: "ready", endpoint: ENDPOINT });
+    expect(rejected.client.deleteEndpoint).toHaveBeenCalledOnce();
+    expect(rejected.client.ensureEndpoint).toHaveBeenCalledOnce();
+    expect(rejected.store.read()).not.toHaveProperty(COMPANION_ENDPOINT_RELEASE_PENDING_FIELD);
+    rejected.service.dispose();
+
+    // Signing out forgets it along with the account.
+    const out = onDemandFixture({
+      initial: signedCredentials({ [COMPANION_ENDPOINT_RELEASE_PENDING_FIELD]: true }),
+    });
+    await out.service.signOut();
+    expect(out.store.read()).not.toHaveProperty(COMPANION_ENDPOINT_RELEASE_PENDING_FIELD);
+    out.service.dispose();
+  });
+
+  it("reconciles an address an older release saved once a device needs it", async () => {
+    // Saved before an origin change: its connector may not start until the
+    // control plane has reconciled it for this release.
+    const outdated = signedCredentials({ [MANAGED_COMPANION_ORIGIN_VERSION_FIELD]: MANAGED_COMPANION_ORIGIN_VERSION - 1 });
+    const provisioned = () => vi.fn(async () => ({ endpoint: { url: ENDPOINT }, connectorToken: RECLAIMED_TOKEN }));
+
+    // Can't tell at launch, then nothing paired: left as it is.
+    const ensureEndpoint = vi.fn()
+      .mockRejectedValueOnce(new ControlPlaneError("endpoint_capacity", 503, "", 600_000))
+      .mockResolvedValue({ endpoint: { url: ENDPOINT }, connectorToken: RECLAIMED_TOKEN });
+    const idle = onDemandFixture({ initial: outdated, client: readyClient({ ensureEndpoint }) });
+    idle.companion.need = null;
+    await idle.service.restore();
+    idle.companion.need = false;
+    for (let tick = 0; tick < 3; tick += 1) {
+      idle.clock.now += HOUR_MS;
+      await idle.watchdog();
+    }
+    expect(ensureEndpoint).not.toHaveBeenCalled();
+    expect(idle.store.writes).toHaveLength(0);
+
+    // A paired phone: reconciled behind the same address on the next check,
+    // and retried with backoff (not on every check) while none is free.
+    idle.companion.need = true;
+    idle.clock.now += HOUR_MS;
+    await idle.watchdog();
+    expect(ensureEndpoint).toHaveBeenCalledOnce();
+    expect(idle.retries()).toEqual([600_000]);
+    idle.clock.now += 5 * 60_000;
+    await idle.watchdog();
+    expect(ensureEndpoint).toHaveBeenCalledOnce();
+    idle.clock.now += 5 * 60_000;
+    await idle.retryTimer();
+    expect(ensureEndpoint).toHaveBeenCalledTimes(2);
+    expect(idle.store.read()).toMatchObject({
+      [MANAGED_COMPANION_ENDPOINT_FIELD]: ENDPOINT,
+      [MANAGED_COMPANION_TOKEN_FIELD]: RECLAIMED_TOKEN,
+      [MANAGED_COMPANION_ORIGIN_VERSION_FIELD]: MANAGED_COMPANION_ORIGIN_VERSION,
+    });
+    expect(idle.activatePersistedEndpoint).toHaveBeenCalledOnce();
+    idle.service.dispose();
+
+    // Known at launch: reconciled then.
+    const paired = onDemandFixture({ initial: outdated, client: readyClient({ ensureEndpoint: provisioned() }) });
+    paired.companion.need = true;
+    await expect(paired.service.restore()).resolves.toMatchObject({ status: "ready", endpoint: ENDPOINT });
+    expect(paired.client.ensureEndpoint).toHaveBeenCalledOnce();
+    paired.service.dispose();
   });
 });

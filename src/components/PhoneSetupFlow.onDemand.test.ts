@@ -76,6 +76,11 @@ function desktop() {
       companion = { ...withHosted(), enabled: true };
       account = { ...account, endpoint: HOSTED };
     },
+    /** An hour after the request the desktop stops retrying and clears the
+     * error: signed in, no address, nothing in flight. */
+    stopRetrying() {
+      account = { available: true, status: "ready", email: "ada@example.com" };
+    },
   };
 }
 
@@ -124,7 +129,8 @@ describe("pairing on a computer that holds no HTTPS address yet", () => {
     // The code's address is the new HTTPS one.
     flushSync(() => button("Reveal")!.click());
     expect(text()).toContain(`Pairing address${HOSTED}`);
-    expect(fake.bridge.companionAccount.prepare).toHaveBeenCalledOnce();
+    // Once to create it, and once more, unawaited, as the QR opens on it.
+    expect(fake.bridge.companionAccount.prepare).toHaveBeenCalledTimes(2);
   });
 
   it("says when to try again when no address is free, and offers Wi-Fi", async () => {
@@ -138,14 +144,47 @@ describe("pairing on a computer that holds no HTTPS address yet", () => {
     expect(button("Try secure access again")).not.toBeNull();
     expect(button("Pair on this Wi-Fi instead")).not.toBeNull();
     expect(fake.bridge.companion.pairing).not.toHaveBeenCalled();
+
+    // Wi-Fi pairing opens its own QR and asks for no HTTPS address.
+    flushSync(() => button("Pair on this Wi-Fi instead")!.click());
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="Device pairing QR code"]')).not.toBeNull());
+    expect(fake.bridge.companion.pairing).toHaveBeenCalledWith(true);
+    expect(fake.bridge.companionAccount.prepare).toHaveBeenCalledOnce();
   });
 
-  it("asks for nothing when the address is already there", async () => {
+  it("asks again when the desktop stopped retrying while pairing still waits", async () => {
+    const fake = desktop();
+    await startPairing(fake);
+    await vi.waitFor(() => expect(fake.bridge.companionAccount.prepare).toHaveBeenCalledOnce());
+    fake.finishPrepare("full");
+    await vi.waitFor(() => expect(text()).toContain(FULL));
+
+    // Not a spinner with nothing behind it: the open pairing asks again.
+    fake.stopRetrying();
+    await vi.waitFor(
+      () => expect(fake.bridge.companionAccount.prepare).toHaveBeenCalledTimes(2),
+      { timeout: 5_000 },
+    );
+    expect(text()).toContain("Creating secure remote access");
+    fake.finishPrepare("ready");
+    await vi.waitFor(
+      () => expect(host.querySelector('[aria-label="Device pairing QR code"]')).not.toBeNull(),
+      { timeout: 5_000 },
+    );
+  });
+});
+
+describe("pairing on a computer that already holds its HTTPS address", () => {
+  it("opens the QR at once, and tells the desktop someone is pairing over it", async () => {
     const fake = desktop();
     fake.alreadyHosted();
     await startPairing(fake);
 
     await vi.waitFor(() => expect(host.querySelector('[aria-label="Device pairing QR code"]')).not.toBeNull());
-    expect(fake.bridge.companionAccount.prepare).not.toHaveBeenCalled();
+    // Recorded as a request, so a release planned for the idle address does
+    // not land while the person installs the app. The QR did not wait for
+    // it: this prepare() never answers.
+    expect(fake.bridge.companionAccount.prepare).toHaveBeenCalledOnce();
+    expect(fake.bridge.companion.pairing).toHaveBeenCalledWith(true);
   });
 });

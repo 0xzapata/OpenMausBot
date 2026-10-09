@@ -4,8 +4,10 @@ import {
   normalizeControlPlaneURL,
 } from "./control-plane-client.mjs";
 import {
+  MANAGED_COMPANION_ENDPOINT_FIELD,
   MANAGED_COMPANION_RELEASE_AT_FIELD,
   managedCompanionTunnelAccess,
+  normalizeManagedCompanionEndpoint,
   withManagedCompanionTunnelAccess,
   withoutManagedCompanionTunnelAccess,
 } from "./managed-companion-tunnel.mjs";
@@ -20,6 +22,10 @@ export const COMPANION_INSTALLATION_ID_FIELD = "companionInstallationId";
 export const COMPANION_INSTALLATION_CREDENTIAL_FIELD = "companionInstallationCredential";
 export const COMPANION_INSTALLATION_EXPIRY_FIELD = "companionInstallationCredentialExpiresAt";
 export const COMPANION_ACCOUNT_CLEANUP_PENDING_FIELD = "companionAccountCleanupPending";
+/** On demand: an address given back whose removal the control plane is still
+ * finishing. It creates no address for this installation until that is done,
+ * so the next request finishes the removal first. */
+export const COMPANION_ENDPOINT_RELEASE_PENDING_FIELD = "companionEndpointReleasePending";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INSTALLATION_ID = UUID;
@@ -139,6 +145,7 @@ function withoutCompanionAccount(credentials) {
     COMPANION_INSTALLATION_CREDENTIAL_FIELD,
     COMPANION_INSTALLATION_EXPIRY_FIELD,
     COMPANION_ACCOUNT_CLEANUP_PENDING_FIELD,
+    COMPANION_ENDPOINT_RELEASE_PENDING_FIELD,
   ]) {
     delete next[field];
   }
@@ -170,6 +177,7 @@ function withProvisionedAccount(credentials, { accountToken, user, installation,
     [COMPANION_ACCOUNT_EMAIL_FIELD]: user.email,
   };
   delete next[COMPANION_ACCOUNT_CLEANUP_PENDING_FIELD];
+  delete next[COMPANION_ENDPOINT_RELEASE_PENDING_FIELD];
   return next;
 }
 
@@ -559,8 +567,29 @@ export function createCompanionAccountService({
     return true;
   };
 
+  /** Finish a give-back the control plane left pending (on demand): until
+   * that removal is done it creates no address for this installation. Once
+   * its own sweep has done it, the DELETE is answered at once. If this one
+   * fails too, the request that follows says why. */
+  const finishPendingRelease = async () => {
+    const document = credentials();
+    const credential = storedAccount(document)?.installationCredential;
+    if (document[COMPANION_ENDPOINT_RELEASE_PENDING_FIELD] !== true || !credential) return;
+    try {
+      await client.deleteEndpoint(credential);
+    } catch {
+      return;
+    }
+    await updateCredentials((current) => {
+      const next = { ...current };
+      delete next[COMPANION_ENDPOINT_RELEASE_PENDING_FIELD];
+      return next;
+    });
+  };
+
   const provision = async ({ accountToken, user }) => {
     const clientInstanceId = await ensureClientIdentity();
+    await finishPendingRelease();
     const before = credentials();
     const previous = storedAccount(before);
     const installation = await client.ensureInstallation({
@@ -829,6 +858,9 @@ export function createCompanionAccountService({
   /** A person's own request counts as a need for an hour. */
   const requestedRecently = () => requestedAt !== null && now() - requestedAt < REQUEST_WINDOW_MS;
 
+  /** The saved address, even one this release cannot start yet. */
+  const savedAddress = (document) => normalizeManagedCompanionEndpoint(document[MANAGED_COMPANION_ENDPOINT_FIELD]);
+
   /** true, false, or null when that cannot be told. Only false gives back. */
   const currentNeed = async () => {
     if (requestedRecently()) return true;
@@ -858,7 +890,8 @@ export function createCompanionAccountService({
    * sign-out's order, the connector stops and the address is withdrawn
    * before the DELETE, so nothing can pair to an address being removed. A
    * failed DELETE brings the connector back, and the next check tries again.
-   * The control plane keeps the hostname, so the next request gets it back. */
+   * The control plane keeps the hostname, so the next request gets it back
+   * (after finishing a removal it left pending: finishPendingRelease). */
   const releaseAddress = async () => {
     const need = await currentNeed();
     if (need !== false) {
@@ -875,14 +908,16 @@ export function createCompanionAccountService({
       return settledState();
     }
     await stopManagedEndpoint();
+    let removalPending = false;
     try {
       await client.deleteEndpoint(account.installationCredential);
     } catch (error) {
-      // Cleanup pending: the control plane finishes it on its own. A
-      // rejected credential cannot remove anything, and the idle reclaim
-      // removes a tunnel that stays offline.
-      const handedOver = error instanceof ControlPlaneError &&
-        (error.code === "endpoint_cleanup_pending" || error.status === 401);
+      // Cleanup pending: the control plane finishes it on its own, and is
+      // remembered so the next request can finish it first. A rejected
+      // credential cannot remove anything, and the idle reclaim removes a
+      // tunnel that stays offline.
+      removalPending = error instanceof ControlPlaneError && error.code === "endpoint_cleanup_pending";
+      const handedOver = removalPending || (error instanceof ControlPlaneError && error.status === 401);
       if (!handedOver) {
         writeLog(
           error instanceof ControlPlaneError
@@ -893,7 +928,9 @@ export function createCompanionAccountService({
         return settledState();
       }
     }
-    await updateCredentials(withoutManagedCompanionTunnelAccess);
+    await updateCredentials((current) => removalPending
+      ? { ...withoutManagedCompanionTunnelAccess(current), [COMPANION_ENDPOINT_RELEASE_PENDING_FIELD]: true }
+      : withoutManagedCompanionTunnelAccess(current));
     resetAutoRetry();
     phase = null;
     writeLog("companion account: gave the secure address back; no device needs it");
@@ -902,19 +939,23 @@ export function createCompanionAccountService({
 
   /** At launch and on every watchdog tick: keep and repair a saved address
    * while something needs it, or while that cannot be told; give it back
-   * once nothing has needed it for the grace period. Never creates one. */
+   * once nothing has needed it for the grace period. Never creates one. At
+   * launch the companion is often still starting, so "can't tell" there is
+   * left to the first check, two minutes later. */
   const reviewAddress = async ({ atLaunch = false } = {}) => {
     const document = credentials();
-    if (
-      !storedAccount(document) ||
-      !managedCompanionTunnelAccess(document) ||
-      companionAccountCleanupPending(document)
-    ) {
-      return null;
+    if (!storedAccount(document) || companionAccountCleanupPending(document)) return null;
+    if (!managedCompanionTunnelAccess(document)) {
+      // An address an older release saved cannot start until the control
+      // plane reconciles it for this one (the origin version gate). A device
+      // that uses it gets that now, behind the same hostname.
+      if (!savedAddress(document) || autoRetryTimer !== null) return null;
+      return (await currentNeed()) === true ? retryWork() : null;
     }
     const need = await currentNeed();
     if (need !== false) {
       if (need) await cancelRelease();
+      if (need === null && atLaunch) return null;
       return recoveryDue({ atLaunch }) ? reconcileIfEndpointGone() : null;
     }
     const releaseAt = releaseScheduledAt();
@@ -947,7 +988,7 @@ export function createCompanionAccountService({
    * with it: no one is waiting for an address. */
   const retryIfWanted = async () => {
     if (requestedRecently()) return retryWork();
-    if (managedCompanionTunnelAccess(credentials()) && (await currentNeed()) !== false) {
+    if (savedAddress(credentials()) && (await currentNeed()) !== false) {
       return retryWork();
     }
     resetAutoRetry();

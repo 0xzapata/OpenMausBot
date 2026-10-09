@@ -505,3 +505,120 @@ test("on demand, an address nothing needs is given back and comes back the same 
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+test("on demand, a give-back the control plane left pending is finished before the address comes back, over real HTTP", { timeout: 15_000 }, async () => {
+  const identity = { name: "Fixture computer", platform: "darwin", appVersion: "1.2.3" };
+  const installation = { id: INSTALLATION_ID, clientInstanceId: CLIENT_ID, ...identity };
+  const calls = [];
+  const routeFailures = [];
+  // Like the control plane: an owner DELETE that fails half-way leaves the
+  // row "deleting", and no endpoint is made for it until a DELETE finishes.
+  let row = "ready";
+  let deleteFailures = 1;
+  let baseURL;
+  let document = {
+    [COMPANION_CLIENT_INSTANCE_FIELD]: CLIENT_ID,
+    [COMPANION_ACCOUNT_TOKEN_FIELD]: ACCOUNT_TOKEN,
+    [COMPANION_ACCOUNT_USER_ID_FIELD]: "fixture-user",
+    [COMPANION_ACCOUNT_EMAIL_FIELD]: EMAIL,
+    [COMPANION_INSTALLATION_ID_FIELD]: INSTALLATION_ID,
+    [COMPANION_INSTALLATION_CREDENTIAL_FIELD]: INSTALLATION_CREDENTIAL,
+    [MANAGED_COMPANION_ENDPOINT_FIELD]: ENDPOINT,
+    [MANAGED_COMPANION_TOKEN_FIELD]: CONNECTOR_TOKEN,
+    [MANAGED_COMPANION_ORIGIN_VERSION_FIELD]: MANAGED_COMPANION_ORIGIN_VERSION,
+    // Nothing has needed it for the grace period.
+    [MANAGED_COMPANION_RELEASE_AT_FIELD]: 1,
+  };
+
+  const reply = (response, status, body) => {
+    response.writeHead(status, { "content-type": "application/json", "x-request-id": REQUEST_ID });
+    response.end(body === undefined ? undefined : JSON.stringify(body));
+  };
+  const route = async (request, response) => {
+    const key = `${request.method} ${request.url}`;
+    calls.push(key);
+    for await (const _chunk of request) {
+      // Drain the body.
+    }
+    if (request.url.startsWith("/v1/installations/self")) {
+      assert.equal(request.headers.authorization, `Bearer ${INSTALLATION_CREDENTIAL}`);
+    }
+    switch (key) {
+      case "GET /healthz":
+        return reply(response, 200, { ok: true, service: "openmausbot-control-plane" });
+      case "GET /v1/installations/self":
+        return reply(response, 200, { installation, credentialExpiresAt: Date.now() + 86_400_000 });
+      case "DELETE /v1/installations/self/endpoint":
+        if (deleteFailures > 0) {
+          deleteFailures -= 1;
+          row = "deleting";
+          return reply(response, 503, { error: "endpoint_cleanup_pending" });
+        }
+        row = "deleted";
+        return reply(response, 204);
+      case "POST /v1/installations/self/endpoint":
+        if (row === "deleting") return reply(response, 409, { error: "endpoint_busy" });
+        row = "ready";
+        return reply(response, 200, {
+          endpoint: { url: ENDPOINT, hostname: new URL(ENDPOINT).hostname, status: "ready" },
+          connectorToken: `fixture-connector-2.${"d".repeat(80)}`,
+        });
+      default:
+        assert.fail(`unexpected fixture request: ${key}`);
+    }
+  };
+  const server = createServer((request, response) => {
+    route(request, response).catch((error) => {
+      routeFailures.push(error);
+      reply(response, 500, { error: "fixture_route_failed" });
+    });
+  });
+
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    baseURL = `http://127.0.0.1:${server.address().port}`;
+    const launch = () => createCompanionAccountService({
+      client: createControlPlaneClient({ baseURL, timeoutMs: 2_000 }),
+      readCredentials: () => structuredClone(document),
+      updateCredentials: async (derive) => {
+        document = structuredClone(await derive(structuredClone(document)));
+        return structuredClone(document);
+      },
+      identity,
+      newClientInstanceId: () => CLIENT_ID,
+      onDemand: true,
+      autoRecover: true,
+      managedEndpointNeeded: async () => false,
+      companionIsOn: () => true,
+      managedConnectionState: () => ({ status: "ready", ready: true }),
+      activatePersistedEndpoint: async () => ({ status: "ready", ready: true }),
+      setTimer: () => 0,
+      clearTimer: () => {},
+    });
+
+    // 1. The give-back is answered "cleanup pending": the address is
+    // forgotten here, and the control plane is still removing it.
+    assert.deepEqual(await launch().restore(), { available: true, status: "ready", email: EMAIL });
+    assert.equal(row, "deleting");
+    assert.equal(Object.hasOwn(document, MANAGED_COMPANION_ENDPOINT_FIELD), false);
+
+    // 2. The next pairing finishes the removal first, then gets the same
+    // address back, instead of "still being prepared".
+    const pairing = launch();
+    await pairing.restore();
+    const mark = calls.length;
+    assert.deepEqual(await pairing.prepare(), { available: true, status: "ready", email: EMAIL, endpoint: ENDPOINT });
+    assert.deepEqual(calls.slice(mark).filter((call) => call !== "GET /healthz"), [
+      "DELETE /v1/installations/self/endpoint",
+      "GET /v1/installations/self",
+      "POST /v1/installations/self/endpoint",
+    ]);
+    assert.equal(document[MANAGED_COMPANION_ENDPOINT_FIELD], ENDPOINT);
+    assert.equal(document[MANAGED_COMPANION_TOKEN_FIELD], `fixture-connector-2.${"d".repeat(80)}`);
+    assert.deepEqual(routeFailures, []);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
