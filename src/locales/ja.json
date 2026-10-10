@@ -1592,5 +1592,8 @@
   "place.view.ccAtOnce.short": "使用中",
   "place.view.localUnavailable.short": "準備できていません",
   "place.view.autoTeam.short": "共有",
-  "pro.name": "MausBot Cloud"
+  "pro.name": "MausBot Cloud",
+  "computer.files.homeFolder": "ホームフォルダー",
+  "computer.files.changeDefaultFolder": "デフォルトを変更",
+  "computer.files.pinnedFolderHint": "この会話では現在のフォルダーを引き続き使います。新しい会話で使うデフォルトのフォルダーを変更できます。"
 }

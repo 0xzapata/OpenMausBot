@@ -680,7 +680,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
                 setError(null);
                 setNotice(null);
               }}
-              className="flex items-center gap-1.5 rounded-lg bg-control px-3 py-2 text-[12.5px] font-medium text-ink hover:bg-raised-hover disabled:opacity-40"
+              className="ui-button"
             >
               <ClipboardPaste size={14} /> {t("mcp.import")}
             </button>

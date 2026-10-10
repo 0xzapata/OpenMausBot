@@ -1611,7 +1611,10 @@
       "place.view.ccAtOnce.short": "750af77aa42eea62726061b574cf8ab011cf3f7f60926532aad4b0da028ed046",
       "place.view.localUnavailable.short": "330010f40240ecd83defa493b21a57b0504ddea6d30810be14e06debba8ad55b",
       "place.view.autoTeam.short": "e3c4b39d6d5013477c98cd58236fed455f37aa7017b7168ce1980a449aaf438a",
-      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca"
+      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     },
     "es": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -3205,7 +3208,10 @@
       "place.view.ccAtOnce.short": "750af77aa42eea62726061b574cf8ab011cf3f7f60926532aad4b0da028ed046",
       "place.view.localUnavailable.short": "330010f40240ecd83defa493b21a57b0504ddea6d30810be14e06debba8ad55b",
       "place.view.autoTeam.short": "e3c4b39d6d5013477c98cd58236fed455f37aa7017b7168ce1980a449aaf438a",
-      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca"
+      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     },
     "fr": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -4799,7 +4805,10 @@
       "place.view.ccAtOnce.short": "750af77aa42eea62726061b574cf8ab011cf3f7f60926532aad4b0da028ed046",
       "place.view.localUnavailable.short": "330010f40240ecd83defa493b21a57b0504ddea6d30810be14e06debba8ad55b",
       "place.view.autoTeam.short": "e3c4b39d6d5013477c98cd58236fed455f37aa7017b7168ce1980a449aaf438a",
-      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca"
+      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     },
     "hi": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -6393,7 +6402,10 @@
       "place.view.ccAtOnce.short": "750af77aa42eea62726061b574cf8ab011cf3f7f60926532aad4b0da028ed046",
       "place.view.localUnavailable.short": "330010f40240ecd83defa493b21a57b0504ddea6d30810be14e06debba8ad55b",
       "place.view.autoTeam.short": "e3c4b39d6d5013477c98cd58236fed455f37aa7017b7168ce1980a449aaf438a",
-      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca"
+      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     },
     "ja": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -7989,7 +8001,10 @@
       "place.view.ccAtOnce.short": "750af77aa42eea62726061b574cf8ab011cf3f7f60926532aad4b0da028ed046",
       "place.view.localUnavailable.short": "330010f40240ecd83defa493b21a57b0504ddea6d30810be14e06debba8ad55b",
       "place.view.autoTeam.short": "e3c4b39d6d5013477c98cd58236fed455f37aa7017b7168ce1980a449aaf438a",
-      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca"
+      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     },
     "pt-br": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -9599,7 +9614,10 @@
       "place.view.ccAtOnce.short": "750af77aa42eea62726061b574cf8ab011cf3f7f60926532aad4b0da028ed046",
       "place.view.localUnavailable.short": "330010f40240ecd83defa493b21a57b0504ddea6d30810be14e06debba8ad55b",
       "place.view.autoTeam.short": "e3c4b39d6d5013477c98cd58236fed455f37aa7017b7168ce1980a449aaf438a",
-      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca"
+      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     },
     "zh": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -12140,7 +12158,10 @@
       "place.view.ccAtOnce.short": "750af77aa42eea62726061b574cf8ab011cf3f7f60926532aad4b0da028ed046",
       "place.view.localUnavailable.short": "330010f40240ecd83defa493b21a57b0504ddea6d30810be14e06debba8ad55b",
       "place.view.autoTeam.short": "e3c4b39d6d5013477c98cd58236fed455f37aa7017b7168ce1980a449aaf438a",
-      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca"
+      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     },
     "zh-tw": {
       "whop.description": "1a07cf04ef17029448d3781415cbac16d54e66b821907a40d94e0e6349710e70",
@@ -15936,7 +15957,10 @@
       "place.view.ccToolsOff.line": "6dea3d0ac1abefc0801b78d2707344b880691fb46a053652b42cf19c279e738f",
       "place.view.ccSignIn.short": "cadcad9e7c2a605a165b09d0c2a106d83daa31587fab898807ab99be6668d47b",
       "place.view.ccSignIn.line": "ce1b2e08b7cb2022fe9ca90fe79342d4c635849c87208af752d514a1b22e0968",
-      "place.view.ccSignIn.lineMyCloud": "6355755039d6f4bc1a8ff134a46e7b29ff8c0f9a45da01340d4c39001303afa2"
+      "place.view.ccSignIn.lineMyCloud": "6355755039d6f4bc1a8ff134a46e7b29ff8c0f9a45da01340d4c39001303afa2",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     },
     "uk": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",
@@ -18076,7 +18100,10 @@
       "place.view.ccAtOnce.short": "750af77aa42eea62726061b574cf8ab011cf3f7f60926532aad4b0da028ed046",
       "place.view.localUnavailable.short": "330010f40240ecd83defa493b21a57b0504ddea6d30810be14e06debba8ad55b",
       "place.view.autoTeam.short": "e3c4b39d6d5013477c98cd58236fed455f37aa7017b7168ce1980a449aaf438a",
-      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca"
+      "pro.name": "3a63038b6432668672151c5029011f6decb8eca0a8a0b63f934cc78190a6beca",
+      "computer.files.homeFolder": "6772da558a23e28185deb8d4bb7cdb20ae916f13a03eca9a9e5c0d4deffd4944",
+      "computer.files.changeDefaultFolder": "d849aca289a009020a597abaf279d8db449aca92344e9d91485cf1cf0aadc144",
+      "computer.files.pinnedFolderHint": "b69c3a6863aa1de63d33f31fcd2ec1b43df5dab08c1a8dd931aec171adff9885"
     }
   }
 }
