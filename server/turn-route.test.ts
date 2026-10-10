@@ -31,9 +31,14 @@ describe("classifyTurn", () => {
     expect(classifyTurn({ text: "what is this", attachments: 1, priorTurnUsedTools: false })).toBe("complex");
   });
 
-  it("keeps a go-ahead after tool work on the full model", () => {
+  it("keeps a go-ahead on the full model, with or without earlier tool work", () => {
     expect(classifyTurn({ text: "yes do it", attachments: 0, priorTurnUsedTools: true })).toBe("complex");
-    expect(classifyTurn({ text: "yes do it", attachments: 0, priorTurnUsedTools: false })).toBe("simple");
+    expect(classifyTurn({ text: "sure", attachments: 0, priorTurnUsedTools: false })).toBe("complex");
+  });
+
+  it("keeps a follow-up after tool work on the full model, but not a thank you", () => {
+    expect(classifyTurn({ text: "and the other one?", attachments: 0, priorTurnUsedTools: true })).toBe("complex");
+    expect(classifyTurn({ text: "thanks!", attachments: 0, priorTurnUsedTools: true })).toBe("simple");
   });
 });
 

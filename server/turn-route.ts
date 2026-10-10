@@ -22,8 +22,10 @@ export interface TurnSignals {
 // another language falls back on the other signals.
 const ACTION = /\b(build|fix|debug|implement|refactor|write|create|generate|deploy|install|run|test|search|find|look up|browse|open|edit|change|update|delete|remove|rename|move|migrate|analy[sz]e|review|compare|research|summari[sz]e|translate|draft|send|email|schedule|book|download|upload|scrape|clone|commit|push|merge|plan|design|calculate|convert)\b/i;
 const CODE = /```|`[^`\n]+`|\b(function|const|let|class|import|def|SELECT|FROM)\b|[{};]\s*$|\w+\.(ts|tsx|js|py|go|rs|json|md|sh|yml|yaml|sql|css|html)\b|https?:\/\/|(^|\s)[~.]?\/[\w.-]+\//m;
-// Short go-aheads that continue work already under way.
+// Short go-aheads, which usually authorize work the bot just offered.
 const CONTINUE = /^(yes|yep|yeah|ok(ay)?|sure|go( ahead| on)?|do it|continue|proceed|please do|sounds good|retry|try again)\b/i;
+// Plain acknowledgments, which need no work even right after tool use.
+const ACK = /^(thanks|thank you|thx|ty|cool|nice|great|perfect|awesome|got it|lol|haha)\b[\s!.]*$/i;
 const SIMPLE_CHARS = 280;
 const SIMPLE_LINES = 4;
 
@@ -34,7 +36,9 @@ export function classifyTurn(signals: TurnSignals): TurnTier {
   if (text.length > SIMPLE_CHARS || text.split("\n").length > SIMPLE_LINES) return "complex";
   if (CODE.test(text)) return "complex";
   if (ACTION.test(text)) return "complex";
-  if (signals.priorTurnUsedTools && CONTINUE.test(text)) return "complex";
+  if (CONTINUE.test(text)) return "complex";
+  // right after tool work, a short follow-up is usually more of that work
+  if (signals.priorTurnUsedTools && !ACK.test(text)) return "complex";
   // several questions at once is a request for a fuller answer
   if ((text.match(/\?/g) ?? []).length > 2) return "complex";
   return "simple";
