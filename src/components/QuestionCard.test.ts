@@ -103,6 +103,14 @@ describe("QuestionCard", () => {
     expect(markup).toContain("Other");
   });
 
+  it("offers no free text on an options-only question", () => {
+    const markup = render(message({
+      questionRequest: { version: 1, questions: [{ question: "Which article?", custom: false, options: [{ label: "Machines of Loving Grace" }, { label: "Reasoning models" }] }] },
+    }));
+    expect(markup).toContain("Machines of Loving Grace");
+    expect(markup).not.toContain(">Other<");
+  });
+
   it("cannot be submitted before every question is answered", () => {
     expect(render(message())).toContain("disabled");
   });

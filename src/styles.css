@@ -87,6 +87,8 @@
 .table-action:hover, .table-action[aria-pressed="true"] { background: var(--color-raised); color: var(--color-ink); }
 .table-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 @media (pointer: coarse) { .table-action { min-width: 40px; min-height: 40px; } }
+/* inside a 28px file pill under a reply, the table preview is a 24px circle */
+.file-chip .table-action { width: 24px; height: 24px; min-width: 24px; min-height: 24px; border-radius: 9999px; }
 
 @theme {
   --animate-panel-in: panel-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
@@ -1157,11 +1159,29 @@ html[data-cloud-intent-morph] [data-tour="composer"] { view-transition-name: clo
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  /* background-clip:text only paints glyphs inside the background box. A
+     tight line box (leading-none) is shorter than ascenders, descenders and
+     arabic marks, so they were cut. Pad the box past the glyphs and pull the
+     margins back so the layout doesn't move. */
+  padding: 0.35em 0.12em;
+  margin: -0.35em -0.12em;
 }
+/* rotating presence phrase: the old phrase fades out where the new one
+   fades in, in the same grid cell */
+@keyframes turn-phrase-in {
+  from { opacity: 0; }
+}
+@keyframes turn-phrase-out {
+  to { opacity: 0; }
+}
+.turn-phrase-in { animation: shimmer 2s linear infinite, turn-phrase-in 0.32s ease-out both; }
+.turn-phrase-out { animation: shimmer 2s linear infinite, turn-phrase-out 0.32s ease-in both; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .animate-caret, .animate-msg-in, .animate-shimmer, .animate-pop-in, .animate-pop-out { animation: none; }
   .animate-status-pulse { animation: none; opacity: 0.6; }
   .thinking-shimmer { background: none; color: var(--color-ink-secondary); }
+  .turn-phrase-in { animation: none; }
+  .turn-phrase-out { display: none; }
   .turn-mascot-in, .turn-mascot-out, .turn-answer { animation: none; }
   .animate-rise, .animate-spot-in { animation: none; }
   .animate-ripple, .animate-bolt { animation: none; }

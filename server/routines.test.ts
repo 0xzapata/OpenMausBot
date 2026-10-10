@@ -1202,6 +1202,19 @@ describe("RoutineManager", () => {
 
     const reloaded = new RoutineManager(h.options);
     expect(reloaded.listRoutines()).toMatchObject([{ id: valid.id, name: "Valid interval" }]);
+
+    // Unrelated writes must not delete the row that failed to load.
+    const malformedOnDisk = stored.routines.find((routine) => routine.id === malformed.id);
+    reloaded.create({
+      name: "Added later",
+      prompt: "Unrelated write",
+      botId: "maus-valid",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+    const saved = JSON.parse(readFileSync(h.options.file!, "utf8")) as { routines: Array<{ id: string }> };
+    expect(saved.routines.find((routine) => routine.id === malformed.id)).toEqual(malformedOnDisk);
+    expect(saved.routines).toHaveLength(3);
+    expect(new RoutineManager(h.options).listRoutines().map((routine) => routine.name).sort()).toEqual(["Added later", "Valid interval"]);
   });
 
   it("persists confirmation receipts with the scheduler mutation and removes them after settlement", () => {

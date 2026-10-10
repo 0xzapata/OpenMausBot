@@ -217,6 +217,25 @@ describe("turn servers", () => {
     const out = await withMcpSignIn({ docs: { type: "http" as const, url: mcp.url, headers: {} } }, manager);
     expect(out).toEqual({});
   });
+  it("refreshes every signed-in server's token at once, keeping server order", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const fake = {
+      authState: () => "signed-in" as const,
+      accessToken: async (name: string) => {
+        inFlight += 1;
+        most = Math.max(most, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, name === "first" ? 30 : 5));
+        inFlight -= 1;
+        return name === "gone" ? null : `token-${name}`;
+      },
+    } as unknown as McpOAuthManager;
+    const url = (name: string) => ({ type: "http" as const, url: `https://${name}.example.com/mcp`, headers: {} });
+    const out = await withMcpSignIn({ first: url("first"), gone: url("gone"), notes: stdio, last: url("last") }, fake);
+    expect(most).toBe(3);
+    expect(Object.keys(out)).toEqual(["first", "notes", "last"]);
+    expect(out.last).toEqual({ ...url("last"), headers: { Authorization: "Bearer token-last" } });
+  });
 });
 
 describe("review fixes", () => {

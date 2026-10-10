@@ -252,6 +252,8 @@ describe("server-owned browser MCP runtime", () => {
     }) as { content: Array<{ text: string }> };
     expect(JSON.parse(result.content[0].text)).toEqual({ name: "agent_browser_open", arguments: { url: "https://example.com" } });
     expect(result.content[1].text).toContain("sign-in");
+    // The bot already holds this page's refs: no second snapshot is needed.
+    expect(result.content[1].text).toContain("Its refs are current");
     expect(JSON.parse(result.content[2].text)).toEqual({ name: "agent_browser_snapshot", arguments: { compact: true } });
   });
   it("inherits only host plumbing and explicit engine settings", () => {

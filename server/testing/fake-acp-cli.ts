@@ -15,6 +15,7 @@
 //                       session, so its load succeeds.
 //   FAKE_ACP_CACHED_LIVE_LOAD  acknowledge session/load of a live session but
 //                       keep its original MCP credentials, matching Qwen.
+//   FAKE_ACP_TEXT_REPLY  answer every session/prompt with only this text.
 //   FAKE_ACP_MODE   happy (default) | image | empty-reply | reasoning-only | exit-early | fail-after-text | hang | hang-initialize | stall-after-text | unkeyed-tool | no-auth | auth-required | permission | question
 //                   | ask-question-unsupported (send a cursor/ask_question server→client
 //                     request mid-prompt; the driver must answer -32601 method
@@ -412,6 +413,7 @@ const configCalls: Array<{ method: string; params: unknown }> = [];
 // pending server→client permission request id → resolver
 let pendingPermissionId: number | null = null;
 let onPermissionAnswered: ((allowed: boolean) => void) | null = null;
+let lastPermissionCancelled = false;
 // pending server→client cursor/ask_question probe → resolver (the unsupported
 // method the driver must reject rather than guess a shape for)
 let pendingAskQuestionId: number | null = null;
@@ -627,6 +629,7 @@ function handle(msg: any) {
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && msg.id === pendingPermissionId) {
     pendingPermissionId = null;
     const chosen = msg.result?.outcome?.optionId;
+    lastPermissionCancelled = msg.result?.outcome?.outcome === "cancelled";
     // which option the client picked, for tests asserting allow_always
     if (process.env.FAKE_ACP_PERMISSION_ANSWER) writeFileSync(process.env.FAKE_ACP_PERMISSION_ANSWER, String(chosen ?? "cancelled"));
     onPermissionAnswered?.(typeof chosen === "string" && chosen.startsWith("allow"));
@@ -860,6 +863,13 @@ function handle(msg: any) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.prompt.json`, JSON.stringify(msg.params?.prompt ?? null, null, 2));
       }
       if (failRpc(msg)) return;
+      // FAKE_ACP_TEXT_REPLY: a plain text answer and nothing else, the shape of
+      // memory upkeep's one-shot call (drivers/acp/background-text.ts)
+      if (process.env.FAKE_ACP_TEXT_REPLY !== undefined) {
+        out({ jsonrpc: "2.0", method: "session/update", params: { sessionId: msg.params?.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: process.env.FAKE_ACP_TEXT_REPLY } } } });
+        result(msg.id, { stopReason: "end_turn", _meta: { inputTokens: 12, outputTokens: 4 } });
+        return;
+      }
       if (mode === "hang") {
         // never resolve the prompt on our own — lets tests exercise interrupt
         hangingPromptId = msg.id;
@@ -1263,6 +1273,12 @@ function handle(msg: any) {
       if (mode === "question") {
         pendingPermissionId = 9002;
         onPermissionAnswered = () => {
+          // FAKE_ACP_HOLD_ON_CANCELLED: a cancelled question leaves the prompt
+          // open until session/cancel, the way Antigravity's agent does
+          if (process.env.FAKE_ACP_HOLD_ON_CANCELLED && lastPermissionCancelled) {
+            hangingPromptId = msg.id;
+            return;
+          }
           out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "answered the question" } } } });
           complete();
         };

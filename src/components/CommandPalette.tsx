@@ -15,6 +15,13 @@ type PaletteEntry =
   | { kind: "room"; group: Group }
   | { kind: "message"; hit: SearchHit };
 
+const OPEN_EVENT = "omb:open-command-palette";
+
+/** Open the palette from a button, for places with no room for a search box. */
+export function openCommandPalette() {
+  window.dispatchEvent(new Event(OPEN_EVENT));
+}
+
 export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean) => void }) {
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
@@ -34,8 +41,13 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
         setOpen((o) => !o);
       }
     };
+    const onOpen = () => setOpen(true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener(OPEN_EVENT, onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener(OPEN_EVENT, onOpen);
+    };
   }, []);
 
   // fresh palette every open; stale queries from last time would flash

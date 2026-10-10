@@ -673,8 +673,8 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
 // and an <a href="file://…"> would still reach setWindowOpenHandler on a
 // middle or modifier click, which calls shell.openExternal without the main
 // process' containment check.
-function LocalFileLink({ filePath, children, message }: { filePath: string; children?: ReactNode; message?: MessageAttachmentContext }) {
-  const save = useLocalFileSave(filePath, undefined, message);
+function LocalFileLink({ filePath, name, children, message }: { filePath: string; name?: string; children?: ReactNode; message?: MessageAttachmentContext }) {
+  const save = useLocalFileSave(filePath, name, message);
   if (!message) {
     return <span title="Unavailable legacy file reference" className="break-words text-ink-secondary">{children}</span>;
   }
@@ -688,7 +688,7 @@ function LocalFileLink({ filePath, children, message }: { filePath: string; chil
 
   return (
     <span dir="ltr" className="inline-flex flex-wrap items-center gap-x-1.5 [unicode-bidi:isolate]">
-      <TableFileButton path={filePath} name={filePath.split(/[\\/]/).at(-1) ?? filePath} message={message} />
+      <TableFileButton path={filePath} name={name ?? fileName(filePath)} message={message} />
       <button
         type="button"
         onClick={() => void save.save()}
@@ -983,7 +983,15 @@ interface MessageScope {
   imageOffsets?: Map<number, number>;
   threads: ThreadRefsValue["threads"];
   currentBotId?: string;
+  /** Files the bot delivered with attach_file, by name. An inline link to one
+   * of them saves that delivered copy, so the file shows once, in the text. */
+  delivered?: DeliveredFiles;
 }
+
+/** A delivered file's name to its stored attachment path. */
+export type DeliveredFiles = Readonly<Record<string, string>>;
+
+const fileName = (path: string) => path.split(/[\\/]/).at(-1) ?? path;
 
 const MessageScopeContext = createContext<MessageScope>({ threads: [] });
 
@@ -1026,7 +1034,7 @@ function MarkdownImage(props: ComponentProps<"img"> & ExtraProps) {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
-  const { threads, currentBotId, message } = useContext(MessageScopeContext);
+  const { threads, currentBotId, message, delivered } = useContext(MessageScopeContext);
   // a canonical thread link is a chip whatever text carries it;
   // a dead one keeps its label as plain text rather than handing
   // the app's own scheme to the shell
@@ -1035,7 +1043,10 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   if (ref) return <ThreadLink target={ref} ambiguous={ref.ambiguous}>{children}</ThreadLink>;
   if (address || (href && looksLikeThreadRefUrl(href))) return <span className="break-words">{children}</span>;
   const localPath = localFilePath(href);
-  if (localPath) return <LocalFileLink filePath={localPath} message={message}>{children}</LocalFileLink>;
+  if (localPath) {
+    const copy = delivered && Object.hasOwn(delivered, fileName(localPath)) ? delivered[fileName(localPath)] : undefined;
+    return <LocalFileLink filePath={copy ?? localPath} name={copy ? fileName(localPath) : undefined} message={message}>{children}</LocalFileLink>;
+  }
   return (
     <a
       href={href}
@@ -1129,9 +1140,10 @@ const MAY_LINK_THREAD = /#|openmausbot/i;
 const NO_THREAD_REFS: ThreadRefsValue = { threads: [] };
 
 /** Render message Markdown with math, protected code, scoped attachments, and mentions. */
-function ChatMarkdownComponent({ text, message, mentionPeers = NO_MENTION_PEERS, everyone = false }: {
+function ChatMarkdownComponent({ text, message, mentionPeers = NO_MENTION_PEERS, everyone = false, delivered }: {
   text: string; message?: MessageAttachmentContext;
   mentionPeers?: readonly MentionPeer[]; everyone?: boolean;
+  delivered?: DeliveredFiles;
 }) {
   // "#Title" mentions link to the threads the person can see (ThreadRefs);
   // @mentions were already decorated by remarkMentions, which runs first.
@@ -1161,7 +1173,7 @@ function ChatMarkdownComponent({ text, message, mentionPeers = NO_MENTION_PEERS,
   }, [needsMath]);
   const mathPlugin = needsMath && katexReady ? katexPlugin : null;
   return (
-    <MessageScopeContext.Provider value={{ message, imageOffsets, threads, currentBotId }}>
+    <MessageScopeContext.Provider value={{ message, imageOffsets, threads, currentBotId, delivered }}>
       <div className="chat-md min-w-0 [&>*+*]:mt-2">
         <Markdown
           remarkPlugins={[remarkGfm, remarkMath, remarkWindowsPathDestinations, unwrapLinkedImages, [remarkMentions, { peers: mentionPeers, everyone }], remarkThreadRefs(threads, currentBotId)]}
@@ -1197,4 +1209,12 @@ export const ChatMarkdown = memo(ChatMarkdownComponent, (previous, next) => (
   && previous.everyone === next.everyone
   && previous.message?.threadId === next.message?.threadId
   && previous.message?.messageId === next.message?.messageId
+  && sameDelivered(previous.delivered, next.delivered)
 ));
+
+function sameDelivered(previous: DeliveredFiles | undefined, next: DeliveredFiles | undefined): boolean {
+  if (previous === next) return true;
+  const a = Object.entries(previous ?? {});
+  const b = next ?? {};
+  return a.length === Object.keys(b).length && a.every(([name, path]) => b[name] === path);
+}

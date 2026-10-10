@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { DEFAULT_BROWSER_RESULT_BUDGET, HARNESS_OWNED_BROWSER_PARAMS, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments } from "./browser-tool-shape.ts";
 
 const snapshotTool = {
@@ -61,5 +62,35 @@ describe("browser tool shaping", () => {
     expect(shaped.content[0].text).toContain("agent_browser_get_text");
     const custom = shapeBrowserToolResult({ content: [{ type: "text", text }] }, { budget: 1_000 }) as { content: Array<{ text: string }> };
     expect(custom.content[0].text.length).toBeLessThan(1_600);
+  });
+
+  it("names only tools the pinned engine advertises", () => {
+    // `agent-browser mcp --tools core` on the pinned 0.37.0, plus the
+    // harness's own restart tool. A name the engine does not list costs the
+    // bot a failed call, so guidance must never point at one.
+    const advertised = new Set([
+      "agent_browser_tools_profiles", "agent_browser_open", "agent_browser_read", "agent_browser_snapshot", "agent_browser_click",
+      "agent_browser_fill", "agent_browser_type", "agent_browser_press", "agent_browser_check", "agent_browser_uncheck",
+      "agent_browser_select", "agent_browser_scroll", "agent_browser_wait_ms", "agent_browser_wait_for_selector",
+      "agent_browser_wait_for_text", "agent_browser_wait_for_load", "agent_browser_screenshot", "agent_browser_get_text",
+      "agent_browser_get_url", "agent_browser_get_title", "agent_browser_eval", "agent_browser_close", "agent_browser_back",
+      "agent_browser_forward", "agent_browser_reload", "agent_browser_tab_new", "agent_browser_tab_list", "agent_browser_tab_switch",
+      "agent_browser_tab_close",
+    ]);
+    const hint = (shapeBrowserToolResult({ content: [{ type: "text", text: "x\n".repeat(40_000) }] }, { toolName: "agent_browser_snapshot" }) as { content: Array<{ text: string }> }).content[0].text;
+    for (const text of [BUILT_IN_BROWSER_SYSTEM_PROMPT, hint]) {
+      const names = text.match(/agent_browser_[a-z_]+/g) ?? [];
+      expect(names.length).toBeGreaterThan(0);
+      for (const name of names) {
+        // "agent_browser_tab_*" names a family by its prefix.
+        const known = name.endsWith("_") ? [...advertised].some((tool) => tool.startsWith(name)) : advertised.has(name);
+        expect(known, name).toBe(true);
+      }
+    }
+  });
+
+  it("tells the bot that opening a page already returns its refs", () => {
+    expect(BUILT_IN_BROWSER_SYSTEM_PROMPT).toContain("agent_browser_open already returns the loaded page's snapshot with current refs");
+    expect(BUILT_IN_BROWSER_SYSTEM_PROMPT).not.toContain("Take a fresh snapshot after navigation");
   });
 });

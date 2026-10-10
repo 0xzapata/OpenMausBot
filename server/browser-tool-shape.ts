@@ -29,7 +29,7 @@ export const HARNESS_OWNED_BROWSER_PARAMS: ReadonlySet<string> = new Set([
 export const DEFAULT_BROWSER_RESULT_BUDGET = 32_000;
 
 const BROWSER_NARROWING_HINT =
-  " For a snapshot, pass selector or depth, or set compact; for one value such as a price, use agent_browser_get_text or agent_browser_find instead of reading the whole page.";
+  " For a snapshot, pass selector or depth, or set compact; for one value such as a price, use agent_browser_get_text with a selector instead of reading the whole page.";
 
 type Tool = { inputSchema?: { properties?: Record<string, unknown>; required?: unknown } & Record<string, unknown> } & Record<string, unknown>;
 

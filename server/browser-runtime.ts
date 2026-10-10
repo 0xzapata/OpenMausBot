@@ -387,7 +387,7 @@ export class BrowserRuntime {
               ...(Array.isArray(navigation.content) ? navigation.content : []),
               { type: "text", text: !observed
                 ? "Navigation returned, but page verification failed. Do not claim the requested page loaded and do not blindly repeat navigation."
-                : "Page observed after navigation. Check this result for redirects, sign-in requirements or page errors before reporting task success:" },
+                : "Page observed after navigation. Its refs are current, so act on them without another snapshot. Check this result for redirects, sign-in requirements or page errors before reporting task success:" },
               ...(Array.isArray(page?.content) ? page.content : []),
             ],
             ...(!observed ? { isError: true } : {}),

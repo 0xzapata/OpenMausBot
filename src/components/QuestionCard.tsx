@@ -210,6 +210,9 @@ export function QuestionCard({
               </button>
             );
           })}
+          {/* an options-only question (an ACP engine answers with an option
+              id, never text) has no free-text row it could send */}
+          {current.custom !== false && (
           <button
             role={current.multiSelect ? "checkbox" : "radio"}
             aria-checked={draft.other}
@@ -223,7 +226,8 @@ export function QuestionCard({
             <Marker checked={draft.other} multi={Boolean(current.multiSelect)} />
             <span className="text-[14.5px] text-ink">{t("question.other")}</span>
           </button>
-          {draft.other && (
+          )}
+          {draft.other && current.custom !== false && (
             <div className="border-t border-hairline/40 px-3 py-2.5">
               <input
                 autoFocus

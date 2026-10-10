@@ -140,6 +140,7 @@ import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall } from "./recall.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
+import type { CaptureTurn } from "./memory-capture.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
 import {
@@ -427,6 +428,7 @@ import {
   setSkillEnabled,
   skillPackageStamps,
   skillsSystemPrompt,
+  expandSkillCommandTurnText,
   stageSkillWrite,
   undoSkillWrite,
 } from "./skills.ts";
@@ -6426,7 +6428,8 @@ const memoryUpkeep = createMemoryUpkeep({
     const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
     // an engine the organisation disallows never receives memory text
     if (!bot || !instance || policyModelRefusal(instance)) return null;
-    const generate = instance.generateText?.bind(instance);
+    // generateMemoryText: the ACP engines' upkeep-only one-shot, on their own provider
+    const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
     return generate ? {
       generateText: async (prompt, options) => {
         // Check every capture, organize and contradiction call, including
@@ -6463,6 +6466,14 @@ const memoryUpkeep = createMemoryUpkeep({
     return facts.length;
   },
   sourceLabel: (botId, threadId) => memorySourceLabel({ task: store.taskByThread(botId, threadId), threadId }),
+  // Turns still waiting at the last shutdown, read back from the transcript.
+  // The checks that need only stored state run again; the in-memory ones
+  // (internal, unattended) already passed before the turn was queued.
+  restoreTurn: (botId, threadId, turnId) => {
+    if (store.botByThread(threadId)?.id !== botId || store.groupByThread(threadId) || routines?.runForThread(threadId)) return null;
+    if (CLOUD_HOME && !cloudOwnerOnlyThread(threadId)) return null;
+    return captureTurnFor(threadId, turnId);
+  },
   // On a Cloud home upkeep only works on the owner's conversations (see the
   // capture hook below), so its writes are the owner's (lending-memory.ts).
   ...(lendingMemory ? { writing: <T>(botId: string, write: () => T): T => lendingMemory.trustedWrite(botId, write) } : {}),
@@ -6490,6 +6501,23 @@ bus.subscribe((event: RuntimeEvent) => {
   }
 });
 
+/** One finished turn as capture reads it: the person's message and the bot's
+ * reply, or null when the reply is not on the active path (rewound) or the
+ * message was another bot's ask. */
+function captureTurnFor(threadId: string, turnId: string): CaptureTurn | null {
+  const path = store.activePath(threadId);
+  const replyAt = path.findLastIndex((message) => message.role === "bot" && message.kind === "text" && message.turnId === turnId);
+  if (replyAt < 0) return null;
+  const asked = path.slice(0, replyAt).findLast((message) => message.role === "user" && message.kind === "text");
+  if (!asked || asked.peerAsk) return null;
+  return {
+    person: extractTurnImages(asked.text ?? "").text,
+    bot: path[replyAt]!.text ?? "",
+    owner: !asked.sender,
+    turnId,
+  };
+}
+
 // A finished 1:1 turn of an upkeep bot waits for capture. Only the person's
 // own conversation: not a room, not a turn another bot or the harness
 // started (its "user" line is not the person), not a failed turn.
@@ -6503,16 +6531,8 @@ bus.subscribe((event: RuntimeEvent) => {
     // On a Cloud home the bot's memory reaches its owner's turns (and a lent
     // Mac): nothing is captured from a conversation anyone else wrote in.
     if (CLOUD_HOME && !cloudOwnerOnlyThread(event.threadId)) return;
-    const path = store.activePath(event.threadId);
-    const replyAt = path.findLastIndex((message) => message.role === "bot" && message.kind === "text" && message.turnId === event.turnId);
-    if (replyAt < 0) return;
-    const asked = path.slice(0, replyAt).findLast((message) => message.role === "user" && message.kind === "text");
-    if (!asked || asked.peerAsk) return;
-    memoryUpkeep.noteTurn(bot.id, event.threadId, {
-      person: extractTurnImages(asked.text ?? "").text,
-      bot: path[replyAt]!.text ?? "",
-      owner: !asked.sender,
-    });
+    const turn = captureTurnFor(event.threadId, event.turnId);
+    if (turn) memoryUpkeep.noteTurn(bot.id, event.threadId, turn);
   } catch (error) {
     console.warn(`memory upkeep: could not queue a turn for capture: ${(error as Error).message}`);
   }
@@ -10165,7 +10185,14 @@ async function startTurn(
       // gate on whether the coaching block itself is active — setupModeActive,
       // which also depends on the bot's soul/description — is decided below,
       // from the same bot snapshot the prompt's soul is built from.
-      const setupText = agentsMounted ? expandSetupTurnText(providerText) : providerText;
+      // A `/name` turn for one of the bot's enabled skills reads as a plain
+      // request to follow that SKILL.md (shared/skill-command.ts). Only where
+      // the skills index rides the prompt: an engine without workspace files
+      // never sees the skill, so it keeps the person's literal text.
+      const skillCommandText = supportsWorkspaceFiles(instance.driverKind)
+        ? expandSkillCommandTurnText(bot.id, providerText, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined)
+        : providerText;
+      const setupText = agentsMounted ? expandSetupTurnText(skillCommandText) : skillCommandText;
       const userTurnText = promptWithReply(
         skillAuthoring ? expandLearnTurnText(setupText) : setupText,
         opts?.replyTo,
@@ -11014,6 +11041,7 @@ async function startTurn(
         startupRecovery: cfg.automaticRecovery?.enabled === true &&
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
         text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText)),
+        ...(recalled ? { recalled } : {}),
         images: turnImages,
         approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
         toolScope,
@@ -13515,6 +13543,7 @@ async function runGroupMemberTurn(
         threadId,
         botId: readyBot.id,
         text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text)),
+        ...(roomRecalled ? { recalled: roomRecalled } : {}),
         images: turnImages,
         approvalMode: roomTurnApprovalMode(readyBot, threadId, orchestration),
         toolScope: toolScopeForTurn(readyBot.id),

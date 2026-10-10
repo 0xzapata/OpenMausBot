@@ -1,6 +1,6 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
-import { ArrowUp, BookOpen, Clock, Mic, Paperclip, Square, Target, Users, X } from "lucide-react";
+import { ArrowUp, BookOpen, Clock, Mic, Paperclip, Sparkles, Square, Target, Users, X } from "lucide-react";
 import { useStore, visibleMessages, currentTaskBot, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
@@ -76,8 +76,11 @@ import {
   composerSlashTrigger,
   goalTextFromComposer,
   replaceComposerSlashTrigger,
+  skillSlashCommands,
+  slashCommandMatches,
   type ComposerSlashCommand,
 } from "@/lib/composer-commands";
+import { useSlashSkills } from "@/lib/use-slash-skills";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -282,6 +285,7 @@ export function Composer({
     return () => cancelAnimationFrame(frame);
   }, [replyToId]);
   const mentionListRef = useRef<HTMLDivElement>(null);
+  const commandListRef = useRef<HTMLDivElement>(null);
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
 
@@ -309,6 +313,9 @@ export function Composer({
   // ── Slash commands and @mentions ─────────────────────────────────────
   const slash = composerSlashTrigger(text, caret);
   const locale = activeLocale();
+  // A 1:1 chat also lists the bot's enabled skills; a room's members each
+  // have their own, so a room keeps to the built-in commands for now.
+  const slashSkills = useSlashSkills(group ? undefined : bot?.id, Boolean(slash) && slash?.start !== dismissedSlashAt);
   const commandCandidates = useMemo(() => {
     if (!slash || slash.start === dismissedSlashAt) return [];
     const supportsAgents = (candidate?: Bot) =>
@@ -320,6 +327,7 @@ export function Composer({
       );
     const available: ComposerSlashCommand[] = [];
     if (group && !group.dm) available.push({
+      kind: "command",
       id: "goal",
       label: "/goal",
       description: t("composer.command.goalDesc"),
@@ -329,6 +337,7 @@ export function Composer({
       (group ? (members ?? []).some(supportsAgents) : supportsAgents(bot))
     ) {
       available.push({
+        kind: "command",
         id: "learn",
         label: "/learn",
         description: t("composer.command.learnDesc"),
@@ -337,18 +346,14 @@ export function Composer({
     // Setup mode needs the agents tools (propose_profile and friends) and a
     // single bot: a room cannot set itself up.
     if (!group && supportsAgents(bot)) available.push({
+      kind: "command",
       id: "setup",
       label: "/setup",
       description: t("composer.command.setupDesc"),
     });
-    const query = slash.query.toLowerCase();
-    return available.filter(
-      (command) =>
-        !query ||
-        command.id.startsWith(query) ||
-        command.description.toLowerCase().includes(query),
-    );
-  }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale]);
+    available.push(...skillSlashCommands(slashSkills));
+    return available.filter((command) => slashCommandMatches(command, slash.query));
+  }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale, slashSkills]);
   const commandPickerOpen = commandCandidates.length > 0;
 
   // Tag another bot; the agent reaches it via ask_bot.
@@ -377,6 +382,20 @@ export function Composer({
     [mention?.start, mention?.query, slash?.start, slash?.query],
   );
 
+  // skills load after the menu opens, so the list can shrink under the
+  // highlighted row
+  useEffect(() => {
+    if (!commandPickerOpen) return;
+    setHighlight((current) => Math.min(current, commandCandidates.length - 1));
+  }, [commandCandidates.length, commandPickerOpen]);
+
+  useEffect(() => {
+    if (!commandPickerOpen) return;
+    commandListRef.current
+      ?.querySelector<HTMLElement>(`[data-command-index="${highlight}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [highlight, commandPickerOpen]);
+
   useEffect(() => {
     if (!mentionPickerOpen) return;
     mentionListRef.current
@@ -399,14 +418,15 @@ export function Composer({
     });
   };
 
-  const pickCommand = (command: ComposerSlashCommand) => {
-    if (!slash) return;
-    const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : "";
+  const pickCommand = (command: ComposerSlashCommand | undefined) => {
+    if (!slash || !command) return;
+    const replacement = command.kind === "skill" ? `${command.label} `
+      : command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : "";
     const next = replaceComposerSlashTrigger(text, slash, replacement);
     editText(next.text);
     setCaret(next.caret);
     setDismissedSlashAt(slash.start);
-    setChannelMode(command.id === "goal" ? "goal" : "chat");
+    setChannelMode(command.kind === "command" && command.id === "goal" ? "goal" : "chat");
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.setSelectionRange(next.caret, next.caret);
@@ -837,16 +857,18 @@ export function Composer({
         ))}
         {commandMotion.shown && (
           <div
+            ref={commandListRef}
             role="listbox"
             aria-label={t("composer.commands.aria")}
-            className={cn("absolute bottom-full left-2 z-20 mb-2 w-80 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg", commandMotion.className)} {...commandMotion.exitProps}
+            className={cn("absolute bottom-full left-2 z-20 mb-2 max-h-80 w-80 max-w-[calc(100%-1rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border border-hairline/40 bg-raised shadow-lg", commandMotion.className)} {...commandMotion.exitProps}
           >
             <div className="border-b border-hairline/20 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-secondary">
               {t("composer.commands.title")}
             </div>
             {commandCandidates.map((command, index) => (
               <button
-                key={command.id}
+                key={`${command.kind}:${command.id}`}
+                data-command-index={index}
                 type="button"
                 role="option"
                 aria-selected={index === highlight}
@@ -859,14 +881,21 @@ export function Composer({
                 )}
               >
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-                  {command.id === "goal" ? (
+                  {command.kind === "skill" ? (
+                    <Sparkles size={15} aria-hidden="true" />
+                  ) : command.id === "goal" ? (
                     <Target size={15} aria-hidden="true" />
                   ) : (
                     <BookOpen size={15} aria-hidden="true" />
                   )}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[14px] font-medium text-accent">{command.label}</span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-[14px] font-medium text-accent">{command.label}</span>
+                    {command.kind === "skill" && (
+                      <span className="shrink-0 rounded-full bg-accent/10 px-1.5 text-[11px] font-medium leading-4 text-accent">{t("composer.command.skillTag")}</span>
+                    )}
+                  </span>
                   <span className="block truncate text-xs text-ink-secondary">
                     {command.description}
                   </span>
