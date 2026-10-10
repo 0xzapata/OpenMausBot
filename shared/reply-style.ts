@@ -24,9 +24,10 @@ export function splitConversationalReply(text: string): string[] {
   let current: string[] = [];
   let fence: string | null = null;
   const flush = () => {
-    const block = current.join("\n").trim();
+    // only trailing space goes: leading indentation can make a code block
+    const block = current.join("\n").trimEnd();
     current = [];
-    if (!block) return;
+    if (!block.trim()) return;
     const prev = parts.at(-1);
     if (prev !== undefined && LIST_OR_TABLE.test(block) && LIST_OR_TABLE.test(prev.split("\n").at(-1) ?? "")) {
       parts[parts.length - 1] = `${prev}\n\n${block}`;

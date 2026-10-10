@@ -32,6 +32,10 @@ describe("splitConversationalReply", () => {
     ]);
   });
 
+  it("keeps the indentation of an indented code block", () => {
+    expect(splitConversationalReply("Run this:\n\n    npm test\n\nDone?")).toEqual(["Run this:", "    npm test", "Done?"]);
+  });
+
   it("returns nothing for blank text", () => {
     expect(splitConversationalReply("  \n\n ")).toEqual([]);
   });
