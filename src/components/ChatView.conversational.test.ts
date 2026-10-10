@@ -73,6 +73,25 @@ describe("conversational replies", () => {
     expect(document.querySelector("[data-quick-model]")?.textContent).toBe("Quick reply with Claude Haiku 4.5");
   });
 
+  it("shows history bubbles at once", async () => {
+    await draw(profile({ replyStyle: "conversational" }));
+    const bubbles = [...document.querySelectorAll<HTMLElement>("[data-reply-segment]")];
+    expect(bubbles.every((el) => el.classList.contains("reply-bubble") && !el.classList.contains("reply-bubble-in"))).toBe(true);
+  });
+
+  it("plays a reply that arrives while the chat is open in, one bubble after another", async () => {
+    root.unmount();
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const later = Date.now() + 60_000;
+    const fresh: Message[] = [messages[0]!, { ...messages[1]!, id: "m3", at: later }];
+    await draw(profile({ replyStyle: "conversational", messages: fresh, activeLeafId: "m3" }));
+    const bubbles = [...document.querySelectorAll<HTMLElement>("[data-reply-segment]")];
+    expect(bubbles.map((el) => el.classList.contains("reply-bubble-in"))).toEqual([true, true, true]);
+    expect(bubbles.map((el) => el.style.animationDelay)).toEqual(["0ms", "120ms", "240ms"]);
+  });
+
   it("keeps a single bubble for a default bot", async () => {
     await draw(profile({}));
     expect(segments()).toEqual([]);

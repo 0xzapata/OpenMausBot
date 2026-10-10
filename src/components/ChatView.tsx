@@ -174,6 +174,8 @@ interface ChatRows {
   onBranch: (messageId: string) => boolean;
   /** Conversational bots show a reply as several small bubbles. */
   conversational: boolean;
+  /** When this thread was opened: replies stamped later arrived while it was in view. */
+  openedAt: number;
 }
 
 const ChatRowsContext = createContext<ChatRows | null>(null);
@@ -506,7 +508,7 @@ const Bubble = memo(function Bubble({
   replyTarget?: Message;
   onReply: (message: Message) => void;
 }) {
-  const { botId, threadId, botName, voiceId, tts, localVoice, busy, mentionPeers, focus, dispatch, onBranch, conversational } = useChatRows();
+  const { botId, threadId, botName, voiceId, tts, localVoice, busy, mentionPeers, focus, dispatch, onBranch, conversational, openedAt } = useChatRows();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   // A user-role line another bot delivered (ask_bot, delegate_bot,
   // start_thread) is that bot speaking, not the person: it takes the
@@ -562,6 +564,15 @@ const Bubble = memo(function Bubble({
     [conversational, user, peer, viewRaw, replyTarget, message.kind, text],
   );
   const split = segments.length > 1;
+  // A reply that arrived while the chat was open shows its bubbles one after
+  // another. Bubbles already on screen stay put as more stream in, and each
+  // batch staggers from its own first bubble.
+  const [fresh] = useState(() => !user && message.at >= openedAt);
+  const shownSegments = useRef(fresh ? 0 : segments.length);
+  const firstNew = shownSegments.current;
+  useEffect(() => {
+    shownSegments.current = Math.max(shownSegments.current, segments.length);
+  }, [segments.length]);
   const webhookView = user ? webhookMessageView(text) : null;
   const cited = user && !webhookView ? splitTranscriptCitations(text) : null;
   const attachments = user && !webhookView ? splitTranscriptAttachments(cited?.display ?? text) : null;
@@ -714,9 +725,15 @@ const Bubble = memo(function Bubble({
               )}
               {!group && <AttachmentGallery images={generatedPaths} files={linkedFiles} message={{ threadId, messageId: message.id }} className={text ? undefined : "mb-0"} eager={eagerAttachments} />}
               {split ? (
-                <div data-conversational-reply className="flex flex-col items-start gap-1.5" data-citation-source={message.id} data-citation-owner-type="bot" data-citation-owner={botId} data-citation-thread={threadId}>
+                <div data-conversational-reply className="flex w-full flex-col items-start gap-1" data-citation-source={message.id} data-citation-owner-type="bot" data-citation-owner={botId} data-citation-thread={threadId}>
                   {segments.map((segment, index) => (
-                    <div key={index} data-reply-segment className="w-fit max-w-full rounded-2xl bg-card px-4 py-2.5">
+                    <div
+                      key={index}
+                      data-reply-segment
+                      dir="auto"
+                      className={cn("reply-bubble", index >= firstNew && "reply-bubble-in")}
+                      style={index >= firstNew ? { animationDelay: `${(index - firstNew) * 120}ms` } : undefined}
+                    >
                       <ChatMarkdown text={segment} mentionPeers={mentionPeers} message={{ threadId, messageId: message.id }} delivered={group?.delivered} />
                     </div>
                   ))}
@@ -1275,6 +1292,11 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const locale = activeLocale();
   const busy = Boolean(bot.busy);
   const conversational = isConversational(bot.replyStyle);
+  // only a reply that arrives while the chat is open plays its bubbles in;
+  // history and rows scrolled back into view show at once
+  const opened = useRef({ threadId: bot.threadId, at: Date.now() });
+  if (opened.current.threadId !== bot.threadId) opened.current = { threadId: bot.threadId, at: Date.now() };
+  const openedAt = opened.current.at;
   // The header face moves only while the bot works or plays a motion beat,
   // as in the sidebar: a resting face left open would redraw at display rate.
   const headerAnimated = busy || (mascotMotion?.kind ?? "none") !== "none";
@@ -1283,8 +1305,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   branch.current = messages;
   const onBranch = useCallback((messageId: string) => branch.current.some((m) => m.id === messageId), []);
   const rows = useMemo<ChatRows>(
-    () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch, conversational }),
-    [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch, conversational],
+    () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch, conversational, openedAt }),
+    [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch, conversational, openedAt],
   );
   // Where this conversation works, for the place icon on screen and page tools.
   const place = effectivePlace(bot, bot.tasks?.find((task) => task.threadId === bot.threadId));
