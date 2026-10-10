@@ -512,6 +512,9 @@ export interface WireMessage {
    * with how sure it was. Absent on every other message; clients that do
    * not know it ignore it. */
   routedBy?: { provider: "jev"; probability: number };
+  /** user messages of a conversational bot: the picker label of the quick
+   * model the reply ran on, when the turn was moved to it. */
+  quickModel?: string;
   /** Set on the user-role line another bot delivered into this bot's own
    * conversation (ask_bot, start_thread). `incident`: the line is
    * OpenMausBot's Team incidents report about that bot's broken run in

@@ -243,6 +243,7 @@ export interface Message {
   queueId?: string;
   /** Auto rooms: the decision model picked this reply's speaker. */
   routedBy?: import("../../shared/wire").WireMessage["routedBy"];
+  quickModel?: string;
 }
 
 export type GroupDefaultResponder = import("../../shared/wire").GroupDefaultResponder;

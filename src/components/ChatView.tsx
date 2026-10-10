@@ -682,6 +682,11 @@ const Bubble = memo(function Bubble({
                   {t("chat.sentMidTurn")}
                 </div>
               )}
+              {message.quickModel && (
+                <div data-quick-model className="mt-1 text-[11px] text-ink-tertiary">
+                  {t("chat.quickModel", { model: message.quickModel })}
+                </div>
+              )}
               {message.via === "call" && (
                 <span className="mt-1 text-[11px] text-ink-tertiary" title={t("chat.viaCall")}>
                   {t("chat.viaCall")}

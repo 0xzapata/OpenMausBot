@@ -112,6 +112,8 @@ import {
   snapshotAvatarGenerationState,
 } from "./avatar-image.ts";
 import { fitsOnOneLine, parseBotProfilePatch } from "./bot-profile.ts";
+import { routeTurn } from "./turn-route.ts";
+import { isConversational } from "../shared/reply-style.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, effectiveRoomTurnTimeoutMinutes, parseConversationTurnTimeout, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { roomTurnEnd, type RoomClaimEnd } from "./room-turn-end.ts";
@@ -10439,9 +10441,26 @@ async function startTurn(
   // A turn always runs on the bot's own engine, model, effort and variant,
   // wherever it works: a cloud computer is a tool it mounts, never a reason
   // to swap the engine (the provider_not_configured incident).
-  const model = bot.modelSelection.model;
-  const effort = bot.modelSelection.effort;
-  const variant = bot.modelSelection.variant;
+  // A conversational bot answers a simple chat line on its engine's quick
+  // model (server/turn-route.ts). Same engine, same provider, never for a
+  // thread whose model a person picked or for an automated turn.
+  const lastAsk = store.activePath(threadId).findLastIndex((m) => m.role === "user" && m.kind === "text");
+  const route = routeTurn({
+    conversational: isConversational(bot.replyStyle),
+    followsBotModel: task.modelSelection === undefined,
+    automated: commsDepth > 0 || opts?.automationSource !== undefined || Boolean(opts?.unattended || opts?.cardContinuation || opts?.peerAsk || opts?.coordination),
+    signals: {
+      text: resolvedImages.text,
+      attachments: resolvedImages.images.length,
+      priorTurnUsedTools: lastAsk >= 0 && store.activePath(threadId).slice(lastAsk + 1).some((m) => m.kind === "activity"),
+    },
+    model: bot.modelSelection.model,
+    effort: bot.modelSelection.effort,
+    variant: bot.modelSelection.variant,
+    catalog: instance.models,
+    effortLevels: instance.adapter.capabilities.effortLevels,
+  });
+  const { model, effort, variant } = route;
   assertModelVariantSupported({ variant, effort }, instance.adapter.capabilities);
   // A selection can be persisted while its engine is offline. Re-check when
   // the engine returns so an old or unsupported value never reaches a CLI.
@@ -10474,6 +10493,7 @@ async function startTurn(
           sender: opts?.sender,
           ...(opts?.via ? { via: opts.via } : {}),
           ...(opts?.relayed ? { relayed: true } : {}),
+          ...(route.quickModel ? { quickModel: route.quickModel } : {}),
         });
   }
   const recoveryUserMessageId = opts?.coordination

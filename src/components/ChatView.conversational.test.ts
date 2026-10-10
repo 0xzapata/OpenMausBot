@@ -25,7 +25,7 @@ const { BotEditorStore, initialState } = await import("@/state/store");
 
 const reply = "Found it.\n\n```ts\nconst a = 1;\n\nconst b = 2;\n```\n\nWant me to run it?";
 const messages: Message[] = [
-  { id: "m1", role: "user", kind: "text", text: "where is it", at: 1 },
+  { id: "m1", role: "user", kind: "text", text: "where is it", at: 1, quickModel: "Claude Haiku 4.5" },
   { id: "m2", parentId: "m1", role: "bot", kind: "text", text: reply, at: 2 },
 ];
 const profile = (extra: Partial<Bot>): Bot => ({
@@ -66,6 +66,11 @@ describe("conversational replies", () => {
     expect(segments()).toEqual(["Found it.", "```ts\nconst a = 1;\n\nconst b = 2;\n```", "Want me to run it?"]);
     // one stored message, so one row and one set of actions
     expect(document.querySelectorAll("[data-conversational-reply]")).toHaveLength(1);
+  });
+
+  it("names the quick model quietly under the message it answered", async () => {
+    await draw(profile({ replyStyle: "conversational" }));
+    expect(document.querySelector("[data-quick-model]")?.textContent).toBe("Quick reply with Claude Haiku 4.5");
   });
 
   it("keeps a single bubble for a default bot", async () => {
