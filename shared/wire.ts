@@ -15,6 +15,7 @@ import type { CommandAllowlistCandidate } from "./command-allowlist.ts";
 import type { TurnDigest } from "./digest.ts";
 import type { BotAvatarCrop } from "./bot-avatar.ts";
 import type { MascotBodyId } from "./mascot-bodies.ts";
+import type { ReplyStyle } from "./reply-style.ts";
 import type { CredentialTargetId } from "./credential-request.ts";
 import type { TeamSetupRequest } from "./team-setup.ts";
 import type { RoutineRequestCardData } from "./routine-request.ts";
@@ -308,6 +309,8 @@ export interface WireBot {
   alwaysAllow?: string[];
   /** Speak this bot's replies aloud as they settle, without being asked. */
   speakReplies?: boolean;
+  /** How replies are shaped. Absent = "default". */
+  replyStyle?: ReplyStyle;
   /** This bot's own voice id, so a room of bots doesn't sound like one person. */
   voice?: string;
   /** Whether this bot may send voice notes. Absent/true = allowed; false
