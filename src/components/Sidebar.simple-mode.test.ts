@@ -13,7 +13,7 @@ vi.mock("@/state/store", async (importOriginal) => {
   return { ...original, useStore: () => ({ state: { ...original.initialState, ...fixture.state }, dispatch: fixture.dispatch }) };
 });
 
-import { BotContextMenu, BotListItem, BotThreadList, botRowProps, GroupListItem, type BotRowProps } from "./Sidebar";
+import { BotContextMenu, BotListItem, BotThreadList, botRowProps, GroupListItem, PinnedBotCircle, type BotRowProps } from "./Sidebar";
 import { SidebarBotActivity, sidebarBotActivityTasks } from "./SidebarBotActivity";
 
 const bot: Bot = {
@@ -33,6 +33,7 @@ const bot: Bot = {
 const densities: SidebarDensity[] = ["comfortable", "compact", "icons"];
 // the memoized row's own function, called directly to inspect its tree
 const botRow = (BotListItem as MemoExoticComponent<(props: BotRowProps) => ReactNode>).type;
+const pinnedCircle = (PinnedBotCircle as MemoExoticComponent<(props: BotRowProps) => ReactNode>).type;
 // what the sidebar hands a bot row for the fixture's store state
 const rowProps = (density: SidebarDensity, candidate: Bot = bot, query = "") =>
   botRowProps({ ...initialState, ...fixture.state }, fixture.dispatch, candidate, { density, quiet: false, query, onMenu: vi.fn() });
@@ -88,7 +89,8 @@ describe("bot-first sidebar", () => {
       const row = findElement(tree, "data-sidebar-bot-row", bot.id)!;
       row.props.onClick!({ type: "click", target: {} } as MouseEvent);
       expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "select", id: bot.id });
-      // Selection reuses bot.threadId; it must not create or switch a task.
+      // Nobody has written here yet, so the selection is the bot's main
+      // thread too: opening it must not create or switch a task.
       expect(bot.threadId).toBe("last-selected");
       for (const key of ["Enter", " "]) {
         fixture.dispatch.mockClear();
@@ -99,6 +101,30 @@ describe("bot-first sidebar", () => {
       }
     });
   }
+
+  it.each(densities)("opens the thread the person last wrote in when threads are hidden, %s density", (density) => {
+    // Threads were on once: this window still sits on an older thread, and
+    // the person last wrote in another one, the bot's main thread. With the
+    // tree hidden, that is the conversation the bot opens to.
+    const used = { ...bot, mainThreadId: "idle-history" };
+    for (const enabled of [false, true]) {
+      fixture.showThreads = enabled;
+      const opened = enabled ? { type: "select", id: bot.id } : { type: "switchTask", botId: bot.id, threadId: "idle-history" };
+      const trees: ReactNode[] = [];
+      function Capture() { const tree = [botRow(rowProps(density, used)), pinnedCircle(rowProps(density, used))]; trees.push(...tree); return tree; }
+      renderToStaticMarkup(createElement(Capture));
+      for (const tree of trees) {
+        const row = findElement(tree, "data-sidebar-bot-row", bot.id)!;
+        fixture.dispatch.mockClear();
+        row.props.onClick!({ type: "click", target: {} } as MouseEvent);
+        expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith(opened);
+        if (!row.props.onKeyDown) continue;
+        fixture.dispatch.mockClear();
+        row.props.onKeyDown({ key: "Enter", preventDefault: vi.fn() } as unknown as KeyboardEvent);
+        expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith(opened);
+      }
+    }
+  });
 
   it.each(densities)("keeps selection separate from expansion in %s density", (density) => {
     fixture.state.selectedId = bot.id;

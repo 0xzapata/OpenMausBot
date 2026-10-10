@@ -415,6 +415,8 @@ export interface Bot {
   waitingForTeammates?: boolean;
   id: string;
   threadId: string;
+  /** The bot's main thread, worked out by the server (WireBot.mainThreadId). */
+  mainThreadId?: string;
   /** every context this bot has, newest first */
   tasks?: Task[];
   projects?: BotProject[];
@@ -1410,6 +1412,23 @@ export function openNotificationTarget(
     bot.threadId === target.threadId ||
     (bot.tasks ?? []).some((task) => task.threadId === target.threadId);
   if (known) dispatch({ type: "switchTask", botId: bot.id, threadId: target.threadId });
+}
+
+/** Open a bot itself: its row, its pinned circle, the palette, ⌘1–9 or the
+ * team map. With threads shown that is the thread it was on. With threads
+ * hidden the bot is one conversation, its main thread (WireBot.mainThreadId),
+ * so a thread a notification or an activity row opened is left on the next
+ * open. Another thread opens the way its row would: the switch selects the
+ * bot, and the thread left behind keeps its unread mark. */
+export function openBot(
+  dispatch: (action: Action) => void,
+  bot: Pick<Bot, "id" | "threadId" | "mainThreadId" | "tasks">,
+  threadsShown: boolean,
+) {
+  // One this window has no row for yet keeps the selection.
+  const main = !threadsShown && bot.mainThreadId && bot.tasks?.some((task) => task.threadId === bot.mainThreadId)
+    ? bot.mainThreadId : bot.threadId;
+  dispatch(main === bot.threadId ? { type: "select", id: bot.id } : { type: "switchTask", botId: bot.id, threadId: main });
 }
 
 /** A thread the person can open from a chip or a #Title link. */

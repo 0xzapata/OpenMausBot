@@ -3,8 +3,9 @@
 // so App.tsx only mounts it.
 import { useEffect, useRef, useState } from "react";
 import { Bot as BotIcon, MessageSquare, Search, Users } from "lucide-react";
-import { api, useStore, type Bot, type Group } from "@/state/store";
+import { api, openBot, useStore, type Bot, type Group } from "@/state/store";
 import { rankByName } from "@/lib/palette-rank";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { cn } from "@/lib/cn";
 import type { SearchHit } from "@/lib/search-hit";
 import { landOnSearchHit } from "@/lib/focus-message";
@@ -16,6 +17,7 @@ type PaletteEntry =
 
 export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean) => void }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [messageHits, setMessageHits] = useState<SearchHit[]>([]);
@@ -100,8 +102,10 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
       } catch (error) {
         dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) });
       }
+    } else if (entry.kind === "bot") {
+      openBot(dispatch, entry.bot, showThreads);
     } else {
-      dispatch({ type: "select", id: entry.kind === "bot" ? entry.bot.id : entry.group.id });
+      dispatch({ type: "select", id: entry.group.id });
     }
     setOpen(false);
   };

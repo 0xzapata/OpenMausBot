@@ -31,7 +31,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, currentTaskBot, openThread, type Action, type AppState, type Bot, type BotProject, type Group, type InstanceInfo, type Message } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, currentTaskBot, openBot, openThread, type Action, type AppState, type Bot, type BotProject, type Group, type InstanceInfo, type Message } from "@/state/store";
 import { approvalModeFor } from "../../shared/approval-mode";
 import { avatarCropRadius, botAvatarProfile } from "../../shared/bot-avatar";
 import { peerLine } from "@/lib/peer-message";
@@ -1269,6 +1269,7 @@ function useVisibleMessages(bot: Bot): Message[] {
 }
 
 export const PinnedBotCircle = memo(function PinnedBotCircle({ bot, selected, mascotMotion, pendingQueued, dispatch, onMenu }: BotRowProps) {
+  const showThreads = useShowThreads();
   const visible = useVisibleMessages(bot);
   const activityTasks = sidebarBotActivityTasks(bot, pendingQueued);
   const waiting = bot.activity === "waiting-on-you" || activityTasks.some((task) => task.activity === "waiting-on-you");
@@ -1282,7 +1283,7 @@ export const PinnedBotCircle = memo(function PinnedBotCircle({ bot, selected, ma
       aria-current={selected ? "page" : undefined}
       aria-label={`${bot.name}${waiting ? ` · ${t("sidebar.preview.waiting")}` : working ? ` · ${t("chat.activity.working")}` : ""}${unread ? ` · ${t("task.unread")}` : ""}`}
       title={bot.name}
-      onClick={() => dispatch({ type: "select", id: bot.id })}
+      onClick={() => openBot(dispatch, bot, showThreads)}
       onContextMenu={(event) => openBotContextMenu(onMenu, bot.id, event)}
       className="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1 text-center outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
     >
@@ -1572,7 +1573,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
     if (renaming) return;
     const insideRenameInput = event.target instanceof HTMLInputElement;
     if (botListItemPointerIntent(event.type, insideRenameInput) === "select") {
-      dispatch({ type: "select", id: bot.id });
+      openBot(dispatch, bot, showThreads);
     }
   };
 
@@ -1602,7 +1603,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
           if (renaming) return;
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            dispatch({ type: "select", id: bot.id });
+            openBot(dispatch, bot, showThreads);
           }
         }}
         onContextMenu={onContextMenu}

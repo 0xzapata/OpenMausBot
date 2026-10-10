@@ -253,6 +253,10 @@ export interface WireBot {
   id: string;
   /** The task selected in the UI; running turns keep their own thread id. */
   threadId: string;
+  /** The bot's main thread (server/main-thread.ts): where a routine without
+   * a thread of its own reports, and what a bot opens to while threads are
+   * hidden. Server-derived; absent only for a bot without threads. */
+  mainThreadId?: string;
   /** every task this bot has, newest first, projected like wireTask */
   tasks?: WireTask[];
   /** Projects group this bot's threads; older bots have no projects. */

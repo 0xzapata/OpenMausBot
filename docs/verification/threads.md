@@ -63,7 +63,9 @@ switching and Stop can be exercised without a real provider or account.
     Group/channel histories are unchanged. Background working, queued, unread,
     and waiting conversations remain reachable through activity-only controls.
     The header stays uncluttered; **Other activity** appears below it only when
-    there is sibling activity, including when the sidebar is closed.
+    there is sibling activity, including when the sidebar is closed. Open a
+    sibling from its activity entry, then click the bot's row: it returns to
+    the conversation you last wrote in (the bot's main thread).
 13. Stop a running job through its activity entry while a sibling is queued;
     verify only the chosen job stops and the queued message starts normally.
     Reload and confirm Show threads remains off. Turn it back on to recover

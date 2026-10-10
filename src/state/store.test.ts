@@ -9,6 +9,7 @@ import {
   initialState,
   liveCallFromFrame,
   loadSnapshotBoundary,
+  openBot,
   openNotificationTarget,
   openThread,
   persistBotUpdate,
@@ -868,6 +869,40 @@ describe("notification routing", () => {
       const twice = reducer(once, { type: "revealThread", threadId: "t" });
       expect(once.revealThread).toEqual({ threadId: "t", nonce: 1 });
       expect(twice.revealThread?.nonce).toBe(2);
+    });
+  });
+
+  describe("openBot", () => {
+    // This window last opened "routine-report" from its activity row; the
+    // person last wrote in "later-chat", the bot's main thread.
+    const bot: Bot = {
+      id: "bot-1", threadId: "routine-report", mainThreadId: "later-chat", name: "Scout", title: "", description: "", color: "green",
+      notifications: true, unread: true, modelSelection: { instanceId: "test", model: "test" }, messages: [],
+      tasks: [
+        { threadId: "routine-report", title: "Reports", createdAt: 1, unread: true },
+        { threadId: "later-chat", title: "Later chat", createdAt: 2 },
+      ],
+    };
+    const opened = (target: Bot, threadsShown: boolean) => {
+      const dispatch = vi.fn();
+      openBot(dispatch, target, threadsShown);
+      return dispatch.mock.calls.map(([action]) => action);
+    };
+
+    it("opens the thread it was on while threads are shown", () => {
+      expect(opened(bot, true)).toEqual([{ type: "select", id: "bot-1" }]);
+    });
+
+    it("opens the bot's main thread while threads are hidden, the way its row would", () => {
+      expect(opened(bot, false)).toEqual([{ type: "switchTask", botId: "bot-1", threadId: "later-chat" }]);
+      expect(opened({ ...bot, threadId: "later-chat" }, false)).toEqual([{ type: "select", id: "bot-1" }]);
+      // A main thread this window has no row for yet, or none at all.
+      expect(opened({ ...bot, tasks: undefined }, false)).toEqual([{ type: "select", id: "bot-1" }]);
+      expect(opened({ ...bot, mainThreadId: undefined }, false)).toEqual([{ type: "select", id: "bot-1" }]);
+      // The switch selects the bot and leaves the thread it came from unread.
+      const switched = reducer({ ...initialState, bots: [bot], selectedId: "other", activeView: "routines" }, opened(bot, false)[0] as Action);
+      expect(switched).toMatchObject({ selectedId: "bot-1", activeView: "chat" });
+      expect(switched.bots[0]!.tasks!.find((task) => task.threadId === "routine-report")!.unread).toBe(true);
     });
   });
 

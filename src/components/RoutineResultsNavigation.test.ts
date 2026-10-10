@@ -81,7 +81,7 @@ function details(receipt: RoutineRun | null = run, definition: Routine | null = 
   const onClose = vi.fn();
   const buttons = buttonsFrom(() => EventDetails({
     item: { kind: "routine", id: receipt?.id ?? definition!.id, at: 100, durationMinutes: 30, routine: definition, run: receipt },
-    bots: [bot], onClose, onEdit: vi.fn(), onCallChanged: vi.fn(), onOpenRoom: vi.fn(),
+    bots: fixture.state!.bots, onClose, onEdit: vi.fn(), onCallChanged: vi.fn(), onOpenRoom: vi.fn(),
   }));
   return { buttons, onClose };
 }
@@ -107,6 +107,14 @@ describe("routine results navigation", () => {
   it("uses the definition's destination only for a definition-only view", () => {
     details(null).buttons.get("Open results thread")!.onClick!();
     expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "switchTask", botId: bot.id, threadId: "new-results" });
+  });
+
+  it("opens the bot's main thread for a definition with no thread of its own, never for a run", () => {
+    const { resultsThreadId: _chosen, ...unchosen } = routine;
+    fixture.state!.bots = [{ ...bot, mainThreadId: "original-source" }];
+    details(null, unchosen).buttons.get("Open results thread")!.onClick!();
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "switchTask", botId: bot.id, threadId: "original-source" });
+    expect(details({ ...run, sourceThreadId: undefined }, unchosen).buttons.has("Open results thread")).toBe(false);
   });
 
   it("does not redirect a deleted run destination to its source or the current definition", () => {

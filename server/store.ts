@@ -99,12 +99,17 @@ export interface TaskRecord extends Omit<WireTask, TaskWireDerivedKeys> {
    * so only positively identified auto pins yield to Works on changes.
    * Clients see only whether a pin is an auto pin (WireTask.surfaceAuto). */
   surfaceSource?: "user" | "auto";
+  /** Epoch ms a person last wrote here: never a teammate, a routine, a
+   * webhook, the bot itself or a line relayed from Slack. The newest open
+   * one is the bot's main thread (server/main-thread.ts), which clients get
+   * worked out (WireBot.mainThreadId). Absent until someone writes. */
+  askedAt?: number;
 }
 
 /** TaskRecord fields no client may see. Everything else must be on WireTask:
  * the exactness assertion below fails to compile when either side drifts,
  * so a new server field forces a decision — wire-visible or private here. */
-export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource";
+export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource" | "askedAt";
 /** WireTask fields computed by toWireTask and never stored on a TaskRecord. */
 export type TaskWireDerivedKeys = "surfaceAuto" | "followsBotModel";
 export type TaskWireProjection = Pick<TaskRecord, Exclude<keyof TaskRecord, TaskWirePrivateKeys>> & Pick<WireTask, TaskWireDerivedKeys>;
@@ -122,7 +127,7 @@ export const taskWireProjectionIsExact: TaskWireProjectionIsExact = true;
 export function toWireTask(task: TaskRecord, botModel: ModelSelection): WireTask {
   const { resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, handedMessages: _handedMessages,
     appliedCompactionId: _appliedCompactionId, contextFloor: _contextFloor, lastContextModel: _lastContextModel,
-    surfaceSource, ...stored } = task;
+    surfaceSource, askedAt: _askedAt, ...stored } = task;
   const wire: WireTask = { ...stored, modelSelection: structuredClone(task.modelSelection ?? botModel), followsBotModel: task.modelSelection === undefined };
   // Who pinned stays private. A client learns only whether the pin is the
   // machine's own record, so it never presents one as the person's choice.
@@ -2873,6 +2878,18 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
     task.openedBy = structuredClone(openedBy);
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+    return task;
+  }
+
+  /** A person wrote in this thread at `at` (startTurn and a steer decide
+   * who is one). Never moves back, and never reachable from the HTTP task
+   * PATCH: askedAt is not a TASK_PATCH_FIELD. */
+  setTaskAskedAt(botId: string, threadId: string, at: number): TaskRecord | null {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || !Number.isFinite(at) || (task.askedAt ?? -1) >= at) return task ?? null;
+    task.askedAt = at;
     this.saveBots();
     this.emit({ type: "bot", botId });
     return task;

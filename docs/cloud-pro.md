@@ -169,8 +169,8 @@ here, or a backup restored in Settings); a routine made from the owner's bot tem
 or a proposal the owner approved, is recorded as theirs when it is made.
 Every other routine is nobody's: it runs confined, like a guest's, and
 reports into a conversation that is nobody's. An owner's routine reports
-into a conversation that is the owner's: the bot's main thread, unless
-someone else opened that one.
+into a conversation that is the owner's: the bot's main thread, which only
+a conversation the owner opened can be.
 
 A webhook is the owner's: only their own devices can create, edit or rotate
 one, so its runs work at the bot's own level, in its project folder, with its
