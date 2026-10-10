@@ -1417,12 +1417,13 @@ export function openNotificationTarget(
   if (known) dispatch({ type: "switchTask", botId: bot.id, threadId: target.threadId });
 }
 
-/** Open a bot itself: its row, its pinned circle, the palette, ⌘1–9 or the
- * team map. With threads shown that is the thread it was on. With threads
- * hidden the bot is one conversation, its main thread (WireBot.mainThreadId),
- * so a thread a notification or an activity row opened is left on the next
- * open. Another thread opens the way its row would: the switch selects the
- * bot, and the thread left behind keeps its unread mark. */
+/** Open a bot itself: its row, its pinned circle, the palette, the + menu,
+ * ⌘1–9 or the team map. With threads shown that is the thread it was on.
+ * With threads hidden the bot is one conversation, its main thread
+ * (WireBot.mainThreadId), so a thread a notification or an activity row
+ * opened is left on the next open. Another thread opens the way its row
+ * would: the switch selects the bot, and the thread left behind keeps its
+ * unread mark. */
 export function openBot(
   dispatch: (action: Action) => void,
   bot: Pick<Bot, "id" | "threadId" | "mainThreadId" | "tasks">,
