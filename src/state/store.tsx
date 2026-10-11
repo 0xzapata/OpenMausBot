@@ -44,6 +44,7 @@ import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
 import { showNotification, type NotificationTarget } from "@/lib/notify";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { speaker } from "@/lib/tts";
 import { roleProfilePatch, type BotRole } from "@/lib/bot-roles";
 import { t } from "@/lib/i18n";
@@ -1371,6 +1372,8 @@ export function pinBotThreadAction(action: Action, bots: Bot[]): Action {
 interface NotificationThreadOwner {
   id: string;
   threadId: string;
+  /** A bot's main thread (WireBot.mainThreadId); a room has none. */
+  mainThreadId?: string;
   tasks?: Array<{ threadId: string }>;
 }
 
@@ -1396,6 +1399,7 @@ export function openNotificationTarget(
   dispatch: (action: Action) => void,
   target: NotificationTarget,
   state: NotificationRoutingState,
+  threadsShown: boolean,
 ) {
   // A room's approval/question notification carries the asker bot with the
   // GROUP's thread id; asking the bot to switch to that thread would 404.
@@ -1417,30 +1421,54 @@ export function openNotificationTarget(
   const bot = state.bots.find((candidate) =>
     candidate.threadId === target.threadId || candidate.tasks?.some((task) => task.threadId === target.threadId)
   ) ?? state.bots.find((candidate) => candidate.id === target.botId);
-  dispatch({ type: "select", id: bot?.id ?? target.botId });
-  if (!bot) return;
+  if (!bot) {
+    dispatch({ type: "select", id: target.botId });
+    return;
+  }
   const known =
     bot.threadId === target.threadId ||
     (bot.tasks ?? []).some((task) => task.threadId === target.threadId);
-  if (known) dispatch({ type: "switchTask", botId: bot.id, threadId: target.threadId });
+  if (known) openBotThread(dispatch, bot, target.threadId, threadsShown);
+  else openBot(dispatch, bot, threadsShown);
+}
+
+/** The thread opening a bot itself shows. With threads shown, the one it
+ * was on. With threads hidden the bot is one conversation, its main thread
+ * (WireBot.mainThreadId), so a thread a notification or an activity row
+ * opened is left on the next open; one this window has no row for yet
+ * keeps the selection. */
+export function botOpensTo(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): string {
+  return !threadsShown && bot.mainThreadId && bot.tasks?.some((task) => task.threadId === bot.mainThreadId)
+    ? bot.mainThreadId : bot.threadId;
 }
 
 /** Open a bot itself: its row, its pinned circle, the palette, the + menu,
- * ⌘1–9 or the team map. With threads shown that is the thread it was on.
- * With threads hidden the bot is one conversation, its main thread
- * (WireBot.mainThreadId), so a thread a notification or an activity row
- * opened is left on the next open. Another thread opens the way its row
- * would: the switch selects the bot, and the thread left behind keeps its
- * unread mark. */
+ * ⌘1–9, the team map, a link to the bot, or the bot a dead thread link
+ * falls back to. It opens where botOpensTo says. */
 export function openBot(
   dispatch: (action: Action) => void,
-  bot: Pick<Bot, "id" | "threadId" | "mainThreadId" | "tasks">,
+  bot: Pick<NotificationThreadOwner, "id" | "threadId" | "mainThreadId" | "tasks">,
   threadsShown: boolean,
 ) {
-  // One this window has no row for yet keeps the selection.
-  const main = !threadsShown && bot.mainThreadId && bot.tasks?.some((task) => task.threadId === bot.mainThreadId)
-    ? bot.mainThreadId : bot.threadId;
-  dispatch(main === bot.threadId ? { type: "select", id: bot.id } : { type: "switchTask", botId: bot.id, threadId: main });
+  const opened = botOpensTo(bot, threadsShown);
+  if (opened === bot.threadId) dispatch({ type: "select", id: bot.id });
+  else openBotThread(dispatch, bot, opened, threadsShown);
+}
+
+/** Open one of a bot's threads, as a notification, a chip, a link or a
+ * button names it: a switch, once the bot is selected. With threads hidden
+ * another thread than the one the bot is on opens by the switch alone,
+ * which selects the bot too, so the thread left behind keeps its unread
+ * mark: only an activity row reaches it, and a reply there must not pass
+ * as read unseen. */
+export function openBotThread(
+  dispatch: (action: Action) => void,
+  bot: Pick<NotificationThreadOwner, "id" | "threadId">,
+  threadId: string,
+  threadsShown: boolean,
+) {
+  if (threadsShown || threadId === bot.threadId) dispatch({ type: "select", id: bot.id });
+  dispatch({ type: "switchTask", botId: bot.id, threadId });
 }
 
 /** A thread the person can open from a chip or a #Title link. */
@@ -1463,16 +1491,17 @@ export function openThread(
   dispatch: (action: Action) => void,
   target: ThreadTarget,
   state: ThreadOpeningState,
+  threadsShown: boolean,
 ): boolean {
   const owns = (owner: NotificationThreadOwner) =>
     owner.threadId === target.threadId || (owner.tasks ?? []).some((task) => task.threadId === target.threadId);
   if (state.groups.some(owns) || state.bots.some(owns)) {
-    openNotificationTarget(dispatch, target, state);
+    openNotificationTarget(dispatch, target, state, threadsShown);
     dispatch({ type: "revealThread", threadId: target.threadId });
     return true;
   }
   const bot = state.bots.find((candidate) => candidate.id === target.botId);
-  if (bot) dispatch({ type: "select", id: bot.id });
+  if (bot) openBot(dispatch, bot, threadsShown);
   dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot?.name ?? null } });
   return false;
 }
@@ -2979,6 +3008,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, rawDispatch] = useReducer(reducer, initialState);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const showThreads = useShowThreads();
+  const showThreadsRef = useRef(showThreads);
+  showThreadsRef.current = showThreads;
   const clearChatError = useCallback(() => {
     rawDispatch({ type: "error", message: null });
   }, []);
@@ -4133,10 +4165,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // in local state either way, but only the wrapper PATCHes
           // unread:false back. Opening a bot from its own notification and
           // watching the badge return on the next hydration is exactly the
-          // bug that makes notifications feel broken.
+          // bug that makes notifications feel broken. Opened as the sidebar
+          // shows threads when it is clicked.
           showNotification(
             frame.notification,
-            (target) => openNotificationTarget(dispatch, target, stateRef.current),
+            (target) => openNotificationTarget(dispatch, target, stateRef.current, showThreadsRef.current),
             stateRef.current.bots.find((bot) => bot.id === frame.notification.botId)?.avatarUrl,
             visibleNotificationThread(stateRef.current),
           );

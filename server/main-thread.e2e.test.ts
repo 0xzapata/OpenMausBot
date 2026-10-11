@@ -1,16 +1,18 @@
 // A bot's main thread is the open thread a person last wrote in
 // (server/main-thread.ts). The stamp it reads, askedAt, comes from a
 // person's own line only: work that merely lands in a thread (a routine, a
-// webhook, a thread the bot opened, a teammate's hand-off, a line relayed
-// from Slack) never moves it. Clients get the answer (WireBot.mainThreadId),
-// never the stamp. Real server, scripted fake engine.
+// webhook, a thread the bot opened, a teammate's hand-off or results, a
+// team incident, a line relayed from Slack) never moves it. Clients get the
+// answer (WireBot.mainThreadId), never the stamp. Real server, scripted
+// fake engine.
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 
-it("stamps askedAt where a person writes, never for a routine, a webhook, start_thread, a teammate's hand-off or a Slack relay", async () => {
+/** An isolated server on the scripted fake engine, and what these tests read from it. */
+async function launch() {
   const fixture = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, { scripted: true });
   const { url, dataDir } = fixture.info;
   const api = async (method: string, path: string, body?: unknown, status = 200) => {
@@ -44,6 +46,11 @@ it("stamps askedAt where a person writes, never for a routine, a webhook, start_
     await expect.poll(async () => (await api("GET", "/api/routines")).runs.find(find)?.status, { timeout: 20_000 }).toBe("completed");
     return (await api("GET", "/api/routines")).runs.find(find).threadId as string;
   };
+  return { fixture, url, dataDir, api, cli, wire, tasks, stamps, thread, idle, said, replied, finished };
+}
+
+it("stamps askedAt where a person writes, never for a routine, a webhook, start_thread, a teammate's hand-off or a Slack relay", async () => {
+  const { fixture, dataDir, api, cli, wire, stamps, thread, idle, said, replied, finished } = await launch();
   try {
     // One turn at a time per bot, and each step settles before the next, so
     // every turn meets its own scripted entry.
@@ -107,6 +114,62 @@ it("stamps askedAt where a person writes, never for a routine, a webhook, start_
     const after = await wire(bot.id);
     expect(after.mainThreadId).toBe(first);
     expect(JSON.stringify(after)).not.toContain("askedAt");
+  } finally {
+    await fixture.close();
+  }
+}, 120_000);
+
+// With threads hidden a person sees a bot's main thread, and a sibling only
+// while it has news for them. A teammate's work, its results and a team
+// incident each land in the conversation they belong to and move no main
+// thread; the results and the incident's report mark theirs unread.
+it("moves no main thread for a teammate's work or results or a team incident; results and incidents are news where they land", async () => {
+  const { fixture, dataDir, api, cli, wire, tasks, stamps, thread, idle, said, replied } = await launch();
+  try {
+    await api("PUT", "/api/config", { threads: { maxConcurrentPerBot: 1 } });
+    const asker = (await cli("new-bot", "--name", "Asker", "--section", "Ops")).bot;
+    const teammate = (await cli("new-bot", "--name", "Teammate", "--section", "Ops")).bot;
+    const chief = (await cli("new-bot", "--name", "Chief", "--section", "Ops")).bot;
+    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
+    writeFileSync(join(dataDir, "room-plan.json"), JSON.stringify({
+      [asker.id]: { script: [
+        { key: "open", match: ["Open a side job that asks Teammate."],
+          steps: [{ tool: "start_thread", arguments: { title: "Side job", message: "Ask Teammate to check the books." } }], reply: "Opened a side job." },
+        { key: "ask", match: ["Ask Teammate to check the books."], steps: [{ arguments: { bot_ids: [teammate.id], message: "BOOKS: check the books." } }], reply: "Asked Teammate." },
+        { key: "review", match: ["Your downstream room requests have settled."], reply: "Side job done: the books balance." },
+      ] },
+      [teammate.id]: { script: [
+        { key: "books", match: ["BOOKS: check the books."], reply: "The books balance." },
+        { key: "crash", match: ["Reconcile the invoices."], fail: true },
+      ] },
+      [chief.id]: { script: [{ key: "incident", match: ["Incident report"], reply: "Incident noted." }] },
+    }));
+
+    // The person asks once, in the Asker's first thread. The side job it
+    // opens asks Teammate, and resumes with Teammate's results.
+    await cli("send", "--bot", asker.id, "--task", asker.activeTaskId, "--text", "Open a side job that asks Teammate.");
+    const side = await thread(asker.id, "Side job");
+    await replied(asker.id, side.threadId, "Side job done: the books balance.");
+    const work = (await tasks(teammate.id)).find((task) => task.openedBy?.kind === "work");
+    expect(await said(work.threadId)).toContain("The books balance.");
+    await idle(teammate.id);
+
+    // The person's own request to Teammate breaks; the Chief hears of it.
+    await cli("send", "--bot", teammate.id, "--task", teammate.activeTaskId, "--text", "Reconcile the invoices.");
+    const incidents = await thread(chief.id, "Team incidents");
+    await replied(chief.id, incidents.threadId, "Incident noted.");
+
+    // Each main thread is where its person wrote, or the selection where nobody has.
+    expect(Object.keys(stamps(asker.id))).toEqual([asker.activeTaskId]);
+    expect(Object.keys(stamps(teammate.id))).toEqual([teammate.activeTaskId]);
+    expect(stamps(chief.id)).toEqual({});
+    expect((await wire(asker.id)).mainThreadId).toBe(asker.activeTaskId);
+    expect((await wire(teammate.id)).mainThreadId).toBe(teammate.activeTaskId);
+    expect((await wire(chief.id)).mainThreadId).toBe(chief.activeTaskId);
+    // The side job's results and the incident's report are news in their own
+    // threads, so an activity row reaches them while threads are hidden.
+    expect((await tasks(asker.id)).find((task) => task.threadId === side.threadId).unread).toBe(true);
+    expect((await tasks(chief.id)).find((task) => task.threadId === incidents.threadId).unread).toBe(true);
   } finally {
     await fixture.close();
   }

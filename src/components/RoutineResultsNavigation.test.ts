@@ -7,8 +7,9 @@ import type { Routine, RoutineRun } from "@/lib/routines";
 const fixture = vi.hoisted(() => {
   vi.stubGlobal("window", {});
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
-  return { state: undefined as AppState | undefined, dispatch: vi.fn() };
+  return { state: undefined as AppState | undefined, dispatch: vi.fn(), showThreads: true };
 });
+vi.mock("@/lib/thread-preferences", () => ({ useShowThreads: () => fixture.showThreads }));
 vi.mock("@/state/store", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/state/store")>();
   return { ...original, useStore: () => ({ state: fixture.state ?? original.initialState, dispatch: fixture.dispatch }) };
@@ -88,6 +89,7 @@ function details(receipt: RoutineRun | null = run, definition: Routine | null = 
 
 beforeEach(() => {
   fixture.dispatch.mockClear();
+  fixture.showThreads = true;
   fixture.state = { ...initialState, bots: [bot], groups: [group], routines: [routine], routineRuns: [run] };
 });
 afterAll(() => vi.unstubAllGlobals());
@@ -138,6 +140,26 @@ describe("routine results navigation", () => {
     expect(fixture.dispatch.mock.calls).toEqual([
       [{ type: "select", id: group.id }],
       [{ type: "switchGroupTask", groupId: group.id, threadId: "original-room-source" }],
+    ]);
+  });
+
+  it("with threads hidden opens the run's thread or its results by the switch alone, leaving the thread the bot was on unread", () => {
+    fixture.showThreads = false;
+    const { buttons } = details();
+    buttons.get("Open results thread")!.onClick!();
+    expect(fixture.dispatch.mock.calls).toEqual([[{ type: "switchTask", botId: bot.id, threadId: "original-source" }]]);
+    fixture.dispatch.mockClear();
+    // Open thread, from a run whose bot is on its results thread.
+    fixture.state!.bots = [{ ...bot, threadId: "new-results" }];
+    details().buttons.get("Open thread")!.onClick!();
+    expect(fixture.dispatch.mock.calls).toEqual([[{ type: "switchTask", botId: bot.id, threadId: "execution" }]]);
+    // With threads shown, as before.
+    fixture.showThreads = true;
+    fixture.dispatch.mockClear();
+    details().buttons.get("Open thread")!.onClick!();
+    expect(fixture.dispatch.mock.calls).toEqual([
+      [{ type: "select", id: bot.id }],
+      [{ type: "switchTask", botId: bot.id, threadId: "execution" }],
     ]);
   });
 

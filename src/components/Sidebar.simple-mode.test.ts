@@ -230,7 +230,7 @@ describe("activity-only escape hatch", () => {
 
   it("switches directly to the requested work and offers no thread-management actions", () => {
     let tree: ReactNode;
-    function Capture() { tree = SidebarBotActivity({ bot, density: "comfortable", pendingQueued: fixture.state.pendingQueued!, dispatch: fixture.dispatch }); return tree; }
+    function Capture() { tree = SidebarBotActivity({ bot, rowThreadId: bot.threadId, density: "comfortable", pendingQueued: fixture.state.pendingQueued!, dispatch: fixture.dispatch }); return tree; }
     const markup = renderToStaticMarkup(createElement(Capture));
     findElement(tree, "data-sidebar-activity-row", "approval")!.props.onClick!({} as MouseEvent);
     expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "switchTask", botId: bot.id, threadId: "approval" });
@@ -241,9 +241,31 @@ describe("activity-only escape hatch", () => {
 
   it("removes selected and settled activity but keeps unread completed replies", () => {
     const selected = { ...bot, threadId: "approval", tasks: bot.tasks!.map((task) => task.threadId === "working" ? { ...task, busy: false, activity: "idle" as const } : task) };
-    const markup = renderToStaticMarkup(createElement(SidebarBotActivity, { bot: selected, density: "compact", pendingQueued: fixture.state.pendingQueued!, dispatch: fixture.dispatch }));
+    const markup = renderToStaticMarkup(createElement(SidebarBotActivity, { bot: selected, rowThreadId: selected.threadId, density: "compact", pendingQueued: fixture.state.pendingQueued!, dispatch: fixture.dispatch }));
     expect(markup).not.toContain('data-sidebar-activity-row="approval"');
     expect(markup).not.toContain('data-sidebar-activity-row="working"');
     expect(markup).toContain('data-sidebar-activity-row="unread"');
+  });
+
+  it("lists a reply in the thread a bot was left on, since its row opens the main thread", () => {
+    // This window left Atlas on an older thread a routine's reply has since
+    // landed in; the person last wrote in another one, the main thread.
+    const left: Bot = { ...bot, threadId: "left-behind", mainThreadId: "main-chat", tasks: [
+      { threadId: "left-behind", title: "Routine report", createdAt: 1, unread: true },
+      { threadId: "main-chat", title: "Main chat", createdAt: 2, unread: true },
+    ] };
+    const rows = () => {
+      const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", left)));
+      return ["left-behind", "main-chat"].filter((threadId) => markup.includes(`data-sidebar-activity-row="${threadId}"`));
+    };
+    fixture.showThreads = false;
+    expect(rows()).toEqual(["left-behind"]);
+    // On screen, the thread it shows is the row, and the main thread a sibling.
+    fixture.state.selectedId = left.id;
+    expect(rows()).toEqual(["main-chat"]);
+    // With threads shown the row opens the thread it was on, as before.
+    fixture.showThreads = true;
+    fixture.state.selectedId = "other-bot";
+    expect(rows()).toEqual(["main-chat"]);
   });
 });
