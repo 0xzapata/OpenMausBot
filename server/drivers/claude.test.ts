@@ -923,6 +923,29 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     }
   });
 
+  it("draws a multiSelect ask_user as a checkbox question card", async () => {
+    // In Full access the CLI has no permission prompt tool, so its own
+    // AskUserQuestion never reaches the card; ask_user is the only way a
+    // bot can ask, and it must still be able to take several picks.
+    await create("hang");
+    await instance.adapter.sendTurn({ threadId: "t-multi-ask", text: "go", approvalMode: "full" });
+    const conn = await connectSocket(permissionSocketPath("t-multi-ask"));
+    try {
+      const questions = [{ question: "Which fruits?", multiSelect: true, options: [{ label: "Apple" }, { label: "Cherry" }] }];
+      conn.write(JSON.stringify({
+        t: "ask", kind: "question", id: "multi-ask", tool: "ask_user",
+        input: { question: "Which fruits?", choices: ["Apple", "Cherry"], questions },
+      }) + "\n");
+      const opened = await recorder.until((e) => e.type === "request.opened") as { requestId: string; questions?: unknown; choices?: unknown };
+      expect(opened.questions).toEqual(questions);
+      // a multi-pick question has no honest one-tap fallback
+      expect(opened.choices).toBeUndefined();
+      expect(await instance.adapter.respondToRequest("t-multi-ask", opened.requestId, { behavior: "answer", message: "Apple, Cherry" })).toBe("answered");
+    } finally {
+      conn.destroy();
+    }
+  });
+
   it("turns Claude's own AskUserQuestion into a question card, not an approval", async () => {
     // The CLI routes AskUserQuestion through --permission-prompt-tool like
     // any other tool use. Left as a permission it offers Deny / Always allow
