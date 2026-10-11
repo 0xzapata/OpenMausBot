@@ -1170,6 +1170,17 @@ describe("OpenCode Go configuration", () => {
 describe("saving OpenCode provider keys", () => {
   const saved: AppConfig = { opencodeGo: { providerKeys: { VENICE_API_KEY: "old-venice", GROQ_API_KEY: "groq" } } };
 
+  it("preserves Cline provider keys for OpenCode without sharing its saved key with other engines", () => {
+    const keys = { CLINE_API_KEY: "cline-provider-fixture" };
+    expect(mergeOpenCodeProviderKeys({}, keys)).toEqual({ ok: true, keys });
+    const instances = instanceConfigs({ opencodeGo: { providerKeys: keys }, instances: {
+      opencode: { driver: "opencodeGo" }, cline: { driver: "clineAgent" }, grok: { driver: "grokAgent" },
+    } });
+    expect(instances.opencode.environment).toMatchObject(keys);
+    expect(instances.cline.environment).toEqual({});
+    expect(instances.grok.environment).toEqual({});
+  });
+
   it("saves, replaces and removes one name at a time, keeping the rest", () => {
     expect(mergeOpenCodeProviderKeys(saved, { VENICE_API_KEY: "  new-venice ", DEEPSEEK_API_KEY: "deep" }))
       .toEqual({ ok: true, keys: { DEEPSEEK_API_KEY: "deep", GROQ_API_KEY: "groq", VENICE_API_KEY: "new-venice" } });
