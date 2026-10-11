@@ -2933,6 +2933,18 @@ describe("run on startup", () => {
     expect(h.triggerSources).toEqual(["schedule"]);
   });
 
+  it("counts a run already started before the scheduler, rather than starting a second", async () => {
+    const h = harness(start);
+    const routine = h.manager.create(daily({ runOnStartup: true }));
+    const booted = new RoutineManager(h.options);
+    booted.runNow(routine.id);
+    await expect.poll(() => booted.listRuns()[0]?.status).toBe("running");
+    booted.start();
+    await booted.tick();
+    booted.stop();
+    expect(booted.listRuns().map((run) => run.triggerSource)).toEqual(["manual"]);
+  });
+
   it("replaces an occurrence too late to catch up, instead of also reporting it missed", async () => {
     const h = harness(start);
     const routine = h.manager.create(daily({ runOnStartup: true, overlap: "queue" }));
