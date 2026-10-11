@@ -14,6 +14,9 @@ export function useExternalChatLinks(state: AppState, dispatch: (action: Action)
   useEffect(() => {
     if (!link || !state.hydrated) return;
     setLink(null);
+    // Settings is a modal over the chat: the link's chat, or its notice,
+    // would open behind it. Closing it loses nothing; a backdrop click does it.
+    if (state.appSettingsOpen) dispatch({ type: "toggleAppSettings", open: false });
     openChatLink(dispatch, link, state);
   }, [link, state, dispatch]);
 }

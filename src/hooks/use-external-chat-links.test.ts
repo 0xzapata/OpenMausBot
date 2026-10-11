@@ -53,6 +53,18 @@ describe("useExternalChatLinks", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  it("closes Settings so the linked chat is not left behind it", () => {
+    vi.stubGlobal("window", {});
+    fixture.link = "openmausbot://bot/scout";
+    const dispatch = vi.fn();
+    render({ ...loaded, appSettingsOpen: true }, dispatch);
+    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+      { type: "toggleAppSettings", open: false },
+      { type: "select", id: "scout" },
+      { type: "revealThread", threadId: "scout-main" },
+    ]);
+  });
+
   it("does nothing without the desktop bridge", () => {
     vi.stubGlobal("window", {});
     const dispatch = vi.fn();
