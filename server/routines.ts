@@ -1515,10 +1515,7 @@ export class RoutineManager {
 
   start() {
     if (this.timer) return;
-    if (!this.startupRunsQueued) {
-      this.startupRunsQueued = true;
-      this.queueStartupRuns();
-    }
+    if (!this.startupRunsQueued) this.startupRunsQueued = this.queueStartupRuns();
     void this.tick();
     this.timer = setInterval(() => void this.tick(), 10_000);
     this.timer.unref?.();
@@ -1531,14 +1528,16 @@ export class RoutineManager {
 
   /** One run for each enabled routine marked to run on startup. A routine the
    * scheduler is about to catch up on, or one with a run still queued from
-   * before the restart, is left to that run so a start never doubles it. */
-  private queueStartupRuns() {
+   * before the restart, is left to that run so a start never doubles it. An
+   * occurrence too late to catch up is replaced by the startup run instead of
+   * being recorded as missed. False when the runs could not be saved. */
+  private queueStartupRuns(): boolean {
     const now = this.now();
     const marked = this.routines.filter((routine) =>
       routine.enabled && routine.runOnStartup &&
       !(routine.nextRunAt != null && routine.nextRunAt <= now && now - routine.nextRunAt <= CATCH_UP_MS) &&
       !this.runs.some((run) => run.routineId === routine.id && run.status === "queued"));
-    if (marked.length === 0) return;
+    if (marked.length === 0) return true;
     const runs: RoutineRun[] = [];
     const allocations: ResultsThreadAllocation[] = [];
     try {
@@ -1547,14 +1546,16 @@ export class RoutineManager {
           const run = this.newRun(routine, now, false, allocations);
           run.triggerSource = "startup";
           runs.push(run);
+          if (routine.nextRunAt != null && routine.nextRunAt <= now) this.advancePastOccurrence(routine, now, routine.nextRunAt);
         }
       }, () => this.discardResultsThreads(allocations));
     } catch (error) {
       console.error("routines: could not queue startup runs", error);
-      return;
+      return false;
     }
     for (const routine of marked) this.emitRoutine(routine);
     for (const run of runs) this.emitRun(run);
+    return true;
   }
 
   async tick(): Promise<void> {
@@ -1615,20 +1616,7 @@ export class RoutineManager {
               routine.skippedRuns = Math.min(Number.MAX_SAFE_INTEGER, (routine.skippedRuns ?? 0) + 1);
               routine.lastSkippedAt = scheduledFor;
             }
-            routine.nextRunAt =
-              routine.schedule.type === "once" ? null : nextOccurrence(routine.schedule, Math.max(now, scheduledFor));
-            // `updatedAt` is the optimistic definition revision carried by
-            // routine confirmation cards. Moving the scheduler cursor is runtime
-            // progress, not a definition edit, so recurring ticks must not make a
-            // still-accurate pending confirmation stale. A one-time routine does
-            // mutate its definition by auto-disabling after its occurrence.
-            if (routine.schedule.type === "once") {
-              routine.enabled = false;
-              routine.updatedAt = Math.max(now, routine.updatedAt + 1);
-            } else if (routine.schedule.type === "interval" && routine.nextRunAt === null) {
-              routine.enabled = false;
-              routine.updatedAt = Math.max(now, routine.updatedAt + 1);
-            }
+            this.advancePastOccurrence(routine, now, scheduledFor);
           }
         }, () => this.discardResultsThreads(allocations));
       }
@@ -1886,6 +1874,24 @@ export class RoutineManager {
     this.save();
     this.emitRun(run);
     this.options.onRunFailed?.(cloneRun(run));
+  }
+
+  /** Move the scheduler cursor past an occurrence that has been dealt with. */
+  private advancePastOccurrence(routine: Routine, now: number, occurrence: number) {
+    routine.nextRunAt =
+      routine.schedule.type === "once" ? null : nextOccurrence(routine.schedule, Math.max(now, occurrence));
+    // `updatedAt` is the optimistic definition revision carried by
+    // routine confirmation cards. Moving the scheduler cursor is runtime
+    // progress, not a definition edit, so recurring ticks must not make a
+    // still-accurate pending confirmation stale. A one-time routine does
+    // mutate its definition by auto-disabling after its occurrence.
+    if (routine.schedule.type === "once") {
+      routine.enabled = false;
+      routine.updatedAt = Math.max(now, routine.updatedAt + 1);
+    } else if (routine.schedule.type === "interval" && routine.nextRunAt === null) {
+      routine.enabled = false;
+      routine.updatedAt = Math.max(now, routine.updatedAt + 1);
+    }
   }
 
   private targetState(target: Pick<RoutineRun, "target" | "groupId" | "botId">): "ready" | "busy" | "missing" {
