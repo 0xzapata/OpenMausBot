@@ -37,6 +37,8 @@ import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { effectiveLanguage, useLanguageChoice } from "@/lib/language-preference";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone-pairing";
+import { useExternalChatLinks } from "@/hooks/use-external-chat-links";
+import { ChatNotice } from "@/components/ChatErrorBanner";
 
 function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
@@ -87,6 +89,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     window.history.replaceState(null, "", rest);
     dispatch(phonePairingSettingsAction());
   }, [dispatch]);
+  useExternalChatLinks(state, dispatch);
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than
   // cancelling them with md:, which would still emit a translate value and
@@ -354,6 +357,8 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       ) : (
         <main className="relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-3 bg-app text-ink-secondary">
           <WindowDragStrip />
+          {/* a chat link opened with no bots here still says it found nothing */}
+          <div className="w-full max-w-md"><ChatNotice notice={state.notice} /></div>
           <Loader2 size={20} className="animate-spin" />
           <div className="text-[14px]">
             {state.connected ? "No bots yet" : "Connecting to the bot server…"}

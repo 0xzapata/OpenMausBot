@@ -25,6 +25,7 @@ import { pollServerIdentity } from "./server-boot-probe.mjs";
 import { createServerSupervisor } from "./server-supervisor.mjs";
 import { serverChildLaunch } from "./server-child-launch.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
+import { chatLinkFrom, chatLinkFromCommandLine } from "./chat-link.mjs";
 import { createOrganizationEntry, isOrganizationDeepLink, takeOrganizationDeepLink, organizationRestartIntent, withOrganizationRestartIntent, withoutOrganizationRestartIntent } from "./organization-entry.mjs";
 import { windowChromeOptions } from "./window-chrome.mjs";
 import { createAllWindowsClosedQuit } from "./window-all-closed.mjs";
@@ -129,6 +130,7 @@ const cloudEntry = createCloudEntry({
 });
 cloudEntry.fromLaunch(process.argv);
 let pendingPackageInstallUrl = pendingOrganizationEntry ? null : packageUrlFromCommandLine(process.argv);
+let pendingChatLink = pendingOrganizationEntry ? null : chatLinkFromCommandLine(process.argv);
 let organizationEntryReady = false;
 let mainWindow = null;
 const serverUnavailableWindows = new WeakSet();
@@ -238,36 +240,68 @@ if (!app.requestSingleInstanceLock()) {
 // would allow a concurrent second instance.
 nativeAutoUpdater.on("before-quit-for-update", () => releaseSingleInstanceLock(app));
 
-function deliverPackageInstall(win) {
-  if (!pendingPackageInstallUrl || !win || win.isDestroyed()) return;
-  if (win.webContents.isLoadingMainFrame()) return;
-  // A package installs into THIS computer's workspace, so it is handed to the
-  // local UI only. Showing a remote server: switch back to Local first; the
-  // pending link is delivered when that page finishes loading.
+/** Hand a pending link to THIS computer's UI. False while it has to wait: the
+ * page is loading, or a remote server is showing, in which case the window
+ * switches back to Local and the link is delivered when that page loads. */
+function sendToLocalPage(win, channel, value) {
+  if (!win || win.isDestroyed() || win.webContents.isLoadingMainFrame()) return false;
   let showingLocal = false;
   try {
     showingLocal = new URL(win.webContents.getURL()).origin === rendererOrigin();
   } catch {}
   if (!showingLocal) {
     if (activeEnvironment(environmentsState)) void workspaceMenuAction(() => switchEnvironment(LOCAL_ID));
-    return;
+    return false;
   }
-  win.webContents.send("package:install", pendingPackageInstallUrl);
-  pendingPackageInstallUrl = null;
+  win.webContents.send(channel, value);
+  return true;
+}
+
+// A package installs into this computer's workspace.
+function deliverPackageInstall(win = mainWindow) {
+  if (pendingPackageInstallUrl && sendToLocalPage(win, "package:install", pendingPackageInstallUrl)) pendingPackageInstallUrl = null;
+}
+
+// A chat link names a chat on this computer.
+function deliverChatLink(win = mainWindow) {
+  if (pendingChatLink && sendToLocalPage(win, "chat:open", pendingChatLink)) pendingChatLink = null;
+}
+
+// Set once boot has made its first window; until then boot owns window creation.
+let openWindowForLink = null;
+
+/** Bring the app forward for a link. macOS keeps running with every window
+ * closed, and open-url does not fire activate there, so a link that finds no
+ * window opens one; its pending link is delivered when that page loads. */
+function revealForLink() {
+  if (desktopTray?.show()) return;
+  // The app window, where the link opens, even when another window (a
+  // desktop viewer) had focus. While the loading screen is up it owns that.
+  const appWindow = !startupScreen && mainWindow && !mainWindow.isDestroyed() ? [mainWindow] : BrowserWindow.getAllWindows();
+  if (activateExistingWindow(appWindow)) return;
+  openWindowForLink?.();
 }
 
 function queuePackageInstall(rawLink) {
   const packageUrl = packageUrlFromDeepLink(rawLink);
   if (!packageUrl) return false;
   pendingPackageInstallUrl = packageUrl;
-  if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
-  const target = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
-  deliverPackageInstall(target);
+  revealForLink();
+  deliverPackageInstall();
+  return true;
+}
+
+function queueChatLink(rawLink) {
+  const link = chatLinkFrom(rawLink);
+  if (!link) return false;
+  pendingChatLink = link;
+  revealForLink();
+  deliverChatLink();
   return true;
 }
 
 app.on("open-url", (event, url) => {
-  if (!queueOrganizationEntry(url) && !cloudEntry.fromUrl(url) && !queuePackageInstall(url)) return;
+  if (!queueOrganizationEntry(url) && !cloudEntry.fromUrl(url) && !queuePackageInstall(url) && !queueChatLink(url)) return;
   event.preventDefault();
 });
 
@@ -279,9 +313,13 @@ app.on("second-instance", (_event, commandLine) => {
   if (cloudEntry.fromArgs(commandLine)) return;
   const packageUrl = packageUrlFromCommandLine(commandLine);
   if (packageUrl) pendingPackageInstallUrl = packageUrl;
-  if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
-  const target = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
-  deliverPackageInstall(target);
+  const chatLink = chatLinkFromCommandLine(commandLine);
+  if (chatLink) pendingChatLink = chatLink;
+  revealForLink();
+  // The app window, not whichever window is listed first: the loading
+  // screen or a desktop viewer can be, and neither is the chat page.
+  deliverPackageInstall();
+  deliverChatLink();
 });
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
@@ -2434,7 +2472,13 @@ function createWindow({ deferNavigation = false } = {}) {
     });
     void workspaceMenuAction(() => switchEnvironment(LOCAL_ID));
   });
-  win.webContents.on("did-finish-load", () => deliverPackageInstall(win));
+  // A pending link is handed over once the page has stopped loading. Not on
+  // did-finish-load: Electron still reports the main frame as loading then,
+  // and the hand-off's own guard would refuse it.
+  win.webContents.on("did-stop-loading", () => {
+    deliverPackageInstall(win);
+    deliverChatLink(win);
+  });
   win.webContents.on("did-finish-load", () => void offerComputerSharing(win));
 
   // Native context menu for text inputs — without this, right-click does
@@ -3730,6 +3774,9 @@ app.whenReady().then(async () => {
   // by itself; only "Restart to update", the person's click, installs
   startUpdater();
   refreshApplicationMenu();
+  openWindowForLink = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  };
   app.on("activate", () => {
     if (desktopTray?.show()) return;
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

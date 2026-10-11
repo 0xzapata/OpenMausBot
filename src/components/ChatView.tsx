@@ -83,7 +83,7 @@ import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Composer } from "./Composer";
-import { ChatErrorBanner } from "./ChatErrorBanner";
+import { ChatErrorBanner, ChatNotice } from "./ChatErrorBanner";
 import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
@@ -1507,13 +1507,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       {findOpen && <ChatFindBar threadId={bot.threadId} onClose={() => setFindOpen(false)} />}
 
       <ChatErrorBanner message={state.error} onDismiss={() => dispatch({ type: "error", message: null })} />
-      {state.notice && (
-        <div className="w-full px-5">
-          <div role="status" className="mb-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[13px] text-ink-secondary">
-            {state.notice.botName ? t("thread.goneShowing", { name: state.notice.botName }) : t("thread.gone")}
-          </div>
-        </div>
-      )}
+      <ChatNotice notice={state.notice} />
 
       {/* Pinned message banner */}
       <PinnedBanner
