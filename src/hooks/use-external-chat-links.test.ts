@@ -53,13 +53,14 @@ describe("useExternalChatLinks", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("closes Settings so the linked chat is not left behind it", () => {
+  it("closes Settings and the shortcuts list so the linked chat is not left behind them", () => {
     vi.stubGlobal("window", {});
     fixture.link = "openmausbot://bot/scout";
     const dispatch = vi.fn();
-    render({ ...loaded, appSettingsOpen: true }, dispatch);
+    render({ ...loaded, appSettingsOpen: true, shortcutsOpen: true, newBotOpen: true }, dispatch);
     expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
       { type: "toggleAppSettings", open: false },
+      { type: "toggleShortcuts", open: false },
       { type: "select", id: "scout" },
       { type: "revealThread", threadId: "scout-main" },
     ]);

@@ -14,9 +14,12 @@ export function useExternalChatLinks(state: AppState, dispatch: (action: Action)
   useEffect(() => {
     if (!link || !state.hydrated) return;
     setLink(null);
-    // Settings is a modal over the chat: the link's chat, or its notice,
-    // would open behind it. Closing it loses nothing; a backdrop click does it.
+    // Settings and the shortcuts list are modals over the chat: the link's
+    // chat, or its notice, would open behind them. Closing them loses
+    // nothing; a backdrop click does it. Dialogs that hold unsaved input
+    // (New Bot, a trigger draft) stay open.
     if (state.appSettingsOpen) dispatch({ type: "toggleAppSettings", open: false });
+    if (state.shortcutsOpen) dispatch({ type: "toggleShortcuts", open: false });
     openChatLink(dispatch, link, state);
   }, [link, state, dispatch]);
 }

@@ -274,7 +274,11 @@ let openWindowForLink = null;
  * closed, and open-url does not fire activate there, so a link that finds no
  * window opens one; its pending link is delivered when that page loads. */
 function revealForLink() {
-  if (desktopTray?.show() || activateExistingWindow(BrowserWindow.getAllWindows())) return;
+  if (desktopTray?.show()) return;
+  // The app window, where the link opens, even when another window (a
+  // desktop viewer) had focus. While the loading screen is up it owns that.
+  const appWindow = !startupScreen && mainWindow && !mainWindow.isDestroyed() ? [mainWindow] : BrowserWindow.getAllWindows();
+  if (activateExistingWindow(appWindow)) return;
   openWindowForLink?.();
 }
 

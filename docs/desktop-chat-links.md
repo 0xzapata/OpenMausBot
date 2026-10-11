@@ -40,7 +40,8 @@ openmausbot://bot/<bot-id>
   it can start a closed app and still find its chat. On macOS, where the app
   keeps running with its window closed, the link opens a new window.
 - Works from any page — the team map, Routines, a room — and leaves it for
-  the chat.
+  the chat. Settings and the keyboard shortcuts list close so the chat is not
+  hidden behind them; a dialog with unsaved input, such as New Bot, stays.
 - Unknown or mismatched ids show a short notice in the chat instead of
   opening anything: "That bot is no longer here." for an unknown bot link;
   "That thread is no longer here." for an unknown thread, or, when the link
