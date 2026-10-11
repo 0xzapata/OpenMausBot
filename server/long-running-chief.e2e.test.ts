@@ -227,6 +227,8 @@ it("carries a consult-and-implement job over several teammate turns, through a s
   const job = await f.newJob("CSV export");
   await f.say(job, request);
   await f.final(job, "A-FINAL", 60_000);
+  // A visible final reply does not yet prove the graph's terminal fold is saved.
+  await expect.poll(() => f.root(job).status, { timeout: 15_000 }).toBe("completed");
 
   // The Chief ran exactly its three turns: the assignment and two reviews.
   expect(f.turns(f.clive.id).map((record: any) => record.planKey)).toEqual(["A0", "A1", "A2"]);

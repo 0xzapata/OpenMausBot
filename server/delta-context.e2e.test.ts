@@ -805,6 +805,8 @@ it.each(["SIGTERM", "SIGKILL"] as const)("resumes a Chief whose own turn a resta
   expect(f.prompt(f.turns().at(-1))).toContain("OpenMausBot restarted before your previous turn here finished, after it sent work to teammates.");
   expect(f.prompt(f.turns().at(-1))).toContain("LEAD_DONE_BEFORE_RESTART");
   expect(f.turns(f.lead.id)).toHaveLength(1);
+  // The final reply is saved before the Chief's graph settlement is persisted.
+  await expect.poll(() => f.nodes().find((node: any) => !node.parentId)?.status, { timeout: 15_000 }).toBe("completed");
   expect(f.nodes().every((node: any) => node.status === "completed")).toBe(true);
   expect((await f.messages()).map((m: any) => m.tool?.name).filter((name: string | undefined) => name?.startsWith("error:"))).toEqual([]);
 }), hostTimeout(90_000));
