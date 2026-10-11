@@ -301,7 +301,9 @@ test("forgetting a local environment whose folder the server child uses is refus
   // The window may show a remote server while the child still runs on this
   // folder (A → remote R); activeId alone is not the folder in use.
   const { calls, context } = runForget({ environments: [LOCAL_FIXTURE], activeId: "r-remote" });
-  context.runningDataDir = LOCAL_FIXTURE.dataDir;
+  // Resolved like the guard resolves the entry's dir, so the comparison holds
+  // on Windows too (path.resolve turns the POSIX fixture into a drive path).
+  context.runningDataDir = path.resolve(LOCAL_FIXTURE.dataDir);
   assert.deepEqual(plain(await context.forgetEnvironment("l1", true)), { ok: false, error: "active" });
   assert.deepEqual(calls.rm, []);
   assert.deepEqual(calls.persisted, [], "the live entry stays in the registry");
