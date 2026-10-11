@@ -43,6 +43,17 @@ describe("the trial Claude credit's refusal", () => {
       "Stopped after 64 steps without a final answer.", "fetch failed", ` ${failure(402, usedUp)}`]) expect(trialCreditFailure(message), message).toBeNull();
   });
 
+  it("reads the code the chat engine puts after the relay's message, and only at the end of the line", () => {
+    // drivers/openai-chat.ts shows an error envelope's message, then its code.
+    expect(trialCreditFailure("upstream HTTP 402: Your $5 of Claude credit is used up. (trial_credit_used_up)")).toBe("used_up");
+    expect(trialCreditFailure("upstream HTTP 402: Claude credit isn't available on this Cloud. (trial_credit_ended)")).toBe("ended");
+    expect(trialCreditFailure("upstream HTTP 401: This Claude credit key isn't valid. (invalid_api_key)")).toBe("ended");
+    expect(trialCreditFailure("upstream HTTP 400: Too little left for this request. (trial_credit_too_low)")).toBe("too_low");
+    // a code in the middle of a sentence, or under the wrong status, is not the relay's
+    expect(trialCreditFailure("upstream HTTP 402: (trial_credit_used_up) was not the cause")).toBeNull();
+    expect(trialCreditFailure("upstream HTTP 500: Overloaded. (trial_credit_used_up)")).toBeNull();
+  });
+
   it("says each in plain words, with the next step, never a retired word or the API's own, and the app tells each back from its words", () => {
     expect(TRIAL_CREDIT_REFUSED.used_up).toBe("Your trial Claude credit is used up. To keep your bots working, sign in with your own Claude or ChatGPT account, or add an API key.");
     for (const [kind, sentence] of Object.entries(TRIAL_CREDIT_REFUSED)) {
