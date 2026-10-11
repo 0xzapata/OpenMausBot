@@ -33,8 +33,10 @@ export type RegistryEntry =
 
 /** The driver's install descriptor plus what this machine can do about it. */
 function withServerInstall(install: AnyProviderDriver["install"], npmPresent: boolean): AnyProviderDriver["install"] {
-  const server = install ? serverInstallFor(install, npmPresent) : null;
-  return server ? { ...install, server } : install;
+  if (!install) return undefined;
+  const server = serverInstallFor(install, npmPresent);
+  const platform = process.platform === "darwin" || process.platform === "linux" || process.platform === "win32" ? process.platform : undefined;
+  return { ...install, platform, ...(server ? { server } : {}) };
 }
 
 /** The `cli` field off a driver's default config, when it has one — the

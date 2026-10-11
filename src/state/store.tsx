@@ -839,6 +839,8 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
  * EngineInstall in server/contracts.ts. Absent for engines that need no
  * local binary. `command` omits platforms that have no one-liner. */
 export interface EngineInstall {
+  /** The server's platform, not the browser device's operating system. */
+  platform?: "darwin" | "win32" | "linux";
   command?: Partial<Record<"darwin" | "win32" | "linux", string>>;
   docsUrl?: string;
   signInCommand?: string;
@@ -3011,7 +3013,7 @@ const StoreContext = createContext<{
   /** Commit any debounced profile edits before an operation reads the bot. */
   flushBotPatches: (botId: string) => Promise<BotAnnouncement | null>;
   /** Re-fetch engine availability — after an install, without a restart. */
-  refreshInstances: () => Promise<void>;
+  refreshInstances: (options?: { reportErrors?: boolean }) => Promise<void>;
   /** Explicit provider/network model discovery. */
   refreshModels: (instanceId: string) => Promise<void>;
 } | null>(null);
@@ -4307,12 +4309,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Re-probe the engines on demand. A CLI installed while the app is running
   // is invisible until something asks again — the setup screens expose this
   // as "Check again" so the user isn't told to restart when a refresh will do.
-  const refreshInstances = useCallback(async () => {
-    try {
-      const { instances } = await api("/api/instances");
+  const instanceProbe = useRef<Promise<void> | null>(null);
+  const refreshInstances = useCallback(async (options?: { reportErrors?: boolean }) => {
+    // Focus and an explicit Check again can arrive together. Share the probe,
+    // but let the explicit caller display failure without breaking background callers.
+    const probe = instanceProbe.current ??= api("/api/instances", { timeoutMs: 120_000 }).then(({ instances }) => {
+      // Keep the last usable list if a proxy returns an empty/non-JSON 200.
+      if (!Array.isArray(instances)) throw new Error(t("engineSetup.invalidStatus"));
       rawDispatch({ type: "instances", instances });
-    } catch {
-      /* offline or server down — the existing list stays */
+    });
+    try {
+      await probe;
+    } catch (error) {
+      if (options?.reportErrors) throw error;
+      // Offline: retain the existing list for background callers.
+    } finally {
+      if (instanceProbe.current === probe) instanceProbe.current = null;
     }
   }, []);
 
@@ -4336,7 +4348,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       void refreshInstances();
     };
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    const onVisible = () => { if (document.visibilityState === "visible") onFocus(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refreshInstances]);
 
   const flushBotPatches = useCallback(
