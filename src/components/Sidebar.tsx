@@ -2383,10 +2383,13 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             type="button"
             onClick={toggleCollapsed}
             aria-label={density === "icons" ? t("sidebar.density.expand") : t("sidebar.density.collapseAria")}
-            className="flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+            className={cn(
+              "flex items-center justify-center text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
+              density === "icons" ? "size-[46px] shrink-0 rounded-xl" : "size-8 rounded-md",
+            )}
             title={density === "icons" ? t("sidebar.density.expand") : t("sidebar.density.collapse")}
           >
-            {density === "icons" ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            {density === "icons" ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={17} />}
           </button>}
           {/* The rail hides the search box, so it gets the ⌘K switcher instead. */}
           {density === "icons" && <button
@@ -2394,9 +2397,9 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             onClick={openCommandPalette}
             aria-label={t("sidebar.searchAria")}
             title={t("sidebar.searchAria")}
-            className="flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+            className="flex size-[46px] shrink-0 items-center justify-center rounded-xl text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
           >
-            <Search size={17} strokeWidth={2} />
+            <Search size={20} strokeWidth={2} />
           </button>}
           {advanced && <div ref={attentionMenuRef} className={density === "icons" ? "relative" : "contents"}>
             <button
@@ -2404,9 +2407,12 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
               onClick={() => setAttentionOpen((o) => !o)}
               aria-label={attentionTriggerLabel(attention.length)}
               title={attentionTriggerLabel(attention.length)}
-              className="relative flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+              className={cn(
+                "relative flex items-center justify-center text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
+                density === "icons" ? "size-[46px] shrink-0 rounded-xl" : "size-8 rounded-md",
+              )}
             >
-              <Activity size={17} strokeWidth={2} />
+              <Activity size={density === "icons" ? 20 : 17} strokeWidth={2} />
               {attention.length > 0 && (
                 <span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-accent px-0.5 text-[9.5px] font-semibold leading-4 text-ink">{attention.length > 9 ? "9+" : attention.length}</span>
               )}
@@ -2449,10 +2455,13 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             ref={importReturnRef}
             onClick={() => setPlusOpen((o) => !o)}
             aria-label={remoteClient ? t("sidebar.new") : t("sidebar.newOrShare")}
-            className="flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+            className={cn(
+              "flex items-center justify-center text-ink-secondary hover:bg-raised hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
+              density === "icons" ? "size-[46px] shrink-0 rounded-xl" : "size-8 rounded-md",
+            )}
             title={remoteClient ? t("sidebar.new") : t("sidebar.newOrShare")}
           >
-            <Plus size={17} strokeWidth={2} />
+            <Plus size={density === "icons" ? 20 : 17} strokeWidth={2} />
           </button>
           {plusMotion.shown && (
             <>
@@ -2772,7 +2781,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
       />
 
       {/* Footer */}
-      <div className={cn("pb-3 pt-2", density === "icons" ? "px-2" : "px-3")}>
+      <div className={cn("pb-3 pt-2", density === "icons" ? "flex flex-col items-center gap-1 px-2" : "px-3")}>
         <SidebarFooterNav
           density={density}
           collapsed={sectionCollapsed(TOOLS_SECTION_ID)}
@@ -2787,7 +2796,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
         {density === "icons" ? (
           // Collapsed to avatars, the avatar opens the same menu as the
           // profile row, anchored to it and kept inside the window.
-          <div className="flex flex-col items-center justify-center gap-2">
+          <div className="flex flex-col items-center justify-center gap-1">
             <UpdateIndicator />
             <SidebarProfileMenu iconOnly />
           </div>
@@ -2804,7 +2813,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             <div className="min-w-0 flex-1">
               <SidebarProfileMenu />
             </div>
-            <UpdateIndicator className="mx-1" />
+            <UpdateIndicator />
             <SidebarAppsButton />
           </div>
         )}
