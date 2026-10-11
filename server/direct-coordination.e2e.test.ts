@@ -1046,7 +1046,9 @@ it("tells the Chief a teammate's turn stopped because its engine's settings chan
   expect((await f.wait()).status).toBe("settled");
   const child = f.nodes().find((node: any) => node.botId === f.lead.id);
   expect(child.status).toBe("failed");
-  expect(child.result).toMatch(/^Turn interrupted — provider settings changed\. /);
+  // The cause leads; what the turn did first follows only if it did anything
+  // before the save stopped it (a slow host can stop it before its first call).
+  expect(child.result).toMatch(/^Turn interrupted — provider settings changed\.(?: |$)/);
   const resumed = f.evidence().find((turn: any) => turn.botId === f.chief.id && turn.resumed);
   expect(resumed.prompt.message.content).toContain("Turn interrupted — provider settings changed.");
   expect(resumed.prompt.message.content).not.toContain("The coordinated turn was interrupted");

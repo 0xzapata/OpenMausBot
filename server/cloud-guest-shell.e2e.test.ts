@@ -302,6 +302,14 @@ it("work a guest's turn hands a teammate is the guest's too: the teammate runs c
   const assigned = JSON.stringify(teammateTurn.prompt);
   expect(assigned).toContain("OpenMausBot cannot trace this work to the user's own request");
   expect(assigned).not.toMatch(/for the user's request|Ask Delegate to read/);
+  // Settle the held turns and the hand-off they belong to: a later test's
+  // restart would cut a turn still running, and a cut teammate turn runs
+  // again once, writing the dump that test reads.
+  writeFileSync(join(home, "release"), "");
+  const handoffs = join(home, ".openmausbot", "room-handoffs.json");
+  await expect.poll(() => (JSON.parse(readFileSync(handoffs, "utf8")) as Array<{ status: string }>)
+    .every((node) => ["completed", "failed", "cancelled"].includes(node.status)), { timeout: hostTimeout(20_000) }).toBe(true);
+  rmSync(join(home, "release"), { force: true });
 }, hostTimeout(60_000));
 
 it("a run of a guest's routine is the guest's: confined, and so is work it hands a teammate", async () => {

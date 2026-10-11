@@ -310,12 +310,15 @@ describe("independent bot tasks through the isolated control surface", () => {
       await expect.poll(replied, { timeout: 20_000 }).toBeTruthy();
       expect((await replied())!.startsWith(`@Delegated Peer replied to the delegated task:\n\n${note}`)).toBe(true);
     } else {
-      // A failed turn reports only its failure: the note rides on it.
+      // A failed turn reports only its failure: the note rides on it, to
+      // the delegating bot it wakes. Its chip shows the cause's one line.
       const failed = async () => (await runMessages())
         .find((message: any) => message.tool?.name?.startsWith("Delegation to @Delegated Peer failed"))?.tool as { name: string; ok: boolean } | undefined;
       await expect.poll(failed, { timeout: 20_000 }).toBeTruthy();
       expect(await failed()).toMatchObject({ ok: false });
-      expect((await failed())!.name).toBe(`Delegation to @Delegated Peer failed — Delegated turn did not finish — error\n\n${note} Do not report it as done; it needs the person's approval.]`);
+      expect((await failed())!.name).toBe("Delegation to @Delegated Peer failed — Delegated turn did not finish — Fixture turn failed. Before it stopped it made 1 tool call: Bash ×1.");
+      const woken = async () => JSON.stringify((await dump(models[0])).prompt);
+      await expect.poll(woken, { timeout: 20_000 }).toContain(JSON.stringify(`${note} Do not report it as done; it needs the person's approval.]`).slice(1, -1));
     }
   }, 60_000);
 
