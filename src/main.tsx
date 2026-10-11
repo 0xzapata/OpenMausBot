@@ -6,6 +6,7 @@ import {
 } from "./lib/session";
 import { bootstrapBrand } from "./lib/brand";
 import { applySkin, readSkin } from "./lib/skins";
+import { applyChatWidth, readChatWidth } from "./lib/chat-width";
 import { applyFont, readFont } from "./lib/fonts";
 import { settleAdvancedModeDefault } from "./lib/interface-mode";
 import { BrowserSignInPage } from "./pair/BrowserSignInPage";
@@ -21,6 +22,7 @@ import "./styles.css";
 settleAdvancedModeDefault();
 applySkin(readSkin());
 applyFont(readFont());
+applyChatWidth(readChatWidth());
 
 /** A pairing link lands on /pair. A remote browser without a session lands
  * there too, because every API call would otherwise fail with "pair this
