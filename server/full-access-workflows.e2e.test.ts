@@ -274,6 +274,10 @@ it("applies requested Full Access workflows through MCP without duplicate approv
     const beforeSnapshot = await api("GET", pendingRoute);
     expect(beforeSnapshot.messages[0]).toMatchObject({ id: pendingReceipt.message.id, requestPending: true });
     expect(beforeSnapshot.executionId).toEqual(expect.any(String));
+    // The restart must cut the teammate's turn, held at its gate: a hand-off
+    // still queued when the server stops just starts afterwards, no rerun.
+    await expect.poll(() => (JSON.parse(readFileSync(join(dataDir, "room-handoffs.json"), "utf8")) as any[])
+      .some((node) => node.botId === peer.id && node.status === "running"), { timeout: 25_000 }).toBe(true);
     await waitForExit(restarted, { signal: "SIGTERM" });
     const beforeRestart = providerTurns().length;
     await restart();
