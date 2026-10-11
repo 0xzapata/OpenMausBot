@@ -4,6 +4,7 @@
 // silence PLUS a failed liveness probe does, and traffic always vetoes.
 import { describe, expect, it, vi } from "vitest";
 
+import { CONTROL_REFUSAL_PLAIN, CONTROL_UNCONFIRMED, type ControlState } from "./control-client.ts";
 import {
   createGateInterceptor,
   createInactivityWatchdog,
@@ -162,20 +163,23 @@ describe("createLineSplitter", () => {
 describe("createGateInterceptor", () => {
   const frame = (method: string, id?: number) => JSON.stringify({ jsonrpc: "2.0", id, method, params: {} });
   const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const free: ControlState = { held: false, helpOpen: false };
+  const person: ControlState = { held: true, helpOpen: false, reason: "person" };
 
-  function harness(isHeld: () => Promise<boolean>) {
+  function harness(check: () => Promise<ControlState>) {
     const forwarded: string[] = [];
     const refused: string[] = [];
     const intercept = createGateInterceptor({
-      isHeld,
+      check,
       forward: (line) => forwarded.push(line),
       refuse: (line) => refused.push(line),
     });
     return { forwarded, refused, intercept };
   }
+  const refusalText = (line: string) => JSON.parse(line).result.content[0].text as string;
 
   it("forwards everything untouched while nobody is driving", async () => {
-    const { forwarded, refused, intercept } = harness(async () => false);
+    const { forwarded, refused, intercept } = harness(async () => free);
     for (const line of [frame("initialize", 1), frame("tools/list", 2), frame("tools/call", 3), "not json at all"]) {
       intercept(line);
     }
@@ -187,7 +191,7 @@ describe("createGateInterceptor", () => {
   });
 
   it("refuses only tools/call while the person is driving", async () => {
-    const { forwarded, refused, intercept } = harness(async () => true);
+    const { forwarded, refused, intercept } = harness(async () => person);
     intercept(frame("tools/list", 1));
     intercept(frame("tools/call", 2));
     await drain();
@@ -196,18 +200,18 @@ describe("createGateInterceptor", () => {
     const answer = JSON.parse(refused[0]!);
     expect(answer.id).toBe(2);
     expect(answer.result.isError).toBe(true);
-    expect(answer.result.content[0].text).toMatch(/taken control/i);
+    expect(answer.result.content[0].text).toBe(CONTROL_REFUSAL_PLAIN);
   });
 
-  it("preserves protocol order even though the held-check is async", async () => {
+  it("preserves protocol order even though the check is async", async () => {
     const order: string[] = [];
     let calls = 0;
-    let releaseFirst!: (held: boolean) => void;
-    const first = new Promise<boolean>((resolve) => (releaseFirst = resolve));
+    let releaseFirst!: (state: ControlState) => void;
+    const first = new Promise<ControlState>((resolve) => (releaseFirst = resolve));
     let drained!: () => void;
     const allForwarded = new Promise<void>((resolve) => (drained = resolve));
     const intercept = createGateInterceptor({
-      isHeld: () => (calls++ === 0 ? first : Promise.resolve(false)),
+      check: () => (calls++ === 0 ? first : Promise.resolve(free)),
       forward: (line) => {
         const parsed = JSON.parse(line);
         order.push(`fwd:${parsed.id ?? parsed.marker}`);
@@ -219,12 +223,12 @@ describe("createGateInterceptor", () => {
     intercept(frame("tools/call", 2));
     intercept(JSON.stringify({ marker: "drained" }));
     expect(order).toEqual([]);
-    releaseFirst(false);
+    releaseFirst(free);
     await allForwarded;
     expect(order).toEqual(["fwd:1", "fwd:2", "fwd:drained"]);
   });
 
-  it("fails closed when the control check rejects", async () => {
+  it("fails closed when the control check rejects, without blaming a person", async () => {
     const { forwarded, refused, intercept } = harness(async () => {
       throw new Error("harness went away");
     });
@@ -232,26 +236,26 @@ describe("createGateInterceptor", () => {
     await drain();
     expect(refused).toHaveLength(1);
     expect(JSON.parse(refused[0]!).result.isError).toBe(true);
+    expect(refusalText(refused[0]!)).toBe(CONTROL_UNCONFIRMED);
     expect(forwarded).toEqual([]);
   });
 
-  it("returns the current thread-contention reason without changing human takeover guidance", async () => {
+  it("words each hold by what the harness said: its reason, a person, or nothing it could confirm", async () => {
     const refused: string[] = [];
-    let reason: string | undefined = "Another thread is using this computer. Pause this task.";
-    const isHeld = vi.fn(async () => true);
-    const intercept = createGateInterceptor({
-      isHeld,
-      forward: () => {},
-      refuse: (line) => refused.push(line),
-      getRefusalReason: () => reason,
-    });
+    let state: ControlState = { held: true, helpOpen: false, blockedReason: "Another thread is using this computer." };
+    const check = vi.fn(async () => state);
+    const intercept = createGateInterceptor({ check, forward: () => {}, refuse: (line) => refused.push(line) });
     await intercept(frame("tools/list", 1));
-    expect(isHeld).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
     await intercept(frame("tools/call", 2));
-    expect(JSON.parse(refused[0]!).result.content[0].text).toBe(reason);
-    reason = undefined;
+    expect(refusalText(refused[0]!)).toBe("Another thread is using this computer.");
+    state = person;
     await intercept(frame("tools/call", 3));
-    expect(JSON.parse(refused[1]!).result.content[0].text).toMatch(/person has taken control/i);
+    expect(refusalText(refused[1]!)).toBe(CONTROL_REFUSAL_PLAIN);
+    // A held answer with no words is not a person's hold.
+    state = { held: true, helpOpen: false };
+    await intercept(frame("tools/call", 4));
+    expect(refusalText(refused[2]!)).toBe(CONTROL_UNCONFIRMED);
   });
 });
 
@@ -304,7 +308,7 @@ describe("createMcpBridgeInterceptor", () => {
     const intercept = createMcpBridgeInterceptor({
       answer: (line) => answered.push(line),
       forward: (line) => forwarded.push(line),
-      gate: { isHeld: async () => true },
+      gate: { check: async () => ({ held: true, helpOpen: false, reason: "person" }) },
     });
     intercept(frame("ping", 1));
     intercept(frame("tools/call", 2));
@@ -313,7 +317,7 @@ describe("createMcpBridgeInterceptor", () => {
     expect(answered).toHaveLength(2);
     expect(JSON.parse(answered[0]!)).toEqual({ jsonrpc: "2.0", id: 1, result: {} });
     expect(JSON.parse(answered[1]!).result.isError).toBe(true);
-    expect(JSON.parse(answered[1]!).result.content[0].text).toMatch(/taken control/i);
+    expect(JSON.parse(answered[1]!).result.content[0].text).toBe(CONTROL_REFUSAL_PLAIN);
   });
 
   it("forwards other frames through the gate", async () => {
@@ -322,7 +326,7 @@ describe("createMcpBridgeInterceptor", () => {
     const intercept = createMcpBridgeInterceptor({
       answer: (line) => answered.push(line),
       forward: (line) => forwarded.push(line),
-      gate: { isHeld: async () => true },
+      gate: { check: async () => ({ held: true, helpOpen: false, reason: "person" }) },
     });
     intercept(frame("tools/list", 1));
     await drain();

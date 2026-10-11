@@ -96,6 +96,15 @@ const LOCK_ACQUIRE_TIMEOUT_MS = 5_000;
 // pattern as container-computer's screenshotStatusCache, and the same TTL.
 const STATUS_CACHE_TTL_MS = 10_000;
 const statusCache = new Map<string, { status: VpsComputerStatus; expiresAt: number }>();
+// How long a turn may mount a desktop it last saw ready without inspecting
+// it again at dispatch (recentlyReadyVps). Every full inspection that finds
+// it ready renews it — the panel's poll, the screen poller, a turn's first
+// computer call, a start — and one that finds it not ready, or any stop or
+// removal, ends it at once. An inspection begun before a lifecycle change
+// (readyEpochs) never renews it after that change.
+const READY_TRUST_MS = 2 * 60_000;
+const lastReady = new Map<string, { status: VpsComputerStatus; at: number }>();
+const readyEpochs = new Map<string, number>();
 const pendingStatuses = new Map<string, Promise<VpsComputerStatus>>();
 const pendingProvisions = new Map<string, Promise<VpsComputerStatus>>();
 const SCREENSHOT_BUDGET_MS = 45_000;
@@ -119,6 +128,7 @@ function invalidateVpsStatus(key: string): void {
   // Detach old polls as well: an inspection begun before a mutation must
   // neither be joined nor republish its old result after that mutation.
   pendingStatuses.delete(key);
+  readyEpochs.set(key, (readyEpochs.get(key) ?? 0) + 1);
 }
 
 export interface VpsCommandOptions {
@@ -528,13 +538,40 @@ function statusProblem(status: VpsComputerStatus): string | null {
 /** The uncached inspection. Lifecycle mutations and their readiness waits
  * call this directly — they must see and publish the truth, never a poll's
  * snapshot; the exported vpsComputerStatus wraps it with the poll cache.
+ * Each answer also renews or ends the ready memory recentlyReadyVps reads. */
+async function computeVpsComputerStatus(
+  cfg: AppConfig,
+  botId: string,
+  runner: VpsCommandRunner,
+): Promise<VpsComputerStatus> {
+  const key = vpsLockKey(cfg, botId);
+  const epoch = key ? readyEpochs.get(key) : undefined;
+  const status = await inspectVpsComputer(cfg, botId, runner);
+  if (key && !status.ready) lastReady.delete(key);
+  else if (key && readyEpochs.get(key) === epoch) lastReady.set(key, { status, at: Date.now() });
+  return status;
+}
+
+/** This bot's VPS desktop as the last full inspection found it, when that
+ * found it ready within READY_TRUST_MS and nothing is changing or reading it
+ * under the lifecycle lock right now; otherwise null. Touches no SSH: a turn
+ * mounts its computer on it instead of inspecting again at dispatch, and the
+ * turn's first computer call checks again (vpsComputerStatus). */
+export function recentlyReadyVps(cfg: AppConfig, botId: string): VpsComputerStatus | null {
+  const key = vpsLockKey(snapshotVpsConfig(cfg), botId);
+  if (!key || lifecycleLocks.has(key)) return null;
+  const seen = lastReady.get(key);
+  return seen && Date.now() - seen.at < READY_TRUST_MS ? seen.status : null;
+}
+
+/** One full read-only inspection over SSH.
  *
  * `docker info` is deliberately NOT probed as its own round-trip: every
  * docker-over-SSH invocation is a full process + SSH connection, and the
  * image inspect right below already proves the daemon answers — even its
  * "No such image" failure is a daemon reply. Anything that is neither JSON
  * nor a "no such object" reply is attributed to the transport instead. */
-async function computeVpsComputerStatus(
+async function inspectVpsComputer(
   cfg: AppConfig,
   botId: string,
   runner: VpsCommandRunner,
@@ -1127,6 +1164,7 @@ export async function removeManagedVpsComputer(
   const key = `${alias}:${containerName}`;
   return withVpsLifecycleLock(key, async () => {
     invalidateVpsStatus(key);
+    lastReady.delete(key);
     const scan = await scanManagedVpsComputers(cfg, owners, runner);
     const inventory = scan.inventory;
     if (!inventory.available) {
@@ -1182,8 +1220,10 @@ export async function vpsComputerAction(
   if (pending) return pending;
   const operation = async () => {
     // A mutation invalidates every cached poll answer, before and after: the
-    // panel must never keep showing the pre-action world for a TTL.
+    // panel must never keep showing the pre-action world for a TTL. Only a
+    // provision leaves a desktop a turn may trust without looking again.
     invalidateVpsStatus(key);
+    if (action !== "provision") lastReady.delete(key);
     try {
       const before = await computeVpsComputerStatus(cfg, botId, runner);
       if (!before.daemonUp) throw Object.assign(new Error(before.problem ?? "Docker over SSH is not reachable"), { status: 409 });
@@ -1246,9 +1286,9 @@ export async function vpsComputerAction(
 }
 
 /** Auto is intentionally read-only: it can attach only to an existing ready
- * container. It recomputes rather than reading the poll cache — routing a
- * turn onto a container that stopped seconds ago is worse than one extra
- * inspection at turn start. */
+ * container. It recomputes rather than reading the poll cache; a turn that
+ * skips it at dispatch (recentlyReadyVps) checks again on its first
+ * computer call instead. */
 export async function reuseVps(
   cfg: AppConfig,
   botId: string,

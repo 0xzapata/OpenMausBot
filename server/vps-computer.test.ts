@@ -47,6 +47,7 @@ import {
   vpsSshTunnelArgs,
   vpsStartsForTurn,
   inspectVpsForAuto,
+  recentlyReadyVps,
   reuseVps,
   type VpsCommandRunner,
 } from "./vps-computer.ts";
@@ -896,6 +897,8 @@ describe("VPS computer", () => {
       expect((await vpsComputerAction("stop", cfg, BOT_ID)).container).toBe("stopped");
       release();
       expect((await stale).ready).toBe(true);
+      // Nor does it tell a turn the stopped desktop is ready to mount.
+      expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
       expect(await vpsComputerStatus(cfg, BOT_ID)).toMatchObject({ ready: false, container: "stopped" });
     } finally {
       release();
@@ -940,6 +943,44 @@ describe("VPS computer", () => {
       await Promise.allSettled([provision, stale]);
       spawnMock.mockReset();
     }
+  });
+
+  it("lets a turn mount a desktop seen ready moments ago, and forgets it on any sign it changed", async () => {
+    const cfg: AppConfig = { vps: { sshAlias: "ready-memory-vps" } };
+    const fake = fixture();
+    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
+    expect((await vpsComputerStatus(cfg, BOT_ID, fake.runner)).ready).toBe(true);
+    expect(recentlyReadyVps(cfg, BOT_ID)).toMatchObject({ ready: true, container_id: CONTAINER_ID, sshAlias: "ready-memory-vps" });
+    expect(recentlyReadyVps({ vps: { sshAlias: "another-vps" } }, BOT_ID)).toBeNull();
+    // Only for a short while.
+    const seenAt = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(seenAt + 2 * 60_000 + 1);
+    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
+    clock.mockRestore();
+    expect(recentlyReadyVps(cfg, BOT_ID)).not.toBeNull();
+
+    // Never while a lifecycle action holds the desktop, and a stop forgets it.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let stopping!: () => void;
+    const reached = new Promise<void>((resolve) => { stopping = resolve; });
+    const stop = vpsComputerAction("stop", cfg, BOT_ID, async (args, options) => {
+      if (args[2] === "stop") { stopping(); await held; }
+      return fake.runner(args, options);
+    });
+    await reached;
+    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
+    release();
+    expect((await stop).container).toBe("stopped");
+    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
+
+    // A start that lands ready remembers it; an inspection that finds it
+    // gone forgets it.
+    expect((await vpsComputerAction("start", cfg, BOT_ID, fake.runner)).ready).toBe(true);
+    expect(recentlyReadyVps(cfg, BOT_ID)).not.toBeNull();
+    fake.state.running = false;
+    expect((await vpsComputerStatus(cfg, BOT_ID, fake.runner)).ready).toBe(false);
+    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
   });
 
   it("fails cleanly when no VPS alias is configured", async () => {

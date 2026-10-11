@@ -6,9 +6,10 @@
 //   1. `ping`. The bundled cua-driver (through at least v0.22.1) does not
 //      implement this MCP method and would answer with -32601. Answering it
 //      here keeps the handshake alive without reaching the driver.
-//   2. The who-is-driving `gate` (opt-in via `gate`). While the person holds
-//      control of this computer, a `tools/call` from the agent is answered
-//      with a refusal here and never forwarded.
+//   2. The who-is-driving `gate` (opt-in via `gate`). Before a `tools/call`
+//      reaches the driver, the harness says whether this turn may act now —
+//      it waits there while the computer is busy — and a call it holds back
+//      is answered here, in its words, and never forwarded.
 //   3. `tools/list` schemas. Every engine passes a tool's inputSchema to its
 //      model provider, and strict providers refuse a root that is not a plain
 //      object — failing the whole turn. The answer to a tools/list is
@@ -27,7 +28,7 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
-import { CONTROL_REFUSAL_PLAIN, createControlClient } from "./control-client.ts";
+import { CONTROL_UNCONFIRMED, controlRefusal, createControlClient, type ControlState } from "./control-client.ts";
 import { augmentedPath, resolveCliSpawn } from "./env-path.ts";
 import { createToolListNormalizer } from "./mcp-tool-schema.ts";
 
@@ -171,18 +172,16 @@ export function createLineSplitter(onLine: (line: string) => void): {
 
 /** The gate itself, factored free of process wiring so a test can drive it
  * with plain strings. Frames are handled on a serialized queue: the
- * held-check is async, and answering frame N+1 before frame N would
+ * check is async, and answering frame N+1 before frame N would
  * reorder the agent's protocol stream. Only a `tools/call` is ever
  * refused; every other frame — handshakes, tools/list, notifications,
- * lines that are not JSON — passes through untouched. */
+ * lines that are not JSON — passes through untouched. A check that throws
+ * refuses as unconfirmed, never as a person's hold. */
 export function createGateInterceptor(options: {
-  isHeld: () => Promise<boolean>;
+  check: () => Promise<ControlState>;
   forward: (line: string) => void;
   refuse: (line: string) => void;
-  refusalText?: string;
-  getRefusalReason?: () => string | undefined;
 }): (line: string) => Promise<void> {
-  const refusalText = options.refusalText ?? CONTROL_REFUSAL_PLAIN;
   let queue: Promise<void> = Promise.resolve();
   return (line: string) => {
     queue = queue.then(async () => {
@@ -197,8 +196,8 @@ export function createGateInterceptor(options: {
         options.forward(line);
         return;
       }
-      const held = await options.isHeld().catch(() => true);
-      if (!held) {
+      const state = await options.check().catch((): ControlState => ({ held: true, helpOpen: false, blockedReason: CONTROL_UNCONFIRMED }));
+      if (!state.held) {
         options.forward(line);
         return;
       }
@@ -206,7 +205,7 @@ export function createGateInterceptor(options: {
         JSON.stringify({
           jsonrpc: "2.0",
           id: frame.id ?? null,
-          result: { content: [{ type: "text", text: options.getRefusalReason?.() ?? refusalText }], isError: true },
+          result: { content: [{ type: "text", text: controlRefusal(state) }], isError: true },
         }),
       );
     });
@@ -220,11 +219,7 @@ export interface McpBridgeInterceptorOptions {
   /** Forwards a line to the far-end child. */
   forward: (line: string) => void;
   /** Optional who-is-driving gate; when set, `tools/call` may be refused. */
-  gate?: {
-    isHeld: () => Promise<boolean>;
-    refusalText?: string;
-    getRefusalReason?: () => string | undefined;
-  };
+  gate?: { check: () => Promise<ControlState> };
 }
 
 /** The near-side MCP method filter. `ping` is answered here so the bundled
@@ -234,13 +229,7 @@ export function createMcpBridgeInterceptor(
   options: McpBridgeInterceptorOptions,
 ): (line: string) => void | Promise<void> {
   const afterPing = options.gate
-    ? createGateInterceptor({
-        isHeld: options.gate.isHeld,
-        forward: options.forward,
-        refuse: options.answer,
-        refusalText: options.gate.refusalText,
-        getRefusalReason: options.gate.getRefusalReason,
-      })
+    ? createGateInterceptor({ check: options.gate.check, forward: options.forward, refuse: options.answer })
     : (line: string) => { options.forward(line); };
   return (line: string) => {
     let frame: any = null;
@@ -276,26 +265,13 @@ export function runMcpBridge(options: BridgeOptions): void {
   const client = options.gate
     ? createControlClient({ url: options.gate.url, token: options.gate.token })
     : null;
-  let refusalReason: string | undefined;
 
   const answer = (line: string) => process.stdout.write(line + "\n");
   const forward = (line: string) => child.stdin.write(line + "\n");
   const intercept = createMcpBridgeInterceptor({
     answer,
     forward,
-    ...(options.gate
-      ? {
-          gate: {
-            isHeld: async () => {
-              refusalReason = undefined;
-              const state = await client!.state(true);
-              refusalReason = state.blockedReason;
-              return state.held;
-            },
-            getRefusalReason: () => refusalReason,
-          },
-        }
-      : {}),
+    ...(client ? { gate: { check: () => client.state(true) } } : {}),
   });
   const toolLists = createToolListNormalizer();
   let pendingInput = Promise.resolve();
