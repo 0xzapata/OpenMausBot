@@ -300,7 +300,8 @@ export interface RoutineManagerOptions {
   resolveResultsThread?: (routine: Routine, forceNew: boolean) => { threadId: string; main?: true } | undefined;
   /** The thread v0.1.98 to v0.1.104 saved on every bot routine that had no
    * destination of its own: its bot's oldest open thread, saved as if a
-   * person had chosen it. A file from then has it cleared, once. */
+   * person had chosen it. A file from then has it cleared, once
+   * (clearFrozenResultsThreads). */
   frozenResultsThread?: (botId: string) => string | undefined;
   /** Compensate an uncommitted allocation, only while still empty. */
   discardResultsThread?: (botId: string, threadId: string) => void;
@@ -810,12 +811,14 @@ export class RoutineManager {
    * failure). Saves are refused while set so a fresh empty state can never
    * overwrite whatever is on disk. Missing means a first run. */
   private unreadable = false;
+  /** A file from before frozenResultsCleared: clearFrozenResultsThreads has
+   * not run on it yet, and no save says it has. */
+  private frozenPending = false;
 
   constructor(options: RoutineManagerOptions) {
     this.options = options;
     this.file = options.file ?? join(DATA_DIR, "routines.json");
     this.now = options.now ?? Date.now;
-    let frozen = false;
     try {
       const disk = JSON.parse(readFileSync(this.file, "utf8")) as Partial<RoutineFile>;
       // A store with the wrong top-level shape is damaged, not empty: a
@@ -892,7 +895,7 @@ export class RoutineManager {
             return parsed.success ? [parsed.data] : [];
           })
         : [];
-      frozen = disk.frozenResultsCleared !== true;
+      this.frozenPending = disk.frozenResultsCleared !== true;
       // Upgrade old run logs before history pruning can discard their IDs.
       const known = new Set(this.webhookRunReceipts.map((r) => JSON.stringify([r.webhookId, r.deliveryId])));
       for (const run of this.runs) {
@@ -919,14 +922,6 @@ export class RoutineManager {
         console.error(`routines: ignoring unreadable ${this.file}: ${reason}`);
       }
     }
-    // A later pick of that same thread is a person's, so this runs once.
-    if (frozen) {
-      for (const routine of this.routines) {
-        if (routine.target === "bot" && routine.resultsThreadId !== undefined &&
-          routine.resultsThreadId === this.options.frozenResultsThread?.(routine.botId)) delete routine.resultsThreadId;
-      }
-      this.save();
-    }
     // A local process cannot still own these turns after a full restart.
     const recovered: RoutineRun[] = [];
     for (const run of this.runs) {
@@ -950,6 +945,21 @@ export class RoutineManager {
 
   listRoutines(): Routine[] {
     return this.routines.map(routine => this.routineWithHealth(routine));
+  }
+
+  /** Clear the destination v0.1.98 to v0.1.104 saved on routines as if a
+   * person had chosen it (RoutineManagerOptions.frozenResultsThread), once:
+   * a later pick of that same thread is a person's. Called once it is
+   * settled who opened which conversation (a Cloud home's earlier device
+   * keys), before any run or request can read a routine. */
+  clearFrozenResultsThreads(): void {
+    if (!this.frozenPending) return;
+    for (const routine of this.routines) {
+      if (routine.target === "bot" && routine.resultsThreadId !== undefined &&
+        routine.resultsThreadId === this.options.frozenResultsThread?.(routine.botId)) delete routine.resultsThreadId;
+    }
+    this.frozenPending = false;
+    this.save();
   }
 
   private routineWithHealth(routine: Routine): Routine {
@@ -2034,7 +2044,7 @@ export class RoutineManager {
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(this.file, JSON.stringify({
       version: 1,
-      frozenResultsCleared: true,
+      ...(this.frozenPending ? {} : { frozenResultsCleared: true }),
       routines: [...this.routines, ...this.unloadedRoutines],
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,

@@ -680,14 +680,23 @@ describe("persistent routine results destinations", () => {
     // A file those versions wrote has no marker.
     delete saved.frozenResultsCleared;
     writeFileSync(h.options.file!, JSON.stringify(saved));
-    const upgraded = new RoutineManager(h.options);
     const destination = (manager: RoutineManager, id: string) => manager.listRoutines().find((routine) => routine.id === id)?.resultsThreadId;
+    // Nothing clears before whose threads are whose is settled (a Cloud
+    // home's earlier keys), and a save meanwhile does not say it is done.
+    const booting = new RoutineManager(h.options);
+    expect(destination(booting, frozen.id)).toBe("first-chat");
+    booting.update(chosen.id, { name: "Chosen report, renamed" });
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8"))).not.toHaveProperty("frozenResultsCleared");
+    const upgraded = new RoutineManager(h.options);
+    upgraded.clearFrozenResultsThreads();
     expect(destination(upgraded, frozen.id)).toBeUndefined();
     expect(destination(upgraded, chosen.id)).toBe("chosen");
     expect(JSON.parse(readFileSync(h.options.file!, "utf8")).frozenResultsCleared).toBe(true);
     // Picked after the upgrade, the same thread is a person's choice.
     upgraded.update(frozen.id, { resultsThreadId: "first-chat" });
-    expect(destination(new RoutineManager(h.options), frozen.id)).toBe("first-chat");
+    const later = new RoutineManager(h.options);
+    later.clearFrozenResultsThreads();
+    expect(destination(later, frozen.id)).toBe("first-chat");
   });
 
   it("replaces a deleted destination only for future runs without rewriting active snapshots", async () => {

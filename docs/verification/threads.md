@@ -67,9 +67,10 @@ switching and Stop can be exercised without a real provider or account.
     sibling from its activity entry, then click the bot's row: it returns to
     the conversation you last wrote in (the bot's main thread). Open another
     bot, let a reply land in the sibling it was left on, and check that the
-    sibling has its own activity entry under that bot. Follow a notification
-    or a thread chip to a third thread of that bot: the sibling keeps its
-    unread entry. An `openmausbot://bot/<id>` link opens the main thread.
+    sibling has its own activity entry under that bot. Follow a notification,
+    a thread chip or a search hit to a third thread of that bot: the sibling
+    keeps its unread entry, and the third thread is read once open. An
+    `openmausbot://bot/<id>` link opens the main thread.
 13. Stop a running job through its activity entry while a sibling is queued;
     verify only the chosen job stops and the queued message starts normally.
     Reload and confirm Show threads remains off. Turn it back on to recover

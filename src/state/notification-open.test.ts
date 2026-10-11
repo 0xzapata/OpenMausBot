@@ -1,16 +1,21 @@
 // @vitest-environment happy-dom
-// A notification's click opens its thread as the sidebar shows threads at
-// that moment. With threads hidden a bot is one conversation, and a sibling
-// is reached only through its activity row while it is unread: following a
-// notification to another thread must not pass the reply in the thread the
-// bot was left on as read. With threads shown nothing changed. The real
-// provider, its live stream and the real display preference.
+// A notification's click, a bot's own row and a search hit open a thread as
+// the sidebar shows threads at that moment. With threads hidden a bot is one
+// conversation, and a sibling is reached only through its activity row while
+// it is unread: opening another thread must not pass the reply in the thread
+// the bot was left on as read, neither by selecting the bot first nor while
+// the switch is under way: the server announces a switch on the live stream
+// before it answers it (store.switchTask emits), so that frame reaches the
+// window while the bot is still on the thread it leaves. With threads shown
+// the bot is selected first, as it always was. The real provider, its live
+// stream, the real display preference, and a fake server answering in the
+// real one's order.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerFrame } from "../../shared/wire";
-import type { BotAnnouncement } from "./store";
+import type { Action, AppState, BotAnnouncement } from "./store";
 
 class FixtureEventSource {
   static opened: FixtureEventSource[] = [];
@@ -44,37 +49,67 @@ const scout: BotAnnouncement = {
     { threadId: "finished", title: "Side job", createdAt: 3, unread: true },
   ],
 };
-const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body)));
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 const requests: Array<{ path: string; body?: string }> = [];
+/** Scout as the server keeps it: where it is, and what is unread. */
+let server: BotAnnouncement;
+let state: AppState;
+let dispatch: (action: Action) => void;
 
-const { StoreProvider } = await import("./store");
+const { StoreProvider, useStore, openBot } = await import("./store");
+const { landOnSearchHit } = await import("@/lib/focus-message");
+const { threadsWhenTreeHidden } = await import("@/components/SidebarBotActivity");
 const { setAdvancedMode } = await import("@/lib/interface-mode");
 const { setShowThreads } = await import("@/lib/thread-preferences");
 
 let root: Root;
-const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
+const settle = async () => { for (let i = 0; i < 8; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
 const stream = () => FixtureEventSource.opened.at(-1)!;
+/** The server's bot frame now, a network hop later, then its answer. */
+const announcedThen = (body: unknown) => new Promise<Response>((resolve) => setTimeout(() => {
+  stream().send({ kind: "bot", bot: structuredClone(server) });
+  setTimeout(() => resolve(json(body)), 0);
+}, 0));
+
+function Probe() {
+  ({ state, dispatch } = useStore());
+  return null;
+}
 
 beforeAll(() => {
   vi.stubGlobal("EventSource", FixtureEventSource);
   vi.stubGlobal("Notification", FixtureNotification);
   vi.stubGlobal("fetch", (path: string, init?: RequestInit) => {
     requests.push({ path, ...(typeof init?.body === "string" ? { body: init.body } : {}) });
-    if (path.startsWith("/api/bots?")) return json({ bots: [elsewhere, scout], groups: [] });
-    if (path.startsWith("/api/bots/scout/tasks/finished")) return json({ bot: { ...scout, threadId: "finished", messages: [] } });
-    if (path === "/api/routines") return json({ routines: [], runs: [] });
-    if (path === "/api/webhooks") return json({ webhooks: [], attempts: [] });
-    if (path === "/api/instances") return json({ instances: [] });
-    return json({});
+    if (path.startsWith("/api/bots?")) return Promise.resolve(json({ bots: [elsewhere, server].map((bot) => ({ ...bot, messages: [] })), groups: [] }));
+    const switched = path.match(/^\/api\/bots\/scout\/tasks\/([\w-]+)/);
+    if (switched && init?.method === "POST") {
+      if (!server.tasks!.some((task) => task.threadId === switched[1])) return Promise.resolve(json({ error: "no such task" }, 404));
+      // store.switchTask moves the selection and announces it; the route
+      // answers with the snapshot it took then.
+      server = { ...server, threadId: switched[1]! };
+      return announcedThen({ bot: { ...structuredClone(server), messages: [] } });
+    }
+    if (path === "/api/bots/scout/read" && init?.method === "POST") {
+      const { threadId } = JSON.parse(String(init.body));
+      const tasks = server.tasks!.map((task) => task.threadId === threadId ? { ...task, unread: false } : task);
+      server = { ...server, tasks, unread: tasks.some((task) => task.unread) };
+      return announcedThen({ bot: structuredClone(server) });
+    }
+    if (path === "/api/routines") return Promise.resolve(json({ routines: [], runs: [] }));
+    if (path === "/api/webhooks") return Promise.resolve(json({ webhooks: [], attempts: [] }));
+    if (path === "/api/instances") return Promise.resolve(json({ instances: [] }));
+    return Promise.resolve(json({}));
   });
 });
 afterAll(() => vi.unstubAllGlobals());
 // Each test starts from the app as it opens: in the other bot's chat.
 beforeEach(async () => {
+  server = structuredClone(scout);
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  flushSync(() => root.render(createElement(StoreProvider, null, null)));
+  flushSync(() => root.render(createElement(StoreProvider, null, createElement(Probe))));
   await settle();
   stream().send({ kind: "hello", resumed: false, cursor: "run:0" });
   await settle();
@@ -82,6 +117,16 @@ beforeEach(async () => {
   FixtureNotification.shown.length = 0;
 });
 afterEach(() => flushSync(() => root.unmount()));
+
+const threadsShown = async (shown: boolean) => {
+  flushSync(() => { setAdvancedMode(true); setShowThreads(shown); });
+  await settle();
+};
+const sent = () => requests.map((request) => request.body ? `${request.path} ${request.body}` : request.path);
+/** The threads the window asked the server to mark read. */
+const reads = () => requests.filter((request) => request.path === "/api/bots/scout/read").map((request) => JSON.parse(request.body!).threadId);
+const scoutNow = () => state.bots.find((bot) => bot.id === "scout")!;
+const unread = (threadId: string) => scoutNow().tasks!.find((task) => task.threadId === threadId)!.unread;
 
 /** Scout's side job finished; the person clicks the notification. */
 async function followNotification() {
@@ -91,21 +136,70 @@ async function followNotification() {
   expect(FixtureNotification.shown).toHaveLength(1);
   FixtureNotification.shown[0]!.onclick!();
   await settle();
-  return requests.map((request) => request.body ? `${request.path} ${request.body}` : request.path);
 }
 
 describe("following a notification", () => {
   it("opens its thread by the switch alone while threads are hidden, leaving the reply the bot was left on unread", async () => {
-    flushSync(() => { setAdvancedMode(true); setShowThreads(false); });
-    const sent = await followNotification();
-    expect(sent.filter((request) => request.startsWith("/api/bots/scout/tasks/finished"))).toHaveLength(1);
-    expect(sent.filter((request) => request.startsWith("/api/bots/scout/read"))).toEqual([]);
+    await threadsShown(false);
+    await followNotification();
+    expect(sent().filter((request) => request.startsWith("/api/bots/scout/tasks/finished"))).toHaveLength(1);
+    // The switch's own announcement reads the thread it opens, not the one
+    // left, and the snapshot that lands after it does not put its dot back.
+    expect(reads()).toEqual(["finished"]);
+    expect(scoutNow().threadId).toBe("finished");
+    expect(unread("finished")).toBe(false);
+    expect(unread("left-behind")).toBe(true);
+    expect(server.tasks!.find((task) => task.threadId === "left-behind")!.unread).toBe(true);
   });
 
   it("selects the bot first while threads are shown, as it always has", async () => {
-    flushSync(() => { setAdvancedMode(true); setShowThreads(true); });
-    const sent = await followNotification();
-    expect(sent).toContain('/api/bots/scout/read {"threadId":"left-behind"}');
-    expect(sent.filter((request) => request.startsWith("/api/bots/scout/tasks/finished"))).toHaveLength(1);
+    await threadsShown(true);
+    await followNotification();
+    expect(reads()).toEqual(["left-behind", "finished"]);
+    expect(sent().filter((request) => request.startsWith("/api/bots/scout/tasks/finished"))).toHaveLength(1);
+    expect(scoutNow().threadId).toBe("finished");
+    expect(unread("finished")).toBe(false);
+  });
+
+  it("leaves the thread a failed switch stayed on as the one on screen", async () => {
+    await threadsShown(false);
+    // Deleted on the server a moment ago; this window has not heard yet.
+    server = { ...server, tasks: server.tasks!.filter((task) => task.threadId !== "finished") };
+    await followNotification();
+    expect(scoutNow().threadId).toBe("left-behind");
+    expect(reads()).toEqual([]);
+    // Scout is on screen at the thread it stayed on: news there is read.
+    stream().send({ kind: "bot", bot: structuredClone(server) });
+    await settle();
+    expect(reads()).toEqual(["left-behind"]);
+  });
+});
+
+describe("opening a bot with threads hidden", () => {
+  it("opens its main thread from its row and leaves the thread it was left on unread, with an activity row", async () => {
+    await threadsShown(false);
+    flushSync(() => openBot(dispatch, scoutNow(), false));
+    await settle();
+    expect(sent().filter((request) => request.startsWith("/api/bots/scout/tasks/main-chat"))).toHaveLength(1);
+    expect(reads()).toEqual([]);
+    expect(scoutNow().threadId).toBe("main-chat");
+    expect(unread("left-behind")).toBe(true);
+    // Its row stands for the thread on screen; the reply keeps a row of its own.
+    expect(threadsWhenTreeHidden(scoutNow(), {}).map((task) => task.threadId).filter((id) => id !== scoutNow().threadId))
+      .toEqual(expect.arrayContaining(["left-behind", "finished"]));
+  });
+
+  it("lands on a search hit in another thread by the switch alone, with the whole thread", async () => {
+    await threadsShown(false);
+    await landOnSearchHit({
+      botId: "scout", name: "Scout", threadId: "finished", messageId: "hit", role: "bot", kind: "text", at: 3,
+      snippet: "the side job is done", matchStart: 4, matchLength: 8, onActivePath: true,
+    }, state, dispatch, false);
+    await settle();
+    // No page limit: the hit can be older than one page.
+    expect(sent().filter((request) => request.startsWith("/api/bots/scout/tasks/"))).toEqual(["/api/bots/scout/tasks/finished {}"]);
+    expect(reads()).toEqual(["finished"]);
+    expect(unread("left-behind")).toBe(true);
+    expect(state.focusMessage).toMatchObject({ threadId: "finished", messageId: "hit" });
   });
 });

@@ -110,7 +110,7 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
     if (entry.kind === "message") {
       const hit = entry.hit;
       try {
-        await landOnSearchHit(hit, state, dispatch);
+        await landOnSearchHit(hit, state, dispatch, showThreads);
       } catch (error) {
         dispatch({ type: "error", message: error instanceof Error ? error.message : String(error) });
       }

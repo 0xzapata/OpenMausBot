@@ -10483,8 +10483,9 @@ async function startTurn(
     if (commsDepth === 0 && opts?.automationSource === undefined && !opts?.unattended && !userMessage.peerAsk) {
       personAskAt.set(threadId, userMessage.at);
       // Where the person is now (server/main-thread.ts). A line relayed
-      // from Slack was written there, not in this conversation.
-      if (!opts?.relayed) store.setTaskAskedAt(bot.id, threadId, userMessage.at);
+      // from Slack was written there, not in this conversation: the line
+      // says so (Message.relayed), also in a turn a computer switch continues.
+      if (!userMessage.relayed) store.setTaskAskedAt(bot.id, threadId, userMessage.at);
       // Continuing an old run as a normal conversation makes that task
       // visible again; these new replies are not routine report updates.
       if (task.routineRunId) store.patchTask(bot.id, threadId, { routineRunId: undefined });
@@ -12242,6 +12243,9 @@ if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
   });
   ownerOnlyCache.clear();
 }
+// Whether an oldest thread is someone else's (frozenResultsThread) is known
+// only now: an earlier key of the owner's is theirs once settled.
+routines.clearFrozenResultsThreads();
 orgLibrary = new OrgLibrary({
   dataDir: DATA_DIR,
   store,

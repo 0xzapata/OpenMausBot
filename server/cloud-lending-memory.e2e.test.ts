@@ -814,6 +814,32 @@ it("the upgrade that clears the oldest thread saved on routines keeps a guest's 
   expect(routine.resultsThreadId).toBe(results);
 }, 60_000);
 
+it("the upgrade clears the oldest thread saved on an owner's routine also where an earlier device key of the owner's opened it", async () => {
+  const bot = await newBot("Earlier key", "done");
+  const created = await api("POST", "/api/routines", { token: owner, body: {
+    name: "EARLIER-OLDEST", prompt: "Summarize the news.", botId: bot.id, enabled: false, resultsThreadId: bot.threadId,
+    schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 } } });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  // The owner's old phone opened the bot's first conversation, before the
+  // owner had one key: adopted as the owner's (cloud-owner.ts), which this
+  // server learns only as it settles who is who at each start.
+  const phone = `p_${randomBytes(16).toString("base64url").slice(0, 22)}`;
+  await leftBehind({}, () => {
+    const data = join(home, ".openmausbot");
+    const edit = (name: string, change: (file: any) => void) => {
+      const file = existsSync(join(data, name)) ? JSON.parse(readFileSync(join(data, name), "utf8")) : {};
+      change(file);
+      writeFileSync(join(data, name), JSON.stringify(file));
+    };
+    edit("thread-starters.json", (starters) => { starters[bot.threadId] = phone; });
+    edit("cloud-owner.json", (record) => { record.adoptedKeys.push(phone); });
+    // Saved on the routine as v0.1.98 to v0.1.104 did, as if chosen.
+    edit("routines.json", (file) => { delete file.frozenResultsCleared; });
+  });
+  const routine = ((await api("GET", "/api/routines", { token: owner })).body.routines as any[]).find((candidate) => candidate.id === created.body.routine.id);
+  expect(routine.resultsThreadId).toBeUndefined();
+}, 60_000);
+
 it("the owner's devices are not told which conversations they may write in, even with one a guest left behind", async () => {
   const bot = await newBot("Composer", "done");
   await guestThread(bot);

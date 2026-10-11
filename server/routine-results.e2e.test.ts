@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -239,8 +240,9 @@ async function resultsFixture() {
       { timeout: 20_000 }).toBe("completed");
     return run.resultsThreadId as string;
   };
-  /** Stop the server, let `edit` change routines.json, and start it again. */
-  const restart = async (edit?: (file: any) => void) => {
+  /** Stop the server, let `edit` change routines.json (and `stopped` the
+   * data directory), and start it again. */
+  const restart = async (edit?: (file: any) => void, stopped?: (dataDir: string) => void) => {
     await waitForExit(server ?? fixture.child, { signal: "SIGTERM" });
     const path = join(dataDir, "routines.json");
     if (edit) {
@@ -248,6 +250,7 @@ async function resultsFixture() {
       edit(file);
       writeFileSync(path, JSON.stringify(file));
     }
+    stopped?.(dataDir);
     const log = openSync(logPath, "a", 0o600);
     server = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./index.ts", import.meta.url))], {
       cwd: fileURLToPath(new URL("..", import.meta.url)),
@@ -291,6 +294,40 @@ it("reports into the conversation the person is in, the one a bot with hidden th
     expect(saved.mainThreadId).toBe(live);
     // Nothing is saved on the routine: each run asks again.
     expect(await f.destination(routine)).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
+it("after the upgrade, reports into and opens the conversation the person last wrote in before it, not the one left selected", async () => {
+  const f = await resultsFixture();
+  try {
+    const { bot } = await f.control("new-bot", "--name", "Upgraded");
+    const oldest = bot.activeTaskId as string;
+    const { task } = await f.api("POST", `/api/bots/${bot.id}/tasks`, { title: "Their chat" }, 201);
+    const theirs = task.threadId as string;
+    // They talk in their own chat from the app, then an activity row leaves
+    // the bot on the oldest thread, where v0.1.98 to v0.1.104 reported.
+    await f.api("POST", `/api/bots/${bot.id}/messages`, { threadId: theirs, text: "Good morning.", sendId: randomUUID() }, 202);
+    expect((await f.control("wait", "--bot", bot.id, "--task", theirs, "--timeout", "20")).status).toBe("settled");
+    await f.api("POST", `/api/bots/${bot.id}/tasks/${oldest}?messages=0`);
+    const routine = await f.routine(bot.id);
+    // Their data as v0.1.98 to v0.1.104 left it: the oldest thread saved on
+    // the routine as if chosen, and no askedAt yet.
+    await f.restart((file) => {
+      delete file.frozenResultsCleared;
+      file.routines.find((candidate: any) => candidate.id === routine).resultsThreadId = oldest;
+    }, (dataDir) => {
+      const bots = JSON.parse(readFileSync(join(dataDir, "bots.json"), "utf8")) as any[];
+      for (const saved of bots) for (const each of saved.tasks ?? []) delete each.askedAt;
+      writeFileSync(join(dataDir, "bots.json"), JSON.stringify(bots));
+      rmSync(join(dataDir, "asked-at-filled"), { force: true });
+    });
+    const saved = await f.savedBot(bot.id);
+    expect(saved.threadId).toBe(oldest);
+    // With threads hidden the app opens the bot there, and reports land there.
+    expect(saved.mainThreadId).toBe(theirs);
+    expect(await f.report(routine)).toBe(theirs);
   } finally {
     await f.close();
   }

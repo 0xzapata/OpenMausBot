@@ -119,7 +119,9 @@ Every routine reports into its bot's main thread unless the user chooses another
 destination, whether it was made in a chat, the editor or the API, and whether a
 teammate (such as a Chief) asked for it. The main thread is the open
 conversation a person last wrote in (until anyone has, the selected one, then
-the oldest); a bot with hidden threads opens there too. Each run looks it up
+the oldest); a bot with hidden threads opens there too. Conversations from
+before the server kept that take it, once on upgrade, from the newest line a
+person sent there from the app. Each run looks it up
 again, so the routine saves nothing and its results follow the person. A routine
 still pointing at an automatic "<name> · Results" thread from an older version
 moves to the main thread on its next run; that thread and its reports stay. The
