@@ -136,7 +136,6 @@ import { plainPreviewText } from "@/lib/plain-preview";
 import { isClientCancellation } from "../../shared/client-cancel";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { useAdvancedMode } from "@/lib/interface-mode";
-import { openChatLink } from "./ThreadRefs";
 
 /** Vertical centre of the macOS traffic lights, in CSS px from the window
  * top: electron/window-chrome.mjs sets trafficLightPosition.y = 16 and the
@@ -2088,19 +2087,6 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
       setTeamLibraryOpen(true);
     });
   }, [remoteClient]);
-
-  // A chat link opened from outside the app. One that arrives at launch waits
-  // until the bots have loaded, so it can find its chat.
-  const [chatLink, setChatLink] = useState<string | null>(null);
-  useEffect(() => {
-    if (remoteClient) return;
-    return window.ogb?.onChatLink?.(setChatLink);
-  }, [remoteClient]);
-  useEffect(() => {
-    if (!chatLink || !state.hydrated) return;
-    setChatLink(null);
-    openChatLink(dispatch, chatLink, state);
-  }, [chatLink, state, dispatch]);
 
   useEffect(() => {
     if (!teamFeedback) return;

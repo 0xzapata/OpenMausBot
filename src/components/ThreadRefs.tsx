@@ -85,25 +85,41 @@ export function ThreadLink({ target, ambiguous, children }: { target: ThreadLink
 
 /** Open a chat link that came from outside the app (a browser or a
  * dashboard): the canonical openmausbot://thread/<id>?bot=<id> a chat's Copy
- * link makes, or openmausbot://bot/<id> for a bot's current conversation.
- * Only navigates. A chat that is not on this computer, or not the named
- * bot's, opens nothing and says the chat could not be found. */
+ * link makes, or openmausbot://bot/<id> for a bot's (or a room's) current
+ * conversation. Only navigates. A chat that is not here, or not the named
+ * owner's, opens nothing and says so where the person can see it. */
 export function openChatLink(dispatch: (action: Action) => void, link: string, state: AppState): boolean {
-  const botAddress = parseBotRefUrl(link);
-  if (botAddress) {
-    const bot = state.bots.find((candidate) => candidate.id === botAddress.botId);
-    if (bot && bot.threadId) return openThread(dispatch, { botId: bot.id, threadId: bot.threadId }, state);
-    if (bot) dispatch({ type: "select", id: bot.id });
-    dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot?.name ?? null } });
+  const ownerAddress = parseBotRefUrl(link);
+  if (ownerAddress) {
+    const owner = state.bots.find((bot) => bot.id === ownerAddress.botId)
+      ?? state.groups.find((group) => group.id === ownerAddress.botId && !group.dm);
+    if (owner) {
+      // Opening it shows its current conversation; nothing is switched.
+      dispatch({ type: "select", id: owner.id });
+      if (owner.threadId) dispatch({ type: "revealThread", threadId: owner.threadId });
+      return true;
+    }
+    showLinkNotice(dispatch, state, { kind: "bot-gone", botName: null });
     return false;
   }
   const address = parseThreadRefUrl(link);
   const ref = address ? resolveThreadRefAddress(collectThreadRefs(state.bots, state.groups), address) : null;
   if (ref) return openThread(dispatch, ref, state);
   const bot = address?.botId ? state.bots.find((candidate) => candidate.id === address.botId) : undefined;
-  if (bot) dispatch({ type: "select", id: bot.id });
-  dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot?.name ?? null } });
+  if (bot) {
+    dispatch({ type: "select", id: bot.id });
+    dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot.name } });
+  } else {
+    showLinkNotice(dispatch, state, { kind: "thread-gone", botName: null });
+  }
   return false;
+}
+
+/** A dead link's notice lives in the chat column, so a link opened from the
+ * team map or the routines page returns to the open chat to show it. */
+function showLinkNotice(dispatch: (action: Action) => void, state: AppState, notice: NonNullable<AppState["notice"]>) {
+  if (state.activeView !== "chat" && state.selectedId) dispatch({ type: "select", id: state.selectedId });
+  dispatch({ type: "notice", notice });
 }
 
 /** The markdown `span` component's props when the remark plugin produced

@@ -9,8 +9,8 @@ bookmark, or a script can bring the person straight to the right conversation:
 openmausbot://thread/<thread-id>?bot=<bot-id>
 ```
 
-A dashboard that only knows a bot also has a link, which opens the bot's
-current conversation:
+A dashboard that only knows a bot (or a room) also has a link, which opens
+its current conversation:
 
 ```text
 openmausbot://bot/<bot-id>
@@ -24,9 +24,9 @@ openmausbot://bot/<bot-id>
   on this computer the same way a pasted in-app reference does), but **Copy
   link** always writes it, and the app checks it strictly: if the thread is not
   that bot's, nothing opens.
-- **`openmausbot://bot/<bot-id>`** — the bot's current conversation. Handy for
-  a team map whose Chat button only knows the bot's id. There is no bot-only
-  form for a room; use the room chat's **Copy link**.
+- **`openmausbot://bot/<bot-id>`** — the bot's current conversation, exactly
+  as clicking the bot in the sidebar opens it. Handy for a team map whose Chat
+  button only knows the bot's id. A room's id works here too.
 
 ## What opening one does
 
@@ -37,12 +37,19 @@ openmausbot://bot/<bot-id>
   never sends a message, interrupts a running turn, or starts a new
   conversation.
 - Works at launch too: the link is held until the app has loaded its bots, so
-  it can start a closed app and still find its chat.
-- Unknown or mismatched ids show a short notice instead of opening anything:
-  "That thread is no longer here.", or, when the named bot exists, "That thread
-  is no longer here. Showing <bot> instead." — the window moves to that bot,
-  the same way a dead in-app thread reference behaves.
+  it can start a closed app and still find its chat. On macOS, where the app
+  keeps running with its window closed, the link opens a new window.
+- Works from any page — the team map, Routines, a room — and leaves it for
+  the chat.
+- Unknown or mismatched ids show a short notice in the chat instead of
+  opening anything: "That bot is no longer here." for an unknown bot link;
+  "That thread is no longer here." for an unknown thread, or, when the link
+  names a bot that exists, "That thread is no longer here. Showing <bot>
+  instead." — the window moves to that bot, the same way a dead in-app thread
+  reference behaves.
 
 Like the `openmausbot://cloud` and `openmausbot://organization` links, these are
 local-shell actions: a page loaded from a remote server never receives them, and
-the browser build has no such links at all.
+the browser build has no such links at all. An app connected to another
+computer as its companion (**Settings → Remote access → Connect to another
+computer**) opens them against that computer's chats, the ones it shows.

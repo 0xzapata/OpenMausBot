@@ -258,22 +258,32 @@ function sendToLocalPage(win, channel, value) {
 }
 
 // A package installs into this computer's workspace.
-function deliverPackageInstall(win) {
+function deliverPackageInstall(win = mainWindow) {
   if (pendingPackageInstallUrl && sendToLocalPage(win, "package:install", pendingPackageInstallUrl)) pendingPackageInstallUrl = null;
 }
 
 // A chat link names a chat on this computer.
-function deliverChatLink(win) {
+function deliverChatLink(win = mainWindow) {
   if (pendingChatLink && sendToLocalPage(win, "chat:open", pendingChatLink)) pendingChatLink = null;
+}
+
+// Set once boot has made its first window; until then boot owns window creation.
+let openWindowForLink = null;
+
+/** Bring the app forward for a link. macOS keeps running with every window
+ * closed, and open-url does not fire activate there, so a link that finds no
+ * window opens one; its pending link is delivered when that page loads. */
+function revealForLink() {
+  if (desktopTray?.show() || activateExistingWindow(BrowserWindow.getAllWindows())) return;
+  openWindowForLink?.();
 }
 
 function queuePackageInstall(rawLink) {
   const packageUrl = packageUrlFromDeepLink(rawLink);
   if (!packageUrl) return false;
   pendingPackageInstallUrl = packageUrl;
-  if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
-  const target = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
-  deliverPackageInstall(target);
+  revealForLink();
+  deliverPackageInstall();
   return true;
 }
 
@@ -281,8 +291,8 @@ function queueChatLink(rawLink) {
   const link = chatLinkFrom(rawLink);
   if (!link) return false;
   pendingChatLink = link;
-  if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
-  deliverChatLink(BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()));
+  revealForLink();
+  deliverChatLink();
   return true;
 }
 
@@ -301,10 +311,11 @@ app.on("second-instance", (_event, commandLine) => {
   if (packageUrl) pendingPackageInstallUrl = packageUrl;
   const chatLink = chatLinkFromCommandLine(commandLine);
   if (chatLink) pendingChatLink = chatLink;
-  if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
-  const target = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
-  deliverPackageInstall(target);
-  deliverChatLink(target);
+  revealForLink();
+  // The app window, not whichever window is listed first: the loading
+  // screen or a desktop viewer can be, and neither is the chat page.
+  deliverPackageInstall();
+  deliverChatLink();
 });
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
@@ -3759,6 +3770,9 @@ app.whenReady().then(async () => {
   // by itself; only "Restart to update", the person's click, installs
   startUpdater();
   refreshApplicationMenu();
+  openWindowForLink = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  };
   app.on("activate", () => {
     if (desktopTray?.show()) return;
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

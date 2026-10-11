@@ -37,6 +37,7 @@ import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { effectiveLanguage, useLanguageChoice } from "@/lib/language-preference";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone-pairing";
+import { useExternalChatLinks } from "@/hooks/use-external-chat-links";
 
 function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
@@ -87,6 +88,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     window.history.replaceState(null, "", rest);
     dispatch(phonePairingSettingsAction());
   }, [dispatch]);
+  useExternalChatLinks(state, dispatch);
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than
   // cancelling them with md:, which would still emit a translate value and

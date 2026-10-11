@@ -1061,7 +1061,7 @@ export interface AppState {
   hydrated?: true;
   error: string | null;
   /** a quiet, non-error line above the transcript; clears itself */
-  notice: { kind: "thread-gone"; botName: string | null } | null;
+  notice: { kind: "thread-gone" | "bot-gone"; botName: string | null } | null;
   /** a thread the person asked to open (chip or #Title link): the sidebar
    * expands its bot and scrolls the row into view once it is current */
   revealThread: { threadId: string; nonce: number } | null;
