@@ -66,7 +66,7 @@ export interface RoutineContextAttachment {
 
 const persistedSourceThreadId = z.string().trim().min(1).optional().catch(undefined);
 
-export type RoutineRunTrigger = "schedule" | "manual" | "webhook";
+export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "startup";
 
 export type RoutineRunStatus =
   | "queued"
@@ -100,6 +100,9 @@ export interface Routine {
   /** Default skips overlapping scheduled occurrences. Queue retains at most
    * one pending scheduled run; manual/webhook requests stay independent. */
   overlap?: "skip" | "queue";
+  /** Also run once each time OpenMausBot starts, for a computer that is often
+   * off at the scheduled time. Absent means off, so older files load as-is. */
+  runOnStartup?: boolean;
   skippedRuns?: number;
   lastSkippedAt?: number;
   /** Derived from retained terminal receipts, not another persisted authority. */
@@ -244,6 +247,7 @@ export interface RoutineInput {
   attachments?: RoutineContextAttachment[];
   continuity?: boolean;
   overlap?: "skip" | "queue";
+  runOnStartup?: boolean;
   /** Omission preserves routing; null resets it to the bot's main thread. */
   resultsThreadId?: string | null;
 }
@@ -790,6 +794,7 @@ function sanitizeInput(input: RoutineInput, after: number): Omit<Routine, "id" |
     attachments,
     ...(continuity ? { continuity: true } : {}),
     ...(input.overlap === "queue" ? { overlap: "queue" as const } : {}),
+    ...(input.runOnStartup === true ? { runOnStartup: true } : {}),
   };
 }
 
@@ -806,6 +811,8 @@ export class RoutineManager {
   private routineRequestReceipts: RoutineRequestReceipt[] = [];
   private webhookRunReceipts: WebhookRunReceipt[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Startup runs belong to the process start, not to a resume after pause. */
+  private startupRunsQueued = false;
   private ticking = false;
   /** The file existed but could not be read (corrupt JSON or a schema
    * failure). Saves are refused while set so a fresh empty state can never
@@ -848,11 +855,13 @@ export class RoutineManager {
               sourceThreadId: persistedSourceThreadId.parse(routine.sourceThreadId),
               resultsThreadId: persistedSourceThreadId.parse(routine.resultsThreadId),
               overlap: routine.overlap === "queue" ? "queue" : undefined,
+              runOnStartup: routine.runOnStartup === true ? true : undefined,
               skippedRuns: Number.isSafeInteger(routine.skippedRuns) && routine.skippedRuns! > 0 ? routine.skippedRuns : undefined,
               lastSkippedAt: Number.isSafeInteger(routine.lastSkippedAt) && routine.lastSkippedAt! >= 0 && routine.lastSkippedAt! <= MAX_DATE_MS ? routine.lastSkippedAt : undefined,
               installedPackage: loadInstalledPackage(routine.installedPackage),
             };
             if (loaded.timeoutMinutes === undefined) delete loaded.timeoutMinutes;
+            if (loaded.runOnStartup === undefined) delete loaded.runOnStartup;
             if (loaded.installedPackage === undefined) delete loaded.installedPackage;
             delete loaded.failureStreak;
             return [loaded];
@@ -1163,6 +1172,7 @@ export class RoutineManager {
       attachments: patch.attachments ?? routine.attachments,
       continuity: patch.continuity ?? routine.continuity,
       overlap: Object.hasOwn(patch, "overlap") ? patch.overlap : routine.overlap,
+      runOnStartup: patch.runOnStartup ?? routine.runOnStartup,
     }, now);
     if (this.targetState(clean) === "missing") throw new Error(this.missingTargetMessage(clean.target));
     const scheduleChanged = JSON.stringify(clean.schedule) !== JSON.stringify(routine.schedule);
@@ -1190,6 +1200,7 @@ export class RoutineManager {
       // rather than false, so switching continuity off has to delete it.
       if (!clean.continuity) delete routine.continuity;
       if (clean.overlap !== "queue") delete routine.overlap;
+      if (!clean.runOnStartup) delete routine.runOnStartup;
       if (Object.hasOwn(patch, "timeoutMinutes") && patch.timeoutMinutes == null) {
         delete routine.timeoutMinutes;
       }
@@ -1496,6 +1507,10 @@ export class RoutineManager {
 
   start() {
     if (this.timer) return;
+    if (!this.startupRunsQueued) {
+      this.startupRunsQueued = true;
+      this.queueStartupRuns();
+    }
     void this.tick();
     this.timer = setInterval(() => void this.tick(), 10_000);
     this.timer.unref?.();
@@ -1504,6 +1519,34 @@ export class RoutineManager {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  /** One run for each enabled routine marked to run on startup. A routine the
+   * scheduler is about to catch up on, or one with a run still queued from
+   * before the restart, is left to that run so a start never doubles it. */
+  private queueStartupRuns() {
+    const now = this.now();
+    const marked = this.routines.filter((routine) =>
+      routine.enabled && routine.runOnStartup &&
+      !(routine.nextRunAt != null && routine.nextRunAt <= now && now - routine.nextRunAt <= CATCH_UP_MS) &&
+      !this.runs.some((run) => run.routineId === routine.id && run.status === "queued"));
+    if (marked.length === 0) return;
+    const runs: RoutineRun[] = [];
+    const allocations: ResultsThreadAllocation[] = [];
+    try {
+      this.commitMutation(() => {
+        for (const routine of marked) {
+          const run = this.newRun(routine, now, false, allocations);
+          run.triggerSource = "startup";
+          runs.push(run);
+        }
+      }, () => this.discardResultsThreads(allocations));
+    } catch (error) {
+      console.error("routines: could not queue startup runs", error);
+      return;
+    }
+    for (const routine of marked) this.emitRoutine(routine);
+    for (const run of runs) this.emitRun(run);
   }
 
   async tick(): Promise<void> {

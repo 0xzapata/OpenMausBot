@@ -54,6 +54,14 @@ it("recovers queued/due work without resurrecting an interrupted routine after r
       name: "Interrupted peer work", prompt: "Do not resume after recovery", botId: interruptedBot.id,
       enabled: false, schedule: { type: "daily", time: "09:00", weekdays: [1] },
     })).routine;
+    // #325: not due for days, but marked to run whenever the app starts.
+    const startupBot = (await api("POST", "/api/bots", { name: "Restart on startup" })).bot;
+    const onStartup = (await api("POST", "/api/routines", {
+      name: "Runs when the app starts", prompt: "Report once at startup", botId: startupBot.id,
+      runOnStartup: true, schedule: { type: "interval", everyMinutes: 1440, anchorAt: Date.now() + 2 * 24 * 60 * 60_000 },
+    })).routine;
+    expect(onStartup.runOnStartup).toBe(true);
+    expect((await api("GET", "/api/routines")).runs.some((run: RoutineRun) => run.routineId === onStartup.id)).toBe(false);
     await waitForExit(fixture.child, { signal: "SIGTERM" });
 
     // The original child is gone; only its owned temporary store is edited.
@@ -120,7 +128,7 @@ it("recovers queued/due work without resurrecting an interrupted routine after r
       expect(restarted.exitCode, `restarted server exited; see ${logPath}`).toBeNull();
       try {
         runs = (await api("GET", "/api/routines")).runs;
-        if ([scheduled.id, manual.id, cron.id].every((id) => runs.some((run) => run.routineId === id && run.status === "completed"))) break;
+        if ([scheduled.id, manual.id, cron.id, onStartup.id].every((id) => runs.some((run) => run.routineId === id && run.status === "completed"))) break;
       } catch {
         // The exact replacement child is still starting its listener.
       }
@@ -131,7 +139,9 @@ it("recovers queued/due work without resurrecting an interrupted routine after r
       expect.objectContaining({ routineId: cron.id, scheduledFor: cronDueAt, status: "completed" }),
       expect.objectContaining({ id: queued.id, routineId: manual.id, status: "completed" }),
       expect.objectContaining({ id: "interrupted-run", status: "failed", error: expect.stringContaining("restarted") }),
+      expect.objectContaining({ routineId: onStartup.id, triggerSource: "startup", status: "completed" }),
     ]));
+    expect(runs.filter(run => run.routineId === onStartup.id)).toHaveLength(1);
     expect(runs.filter(run => run.routineId === cron.id && run.scheduledFor < Math.floor(Date.now() / 60_000) * 60_000)).toHaveLength(1);
     const restoredCron = (await api("GET", "/api/routines")).routines.find((routine: { id: string }) => routine.id === cron.id);
     expect(restoredCron.schedule).toEqual(cron.schedule);

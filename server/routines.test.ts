@@ -2870,6 +2870,79 @@ describe("RoutineManager", () => {
   });
 });
 
+// #325: a computer that is off at the scheduled time can still run a routine
+// as soon as OpenMausBot starts.
+describe("run on startup", () => {
+  const start = Date.parse("2026-09-13T08:00:00Z");
+  const daily = (patch: Record<string, unknown> = {}) => ({
+    name: "Morning check", prompt: "Check the fixture", botId: "maus-1",
+    schedule: { type: "daily" as const, time: "23:00", weekdays: [0, 1, 2, 3, 4, 5, 6] }, ...patch,
+  });
+
+  it("runs a marked routine once when the scheduler starts, between scheduled times", async () => {
+    const h = harness(start);
+    const routine = h.manager.create(daily({ runOnStartup: true }));
+    expect(routine.runOnStartup).toBe(true);
+    const booted = new RoutineManager(h.options);
+    booted.start();
+    try {
+      await expect.poll(() => h.started.length).toBe(1);
+      expect(h.triggerSources).toEqual(["startup"]);
+      expect(booted.listRuns()[0]).toMatchObject({ routineId: routine.id, triggerSource: "startup", manual: false, status: "running" });
+      // The schedule itself is untouched: the next 23:00 still runs.
+      expect(booted.listRoutines()[0].nextRunAt).toBe(routine.nextRunAt);
+    } finally {
+      booted.stop();
+    }
+  });
+
+  it("leaves unmarked and paused routines alone", async () => {
+    const h = harness(start);
+    h.manager.create(daily());
+    h.manager.create(daily({ name: "Paused", runOnStartup: true, enabled: false }));
+    const booted = new RoutineManager(h.options);
+    booted.start();
+    await booted.tick();
+    booted.stop();
+    expect(h.started).toHaveLength(0);
+    expect(booted.listRuns()).toHaveLength(0);
+  });
+
+  it("runs once per start, not again when a paused scheduler resumes", async () => {
+    const h = harness(start);
+    h.manager.create(daily({ runOnStartup: true }));
+    const booted = new RoutineManager(h.options);
+    booted.start();
+    await expect.poll(() => h.started.length).toBe(1);
+    booted.stop();
+    booted.start();
+    await booted.tick();
+    booted.stop();
+    expect(booted.listRuns()).toHaveLength(1);
+  });
+
+  it("does not double a routine the scheduler is already catching up", async () => {
+    const h = harness(start);
+    const routine = h.manager.create(daily({ runOnStartup: true }));
+    h.setNow(routine.nextRunAt! + 60_000);
+    const booted = new RoutineManager(h.options);
+    booted.start();
+    await expect.poll(() => h.started.length).toBe(1);
+    booted.stop();
+    expect(booted.listRuns()).toHaveLength(1);
+    expect(h.triggerSources).toEqual(["schedule"]);
+  });
+
+  it("saves the choice, keeps it across edits, and clears it when switched off", () => {
+    const h = harness(start);
+    const routine = h.manager.create(daily({ runOnStartup: true }));
+    expect(h.manager.update(routine.id, { name: "Renamed" })?.runOnStartup).toBe(true);
+    expect(new RoutineManager(h.options).listRoutines()[0].runOnStartup).toBe(true);
+    expect(h.manager.update(routine.id, { runOnStartup: false })?.runOnStartup).toBeUndefined();
+    expect(new RoutineManager(h.options).listRoutines()[0].runOnStartup).toBeUndefined();
+  });
+});
+
 describe("routine continuity", () => {
   /** Drive one interval run to completion and return the prompt it was sent. */
   async function runOnce(
