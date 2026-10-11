@@ -57,6 +57,7 @@ import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import {
   ASK_USER_QUESTION_TOOL,
+  ASK_USER_TOOL,
   askQuestionSummary,
   parseAskQuestions,
   parseChoices,
@@ -658,10 +659,10 @@ function systemEndedReply(kind: Ask["kind"]): { behavior: AskBehavior; message: 
 }
 
 /** The structured questions behind an ask, when it is one. Claude's own
- * AskUserQuestion carries them; everything else answers null and keeps the
- * plain summary/choices card. */
+ * AskUserQuestion carries them, and so does a multiSelect ask_user;
+ * everything else answers null and keeps the plain summary/choices card. */
 function askQuestions(ask: Ask): AskQuestion[] | null {
-  return ask.tool === ASK_USER_QUESTION_TOOL ? parseAskQuestions(ask.input) : null;
+  return ask.tool === ASK_USER_QUESTION_TOOL || ask.tool === ASK_USER_TOOL ? parseAskQuestions(ask.input) : null;
 }
 
 /** One human-readable line for an ask — what the card subtitle shows. */
