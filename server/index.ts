@@ -5269,7 +5269,9 @@ const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
       tool: {
         name: problem ? `Result withheld: ${problem}`
           : child.status === "completed" ? `${bot?.name ?? "Teammate"} replied${child.groupId ? ` · ${store.group(child.groupId)?.name ?? "Room"}` : ""}`
-          : `${bot?.name ?? "Teammate"} — ${child.status}: ${child.result.slice(0, 180)}`,
+          // A stop's account (turn-outcome.ts) leads with its cause; what
+          // the teammate last said, quoted below it, is not a label.
+          : `${bot?.name ?? "Teammate"} — ${child.status}: ${child.result.split("\n", 1)[0]!.slice(0, 180)}`,
         ok: child.status === "completed" && !problem,
         // The chip label stays short; the report itself rides along so a
         // phone can show what the teammate said without opening its thread.

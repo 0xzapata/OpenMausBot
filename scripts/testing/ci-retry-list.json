@@ -63,6 +63,13 @@
       "owner": "milind-soni",
       "reason": "Failed 8 runs (7 branches, 2 main runs) since Sep 24, Windows; same commit later green.",
       "since": "2026-10-08"
+    },
+    {
+      "file": "server/delta-context.e2e.test.ts",
+      "test": "ends a Chief's review a second restart cuts, and says so in its conversation",
+      "owner": "milind-soni",
+      "reason": "Failed on Windows CI (run 38119639995) and once locally under parallel load: after the first SIGKILL the Chief's review is marked to rerun but its engine never takes the prompt. The rerun normally starts within ~100 ms, so a failure is a stuck rerun, not a slow one; being investigated as a possible crash-recovery bug.",
+      "since": "2026-10-11"
     }
   ]
 }
