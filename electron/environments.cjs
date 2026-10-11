@@ -5,9 +5,10 @@
 // ({id, kind:"remote", name, origin}); a named local environment is another
 // data directory the same server can be restarted onto
 // ({id, kind:"local", name, dataDir}). The app switches by loading that
-// environment, so an entry only names a destination. The session credential
-// for a remote is the HttpOnly cookie the /pair page set for that origin,
-// held by Chromium's cookie jar, never by this file.
+// environment, so an entry only names a destination. A remote entry also
+// carries `microphone: true` once the person allowed it a Live call. The
+// session credential for a remote is the HttpOnly cookie the /pair page set
+// for that origin, held by Chromium's cookie jar, never by this file.
 const LOCAL_ID = "local";
 const MAX_NAME = 60;
 
@@ -213,7 +214,8 @@ function parseEnvironments(raw) {
     if (!origin || (entry?.kind !== undefined && entry.kind !== "remote") || seen.has(origin)) continue;
     seen.add(id);
     seen.add(origin);
-    environments.push({ id, kind: "remote", name: cleanName(entry?.name, nameFromOrigin(origin)), origin });
+    // `microphone: true` only once the person allowed this server a Live call.
+    environments.push({ id, kind: "remote", name: cleanName(entry?.name, nameFromOrigin(origin)), origin, ...(entry?.microphone === true ? { microphone: true } : {}) });
   }
   const activeId = typeof value?.activeId === "string" && environments.some((e) => e.id === value.activeId) ? value.activeId : LOCAL_ID;
   return { environments, activeId };
@@ -295,6 +297,13 @@ function withoutEnvironment(state, id) {
   return { environments, activeId: state.activeId === id ? LOCAL_ID : state.activeId };
 }
 
+/** The person allowed this saved server the microphone (asked on its first
+ * Live call); forgetting the server drops the record and the answer with it. */
+function withMicrophone(state, id) {
+  if (!state.environments.some((e) => e.id === id)) return state;
+  return { ...state, environments: state.environments.map((e) => (e.id === id ? { ...e, microphone: true } : e)) };
+}
+
 function withActive(state, id) {
   if (id !== LOCAL_ID && !state.environments.some((e) => e.id === id)) return state;
   return { ...state, activeId: id };
@@ -334,6 +343,7 @@ module.exports = {
   withActive,
   withEnvironment,
   withLocalEnvironment,
+  withMicrophone,
   withoutEnvironment,
   workspaceMenuTemplate,
   workspaceNavigationAllowed,

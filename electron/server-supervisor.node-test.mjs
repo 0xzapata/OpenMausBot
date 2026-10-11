@@ -249,6 +249,7 @@ function runForget(state) {
     },
     path,
     AbortSignal,
+    remoteMicrophoneRefused: new Set(),
     desktopDataDir: () => "/Users/me/.openmausbot",
     slog: () => {},
     session: { defaultSession: { fetch: async () => ({ ok: true }), clearStorageData: async () => {} } },

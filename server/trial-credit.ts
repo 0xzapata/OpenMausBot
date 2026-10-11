@@ -16,9 +16,11 @@ export const trialCreditEnds = (refusal: TrialCreditRefusal): refusal is TrialCr
 /** The credit's engine once the person's own AI can run on My Cloud: theirs always wins. */
 export const TRIAL_CREDIT_OWN_AI = "Your own AI is connected on My Cloud, so bots use it instead of the trial Claude credit.";
 
-/** The relay's own codes, which it puts first in its error object (the chat
- * engine keeps only the start of an error body). */
-const RELAY_CODE = /"code"\s*:\s*"(trial_credit_used_up|trial_credit_ended|trial_credit_too_low|invalid_api_key)"/;
+/** The relay's own codes, read from its raw JSON body, or from the end of
+ * the chat engine's failure line, which puts the code after the relay's
+ * message ("… is used up. (trial_credit_used_up)"). */
+const RELAY_CODES = "trial_credit_used_up|trial_credit_ended|trial_credit_too_low|invalid_api_key";
+const RELAY_CODE = new RegExp(`"code"\\s*:\\s*"(${RELAY_CODES})"|\\((${RELAY_CODES})\\)$`);
 
 /** What the relay said about the credit, from its HTTP status and its own
  * error code: 402 `trial_credit_used_up` is used up, 402
@@ -30,7 +32,8 @@ const RELAY_CODE = /"code"\s*:\s*"(trial_credit_used_up|trial_credit_ended|trial
  * the credit. */
 export function trialCreditRefusal(status: number, body = ""): TrialCreditRefusal | null {
   if (status === 429) return "paused";
-  const code = RELAY_CODE.exec(body)?.[1];
+  const match = RELAY_CODE.exec(body);
+  const code = match?.[1] ?? match?.[2];
   if (status === 402 && code === "trial_credit_used_up") return "used_up";
   if ((status === 402 && code === "trial_credit_ended") || (status === 401 && code === "invalid_api_key")) return "ended";
   if (status === 400 && code === "trial_credit_too_low") return "too_low";

@@ -44,6 +44,7 @@ import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
 import { showNotification, type NotificationTarget } from "@/lib/notify";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { speaker } from "@/lib/tts";
 import { roleProfilePatch, type BotRole } from "@/lib/bot-roles";
 import { t } from "@/lib/i18n";
@@ -306,6 +307,10 @@ export interface GroupTask {
   /** This conversation's turn ceiling, in whole minutes. Absent uses the
    * global group limit. */
   turnTimeoutMinutes?: number;
+  /** Whether a turn is actively running in this thread. */
+  working?: boolean;
+  /** The member bot currently speaking or generating in this thread, if any. */
+  busyBotId?: string | null;
 }
 
 export interface ModelSelection {
@@ -416,6 +421,8 @@ export interface Bot {
   waitingForTeammates?: boolean;
   id: string;
   threadId: string;
+  /** The bot's main thread, worked out by the server (WireBot.mainThreadId). */
+  mainThreadId?: string;
   /** every context this bot has, newest first */
   tasks?: Task[];
   projects?: BotProject[];
@@ -521,6 +528,11 @@ export interface Bot {
   /** Renderer-only: a deleted selection moved to a thread whose full
    * transcript has not arrived yet. Never carry the deleted chat into it. */
   awaitingThreadSnapshot?: boolean;
+  /** Renderer-only: the thread a switch in this window is opening, until its
+   * snapshot lands (taskSwitched). The server announces the switch before it
+   * answers it, so meanwhile this is the thread on screen, never threadId:
+   * the one left behind is not read by being left (the "bot" frame). */
+  switchingTo?: string;
   /** leaf of the visible conversation branch (see visibleMessages) */
   activeLeafId?: string | null;
 }
@@ -653,6 +665,7 @@ export interface ConfigStatus {
   xai?: { configured: boolean };
   mistral?: { configured: boolean };
   cerebras?: { configured: boolean };
+  groq?: { configured: boolean };
   /** `everyClaudeBot`: the key runs every Claude bot, not only "Claude (API key)". */
   anthropic?: { configured: boolean; everyClaudeBot?: boolean };
   openai?: { configured: boolean };
@@ -781,7 +794,7 @@ export interface BrowserProfile {
 // Settings shows (a saved key's Test button used to vanish that way).
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "mistral" | "cerebras" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
+  "xai" | "mistral" | "cerebras" | "groq" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -789,6 +802,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     xai: frame.xai,
     mistral: frame.mistral,
     cerebras: frame.cerebras,
+    groq: frame.groq,
     anthropic: frame.anthropic,
     openai: frame.openai,
     openrouter: frame.openrouter,
@@ -825,6 +839,8 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
  * EngineInstall in server/contracts.ts. Absent for engines that need no
  * local binary. `command` omits platforms that have no one-liner. */
 export interface EngineInstall {
+  /** The server's platform, not the browser device's operating system. */
+  platform?: "darwin" | "win32" | "linux";
   command?: Partial<Record<"darwin" | "win32" | "linux", string>>;
   docsUrl?: string;
   signInCommand?: string;
@@ -1051,9 +1067,11 @@ export interface AppState {
    * so it holds still while that conversation stays open. */
   unreadDivider: { threadId: string; messageId: string } | null;
   connected: boolean;
+  /** Bots and rooms have loaded once: a link opened at launch can resolve. */
+  hydrated?: true;
   error: string | null;
   /** a quiet, non-error line above the transcript; clears itself */
-  notice: { kind: "thread-gone"; botName: string | null } | null;
+  notice: { kind: "thread-gone" | "bot-gone"; botName: string | null } | null;
   /** a thread the person asked to open (chip or #Title link): the sidebar
    * expands its bot and scrolls the row into view once it is current */
   revealThread: { threadId: string; nonce: number } | null;
@@ -1273,7 +1291,9 @@ export type Action =
       onError?: (message: string) => void;
     }
   | { type: "newTask"; botId: string; projectId?: string; cwd?: string; onCreated?: () => void; onError?: (message: string) => void }
-  | { type: "switchTask"; botId: string; threadId: string }
+  /** `whole`: the whole thread, not its newest page (a search hit can be older). */
+  | { type: "switchTask"; botId: string; threadId: string; whole?: true }
+  | { type: "switchTaskFailed"; botId: string; threadId: string }
   | { type: "taskSwitched"; bot: Bot }
   | { type: "renameTask"; botId: string; threadId: string; title: string }
   /** Name the thread again from its conversation; the new title arrives with the bot event. */
@@ -1361,6 +1381,8 @@ export function pinBotThreadAction(action: Action, bots: Bot[]): Action {
 interface NotificationThreadOwner {
   id: string;
   threadId: string;
+  /** A bot's main thread (WireBot.mainThreadId); a room has none. */
+  mainThreadId?: string;
   tasks?: Array<{ threadId: string }>;
 }
 
@@ -1386,6 +1408,7 @@ export function openNotificationTarget(
   dispatch: (action: Action) => void,
   target: NotificationTarget,
   state: NotificationRoutingState,
+  threadsShown: boolean,
 ) {
   // A room's approval/question notification carries the asker bot with the
   // GROUP's thread id; asking the bot to switch to that thread would 404.
@@ -1407,12 +1430,54 @@ export function openNotificationTarget(
   const bot = state.bots.find((candidate) =>
     candidate.threadId === target.threadId || candidate.tasks?.some((task) => task.threadId === target.threadId)
   ) ?? state.bots.find((candidate) => candidate.id === target.botId);
-  dispatch({ type: "select", id: bot?.id ?? target.botId });
-  if (!bot) return;
+  if (!bot) {
+    dispatch({ type: "select", id: target.botId });
+    return;
+  }
   const known =
     bot.threadId === target.threadId ||
     (bot.tasks ?? []).some((task) => task.threadId === target.threadId);
-  if (known) dispatch({ type: "switchTask", botId: bot.id, threadId: target.threadId });
+  if (known) openBotThread(dispatch, bot, target.threadId, threadsShown);
+  else openBot(dispatch, bot, threadsShown);
+}
+
+/** The thread opening a bot itself shows. With threads shown, the one it
+ * was on. With threads hidden the bot is one conversation, its main thread
+ * (WireBot.mainThreadId), so a thread a notification or an activity row
+ * opened is left on the next open; one this window has no row for yet
+ * keeps the selection. */
+export function botOpensTo(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): string {
+  return !threadsShown && bot.mainThreadId && bot.tasks?.some((task) => task.threadId === bot.mainThreadId)
+    ? bot.mainThreadId : bot.threadId;
+}
+
+/** Open a bot itself: its row, its pinned circle, the palette, the + menu,
+ * ⌘1–9, the team map, a link to the bot, or the bot a dead thread link
+ * falls back to. It opens where botOpensTo says. */
+export function openBot(
+  dispatch: (action: Action) => void,
+  bot: Pick<NotificationThreadOwner, "id" | "threadId" | "mainThreadId" | "tasks">,
+  threadsShown: boolean,
+) {
+  const opened = botOpensTo(bot, threadsShown);
+  if (opened === bot.threadId) dispatch({ type: "select", id: bot.id });
+  else openBotThread(dispatch, bot, opened, threadsShown);
+}
+
+/** Open one of a bot's threads, as a notification, a chip, a link or a
+ * button names it: a switch, once the bot is selected. With threads hidden
+ * another thread than the one the bot is on opens by the switch alone,
+ * which selects the bot too, so the thread left behind keeps its unread
+ * mark: only an activity row reaches it, and a reply there must not pass
+ * as read unseen, nor while the switch is under way (Bot.switchingTo). */
+export function openBotThread(
+  dispatch: (action: Action) => void,
+  bot: Pick<NotificationThreadOwner, "id" | "threadId">,
+  threadId: string,
+  threadsShown: boolean,
+) {
+  if (threadsShown || threadId === bot.threadId) dispatch({ type: "select", id: bot.id });
+  dispatch({ type: "switchTask", botId: bot.id, threadId });
 }
 
 /** A thread the person can open from a chip or a #Title link. */
@@ -1435,16 +1500,17 @@ export function openThread(
   dispatch: (action: Action) => void,
   target: ThreadTarget,
   state: ThreadOpeningState,
+  threadsShown: boolean,
 ): boolean {
   const owns = (owner: NotificationThreadOwner) =>
     owner.threadId === target.threadId || (owner.tasks ?? []).some((task) => task.threadId === target.threadId);
   if (state.groups.some(owns) || state.bots.some(owns)) {
-    openNotificationTarget(dispatch, target, state);
+    openNotificationTarget(dispatch, target, state, threadsShown);
     dispatch({ type: "revealThread", threadId: target.threadId });
     return true;
   }
   const bot = state.bots.find((candidate) => candidate.id === target.botId);
-  if (bot) dispatch({ type: "select", id: bot.id });
+  if (bot) openBot(dispatch, bot, threadsShown);
   dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot?.name ?? null } });
   return false;
 }
@@ -1572,6 +1638,7 @@ export function reducer(state: AppState, action: Action): AppState {
         sections: action.sections ?? [],
         computerControl: action.computerControl,
         selectedId,
+        hydrated: true as const,
         backgroundThreadEvents: {},
         loadingOlder: {},
         transcriptGeneration: {},
@@ -2439,8 +2506,11 @@ export function reducer(state: AppState, action: Action): AppState {
       // Older background frames are already represented by the next server
       // snapshot. Only frames racing that request need replaying over it.
       const { [action.threadId]: _old, ...backgroundThreadEvents } = state.backgroundThreadEvents;
-      return { ...state, backgroundThreadEvents, selectedId: action.botId, activeView: "chat" };
+      return updateBot({ ...state, backgroundThreadEvents, selectedId: action.botId, activeView: "chat" }, action.botId,
+        (bot) => ({ ...bot, switchingTo: action.threadId }));
     }
+    case "switchTaskFailed":
+      return updateBot(state, action.botId, (bot) => bot.switchingTo === action.threadId ? { ...bot, switchingTo: undefined } : bot);
     case "renameTask":
       return updateBot(state, action.botId, (bot) => ({
         ...bot,
@@ -2503,6 +2573,7 @@ export function reducer(state: AppState, action: Action): AppState {
         // would carry the previous thread's answer onto a new one.
         hasMore: action.bot.hasMore,
         awaitingThreadSnapshot: false,
+        switchingTo: undefined,
       }));
       for (const frame of state.backgroundThreadEvents[action.bot.threadId] ?? []) switched = reducer(switched, frame);
       const { [action.bot.threadId]: _settled, ...backgroundThreadEvents } = switched.backgroundThreadEvents;
@@ -2512,6 +2583,12 @@ export function reducer(state: AppState, action: Action): AppState {
       const opened = switched.bots.find((bot) => bot.id === action.bot.id);
       if (opened && opened.id === switched.selectedId) {
         switched = { ...switched, unreadDivider: openedUnreadDivider(switched, opened.threadId, threadOpensUnread(opened), visibleMessages(opened), threadReadCursor(opened)) };
+        // …and on screen it is read, as `select` reads the thread it opens. The
+        // snapshot predates the switch's own announcement, which told the
+        // server so (the "bot" frame), and must not put the dot back.
+        if (switched.activeView === "chat") switched = updateBot(switched, opened.id, (bot) => ({ ...bot,
+          unread: Boolean(bot.tasks?.some((task) => task.threadId !== bot.threadId && task.unread)),
+          tasks: bot.tasks?.map((task) => task.threadId === bot.threadId ? { ...task, unread: false } : task) }));
       }
       return reconcileModelVariantSessions(reconcileSnapshotQueues(switched, [action.bot]));
     }
@@ -2548,9 +2625,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case "sendGroup": {
       if (!action.sendId) return state;
       const group = state.groups.find((candidate) => candidate.id === action.groupId);
-      const threadId = action.threadId ?? group?.threadId;
-      if (!group || threadId !== group.threadId) return state;
-      if (group.messages.some((message) => message.sendId === action.sendId)) return state;
+      if (!group) return state;
+      const threadId: string = action.threadId ?? group.threadId;
+      if (threadId === group.threadId && group.messages.some((message) => message.sendId === action.sendId)) return state;
       const message = optimisticUserMessage(
         action.text,
         action.sendId,
@@ -2558,12 +2635,14 @@ export function reducer(state: AppState, action: Action): AppState {
         null,
         action.mode ?? "chat",
       );
-      return bumpThreadUpdatedAt({
-        ...state,
-        groups: state.groups.map((candidate) => candidate.id === group.id
+      const stamped = bumpThreadUpdatedAt(state, threadId, message.at);
+      if (threadId !== group.threadId) return stamped;
+      return {
+        ...stamped,
+        groups: stamped.groups.map((candidate) => candidate.id === group.id
           ? { ...candidate, messages: [...candidate.messages, message] }
           : candidate),
-      }, threadId, message.at);
+      };
     }
   }
 }
@@ -2934,7 +3013,7 @@ const StoreContext = createContext<{
   /** Commit any debounced profile edits before an operation reads the bot. */
   flushBotPatches: (botId: string) => Promise<BotAnnouncement | null>;
   /** Re-fetch engine availability — after an install, without a restart. */
-  refreshInstances: () => Promise<void>;
+  refreshInstances: (options?: { reportErrors?: boolean }) => Promise<void>;
   /** Explicit provider/network model discovery. */
   refreshModels: (instanceId: string) => Promise<void>;
 } | null>(null);
@@ -2948,6 +3027,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, rawDispatch] = useReducer(reducer, initialState);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const showThreads = useShowThreads();
+  const showThreadsRef = useRef(showThreads);
+  showThreadsRef.current = showThreads;
   const clearChatError = useCallback(() => {
     rawDispatch({ type: "error", message: null });
   }, []);
@@ -3742,7 +3824,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // A new task's thread is empty, so only the switch needs a page.
           void ready.then(() => api<{ bot: Bot }>(action.type === "newTask"
             ? `/api/bots/${action.botId}/tasks`
-            : `/api/bots/${action.botId}/tasks/${action.threadId}?messages=${MESSAGE_PAGE_SIZE}`, { method: "POST", body: JSON.stringify(action.type === "newTask" ? { projectId: action.projectId, cwd: action.cwd } : {}) }))
+            : `/api/bots/${action.botId}/tasks/${action.threadId}${action.whole ? "" : `?messages=${MESSAGE_PAGE_SIZE}`}`, { method: "POST", body: JSON.stringify(action.type === "newTask" ? { projectId: action.projectId, cwd: action.cwd } : {}) }))
             .then((r) => {
               if (action.type === "newTask") action.onCreated?.();
               if (!r?.bot || navigation.get(action.botId) !== revision) return;
@@ -3752,6 +3834,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               if (selectsAfterCreation) rawDispatch({ type: "select", id: action.botId });
             })
             .catch((error) => {
+              // The latest switch, failed, leaves the thread it was on on screen.
+              if (action.type === "switchTask" && navigation.get(action.botId) === revision) {
+                rawDispatch({ type: "switchTaskFailed", botId: action.botId, threadId: action.threadId });
+              }
               if (action.type === "newTask" && action.onError) action.onError(error instanceof Error ? error.message : String(error));
               else showError(error);
             });
@@ -4068,16 +4154,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "bot": {
           const bot = frame.bot as BotAnnouncement;
-          // reading the selected chat clears its badge immediately
+          // reading the selected chat clears its badge immediately: the
+          // thread on screen, the one a switch is opening while it is under
+          // way (this frame may be its own announcement), never one it leaves
           const selected = stateRef.current.bots.find((candidate) => candidate.id === bot.id);
-          const selectedTask = bot.tasks?.find((task) => task.threadId === selected?.threadId);
+          const shown = selected?.switchingTo ?? selected?.threadId;
+          const selectedTask = bot.tasks?.find((task) => task.threadId === shown);
           if (bot.id === stateRef.current.selectedId && stateRef.current.activeView === "chat" &&
               (selectedTask?.unread || (!bot.tasks && bot.unread))) {
             if (selectedTask) selectedTask.unread = false;
             // Hidden routine runs must not put the dot back on the next frame.
             // No task list: the bot flag is the unread signal.
             bot.unread = botShowsUnread(bot);
-            fetch(`/api/bots/${bot.id}/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: selected?.threadId }) }).catch(() => {});
+            fetch(`/api/bots/${bot.id}/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: shown }) }).catch(() => {});
           }
           rawDispatch({
             type: "botPatched",
@@ -4102,10 +4191,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // in local state either way, but only the wrapper PATCHes
           // unread:false back. Opening a bot from its own notification and
           // watching the badge return on the next hydration is exactly the
-          // bug that makes notifications feel broken.
+          // bug that makes notifications feel broken. Opened as the sidebar
+          // shows threads when it is clicked.
           showNotification(
             frame.notification,
-            (target) => openNotificationTarget(dispatch, target, stateRef.current),
+            (target) => openNotificationTarget(dispatch, target, stateRef.current, showThreadsRef.current),
             stateRef.current.bots.find((bot) => bot.id === frame.notification.botId)?.avatarUrl,
             visibleNotificationThread(stateRef.current),
           );
@@ -4219,12 +4309,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Re-probe the engines on demand. A CLI installed while the app is running
   // is invisible until something asks again — the setup screens expose this
   // as "Check again" so the user isn't told to restart when a refresh will do.
-  const refreshInstances = useCallback(async () => {
-    try {
-      const { instances } = await api("/api/instances");
+  const instanceProbe = useRef<Promise<void> | null>(null);
+  const refreshInstances = useCallback(async (options?: { reportErrors?: boolean }) => {
+    // Focus and an explicit Check again can arrive together. Share the probe,
+    // but let the explicit caller display failure without breaking background callers.
+    const probe = instanceProbe.current ??= api("/api/instances", { timeoutMs: 120_000 }).then(({ instances }) => {
+      // Keep the last usable list if a proxy returns an empty/non-JSON 200.
+      if (!Array.isArray(instances)) throw new Error(t("engineSetup.invalidStatus"));
       rawDispatch({ type: "instances", instances });
-    } catch {
-      /* offline or server down — the existing list stays */
+    });
+    try {
+      await probe;
+    } catch (error) {
+      if (options?.reportErrors) throw error;
+      // Offline: retain the existing list for background callers.
+    } finally {
+      if (instanceProbe.current === probe) instanceProbe.current = null;
     }
   }, []);
 
@@ -4248,7 +4348,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       void refreshInstances();
     };
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    const onVisible = () => { if (document.visibilityState === "visible") onFocus(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refreshInstances]);
 
   const flushBotPatches = useCallback(

@@ -46,8 +46,8 @@ function NavRow({
       title={iconsOnly ? label : undefined}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "relative flex w-full items-center rounded-xl text-left transition-colors",
-        iconsOnly ? "min-h-10 justify-center px-2 py-2" : "min-h-9 gap-3 px-3 py-1.5",
+        "relative flex items-center rounded-xl transition-colors",
+        iconsOnly ? "mx-auto size-[46px] shrink-0 justify-center" : "w-full min-h-9 gap-3 px-3 py-1.5 text-left",
         active ? "bg-raised text-ink" : "text-ink hover:bg-raised/50",
       )}
     >
@@ -77,7 +77,7 @@ export function SidebarAppsButton() {
       title={label}
       aria-pressed={state.pluginsOpen}
       className={cn(
-        "flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors",
+        "flex size-[46px] shrink-0 items-center justify-center rounded-xl transition-colors",
         state.pluginsOpen ? "bg-raised text-accent" : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
       )}
     >
@@ -150,7 +150,7 @@ export function SidebarFooterNav({
 
   // `tools` is the guided tour's anchor for "the places down here".
   if (iconsOnly) {
-    return <nav data-tour="tools" aria-label={t("sidebar.tools")} className="flex flex-col gap-0.5">{rows}</nav>;
+    return <nav data-tour="tools" aria-label={t("sidebar.tools")} className="flex flex-col items-center gap-1">{rows}</nav>;
   }
   // The label stays visible when the rows fold away, so the header says what is inside.
   return (

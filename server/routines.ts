@@ -107,8 +107,9 @@ export interface Routine {
   /** Conversation that created this routine in chat. Calendar/import-created
    * routines intentionally have no source, and older files migrate in place. */
   sourceThreadId?: string;
-  /** Stable visible report destination (the bot's main thread unless the
-   * person chose another); execution still gets a fresh task. */
+  /** The thread chosen in "Post results to", or a Cloud guest's own
+   * results thread; execution still gets a fresh task. Absent: every run
+   * reports into the bot's main thread as it is when the run is made. */
   resultsThreadId?: string;
   /** Server-private: added from the organization's library. Never on the
    * wire (routineWithHealth drops it); packageStamps() reads it. */
@@ -178,7 +179,8 @@ export interface RoutineRun {
   /** Snapshot the routine's reporting destination. Execution remains on the
    * separate `threadId` so recurring work never contaminates chat context. */
   sourceThreadId?: string;
-  /** Snapshot of the chosen destination, never redirected by later edits. */
+  /** Where this run reports (its routine's destination, else the bot's main
+   * thread when the run was made), never redirected by later edits. */
   resultsThreadId?: string;
   threadId?: string;
   startedAt?: number;
@@ -248,6 +250,9 @@ export interface RoutineInput {
 
 interface RoutineFile {
   version: 1;
+  /** The destinations v0.1.98 to v0.1.104 saved as a default
+   * (RoutineManagerOptions.frozenResultsThread) are cleared. */
+  frozenResultsCleared?: true;
   routines: Routine[];
   runs: RoutineRun[];
   /** Durable commit receipts for cross-file confirmation recovery. */
@@ -289,9 +294,15 @@ export interface RoutineManagerOptions {
   joinConversation?: (run: RoutineRun) => string | null;
   createGoalTask?: (groupId: string, title: string) => { threadId: string } | null;
   isResultsThread?: (botId: string, threadId: string) => boolean;
-  /** Reuse a chosen routine.resultsThreadId, else the bot's main thread (a
-   * Cloud guest's routine may allocate its own). `forceNew` ignores the choice. */
-  resolveResultsThread?: (routine: Routine, forceNew: boolean) => string | undefined;
+  /** Reuse a chosen routine.resultsThreadId, else the bot's main thread
+   * (`main`: never saved on the routine, since the next run asks again), else
+   * a Cloud guest's routine allocates its own. `forceNew` ignores the choice. */
+  resolveResultsThread?: (routine: Routine, forceNew: boolean) => { threadId: string; main?: true } | undefined;
+  /** The thread v0.1.98 to v0.1.104 saved on every bot routine that had no
+   * destination of its own: its bot's oldest open thread, saved as if a
+   * person had chosen it. A file from then has it cleared, once
+   * (clearFrozenResultsThreads). */
+  frozenResultsThread?: (botId: string) => string | undefined;
   /** Compensate an uncommitted allocation, only while still empty. */
   discardResultsThread?: (botId: string, threadId: string) => void;
   startTurn: (
@@ -334,6 +345,8 @@ const WAKE_HORIZON_MS = 60 * 60_000;
 /** How long a run may sit deferred behind a busy target before the user
  * hears about it once. Surfacing only; dispatch semantics stay unchanged. */
 export const ROUTINE_DEFERRAL_NOTICE_MS = 30 * 60_000;
+/** Why a run still going when the server stopped failed at the next start. */
+export const ROUTINE_RESTARTED = "OpenMausBot restarted while this routine was running";
 const MAX_DATE_MS = 8_640_000_000_000_000;
 const LOCAL_DAY_MS = 24 * 60 * 60_000;
 const INTERVAL_RESTRICTION_SEARCH_MS = 9 * LOCAL_DAY_MS;
@@ -798,6 +811,9 @@ export class RoutineManager {
    * failure). Saves are refused while set so a fresh empty state can never
    * overwrite whatever is on disk. Missing means a first run. */
   private unreadable = false;
+  /** A file from before frozenResultsCleared: clearFrozenResultsThreads has
+   * not run on it yet, and no save says it has. */
+  private frozenPending = false;
 
   constructor(options: RoutineManagerOptions) {
     this.options = options;
@@ -879,6 +895,7 @@ export class RoutineManager {
             return parsed.success ? [parsed.data] : [];
           })
         : [];
+      this.frozenPending = disk.frozenResultsCleared !== true;
       // Upgrade old run logs before history pruning can discard their IDs.
       const known = new Set(this.webhookRunReceipts.map((r) => JSON.stringify([r.webhookId, r.deliveryId])));
       for (const run of this.runs) {
@@ -911,7 +928,7 @@ export class RoutineManager {
       if (run.status === "running" || run.status === "waiting") {
         run.status = "failed";
         if (run.target === "room-goal") run.goalStatus = "failed";
-        run.error = "OpenMausBot restarted while this routine was running";
+        run.error = ROUTINE_RESTARTED;
         run.attention = undefined;
         run.finishedAt = this.now();
         recovered.push(cloneRun(run));
@@ -928,6 +945,21 @@ export class RoutineManager {
 
   listRoutines(): Routine[] {
     return this.routines.map(routine => this.routineWithHealth(routine));
+  }
+
+  /** Clear the destination v0.1.98 to v0.1.104 saved on routines as if a
+   * person had chosen it (RoutineManagerOptions.frozenResultsThread), once:
+   * a later pick of that same thread is a person's. Called once it is
+   * settled who opened which conversation (a Cloud home's earlier device
+   * keys), before any run or request can read a routine. */
+  clearFrozenResultsThreads(): void {
+    if (!this.frozenPending) return;
+    for (const routine of this.routines) {
+      if (routine.target === "bot" && routine.resultsThreadId !== undefined &&
+        routine.resultsThreadId === this.options.frozenResultsThread?.(routine.botId)) delete routine.resultsThreadId;
+    }
+    this.frozenPending = false;
+    this.save();
   }
 
   private routineWithHealth(routine: Routine): Routine {
@@ -1720,14 +1752,9 @@ export class RoutineManager {
       if (event.cost != null) run.cost = (run.cost ?? 0) + event.cost;
       if (event.denials?.length) run.denials = [...new Set([...(run.denials ?? []), ...event.denials])];
       if (!event.ok) {
-        const genericStopReason = event.stopReason === "error" || event.stopReason === "tool_error";
-        this.failRun(
-          run,
-          (genericStopReason ? run.error : undefined) ??
-            event.stopReason ??
-            run.error ??
-            "The bot did not complete this run",
-        );
+        // the run's own last error says what failed it; a provider's stop
+        // token ("error", "quota", "stop_sequence") alone says little
+        this.failRun(run, run.error ?? event.stopReason ?? "The bot did not complete this run");
         queueMicrotask(() => void this.tick());
         return cloneRun(run);
       }
@@ -1842,13 +1869,17 @@ export class RoutineManager {
     allocations: ResultsThreadAllocation[],
     sourceThreadId = routine.sourceThreadId,
   ): RoutineRun {
+    let resultsThreadId = routine.resultsThreadId;
     if (routine.target === "bot" && this.options.resolveResultsThread) {
       const destination = this.options.resolveResultsThread({ ...routine, sourceThreadId }, false);
-      if (destination !== routine.resultsThreadId) {
-        if (destination) allocations.push({ botId: routine.botId, threadId: destination });
-        routine.resultsThreadId = destination;
+      const own = destination?.main ? undefined : destination?.threadId;
+      if (own !== routine.resultsThreadId) {
+        if (own) allocations.push({ botId: routine.botId, threadId: own });
+        if (own) routine.resultsThreadId = own;
+        else delete routine.resultsThreadId;
         routine.updatedAt = Math.max(this.now(), routine.updatedAt + 1);
       }
+      resultsThreadId = destination?.threadId;
     }
     const run: RoutineRun = {
       id: randomUUID(),
@@ -1867,7 +1898,7 @@ export class RoutineManager {
       manual,
       triggerSource: manual ? "manual" : "schedule",
       sourceThreadId,
-      resultsThreadId: routine.resultsThreadId,
+      resultsThreadId,
       createdAt: this.now(),
     };
     this.runs.push(run);
@@ -1892,10 +1923,15 @@ export class RoutineManager {
     }
     if (value === undefined) return;
     if (value === null) {
+      // The main thread is no destination of a routine's own: only a
+      // routine that may not report there gets one.
       const destination = this.options.resolveResultsThread?.(routine, true);
-      if (!destination) throw new Error("Could not find a results thread for this routine");
-      routine.resultsThreadId = destination;
-      return () => this.options.discardResultsThread?.(routine.botId, destination);
+      if (!destination || destination.main) {
+        delete routine.resultsThreadId;
+        return;
+      }
+      routine.resultsThreadId = destination.threadId;
+      return () => this.options.discardResultsThread?.(routine.botId, destination.threadId);
     }
     if (typeof value !== "string" || !value.trim() || !this.options.isResultsThread?.(routine.botId, value.trim())) {
       throw Object.assign(new Error("Choose a visible results thread belonging to this bot"), { status: 400 });
@@ -2008,6 +2044,7 @@ export class RoutineManager {
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(this.file, JSON.stringify({
       version: 1,
+      ...(this.frozenPending ? {} : { frozenResultsCleared: true }),
       routines: [...this.routines, ...this.unloadedRoutines],
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,
