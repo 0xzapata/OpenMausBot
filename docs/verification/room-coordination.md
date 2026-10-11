@@ -69,6 +69,18 @@ pnpm exec vitest run server/full-access-workflows.e2e.test.ts server/room-recove
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/direct-coordination-ui.e2e.test.ts
 ```
 
+The long-running Chief suite plays one Chief of Staff job per scenario through
+the real harness with fake engines, and checks what the person, the Chief and
+each teammate are shown: a consult-and-implement job through a step cap,
+approvals allowed, denied and left unanswered, a quit and a crash mid-job, a
+provider save that changes nothing, a stalled turn, two jobs sharing a
+teammate behind a card, two jobs sharing a busy computer, and what a teammate
+is told for the person's own job and for a routine's run:
+
+```sh
+pnpm exec vitest run server/long-running-chief.e2e.test.ts
+```
+
 Gated fake-model turns prove a teammate starts before the Chief settles,
 the Chief becomes available while results are pending, failure of the source
 does not discard accepted work, and exactly one final answer returns to the
