@@ -1260,6 +1260,7 @@ export function stripWorkspaceCredentialEnv(env: Record<string, string | undefin
  * along in `...process.env` must not flip a subscription CLI onto
  * pay-as-you-go billing the user never granted. */
 export const PROVIDER_CREDENTIAL_ENV = [
+  "CLINE_API_KEY",
   "ANTHROPIC_API_KEY",
   "FACTORY_API_KEY",
   "GEMINI_API_KEY",
@@ -1283,6 +1284,7 @@ export const PROVIDER_CREDENTIAL_ENV = [
  * Anthropic key) are workspace credentials under other names and never
  * ride along. */
 export const OPENCODE_PROVIDER_ENV = [
+  "CLINE_API_KEY",
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "GEMINI_API_KEY",
@@ -1736,11 +1738,13 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     ...API_KEY_FLEET,
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
+    cline: { driver: "clineAgent" },
     pi: { driver: "piAgent" },
   };
   const CUSTOM_ONLY = {
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
+    cline: { driver: "clineAgent" },
     pi: { driver: "piAgent" },
   } as const;
   // New default-fleet engines that existing product configs would otherwise
