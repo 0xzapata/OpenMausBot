@@ -1057,6 +1057,8 @@ export interface AppState {
    * so it holds still while that conversation stays open. */
   unreadDivider: { threadId: string; messageId: string } | null;
   connected: boolean;
+  /** Bots and rooms have loaded once: a link opened at launch can resolve. */
+  hydrated?: true;
   error: string | null;
   /** a quiet, non-error line above the transcript; clears itself */
   notice: { kind: "thread-gone"; botName: string | null } | null;
@@ -1578,6 +1580,7 @@ export function reducer(state: AppState, action: Action): AppState {
         sections: action.sections ?? [],
         computerControl: action.computerControl,
         selectedId,
+        hydrated: true as const,
         backgroundThreadEvents: {},
         loadingOlder: {},
         transcriptGeneration: {},

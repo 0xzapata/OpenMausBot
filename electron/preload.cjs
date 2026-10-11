@@ -14,6 +14,20 @@ ipcRenderer.on("package:install", (_event, url) => {
   for (const listener of packageInstallListeners) listener(url);
 });
 
+// A chat link opened from outside the app. Held until the page subscribes,
+// then handed over once: replaying it to a remounted listener would yank the
+// person back to that chat.
+let pendingChatLink = null;
+const chatLinkListeners = new Set();
+ipcRenderer.on("chat:open", (_event, link) => {
+  if (typeof link !== "string") return;
+  if (!chatLinkListeners.size) {
+    pendingChatLink = link;
+    return;
+  }
+  for (const listener of chatLinkListeners) listener(link);
+});
+
 // Main can finish loading the document before React subscribes. Retain only
 // the fixed actions (Organisation, the openmausbot://cloud link, plain
 // Settings → OpenMausBot Cloud from the lending menu-bar item, and the Add a
@@ -234,6 +248,17 @@ const bridge = {
     packageInstallListeners.add(cb);
     if (pendingPackageInstallUrl) cb(pendingPackageInstallUrl);
     return () => packageInstallListeners.delete(cb);
+  },
+  /** A chat link (openmausbot://thread/… or openmausbot://bot/…) opened from
+   * outside the app. */
+  onChatLink: (cb) => {
+    chatLinkListeners.add(cb);
+    if (pendingChatLink) {
+      const link = pendingChatLink;
+      pendingChatLink = null;
+      cb(link);
+    }
+    return () => chatLinkListeners.delete(cb);
   },
   /** Mirrors durable unread state into the native Dock/taskbar badge. */
   setUnreadCount: (count) => ipcRenderer.send("desktop:unread-count", count),

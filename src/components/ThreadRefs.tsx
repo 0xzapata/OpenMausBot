@@ -6,9 +6,9 @@
 import { MentionText } from "./MentionText";
 import type { MentionPeer } from "@/lib/mentions";
 import { createContext, Fragment, useContext, useMemo, useRef, type ReactNode } from "react";
-import { openThread, useStore, type Bot, type Group, type ThreadTarget } from "@/state/store";
+import { openThread, useStore, type Action, type AppState, type Bot, type Group, type ThreadTarget } from "@/state/store";
 import { t } from "@/lib/i18n";
-import { splitThreadRefsForDisplay, type ThreadRefCandidate } from "@/lib/thread-refs";
+import { parseBotRefUrl, parseThreadRefUrl, resolveThreadRefAddress, splitThreadRefsForDisplay, type ThreadRefCandidate } from "@/lib/thread-refs";
 
 export interface ThreadRefsValue {
   threads: ThreadRefCandidate[];
@@ -81,6 +81,29 @@ export function ThreadLink({ target, ambiguous, children }: { target: ThreadLink
       {children}
     </button>
   );
+}
+
+/** Open a chat link that came from outside the app (a browser or a
+ * dashboard): the canonical openmausbot://thread/<id>?bot=<id> a chat's Copy
+ * link makes, or openmausbot://bot/<id> for a bot's current conversation.
+ * Only navigates. A chat that is not on this computer, or not the named
+ * bot's, opens nothing and says the chat could not be found. */
+export function openChatLink(dispatch: (action: Action) => void, link: string, state: AppState): boolean {
+  const botAddress = parseBotRefUrl(link);
+  if (botAddress) {
+    const bot = state.bots.find((candidate) => candidate.id === botAddress.botId);
+    if (bot && bot.threadId) return openThread(dispatch, { botId: bot.id, threadId: bot.threadId }, state);
+    if (bot) dispatch({ type: "select", id: bot.id });
+    dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot?.name ?? null } });
+    return false;
+  }
+  const address = parseThreadRefUrl(link);
+  const ref = address ? resolveThreadRefAddress(collectThreadRefs(state.bots, state.groups), address) : null;
+  if (ref) return openThread(dispatch, ref, state);
+  const bot = address?.botId ? state.bots.find((candidate) => candidate.id === address.botId) : undefined;
+  if (bot) dispatch({ type: "select", id: bot.id });
+  dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot?.name ?? null } });
+  return false;
 }
 
 /** The markdown `span` component's props when the remark plugin produced
