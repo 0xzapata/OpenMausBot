@@ -2933,6 +2933,40 @@ describe("run on startup", () => {
     expect(h.triggerSources).toEqual(["schedule"]);
   });
 
+  it("replaces an occurrence too late to catch up, instead of also reporting it missed", async () => {
+    const h = harness(start);
+    const routine = h.manager.create(daily({ runOnStartup: true, overlap: "queue" }));
+    h.setNow(routine.nextRunAt! + 13 * 60 * 60_000);
+    const booted = new RoutineManager(h.options);
+    booted.start();
+    await expect.poll(() => h.started.length).toBe(1);
+    await booted.tick();
+    booted.stop();
+    expect(booted.listRuns().map((run) => [run.triggerSource, run.status])).toEqual([["startup", "running"]]);
+    expect(h.failed).toHaveLength(0);
+    expect(booted.listRoutines()[0].nextRunAt).toBeGreaterThan(routine.nextRunAt! + 13 * 60 * 60_000);
+  });
+
+  it("tries again on the next start when the startup runs could not be saved", async () => {
+    const h = harness(start);
+    h.manager.create(daily({ runOnStartup: true }));
+    const booted = new RoutineManager(h.options);
+    // A directory where the store goes fails the atomic rename on every OS.
+    const file = h.options.file!;
+    rmSync(file);
+    mkdirSync(file);
+    writeFileSync(join(file, "blocker"), "");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    booted.start();
+    booted.stop();
+    rmSync(file, { recursive: true });
+    expect(booted.listRuns()).toHaveLength(0);
+    booted.start();
+    await expect.poll(() => h.started.length).toBe(1);
+    booted.stop();
+    expect(booted.listRuns()[0].triggerSource).toBe("startup");
+  });
+
   it("saves the choice, keeps it across edits, and clears it when switched off", () => {
     const h = harness(start);
     const routine = h.manager.create(daily({ runOnStartup: true }));
