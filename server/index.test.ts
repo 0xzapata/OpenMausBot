@@ -115,6 +115,8 @@ let boatStubPort = 0;
 const boatRouteCalls: Array<{ method: string; path: string }> = [];
 const boatPromptBodies: Array<Record<string, unknown>> = [];
 let boatSlowRequestCount = 0;
+/** Holds a "box_slow" credential check open until released; unset, it takes 150 ms. */
+let boatSlowHold: Promise<void> | null = null;
 let managedBoatRows: Array<Record<string, unknown>> = [];
 let managedBoatListRowsOverride: Array<Record<string, unknown>> | null = null;
 let managedBoatListStatus = 200;
@@ -617,6 +619,12 @@ beforeAll(async () => {
   writeFileSync(linkedImage, "png preview bytes");
   writeFileSync(generatedImage, "generated image bytes");
   writeFileSync(userAttachment, "%PDF shared from the phone\n", { mode: 0o600 });
+  // A picture a bot saved outside the room's folders, and the copy attach_file made of it.
+  const outsideImage = join(home, "Downloads", "sideboard.png");
+  const deliveredImage = join(privateAttachments, "5e1dbd0a-7c3a-4f1e-9b2d-6a0c4f8e2b71.png");
+  mkdirSync(join(home, "Downloads"), { recursive: true });
+  writeFileSync(outsideImage, "outside photo bytes");
+  writeFileSync(deliveredImage, "delivered photo bytes");
   writeFileSync(
     join(home, ".openmausbot", "messages-test-linked-file-room-thread.json"),
     JSON.stringify({
@@ -679,6 +687,24 @@ beforeAll(async () => {
           role: "user",
           kind: "text",
           text: `<attached-file path="${linkedFile}" />`,
+        },
+        // A side branch: a reply showing an outside picture, alone and then
+        // after the turn delivered it with attach_file.
+        {
+          id: "outside-image-message", at: 9, parentId: "user-outside-file-message", role: "bot", kind: "text",
+          text: `Heidi, 51 – Sideboard\n\n![Sideboard](<${pathToFileURL(outsideImage).href}>)\n\nEinschätzung`,
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
+        },
+        { id: "photo-request-message", at: 10, parentId: "outside-image-message", role: "user", kind: "text", text: "Show me the photo" },
+        {
+          id: "delivered-image-message", at: 11, parentId: "photo-request-message", role: "bot", kind: "text", text: "",
+          attachments: [{ kind: "image", path: deliveredImage, mime: "image/png", name: "sideboard.png" }],
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
+        },
+        {
+          id: "delivered-image-reply-message", at: 12, parentId: "delivered-image-message", role: "bot", kind: "text",
+          text: `Heidi, 51 – Sideboard\n\n![Sideboard](<${pathToFileURL(outsideImage).href}>)\n\nEinschätzung`,
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
         },
       ],
     }),
@@ -964,7 +990,7 @@ beforeAll(async () => {
       && new URL(req.url ?? "/", "http://box.invalid").pathname === "/boxes"
     ) {
       boatSlowRequestCount += 1;
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await (boatSlowHold ?? new Promise((resolve) => setTimeout(resolve, 150)));
     }
     if (
       req.headers.authorization === "Bearer box_route" ||
@@ -2857,14 +2883,27 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("keeps bot-to-bot channels single-threaded and blocks task changes on an open approval", async () => {
+  it("keeps bot-to-bot channels single-threaded and lets another task start beside an open approval", async () => {
     const dm = await api("POST", "/api/groups/test-dm/tasks", {});
     expect(dm.status).toBe(400);
     expect(dm.body.error).toMatch(/one canonical conversation/i);
 
-    const blocked = await api("POST", "/api/groups/test-stranded-room/tasks", {});
-    expect(blocked.status).toBe(409);
-    expect(blocked.body.error).toMatch(/waiting on you/i);
+    // A card holds only its own task: the person can start another while it
+    // waits, and the card stays in its task to be answered there.
+    const created = await api("POST", "/api/groups/test-stranded-room/tasks", {});
+    expect(created.status).toBe(201);
+    const taskThreadId = created.body.task.threadId as string;
+    expect(taskThreadId).not.toBe("test-stranded-room-thread");
+    try {
+      const back = await api("POST", "/api/groups/test-stranded-room/tasks/test-stranded-room-thread", {});
+      expect(back.status).toBe(200);
+      const card = back.body.group.messages.find((message: { id: string }) => message.id === "stranded-card")?.card;
+      expect(card?.requestId).toBe("stranded-request");
+      expect(card.answered).toBeFalsy();
+    } finally {
+      await api("POST", "/api/groups/test-stranded-room/tasks/test-stranded-room-thread", {});
+      await api("DELETE", `/api/groups/test-stranded-room/tasks/${taskThreadId}`);
+    }
   });
 
   it("keeps Chief room changes behind pending user approvals", async () => {
@@ -7037,15 +7076,23 @@ describe("harness HTTP API", () => {
       await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.groups.find(
         (candidate: { id: string }) => candidate.id === room.id,
       )?.working).toBe(true);
-      const rejected = await held.finish();
-      expect(rejected.status).toBe(409);
-      expect(rejected.body.error).toMatch(/working/i);
+      const finished = await held.finish();
       const current = (await api("GET", "/api/bots?messages=0")).body.groups.find(
         (candidate: { id: string }) => candidate.id === room.id,
       );
-      expect(current.threadId).toBe(room.threadId);
-      expect(current.tasks).toHaveLength(1);
-      expect(current.tasks[0].title).not.toBe("Delayed task");
+      const running = current.tasks.find((task: { threadId: string }) => task.threadId === room.threadId);
+      expect(running.working).toBe(true);
+      if (method === "POST") {
+        // Each task has its own queue: a new one starts beside the running one.
+        expect(finished.status).toBe(201);
+        expect(current.tasks).toHaveLength(2);
+      } else {
+        // Renaming the running task still waits for it, checked after the body.
+        expect(finished.status).toBe(409);
+        expect(finished.body.error).toMatch(/running/i);
+        expect(current.tasks).toHaveLength(1);
+        expect(running.title).not.toBe("Delayed task");
+      }
     } finally {
       held.close();
       await api("POST", `/api/groups/${room.id}/interrupt`, {});
@@ -7880,6 +7927,10 @@ describe("harness HTTP API", () => {
 
   it("excludes new Boat turns, lifecycle actions, and bot deletion while a token change validates", async () => {
     let botId = "";
+    // The check stays open until every refusal below is seen: a save that
+    // reloads no engine is over in moments.
+    let release = () => {};
+    boatSlowHold = new Promise<void>((resolve) => { release = resolve; });
     try {
       expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots")).body.bot;
@@ -7896,11 +7947,14 @@ describe("harness HTTP API", () => {
       expect(turn.status).toBe(409);
       expect(turn.body.error).toMatch(/Boat account settings are being updated/i);
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(409);
+      release();
       expect((await changing).status).toBe(200);
 
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
       botId = "";
     } finally {
+      release();
+      boatSlowHold = null;
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
     }
@@ -8439,7 +8493,7 @@ describe("harness HTTP API", () => {
         mcpConfig: z.object({ mcpServers: z.object({ ogb: z.object({ args: z.array(z.string()) }) }) }),
       }).parse(await readJsonFileWhenReady(fakeClaudeDump));
       const socketPath = dump.mcpConfig.mcpServers.ogb.args[1];
-      const raise = async (id: string, command: string) => {
+      const raise = async (id: string, command: string, extra: Record<string, unknown> = {}) => {
         const conn = connect(socketPath);
         conns.push(conn);
         const answered = new Promise<{ behavior: string; always?: boolean }>((resolve) => {
@@ -8454,7 +8508,7 @@ describe("harness HTTP API", () => {
           conn.on("connect", resolve);
           conn.on("error", reject);
         });
-        conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input: { command } }) + "\n");
+        conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input: { command, ...extra } }) + "\n");
         return answered;
       };
       type Msg = { kind: string; tool?: { name: string }; card?: { title: string; subtitle: string; requestId?: string; held?: string; heldCode?: string; allowKey?: string; allowSession?: boolean; answered?: string } };
@@ -8490,6 +8544,17 @@ describe("harness HTTP API", () => {
       const plain = await second;
       expect(plain).toMatchObject({ behavior: "allow" });
       expect(plain).not.toHaveProperty("always");
+
+      // A card that offers no session allow keeps none, whatever the answer
+      // claims: widening the sandbox is allowed once at most.
+      const widen = raise("ask-widen", "ls /", { dangerouslyDisableSandbox: true });
+      await expect.poll(async () => (await messages()).find((m) => m.card?.subtitle === "ls /")?.card?.title).toBe("Approval needed");
+      const widenCard = (await messages()).find((m) => m.card?.subtitle === "ls /")!.card!;
+      expect(widenCard.allowSession).toBeUndefined();
+      expect((await api("POST", `/api/bots/${bot.id}/respond`, { requestId: widenCard.requestId, behavior: "allow", always: true })).status).toBe(200);
+      const once = await widen;
+      expect(once).toMatchObject({ behavior: "allow" });
+      expect(once).not.toHaveProperty("always");
     } finally {
       for (const conn of conns) conn.destroy();
       await api("POST", `/api/bots/${bot.id}/interrupt`);
@@ -9179,6 +9244,46 @@ describe("harness HTTP API", () => {
       await api("PATCH", "/api/config", { features: { browser: false }, browserProfiles: [] }).catch(() => undefined);
       if (room) await api("DELETE", `/api/groups/${room.id}`).catch(() => undefined);
       await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  }, 60_000);
+
+  it.each(["direct", "room"] as const)("loads the browser tools up front only when the browser is the conversation's place in %s turns", async (target) => {
+    // Behind Claude's tool search, the first browser action costs a model
+    // step. Works on: Browser preloads them. Auto, which only falls back to
+    // the browser, keeps them deferred, so turns that never browse stay small.
+    const bots: string[] = [];
+    const rooms: string[] = [];
+    const mounted = async (computer: "browser" | undefined) => {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      bots.push(bot.id);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        approvalMode: "auto",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+        ...(computer ? { computer } : {}),
+      })).status).toBe(200);
+      let path = `/api/bots/${bot.id}/messages`;
+      if (target === "room") {
+        const room = (await api("POST", "/api/groups", { name: `Browser preload ${bots.length}`, memberIds: [bot.id] })).body.group;
+        rooms.push(room.id);
+        expect((await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" })).status).toBe(200);
+        path = `/api/groups/${room.id}/messages`;
+      }
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", path, { text: "Check the website." })).status).toBe(202);
+      const dump = await readJsonFileWhenReady(fakeClaudeDump) as { mcpConfig: { mcpServers: { browser?: { alwaysLoad?: boolean } } } };
+      expect(dump.mcpConfig.mcpServers.browser).toBeDefined();
+      return dump.mcpConfig.mcpServers.browser!;
+    };
+    try {
+      expect((await api("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
+      expect((await mounted(undefined)).alwaysLoad).toBeUndefined();
+      expect((await mounted("browser")).alwaysLoad).toBe(true);
+    } finally {
+      for (const id of rooms) await api("POST", `/api/groups/${id}/interrupt`, {}).catch(() => undefined);
+      for (const id of bots) await api("POST", `/api/bots/${id}/interrupt`, {}).catch(() => undefined);
+      await api("PATCH", "/api/config", { features: { browser: false } }).catch(() => undefined);
+      for (const id of rooms) await api("DELETE", `/api/groups/${id}`).catch(() => undefined);
+      for (const id of bots) await api("DELETE", `/api/bots/${id}`).catch(() => undefined);
     }
   }, 60_000);
 
@@ -9883,7 +9988,7 @@ describe("harness HTTP API", () => {
       // and structural guards therefore cannot see a false idle window.
       const immediate = (await api("GET", "/api/bots?messages=0")).body;
       expect(immediate.groups.find((group: { id: string }) => group.id === room.id)?.working).toBe(true);
-      expect((await api("POST", `/api/groups/${room.id}/tasks`, { title: "Too soon" })).status).toBe(409);
+      expect((await api("PATCH", `/api/groups/${room.id}/tasks/${room.threadId}`, { title: "Too soon" })).status).toBe(409);
       expect((await api("PATCH", `/api/groups/${room.id}`, { memberIds: [first.id] })).status).toBe(409);
 
       const interrupted = await api("POST", `/api/groups/${room.id}/interrupt`, {
@@ -12872,6 +12977,28 @@ describe("message pages", () => {
     expect((await fetch(
       `${BASE}/api/threads/${threadId}/messages/prose-file-message/file?preview=1&ref=0`,
     )).status).toBe(400);
+  });
+
+  it("shows the copy a bot delivered of an outside picture, and says why one it never delivered is refused", async () => {
+    const threadId = "test-linked-file-room-thread";
+    const ref = "Heidi, 51 – Sideboard\n\n".length;
+    const refused = await fetch(`${BASE}/api/threads/${threadId}/messages/outside-image-message/file?preview=1&ref=${ref}`);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { code?: string }).code).toBe("outside_workspace");
+
+    const delivered = await fetch(`${BASE}/api/threads/${threadId}/messages/delivered-image-reply-message/file?preview=1&ref=${ref}`);
+    expect(delivered.status).toBe(200);
+    expect(delivered.headers.get("content-type")).toBe("image/png");
+    expect(await delivered.text()).toBe("delivered photo bytes");
+
+    // a link to it saves the same copy
+    const saved = await fetch(`${BASE}/api/threads/${threadId}/messages/delivered-image-reply-message/file`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: pathToFileURL(join(home, "Downloads", "sideboard.png")).href }),
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.text()).toBe("delivered photo bytes");
   });
 
   it("downloads an exact user attachment only from the private attachment store", async () => {
