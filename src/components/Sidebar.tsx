@@ -52,6 +52,7 @@ import { activeLocale, t } from "@/lib/i18n";
 import { copyText } from "@/lib/copy-text";
 import type { LocaleKey } from "@/locales";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { BulkSelectBar, BulkSelectFilters, useBulkSelect } from "./BulkSelectBar";
 import { FullAccessWarning } from "./FullAccessWarning";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { WorkingDots } from "./WorkingIndicator";
@@ -369,7 +370,9 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
     ...task, busy: task.threadId === group.threadId && busy, unread: task.threadId === group.threadId && group.unread,
     activity: task.threadId === group.threadId && waiting ? "waiting-on-you" as const : undefined,
   }));
-  const visible = orderedThreadList(visibleSidebarThreads(tasks, group.threadId, query, [], showAll));
+  const bulk = useBulkSelect();
+  const visible = orderedThreadList(visibleSidebarThreads(tasks, group.threadId, query, [], showAll || bulk.active));
+  const selection = bulk.forRows(visible);
   useRevealedThreadRow(state.revealThread, selected ? group.threadId : null);
   // One set of row actions per room; they read the room as it is when used.
   const latest = useRef(group);
@@ -386,9 +389,15 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
   }), [groupId, dispatch]);
   const locale = activeLocale();
   return <div className="mb-2 space-y-0.5" role="group" aria-label={t("task.namedList", { name: group.name })}>
+    {bulk.active && <BulkSelectFilters rows={visible} selected={selection} now={now} onChange={bulk.setSelected} onDone={bulk.finish} />}
     {visible.map((task) => <SidebarThreadRow key={task.threadId} task={task} ownerId={group.id} current={selected && task.threadId === group.threadId} compact={density === "compact"}
-      now={stampClock(threadRecency(task), now)} locale={locale} {...actions} />)}
-    {!query && !showAll && tasks.length > visible.length && <button type="button" onClick={() => setShowAll(true)} className="inline-flex h-7 items-center self-start pl-6 pr-3 text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button>}
+      now={stampClock(threadRecency(task), now)} locale={locale} {...actions} selectMode={bulk.active} checked={selection.has(task.threadId)} onToggleSelect={bulk.toggle} />)}
+    {!bulk.active && (tasks.length > 1 || (!query && !showAll && tasks.length > visible.length)) && <div className="flex items-center justify-between pl-6 pr-2">
+      {!query && !showAll && tasks.length > visible.length ? <button type="button" onClick={() => setShowAll(true)} className="inline-flex h-7 items-center text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button> : <span />}
+      {tasks.length > 1 && !group.dm && <button type="button" onClick={bulk.start} className="inline-flex h-7 items-center text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink">{t("task.bulk.select")}</button>}
+    </div>}
+    {bulk.active && <BulkSelectBar rows={visible} selected={selection} maxDeletable={tasks.length - 1} freshConversation={false} onChange={bulk.setSelected}
+      onDelete={(threadIds, onSettled) => dispatch({ type: "deleteGroupTasks", groupId, threadIds, onSettled })} />}
   </div>;
 }
 
@@ -1081,7 +1090,8 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
   }, [selected, currentProjectId]);
   useSnoozeExpiry(tasks);
   // Pin, then newest update. Search keeps the same order among matches.
-  const visibleTasks = orderedThreadList(visibleSidebarThreads(tasks, bot.threadId, query, projects, showAll));
+  const bulk = useBulkSelect();
+  const visibleTasks = orderedThreadList(visibleSidebarThreads(tasks, bot.threadId, query, projects, showAll || bulk.active));
   // A folder rises with the thread of its that sits highest in that order.
   // An empty index sorts last. Saved order breaks ties, and still governs
   // move up and down.
@@ -1126,9 +1136,16 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
   const renderThread = (task: (typeof tasks)[number]) => {
     const thread = currentTaskBot(bot, task.threadId);
     return <SidebarThreadRow key={task.threadId} task={{ ...task, busy: thread.busy, activity: thread.activity, waitingForTeammates: thread.waitingForTeammates }} ownerId={bot.id} current={selected && task.threadId === bot.threadId} compact={density === "compact"} folders={projects}
-      activityLabel={task.threadId === bot.threadId ? activityLabel : undefined} now={stampClock(threadRecency(task), now)} locale={locale} {...actions} />;
+      activityLabel={task.threadId === bot.threadId ? activityLabel : undefined} now={stampClock(threadRecency(task), now)} locale={locale} {...actions}
+      selectMode={bulk.active} checked={selection.has(task.threadId)} onToggleSelect={bulk.toggle} />;
   };
   const ungrouped = visibleTasks.filter((task) => !projects.some((project) => project.id === task.projectId));
+  // What Select mode can reach: the rows on screen, in the order they show.
+  const shownRows = [
+    ...orderedProjects.filter((project) => query || !collapsed.has(project.id)).flatMap((project) => visibleTasks.filter((task) => task.projectId === project.id)),
+    ...ungrouped,
+  ].map((task) => { const thread = currentTaskBot(bot, task.threadId); return { ...task, busy: thread.busy, activity: thread.activity }; });
+  const selection = bulk.forRows(shownRows);
   const projectToEdit = projects.find((project) => project.id === editingProject);
   const projectIds = projects.map((project) => project.id);
   const saveOrder = (ids: string[], onSaved?: () => void) => {
@@ -1156,6 +1173,7 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
       onDragOver={(event) => { if (event.dataTransfer.types.includes(FOLDER_DRAG_TYPE)) event.stopPropagation(); }}
       onDrop={(event) => { if (event.dataTransfer.types.includes(FOLDER_DRAG_TYPE)) { event.preventDefault(); event.stopPropagation(); resetFolderDrag(); } }}>
       {!hidden && <>
+      {bulk.active && <BulkSelectFilters rows={shownRows} selected={selection} now={now} onChange={bulk.setSelected} onDone={bulk.finish} />}
       {orderedProjects.map((project) => {
         const index = projects.indexOf(project);
         const projectTasks = tasks.filter((task) => task.projectId === project.id);
@@ -1229,7 +1247,12 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
       <span role="status" className="sr-only">{readStatus}</span>
       {projects.length > 0 && ungrouped.length > 0 && <div className="pl-6 pr-3 pb-1 pt-2 text-[10.5px] text-ink-tertiary">{t("task.list")}</div>}
       {ungrouped.map(renderThread)}
-      {!query && !showAll && tasks.length > visibleTasks.length && <button type="button" onClick={() => setShowAll(true)} className="inline-flex h-7 items-center self-start pl-6 pr-3 text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button>}
+      {!bulk.active && (tasks.length > 1 || (!query && !showAll && tasks.length > visibleTasks.length)) && <div className="flex items-center justify-between pl-6 pr-2">
+        {!query && !showAll && tasks.length > visibleTasks.length ? <button type="button" onClick={() => setShowAll(true)} className="inline-flex h-7 items-center text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button> : <span />}
+        {tasks.length > 1 && <button type="button" onClick={bulk.start} className="inline-flex h-7 items-center text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink">{t("task.bulk.select")}</button>}
+      </div>}
+      {bulk.active && <BulkSelectBar rows={shownRows} selected={selection} freshConversation onChange={bulk.setSelected}
+        onDelete={(threadIds, onSettled) => dispatch({ type: "deleteTasks", botId: bot.id, threadIds, onSettled })} />}
       <FullAccessWarning
         open={permissionRefresh?.kind === "full"}
         scope="thread"

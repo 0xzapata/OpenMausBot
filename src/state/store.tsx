@@ -47,6 +47,7 @@ import { showNotification, type NotificationTarget } from "@/lib/notify";
 import { speaker } from "@/lib/tts";
 import { roleProfilePatch, type BotRole } from "@/lib/bot-roles";
 import { t } from "@/lib/i18n";
+import { chunkIds, type DeleteResponse } from "@/lib/bulk-select";
 import { createBotPatchQueue, type BotUpdatePatch } from "./bot-patch-queue";
 import { useChatErrorClear } from "./chat-error";
 import type { OnboardingStatus } from "@/lib/onboarding";
@@ -1161,6 +1162,8 @@ function replaceBotQueues(state: AppState, queues: AppState["pendingQueued"]): A
   return { ...state, pendingQueued, consumedQueueIds };
 }
 
+export type BulkDeleteResult = { responses: DeleteResponse[]; error?: string };
+
 export type BotAnnouncement = Omit<Bot, "messages"> & { messages?: Message[] };
 
 export type Action =
@@ -1221,6 +1224,8 @@ export type Action =
   | { type: "pinGroupTask"; groupId: string; threadId: string; pinned: boolean; title: string }
   | { type: "setConversationTurnLimit"; groupId: string; threadId: string; minutes: number | null; dm: boolean }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
+  /** Many channel tasks in one go (chunked); settles with every response, or the error that stopped it. */
+  | { type: "deleteGroupTasks"; groupId: string; threadIds: string[]; onSettled?: (result: BulkDeleteResult) => void }
   | { type: "interruptGroup"; groupId: string; threadId?: string; onError?: () => void }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
@@ -1285,6 +1290,8 @@ export type Action =
   /** Name the thread again from its conversation; the new title arrives with the bot event. */
   | { type: "regenerateTaskTitle"; botId: string; threadId: string; onSettled?: (ok: boolean) => void }
   | { type: "deleteTask"; botId: string; threadId: string }
+  /** Many of a bot's tasks in one go (chunked); settles with every response, or the error that stopped it. */
+  | { type: "deleteTasks"; botId: string; threadIds: string[]; onSettled?: (result: BulkDeleteResult) => void }
   | { type: "newBot"; role?: BotRole; visibility?: BotVisibility; section?: string; preserveSelection?: boolean; onCreated?: (bot: Bot) => void; onError?: (message: string) => void }
   | { type: "botCreationPending"; on: boolean }
   | { type: "updateTask"; botId: string; threadId: string; patch: TaskUpdatePatch }
@@ -2432,9 +2439,11 @@ export function reducer(state: AppState, action: Action): AppState {
       }));
     }
     case "deleteTask":
+    case "deleteTasks":
     case "newGroupTask":
     case "switchGroupTask":
     case "deleteGroupTask":
+    case "deleteGroupTasks":
     case "regenerateTaskTitle":
       return state;
     case "newTask":
@@ -2998,6 +3007,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let creatingBot = false;
     const showError = (e: unknown) => {
       rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
+    };
+    // One request per chunk, in order. A failed chunk stops the rest and is
+    // reported; earlier chunks stay deleted and are in `responses`.
+    const bulkDelete = async (
+      url: string,
+      threadIds: string[],
+      apply: (response: DeleteResponse & { bot?: BotAnnouncement; group?: Partial<Group> & { id: string } }) => void,
+      onSettled?: (result: BulkDeleteResult) => void,
+    ) => {
+      const responses: DeleteResponse[] = [];
+      try {
+        for (const part of chunkIds(threadIds)) {
+          const response = await api<DeleteResponse & { bot?: BotAnnouncement; group?: Partial<Group> & { id: string } }>(url, { method: "POST", body: JSON.stringify({ threadIds: part }) });
+          responses.push(response);
+          apply(response);
+        }
+        onSettled?.({ responses });
+      } catch (error) {
+        showError(error);
+        onSettled?.({ responses, error: error instanceof Error ? error.message : String(error) });
+      }
     };
     /** Where a card action's message lives, and the card on it. A card asked
      * inside a room belongs to the room's list, never to one member's. */
@@ -3781,6 +3811,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             .then((r) => r?.bot && dispatch({ type: "botPatched", bot: r.bot }))
             .catch(showError);
           break;
+        case "deleteTasks":
+          void bulkDelete(`/api/bots/${action.botId}/tasks/delete`, action.threadIds,
+            (r) => { if (r.bot) dispatch({ type: "botPatched", bot: r.bot }); }, action.onSettled);
+          break;
         // Channel tasks mirror bot tasks, but hydrate the whole channel so
         // switching atomically replaces its transcript, folder and pin.
         case "newGroupTask":
@@ -3817,6 +3851,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api<{ group?: Partial<Group> & { id: string } }>(`/api/groups/${action.groupId}/tasks/${action.threadId}`, { method: "DELETE" })
             .then((r) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
             .catch(showError);
+          break;
+        case "deleteGroupTasks":
+          void bulkDelete(`/api/groups/${action.groupId}/tasks/delete`, action.threadIds,
+            (r) => { if (r.group) dispatch({ type: "groupPatched", group: r.group }); }, action.onSettled);
           break;
         case "interruptGroup":
           api(`/api/groups/${action.groupId}/interrupt`, {

@@ -1296,9 +1296,9 @@ export class Store {
   /** A thread's durable record: DB rows, legacy JSON leftovers, and the
    * per-thread event logs. Every delete path funnels here — task, group,
    * and bot deletion — so the logs cannot outlive the thread anywhere. */
-  private deleteThreadRecord(threadId: string) {
+  private deleteThreadRecord(threadId: string, dbAlreadyDeleted = false) {
     this.threads.delete(threadId);
-    mdb.deleteThread(threadId);
+    if (!dbAlreadyDeleted) mdb.deleteThread(threadId);
     for (const file of [
       messagesFile(threadId),
       `${messagesFile(threadId)}.imported`,
@@ -1477,12 +1477,29 @@ export class Store {
   }
 
   deleteGroupTask(groupId: string, threadId: string): GroupRecord | null {
+    const result = this.deleteGroupTasks(groupId, [threadId]);
+    return result && result.deleted.length ? result.group : null;
+  }
+
+  /** Delete many tasks of one channel with a single transcript transaction,
+   * a single save and a single `group` event. Null when nothing can be
+   * deleted: no such channel, a direct-message channel, or a request that
+   * would leave it without a conversation (a channel keeps at least one).
+   * Ids that are not this channel's tasks come back in `missing`. */
+  deleteGroupTasks(groupId: string, threadIds: string[]): { group: GroupRecord; deleted: string[]; missing: string[] } | null {
     const group = this.group(groupId);
-    if (!group || group.dm || !group.tasks || group.tasks.length < 2) return null;
-    if (!group.tasks.some((task) => task.threadId === threadId)) return null;
-    group.tasks = group.tasks.filter((task) => task.threadId !== threadId);
-    this.deleteThreadRecord(threadId);
-    if (group.threadId === threadId) {
+    if (!group || group.dm || !group.tasks) return null;
+    const present = new Set(group.tasks.map((task) => task.threadId));
+    const unique = [...new Set(threadIds)];
+    const deleted = unique.filter((id) => present.has(id));
+    const missing = unique.filter((id) => !present.has(id));
+    if (deleted.length >= group.tasks.length) return null;
+    if (!deleted.length) return { group, deleted, missing };
+    mdb.deleteThreads(deleted);
+    const doomed = new Set(deleted);
+    group.tasks = group.tasks.filter((task) => !doomed.has(task.threadId));
+    for (const id of deleted) this.deleteThreadRecord(id, true);
+    if (doomed.has(group.threadId)) {
       const next = group.tasks[0]!;
       group.threadId = next.threadId;
       group.pinnedCwd = next.pinnedCwd;
@@ -1490,7 +1507,7 @@ export class Store {
     }
     this.saveGroups();
     this.emit({ type: "group", groupId });
-    return group;
+    return { group, deleted, missing };
   }
 
   /** Toggle an emoji reaction on a message ("user" or a member botId). */
@@ -2838,8 +2855,21 @@ export class Store {
     const bot = this.bot(botId);
     if (!bot) return null;
     if (projectId !== undefined && !this.project(botId, projectId)) return null;
+    const task = this.buildTask(bot, title, projectId, openedBy, approvalMode, modelSelection, cwd);
+    bot.tasks = [task, ...(bot.tasks ?? [])];
+    if (activate) {
+      this.mirrorActiveTask(bot, task);
+    }
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+    return task;
+  }
+
+  /** A new task record. Attaches and persists nothing. */
+  private buildTask(bot: BotRecord, title?: string, projectId?: string, openedBy?: TaskOpenedBy, approvalMode?: "ask" | "full",
+    modelSelection?: ModelSelection, cwd?: string): TaskRecord {
     const createdAt = Date.now();
-    const task: TaskRecord = {
+    return {
       threadId: newId(),
       title: threadTitleFrom(title),
       createdAt,
@@ -2858,13 +2888,6 @@ export class Store {
       activity: "idle",
       busy: false,
     };
-    bot.tasks = [task, ...(bot.tasks ?? [])];
-    if (activate) {
-      this.mirrorActiveTask(bot, task);
-    }
-    this.saveBots();
-    this.emit({ type: "bot", botId });
-    return task;
   }
 
   /** Attach (or complete) the opener record after the thread exists — the
@@ -2937,21 +2960,39 @@ export class Store {
   /** Delete a task and its transcript, retaining generated project files.
    * When no visible tasks remain, replace it with a fresh conversation. */
   deleteTask(botId: string, threadId: string): BotRecord | null {
+    const result = this.deleteTasks(botId, [threadId]);
+    return result && result.deleted.length ? result.bot : null;
+  }
+
+  /** Delete many tasks of one bot with a single transcript transaction, a
+   * single save and a single `bot` event. Ids that are not this bot's tasks
+   * are reported in `missing`. The transcript rows go first, so a failure
+   * there leaves every task, log file and subscriber untouched. */
+  deleteTasks(botId: string, threadIds: string[]): { bot: BotRecord; deleted: string[]; missing: string[] } | null {
     const bot = this.bot(botId);
     if (!bot?.tasks) return null;
-    if (!bot.tasks.some((t) => t.threadId === threadId)) return null;
-    bot.tasks = bot.tasks.filter((t) => t.threadId !== threadId);
-    const visible = bot.tasks.find((task) => !task.routineRunId)
-      ?? this.createTask(botId, undefined, bot.threadId === threadId)!;
-    if (bot.threadId === threadId || this.taskByThread(botId, bot.threadId)?.routineRunId) {
+    const present = new Set(bot.tasks.map((t) => t.threadId));
+    const unique = [...new Set(threadIds)];
+    const deleted = unique.filter((id) => present.has(id));
+    const missing = unique.filter((id) => !present.has(id));
+    if (!deleted.length) return { bot, deleted, missing };
+    mdb.deleteThreads(deleted);
+    const doomed = new Set(deleted);
+    bot.tasks = bot.tasks.filter((t) => !doomed.has(t.threadId));
+    let visible = bot.tasks.find((task) => !task.routineRunId);
+    if (!visible) {
+      visible = this.buildTask(bot);
+      bot.tasks = [visible, ...bot.tasks];
+    }
+    if (doomed.has(bot.threadId) || this.taskByThread(botId, bot.threadId)?.routineRunId) {
       this.mirrorActiveTask(bot, visible);
     }
-    this.deleteThreadRecord(threadId);
+    for (const id of deleted) this.deleteThreadRecord(id, true);
     bot.unread = bot.tasks.some(taskCountsAsBotUnread);
     this.refreshBotActivity(bot);
     this.saveBots();
     this.emit({ type: "bot", botId });
-    return bot;
+    return { bot, deleted, missing };
   }
 
   /** A first run: no bot yet, so seedIfEmpty makes one. */

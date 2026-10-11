@@ -529,6 +529,19 @@ export function deleteThread(threadId: string): void {
   });
 }
 
+/** Delete several threads in ONE transaction: all of them go or none do. */
+export function deleteThreads(threadIds: string[]): void {
+  if (threadIds.length === 0) return;
+  writeFollowups((connection) => {
+    const statements = [
+      connection.prepare("DELETE FROM chat_followups WHERE thread_id = ?"),
+      connection.prepare("DELETE FROM messages WHERE thread_id = ?"),
+      connection.prepare("DELETE FROM thread_state WHERE thread_id = ?"),
+    ];
+    for (const id of threadIds) for (const statement of statements) statement.run(id);
+  });
+}
+
 /** Every thread whose stored messages mention `fragment` anywhere (an
  * attachment's file name, say). A scan, like search; used only to decide
  * whether a member on a workspace with a restricted bot may fetch a file. */

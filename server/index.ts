@@ -1116,6 +1116,71 @@ function cloudGuestSendRefusal(auth: RequestAuth, threadId: string): string | nu
     ? null : "On this Cloud you can only write in conversations you started. Start a new conversation with this bot.";
 }
 
+const MAX_BULK_DELETE_TASKS = 500;
+
+type TaskDeleteRefusal =
+  | { reason: "not-found"; status: 404; error: string }
+  | { reason: "forbidden"; status: 403; error: string }
+  | { reason: "busy"; status: 409; error: string };
+
+/** Why one task may not be deleted right now, or null. Shared by the single
+ * and bulk delete routes so both enforce the same rules. */
+function taskDeleteRefusal(auth: RequestAuth, botId: string, threadId: string): TaskDeleteRefusal | null {
+  if (!store.taskByThread(botId, threadId)) return { reason: "not-found", status: 404, error: "no such task" };
+  const notYours = cloudThreadRefusal(auth, threadId);
+  if (notYours) return { reason: "forbidden", status: 403, error: notYours };
+  if (phoneSecretSubmissions.hasThread(threadId)) {
+    return { reason: "busy", status: 409, error: "this task is securely saving a credential — try again when it finishes" };
+  }
+  if (threadBusy(botId, threadId) || routines!.isActiveThread(threadId)) {
+    return { reason: "busy", status: 409, error: "this task is running — stop it first" };
+  }
+  return null;
+}
+
+/** Cancel what hangs off threads that are about to be deleted. Returns the
+ * state `forgetDeletedTasks` needs once the store has deleted them. */
+function prepareTaskDeletion(threadIds: string[]): Map<string, Array<{ botId: string; stagedId: string }>> {
+  const stagedSkillCleanups = new Map<string, Array<{ botId: string; stagedId: string }>>();
+  for (const threadId of threadIds) {
+    stagedSkillCleanups.set(threadId, stagedSkillCleanupsForThread(threadId));
+    roomHandoffs.cancelDirect(threadId, "The source conversation was deleted");
+    cancelTeamSetupResumesForThread(threadId);
+  }
+  return stagedSkillCleanups;
+}
+
+/** Cancel what hangs off channel tasks that are about to be deleted. */
+function prepareGroupTaskDeletion(threadIds: string[]): Map<string, Array<{ botId: string; stagedId: string }>> {
+  const stagedSkillCleanups = new Map<string, Array<{ botId: string; stagedId: string }>>();
+  for (const threadId of threadIds) {
+    stagedSkillCleanups.set(threadId, stagedSkillCleanupsForThread(threadId));
+    lastReply.delete(threadId);
+    cancelTeamSetupResumesForThread(threadId);
+  }
+  return stagedSkillCleanups;
+}
+
+/** Drop in-memory state for channel tasks the store has deleted. */
+function forgetDeletedGroupTasks(deleted: string[], stagedSkillCleanups: Map<string, Array<{ botId: string; stagedId: string }>>): void {
+  for (const threadId of deleted) {
+    clearTurnDigestState(threadId);
+    revokeInternalCapabilitiesForThread(threadId);
+    rejectDeletedThreadSkillStages(stagedSkillCleanups.get(threadId) ?? []);
+  }
+}
+
+/** Drop in-memory state for threads the store has deleted. */
+function forgetDeletedTasks(deleted: string[], stagedSkillCleanups: Map<string, Array<{ botId: string; stagedId: string }>>): void {
+  for (const threadId of deleted) {
+    clearTurnDigestState(threadId);
+    revokeInternalCapabilitiesForThread(threadId);
+    handoffs.forget(threadId);
+    settleDirectFollowup(directTurnGenerationByThread.get(threadId));
+    rejectDeletedThreadSkillStages(stagedSkillCleanups.get(threadId) ?? []);
+  }
+}
+
 /** On a Cloud home: the one key every line, card answer, conversation and
  * routine of the owner's own devices carries, whichever device and however
  * often it was paired again, so re-pairing never demotes what the owner
@@ -5820,6 +5885,17 @@ function pageIfThreadChanged(id: string, threadId: string) {
   sentThreads.set(id, threadId);
   return messagePage(threadId, DEFAULT_PAGE);
 }
+let queuedBroadcastScheduled = false;
+/** A bulk delete emits one thread.deleted per thread inside one synchronous
+ * call; one snapshot after it carries the same final state. */
+function scheduleQueuedBroadcast(): void {
+  if (queuedBroadcastScheduled) return;
+  queuedBroadcastScheduled = true;
+  queueMicrotask(() => {
+    queuedBroadcastScheduled = false;
+    broadcast({ kind: "bot.queued", queues: publicBotQueuedMessages() });
+  });
+}
 store.onChange((change) => {
   // Who owns which thread, and what each member may see, follow the fleet.
   if (change.type !== "message" && change.type !== "message.patch" && change.type !== "thread" && change.type !== "sections") forgetVisibility();
@@ -5849,7 +5925,7 @@ store.onChange((change) => {
           syncRoutineRunToSource(run);
         }
       }
-      broadcast({ kind: "bot.queued", queues: publicBotQueuedMessages() });
+      scheduleQueuedBroadcast();
       break;
     case "bot": {
       const bot = store.bot(change.botId);
@@ -21336,6 +21412,39 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return json(res, 201, { group: groupWithThread(store.group(group.id)!), task });
     }
 
+    // Bulk delete of channel tasks; before the switch route, which would
+    // read "delete" as a thread id. A channel keeps at least one task.
+    m = path.match(/^\/api\/groups\/([\w-]+)\/tasks\/delete$/);
+    if (m && method === "POST") {
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
+      const ids = (body as { threadIds?: unknown }).threadIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_BULK_DELETE_TASKS
+        || ids.some((id) => typeof id !== "string" || id === "")) {
+        return json(res, 400, { error: `threadIds must be 1-${MAX_BULK_DELETE_TASKS} thread ids` });
+      }
+      const group = store.group(m[1]);
+      if (!group) return json(res, 404, { error: "no such channel" });
+      if (group.dm) return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
+      if (phoneSecretSubmissions.hasGroup(group.id)) {
+        return json(res, 409, { error: "this channel is securely saving a credential — try again when it finishes" });
+      }
+      if (channelTaskBlocked(group)) {
+        return json(res, 409, { error: "this channel is working or waiting on you — finish that turn first" });
+      }
+      const allowed: string[] = [];
+      const refused: Array<{ threadId: string; reason: "not-found" }> = [];
+      for (const threadId of new Set(ids as string[])) {
+        if (!store.groupTaskByThread(group.id, threadId) || cloudThreadRefusal(auth, threadId)) refused.push({ threadId, reason: "not-found" });
+        else allowed.push(threadId);
+      }
+      const cleanups = prepareGroupTaskDeletion(allowed);
+      const result = store.deleteGroupTasks(group.id, allowed);
+      if (!result) return json(res, 400, { error: "a channel keeps at least one task" });
+      forgetDeletedGroupTasks(result.deleted, cleanups);
+      return json(res, 200, { group: groupWithThread(result.group), deleted: result.deleted, refused });
+    }
+
     m = path.match(/^\/api\/groups\/([\w-]+)\/tasks\/([\w-]+)$/);
     if (m && method === "POST") {
       const group = store.group(m[1]);
@@ -21425,14 +21534,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!store.groupTaskByThread(group.id, m[2])) return json(res, 404, { error: "no such channel task" });
       const notYours = cloudThreadRefusal(auth, m[2]);
       if (notYours) return json(res, 403, { error: notYours });
-      const stagedSkillCleanups = stagedSkillCleanupsForThread(m[2]);
-      lastReply.delete(m[2]);
-      cancelTeamSetupResumesForThread(m[2]);
+      const cleanups = prepareGroupTaskDeletion([m[2]]);
       const updated = store.deleteGroupTask(group.id, m[2]);
       if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
-      clearTurnDigestState(m[2]);
-      revokeInternalCapabilitiesForThread(m[2]);
-      rejectDeletedThreadSkillStages(stagedSkillCleanups);
+      forgetDeletedGroupTasks([m[2]], cleanups);
       return json(res, 200, { group: groupWithThread(updated) });
     }
 
@@ -23983,6 +24088,33 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (auth.kind === "session") threadStarters.set(task.threadId, actorKey(auth));
       return json(res, 201, { bot: publicBot(store.bot(bot.id)!), task: wireTask(task, store.bot(bot.id)!.modelSelection) });
     }
+    // Bulk delete. Must sit before the switch route below, which would read
+    // "delete" as a thread id. Partial success: refused ids are reported.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/delete$/);
+    if (m && method === "POST") {
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
+      const ids = (body as { threadIds?: unknown }).threadIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_BULK_DELETE_TASKS
+        || ids.some((id) => typeof id !== "string" || id === "")) {
+        return json(res, 400, { error: `threadIds must be 1-${MAX_BULK_DELETE_TASKS} thread ids` });
+      }
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such bot" });
+      const allowed: string[] = [];
+      const refused: Array<{ threadId: string; reason: "not-found" | "busy" }> = [];
+      for (const threadId of new Set(ids as string[])) {
+        const refusal = taskDeleteRefusal(auth, bot.id, threadId);
+        if (!refusal) allowed.push(threadId);
+        else refused.push({ threadId, reason: refusal.reason === "busy" ? "busy" : "not-found" });
+      }
+      const cleanups = prepareTaskDeletion(allowed);
+      const result = store.deleteTasks(bot.id, allowed);
+      if (!result) return json(res, 404, { error: "no such bot" });
+      forgetDeletedTasks(result.deleted, cleanups);
+      for (const threadId of result.missing) refused.push({ threadId, reason: "not-found" });
+      return json(res, 200, { bot: publicBot(result.bot), deleted: result.deleted, refused });
+    }
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)$/);
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
@@ -24151,27 +24283,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     if (m && method === "DELETE") {
       const bot = store.bot(m[1]);
-      if (!bot || !store.taskByThread(bot.id, m[2])) {
-        return json(res, 404, { error: "no such task" });
-      }
-      const notYours = cloudThreadRefusal(auth, m[2]);
-      if (notYours) return json(res, 403, { error: notYours });
-      if (phoneSecretSubmissions.hasThread(m[2])) {
-        return json(res, 409, { error: "this task is securely saving a credential — try again when it finishes" });
-      }
-      if (threadBusy(bot.id, m[2]) || routines!.isActiveThread(m[2])) {
-        return json(res, 409, { error: "this task is running — stop it first" });
-      }
-      const stagedSkillCleanups = stagedSkillCleanupsForThread(m[2]);
-      roomHandoffs.cancelDirect(m[2], "The source conversation was deleted");
-      cancelTeamSetupResumesForThread(m[2]);
+      if (!bot) return json(res, 404, { error: "no such task" });
+      const refusal = taskDeleteRefusal(auth, bot.id, m[2]);
+      if (refusal) return json(res, refusal.status, { error: refusal.error });
+      const cleanups = prepareTaskDeletion([m[2]]);
       const updated = store.deleteTask(m[1], m[2]);
       if (!updated) return json(res, 404, { error: "no such task" });
-      clearTurnDigestState(m[2]);
-      revokeInternalCapabilitiesForThread(m[2]);
-      handoffs.forget(m[2]);
-      settleDirectFollowup(directTurnGenerationByThread.get(m[2]));
-      rejectDeletedThreadSkillStages(stagedSkillCleanups);
+      forgetDeletedTasks([m[2]], cleanups);
       return json(res, 200, { bot: publicBot(updated) });
     }
     // Regenerate title (#1858): name the thread again from its conversation
