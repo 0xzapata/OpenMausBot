@@ -687,10 +687,15 @@ describe("independent bot tasks through the isolated control surface", () => {
       return internal(env.OMB_CONTROL_TOKEN, "GET", `${url.pathname}${url.search}`);
     };
     // B acquires first although A started first: mounting the tool did not
-    // lock the shared computer. A receives an actionable hold, not authority.
+    // lock the shared computer. A's call waits behind B, its waiting chip
+    // up; stopping A ends that wait held — never with authority — and does
+    // not release B's seat.
     expect((await gate(launchedB)).body.held).toBe(false);
-    expect((await gate(launchedA)).body).toMatchObject({ held: true, blockedReason: expect.stringContaining("Another thread") });
+    const waitingA = gate(launchedA);
+    await expect.poll(async () => ((await api("GET", `/api/threads/${taskA}/messages`)).body.messages as any[])
+      .some((message) => String(message.tool?.name ?? "").startsWith("Waiting for its turn on this computer")), { timeout: 15_000 }).toBe(true);
     await control(["interrupt", "--bot", botId, "--task", taskA]);
+    expect((await waitingA).body.held).toBe(true);
     expect((await gate(launchedA)).status).toBe(401);
     expect((await gate(launchedB)).body.held).toBe(false);
     await control(["interrupt", "--bot", botId, "--task", taskB]);
