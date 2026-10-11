@@ -173,6 +173,15 @@ describe("openChatLink", () => {
     ]);
   });
 
+  it("refuses a room's dead thread, showing that room instead", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://thread/gone?bot=standup", await state())).toBe(false);
+    expect(actions(dispatch)).toEqual([
+      { type: "select", id: "standup" },
+      { type: "notice", notice: { kind: "thread-gone", botName: "Standup" } },
+    ]);
+  });
+
   it("says a bot it does not know is gone", async () => {
     const dispatch = vi.fn();
     expect(openChatLink(dispatch, "openmausbot://bot/nobody", await state())).toBe(false);

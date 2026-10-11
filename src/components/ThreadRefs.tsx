@@ -105,10 +105,12 @@ export function openChatLink(dispatch: (action: Action) => void, link: string, s
   const address = parseThreadRefUrl(link);
   const ref = address ? resolveThreadRefAddress(collectThreadRefs(state.bots, state.groups), address) : null;
   if (ref) return openThread(dispatch, ref, state);
-  const bot = address?.botId ? state.bots.find((candidate) => candidate.id === address.botId) : undefined;
-  if (bot) {
-    dispatch({ type: "select", id: bot.id });
-    dispatch({ type: "notice", notice: { kind: "thread-gone", botName: bot.name } });
+  const owner = address?.botId
+    ? state.bots.find((bot) => bot.id === address.botId) ?? state.groups.find((group) => group.id === address.botId && !group.dm)
+    : undefined;
+  if (owner) {
+    dispatch({ type: "select", id: owner.id });
+    dispatch({ type: "notice", notice: { kind: "thread-gone", botName: owner.name } });
   } else {
     showLinkNotice(dispatch, state, { kind: "thread-gone", botName: null });
   }
