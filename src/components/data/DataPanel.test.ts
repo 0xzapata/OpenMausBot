@@ -471,8 +471,9 @@ describe("DataPanel", () => {
     render();
     await settle();
     // Five keystrokes inside the pause: one run, with the final text.
+    // Checked before any await: the pause is real time, and a slow runner's
+    // settle() can outlast it.
     for (const text of ["s", "se", "sel", "sele", "select 42"]) type(text);
-    await settle();
     expect(runRequests()).toHaveLength(0);
     await pause(LIVE_RUN_DELAY_MS + 10);
     await settle();

@@ -55,14 +55,16 @@ export function runAcpOneShot(input: AcpOneShotInput): Promise<string> {
     let nextId = 1;
     const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
 
-    const finish = (error?: Error) => {
+    const finish = async (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       for (const waiter of pending.values()) waiter.reject(error ?? new Error(`${name} background call closed`));
       pending.clear();
-      void input.kill(child).catch(() => undefined);
+      // The caller removes the session folder: Windows keeps it locked until
+      // the process exits, including on refusal and abort.
+      await input.kill(child).catch(() => undefined);
       if (!error && usage) {
         try {
           onUsage?.(usage);
