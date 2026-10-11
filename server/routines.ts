@@ -1519,8 +1519,8 @@ export class RoutineManager {
   }
 
   /** One run for each enabled routine marked to run on startup. A routine the
-   * scheduler is about to catch up on, or one with a run still queued from
-   * before the restart, is left to that run so a start never doubles it. An
+   * scheduler is about to catch up on, or one with a run already queued or
+   * under way, is left to that run so a start never doubles it. An
    * occurrence too late to catch up is replaced by the startup run instead of
    * being recorded as missed. False when the runs could not be saved. */
   private queueStartupRuns(): boolean {
@@ -1528,7 +1528,7 @@ export class RoutineManager {
     const marked = this.routines.filter((routine) =>
       routine.enabled && routine.runOnStartup &&
       !(routine.nextRunAt != null && routine.nextRunAt <= now && now - routine.nextRunAt <= CATCH_UP_MS) &&
-      !this.runs.some((run) => run.routineId === routine.id && run.status === "queued"));
+      !this.runs.some((run) => run.routineId === routine.id && ["queued", "running", "waiting"].includes(run.status)));
     if (marked.length === 0) return true;
     const runs: RoutineRun[] = [];
     const allocations: ResultsThreadAllocation[] = [];
