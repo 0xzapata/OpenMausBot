@@ -28,6 +28,14 @@
  * seconds an engine may give one tool call (Codex's default), with room for
  * the action itself. */
 export const CONTROL_WAIT_MS = 45_000;
+/** A call acts only when it got its computer within this of being made: the
+ * action then keeps nearly all of the engine's budget for one tool call. One
+ * that waited longer is not performed (CONTROL_WAITED) and the model calls
+ * again — the computer is this turn's by then, so that call acts at once —
+ * because an action started late could outlive a call the engine already
+ * gave up on and retried, and happen twice. The harness counts its own wait;
+ * a bridge counts from the moment the call reached it, its queue included. */
+export const CONTROL_ACT_WITHIN_MS = 5_000;
 /** Past the harness's longest answer: a check it is still legitimately
  * holding must never be cut off and misread. */
 const READ_TIMEOUT_MS = CONTROL_WAIT_MS + 10_000;
@@ -48,6 +56,11 @@ export const CONTROL_REFUSAL_PLAIN =
 export const CONTROL_HANDED_BACK =
   "The person has handed this computer back. This call was NOT performed — the screen may have changed while they had it. " +
   "Take a fresh screenshot, then continue the task.";
+/** The computer came free, but only after this call had waited for it past
+ * CONTROL_ACT_WITHIN_MS. */
+export const CONTROL_WAITED =
+  "This computer is free now, but this call had to wait for it, so it was NOT performed. " +
+  "Call again: the next call goes through at once. If you meant to click or type from an earlier screenshot, take a fresh one first — the screen may have changed while you waited.";
 /** Another turn has the computer and this one is in line for it. */
 export const CONTROL_BUSY =
   "Another thread is using this computer. This call was not performed. This turn gets the computer as soon as it is free: " +

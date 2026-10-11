@@ -4,7 +4,7 @@
 // silence PLUS a failed liveness probe does, and traffic always vetoes.
 import { describe, expect, it, vi } from "vitest";
 
-import { CONTROL_REFUSAL_PLAIN, CONTROL_UNCONFIRMED, type ControlState } from "./control-client.ts";
+import { CONTROL_REFUSAL_PLAIN, CONTROL_UNCONFIRMED, CONTROL_WAITED, type ControlState } from "./control-client.ts";
 import {
   createGateInterceptor,
   createInactivityWatchdog,
@@ -256,6 +256,44 @@ describe("createGateInterceptor", () => {
     state = { held: true, helpOpen: false };
     await intercept(frame("tools/call", 4));
     expect(refusalText(refused[2]!)).toBe(CONTROL_UNCONFIRMED);
+  });
+
+  // Codex gives one tool call 60 s. A call forwarded after a long wait could
+  // still be acting when the engine gives up on it, and the model's retry
+  // would act twice. The wait counts from the call reaching the bridge: a
+  // parallel call queued behind another's held check has waited too.
+  it("never forwards a call answered free late, whether the harness held its check or it queued behind another", async () => {
+    vi.useFakeTimers();
+    try {
+      const checks: Array<(state: ControlState) => void> = [];
+      const forwarded: string[] = [];
+      const refused: string[] = [];
+      const intercept = createGateInterceptor({
+        check: () => new Promise<ControlState>((resolve) => checks.push(resolve)),
+        forward: (line) => forwarded.push(line),
+        refuse: (line) => refused.push(line),
+        actWithinMs: 1_000,
+      });
+      const quick = intercept(frame("tools/call", 1));
+      await vi.advanceTimersByTimeAsync(900);
+      checks.shift()!(free);
+      await quick;
+      expect(forwarded).toEqual([frame("tools/call", 1)]);
+
+      const held = intercept(frame("tools/call", 2));
+      const queued = intercept(frame("tools/call", 3));
+      await vi.advanceTimersByTimeAsync(1_500);
+      checks.shift()!(free);
+      await vi.advanceTimersByTimeAsync(0);
+      // The queued call's own check answers free at once, 1.5 s after it arrived.
+      expect(checks).toHaveLength(1);
+      checks.shift()!(free);
+      await Promise.all([held, queued]);
+      expect(forwarded).toEqual([frame("tools/call", 1)]);
+      expect(refused.map((line) => [JSON.parse(line).id, refusalText(line)])).toEqual([[2, CONTROL_WAITED], [3, CONTROL_WAITED]]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

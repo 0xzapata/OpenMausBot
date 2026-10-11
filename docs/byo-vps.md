@@ -116,9 +116,8 @@ VPS is unavailable and what to do about it, so it says so instead of claiming sc
 fails and says why instead. Enable **Start VPS automatically** per bot to let Auto prepare or wake that bot's
 managed container; the switch is deliberately off by default.
 
-A turn doesn't inspect the VPS over SSH when an inspection found its desktop ready in the last two minutes
-(the Computer panel's poll, another turn, a start): it mounts the computer at once, and its first computer call
-checks the desktop again before using it.
+Each turn checks the container when it starts, because the computer tools connect into the running container
+the moment the engine launches them. Turns that start together share one check instead of queueing one each.
 
 ## Several turns at once
 
@@ -130,14 +129,17 @@ reaches for the screen while another holds it shows
 
 > Waiting for its turn on this computer — *position* in queue — *bot* is running *thread*. Starts automatically when the turns ahead of it finish.
 
-and its computer call waits for the desktop, up to 45 seconds, and goes through the moment it is free; a call
-that runs out tells the model the desktop is still taken and to keep waiting with another call rather than end
-its turn. The chip settles as "Computer free — continuing" when the desktop lands, or "Stopped waiting for the
-computer" if the turn ends first. A long wait parks the turn at the ceiling (30 minutes by default), still
-naming the holder, and it resumes on its own when the computer is free. A call made while a person has taken
-control waits for them the same way; once they hand it back it is not performed (the screen may have moved),
-and the model takes a fresh screenshot. Container lifecycle actions (create, start, stop) are still one at a
-time per container.
+and its computer call waits for the desktop, up to 45 seconds, and answers the moment it is free; a call that
+runs out tells the model the desktop is still taken and to keep waiting with another call rather than end its
+turn. A call that waited more than five seconds is not performed even then — an action started that late could
+outlast the engine's limit for one tool call and run twice when the model retries — so the model calls again,
+and that call acts at once: the desktop is its turn's by then. The chip settles as "Computer free — continuing"
+when the desktop lands, or "Stopped waiting for the computer" if the turn ends first. A long wait parks the
+turn at the ceiling (30 minutes by default), still naming the holder, and it resumes on its own when the
+computer is free. A call made while a person has taken control waits for them the same way; once they hand it
+back it is not performed (the screen may have moved), and the model takes a fresh screenshot. A hold older
+than the same ceiling is not waited for: the bot stops and says it is waiting for control back. Container
+lifecycle actions (create, start, stop) are still one at a time per container.
 
 ## Troubleshooting
 

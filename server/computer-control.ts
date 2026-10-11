@@ -11,7 +11,8 @@
 //     the person has moved on, on whatever happens to be under it. A call
 //     made during the hold waits in the harness's gate for them to hand
 //     back (so the turn goes on), and even then is answered unperformed,
-//     with a note to look at the screen again.
+//     with a note to look at the screen again. A hold older than the wait
+//     ceiling is not waited for: the turn is told to stop and say so.
 //   - Releasing control also settles any open help request, so a bot
 //     waiting on `requestHelp` wakes up from the same state change the
 //     person made — there is no separate "done helping" step to forget.

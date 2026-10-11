@@ -755,48 +755,6 @@ createServer(socket => socket.end()).listen(port, '127.0.0.1');
     60_000,
   );
 
-  // Every turn of a VPS bot paid a fresh ~6-round-trip SSH inspection at
-  // dispatch, "hi" included. A desktop an inspection found ready moments ago
-  // now mounts with no SSH at all; the turn's first computer call looks
-  // again (through the poll's short cache) before it claims, and refuses a
-  // desktop that went away meanwhile with the reason.
-  it("mounts a VPS desktop seen ready moments ago without SSH at dispatch; its first computer call checks it again", async () => {
-    expect((await api("PUT", "/api/config", { vps: { sshAlias: "production-vps" } })).status).toBe(200);
-    const bot = (await api("POST", "/api/bots")).body.bot;
-    writeFileSync(join(dirname(dockerLog), "container.name"), vpsContainerName(bot.id));
-    await api("PATCH", `/api/bots/${bot.id}`, { browser: false, cloudBackend: "vps", computer: null,
-      modelSelection: { instanceId: "vps", model: "fake-model" } });
-    const template = join(dirname(dockerLog), "container.json.tpl");
-    const original = readFileSync(template, "utf8");
-    rmSync(gateFile, { force: true });
-    rmSync(`${acpDump}.mcp.json`, { force: true });
-    try {
-      // The Computer panel's poll: one full inspection, ready.
-      expect((await api("GET", `/api/bots/${bot.id}/computer`)).body).toMatchObject({ backend: "vps", ready: true });
-      const inspectedAt = Date.now();
-      const before = readFileSync(dockerLog, "utf8").length;
-      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Check the VPS desktop" })).status).toBe(202);
-      await until(async () => existsSync(`${acpDump}.mcp.json`) && (await botById(bot.id))?.busy === true, "the VPS turn");
-      const computer = (JSON.parse(readFileSync(`${acpDump}.mcp.json`, "utf8")) as Array<{ name: string; args?: string[]; env?: Array<{ name: string; value: string }> }>)
-        .find((server) => server.name === "computer");
-      expect(computer?.args).toContain(CONTAINER_ID);
-      expect(readFileSync(dockerLog, "utf8").slice(before).split("\n").filter((line) => line.startsWith("-H ssh://"))).toEqual([]);
-
-      // The desktop stops behind the turn's back. Once the poll's cache has
-      // lapsed, the first computer call sees it and says why.
-      writeFileSync(template, original.replace('"Running":true', '"Running":false'));
-      await new Promise((resolve) => setTimeout(resolve, Math.max(0, inspectedAt + 10_500 - Date.now())));
-      const env = (name: string) => computer?.env?.find((entry) => entry.name === name)?.value ?? "";
-      const answer = await createControlClient({ url: env("OMB_CONTROL_URL"), token: env("OMB_CONTROL_TOKEN") }).state(true);
-      expect(answer.held).toBe(true);
-      expect(answer.blockedReason).toContain("could not claim the VPS computer (The OpenMausBot VPS container is stopped)");
-    } finally {
-      writeFileSync(template, original);
-      writeFileSync(gateFile, "open");
-      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
-    }
-  }, 45_000);
-
   // A Chief's assignment (coordinate_bots) to a bot whose VPS was stopped
   // failed at dispatch, even when the work never needed a screen. The turn
   // now runs, and its model is told why there is no computer and what the

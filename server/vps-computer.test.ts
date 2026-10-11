@@ -46,8 +46,8 @@ import {
   vpsLifecycleBusy,
   vpsSshTunnelArgs,
   vpsStartsForTurn,
+  vpsUnavailableHint,
   inspectVpsForAuto,
-  recentlyReadyVps,
   reuseVps,
   type VpsCommandRunner,
 } from "./vps-computer.ts";
@@ -573,6 +573,34 @@ describe("VPS computer", () => {
     }
   });
 
+  it("shares one Auto inspection among turns that ask while it runs, never jumping a stop queued behind it", async () => {
+    const config: AppConfig = { vps: { sshAlias: "burst-vps" } };
+    const fake = fixture();
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => { release = resolve; });
+    const runner: VpsCommandRunner = async (args, options) => {
+      if (args[2] === "image") await gate;
+      return fake.runner(args, options);
+    };
+    const inspections = () => fake.calls.filter(({ args }) => args[2] === "image").length;
+    // A burst: three turns ask while the first inspection is still out.
+    const burst = [1, 2, 3].map(() => inspectVpsForAuto(config, BOT_ID, runner));
+    release();
+    expect((await Promise.all(burst)).map((status) => status.ready)).toEqual([true, true, true]);
+    expect(inspections()).toBe(1);
+
+    // A stop queues behind a running inspection: a turn that asks after it
+    // waits its turn and sees the stopped desktop, not the answer in flight.
+    gate = new Promise<void>((resolve) => { release = resolve; });
+    const running = inspectVpsForAuto(config, BOT_ID, runner);
+    const stop = vpsComputerAction("stop", config, BOT_ID, runner);
+    const after = inspectVpsForAuto(config, BOT_ID, runner);
+    release();
+    expect((await running).ready).toBe(true);
+    expect((await stop).container).toBe("stopped");
+    expect(await after).toMatchObject({ ready: false, container: "stopped" });
+  });
+
   it("keeps provisioning and readiness checks on the alias captured at operation start", async () => {
     const fake = fixture({ container: false });
     const config: AppConfig = { vps: { sshAlias: "original-vps" } };
@@ -897,8 +925,6 @@ describe("VPS computer", () => {
       expect((await vpsComputerAction("stop", cfg, BOT_ID)).container).toBe("stopped");
       release();
       expect((await stale).ready).toBe(true);
-      // Nor does it tell a turn the stopped desktop is ready to mount.
-      expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
       expect(await vpsComputerStatus(cfg, BOT_ID)).toMatchObject({ ready: false, container: "stopped" });
     } finally {
       release();
@@ -943,44 +969,6 @@ describe("VPS computer", () => {
       await Promise.allSettled([provision, stale]);
       spawnMock.mockReset();
     }
-  });
-
-  it("lets a turn mount a desktop seen ready moments ago, and forgets it on any sign it changed", async () => {
-    const cfg: AppConfig = { vps: { sshAlias: "ready-memory-vps" } };
-    const fake = fixture();
-    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
-    expect((await vpsComputerStatus(cfg, BOT_ID, fake.runner)).ready).toBe(true);
-    expect(recentlyReadyVps(cfg, BOT_ID)).toMatchObject({ ready: true, container_id: CONTAINER_ID, sshAlias: "ready-memory-vps" });
-    expect(recentlyReadyVps({ vps: { sshAlias: "another-vps" } }, BOT_ID)).toBeNull();
-    // Only for a short while.
-    const seenAt = Date.now();
-    const clock = vi.spyOn(Date, "now").mockReturnValue(seenAt + 2 * 60_000 + 1);
-    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
-    clock.mockRestore();
-    expect(recentlyReadyVps(cfg, BOT_ID)).not.toBeNull();
-
-    // Never while a lifecycle action holds the desktop, and a stop forgets it.
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    let stopping!: () => void;
-    const reached = new Promise<void>((resolve) => { stopping = resolve; });
-    const stop = vpsComputerAction("stop", cfg, BOT_ID, async (args, options) => {
-      if (args[2] === "stop") { stopping(); await held; }
-      return fake.runner(args, options);
-    });
-    await reached;
-    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
-    release();
-    expect((await stop).container).toBe("stopped");
-    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
-
-    // A start that lands ready remembers it; an inspection that finds it
-    // gone forgets it.
-    expect((await vpsComputerAction("start", cfg, BOT_ID, fake.runner)).ready).toBe(true);
-    expect(recentlyReadyVps(cfg, BOT_ID)).not.toBeNull();
-    fake.state.running = false;
-    expect((await vpsComputerStatus(cfg, BOT_ID, fake.runner)).ready).toBe(false);
-    expect(recentlyReadyVps(cfg, BOT_ID)).toBeNull();
   });
 
   it("fails cleanly when no VPS alias is configured", async () => {
@@ -1192,6 +1180,20 @@ describe("VPS computer", () => {
     // another explicit destination is never the VPS
     expect(vpsStartsForTurn({ wants: "vm", automationSource: "schedule" })).toBe(false);
     expect(vpsStartsForTurn({ wants: "off", autoStartVps: true })).toBe(false);
+  });
+
+  it("names the one way on that fits what Auto's VPS check found", () => {
+    const connection = "Check the VPS connection in Settings → API keys.";
+    // A stopped desktop on a VPS that answered: the switch starts it.
+    expect(vpsUnavailableHint({ reachable: true })).toBe("Open Computer and enable Start VPS automatically, or choose Cloud computer to start it manually.");
+    // A VPS that never answered, or a start the switch allowed that failed.
+    expect(vpsUnavailableHint({ reachable: false })).toBe(connection);
+    expect(vpsUnavailableHint({ autoStartVps: true, reachable: true })).toBe(connection);
+    expect(vpsUnavailableHint({ autoStartVps: true })).toBe(connection);
+    // A check that timed out behind a start already under way: the problem
+    // says to try again shortly, and no switch would help.
+    expect(vpsUnavailableHint({})).toBe("");
+    expect(vpsUnavailableHint({ automationSource: "schedule" })).toMatch(/^This scheduled run tried to start the VPS computer/);
   });
 });
 

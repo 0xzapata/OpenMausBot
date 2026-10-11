@@ -550,8 +550,8 @@ import { MAX_TEAM_BACKUP_BYTES } from "../shared/team-backup.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 import { autoLocalVmAttachable, type ContainerComputerStatus } from "./container-computer.ts";
 import { startAutoVmClaim, type AutoVmClaimSlot, type AutoVmClaimTable } from "./auto-vm-claims.ts";
-import { CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_WAIT_MS, controlRefusal, type ControlState } from "./control-client.ts";
-import { computerFreeAfterText, computerParkedText, computerStoppedWaitingText, computerWaitingText, type ComputerHolder } from "./computer-wait.ts";
+import { CONTROL_ACT_WITHIN_MS, CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_WAIT_MS, CONTROL_WAITED, controlRefusal, type ControlState } from "./control-client.ts";
+import { computerFreeAfterText, computerParkedText, computerPersonAwayText, computerStoppedWaitingText, computerWaitingText, type ComputerHolder } from "./computer-wait.ts";
 import { modelContextWindow } from "./model-context-window.ts";
 import { cloudPlaceRefusal, computerToolsRefusal, parseSurface, PlaceUnavailableError, placeUnavailable, resolveSurface, surfaceLabel, surfaceOfComputerKind, surfacePrompt, type PlaceSource, type Surface } from "./surface.ts";
 import { cloudRefusal, type PlaceRow } from "../shared/place-view.ts";
@@ -6864,6 +6864,10 @@ const autoVmClaims: AutoVmClaimTable = new Map();
  * call that runs out finds the wait still going and waits again.
  * OMB_COMPUTER_CALL_WAIT_MS shortens it for tests, never past the client. */
 const COMPUTER_CALL_WAIT_MS = Math.min(CONTROL_WAIT_MS, Math.max(500, Number(process.env.OMB_COMPUTER_CALL_WAIT_MS) || CONTROL_WAIT_MS));
+/** A call acts only when it got its computer within this of asking
+ * (CONTROL_ACT_WITHIN_MS); OMB_COMPUTER_CALL_ACT_WITHIN_MS shortens it for
+ * tests. */
+const COMPUTER_CALL_ACT_WITHIN_MS = Math.min(CONTROL_ACT_WITHIN_MS, Math.max(100, Number(process.env.OMB_COMPUTER_CALL_ACT_WITHIN_MS) || CONTROL_ACT_WITHIN_MS));
 /** How often a waiting call re-reads a hold it has no promise for. */
 const COMPUTER_CALL_POLL_MS = 250;
 /** Local VM targets with a durable workspace or seen ready/recreatable — at
@@ -6946,7 +6950,11 @@ function settledWithin(work: Promise<unknown> | null, ms: number, signal?: Abort
  * words that keep the turn going:
  *   - a person driving: `reason: "person"` (the bridge words it). A call
  *     that waited through their hold is not performed even once they hand
- *     back; it is told to look again (CONTROL_HANDED_BACK).
+ *     back; it is told to look again (CONTROL_HANDED_BACK). A hold older
+ *     than the wait ceiling (COMPUTER_WAIT_MAX_MS, the most any turn waits
+ *     for a computer) is not waited for at all: the turn is told to stop
+ *     and tell the person, as every hold once was, instead of calling again
+ *     for as long as they are away.
  *   - a lazily mounted computer's first call fires its exclusive claim
  *     (issue #1361) — at most once — and every call waits on it while it
  *     runs: a free desktop lands at once and the call proceeds; one queued
@@ -6958,11 +6966,15 @@ function settledWithin(work: Promise<unknown> | null, ms: number, signal?: Abort
  *   - a seat bound for the turn without a claim (the cloud computer's
  *     machine, once its claim landed) but held by another turn: re-claimed
  *     until it frees up.
- * A stopped turn or a caller that hung up ends the wait at once, and a call
- * whose turn ended while it waited is never let through. */
+ * A computer that came free only after COMPUTER_CALL_ACT_WITHIN_MS is this
+ * turn's, but the call that waited for it is answered unperformed
+ * (CONTROL_WAITED) and the next one acts. A stopped turn or a caller that
+ * hung up ends the wait at once, and a call whose turn ended while it waited
+ * is never let through. */
 async function computerCallGate(internalCapability: InternalCapability, signal?: AbortSignal): Promise<ControlState> {
   const { botId, threadId, generation } = internalCapability;
-  const deadline = Date.now() + COMPUTER_CALL_WAIT_MS;
+  const askedAt = Date.now();
+  const deadline = askedAt + COMPUTER_CALL_WAIT_MS;
   let personHeld = false;
   for (;;) {
     const snapshot = botComputerControlSnapshot(botId, internalCapability.teamComputerId);
@@ -6970,7 +6982,9 @@ async function computerCallGate(internalCapability: InternalCapability, signal?:
     const slot = autoVmClaims.get(threadId);
     const lazyClaim = slot && slot.owner.generation === generation ? slot : undefined;
     let held: ControlState;
-    if (snapshot.held) {
+    if (snapshot.held && snapshot.heldSinceMs !== null && Date.now() - snapshot.heldSinceMs >= COMPUTER_WAIT_MAX_MS) {
+      return { held: true, helpOpen, blockedReason: computerPersonAwayText(COMPUTER_WAIT_MAX_MS) };
+    } else if (snapshot.held) {
       personHeld = true;
       held = { held: true, helpOpen, reason: "person" };
     } else if (lazyClaim?.failed) {
@@ -7004,8 +7018,10 @@ async function computerCallGate(internalCapability: InternalCapability, signal?:
         // settling it cleared the slot and seat this pass found free: a
         // call from a turn that is over never reaches the screen.
         return { held: true, helpOpen, blockedReason: "This turn no longer has this computer, so this call was not performed." };
+      } else if (personHeld) {
+        return { held: true, helpOpen, blockedReason: CONTROL_HANDED_BACK };
       } else {
-        return personHeld ? { held: true, helpOpen, blockedReason: CONTROL_HANDED_BACK } : { held: false, helpOpen };
+        return Date.now() - askedAt > COMPUTER_CALL_ACT_WITHIN_MS ? { held: true, helpOpen, blockedReason: CONTROL_WAITED } : { held: false, helpOpen };
       }
     }
     if (Date.now() >= deadline || signal?.aborted || !internalCapabilityIsActive(internalCapability)) return held;
@@ -7153,28 +7169,25 @@ async function mountHostComputer(owner: TurnOwner, botId: string, providerSuppor
 /** The bot's own VPS desktop, mounted into the local agent. The desktop lease
  * is claimed on the first computer call, through the computer-control gate
  * (the Local VM's seam, #1361), never at mount: turns that never touch the
- * computer tools run side by side. A desktop some inspection found ready
- * moments ago (vps.recentlyReadyVps) mounts with no SSH at all, and the
- * first computer call inspects it again (through the poll cache) before it
- * claims: a Chief's burst of turns on one VPS pays for one inspection, not
- * one each. Otherwise `start` may provision or start the container, and
- * without it the VPS is only inspected. Unlike the bot's cloud computer
- * (mountBotBoat), that start stays here, at dispatch: the VPS tools are a
- * bridge that execs into the running container as soon as the engine
- * launches it (runMcpBridge), and a self-hosted container uses no plan
- * hours. The caller has already recorded the thread with vpsThreadStarted
- * and ends it on a problem; `reachable` says whether SSH and Docker
- * answered at all. */
+ * computer tools run side by side. `start` may provision or start the
+ * container; without it the VPS is only inspected (a burst of turns shares
+ * one inspection: vps.inspectVpsForAuto). Unlike the bot's cloud computer
+ * (mountBotBoat), the check and the start stay here, at dispatch: the VPS
+ * tools are a bridge that execs into the running container as soon as the
+ * engine launches it (runMcpBridge) — mounted on a desktop that is not up,
+ * it dies before any call could notice — and a self-hosted container uses
+ * no plan hours. The caller has already recorded the thread with
+ * vpsThreadStarted and ends it on a problem; `reachable` says whether SSH
+ * and Docker answered at all. */
 async function mountBotVps(
   bot: BotRecord,
   owner: TurnOwner,
   opts: { start: boolean; onClaimed: (capture: () => Promise<{ png: string; format: string }>) => void; onRejected?: (failure: string) => void },
 ) {
   const vpsResource = `computer:vps:${vpsSshAlias(cfg)}:${bot.id}`;
-  const recent = vps.recentlyReadyVps(cfg, bot.id);
-  const remote = recent ?? (opts.start
+  const remote = opts.start
     ? await vps.vpsComputerAction("provision", cfg, bot.id)
-    : await vps.inspectVpsForAuto(cfg, bot.id));
+    : await vps.inspectVpsForAuto(cfg, bot.id);
   if (!remote?.ready || !remote.sshAlias) return { problem: remote?.problem ?? null, reachable: remote?.daemonUp === true };
   const targetCfg = { ...cfg, vps: { sshAlias: remote.sshAlias } };
   const vpsMcp = vps.vpsComputerMcp(targetCfg, bot.id, remote.container_id ?? undefined);
@@ -7188,10 +7201,6 @@ async function mountBotVps(
     label: "the VPS computer",
     onRejected: opts.onRejected,
     claim: async () => {
-      if (recent) {
-        const now = await vps.vpsComputerStatus(cfg, bot.id);
-        if (!now.ready) throw new Error(now.problem ?? "the VPS computer is not ready");
-      }
       await bindTurnComputer(owner, vpsResource, true);
       opts.onClaimed(vpsCapture);
     },
@@ -10451,7 +10460,8 @@ async function startTurn(
       let browserCapture: (() => Promise<{ png: string; format: string }>) | null = null;
       let computerKind: "box" | "vps" | "vm" | "local" | null = null;
       let autoVpsProblem: string | null = null;
-      let autoVpsUnreachable = false;
+      /** Whether Auto's VPS check reached SSH and Docker (vpsUnavailableHint). */
+      let autoVpsReachable: boolean | undefined;
       /** The Local VM frame capture for the poller and the settled transcript
        * screenshot. The shared desktop outlives the turn: once another thread
        * owns it, a capture still in flight would picture ITS work under this
@@ -10779,7 +10789,7 @@ async function startTurn(
               throw new Error(mounted.problem ?? "the VPS computer could not be created or reached");
             }
             autoVpsProblem = mounted.problem ?? "the VPS computer could not be reached";
-            autoVpsUnreachable = mounted.reachable === false;
+            autoVpsReachable = mounted.reachable;
           }
         }
 
@@ -10881,13 +10891,9 @@ async function startTurn(
         autoVpsProblem &&
         !computerSelectionTurns.has(threadId)
       ) {
-        const hint = opts?.automationSource
-          ? "This scheduled run tried to start the VPS computer and could not reach it. Check the VPS connection in Settings → API keys."
-          : bot.autoStartVps || autoVpsUnreachable
-            ? "Check the VPS connection in Settings → API keys."
-            : "Open Computer and enable Start VPS automatically, or choose Cloud computer to start it manually.";
+        const hint = vps.vpsUnavailableHint({ automationSource: opts?.automationSource, autoStartVps: bot.autoStartVps, reachable: autoVpsReachable });
         if (opts?.automationSource) throw new Error(`${autoVpsProblem}. ${hint}`);
-        vpsUnavailableNote = ` This bot's VPS computer is unavailable this turn (${autoVpsProblem}), so no computer is mounted. Work that needs no screen can go ahead. If the request needs the VPS desktop, do not claim to have used it: say it is unavailable and what the person can do: ${hint}`;
+        vpsUnavailableNote = ` This bot's VPS computer is unavailable this turn (${autoVpsProblem}), so no computer is mounted. Work that needs no screen can go ahead. If the request needs the VPS desktop, do not claim to have used it: say it is unavailable${hint ? ` and what the person can do: ${hint}` : "."}`;
       }
       // Agent control tools include peer comms and the secure credential
       // request card. A comms-invoked turn (depth ≥ cap) gets none — hard recursion

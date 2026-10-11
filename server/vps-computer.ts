@@ -96,15 +96,6 @@ const LOCK_ACQUIRE_TIMEOUT_MS = 5_000;
 // pattern as container-computer's screenshotStatusCache, and the same TTL.
 const STATUS_CACHE_TTL_MS = 10_000;
 const statusCache = new Map<string, { status: VpsComputerStatus; expiresAt: number }>();
-// How long a turn may mount a desktop it last saw ready without inspecting
-// it again at dispatch (recentlyReadyVps). Every full inspection that finds
-// it ready renews it — the panel's poll, the screen poller, a turn's first
-// computer call, a start — and one that finds it not ready, or any stop or
-// removal, ends it at once. An inspection begun before a lifecycle change
-// (readyEpochs) never renews it after that change.
-const READY_TRUST_MS = 2 * 60_000;
-const lastReady = new Map<string, { status: VpsComputerStatus; at: number }>();
-const readyEpochs = new Map<string, number>();
 const pendingStatuses = new Map<string, Promise<VpsComputerStatus>>();
 const pendingProvisions = new Map<string, Promise<VpsComputerStatus>>();
 const SCREENSHOT_BUDGET_MS = 45_000;
@@ -128,7 +119,6 @@ function invalidateVpsStatus(key: string): void {
   // Detach old polls as well: an inspection begun before a mutation must
   // neither be joined nor republish its old result after that mutation.
   pendingStatuses.delete(key);
-  readyEpochs.set(key, (readyEpochs.get(key) ?? 0) + 1);
 }
 
 export interface VpsCommandOptions {
@@ -154,6 +144,19 @@ export function vpsStartsForTurn(input: { wants: "cloud" | "vm" | "local" | "off
   if (input.wants === "cloud") return true;
   if (input.wants !== undefined) return false;
   return input.autoStartVps === true || Boolean(input.automationSource);
+}
+
+/** The one way on an Auto turn names when this bot's VPS is unavailable,
+ * fitted to what its check found. `reachable`: true when SSH and Docker
+ * answered and the desktop is down — the switch would start it; false when
+ * the VPS never answered — the connection; undefined when the check threw:
+ * an allowed start that failed is the connection too, and a lifecycle busy
+ * past the lock wait is already said by the problem itself ("being prepared
+ * — try again shortly"), with a start under way and no switch to flip. */
+export function vpsUnavailableHint(input: { automationSource?: string; autoStartVps?: boolean; reachable?: boolean }): string {
+  if (input.automationSource) return "This scheduled run tried to start the VPS computer and could not reach it. Check the VPS connection in Settings → API keys.";
+  if (input.autoStartVps || input.reachable === false) return "Check the VPS connection in Settings → API keys.";
+  return input.reachable ? "Open Computer and enable Start VPS automatically, or choose Cloud computer to start it manually." : "";
 }
 
 export interface VpsComputerStatus {
@@ -538,40 +541,13 @@ function statusProblem(status: VpsComputerStatus): string | null {
 /** The uncached inspection. Lifecycle mutations and their readiness waits
  * call this directly — they must see and publish the truth, never a poll's
  * snapshot; the exported vpsComputerStatus wraps it with the poll cache.
- * Each answer also renews or ends the ready memory recentlyReadyVps reads. */
-async function computeVpsComputerStatus(
-  cfg: AppConfig,
-  botId: string,
-  runner: VpsCommandRunner,
-): Promise<VpsComputerStatus> {
-  const key = vpsLockKey(cfg, botId);
-  const epoch = key ? readyEpochs.get(key) : undefined;
-  const status = await inspectVpsComputer(cfg, botId, runner);
-  if (key && !status.ready) lastReady.delete(key);
-  else if (key && readyEpochs.get(key) === epoch) lastReady.set(key, { status, at: Date.now() });
-  return status;
-}
-
-/** This bot's VPS desktop as the last full inspection found it, when that
- * found it ready within READY_TRUST_MS and nothing is changing or reading it
- * under the lifecycle lock right now; otherwise null. Touches no SSH: a turn
- * mounts its computer on it instead of inspecting again at dispatch, and the
- * turn's first computer call checks again (vpsComputerStatus). */
-export function recentlyReadyVps(cfg: AppConfig, botId: string): VpsComputerStatus | null {
-  const key = vpsLockKey(snapshotVpsConfig(cfg), botId);
-  if (!key || lifecycleLocks.has(key)) return null;
-  const seen = lastReady.get(key);
-  return seen && Date.now() - seen.at < READY_TRUST_MS ? seen.status : null;
-}
-
-/** One full read-only inspection over SSH.
  *
  * `docker info` is deliberately NOT probed as its own round-trip: every
  * docker-over-SSH invocation is a full process + SSH connection, and the
  * image inspect right below already proves the daemon answers — even its
  * "No such image" failure is a daemon reply. Anything that is neither JSON
  * nor a "no such object" reply is attributed to the transport instead. */
-async function inspectVpsComputer(
+async function computeVpsComputerStatus(
   cfg: AppConfig,
   botId: string,
   runner: VpsCommandRunner,
@@ -1164,7 +1140,6 @@ export async function removeManagedVpsComputer(
   const key = `${alias}:${containerName}`;
   return withVpsLifecycleLock(key, async () => {
     invalidateVpsStatus(key);
-    lastReady.delete(key);
     const scan = await scanManagedVpsComputers(cfg, owners, runner);
     const inventory = scan.inventory;
     if (!inventory.available) {
@@ -1220,10 +1195,8 @@ export async function vpsComputerAction(
   if (pending) return pending;
   const operation = async () => {
     // A mutation invalidates every cached poll answer, before and after: the
-    // panel must never keep showing the pre-action world for a TTL. Only a
-    // provision leaves a desktop a turn may trust without looking again.
+    // panel must never keep showing the pre-action world for a TTL.
     invalidateVpsStatus(key);
-    if (action !== "provision") lastReady.delete(key);
     try {
       const before = await computeVpsComputerStatus(cfg, botId, runner);
       if (!before.daemonUp) throw Object.assign(new Error(before.problem ?? "Docker over SSH is not reachable"), { status: 409 });
@@ -1286,9 +1259,9 @@ export async function vpsComputerAction(
 }
 
 /** Auto is intentionally read-only: it can attach only to an existing ready
- * container. It recomputes rather than reading the poll cache; a turn that
- * skips it at dispatch (recentlyReadyVps) checks again on its first
- * computer call instead. */
+ * container. It recomputes rather than reading the poll cache — routing a
+ * turn onto a container that stopped seconds ago is worse than one extra
+ * inspection at turn start. */
 export async function reuseVps(
   cfg: AppConfig,
   botId: string,
@@ -1298,8 +1271,18 @@ export async function reuseVps(
   return status.ready ? status : null;
 }
 
+/** Auto inspections in flight, by container: a turn that asks while one runs
+ * joins it, as long as nothing has queued on the lifecycle lock behind it.
+ * A Chief's burst of turns on one bot's VPS then pays for one inspection
+ * instead of queueing one each behind the lock — on an unreachable VPS, one
+ * connect timeout instead of a chain of them ending in "being prepared". A
+ * start or stop queued behind it is never jumped: an ask after that queues
+ * too, and sees what the change left. */
+const pendingAutoInspections = new Map<string, { inspection: Promise<VpsComputerStatus>; lock?: Promise<void>; runner: VpsCommandRunner }>();
+
 /** Auto needs the complete fresh status to explain a failed attach, while
- * retaining reuseVps's no-cache/no-mutation routing guarantee. */
+ * retaining reuseVps's no-cache/no-mutation routing guarantee: an answer is
+ * never older than the inspection it joined. */
 export async function inspectVpsForAuto(
   cfg: AppConfig,
   botId: string,
@@ -1307,9 +1290,16 @@ export async function inspectVpsForAuto(
 ): Promise<VpsComputerStatus> {
   cfg = snapshotVpsConfig(cfg);
   const key = vpsLockKey(cfg, botId);
-  return key
-    ? withVpsLifecycleLock(key, () => computeVpsComputerStatus(cfg, botId, runner), PREPARATION_LOCK_TIMEOUT_MS)
-    : computeVpsComputerStatus(cfg, botId, runner);
+  if (!key) return computeVpsComputerStatus(cfg, botId, runner);
+  const pending = pendingAutoInspections.get(key);
+  if (pending && pending.runner === runner && lifecycleLocks.get(key) === pending.lock) return pending.inspection;
+  const inspection = withVpsLifecycleLock(key, () => computeVpsComputerStatus(cfg, botId, runner), PREPARATION_LOCK_TIMEOUT_MS);
+  // withVpsLifecycleLock takes its place in line synchronously, so the
+  // newest lock slot right now is this inspection's own.
+  const entry = { inspection, lock: lifecycleLocks.get(key), runner };
+  pendingAutoInspections.set(key, entry);
+  try { return await inspection; }
+  finally { if (pendingAutoInspections.get(key) === entry) pendingAutoInspections.delete(key); }
 }
 
 /** Open a temporary noVNC connection through the configured SSH alias. The

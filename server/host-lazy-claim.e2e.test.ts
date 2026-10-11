@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_REFUSAL_PLAIN, controlRefusal, createControlClient } from "./control-client.ts";
+import { CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_REFUSAL_PLAIN, CONTROL_WAITED, controlRefusal, createControlClient } from "./control-client.ts";
+import { computerPersonAwayText } from "./computer-wait.ts";
 import { freePortBlock } from "./testing/ports.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
@@ -18,6 +19,8 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
  * bridges' old control client gave up and told the model a person had
  * taken control. */
 const CALL_WAIT_MS = 3_000;
+/** How soon a call must get its computer to act, shortened likewise. */
+const ACT_WITHIN_MS = 1_000;
 
 describe("lazy host claim and pin on use (issue #1650)", () => {
   let home = "";
@@ -82,7 +85,7 @@ describe("lazy host claim and pin on use (issue #1650)", () => {
     (JSON.parse(readFileSync(join(data, "bots.json"), "utf8")) as any[])
       .find((bot: any) => bot.id === botId)?.tasks.find((task: any) => task.threadId === threadId);
 
-  async function start() {
+  async function start(env: Record<string, string> = {}) {
     const port = await freePortBlock([0, 1]);
     base = `http://127.0.0.1:${port}`;
     output = "";
@@ -94,6 +97,7 @@ describe("lazy host claim and pin on use (issue #1650)", () => {
         TEMP: home, TMP: home, TMPDIR: home,
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: ui, OMB_TEST_VM_STATE: stateFile,
         OMB_USER_DATA: join(home, "user-data"), OMB_COMPUTER_CALL_WAIT_MS: String(CALL_WAIT_MS),
+        OMB_COMPUTER_CALL_ACT_WITHIN_MS: String(ACT_WITHIN_MS), ...env,
       }, stdio: ["ignore", "pipe", "pipe"],
     });
     child = proc;
@@ -200,7 +204,7 @@ describe("lazy host claim and pin on use (issue #1650)", () => {
     await idle(second.id, secondTask.threadId);
   });
 
-  itAutoHost("a busy computer is waited for inside the call: it proceeds when the holder ends, and a person's hold is waited out", async () => {
+  itAutoHost("a busy computer is waited for inside the call: it answers when the holder ends, and a person's hold is waited out", async () => {
     await start();
     const turn = async (name: string) => {
       const { bot } = await apiOk("POST", "/api/bots", { name });
@@ -214,14 +218,21 @@ describe("lazy host claim and pin on use (issue #1650)", () => {
     const waiter = await turn("Host Waiter Bot");
 
     // Contention: the waiter's call is held open — its claim queued with
-    // the waiting chip — and goes through the moment the holder's turn ends.
+    // the waiting chip — and answers the moment the holder's turn ends. It
+    // waited past ACT_WITHIN_MS, so it is not performed: an action started
+    // that late could outlive the engine's patience with the call and run
+    // twice. The computer is the waiter's now, and its next call acts at once.
     const waiting = timed(gate(waiter.computer));
     await until(() => api("GET", `/api/threads/${waiter.threadId}/messages`).then(({ body }) =>
       (body.messages as any[]).some(m => String(m.tool?.name ?? "").startsWith("Waiting for its turn on this computer"))), Boolean);
+    await new Promise(resolve => setTimeout(resolve, ACT_WITHIN_MS + 200));
     await apiOk("POST", `/api/bots/${holder.bot.id}/interrupt`, { threadId: holder.threadId });
-    const proceeded = await waiting;
-    expect(proceeded.value).toEqual({ held: false, helpOpen: false });
-    expect(proceeded.ms).toBeLessThan(CALL_WAIT_MS);
+    const freed = await waiting;
+    expect(freed.value).toEqual({ held: true, helpOpen: false, blockedReason: CONTROL_WAITED });
+    expect(freed.ms).toBeLessThan(CALL_WAIT_MS);
+    const next = await timed(gate(waiter.computer));
+    expect(next.value).toEqual({ held: false, helpOpen: false });
+    expect(next.ms).toBeLessThan(ACT_WITHIN_MS);
     await until(() => savedTask(waiter.bot.id, waiter.threadId)?.surface === "local", Boolean);
 
     // A person takes the wheel: the call waits for them, and once they hand
@@ -251,6 +262,35 @@ describe("lazy host claim and pin on use (issue #1650)", () => {
     await control("release");
     await idle(holder.bot.id, holder.threadId);
     await idle(waiter.bot.id, waiter.threadId);
+  }, 60_000);
+
+  itAutoHost("a person's hold past the wait ceiling is not waited for: the turn is told to stop and say so", async () => {
+    const ceilingMs = 2_000;
+    await start({ OMB_COMPUTER_WAIT_MAX_MS: String(ceilingMs) });
+    const { bot } = await apiOk("POST", "/api/bots", { name: "Host Away Bot" });
+    const { task } = await apiOk("POST", `/api/bots/${bot.id}/tasks`, {});
+    await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Work slowly on the screen.", threadId: task.threadId });
+    await busy(bot.id, task.threadId);
+    const computer = mountedComputer(await dumpFor(bot.id));
+    expect(await gate(computer)).toEqual({ held: false, helpOpen: false });
+    const control = (action: "take" | "release") => apiOk("POST", `/api/bots/${bot.id}/computer/control`, { action });
+    await control("take");
+    const tookAt = Date.now();
+    // Waited for until the hold reaches the ceiling — not for the whole call,
+    // and not again: every later call is answered at once.
+    const away = { held: true, helpOpen: false, blockedReason: computerPersonAwayText(ceilingMs) };
+    const first = await timed(gate(computer));
+    expect(first.value).toEqual(away);
+    expect(Date.now() - tookAt).toBeGreaterThanOrEqual(ceilingMs - 200);
+    expect(first.ms).toBeLessThan(CALL_WAIT_MS);
+    const again = await timed(gate(computer));
+    expect(again.value).toEqual(away);
+    expect(again.ms).toBeLessThan(500);
+    expect(controlRefusal(again.value)).toContain("tell the person you are waiting for them to hand control back");
+    await control("release");
+    expect(await gate(computer)).toEqual({ held: false, helpOpen: false });
+    writeFileSync(finishFile, "finish");
+    await idle(bot.id, task.threadId);
   }, 60_000);
 
   itAutoHost("a call waiting behind another turn never goes through once its own turn is stopped", async () => {

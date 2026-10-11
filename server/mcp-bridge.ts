@@ -28,7 +28,7 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
-import { CONTROL_UNCONFIRMED, controlRefusal, createControlClient, type ControlState } from "./control-client.ts";
+import { CONTROL_ACT_WITHIN_MS, CONTROL_UNCONFIRMED, CONTROL_WAITED, controlRefusal, createControlClient, type ControlState } from "./control-client.ts";
 import { augmentedPath, resolveCliSpawn } from "./env-path.ts";
 import { createToolListNormalizer } from "./mcp-tool-schema.ts";
 
@@ -176,14 +176,20 @@ export function createLineSplitter(onLine: (line: string) => void): {
  * reorder the agent's protocol stream. Only a `tools/call` is ever
  * refused; every other frame — handshakes, tools/list, notifications,
  * lines that are not JSON — passes through untouched. A check that throws
- * refuses as unconfirmed, never as a person's hold. */
+ * refuses as unconfirmed, never as a person's hold. A call answered free
+ * only after `actWithinMs` from reaching the bridge — the harness held its
+ * check while the computer was busy, or it sat in this queue behind another
+ * call's — is not forwarded either (CONTROL_ACT_WITHIN_MS). */
 export function createGateInterceptor(options: {
   check: () => Promise<ControlState>;
   forward: (line: string) => void;
   refuse: (line: string) => void;
+  actWithinMs?: number;
 }): (line: string) => Promise<void> {
+  const actWithinMs = options.actWithinMs ?? CONTROL_ACT_WITHIN_MS;
   let queue: Promise<void> = Promise.resolve();
   return (line: string) => {
+    const arrivedAt = Date.now();
     queue = queue.then(async () => {
       let frame: any = null;
       try {
@@ -197,7 +203,7 @@ export function createGateInterceptor(options: {
         return;
       }
       const state = await options.check().catch((): ControlState => ({ held: true, helpOpen: false, blockedReason: CONTROL_UNCONFIRMED }));
-      if (!state.held) {
+      if (!state.held && Date.now() - arrivedAt <= actWithinMs) {
         options.forward(line);
         return;
       }
@@ -205,7 +211,7 @@ export function createGateInterceptor(options: {
         JSON.stringify({
           jsonrpc: "2.0",
           id: frame.id ?? null,
-          result: { content: [{ type: "text", text: controlRefusal(state) }], isError: true },
+          result: { content: [{ type: "text", text: state.held ? controlRefusal(state) : CONTROL_WAITED }], isError: true },
         }),
       );
     });
