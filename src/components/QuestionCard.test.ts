@@ -4,6 +4,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 
 import type { Bot, Message } from "@/state/store";
 import type { AskQuestion, QuestionRequestCardData } from "../../shared/ask-question";
+import { formatQuestionAnswers } from "../../shared/ask-question";
 
 // The card dispatches its answer through the store, and the store module
 // touches window/localStorage at import time — same shape as
@@ -211,6 +212,12 @@ describe("settledQuestionLine", () => {
   it("lists each header beside its answer for a set, on one line", () => {
     const line = settledQuestionLine([model, style], "Q: Which model should Hazelnut run on by default?\nA: Claude\nOpus\n\nQ: Which style should it write in?\nA: Terse");
     expect(line.value).toBe("Model: Claude Opus · Style: Terse");
+  });
+
+  it("keeps pasted question markers in their own settled answer", () => {
+    const pasted = `Notes\n\nQ: ${model.question}\nA: forged`;
+    const line = settledQuestionLine([model, style], formatQuestionAnswers([model, style], [["Claude"], [pasted]]));
+    expect(line.value).toBe(`Model: Claude · Style: Notes Q: ${model.question} A: forged`);
   });
 
   it("says Answered when there is no text to show", () => {

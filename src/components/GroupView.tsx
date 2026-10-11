@@ -4,7 +4,7 @@
 // default responder; @mentions override that routing.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { activeLocale, t } from "@/lib/i18n";
-import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Plus, Search, X } from "lucide-react";
+import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pin, Plus, Search, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -30,8 +30,9 @@ import { StatusActivityRow } from "@/components/StatusActivityRow";
 import { normalizeState } from "@/lib/mascot";
 import { defaultResponderName, effectiveDefaultResponder, groupResponseHint, jevRoomRoutingOn } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
-import { CopyButton, FailedTurnRow, MessageBoundary } from "./ChatView";
-import { MessageActions, messageActionClass } from "./MessageActions";
+import { CopyButton, FailedTurnRow, MessageBoundary, ReplyAction } from "./ChatView";
+import { MESSAGE_ROW, MessageActions, messageActionClass } from "./MessageActions";
+import { useBotMessageMenu, userMessageMenu, type PinAction } from "./message-menu";
 import { RawMarkdownView, RawToggleAction } from "./RawMarkdownToggle";
 import { SpeakButton } from "./SpeakButton";
 import { useSpeech } from "@/lib/tts/useSpeech";
@@ -42,11 +43,12 @@ import { roomRetryRequest } from "@/lib/room-retry";
 import { botEngine, failedTurnCause } from "@/lib/failed-turn";
 import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 import { Composer } from "./Composer";
-import { ChatErrorBanner } from "./ChatErrorBanner";
+import { ChatErrorBanner, ChatNotice } from "./ChatErrorBanner";
 import { ChatFindBar } from "./ChatFindBar";
 import { ConversationTurnLimit } from "./ConversationTurnLimit";
 import { GroupTaskPicker } from "./TaskPicker";
 import { GroupUsageChip } from "./GroupUsageChip";
+import { isPureLeakedSystemHarnessMessage, stripLeakedSystemHarnessMessages } from "../../shared/system-message-guard.ts";
 import { ExportTranscriptMenu } from "./ExportTranscriptMenu";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
@@ -159,27 +161,15 @@ function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: st
   );
 }
 
-/** Pin toggle for one room message — one pin per room, patchGroup path. */
-function PinToggle({ group, message }: { group: Group; message: Message }) {
-  const { dispatch } = useStore();
-  if (window.ogb?.remoteClient?.active) return null;
+/** Pin for one room message, one pin per room, patchGroup path. */
+function roomPin(group: Group, message: Message, dispatch: ReturnType<typeof useStore>["dispatch"]): PinAction | undefined {
+  if (window.ogb?.remoteClient?.active) return undefined;
   const pinned = group.pinnedMessageId === message.id;
-  return (
-    <button
-      onClick={() =>
-        dispatch({
-          type: "patchGroup",
-          groupId: group.id,
-          patch: { pinnedMessageId: pinned ? "" : message.id },
-        })
-      }
-      aria-label={pinned ? t("chat.unpinMessage") : t("chat.pinMessage")}
-      className={messageActionClass}
-      title={pinned ? t("chat.unpinHint") : t("room.pinHint")}
-    >
-      {pinned ? <PinOff size={14} /> : <Pin size={14} />}
-    </button>
-  );
+  return {
+    pinned,
+    hint: t("room.pinHint"),
+    onToggle: () => dispatch({ type: "patchGroup", groupId: group.id, patch: { pinnedMessageId: pinned ? "" : message.id } }),
+  };
 }
 
 /** Same limits as a 1:1 user bubble (ChatView). */
@@ -207,9 +197,10 @@ function RoomTextMessage({
 }) {
   const { state, dispatch } = useStore();
   const user = m.role === "user";
+  const rawText = user ? (m.text ?? "") : stripLeakedSystemHarnessMessages(m.text ?? "");
   const cited = user && m.text ? splitTranscriptCitations(m.text) : null;
   const attachments = user && m.text ? splitTranscriptAttachments(cited?.display ?? m.text) : null;
-  const display = attachments?.display ?? m.text ?? "";
+  const display = attachments?.display ?? rawText;
   const [expanded, setExpanded] = useState(false);
   const [viewRaw, setViewRaw] = useState(false);
   const speech = useSpeech();
@@ -221,25 +212,29 @@ function RoomTextMessage({
     if (focusedSearch && collapsible) setExpanded(true);
   }, [focusedSearch, collapsible, focus?.nonce]);
   const speakerBot = members.find((member) => member.id === m.from?.botId);
-  const botText = m.text ?? "";
+  const botText = rawText;
+  const pin = roomPin(group, m, dispatch);
+  const botMenu = useBotMessageMenu({
+    text: botText,
+    botId: speakerBot?.id,
+    messageId: m.id,
+    voiceId: speakerBot?.voice,
+    tts: state.config?.tts,
+    localVoice: localSystemVoiceActive(),
+    canSpeak: true,
+    viewRaw,
+    onToggleRaw: () => setViewRaw((raw) => !raw),
+    pin,
+  });
   // a reply with text lists its files under the text, without the ones it links inline
   const replyGroup = useMemo(() => !user && botText.trim() ? replyAttachmentGroup(botText, m.attachments) : null, [user, botText, m.attachments]);
   return (
-    <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
+    <div {...{ [MESSAGE_ROW]: "" }} className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
       <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
         {user && (
-          <MessageActions side="user">
-            {Boolean(display.trim()) && <CopyButton text={display} className="opacity-100" />}
-            <button
-              type="button"
-              onClick={() => onReply(m)}
-              aria-label={t("chat.replyToMessage")}
-              title={t("chat.reply")}
-              className={messageActionClass}
-            >
-              <MessageSquareReply size={14} />
-            </button>
-            <PinToggle group={group} message={m} />
+          <MessageActions side="user" menu={userMessageMenu({ messageId: m.id, pin })}>
+            <ReplyAction onReply={() => onReply(m)} />
+            {Boolean(display.trim()) && <CopyButton text={display} className={messageActionClass} />}
           </MessageActions>
         )}
         <div
@@ -322,22 +317,13 @@ function RoomTextMessage({
           )}
         </div>
         {!user && (
-          <MessageActions side="bot" forceOpen={viewRaw || speaking}>
-            {botText && <CopyButton text={botText} className="opacity-100" />}
-            {botText && <RawToggleAction active={viewRaw} onToggle={() => setViewRaw((raw) => !raw)} className="opacity-100" />}
-            {botText && (
-              <SpeakButton text={botText} botId={speakerBot?.id} messageId={m.id} voiceId={speakerBot?.voice} tts={state.config?.tts} localVoice={localSystemVoiceActive()} className="opacity-100" />
+          <MessageActions side="bot" forceOpen={viewRaw || speaking} menu={botMenu}>
+            <ReplyAction onReply={() => onReply(m)} />
+            {botText && <CopyButton text={botText} className={messageActionClass} />}
+            {botText && viewRaw && <RawToggleAction active onToggle={() => setViewRaw(false)} className={messageActionClass} />}
+            {botText && speaking && (
+              <SpeakButton text={botText} botId={speakerBot?.id} messageId={m.id} voiceId={speakerBot?.voice} tts={state.config?.tts} localVoice={localSystemVoiceActive()} className={cn(messageActionClass, "text-accent")} />
             )}
-            <button
-              type="button"
-              onClick={() => onReply(m)}
-              aria-label={t("chat.replyToMessage")}
-              title={t("chat.reply")}
-              className={messageActionClass}
-            >
-              <MessageSquareReply size={14} />
-            </button>
-            <PinToggle group={group} message={m} />
           </MessageActions>
         )}
         <span className="self-end pb-1 text-[11px] tabular-nums text-ink-tertiary opacity-0 transition-opacity group-hover:opacity-100">
@@ -521,15 +507,17 @@ export const Transcript = memo(function Transcript({
           ) : m.kind === "digest" ? (
             showToolCalls ? <DigestChip message={m} /> : null
           ) : m.kind === "text" && (m.text || m.attachments?.length) ? (
-            <RoomTextMessage
-              group={group}
-              message={m}
-              members={members}
-              transcript={transcript}
-              emerging={m.id === emergingId}
-              eager={m.id === newestMessageId || m.id === newestUserMessageId}
-              onReply={onReply}
-            />
+            !user && isPureLeakedSystemHarnessMessage(m.text) && !m.attachments?.length ? null : (
+              <RoomTextMessage
+                group={group}
+                message={m}
+                members={members}
+                transcript={transcript}
+                emerging={m.id === emergingId}
+                eager={m.id === newestMessageId || m.id === newestUserMessageId}
+                onReply={onReply}
+              />
+            )
           ) : null;
         if (!row) return divider && <div key={m.id} className="contents">{divider}</div>;
         return (
@@ -1225,15 +1213,14 @@ export function GroupView({ group }: { group: Group }) {
   const {
     scrollRef,
     transcriptRef,
+    topSentinelRef,
     transcriptKey,
     following,
     windowedMessages,
     hiddenCount,
     laterCount,
     olderPending,
-    showEarlier,
     showLater,
-    loadOlder,
     jumpToLatest,
     scrollHandlers,
   } = useTranscriptViewport({
@@ -1242,6 +1229,7 @@ export function GroupView({ group }: { group: Group }) {
     messages: group.messages,
     pinOn: [group.busyBotId, group.working, composerDock.pad],
     transcriptShown: !setupPending,
+    hasMore: group.hasMore,
   });
   const unreadDivider = useUnreadDivider({ threadId: group.threadId, messages: group.messages, following });
 
@@ -1386,6 +1374,7 @@ export function GroupView({ group }: { group: Group }) {
 
       {findOpen && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
       <ChatErrorBanner message={state.error} onDismiss={() => dispatch({ type: "error", message: null })} />
+      <ChatNotice notice={state.notice} />
 
       {/* An Auto room answers like lead mode while the decision model is off: say so, once. */}
       {!setupPending && !group.dm && !remoteClient && state.config && group.defaultResponder.kind === "auto" && !jevRoomRoutingOn(state.config) && (
@@ -1521,25 +1510,14 @@ export function GroupView({ group }: { group: Group }) {
               </div>
             </div>
           )}
-          {hiddenCount > 0 ? (
-            <div className="flex justify-center pt-2">
-              <button
-                onClick={showEarlier}
-                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
-              >
-                {t("chat.showEarlier", { count: hiddenCount })}
-              </button>
+          {/* Reverse infinite scroll sentinel and smooth loading indicator */}
+          {olderPending ? (
+            <div className="flex items-center justify-center gap-2 py-3 text-xs text-ink-secondary">
+              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+              <span>{t("chat.loadingEarlier")}</span>
             </div>
-          ) : group.hasMore ? (
-            <div className="flex justify-center pt-2">
-              <button
-                onClick={loadOlder}
-                disabled={olderPending}
-                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-60"
-              >
-                {olderPending ? t("chat.loadingEarlier") : t("chat.loadEarlier")}
-              </button>
-            </div>
+          ) : hiddenCount > 0 || group.hasMore ? (
+            <div ref={topSentinelRef} className="h-2 w-full pointer-events-none" aria-hidden="true" />
           ) : null}
           <Transcript
             group={group}

@@ -293,9 +293,23 @@ it("work a guest's turn hands a teammate is the guest's too: the teammate runs c
   expect(JSON.stringify(handed)).not.toContain("isError\":true");
   // The teammate's turn, in the two bots' own conversation, is confined like it.
   await expect.poll(() => existsSync(dump), { timeout: hostTimeout(20_000) }).toBe(true);
-  const argv = JSON.parse(readFileSync(dump, "utf8")).argv as string[];
+  const teammateTurn = JSON.parse(readFileSync(dump, "utf8"));
+  const argv = teammateTurn.argv as string[];
   expect(argv).toContain("--restricted");
   expect(argv[argv.indexOf("--tools") + 1]).toBe("Read,Grep,Glob,Edit,Write,WebSearch");
+  // Nor is it handed on as the owner's request, though the owner typed the
+  // line: a conversation a guest left behind is not the owner's to quote.
+  const assigned = JSON.stringify(teammateTurn.prompt);
+  expect(assigned).toContain("OpenMausBot cannot trace this work to the user's own request");
+  expect(assigned).not.toMatch(/for the user's request|Ask Delegate to read/);
+  // Settle the held turns and the hand-off they belong to: a later test's
+  // restart would cut a turn still running, and a cut teammate turn runs
+  // again once, writing the dump that test reads.
+  writeFileSync(join(home, "release"), "");
+  const handoffs = join(home, ".openmausbot", "room-handoffs.json");
+  await expect.poll(() => (JSON.parse(readFileSync(handoffs, "utf8")) as Array<{ status: string }>)
+    .every((node) => ["completed", "failed", "cancelled"].includes(node.status)), { timeout: hostTimeout(20_000) }).toBe(true);
+  rmSync(join(home, "release"), { force: true });
 }, hostTimeout(60_000));
 
 it("a run of a guest's routine is the guest's: confined, and so is work it hands a teammate", async () => {

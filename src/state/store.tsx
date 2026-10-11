@@ -306,6 +306,10 @@ export interface GroupTask {
   /** This conversation's turn ceiling, in whole minutes. Absent uses the
    * global group limit. */
   turnTimeoutMinutes?: number;
+  /** Whether a turn is actively running in this thread. */
+  working?: boolean;
+  /** The member bot currently speaking or generating in this thread, if any. */
+  busyBotId?: string | null;
 }
 
 export interface ModelSelection {
@@ -655,6 +659,7 @@ export interface ConfigStatus {
   xai?: { configured: boolean };
   mistral?: { configured: boolean };
   cerebras?: { configured: boolean };
+  groq?: { configured: boolean };
   /** `everyClaudeBot`: the key runs every Claude bot, not only "Claude (API key)". */
   anthropic?: { configured: boolean; everyClaudeBot?: boolean };
   openai?: { configured: boolean };
@@ -783,7 +788,7 @@ export interface BrowserProfile {
 // Settings shows (a saved key's Test button used to vanish that way).
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "mistral" | "cerebras" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
+  "xai" | "mistral" | "cerebras" | "groq" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -791,6 +796,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     xai: frame.xai,
     mistral: frame.mistral,
     cerebras: frame.cerebras,
+    groq: frame.groq,
     anthropic: frame.anthropic,
     openai: frame.openai,
     openrouter: frame.openrouter,
@@ -1053,9 +1059,11 @@ export interface AppState {
    * so it holds still while that conversation stays open. */
   unreadDivider: { threadId: string; messageId: string } | null;
   connected: boolean;
+  /** Bots and rooms have loaded once: a link opened at launch can resolve. */
+  hydrated?: true;
   error: string | null;
   /** a quiet, non-error line above the transcript; clears itself */
-  notice: { kind: "thread-gone"; botName: string | null } | null;
+  notice: { kind: "thread-gone" | "bot-gone"; botName: string | null } | null;
   /** a thread the person asked to open (chip or #Title link): the sidebar
    * expands its bot and scrolls the row into view once it is current */
   revealThread: { threadId: string; nonce: number } | null;
@@ -1592,6 +1600,7 @@ export function reducer(state: AppState, action: Action): AppState {
         sections: action.sections ?? [],
         computerControl: action.computerControl,
         selectedId,
+        hydrated: true as const,
         backgroundThreadEvents: {},
         loadingOlder: {},
         transcriptGeneration: {},
@@ -2568,9 +2577,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case "sendGroup": {
       if (!action.sendId) return state;
       const group = state.groups.find((candidate) => candidate.id === action.groupId);
-      const threadId = action.threadId ?? group?.threadId;
-      if (!group || threadId !== group.threadId) return state;
-      if (group.messages.some((message) => message.sendId === action.sendId)) return state;
+      if (!group) return state;
+      const threadId: string = action.threadId ?? group.threadId;
+      if (threadId === group.threadId && group.messages.some((message) => message.sendId === action.sendId)) return state;
       const message = optimisticUserMessage(
         action.text,
         action.sendId,
@@ -2578,12 +2587,14 @@ export function reducer(state: AppState, action: Action): AppState {
         null,
         action.mode ?? "chat",
       );
-      return bumpThreadUpdatedAt({
-        ...state,
-        groups: state.groups.map((candidate) => candidate.id === group.id
+      const stamped = bumpThreadUpdatedAt(state, threadId, message.at);
+      if (threadId !== group.threadId) return stamped;
+      return {
+        ...stamped,
+        groups: stamped.groups.map((candidate) => candidate.id === group.id
           ? { ...candidate, messages: [...candidate.messages, message] }
           : candidate),
-      }, threadId, message.at);
+      };
     }
   }
 }

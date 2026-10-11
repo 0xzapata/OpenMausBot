@@ -44,6 +44,19 @@ interface Draft {
 }
 
 const EMPTY: Draft = { picked: [], custom: "", other: false };
+/** A question with nothing to choose from is answered in words only. */
+const OPEN: Draft = { picked: [], custom: "", other: true };
+
+/** Where an untouched question's draft starts. */
+export function initialDraft(question: AskQuestion): Draft {
+  return question.options.length ? EMPTY : OPEN;
+}
+
+/** One question, one pick: choosing it is the whole answer, so the card
+ * sends it right away rather than waiting for Submit. */
+export function answersInOneTap(questions: readonly AskQuestion[]): boolean {
+  return questions.length === 1 && !questions[0]!.multiSelect && questions[0]!.options.length > 0;
+}
 
 function answersOf(draft: Draft): string[] {
   const custom = draft.other ? draft.custom.trim() : "";
@@ -129,7 +142,7 @@ export function QuestionCard({
   const [sent, setSent] = useState<string | null>(null);
 
   const answered = useMemo(
-    () => questions.map((_, index) => answersOf(drafts[index] ?? EMPTY).length > 0),
+    () => questions.map((question, index) => answersOf(drafts[index] ?? initialDraft(question)).length > 0),
     [questions, drafts],
   );
 
@@ -137,12 +150,13 @@ export function QuestionCard({
   const settled = Boolean(card.answered) || sent !== null;
   const current = questions[Math.min(active, questions.length - 1)]!;
   const currentIndex = Math.min(active, questions.length - 1);
-  const draft = drafts[currentIndex] ?? EMPTY;
+  const draft = drafts[currentIndex] ?? initialDraft(current);
+  const oneTap = answersInOneTap(questions);
   const answeredCount = answered.filter(Boolean).length;
   const complete = answeredCount === questions.length;
 
   const update = (index: number, next: Partial<Draft>) =>
-    setDrafts((previous) => ({ ...previous, [index]: { ...(previous[index] ?? EMPTY), ...next } }));
+    setDrafts((previous) => ({ ...previous, [index]: { ...(previous[index] ?? initialDraft(questions[index]!)), ...next } }));
 
   const choose = (label: string) => {
     if (settled) return;
@@ -156,6 +170,10 @@ export function QuestionCard({
     // Single-select is a radio group: picking replaces, and picking an
     // option means the free-text answer was not the one they wanted.
     update(currentIndex, { picked: [label], other: false, custom: "" });
+    if (oneTap) {
+      send({ ...drafts, [currentIndex]: { picked: [label], other: false, custom: "" } });
+      return;
+    }
     // Move to the next question they still owe an answer to, the way the
     // tabs would have been clicked anyway. The last one stays put so the
     // submit button is under the cursor that just chose.
@@ -175,8 +193,14 @@ export function QuestionCard({
   };
 
   const submit = () => {
-    if (settled || !complete || !card.requestId) return;
-    const answer = formatQuestionAnswers(questions, questions.map((_, index) => answersOf(drafts[index] ?? EMPTY)));
+    if (complete) send(drafts);
+  };
+
+  function send(final: Record<number, Draft>) {
+    if (settled || !card?.requestId) return;
+    const answers = questions.map((question, index) => answersOf(final[index] ?? initialDraft(question)));
+    if (answers.some((entry) => !entry.length)) return;
+    const answer = formatQuestionAnswers(questions, answers);
     if (!answer) return;
     setSent(answer);
     returnFocusToComposer();
@@ -190,7 +214,7 @@ export function QuestionCard({
       // being answerable rather than sitting there looking settled.
       onError: () => setSent(null),
     });
-  };
+  }
 
   if (settled) {
     const answer = card.answeredText ?? sent;
@@ -237,14 +261,16 @@ export function QuestionCard({
       title={title}
       meta={meta}
       onKeyDown={onCardKey}
-      footer={
+      // a single pick answers in one tap, so there is nothing to submit
+      // until they type an answer of their own
+      footer={oneTap && !draft.custom.trim() ? undefined : (
         <>
           <span className="me-auto text-[12px] text-ink-tertiary">{t("question.status.waiting")}</span>
           <button type="button" onClick={submit} disabled={!complete} className={ASK_PRIMARY_BUTTON}>
             {questions.length > 1 ? t("question.submitAll") : t("question.submit")}
           </button>
         </>
-      }
+      )}
     >
       {card.questionRequest?.origin === "output" && (
         <div className="-mt-1 mb-1.5 text-[12px] text-ink-secondary">{t("question.origin.badge")}</div>
@@ -321,18 +347,25 @@ export function QuestionCard({
       {/* an options-only question (an ACP engine answers with an option
           id, never text) has no free-text answer it could send */}
       {freeText && (
-        <input
+        // A textarea, so an answer can run to a few lines: Enter sends,
+        // Shift+Enter starts a new line, and it grows with its text up to a
+        // cap. It never takes focus on its own, so a question that arrives
+        // while they type in the composer does not steal the cursor.
+        <textarea
           dir="auto"
+          rows={1}
           value={draft.custom}
           maxLength={MAX_CUSTOM_ANSWER}
           aria-label={current.options.length ? t("question.otherPlaceholder") : current.question}
           onChange={(event) => type(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.nativeEvent.isComposing && complete) submit();
+            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            if (complete) submit();
           }}
-          placeholder={t("question.otherPlaceholder")}
+          placeholder={current.options.length ? t("question.otherPlaceholder") : t("question.answerPlaceholder")}
           className={cn(
-            "block h-11 w-full rounded-xl border border-ink/[0.12] bg-inset px-3 text-[15px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent/70",
+            "block max-h-40 min-h-11 w-full resize-none rounded-xl border border-ink/[0.12] bg-inset px-3 py-2.5 text-[15px] leading-6 text-ink outline-none placeholder:text-ink-tertiary focus:border-accent/70 [field-sizing:content]",
             current.options.length > 0 && "mt-2.5",
           )}
         />

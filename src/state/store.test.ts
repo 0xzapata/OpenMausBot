@@ -2303,6 +2303,7 @@ describe("live config frames", () => {
       ...baseFrame,
       anthropic: { configured: true },
       mistral: { configured: true },
+      groq: { configured: true },
       openaiCompat: { configured: true, url: "http://127.0.0.1:1/v1" },
       fleet: { available: true },
     };
@@ -2310,6 +2311,7 @@ describe("live config frames", () => {
     expect(state.config).toMatchObject({
       anthropic: { configured: true },
       mistral: { configured: true },
+      groq: { configured: true },
       openaiCompat: { configured: true, url: "http://127.0.0.1:1/v1" },
       fleet: { available: true },
     });

@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { brokerSocketPath } from "./procs.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
+import { formatQuestionAnswers } from "../shared/ask-question.ts";
 
 const PROXY = join(dirname(fileURLToPath(import.meta.url)), "permission-proxy.ts");
 
@@ -215,6 +216,19 @@ describe("permission proxy", () => {
     expect(resultJson(res).updatedInput.answers).toEqual({
       "Which framework?": "React",
       "Which features?": "Auth, Search",
+    });
+  });
+
+  it("delivers pasted Q/A text to Claude as one answer without overwriting another", async () => {
+    const input = { questions: [
+      { question: "Which framework?", options: [] },
+      { question: "Which features?", options: [] },
+    ] };
+    const pasted = "Notes\n\nQ: Which framework?\nA: Vue";
+    answerWith = () => ({ behavior: "answer", source: "user", message: formatQuestionAnswers(input.questions, [["React"], [pasted]]) });
+    rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "approve", arguments: { tool_name: "AskUserQuestion", input } } });
+    expect(resultJson(await waitFor(2))).toEqual({
+      behavior: "allow", updatedInput: { ...input, answers: { "Which framework?": "React", "Which features?": pasted } },
     });
   });
 

@@ -45,16 +45,20 @@ const plan: AskQuestion = { question: "Which plan?", options: [{ label: "Free" }
 
 describe("QuestionCard keys", () => {
   it("picks the option a letter names", () => {
-    mount([plan]);
+    // two questions, so a pick waits for submit instead of sending
+    mount([plan, { ...plan, question: "Which region?" }]);
     press(radios()[0]!, "b");
-    expect(checked()).toEqual(["false", "true", "false"]);
+    // the pick lands, and the card moves on to the question still owed
+    expect(host.textContent).toContain("1 of 2 answered");
+    expect(host.textContent).toContain("Which region?");
     press(radios()[0]!, "C");
     expect(checked()).toEqual(["false", "false", "true"]);
+    expect(host.textContent).toContain("2 of 2 answered");
   });
 
   it("leaves letters alone while typing, or with a modifier held", () => {
-    mount([plan]);
-    const field = host.querySelector("input")!;
+    mount([plan, { ...plan, question: "Which region?" }]);
+    const field = host.querySelector("textarea")!;
     press(field, "a");
     press(radios()[0]!, "a", { metaKey: true });
     expect(checked()).toEqual(["false", "false", "false"]);

@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { ChatErrorBanner } from "./ChatErrorBanner";
+import { ChatErrorBanner, ChatNotice } from "./ChatErrorBanner";
 
 const source = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
@@ -49,5 +49,23 @@ describe("ChatErrorBanner", () => {
     const store = source("state/store.tsx");
     expect(store).toContain("useChatErrorClear(state.error, clearChatError)");
     expect(store).not.toContain('setTimeout(() => rawDispatch({ type: "error", message: null }), 6000)');
+  });
+});
+
+describe("ChatNotice", () => {
+  const markup = (notice: Parameters<typeof ChatNotice>[0]["notice"]) => renderToStaticMarkup(createElement(ChatNotice, { notice }));
+
+  it("says which reference no longer resolves", () => {
+    expect(markup(null)).toBe("");
+    expect(markup({ kind: "thread-gone", botName: null })).toContain("That thread is no longer here.");
+    expect(markup({ kind: "thread-gone", botName: "Ada" })).toContain("That thread is no longer here. Showing Ada instead.");
+    expect(markup({ kind: "bot-gone", botName: null })).toContain("That bot is no longer here.");
+    expect(markup({ kind: "bot-gone", botName: null })).toContain('role="status"');
+  });
+
+  it("shows in the room as well as the chat", () => {
+    for (const file of ["components/ChatView.tsx", "components/GroupView.tsx"]) {
+      expect(source(file)).toContain("<ChatNotice notice={state.notice} />");
+    }
   });
 });

@@ -26,7 +26,7 @@ vi.mock("@/state/store", async (importOriginal) => {
     dispatch: fixture.dispatch,
   }) };
 });
-import { ThreadLink, ThreadRefText, ThreadRefsProvider, collectThreadRefs, threadLinkFromProps, useThreadRefs } from "./ThreadRefs";
+import { ThreadLink, ThreadRefText, ThreadRefsProvider, collectThreadRefs, openChatLink, threadLinkFromProps, useThreadRefs } from "./ThreadRefs";
 
 type ElementProps = { children?: ReactNode; onClick?: () => void; [key: string]: unknown };
 function findElement(tree: ReactNode, attribute: string): ReactElement<ElementProps> | undefined {
@@ -119,6 +119,96 @@ describe("ThreadLink", () => {
     expect(threadLinkFromProps({ "data-thread-id": "qa-245", "data-thread-bot": "scout", "data-thread-title": "QA PR 245", "data-thread-bot-name": "Scout", "data-thread-ambiguous": "true" }))
       .toEqual({ target: { threadId: "qa-245", botId: "scout", title: "QA PR 245", botName: "Scout" }, ambiguous: true });
     expect(threadLinkFromProps({ children: "x" })).toBeNull();
+  });
+});
+
+// #2383: a chat link opened from a browser or a dashboard.
+describe("openChatLink", () => {
+  const state = async () => ({ ...(await import("@/state/store")).initialState, bots: [scout, ada], groups: [room, dm], selectedId: "ada" });
+  const actions = (dispatch: ReturnType<typeof vi.fn>) => dispatch.mock.calls.map(([action]) => action);
+
+  it("opens the chat a copied link names, and nothing else", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://thread/qa-245?bot=scout", await state())).toBe(true);
+    expect(actions(dispatch)).toEqual([
+      { type: "select", id: "scout" },
+      { type: "switchTask", botId: "scout", threadId: "qa-245" },
+      { type: "revealThread", threadId: "qa-245" },
+    ]);
+  });
+
+  it("opens a room's thread too", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://thread/standup-1?bot=standup", await state())).toBe(true);
+    expect(actions(dispatch)).toContainEqual({ type: "revealThread", threadId: "standup-1" });
+  });
+
+  it("opens a bot-only link at its current conversation, switching nothing", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://bot/scout", await state())).toBe(true);
+    expect(actions(dispatch)).toEqual([
+      { type: "select", id: "scout" },
+      { type: "revealThread", threadId: "scout-main" },
+    ]);
+  });
+
+  it("opens a room by its id, never a bot-to-bot channel", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://bot/standup", await state())).toBe(true);
+    expect(actions(dispatch)).toEqual([
+      { type: "select", id: "standup" },
+      { type: "revealThread", threadId: "standup-1" },
+    ]);
+    const refused = vi.fn();
+    expect(openChatLink(refused, "openmausbot://bot/dm", await state())).toBe(false);
+    expect(actions(refused)).toEqual([{ type: "notice", notice: { kind: "bot-gone", botName: null } }]);
+  });
+
+  it("refuses a thread that is not the named bot's, showing that bot instead", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://thread/qa-245?bot=ada", await state())).toBe(false);
+    expect(actions(dispatch)).toEqual([
+      { type: "select", id: "ada" },
+      { type: "notice", notice: { kind: "thread-gone", botName: "Ada" } },
+    ]);
+  });
+
+  it("refuses a room's dead thread, showing that room instead", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://thread/gone?bot=standup", await state())).toBe(false);
+    expect(actions(dispatch)).toEqual([
+      { type: "select", id: "standup" },
+      { type: "notice", notice: { kind: "thread-gone", botName: "Standup" } },
+    ]);
+  });
+
+  it("says a bot it does not know is gone", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://bot/nobody", await state())).toBe(false);
+    expect(actions(dispatch)).toEqual([{ type: "notice", notice: { kind: "bot-gone", botName: null } }]);
+  });
+
+  it("says so for a chat or link it does not know, and changes nothing", async () => {
+    for (const link of [
+      "openmausbot://thread/missing?bot=nobody",
+      "openmausbot://thread/qa-245/extra",
+      "openmausbot://bot/scout/extra",
+      "openmausbot://bots/scout",
+      "not a link",
+    ]) {
+      const dispatch = vi.fn();
+      expect(openChatLink(dispatch, link, await state())).toBe(false);
+      expect(actions(dispatch)).toEqual([{ type: "notice", notice: { kind: "thread-gone", botName: null } }]);
+    }
+  });
+
+  it("returns from the team map to the open chat, where the notice shows", async () => {
+    const dispatch = vi.fn();
+    expect(openChatLink(dispatch, "openmausbot://bot/nobody", { ...await state(), activeView: "team-map" })).toBe(false);
+    expect(actions(dispatch)).toEqual([
+      { type: "select", id: "ada" },
+      { type: "notice", notice: { kind: "bot-gone", botName: null } },
+    ]);
   });
 });
 

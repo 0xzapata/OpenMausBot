@@ -14,6 +14,20 @@ ipcRenderer.on("package:install", (_event, url) => {
   for (const listener of packageInstallListeners) listener(url);
 });
 
+// A chat link opened from outside the app. Held until the page subscribes,
+// then handed over once: replaying it to a remounted listener would yank the
+// person back to that chat.
+let pendingChatLink = null;
+const chatLinkListeners = new Set();
+ipcRenderer.on("chat:open", (_event, link) => {
+  if (typeof link !== "string") return;
+  if (!chatLinkListeners.size) {
+    pendingChatLink = link;
+    return;
+  }
+  for (const listener of chatLinkListeners) listener(link);
+});
+
 // Main can finish loading the document before React subscribes. Retain only
 // the fixed actions (Organisation, the openmausbot://cloud link, plain
 // Settings → OpenMausBot Cloud from the lending menu-bar item, and the Add a
@@ -59,7 +73,7 @@ const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(upda
 // Only main can request a fresh snapshot; there is no renderer-callable method.
 const COMPANY_BACKUP_CLIENT_KEYS = [
   "omb-drafts", "omb-draft-attachments", "omb-draft-send-ids", "omb-draft-channel-modes",
-  "omb-skin", "omb-show-threads", "omb-show-run-card", "openmausbot.sidebarDensity",
+  "omb-skin", "omb-show-threads", "omb-show-run-card", "omb-send-key", "openmausbot.sidebarDensity",
   "openmausbot.sidebarCollapsedSections.v1", "openmausbot.sidebarSectionOrder.v1",
   "omb-analytics-opt-out", "openmausbot.remote-voice.v1",
 ];
@@ -234,6 +248,17 @@ const bridge = {
     packageInstallListeners.add(cb);
     if (pendingPackageInstallUrl) cb(pendingPackageInstallUrl);
     return () => packageInstallListeners.delete(cb);
+  },
+  /** A chat link (openmausbot://thread/… or openmausbot://bot/…) opened from
+   * outside the app. */
+  onChatLink: (cb) => {
+    chatLinkListeners.add(cb);
+    if (pendingChatLink) {
+      const link = pendingChatLink;
+      pendingChatLink = null;
+      cb(link);
+    }
+    return () => chatLinkListeners.delete(cb);
   },
   /** Mirrors durable unread state into the native Dock/taskbar badge. */
   setUnreadCount: (count) => ipcRenderer.send("desktop:unread-count", count),

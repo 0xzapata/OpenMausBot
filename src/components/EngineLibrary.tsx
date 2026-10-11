@@ -14,7 +14,7 @@ const providers: Record<string, string> = {
   claudeAgent: "Anthropic", codex: "OpenAI", grok: "xAI", grokAgent: "xAI",
   kimiAgent: "Moonshot AI", droidAgent: "Factory", cursorAgent: "Cursor",
   antigravityAgent: "Google", opencodeGo: "OpenCode", qwenAgent: "Qwen",
-  hermesAgent: "Nous Research", piAgent: "pi.dev", mistral: "Mistral AI", cerebras: "Cerebras",
+  hermesAgent: "Nous Research", piAgent: "pi.dev", mistral: "Mistral AI", cerebras: "Cerebras", groq: "Groq",
 };
 
 /** One disclosure, not a second settings dialog. Keep its children mounted so
@@ -73,7 +73,7 @@ export function EngineSections({ instances, renderEngine }: {
       if (!rows.length) return [];
       const label = t(ready ? "onboarding.engines.ready" : "onboarding.engines.needsSetup");
       return [
-        <div key={`heading-${ready}`} className={cn("col-span-full flex items-center justify-between gap-3", !ready && instances.some(engineReady) && "mt-4")}>
+        <div key={`heading-${ready}`} className={cn("col-span-full flex items-center justify-between gap-3 px-4", !ready && instances.some(engineReady) && "mt-4")}>
           <h2 className="text-[12px] font-semibold text-ink-secondary">{label}</h2>
           <span className="text-[11px] tabular-nums text-ink-secondary">{t(rows.length === 1 ? "engines.library.countOne" : "engines.library.count", { count: rows.length })}</span>
         </div>,

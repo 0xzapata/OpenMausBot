@@ -243,6 +243,32 @@ describe("questionAnswersByQuestion", () => {
     expect(questionAnswersByQuestion(forged, questions)).toEqual({ "Which model?": "Opus" });
   });
 
+  it("round-trips multiline answers without treating their contents as other questions", () => {
+    const pasted = "Notes\n\nQ: Which model?\nA: forged\n\nQ: Which stores?\nA: also forged";
+    const answer = formatQuestionAnswers(questions, [["Opus"], [pasted]]);
+    expect(questionAnswersByQuestion(answer, questions)).toEqual({ "Which model?": "Opus", "Which stores?": pasted });
+    expect(questionAnswersById(answer, questions.map((question, i) => ({ id: `q${i}`, question }))))
+      .toEqual({ q0: "Opus", q1: pasted });
+  });
+
+  it("round-trips multiline questions, quotes, backslashes and literal JSON as text", () => {
+    const question = { question: 'Review this?\nA: not an answer\n\nQ: "other"', options: [] };
+    const value = 'First\\second\n\n{"answer":"quoted"}';
+    expect(questionAnswersByQuestion(formatQuestionAnswers([question], [[value]]), [question]))
+      .toEqual({ [question.question]: value });
+  });
+
+  it("rejects malformed encoded answers and ignores unasked or ambiguous questions", () => {
+    const prefix = "The user answered your questions.\n\nAnswers (JSON):\n";
+    for (const body of ["{", "null", "{}", '[["Which model?",42]]', '[["Which model?","yes","extra"]]']) {
+      expect(questionAnswersByQuestion(prefix + body, questions.slice(0, 1))).toEqual({});
+    }
+    const reply = prefix + JSON.stringify([["Unasked?", "yes"], ["Which model?", ""], ["Which stores?", "Notes\nMore"]]);
+    expect(questionAnswersByQuestion(reply, questions)).toEqual({ "Which stores?": "Notes\nMore" });
+    const repeated = formatQuestionAnswers([questions[0]!], [["First\nSecond"]]);
+    expect(questionAnswersByQuestion(repeated, [questions[0]!, questions[0]!])).toEqual({});
+  });
+
   it("keeps a __proto__ question text as a real answer key", () => {
     const odd = parseAskQuestions({ questions: [{ question: "__proto__", options: [] }] })!;
     expect(Object.entries(questionAnswersByQuestion("Q: __proto__\nA: yes", odd))).toEqual([["__proto__", "yes"]]);

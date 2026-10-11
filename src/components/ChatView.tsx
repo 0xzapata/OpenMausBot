@@ -13,20 +13,19 @@ import {
   Download,
   Gauge,
   ListChecks,
-  MessageSquareReply,
   Monitor,
   MoreHorizontal,
-  Pencil,
   Pin,
-  PinOff,
   RefreshCw,
   Search,
   Square,
+  Reply,
   Webhook,
   X,
 } from "lucide-react";
 import { WorkingDots } from "@/components/WorkingIndicator";
-import { MessageActions, messageActionClass } from "@/components/MessageActions";
+import { ACTION_ICON, MESSAGE_ROW, MessageActions, messageActionClass } from "@/components/MessageActions";
+import { useBotMessageMenu, userMessageMenu } from "@/components/message-menu";
 import { useSpeech } from "@/lib/tts/useSpeech";
 import { localSystemVoiceActive } from "@/lib/local-voice";
 import { computerStartLine } from "@/lib/computer-start";
@@ -58,6 +57,7 @@ import { plainErrorLine } from "@/lib/plain-error";
 import { openPlaceAction, placeRowViewFor, usePlaceSeat, worksOnSimpleLabel } from "@/lib/place-view";
 import type { PlaceRow } from "../../shared/place-view";
 import { trialCreditKind, type TrialCreditRefusal } from "../../shared/trial-credit";
+import { isPureLeakedSystemHarnessMessage, stripLeakedSystemHarnessMessages } from "../../shared/system-message-guard.ts";
 import type { LocaleKey } from "@/locales";
 import { isProviderSafetyBlock, PROVIDER_SAFETY_GUIDANCE, PROVIDER_SAFETY_HELP_URL } from "../../shared/provider-safety";
 import { isCancelledTranscriptRow } from "../../shared/client-cancel";
@@ -75,6 +75,7 @@ import { ThreadChip } from "./ThreadChip";
 import { VerifyCard } from "./VerifyCard";
 import { askText, runSkill, runSteps, runSummary, showRun, skillPrompt } from "@/lib/verify-steps";
 import { useShowRunCard } from "@/lib/run-card-preferences";
+import { sendsMessage, useSendKey } from "@/lib/send-key";
 import { ToolActivity } from "./ToolActivity";
 import { DataResultChip } from "./DataResultChip";
 import { ThreadRefText } from "./ThreadRefs";
@@ -82,7 +83,7 @@ import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Composer } from "./Composer";
-import { ChatErrorBanner } from "./ChatErrorBanner";
+import { ChatErrorBanner, ChatNotice } from "./ChatErrorBanner";
 import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
@@ -199,6 +200,15 @@ function DaySeparator({ at, today }: { at: number; today: number }) {
   );
 }
 
+/** Reply to one message: the curved back arrow beside every bubble. */
+export function ReplyAction({ onReply }: { onReply: () => void }) {
+  return (
+    <button type="button" onClick={onReply} aria-label={t("chat.replyToMessage")} title={t("chat.reply")} className={messageActionClass}>
+      <Reply {...ACTION_ICON} aria-hidden="true" />
+    </button>
+  );
+}
+
 /** Hover/focus-revealed copy control shared by user + bot bubbles. Rooms use
  * the same button beside a message. */
 export function CopyButton({ text, className }: { text: string; className?: string }) {
@@ -215,7 +225,7 @@ export function CopyButton({ text, className }: { text: string; className?: stri
         className,
       )}
     >
-      {state === "copied" ? <Check size={14} className="text-success" /> : state === "failed" ? <X size={14} className="text-danger" /> : <Copy size={14} />}
+      {state === "copied" ? <Check {...ACTION_ICON} className="text-success" /> : state === "failed" ? <X {...ACTION_ICON} className="text-danger" /> : <Copy {...ACTION_ICON} />}
     </button>
   );
 }
@@ -399,8 +409,8 @@ export class MessageBoundary extends Component<{ children: ReactNode; fallbackTe
   }
 }
 
-/** Inline editor a user bubble turns into: Enter sends (forking the
- * conversation), Esc cancels. Shift+Enter for a newline, like everywhere. */
+/** Inline editor a user bubble turns into: the send key sends (forking the
+ * conversation), Esc cancels. Any other Enter is a newline, like the composer. */
 function BubbleEditor({
   initial,
   onCancel,
@@ -411,6 +421,7 @@ function BubbleEditor({
   onSubmit: (text: string) => void;
 }) {
   const [draft, setDraft] = useState(initial);
+  const sendKey = useSendKey();
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -429,8 +440,7 @@ function BubbleEditor({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
-          // isComposing: an IME confirm-Enter must not submit the edit
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+          if (sendsMessage(e.nativeEvent, sendKey)) {
             e.preventDefault();
             submit();
           }
@@ -505,7 +515,25 @@ const Bubble = memo(function Bubble({
   const [viewRaw, setViewRaw] = useState(false);
   const speech = useSpeech();
   const speaking = speech.messageId === message.id && speech.status !== "idle";
-  const text = peer ? peer.body : (message.text ?? "");
+  const rawText = peer ? peer.body : (message.text ?? "");
+  const text = user ? rawText : stripLeakedSystemHarnessMessages(rawText);
+  // built before any early return so the hook order never changes
+  const botMenu = useBotMessageMenu({
+    text,
+    botId,
+    messageId: message.id,
+    voiceId,
+    tts,
+    localVoice,
+    canSpeak: message.kind === "text" && !peer,
+    viewRaw,
+    onToggleRaw: () => setViewRaw((raw) => !raw),
+    onRegenerate: !busy ? onRegenerate : undefined,
+    pin: remoteClient ? undefined : {
+      pinned,
+      onToggle: () => dispatch({ type: "updateTask", botId, threadId, patch: { pinnedMessageId: pinned ? "" : message.id } }),
+    },
+  });
   const attached = useMemo(() => splitMessageAttachments(message.attachments), [message.attachments]);
   const generatedPaths = attached.images;
   const linkedFiles = useMemo(
@@ -554,41 +582,23 @@ const Bubble = memo(function Bubble({
     dispatch({ type: "updateTask", botId, threadId, patch: { pinnedMessageId: pinned ? "" : message.id } });
 
   return (
-    <div className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start")}>
+    <div {...{ [MESSAGE_ROW]: "" }} className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start")}>
       {peer && <PeerLabel peer={peer} />}
       <div className={cn("flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
         {user && (
-          <MessageActions side="user">
-            {/* editing rewinds the thread, so it waits for the turn to end —
-                same rule as the version switcher below */}
-            {message.kind === "text" && !webhookView && !hasAttachments && !busy && !message.id.startsWith("optimistic-") && (
-              <button
-                onClick={() => onStartEdit(message.id)}
-                aria-label={t("chat.editMessage")}
-                title={t("chat.editMessage")}
-                className={messageActionClass}
-              >
-                <Pencil size={14} />
-              </button>
-            )}
-            {Boolean(visibleText.trim()) && <CopyButton text={visibleText} className="opacity-100" />}
-            <button
-              type="button"
-              onClick={() => onReply(message)}
-              aria-label={t("chat.replyToMessage")}
-              title={t("chat.reply")}
-              className={messageActionClass}
-            >
-              <MessageSquareReply size={14} />
-            </button>
-            <button
-              onClick={togglePin}
-              aria-label={pinned ? t("chat.unpinMessage") : t("chat.pinMessage")}
-              title={pinned ? t("chat.unpinHint") : t("chat.pinHint")}
-              className={cn(messageActionClass, remoteClient && "hidden")}
-            >
-              {pinned ? <PinOff size={14} /> : <Pin size={14} />}
-            </button>
+          <MessageActions
+            side="user"
+            menu={userMessageMenu({
+              messageId: message.id,
+              // editing rewinds the thread, so it waits for the turn to end,
+              // same rule as the version switcher below
+              onEdit: message.kind === "text" && !webhookView && !hasAttachments && !busy && !message.id.startsWith("optimistic-")
+                ? () => onStartEdit(message.id) : undefined,
+              pin: remoteClient ? undefined : { pinned, onToggle: togglePin },
+            })}
+          >
+            <ReplyAction onReply={() => onReply(message)} />
+            {Boolean(visibleText.trim()) && <CopyButton text={visibleText} className={messageActionClass} />}
           </MessageActions>
         )}
         <div
@@ -695,39 +705,14 @@ const Bubble = memo(function Bubble({
           )}
         </div>
         {!user && (
-          <MessageActions side="bot" forceOpen={viewRaw || speaking}>
-            {text && <CopyButton text={text} className="opacity-100" />}
-            {text && <RawToggleAction active={viewRaw} onToggle={() => setViewRaw((r) => !r)} className="opacity-100" />}
-            {message.kind === "text" && text && !peer && (
-              <SpeakButton text={text} botId={botId} messageId={message.id} voiceId={voiceId} tts={tts} localVoice={localVoice} className="opacity-100" />
+          <MessageActions side="bot" forceOpen={viewRaw || speaking} menu={botMenu}>
+            <ReplyAction onReply={() => onReply(message)} />
+            {text && <CopyButton text={text} className={messageActionClass} />}
+            {/* a state the person turned on keeps its switch in view */}
+            {text && viewRaw && <RawToggleAction active onToggle={() => setViewRaw(false)} className={messageActionClass} />}
+            {text && speaking && (
+              <SpeakButton text={text} botId={botId} messageId={message.id} voiceId={voiceId} tts={tts} localVoice={localVoice} className={cn(messageActionClass, "text-accent")} />
             )}
-            {!busy && onRegenerate && (
-              <button
-                onClick={onRegenerate}
-                aria-label={t("chat.regenerate")}
-                title={t("chat.regenerate")}
-                className={messageActionClass}
-              >
-                <RefreshCw size={14} />
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => onReply(message)}
-              aria-label={t("chat.replyToMessage")}
-              title={t("chat.reply")}
-              className={messageActionClass}
-            >
-              <MessageSquareReply size={14} />
-            </button>
-            <button
-              onClick={togglePin}
-              aria-label={pinned ? t("chat.unpinMessage") : t("chat.pinMessage")}
-              title={pinned ? t("chat.unpinHint") : t("chat.pinHint")}
-              className={cn(messageActionClass, remoteClient && "hidden")}
-            >
-              {pinned ? <PinOff size={14} /> : <Pin size={14} />}
-            </button>
           </MessageActions>
         )}
         <span
@@ -1060,7 +1045,12 @@ const MessagesList = memo(function MessagesList({
               return <CompactionChip message={m} />;
             case "screen":
               return <ScreenFrame threadId={threadId} message={m} />;
-            default:
+            default: {
+              const peer = peerLine(m) ?? peerRequest(m, botId);
+              const user = m.role === "user" && !peer;
+              if (!user && isPureLeakedSystemHarnessMessage(m.text) && !m.attachments?.length) {
+                return null;
+              }
               return (
                 <Bubble
                   message={m}
@@ -1079,6 +1069,7 @@ const MessagesList = memo(function MessagesList({
                   onReply={onReply}
                 />
               );
+            }
           }
         })();
         if (!row) return divider && <div key={m.id} className="contents">{divider}</div>;
@@ -1222,15 +1213,14 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const {
     scrollRef,
     transcriptRef,
+    topSentinelRef,
     transcriptKey,
     following,
     windowedMessages,
     hiddenCount,
     laterCount,
     olderPending,
-    showEarlier,
     showLater,
-    loadOlder,
     jumpToLatest,
     scrollHandlers,
   } = useTranscriptViewport({
@@ -1238,6 +1228,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     threadId: bot.threadId,
     messages,
     pinOn: [bot.busy, composerDock.pad],
+    hasMore: bot.hasMore,
   });
 
   const lastBotTextId = useMemo(
@@ -1516,13 +1507,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       {findOpen && <ChatFindBar threadId={bot.threadId} onClose={() => setFindOpen(false)} />}
 
       <ChatErrorBanner message={state.error} onDismiss={() => dispatch({ type: "error", message: null })} />
-      {state.notice && (
-        <div className="w-full px-5">
-          <div role="status" className="mb-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[13px] text-ink-secondary">
-            {state.notice.botName ? t("thread.goneShowing", { name: state.notice.botName }) : t("thread.gone")}
-          </div>
-        </div>
-      )}
+      <ChatNotice notice={state.notice} />
 
       {/* Pinned message banner */}
       <PinnedBanner
@@ -1557,25 +1542,14 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           aria-live="off"
           aria-label={t("chat.conversationWith", { name: bot.name })}
         >
-          {hiddenCount > 0 ? (
-            <div className="flex justify-center pt-2">
-              <button
-                onClick={showEarlier}
-                className="ui-pill"
-              >
-                {t("chat.showEarlier", { count: hiddenCount })}
-              </button>
+          {/* Reverse infinite scroll sentinel and smooth loading indicator */}
+          {olderPending ? (
+            <div className="flex items-center justify-center gap-2 py-3 text-xs text-ink-tertiary">
+              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+              <span>{t("chat.loadingEarlier")}</span>
             </div>
-          ) : bot.hasMore ? (
-            <div className="flex justify-center pt-2">
-              <button
-                onClick={loadOlder}
-                disabled={olderPending}
-                className="ui-pill"
-              >
-                {olderPending ? t("chat.loadingEarlier") : t("chat.loadEarlier")}
-              </button>
-            </div>
+          ) : hiddenCount > 0 || bot.hasMore ? (
+            <div ref={topSentinelRef} className="h-2 w-full pointer-events-none" aria-hidden="true" />
           ) : null}
           {windowedMessages.length === 0 && !bot.busy && <EmptyChat bot={bot} />}
           <ChatRowsContext.Provider value={rows}>

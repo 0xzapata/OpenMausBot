@@ -258,6 +258,9 @@ const __APP_VERSION__: string;
       };
       /** Receives a GitHub package URL opened through openmausbot://install. */
       onPackageInstall?(cb: (url: string) => void): () => void;
+      /** Receives a chat link (openmausbot://thread/… or openmausbot://bot/…)
+       * opened from outside the app. */
+      onChatLink?(cb: (link: string) => void): () => void;
       /** The desktop shell's app-menu Preferences… item was activated; open
        * app Settings. Local-shell only: remote server pages never receive
        * the channel, and the bridge is absent in the browser. "cloud" is the
