@@ -122,7 +122,9 @@ async function fixture(test: (f: any) => Promise<void>, options: { env?: NodeJS.
     };
     // Prompts a bot's engine has actually consumed: a launch record is
     // written before its engine reads the prompt, so launch counts alone
-    // cannot prove the prompt arrived.
+    // cannot prove the prompt arrived. Nor can a hand-off node's "running",
+    // saved before its turn is even set up: a restart on that alone can cut
+    // the turn before its engine ever had the prompt.
     const consumed = (botId = chief.id) => jsonl(join(dataDir, `consumed-${botId}.jsonl`)).length;
     const codexLaunches = (botId = chief.id) => jsonl(codexLaunchesPath).filter((launch: any) => launch.botId === botId);
     // The app-server calls of the last Codex launch: thread/resume keeps the
@@ -842,6 +844,7 @@ it("runs a Chief's review a restart cut again once, without notifying again", ()
   await f.send("Please have Engineering build the export.");
   await expect.poll(async () => (await f.messages()).some((m: any) => m.tool?.name === "Resumed with Engineering lead results, reviewing"), { timeout: 20_000 }).toBe(true);
   await expect.poll(() => f.nodes().find((node: any) => !node.parentId)?.status, { timeout: 15_000 }).toBe("running");
+  await expect.poll(() => f.consumed(), { timeout: 20_000 }).toBe(3); // warm-up, delegation, its review
   const chiefTurns = f.turns().length;
   await f.restart(() => {}, "SIGKILL");
   const stream = await openSse(`${f.session.info.url}/api/events`);
@@ -869,6 +872,7 @@ it("ends a Chief's review a second restart cuts, and says so in its conversation
   f.plan[f.chief.id] = { turns: [{}, f.delegate("build", [f.lead], "Build the export"), { reply: "NEVER_SENT", gateFile: f.gate("review") }] };
   await f.send("Please have Engineering build the export.");
   await expect.poll(() => f.nodes().find((node: any) => !node.parentId)?.status, { timeout: 20_000 }).toBe("running");
+  await expect.poll(() => f.consumed(), { timeout: 20_000 }).toBe(3); // warm-up, delegation, its review
   await f.restart(() => {}, "SIGKILL");
   await expect.poll(() => f.nodes().find((node: any) => !node.parentId), { timeout: 20_000 }).toMatchObject({ status: "running", restart: "rerun" });
   await expect.poll(() => f.consumed(), { timeout: 20_000 }).toBe(4); // warm-up, delegation, review, its rerun
