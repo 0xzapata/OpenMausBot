@@ -175,6 +175,58 @@ describe("bot-first sidebar", () => {
     expect(disabled).toContain("Move to team");
   });
 
+  it("Edit profile opens the panel without naming a section", () => {
+    let tree: ReactNode;
+    // call the menu inside a render so its hooks run and the returned tree
+    // carries the items' handlers
+    function Capture() {
+      tree = BotContextMenu({
+        menu: { botId: bot.id, x: 0, y: 0 }, onClose: vi.fn(), onArchive: vi.fn(), onDelete: vi.fn(), onMoveToSection: vi.fn(), onNewFolder: vi.fn(), onNewTaskFolder: vi.fn(),
+      });
+      return tree;
+    }
+    const editProfile = () => {
+      const items: ReactElement<ElementProps>[] = [];
+      const walk = (node: ReactNode) => {
+        for (const child of Children.toArray(node)) {
+          if (!isValidElement<ElementProps>(child)) continue;
+          if (child.props.role === "menuitem") items.push(child);
+          walk(child.props.children);
+        }
+      };
+      walk(tree);
+      return items.find((item) => Children.toArray(item.props.children).includes("Edit Profile"))!;
+    };
+    const render = () => renderToStaticMarkup(createElement(Capture));
+
+    // the panel is closed: select the bot, then a bare open (the remembered
+    // section, or a collapsed rail when nothing is stored)
+    render();
+    editProfile().props.onClick!({} as MouseEvent);
+    expect(fixture.dispatch.mock.calls).toEqual([
+      [{ type: "select", id: bot.id }],
+      [{ type: "toggleSettings", open: true }],
+    ]);
+
+    // already open: only the retarget, never a section
+    fixture.dispatch.mockClear();
+    fixture.state.settingsOpen = true;
+    render();
+    editProfile().props.onClick!({} as MouseEvent);
+    expect(fixture.dispatch.mock.calls).toEqual([[{ type: "select", id: bot.id }]]);
+
+    // the remote client's menu carries the same two-step open
+    vi.stubGlobal("window", { innerWidth: 1024, innerHeight: 768, ogb: { remoteClient: { active: true } } });
+    fixture.dispatch.mockClear();
+    fixture.state.settingsOpen = false;
+    render();
+    editProfile().props.onClick!({} as MouseEvent);
+    expect(fixture.dispatch.mock.calls).toEqual([
+      [{ type: "select", id: bot.id }],
+      [{ type: "toggleSettings", open: true }],
+    ]);
+  });
+
   it("reveals a matching sole thread when searching a bot", () => {
     const single = { ...bot, projects: [], tasks: [bot.tasks![0]], unread: false };
     const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", single, "last selected")));

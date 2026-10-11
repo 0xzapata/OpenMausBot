@@ -911,7 +911,7 @@ export function BotContextMenu({
         }),
         item(<Pencil size={16} className="text-ink-secondary" />, t("sidebar.bot.editProfile"), () => {
           dispatch({ type: "select", id: bot.id });
-          dispatch({ type: "toggleSettings", open: true });
+          if (!state.settingsOpen) dispatch({ type: "toggleSettings", open: true });
         }),
         item(<ClipboardCopy size={16} className="text-ink-secondary" />, t("sidebar.copyConversationId"), () => {
           void copyText(bot.threadId);
@@ -947,7 +947,7 @@ export function BotContextMenu({
         divider("d1"),
         item(<Pencil size={16} className="text-ink-secondary" />, t("sidebar.bot.editProfile"), () => {
           dispatch({ type: "select", id: bot.id });
-          dispatch({ type: "toggleSettings", open: true, section: "identity" });
+          if (!state.settingsOpen) dispatch({ type: "toggleSettings", open: true });
         }),
         item(<Copy size={16} className="text-ink-secondary" />, t("sidebar.bot.duplicate"), () =>
           dispatch({ type: "duplicateBot", botId: bot.id }),
