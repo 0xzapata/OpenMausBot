@@ -330,6 +330,7 @@ import {
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { ManagedDesktopProviders } from "./managed-desktop.ts";
+import { mainThread, oldestThread } from "./main-thread.ts";
 import { computerKindForResource, ManagedDesktopPolicy, type ComputerKind } from "./managed-policy.ts";
 import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER, HOSTED_PROVIDER_SETTINGS_ERROR } from "./hosted-models.ts";
 import {
@@ -4062,6 +4063,7 @@ const wireBot = (bot: BotRecord): WireBot => {
     ? { ...rest, approvalMode: "ask" as const, autoApprove: false }
     : rest;
   return { ...visible, waitingForTeammates: activeCoordinationForThread(bot.threadId) && !threadBusy(bot.id, bot.threadId),
+    mainThreadId: botMainThread(bot.id),
     avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
 };
 
@@ -4077,7 +4079,7 @@ function toolScopeForTurn(botId: string) {
  * can validate it before sending the confirmation that makes it effective. */
 const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
   const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
-  return { ...rest, approvalMode: approvalModeFor(rest), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
+  return { ...rest, approvalMode: approvalModeFor(rest), mainThreadId: botMainThread(bot.id), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
 };
 
 /** A settings-based preview, not a receipt of a dispatched turn. No
@@ -9880,6 +9882,8 @@ async function acceptDirectSend(
             sender,
             ...(via ? { via } : {}),
           });
+          // Written here, as the words that start a turn are (startTurn).
+          store.setTaskAskedAt(botId, threadId, message.at);
           // Offered to the next turn again unless the person stops this one.
           handoffs.steered(threadId, steerTarget, instance?.instanceId, message.id);
           return { ok: true as const, steered: true as const, threadId, message };
@@ -10478,6 +10482,10 @@ async function startTurn(
   if (!opts?.cardContinuation) {
     if (commsDepth === 0 && opts?.automationSource === undefined && !opts?.unattended && !userMessage.peerAsk) {
       personAskAt.set(threadId, userMessage.at);
+      // Where the person is now (server/main-thread.ts). A line relayed
+      // from Slack was written there, not in this conversation: the line
+      // says so (Message.relayed), also in a turn a computer switch continues.
+      if (!userMessage.relayed) store.setTaskAskedAt(bot.id, threadId, userMessage.at);
       // Continuing an old run as a normal conversation makes that task
       // visible again; these new replies are not routine report updates.
       if (task.routineRunId) store.patchTask(bot.id, threadId, { routineRunId: undefined });
@@ -11837,16 +11845,13 @@ function routineSourceOwner(run: Pick<RoutineRun, "botId" | "sourceThreadId" | "
   return group?.memberIds.includes(bot.id) ? { bot, group, threadId } : null;
 }
 
-/** There is no durable "main thread" (bot.threadId is only the UI
- * selection), so a routine reports into the bot's oldest open conversation:
- * the one it was created with until that is deleted or archived. Deleting
- * the last one already gives the bot a fresh conversation (Store.deleteTask). */
+/** Where a routine without a thread of its own reports: the bot's main
+ * thread (server/main-thread.ts), the one a bot with hidden threads opens
+ * to (WireBot.mainThreadId). On a Cloud home a conversation someone else
+ * opened never counts. */
 function botMainThread(botId: string): string | undefined {
-  const visible = store.tasks(botId).filter((task) => !task.routineRunId);
-  const open = visible.filter((task) => task.archivedAt === undefined);
-  return (open.length ? open : visible).reduce<TaskRecord | undefined>(
-    (oldest, task) => (!oldest || task.createdAt < oldest.createdAt ? task : oldest), undefined,
-  )?.threadId;
+  const tasks = store.tasks(botId);
+  return mainThread(CLOUD_HOME ? tasks.filter((task) => !cloudGuestOpened(task.threadId)) : tasks, store.bot(botId)?.threadId);
 }
 
 /** Routines without a chosen thread used to get an automatic "<name> ·
@@ -12097,9 +12102,10 @@ routines = new RoutineManager({
   },
   resolveResultsThread: (routine, forceNew) => {
     // Every run reports into the routine's bot's main thread, wherever the
-    // routine was made (chat, editor, API, or a teammate's request). A run
-    // still executes in its own hidden task, which Run logs and Open run use.
-    // A thread the person chose in "Post results to" keeps winning.
+    // routine was made (chat, editor, API, or a teammate's request), asked
+    // again for each run so results follow the person. A run still executes
+    // in its own hidden task, which Run logs and Open run use. A thread the
+    // person chose in "Post results to" keeps winning.
     const bot = store.bot(routine.botId);
     const chosen = !forceNew && routine.resultsThreadId && bot && !bot.hidden
       ? store.taskByThread(bot.id, routine.resultsThreadId) : undefined;
@@ -12107,18 +12113,25 @@ routines = new RoutineManager({
     // guest's (or nobody's) keeps a results conversation opened as theirs.
     const opener = CLOUD_HOME ? routineOpener(routine.id) : undefined;
     const main = bot && !bot.hidden ? botMainThread(bot.id) : undefined;
-    const mainAllowed = main && (!CLOUD_HOME || (opener === CLOUD_OWNER_KEY && !cloudGuestOpened(main)));
+    const mainAllowed = main && (!CLOUD_HOME || opener === CLOUD_OWNER_KEY);
     const keepChosen = chosen && !chosen.routineRunId && !(mainAllowed && legacyResultsThread(routine.name, chosen));
-    if (keepChosen) return chosen.threadId;
-    if (mainAllowed || !CLOUD_HOME) return main;
+    if (keepChosen) return { threadId: chosen.threadId };
+    if (mainAllowed) return { threadId: main, main: true };
+    if (!CLOUD_HOME) return undefined;
     const threadId = store.createTask(routine.botId, `${routine.name} · Results`, false)?.threadId;
     if (threadId) threadStarters.set(threadId, opener!);
-    return threadId;
+    return threadId ? { threadId } : undefined;
+  },
+  // Those versions saved it only where a routine might report into the main
+  // thread: never one someone else opened, which a guest's routine's own
+  // results conversation is.
+  frozenResultsThread: (botId) => {
+    const oldest = oldestThread(store.tasks(botId));
+    return oldest && !cloudGuestOpened(oldest) ? oldest : undefined;
   },
   discardResultsThread: (botId, threadId) => {
     const task = store.taskByThread(botId, threadId);
-    // The main thread is reused, never allocated, so a failed write keeps it.
-    if (task && threadId !== botMainThread(botId) && !task.busy && !task.routineRunId && store.messagesFor(threadId).length === 0) {
+    if (task && !task.busy && !task.routineRunId && store.messagesFor(threadId).length === 0) {
       store.deleteTask(botId, threadId);
       handoffs.forget(threadId);
     }
@@ -12230,6 +12243,9 @@ if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
   });
   ownerOnlyCache.clear();
 }
+// Whether an oldest thread is someone else's (frozenResultsThread) is known
+// only now: an earlier key of the owner's is theirs once settled.
+routines.clearFrozenResultsThreads();
 orgLibrary = new OrgLibrary({
   dataDir: DATA_DIR,
   store,
@@ -23560,6 +23576,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           sender: item.sender,
           ...(item.via ? { via: item.via } : {}),
         }));
+        // Words a person queued are written here once steered in, as once a
+        // drained turn starts with them (startTurn); a bot's own never are.
+        const asked = messages.filter((_, index) => !held.items[index]?.unattended && !held.items[index]?.peerAsk).at(-1);
+        if (asked) store.setTaskAskedAt(bot.id, bot.threadId, asked.at);
         // Offered to the next turn again unless the person stops this one.
         for (const message of messages) handoffs.steered(bot.threadId, steerTarget, instance?.instanceId, message.id);
         const queueIds = held.items.map((item) => item.messageId);

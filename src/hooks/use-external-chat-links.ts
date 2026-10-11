@@ -4,10 +4,12 @@
 // and a link must work from any of them.
 import { useEffect, useState } from "react";
 import { openChatLink } from "@/components/ThreadRefs";
+import { useShowThreads } from "@/lib/thread-preferences";
 import type { Action, AppState } from "@/state/store";
 
 export function useExternalChatLinks(state: AppState, dispatch: (action: Action) => void): void {
   const [link, setLink] = useState<string | null>(null);
+  const showThreads = useShowThreads();
   useEffect(() => window.ogb?.onChatLink?.(setLink), []);
   // One that arrives at launch waits until the bots have loaded, so it can
   // find its chat; a newer link replaces one still waiting.
@@ -20,6 +22,6 @@ export function useExternalChatLinks(state: AppState, dispatch: (action: Action)
     // (New Bot, a trigger draft) stay open.
     if (state.appSettingsOpen) dispatch({ type: "toggleAppSettings", open: false });
     if (state.shortcutsOpen) dispatch({ type: "toggleShortcuts", open: false });
-    openChatLink(dispatch, link, state);
-  }, [link, state, dispatch]);
+    openChatLink(dispatch, link, state, showThreads);
+  }, [link, state, showThreads, dispatch]);
 }

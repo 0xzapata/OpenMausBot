@@ -4,6 +4,7 @@
 // default responder; @mentions override that routing.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { activeLocale, t } from "@/lib/i18n";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pin, Plus, Search, X } from "lucide-react";
 import {
   api,
@@ -360,6 +361,7 @@ export const Transcript = memo(function Transcript({
   onReply: (message: Message) => void;
 }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const showToolCalls = showToolCallsEnabled(state.config);
   const memberOf = (id?: string) => members.find((b) => b.id === id);
   // Several bots working at once turn a room into a wall of chips; fold the
@@ -492,7 +494,7 @@ export const Transcript = memo(function Transcript({
               <RoutineRunCard
                 message={m}
                 onOpen={routineTarget
-                  ? () => openNotificationTarget(dispatch, routineTarget, state)
+                  ? () => openNotificationTarget(dispatch, routineTarget, state, showThreads)
                   : undefined}
               />
             </div>

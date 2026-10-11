@@ -6,7 +6,8 @@
 import { MentionText } from "./MentionText";
 import type { MentionPeer } from "@/lib/mentions";
 import { createContext, Fragment, useContext, useMemo, useRef, type ReactNode } from "react";
-import { openThread, useStore, type Action, type AppState, type Bot, type Group, type ThreadTarget } from "@/state/store";
+import { botOpensTo, openBot, openThread, useStore, type Action, type AppState, type Bot, type Group, type ThreadTarget } from "@/state/store";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { t } from "@/lib/i18n";
 import { parseBotRefUrl, parseThreadRefUrl, resolveThreadRefAddress, splitThreadRefsForDisplay, type ThreadRefCandidate } from "@/lib/thread-refs";
 
@@ -70,11 +71,12 @@ export interface ThreadLinkTarget extends ThreadTarget {
  * must work from the keyboard. Looks like the links around it. */
 export function ThreadLink({ target, ambiguous, children }: { target: ThreadLinkTarget; ambiguous: boolean; children?: ReactNode }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   return (
     <button
       type="button"
       data-thread-link={target.threadId}
-      onClick={() => openThread(dispatch, target, state)}
+      onClick={() => openThread(dispatch, target, state, showThreads)}
       title={ambiguous ? t("chat.openThreadOn", { title: target.title, name: target.botName }) : t("chat.openThread", { title: target.title })}
       className="inline break-words text-start text-accent underline decoration-accent/40 hover:decoration-accent"
     >
@@ -86,16 +88,26 @@ export function ThreadLink({ target, ambiguous, children }: { target: ThreadLink
 /** Open a chat link that came from outside the app (a browser or a
  * dashboard): the canonical openmausbot://thread/<id>?bot=<id> a chat's Copy
  * link makes, or openmausbot://bot/<id> for a bot's (or a room's) current
- * conversation. Only navigates. A chat that is not here, or not the named
- * owner's, opens nothing and says so where the person can see it. */
-export function openChatLink(dispatch: (action: Action) => void, link: string, state: AppState): boolean {
+ * conversation, which a bot's row would open (openBot). Only navigates. A
+ * chat that is not here, or not the named owner's, opens nothing and says
+ * so where the person can see it. */
+export function openChatLink(dispatch: (action: Action) => void, link: string, state: AppState, threadsShown: boolean): boolean {
+  /** The bot, or room, a link names, opened as itself; its thread. */
+  const openOwner = (id: string) => {
+    const bot = state.bots.find((candidate) => candidate.id === id);
+    if (bot) {
+      openBot(dispatch, bot, threadsShown);
+      return { name: bot.name, threadId: botOpensTo(bot, threadsShown) };
+    }
+    const room = state.groups.find((group) => group.id === id && !group.dm);
+    // Opening it shows its current conversation; nothing is switched.
+    if (room) dispatch({ type: "select", id: room.id });
+    return room && { name: room.name, threadId: room.threadId };
+  };
   const ownerAddress = parseBotRefUrl(link);
   if (ownerAddress) {
-    const owner = state.bots.find((bot) => bot.id === ownerAddress.botId)
-      ?? state.groups.find((group) => group.id === ownerAddress.botId && !group.dm);
+    const owner = openOwner(ownerAddress.botId);
     if (owner) {
-      // Opening it shows its current conversation; nothing is switched.
-      dispatch({ type: "select", id: owner.id });
       if (owner.threadId) dispatch({ type: "revealThread", threadId: owner.threadId });
       return true;
     }
@@ -104,12 +116,9 @@ export function openChatLink(dispatch: (action: Action) => void, link: string, s
   }
   const address = parseThreadRefUrl(link);
   const ref = address ? resolveThreadRefAddress(collectThreadRefs(state.bots, state.groups), address) : null;
-  if (ref) return openThread(dispatch, ref, state);
-  const owner = address?.botId
-    ? state.bots.find((bot) => bot.id === address.botId) ?? state.groups.find((group) => group.id === address.botId && !group.dm)
-    : undefined;
+  if (ref) return openThread(dispatch, ref, state, threadsShown);
+  const owner = address?.botId ? openOwner(address.botId) : undefined;
   if (owner) {
-    dispatch({ type: "select", id: owner.id });
     dispatch({ type: "notice", notice: { kind: "thread-gone", botName: owner.name } });
   } else {
     showLinkNotice(dispatch, state, { kind: "thread-gone", botName: null });

@@ -115,11 +115,12 @@ let macAway = false;
  * written into the server's records while it is stopped. A restart ends every
  * turn and its agents proxy, so a test does this before any of its turns. The
  * owner's session survives it; the lent Mac's connector reconnects by itself
- * a few seconds later (see macOnline). */
-async function leftBehind(of: { threadIds?: string[]; routineIds?: string[] }) {
+ * a few seconds later (see macOnline). `stopped` changes other records then. */
+async function leftBehind(of: { threadIds?: string[]; routineIds?: string[] }, stopped?: () => void) {
   for (const proxy of proxies.splice(0)) proxy.kill();
   await waitForExit(child, { signal: "SIGTERM" });
   markLeftBehind(join(home, ".openmausbot"), of);
+  stopped?.();
   await boot();
   macAway = true;
 }
@@ -757,13 +758,86 @@ it("the results conversation of a routine a guest left behind never reaches the 
   const ownerTools = await toolsFor(async () => say(owner, bot, "Read plan.md from my Mac.", await newThread(bot)));
   expect((await sees(ownerTools)).computers).toHaveLength(1);
   expect(JSON.stringify(await ownerTools("list_threads", {}))).not.toContain("setup.sh");
-  // The owner's own routine reports into the bot's main thread, the owner's.
+  // The owner's own routine reports into the bot's main thread, the owner's:
+  // no results conversation of its own, as a guest's gets.
   const owners = await api("POST", "/api/routines", { token: owner, body: {
     name: "OWNER-ROUTINE", prompt: "Summarize my day.", botId: bot.id, enabled: false, resultsThreadId: null,
     schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 } } });
   expect(owners.status).toBe(201);
-  expect(owners.body.routine.resultsThreadId).toBe(bot.threadId);
+  expect(owners.body.routine.resultsThreadId).toBeUndefined();
+  expect(((await api("GET", "/api/bots", { token: owner })).body.bots as any[]).find((candidate) => candidate.id === bot.id).tasks
+    .some((task: any) => task.title.startsWith("OWNER-ROUTINE"))).toBe(false);
   expect(JSON.stringify(await ownerTools("list_threads", {}))).toContain(bot.threadId);
+}, 60_000);
+
+it("an owner's routine reports into the conversation the owner last wrote in, never one a guest left behind", async () => {
+  const bot = await newBot("Main thread", "done");
+  const mine = await newThread(bot);
+  await completedTurn(() => say(owner, bot, "Morning.", mine));
+  await settled(mine);
+  // Written in later, then left behind as nobody's: the newest conversation
+  // anyone wrote in, yet never the owner's main thread.
+  const left = await newThread(bot, owner, "Guest's");
+  await completedTurn(() => say(owner, bot, "Evening.", left));
+  await settled(left);
+  await leftBehind({ threadIds: [left] });
+  const created = await api("POST", "/api/routines", { token: owner, body: {
+    name: "OWNER-REPORT", prompt: "Summarize my day.", botId: bot.id, enabled: false,
+    schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 } } });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const run = await api("POST", `/api/routines/${created.body.routine.id}/run`, { token: owner });
+  expect(run.status, JSON.stringify(run.body)).toBe(201);
+  expect(run.body.run.resultsThreadId).toBe(mine);
+  // And with threads hidden, the owner's app opens the bot there too.
+  expect(((await api("GET", "/api/bots", { token: owner })).body.bots as any[]).find((candidate) => candidate.id === bot.id).mainThreadId).toBe(mine);
+  await expect.poll(async () => ((await api("GET", "/api/routines", { token: owner })).body.runs as any[])
+    .find((candidate) => candidate.id === run.body.run.id)?.status, { timeout: 20_000 }).toBe("completed");
+}, 60_000);
+
+it("the upgrade that clears the oldest thread saved on routines keeps a guest's routine's results conversation, even as the bot's oldest", async () => {
+  const bot = await newBot("Oldest results", "done");
+  const results = await newThread(bot, owner, "GUEST-OLDEST · Results");
+  const created = await api("POST", "/api/routines", { token: owner, body: {
+    name: "GUEST-OLDEST", prompt: "Summarize the news.", botId: bot.id, enabled: false, resultsThreadId: results,
+    schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 } } });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  // With the bot's first conversation archived, the results conversation is
+  // its oldest open one. Those versions saved that only for an owner's
+  // routine, never one a guest opened, so it is the guest's own.
+  expect((await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { token: owner, body: { archivedAt: Date.now() } })).status).toBe(200);
+  await leftBehind({ routineIds: [created.body.routine.id], threadIds: [results] }, () => {
+    const file = join(home, ".openmausbot", "routines.json");
+    const { frozenResultsCleared: _cleared, ...before } = JSON.parse(readFileSync(file, "utf8"));
+    writeFileSync(file, JSON.stringify(before));
+  });
+  const routine = ((await api("GET", "/api/routines", { token: owner })).body.routines as any[]).find((candidate) => candidate.id === created.body.routine.id);
+  expect(routine.resultsThreadId).toBe(results);
+}, 60_000);
+
+it("the upgrade clears the oldest thread saved on an owner's routine also where an earlier device key of the owner's opened it", async () => {
+  const bot = await newBot("Earlier key", "done");
+  const created = await api("POST", "/api/routines", { token: owner, body: {
+    name: "EARLIER-OLDEST", prompt: "Summarize the news.", botId: bot.id, enabled: false, resultsThreadId: bot.threadId,
+    schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 } } });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  // The owner's old phone opened the bot's first conversation, before the
+  // owner had one key: adopted as the owner's (cloud-owner.ts), which this
+  // server learns only as it settles who is who at each start.
+  const phone = `p_${randomBytes(16).toString("base64url").slice(0, 22)}`;
+  await leftBehind({}, () => {
+    const data = join(home, ".openmausbot");
+    const edit = (name: string, change: (file: any) => void) => {
+      const file = existsSync(join(data, name)) ? JSON.parse(readFileSync(join(data, name), "utf8")) : {};
+      change(file);
+      writeFileSync(join(data, name), JSON.stringify(file));
+    };
+    edit("thread-starters.json", (starters) => { starters[bot.threadId] = phone; });
+    edit("cloud-owner.json", (record) => { record.adoptedKeys.push(phone); });
+    // Saved on the routine as v0.1.98 to v0.1.104 did, as if chosen.
+    edit("routines.json", (file) => { delete file.frozenResultsCleared; });
+  });
+  const routine = ((await api("GET", "/api/routines", { token: owner })).body.routines as any[]).find((candidate) => candidate.id === created.body.routine.id);
+  expect(routine.resultsThreadId).toBeUndefined();
 }, 60_000);
 
 it("the owner's devices are not told which conversations they may write in, even with one a guest left behind", async () => {

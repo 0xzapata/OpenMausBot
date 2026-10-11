@@ -7,11 +7,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ dispatch: vi.fn(), showThreads: true }));
-vi.mock("@/state/store", () => ({
+vi.mock("@/state/store", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/state/store")>(),
   useStore: () => ({
     state: {
       bots: [
-        { id: "scout", name: "Scout", title: "Research", description: "", color: "blue", hidden: false },
+        { id: "scout", name: "Scout", title: "Research", description: "", color: "blue", hidden: false,
+          threadId: "older", mainThreadId: "latest", tasks: [{ threadId: "older" }, { threadId: "latest" }] },
         { id: "quill", name: "Quill", title: "", description: "Writes the newsletter\nand more", color: "pink", hidden: false },
         { id: "ghost", name: "Ghost", title: "", description: "", color: "green", hidden: true },
       ],
@@ -127,12 +129,12 @@ describe("SidebarNewChatPanel", () => {
     expect(props.onNewGroup).toHaveBeenCalledOnce();
   });
 
-  it("opens the bot's one conversation in simple mode", () => {
+  it("opens the bot's one conversation, its main thread, in simple mode", () => {
     fixture.showThreads = false;
     const { input } = open();
     expect(container!.querySelector("[aria-label$='. Open']")).not.toBeNull();
     key(input, "Enter");
-    expect(fixture.dispatch).toHaveBeenCalledWith({ type: "select", id: "scout" });
+    expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "switchTask", botId: "scout", threadId: "latest" });
   });
 
   it("has a close button for when it covers the whole window", () => {

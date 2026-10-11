@@ -2,12 +2,13 @@ import type { EffectCallback } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { initialState, type Action, type AppState, type Bot } from "@/state/store";
 
-const fixture = vi.hoisted(() => ({ effects: [] as EffectCallback[], link: null as string | null }));
+const fixture = vi.hoisted(() => ({ effects: [] as EffectCallback[], link: null as string | null, showThreads: true }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState: () => [fixture.link, (next: string | null) => { fixture.link = next; }],
   useEffect: (effect: EffectCallback) => { fixture.effects.push(effect); },
 }));
+vi.mock("@/lib/thread-preferences", () => ({ useShowThreads: () => fixture.showThreads }));
 
 import { useExternalChatLinks } from "./use-external-chat-links";
 
@@ -26,7 +27,7 @@ function render(state: AppState, dispatch: (action: Action) => void) {
   return fixture.effects.map((effect) => effect());
 }
 
-afterEach(() => { vi.unstubAllGlobals(); fixture.effects = []; fixture.link = null; });
+afterEach(() => { vi.unstubAllGlobals(); fixture.effects = []; fixture.link = null; fixture.showThreads = true; });
 
 describe("useExternalChatLinks", () => {
   it("holds a link that arrives at launch until the bots have loaded, then opens it once", () => {
@@ -62,6 +63,20 @@ describe("useExternalChatLinks", () => {
       { type: "toggleAppSettings", open: false },
       { type: "toggleShortcuts", open: false },
       { type: "select", id: "scout" },
+      { type: "revealThread", threadId: "scout-main" },
+    ]);
+  });
+
+  it("opens a bot's link as its row would: at its main thread while threads are hidden", () => {
+    vi.stubGlobal("window", {});
+    fixture.link = "openmausbot://bot/scout";
+    fixture.showThreads = false;
+    const dispatch = vi.fn();
+    const left = { ...scout, threadId: "scout-report", mainThreadId: "scout-main",
+      tasks: [...scout.tasks!, { threadId: "scout-report", title: "Report", createdAt: 2, unread: true }] };
+    render({ ...loaded, bots: [left] }, dispatch);
+    expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+      { type: "switchTask", botId: "scout", threadId: "scout-main" },
       { type: "revealThread", threadId: "scout-main" },
     ]);
   });

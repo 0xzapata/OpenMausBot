@@ -446,11 +446,11 @@ describe("persistent routine results destinations", () => {
     let created = 0;
     h.options.isResultsThread = (botId, threadId) => visible.get(threadId) === botId;
     h.options.resolveResultsThread = (routine, forceNew) => {
-      if (!forceNew && visible.get(routine.resultsThreadId ?? "") === routine.botId) return routine.resultsThreadId;
+      if (!forceNew && visible.get(routine.resultsThreadId ?? "") === routine.botId) return { threadId: routine.resultsThreadId! };
       if (!forceNew && !routine.resultsThreadId && routine.sourceThreadId === "trusted-source") return undefined;
       const id = `results-${++created}`;
       visible.set(id, routine.botId);
-      return id;
+      return { threadId: id };
     };
     return { ...h, visible, created: () => created };
   }
@@ -641,6 +641,62 @@ describe("persistent routine results destinations", () => {
     expect(h.created()).toBe(0);
     expect(h.manager.listRoutines()[0]?.sourceThreadId).toBeUndefined();
     expect(h.manager.runNow(routine.id)?.resultsThreadId).toBe("results-1");
+  });
+
+  it("reports into the main thread each run finds and never saves it on the routine", async () => {
+    const h = resultsHarness();
+    let main = "first-chat";
+    h.options.resolveResultsThread = (routine, forceNew) => !forceNew && h.visible.get(routine.resultsThreadId ?? "") === routine.botId
+      ? { threadId: routine.resultsThreadId! } : { threadId: main, main: true };
+    const routine = h.manager.create({ ...input(), resultsThreadId: "chosen" });
+    const chosen = h.manager.runNow(routine.id)!;
+    await h.manager.tick();
+    complete(h, "thread-1");
+    // The chosen thread is gone: runs report into the main thread again.
+    h.visible.delete("chosen");
+    const first = h.manager.runNow(routine.id)!;
+    await h.manager.tick();
+    complete(h, "thread-2");
+    expect(h.manager.listRoutines()[0]?.resultsThreadId).toBeUndefined();
+    // The person moved on to another conversation; so does the next report.
+    main = "later-chat";
+    const second = h.manager.runNow(routine.id)!;
+    expect([chosen, first, second].map((run) => run.resultsThreadId)).toEqual(["chosen", "first-chat", "later-chat"]);
+    h.visible.set("chosen", "maus-1");
+    expect(h.manager.update(routine.id, { resultsThreadId: "chosen" })?.resultsThreadId).toBe("chosen");
+    expect(h.manager.update(routine.id, { resultsThreadId: null })?.resultsThreadId).toBeUndefined();
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8")).routines[0]).not.toHaveProperty("resultsThreadId");
+    expect(h.created()).toBe(0);
+  });
+
+  it("clears the default v0.1.98 to v0.1.104 saved as a destination once, and keeps a later pick of that thread", () => {
+    const h = resultsHarness();
+    h.visible.set("first-chat", "maus-1");
+    h.options.frozenResultsThread = (botId) => botId === "maus-1" ? "first-chat" : undefined;
+    const frozen = h.manager.create({ ...input(), resultsThreadId: "first-chat" });
+    const chosen = h.manager.create({ ...input(), name: "Chosen report", resultsThreadId: "chosen" });
+    const saved = JSON.parse(readFileSync(h.options.file!, "utf8"));
+    expect(saved.frozenResultsCleared).toBe(true);
+    // A file those versions wrote has no marker.
+    delete saved.frozenResultsCleared;
+    writeFileSync(h.options.file!, JSON.stringify(saved));
+    const destination = (manager: RoutineManager, id: string) => manager.listRoutines().find((routine) => routine.id === id)?.resultsThreadId;
+    // Nothing clears before whose threads are whose is settled (a Cloud
+    // home's earlier keys), and a save meanwhile does not say it is done.
+    const booting = new RoutineManager(h.options);
+    expect(destination(booting, frozen.id)).toBe("first-chat");
+    booting.update(chosen.id, { name: "Chosen report, renamed" });
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8"))).not.toHaveProperty("frozenResultsCleared");
+    const upgraded = new RoutineManager(h.options);
+    upgraded.clearFrozenResultsThreads();
+    expect(destination(upgraded, frozen.id)).toBeUndefined();
+    expect(destination(upgraded, chosen.id)).toBe("chosen");
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8")).frozenResultsCleared).toBe(true);
+    // Picked after the upgrade, the same thread is a person's choice.
+    upgraded.update(frozen.id, { resultsThreadId: "first-chat" });
+    const later = new RoutineManager(h.options);
+    later.clearFrozenResultsThreads();
+    expect(destination(later, frozen.id)).toBe("first-chat");
   });
 
   it("replaces a deleted destination only for future runs without rewriting active snapshots", async () => {

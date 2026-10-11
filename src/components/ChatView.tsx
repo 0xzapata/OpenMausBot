@@ -1,5 +1,6 @@
 import { Component, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode } from "react";
 import { useAdvancedMode } from "@/lib/interface-mode";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { useCopyFeedback } from "@/lib/copy-text";
 import {
   AlertTriangle,
@@ -814,6 +815,7 @@ const ActivityChip = memo(function ActivityChip({ message, place = "auto" }: { m
  * the whole store to know whether that thread is still there. */
 function RoutineRunRow({ message, botId }: { message: Message; botId: string }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const executionThreadId = message.routineRun?.executionThreadId;
   const canOpen = executionThreadId && state.bots.some((candidate) =>
     candidate.threadId === executionThreadId || hasRoutineExecutionTask(candidate.tasks, executionThreadId)
@@ -822,7 +824,7 @@ function RoutineRunRow({ message, botId }: { message: Message; botId: string }) 
     <RoutineRunCard
       message={message}
       onOpen={canOpen && executionThreadId
-        ? () => openNotificationTarget(dispatch, { botId, threadId: executionThreadId }, state)
+        ? () => openNotificationTarget(dispatch, { botId, threadId: executionThreadId }, state, showThreads)
         : undefined}
     />
   );
@@ -1151,6 +1153,7 @@ function chiefOfStaffBadge(bot: Bot) {
 export function ChatView({ bot: profile }: { bot: Bot }) {
   const bot = useMemo(() => currentTaskBot(profile), [profile]);
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   // Simple mode reaches other threads from the sidebar; the header picker is Advanced only.
   // Without a native title bar (macOS inset lights, frameless Windows) this
@@ -1479,7 +1482,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           )}
           {!remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
           {/* below md the sidebar (and its Live call pill) is hidden */}
-          <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state)} />
+          <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state, showThreads)} />
           <button
             data-tour="computer"
             onClick={() => dispatch({ type: "toggleComputer" })}
@@ -1501,7 +1504,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       <BotActivityPicker bot={bot} />
       {routineExecution && <div className="mx-5 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[11.5px] text-ink-secondary">
         <span className="min-w-0 flex-1 truncate">{t("routines.executionDetails", { name: routineExecution.routineName })}</span>
-        {canOpenResults && resultsThreadId && <button type="button" onClick={() => openNotificationTarget(dispatch, { botId: bot.id, threadId: resultsThreadId }, state)} className="rounded px-2 py-1 text-accent hover:bg-raised">{t("routines.results.back")}</button>}
+        {canOpenResults && resultsThreadId && <button type="button" onClick={() => openNotificationTarget(dispatch, { botId: bot.id, threadId: resultsThreadId }, state, showThreads)} className="rounded px-2 py-1 text-accent hover:bg-raised">{t("routines.results.back")}</button>}
         <button type="button" onClick={() => dispatch({ type: "showRoutines", section: "logs", routineId: routineExecution.routineId, botId: bot.id })} className="rounded px-2 py-1 hover:bg-raised hover:text-ink">{t("routines.logs")}</button>
       </div>}
       {findOpen && <ChatFindBar threadId={bot.threadId} onClose={() => setFindOpen(false)} />}
