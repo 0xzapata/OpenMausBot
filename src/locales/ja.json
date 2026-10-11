@@ -4017,5 +4017,10 @@
   "error.plain.notFound": "見つかりませんでした。削除された可能性があります。",
   "error.plain.tooLarge": "サイズが大きすぎるため送信できません。",
   "error.plain.server": "接続先で問題が発生しました。もう一度お試しください。",
-  "error.plain.generic": "問題が発生しました。もう一度お試しください。"
+  "error.plain.generic": "問題が発生しました。もう一度お試しください。",
+  "settings.browserNotifications.title": "ブラウザ通知",
+  "settings.browserNotifications.subtitle": "新しいメッセージの到着時やエージェントの完了時に、バックグラウンドでもWindowsやAndroidに通知を送信します。",
+  "settings.browserNotifications.deniedSubtitle": "ブラウザの設定で通知がブロックされています。通知を受け取るにはブラウザのサイト権限で通知を許可してください。",
+  "settings.browserNotifications.enableButton": "通知を許可する",
+  "settings.browserNotifications.aria": "ブラウザ通知"
 }

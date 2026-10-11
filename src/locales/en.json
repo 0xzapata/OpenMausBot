@@ -4030,5 +4030,10 @@
   "data.editor.resize": "Resize SQL editor",
   "computer.files.homeFolder": "Home folder",
   "computer.files.changeDefaultFolder": "Change default",
-  "computer.files.pinnedFolderHint": "This chat keeps its current folder. Change the default for new chats."
+  "computer.files.pinnedFolderHint": "This chat keeps its current folder. Change the default for new chats.",
+  "settings.browserNotifications.title": "Browser notifications",
+  "settings.browserNotifications.subtitle": "Send desktop and mobile notifications when new messages arrive or an agent finishes, even when in the background.",
+  "settings.browserNotifications.deniedSubtitle": "Notifications are blocked in your browser settings. Please allow notifications in site permissions to receive them.",
+  "settings.browserNotifications.enableButton": "Enable notifications",
+  "settings.browserNotifications.aria": "Browser notifications"
 }

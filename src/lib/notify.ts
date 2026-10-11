@@ -1,6 +1,5 @@
-// Desktop notifications, driven by the harness's {kind:"notify"} frames.
-// The server decides *whether* something is worth an interruption (it owns
-// the per-bot toggle); this only decides how to show it here.
+// Desktop and mobile notifications, driven by the harness's {kind:"notify"} frames
+// and new message arrivals.
 import type { Notification } from "../../shared/notification";
 import { notificationSoundsEnabled } from "./notification-preferences";
 
@@ -13,6 +12,27 @@ export type NotificationTarget = Pick<NotifyFrame, "botId" | "threadId">;
 export function requestNotificationPermission(): Promise<NotificationPermission> | null {
   if (typeof Notification === "undefined" || Notification.permission !== "default") return null;
   return Notification.requestPermission();
+}
+
+/** Register service worker for cross-platform notifications (Windows, Android, etc.)
+ * and listen for notification clicks. */
+export function initNotificationServiceWorker(onOpen: (target: NotificationTarget) => void): void {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+
+  // Register worker
+  navigator.serviceWorker
+    .register("/sw.js")
+    .catch(() => {
+      // Ignore registration errors (e.g. in insecure context or unsupported browser)
+    });
+
+  // Listen for notification click messages from sw.js
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type === "openmausbot:notification-click" && event.data.target) {
+      window.focus();
+      onOpen(event.data.target);
+    }
+  });
 }
 
 /** The identity a notification groups under: one bot, wherever it was
@@ -28,6 +48,25 @@ export interface NotificationBotIdentity {
  * profile has one. Pure so the grouping rule stays testable on its own. */
 export function buildNotificationOptions(bot: NotificationBotIdentity): NotificationOptions {
   return { tag: `openmausbot:${bot.id}`, icon: bot.avatarUrl ?? undefined };
+}
+
+function fallbackNotification(
+  title: string,
+  options: NotificationOptions,
+  open: () => void,
+) {
+  try {
+    const notification = new Notification(title, options);
+    notification.onclick = open;
+  } catch {
+    // Mobile browsers (e.g. Android Chrome) throw TypeError on new Notification().
+    // Show through ServiceWorkerRegistration if supported.
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.ready
+        ?.then((reg) => reg.showNotification(title, options))
+        ?.catch(() => {});
+    }
+  }
 }
 
 /** Show one unless the exact destination conversation is already visible.
@@ -60,6 +99,21 @@ export function showNotification(
       // back, which is what a person on a call with the bot asked for.
       ...(notificationSoundsEnabled() ? {} : { silent: true }),
     };
-    new Notification(frame.title, options).onclick = open;
+
+    const sw = typeof navigator !== "undefined" && "serviceWorker" in navigator ? navigator.serviceWorker : null;
+    if (sw?.controller) {
+      sw.ready
+        .then((registration) => {
+          return registration.showNotification(frame.title, {
+            ...options,
+            data: { botId: frame.botId, threadId: frame.threadId },
+          });
+        })
+        .catch(() => {
+          fallbackNotification(frame.title, options, open);
+        });
+    } else {
+      fallbackNotification(frame.title, options, open);
+    }
   }
 }

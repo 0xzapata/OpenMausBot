@@ -149,3 +149,23 @@ describe("notification sounds preference", () => {
     expect(preference.useNotificationSounds()).toBe(true);
   });
 });
+
+describe("message notifications preference", () => {
+  it("defaults on and persists preference changes", async () => {
+    let preference = await import("./notification-preferences");
+    expect(preference.useMessageNotifications()).toBe(true);
+    expect(preference.messageNotificationsEnabled()).toBe(true);
+
+    preference.setMessageNotifications(false);
+    expect(local.getItem(preference.MESSAGE_NOTIFICATIONS_KEY)).toBe("0");
+    expect(preference.useMessageNotifications()).toBe(false);
+    expect(preference.messageNotificationsEnabled()).toBe(false);
+
+    vi.resetModules();
+    preference = await import("./notification-preferences");
+    expect(preference.messageNotificationsEnabled()).toBe(false);
+    preference.setMessageNotifications(true);
+    expect(local.getItem(preference.MESSAGE_NOTIFICATIONS_KEY)).toBe("1");
+    expect(preference.messageNotificationsEnabled()).toBe(true);
+  });
+});

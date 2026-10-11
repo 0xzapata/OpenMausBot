@@ -10442,7 +10442,12 @@
       "error.plain.notFound": "bcbdb6c01d36cba08d7f123685ccd0e1243967d5b498cd8615cb01897bea05c3",
       "error.plain.tooLarge": "6698badb14fdf95c744bb7cfde5cbb4c999833ac9043597f1ec009348a7cbc80",
       "error.plain.server": "4bb75b0940538f075b027ef80f4e2b8b176d9499f54137b5148ce54b0fe16d75",
-      "error.plain.generic": "4def98c892406e31099ba18e5d6a60db12420dd723a27a5ab77235d20adb0beb"
+      "error.plain.generic": "4def98c892406e31099ba18e5d6a60db12420dd723a27a5ab77235d20adb0beb",
+      "settings.browserNotifications.title": "7761b572aba8a8575e68d332be0ff8e3643c275d3da900f3116180031a1c8c69",
+      "settings.browserNotifications.subtitle": "91d25377ab796d738f3815ae660b8f7153c360c95a6c84b44100a0e4d0bb39d8",
+      "settings.browserNotifications.deniedSubtitle": "b6eb95b4dd8e178f9f72ddbce90287585bb6492decb389a5c0411381dbe7c448",
+      "settings.browserNotifications.enableButton": "682be64ae7801fd09a2dd7a96f312d96d4b9cbb16badd45cbbe6dc82c422f811",
+      "settings.browserNotifications.aria": "7761b572aba8a8575e68d332be0ff8e3643c275d3da900f3116180031a1c8c69"
     },
     "pt-br": {
       "pro.fromPrice": "a48a04a457d60b08b54fc83e7a6c4584ffedb1e23621859084900c8521a3af7b",

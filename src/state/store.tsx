@@ -43,7 +43,8 @@ import type { ComputerStart } from "@/lib/computer-start";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
-import { showNotification, type NotificationTarget } from "@/lib/notify";
+import { initNotificationServiceWorker, showNotification, type NotificationTarget } from "@/lib/notify";
+import { messageNotificationsEnabled } from "@/lib/notification-preferences";
 import { speaker } from "@/lib/tts";
 import { roleProfilePatch, type BotRole } from "@/lib/bot-roles";
 import { t } from "@/lib/i18n";
@@ -4068,6 +4069,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 voiceId: owner.voice,
               });
             }
+            if (messageNotificationsEnabled()) {
+              const botAllowsNotifications = owner?.notifications !== false;
+              if (botAllowsNotifications && frame.message.text?.trim()) {
+                showNotification(
+                  {
+                    kind: "done",
+                    botId: owner?.id ?? "bot",
+                    botName: owner?.name ?? "OpenMausBot",
+                    threadId: frame.threadId,
+                    title: owner?.name ?? "OpenMausBot",
+                    body: frame.message.text.trim().slice(0, 200),
+                  },
+                  (target) => openNotificationTarget(dispatch, target, stateRef.current),
+                  owner?.avatarUrl,
+                  visibleNotificationThread(stateRef.current),
+                );
+              }
+            }
           }
           break;
         }
@@ -4198,6 +4217,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
       }
     };
+    initNotificationServiceWorker((target) => openNotificationTarget(dispatch, target, stateRef.current));
     const stopLive = openLiveEvents({
       onOpen: () => rawDispatch({ type: "connected", value: true }),
       onError: () => rawDispatch({ type: "connected", value: false }),

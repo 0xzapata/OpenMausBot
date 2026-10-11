@@ -51,7 +51,8 @@ import { WorkspaceBackupSettings } from "./WorkspaceBackupSettings";
 import { CompanyBackupSettings } from "./CompanyBackupSettings";
 import { cn } from "@/lib/cn";
 import { glassPopupFrameStyle } from "@/lib/glass-popup";
-import { setNotificationSounds, useNotificationSounds } from "@/lib/notification-preferences";
+import { requestNotificationPermission } from "@/lib/notify";
+import { setMessageNotifications, setNotificationSounds, useMessageNotifications, useNotificationSounds } from "@/lib/notification-preferences";
 import { setPinnedCircles, setUniversalPins, usePinnedCircles, useUniversalPins } from "@/lib/sidebar-preferences";
 import { setShowThreads, useShowThreadsChoice } from "@/lib/thread-preferences";
 import { setAdvancedMode, useAdvancedMode } from "@/lib/interface-mode";
@@ -418,6 +419,70 @@ function LanguageRow() {
           </option>
         ))}
       </select>
+    </SettingRow>
+  );
+}
+
+function BrowserNotificationsRow() {
+  const [permission, setPermission] = useState<NotificationPermission>(() => {
+    return typeof Notification !== "undefined" ? Notification.permission : "default";
+  });
+  const messageNotifications = useMessageNotifications();
+  if (typeof Notification === "undefined") return null;
+
+  const handleEnable = async () => {
+    const next = await requestNotificationPermission();
+    if (next) {
+      setPermission(next);
+      if (next === "granted") {
+        setMessageNotifications(true);
+      }
+    }
+  };
+
+  const handleToggle = async () => {
+    if (permission !== "granted") {
+      const next = await requestNotificationPermission();
+      if (next) {
+        setPermission(next);
+        if (next === "granted") {
+          setMessageNotifications(true);
+        }
+      }
+      return;
+    }
+    setMessageNotifications(!messageNotifications);
+  };
+
+  const isDenied = permission === "denied";
+  const isGranted = permission === "granted";
+
+  return (
+    <SettingRow
+      title={t("settings.browserNotifications.title")}
+      subtitle={
+        isDenied
+          ? t("settings.browserNotifications.deniedSubtitle")
+          : t("settings.browserNotifications.subtitle")
+      }
+    >
+      <div className="flex items-center gap-3">
+        {!isGranted && !isDenied && (
+          <button
+            type="button"
+            onClick={() => void handleEnable()}
+            className="cursor-pointer rounded-lg bg-accent px-2.5 py-1 text-[12px] font-medium text-white transition hover:bg-accent/90"
+          >
+            {t("settings.browserNotifications.enableButton")}
+          </button>
+        )}
+        <Switch
+          checked={isGranted && messageNotifications}
+          disabled={isDenied}
+          aria-label={t("settings.browserNotifications.aria")}
+          onClick={() => void handleToggle()}
+        />
+      </div>
     </SettingRow>
   );
 }
@@ -971,6 +1036,7 @@ export function SettingsModal() {
             {advanced && <ShowThreadsRow />}
             <PinnedCirclesRow />
             <UniversalPinsRow />
+            <BrowserNotificationsRow />
             <NotificationSoundsRow />
             {!remoteActive && <ToolCallsRow />}
             <RunCardRow />
