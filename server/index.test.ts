@@ -27,6 +27,7 @@ import { startFakeHttpMcp } from "./testing/fake-http-mcp-server.ts";
 import { startFakeOAuth } from "./testing/fake-oauth-server.ts";
 import { freePortBlock, withFreeSignInPort } from "./testing/ports.ts";
 import { openSse } from "./testing/sse.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 import { FILE_MAX_BYTES, IMAGE_MAX_BYTES } from "./attachments.ts";
 import { computerPrompt, SIGN_IN_PROMPT } from "./system-prompt.ts";
 import {
@@ -350,6 +351,8 @@ const delayedJsonBody = async (
 /** The prompts fake Claude engines have received so far, in order. */
 const claudePrompts = (file = fakeClaudePrompts): string[] =>
   existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+/** The continuation a freed computer seat opens with (index.ts COMPUTER_FREE_NOTE). */
+const COMPUTER_FREE_NOTE = "OpenMausBot computer update: the computer this conversation waited for is free again. Continue the task that parked waiting for it.";
 
 const readJsonFileWhenReady = async <T = unknown>(file: string, timeout = 5_000): Promise<T> => {
   let parsed: unknown;
@@ -3854,9 +3857,11 @@ describe("harness HTTP API", () => {
       expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThreadId })).status).toBe(200);
       await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
 
-      // A room speaker hits the same deadline against the sibling's resumed
-      // turn and parks the same way, while the room still settles its
-      // dispatch without a failure chip.
+      // A room member hits the same deadline against the sibling's resumed
+      // turn and parks the same way: its turn is a root of the runtime like
+      // the sibling's (docs/runtime-contract.md §10 PR 5), queued to continue
+      // on the seat with the computer line, no hand-off rows, and the room
+      // settles its dispatch without a failure chip.
       const roomBot = (await isolatedApi("POST", "/api/bots", {
         name: "Park room speaker", section,
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
@@ -3867,20 +3872,25 @@ describe("harness HTTP API", () => {
         setup: { bulletin: "", defaultResponder: { kind: "member", botId: roomBot.id } },
       })).body.group;
       roomId = room.id;
+      // The room thread's rows in runtime.db: [bot, parent, status, executions, continuation note].
+      const roomRows = () => readHandoffs(isolatedData).filter((node) => node.threadId === room.threadId)
+        .map((node) => [node.botId, node.parentId ?? null, node.status, node.executions, node.continuation?.note ?? null]);
       expect((await isolatedApi("POST", `/api/groups/${room.id}/messages`, { text: "wait for the same occupied desktop" })).status).toBe(202);
       await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body),
         { timeout: 8_000 }).toMatch(/Parked — it continues automatically when the computer is free/);
-      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.groups
-        .find((group: any) => group.id === room.id)?.working, { timeout: 5_000 }).toBe(false);
+      await expect.poll(roomRows, { timeout: 5_000 }).toEqual([[roomBot.id, null, "queued", 1, COMPUTER_FREE_NOTE]]);
       const roomMessages = (await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body.messages;
       expect(roomMessages.filter((message: any) => message.tool?.ok === false && /Computer still busy|Parked/.test(message.tool.name))).toHaveLength(0);
       const roomEvents = (await isolatedApi("GET", `/api/threads/${room.threadId}/events`)).body.entries;
       expect(roomEvents.filter((entry: any) => entry.kind === "runtime" && entry.data.type === "turn.wait_ended"))
         .toMatchObject([{ data: { outcome: "parked" } }]);
 
-      // Freeing the seat again continues the parked room the same way.
+      // Freeing the seat again continues the parked room member the same
+      // way: the same root, one more execution, opening with the computer line.
       expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: sibling.threadId })).status).toBe(200);
       await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+      await expect.poll(roomRows, { timeout: 5_000 }).toEqual([[roomBot.id, null, "running", 2, null]]);
+      expect(claudePrompts(join(isolatedHome, "desktop-prompts.jsonl")).at(-1)).toContain("Continue the task that parked waiting for it");
 
       // Supersede (#1651): a newer user message replaces parked work, so
       // the superseded park must never resume. The sibling parks behind the
@@ -3898,6 +3908,8 @@ describe("harness HTTP API", () => {
       await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(4);
       await new Promise((resolve) => setTimeout(resolve, 3_000));
       expect(promptsOnParkBox()).toBe(4);
+      // Stop ended the room member's continued turn: its root is cancelled.
+      expect(roomRows()).toEqual([[roomBot.id, null, "cancelled", 2, null]]);
       await expect.poll(async () => {
         const task = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
           .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === siblingThreadId);
@@ -3918,7 +3930,12 @@ describe("harness HTTP API", () => {
       expect((await isolatedApi("POST", `/api/groups/${roomId}/messages`, { text: "park then stop this room" })).status).toBe(202);
       await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body),
         { timeout: 8_000 }).toMatch(/park then stop this room[\s\S]*Parked — it continues automatically when the computer is free/);
+      await expect.poll(roomRows, { timeout: 5_000 }).toEqual([[roomBot.id, null, "cancelled", 2, null], [roomBot.id, null, "queued", 1, COMPUTER_FREE_NOTE]]);
       expect((await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {})).status).toBe(200);
+      // Stop while queued on the seat cancels the room member's root, as it
+      // does the direct task's: nothing is left to continue (the row keeps
+      // the note it was queued with; its status is what counts).
+      await expect.poll(roomRows, { timeout: 5_000 }).toEqual([[roomBot.id, null, "cancelled", 2, null], [roomBot.id, null, "cancelled", 1, COMPUTER_FREE_NOTE]]);
       expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: siblingThreadId })).status).toBe(200);
       await new Promise((resolve) => setTimeout(resolve, 3_000));
       expect(promptsOnParkBox()).toBe(4);
@@ -3943,7 +3960,7 @@ describe("harness HTTP API", () => {
     expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
   }, 75_000);
 
-  it("routes a goal run around a member parked at the computer wait ceiling, then resumes it", async () => {
+  it("routes a goal run around a member parked at the computer wait ceiling and never runs that step again", async () => {
     const requestId = randomUUID();
     const section = `Park goal machine ${requestId.slice(0, 8)}`;
     // Same shape as the park test above: an isolated server with a
@@ -4026,8 +4043,9 @@ describe("harness HTTP API", () => {
       });
       return { status: response.status, body: await response.json() };
     };
-    // Turns granted the shared desktop: the holder's, then the parked
-    // member's resume. Each starts its own engine; Boat's runner is never asked.
+    // Turns granted the shared desktop: the holder's alone (the parked goal
+    // step never gets a second run). Each starts its own engine; Boat's
+    // runner is never asked.
     const promptsOnGoalBox = () => {
       expect(boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/boxes/bx_parkedsk/prompt")).toHaveLength(0);
       return claudePrompts(join(isolatedHome, "desktop-prompts.jsonl")).length;
@@ -4089,20 +4107,27 @@ describe("harness HTTP API", () => {
         mode: "goal",
       })).status).toBe(202);
 
+      // Every goal step is a root of the runtime (docs/runtime-contract.md
+      // §10 PR 5): [bot, parent, status, executions, continuation note].
+      const goalRows = () => readHandoffs(isolatedData).filter((node) => node.threadId === room.threadId)
+        .map((node) => [node.botId, node.parentId ?? null, node.status, node.executions, node.continuation?.note ?? null]);
       // The run delegates, the member parks exactly once, and the lead gets
       // the park as reassignment data — never as an in-step retry that would
       // wait the ceiling out again for every goal turn left in the budget.
       // On that bug this completion poll times out: the worker re-parks
       // every ceiling until the turn budget is gone and the lead never gets
-      // the note.
+      // the note. The rows: the lead's two turns and the parked member's,
+      // which ended with its park (the run routed around it), not queued to
+      // continue; no hand-off rows under any of them; the room is not working.
       await expect.poll(async () => {
         const { working, card } = await goalCard();
-        return { working, status: card?.goalRun?.status, detail: card?.goalRun?.detail, turnCount: card?.goalRun?.turnCount };
+        return { working, status: card?.goalRun?.status, detail: card?.goalRun?.detail, turnCount: card?.goalRun?.turnCount, rows: goalRows() };
       }, { timeout: 15_000 }).toEqual({
         working: false,
         status: "completed",
         detail: "Parker parked at the computer; the lead finished the goal directly.",
         turnCount: 3,
+        rows: [[leadId, null, "completed", 1, null], [workerId, null, "failed", 1, null], [leadId, null, "completed", 1, null]],
       });
       expect((await parkedChips()).length).toBe(1);
       expect((await parkedChips()).every((message: any) => message.tool?.ok === true)).toBe(true);
@@ -4111,11 +4136,13 @@ describe("harness HTTP API", () => {
       await new Promise((resolve) => setTimeout(resolve, 3_000));
       expect((await parkedChips()).length).toBe(1);
 
-      // Freeing the seat resumes the parked member on its own through the
-      // registered entry: the resumed turn takes the desktop (its Box prompt
-      // hangs, holding the seat) without any new user message.
+      // Freeing the seat starts nothing: the parked step is never run a
+      // second time, with or without a new message.
       expect((await isolatedApi("POST", `/api/bots/${holderBotId}/interrupt`, { threadId: holderThreadId })).status).toBe(200);
-      await expect.poll(promptsOnGoalBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect(promptsOnGoalBox()).toBe(1);
+      expect(goalRows()).toHaveLength(3);
+      expect((await goalCard()).working).toBe(false);
     } finally {
       await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
       await isolatedApi("POST", `/api/bots/${holderBotId}/interrupt`, {}).catch(() => undefined);
@@ -6996,7 +7023,22 @@ describe("harness HTTP API", () => {
         const state = (await isolatedApi("GET", "/api/bots?messages=0")).body;
         return state.bots.find((bot: { id: string }) => bot.id === direct.id)?.busy;
       }).toBe(false);
+      // The room's member raises its card mid-turn the same way, and the
+      // person stops the room: a room member's turn is a root too
+      // (docs/runtime-contract.md §10 PR 5), so Stop cancels it like the
+      // direct one, and the key saved later starts nothing.
+      expect((await isolatedApi("POST", `/api/groups/${group.id}/messages`, { text: "request a private key in the room" })).status).toBe(202);
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.groups
+        .find((candidate: { id: string }) => candidate.id === group.id)?.busyBotId, { timeout: 10_000 }).toBe(channelOwner.id);
       const groupRequest = await requestCredential(channelOwner.id, groupOriginalThread);
+      expect((await isolatedApi("POST", `/api/groups/${group.id}/interrupt`, {})).status).toBe(200);
+      await expect.poll(async () => {
+        const state = (await isolatedApi("GET", "/api/bots?messages=0")).body;
+        return {
+          working: state.groups.find((candidate: { id: string }) => candidate.id === group.id)?.working,
+          busy: state.bots.find((bot: { id: string }) => bot.id === channelOwner.id)?.busy,
+        };
+      }, { timeout: 10_000 }).toEqual({ working: false, busy: false });
 
       const state = (await isolatedApi("GET", "/api/bots?messages=20")).body;
       const directState = state.bots.find((bot: { id: string }) => bot.id === direct.id);
@@ -7151,10 +7193,11 @@ describe("harness HTTP API", () => {
       writeFileSync(releaseFile, "release");
       const completed = await Promise.all(provideRequests);
       for (const response of completed) expect(response.status).toBe(200);
-      // The direct card's turn was stopped by the person: the key is saved
-      // and nothing runs again (Stop means stop). The room re-runs its member.
+      // Both cards' turns were stopped by the person: the keys are saved
+      // and nothing runs again (Stop means stop), in the room as in the
+      // direct chat.
       expect(await completed[0]!.json()).toEqual({ provided: true, resumed: false });
-      expect(await completed[1]!.json()).toEqual({ provided: true, resumed: true });
+      expect(await completed[1]!.json()).toEqual({ provided: true, resumed: false });
 
       // A lost HTTP response may replay the exact randomized envelope, but a
       // new envelope could contain a different value and must never inherit
@@ -10642,7 +10685,7 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("tracks and cancels a queued channel credential continuation before provider dispatch", async () => {
+  it("keeps a room credential card owned by the member that raised it", async () => {
     const first = (await api("POST", "/api/bots", {})).body.bot;
     const second = (await api("POST", "/api/bots", {})).body.bot;
     const room = (await api("POST", "/api/groups", {
@@ -10722,16 +10765,17 @@ describe("harness HTTP API", () => {
       );
       expect(wrongOwnerPhone.status).toBe(404);
 
-      const resumed = await api("POST", `/api/bots/${second.id}/secret-cards/${messageId}/dismiss`, {
+      // The member that raised it may dismiss it. No turn of that member is
+      // parked on this card (the lead's turn is the one running), so the
+      // dismissal records the fact and starts nothing: the lead's process
+      // stays the room's only one, before and after the room is stopped.
+      const dismissed = await api("POST", `/api/bots/${second.id}/secret-cards/${messageId}/dismiss`, {
         threadId: room.threadId,
       });
-      expect(resumed).toEqual({ status: 200, body: { dismissed: true, resumed: true } });
-
-      const queued = (await api("GET", "/api/bots?messages=0")).body;
-      expect(queued.groups.find((group: { id: string }) => group.id === room.id)?.working).toBe(true);
-      const deletion = await api("DELETE", `/api/groups/${room.id}`);
-      expect(deletion.status).toBe(409);
-      expect(deletion.body.error).toMatch(/working/i);
+      expect(dismissed).toEqual({ status: 200, body: { dismissed: true, resumed: false } });
+      const roomState = (await api("GET", "/api/bots?messages=0")).body;
+      expect(roomState.groups.find((group: { id: string }) => group.id === room.id)?.busyBotId).toBe(first.id);
+      expect(Boolean(roomState.bots.find((bot: { id: string }) => bot.id === second.id)?.busy)).toBe(false);
 
       expect((await api("POST", `/api/groups/${room.id}/interrupt`, { threadId: room.threadId })).status).toBe(200);
       await expect.poll(async () => {
@@ -10741,9 +10785,6 @@ describe("harness HTTP API", () => {
           secondBusy: Boolean(state.bots.find((bot: { id: string }) => bot.id === second.id)?.busy),
         };
       }, { timeout: 5_000 }).toEqual({ working: false, secondBusy: false });
-
-      // The continuation sat behind the lead's hanging provider. Interrupting
-      // the room must cancel it before a second provider process is spawned.
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(JSON.parse(readFileSync(fakeClaudeDump, "utf8")).pid).toBe(firstDump.pid);
     } finally {

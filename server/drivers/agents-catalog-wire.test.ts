@@ -90,10 +90,9 @@ const CHIEF_ONLY_TOOLS = ["create_bot", "list_team_setup", "propose_team_setup",
 /** Their for_bot_id, changing another bot, is a Chief's alone. */
 const CHIEF_TARGET_TOOLS = ["propose_profile", "propose_model"];
 const CHIEF_PROFILE_TARGET = " A Chief of Staff may pass for_bot_id (from list_bots) for a requested change to another bot in its section.";
-/** The one surface's teamwork tools (docs/runtime-contract.md §9), and the
- * aliases that stay for one release. Every profile mounts all of them. */
+/** The one surface's teamwork tools (docs/runtime-contract.md §9). Every
+ * profile mounts all of them. */
 const TEAMWORK_TOOLS = ["list_room_targets", "coordinate_bots", "assignment_status", "list_bots", "list_rooms", "list_threads", "close_thread", "start_thread", "post_to_room"];
-const ALIAS_TOOLS = ["delegate_bot", "ask_bot", "send_to_bot", "check_delegation", "wait_delegation"];
 /** The profile that mounts the most: checked in whole, as readable JSON.
  * Every other profile is a by-name subset of it and is pinned by tool names,
  * byte count and sha256 in profiles.json. */
@@ -102,30 +101,30 @@ const FULL = "skills+shared+voice";
 /** Bytes measured when the budget was last set. A profile may not exceed this
  * by more than 2%, and may not undercut it by more than 2% either: a smaller
  * catalog is the goal, so lock the win in by lowering the number. */
-// PR 3 (one tool surface): every profile carries coordinate_bots and
-// assignment_status AND the five deprecated aliases for one release, so the
-// catalog is ~5.7 KB heavier than the old direct profile. Lower these again
-// when the aliases go. fill_login (saved website logins) adds 670 bytes.
+// PR 5 (rooms as roots): the five one-release aliases of coordinate_bots and
+// assignment_status (delegate_bot, ask_bot, send_to_bot, check_delegation,
+// wait_delegation) are gone, so every profile is 3,175 B lighter than PR 3's (fill_login, saved website logins, adds 670 B)
+// and carries the one surface alone (docs/runtime-contract.md §9).
 const BUDGET_BASELINE: Record<string, number> = {
-  "default": 55321,
-  "voice": 56062,
-  "shared": 57066,
-  "shared+voice": 57807,
-  "skills": 57374,
-  "skills+voice": 58115,
-  "skills+shared": 59119,
-  "skills+shared+voice": 59860,
-  "non-chief": 45671,
-  "voice+non-chief": 46412,
-  "shared+non-chief": 47416,
-  "shared+voice+non-chief": 48157,
-  "skills+non-chief": 47724,
-  "skills+voice+non-chief": 48465,
-  "skills+shared+non-chief": 49469,
-  "skills+shared+voice+non-chief": 50210,
-  "skills+shared+voice+cloud-home": 58915,
-  "skills+shared+voice+non-chief+cloud-home": 49265,
-  "default+legacy-switches": 55321,
+  "default": 52552,
+  "voice": 53293,
+  "shared": 54297,
+  "shared+voice": 55038,
+  "skills": 54605,
+  "skills+voice": 55346,
+  "skills+shared": 56350,
+  "skills+shared+voice": 57091,
+  "non-chief": 42902,
+  "voice+non-chief": 43643,
+  "shared+non-chief": 44647,
+  "shared+voice+non-chief": 45388,
+  "skills+non-chief": 44955,
+  "skills+voice+non-chief": 45696,
+  "skills+shared+non-chief": 46700,
+  "skills+shared+voice+non-chief": 47441,
+  "skills+shared+voice+cloud-home": 56146,
+  "skills+shared+voice+non-chief+cloud-home": 46496,
+  "default+legacy-switches": 52552,
 };
 
 const RPC_PREFIX = '{"jsonrpc":"2.0","id":1,"result":';
@@ -230,16 +229,14 @@ describe("agents proxy tools/list golden", () => {
     }
   });
 
-  it("gives every turn the one teamwork surface and the aliases, with start_thread on the bot itself", () => {
+  it("gives every turn the one teamwork surface, with start_thread on the bot itself", () => {
     type SchemaTool = Tool & { description: string; inputSchema: { properties: Record<string, { enum?: string[]; description?: string }> } };
     for (const [name, wire] of Object.entries(wires)) {
       const tools = new Map((toolsOf(wire) as SchemaTool[]).map((tool) => [tool.name, tool]));
-      for (const tool of [...TEAMWORK_TOOLS, ...ALIAS_TOOLS]) expect(tools.has(tool), `${name}: ${tool}`).toBe(true);
-      // the aliases are listed last, and each opens by naming its replacement
-      expect([...tools.keys()].slice(-ALIAS_TOOLS.length)).toEqual(ALIAS_TOOLS);
-      for (const alias of ALIAS_TOOLS) {
-        expect(tools.get(alias)!.description, `${name}: ${alias}`).toMatch(/^Deprecated alias of (coordinate_bots|assignment_status)\b.*; works for this release\./);
-      }
+      for (const tool of TEAMWORK_TOOLS) expect(tools.has(tool), `${name}: ${tool}`).toBe(true);
+      // the one-release aliases of the old names are gone (docs/runtime-contract.md §9)
+      for (const alias of ["delegate_bot", "ask_bot", "send_to_bot", "check_delegation", "wait_delegation"]) expect(tools.has(alias), `${name}: ${alias}`).toBe(false);
+      expect(JSON.stringify([...tools.values()])).not.toMatch(/Deprecated alias|works for this release/);
       // the contract's fields, in the contract's words
       const coordinate = tools.get("coordinate_bots")!.inputSchema.properties;
       expect(Object.keys(coordinate)).toEqual(["group_id", "bot_ids", "message", "reason", "rework", "thread", "reply", "consult", "done_when"]);

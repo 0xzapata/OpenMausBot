@@ -472,7 +472,7 @@ describe("coordinate_bots on a teammate", () => {
     }
   }, 90_000);
 
-  it("opens a peer thread through the start_thread alias, refuses inaccessible peers and oversized batches, and does not duplicate a retried request", async () => {
+  it("opens a peer thread through the threads route, refuses inaccessible peers and oversized batches, and does not duplicate a retried request", async () => {
     const pm = await createBot("Pam", "gated");
     const near = await createBot("Near", "gated");
     const far = await createBot("Far", "gated");
@@ -481,14 +481,14 @@ describe("coordinate_bots on a teammate", () => {
       expect((await api("PATCH", `/api/bots/${other.id}`, { section: "Elsewhere" })).status).toBe(200);
       expect((await api("PATCH", `/api/bots/${pm.id}`, { peers: [near.id] })).status).toBe(200);
       const token = await heldTurn(pm, "Coordinate only with my allowed teammate.");
-      // start_thread on a teammate is an alias of coordinate_bots with thread
-      // "new" for this release: a fresh thread on the peer, titled by the call,
-      // and one deprecation line in the answer.
-      const alias = await api("POST", "/api/internal/threads", { toBotId: near.id, title: "Job", message: "go" }, token);
-      expect(alias.status, JSON.stringify(alias.body)).toBe(200);
-      expect(alias.body.deprecation).toContain("start_thread on a teammate is replaced by coordinate_bots(thread: \"new\")");
-      expect(alias.body.receipts).toEqual([expect.objectContaining({ botId: near.id, outcome: "queued", threadId: expect.any(String) })]);
-      const job = alias.body.receipts[0].threadId as string;
+      // A thread on a teammate through the threads route is coordinate_bots
+      // with thread "new": a fresh thread on the peer, titled by the call,
+      // answered with the hand-off's receipts and no deprecation line.
+      const opened = await api("POST", "/api/internal/threads", { toBotId: near.id, title: "Job", message: "go" }, token);
+      expect(opened.status, JSON.stringify(opened.body)).toBe(200);
+      expect(opened.body.deprecation).toBeUndefined();
+      expect(opened.body.receipts).toEqual([expect.objectContaining({ botId: near.id, outcome: "queued", threadId: expect.any(String) })]);
+      const job = opened.body.receipts[0].threadId as string;
       expect(job).not.toBe(near.threadId);
       release(job);
       expect((await botState(near.id)).tasks.find((task: any) => task.threadId === job)).toMatchObject({ title: "Job", openedBy: { botId: pm.id } });

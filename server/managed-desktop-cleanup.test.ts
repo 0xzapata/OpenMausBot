@@ -53,15 +53,6 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
   const interruptCalls: string[] = [], cancelled: string[] = [], revoked: string[] = [], messages: string[] = [], settled: string[] = [], detached: string[] = [];
   const roomStops: Array<{ threadId: string; status: string; detail: string; byHarness?: boolean }> = [];
   const causes: Array<{ threadId: string; cause: string; interrupted: boolean }> = [];
-  // The room remnant (#1651, docs/runtime-contract.md §10 PR 5): a room
-  // turn parked on a seat or a card re-runs through roomCardResumes, and
-  // releaseTurnResources nudges that drain when an entry waits behind the
-  // release. A direct root waits through the runtime's admission instead.
-  // Recorded stubs, so the extracted code runs against the same names the
-  // real module sees.
-  const roomCardResumes = new Map<string, { threadId: string }>();
-  const resumeDrains: number[] = [];
-  const microtasks: Array<() => void> = [];
   // What Stop does that a computer-wait park must not: stop the request,
   // stop awaiting the conversation's teammates, cancel the person's message.
   const directRequestOwners = new Map<string, { messageId?: string; stopped: boolean; generations: Set<string> }>();
@@ -120,9 +111,6 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
     closeOpenApprovals: (threadId: string) => approvals.delete(threadId),
     finalizeDelegationWatch() {}, routines: { failThread() {} },
     settleDirectFollowup: (generation: string) => settled.push(generation),
-    roomCardResumes,
-    drainRoomCardResumes: () => { resumeDrains.push(roomCardResumes.size); },
-    queueMicrotask: (run: () => void) => { microtasks.push(run); },
   });
   context.runningTurnInstance = (bot: Bot) => context.registry.get(bot.modelSelection.instanceId);
   vm.runInContext(code, context, { filename: "index.ts (Company cleanup ownership fixture)" });
@@ -130,8 +118,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
     bots, tasks, groups, owners, directBots, speakers, vmLeases, approvals, screens, watched,
     autoVmClaims,
     interruptCalls, cancelled, revoked, messages, settled, detached, roomStops, causes,
-    roomCardResumes, resumeDrains, microtasks, directRequestOwners, stopAwaiting, patched,
-    flushMicrotasks: () => { for (const run of microtasks.splice(0)) run(); },
+    directRequestOwners, stopAwaiting, patched,
     context,
     stop: () => context.stopCompanyInstances(["company"]) as Promise<void>,
     interrupt: (threadId: string) => context.interruptDirectThread(threadId, threadId) as Promise<void>,
@@ -253,20 +240,6 @@ for (const kind of ["direct", "group"] as const) {
   });
 }
 
-it("nudges the room card-resume drain only when a room entry waits behind the release", async () => {
-  const quiet = fixture("direct"), quietStop = quiet.stop();
-  await quiet.started("first"); quiet.finish("first"); await quietStop;
-  expect(quiet.resumeDrains).toEqual([]);
-  expect(quiet.microtasks).toEqual([]);
-
-  const f = fixture("direct"), stopping = f.stop();
-  f.roomCardResumes.set("parked", { threadId: "parked" });
-  await f.started("first"); f.finish("first"); await stopping;
-  expect(f.owners.has("first")).toBe(false);
-  f.flushMicrotasks();
-  expect(f.resumeDrains).toEqual([1]);
-});
-
 // The computer wait ceiling at a lazy claim (#1651) ends the engine's turn
 // so the seat is not held through the wait, but it is not the person's
 // Stop: the request stays theirs, the conversation keeps awaiting its
@@ -302,7 +275,9 @@ it("interruptParkedTurn cannot close a replacement generation's approval after a
 });
 
 // The seat park → continuation, card park → answer and seat-admission paths are
-// covered end-to-end by server/runtime-roots.e2e.test.ts (T2–T7) and by the
+// covered end-to-end by server/runtime-roots.e2e.test.ts (T2–T7) for direct
+// roots and by server/room-roots.e2e.test.ts for room members (a room
+// member's turn is a root too; docs/runtime-contract.md §10 PR 5), and by the
 // runtime-coordinator unit tests; no sliced-source fixture repeats them here.
 
 it("quitting disposes Company instances without interrupting turns or writing connection-changed cards", async () => {
@@ -384,7 +359,7 @@ function reloadFixture() {
     routines: { failThread() {} }, failedTurnTool: (name: string) => ({ name, ok: false }),
     settleDirectFollowup: (generation: string, outcome: { text: string }) => settled.push({ generation, text: outcome.text }),
     retryDelegationsWaitingOn() {},
-    drainQueuedSends() {}, drainConnectorResumes() {}, drainComputerResumes() {}, drainSecretResumes() {}, drainTeamSetupResumes() {},
+    drainQueuedSends() {},
   });
   vm.runInContext(reloadProvidersCode, context, { filename: "index.ts (provider reload fixture)" });
   const save = (next: typeof configs) => {
@@ -434,13 +409,21 @@ it("a changed key replaces only its engine and tells only that engine's requeste
 // A harness stop ends a room with its cause: the assignments fail with it
 // (their assigners read it, not "Stopped by user") and the goal run's card
 // says it under the same "stopped" status, so no new failure notice goes out.
+// The person's Stop is the one a bot's thread gets (docs/runtime-contract.md
+// §2): the cards the room's roots parked on are stopped first, the room
+// stops awaiting its teammates (those left mid-turn noted once), then the
+// room's remaining rows are cancelled as theirs.
 it("ends a room stopped by the harness with its cause, and one the person stopped as theirs", () => {
   const run = (outcome?: { status: "stopped"; detail: string; byHarness: true }) => {
     const calls: string[] = [];
     const context = vm.createContext({
-      roomCardResumes: new Map(),
+      coordinator: {
+        cancelRoom: (...args: string[]) => calls.push(`assignments:${args.join("|")}`),
+        stopAwaitingDirect: (threadId: string) => { calls.push(`stop-awaiting:${threadId}`); return ["mid-turn teammate"]; },
+      },
+      stopParkedCards: (threadId: string) => calls.push(`cards-stopped:${threadId}`),
+      noteTeammatesLeftRunning: (threadId: string, left: string[]) => calls.push(`left-running:${threadId}:${left.join(",")}`),
       roomMemberLock: { releaseThread: (threadId: string) => calls.push(`member-claims:${threadId}`) },
-      coordinator: { cancelRoom: (...args: string[]) => calls.push(`assignments:${args.join("|")}`) },
       groupTurnOperations: new Map([["g", new Set([{ threadId: "room", cancellation: new AbortController() }])]]),
       finishGroupGoalRun: (_groupId: string, _operation: unknown, status: string, detail: string) => calls.push(`goal:${status}|${detail}`),
       markCancelledProviderHandshake() {},
@@ -456,5 +439,8 @@ it("ends a room stopped by the harness with its cause, and one the person stoppe
     "member-claims:room",
     "goal:stopped|Turn interrupted — provider settings changed.",
   ]);
-  expect(run()).toEqual(["assignments:g|room", "member-claims:room", "goal:stopped|Stopped by you."]);
+  expect(run()).toEqual([
+    "cards-stopped:room", "stop-awaiting:room", "left-running:room:mid-turn teammate",
+    "assignments:g|room", "member-claims:room", "goal:stopped|Stopped by you.",
+  ]);
 });

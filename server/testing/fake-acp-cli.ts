@@ -42,9 +42,7 @@
 //                   | create-peer (a Chief creates a specialist, then hands
 //                     work to it through the returned id with coordinate_bots)
 //                   The four peer modes call coordinate_bots / assignment_status
-//                   (docs/runtime-contract.md §9). FAKE_ACP_LEGACY_TOOLS=1 keeps
-//                   a scenario on the deprecated aliases instead: ask_bot,
-//                   delegate_bot and check_delegation, with the same prompts.
+//                   (docs/runtime-contract.md §9).
 //                   A wake carrying a hand-off's result (the legacy "[A
 //                   delegated task just completed]" or the runtime's
 //                   "[OpenMausBot report from …]") is answered with a fixed
@@ -187,29 +185,18 @@ let currentMode: string | null = modes[0] ?? null;
 // assignment_status call. Each turn is a fresh process, so the id is passed
 // through a file (same state-passing pattern as FAKE_ACP_GATE_FILE).
 const taskIdFile = process.env.FAKE_ACP_TASKID_FILE ?? "";
-// Which teammate tools the scripted peer modes call: coordinate_bots and
-// assignment_status, the one surface every turn gets, or — for a scenario
-// that pins the deprecated aliases — ask_bot, delegate_bot, check_delegation.
-const legacyTools = process.env.FAKE_ACP_LEGACY_TOOLS === "1";
 /** The teammate id as list_bots prints it ("[id: …]"). */
 const peerIdOf = (list: string): string => /id: ([\w-]+)/.exec(list)?.[1] ?? "";
 /** The hand-off a scripted mode makes to one peer. */
 function handoffCall(message: string, options: { consult?: boolean; reason?: string } = {}): { name: string; args: (list: string) => object } {
   const reason = options.reason ? { reason: options.reason } : {};
-  if (legacyTools) {
-    return options.consult
-      ? { name: "ask_bot", args: (list) => ({ bot_id: peerIdOf(list), message }) }
-      : { name: "delegate_bot", args: (list) => ({ bot_id: peerIdOf(list), message, ...reason }) };
-  }
   return { name: "coordinate_bots", args: (list) => ({ bot_ids: [peerIdOf(list)], message, ...(options.consult ? { consult: true } : {}), ...reason }) };
 }
 /** The assignment id a hand-off reply names: coordinate_bots answers with
- * JSON receipts (requestId), the aliases with "Task id: …". */
-const handoffIdOf = (reply: string): string => /"requestId":"([\w-]+)"/.exec(reply)?.[1] ?? /Task id: ([\w-]+)/.exec(reply)?.[1] ?? "";
+ * JSON receipts (requestId). */
+const handoffIdOf = (reply: string): string => /"requestId":"([\w-]+)"/.exec(reply)?.[1] ?? "";
 /** The status read for a remembered assignment id. */
-const statusCall = (id: string): { name: string; args: () => object } => legacyTools
-  ? { name: "check_delegation", args: () => ({ task_id: id }) }
-  : { name: "assignment_status", args: () => ({ id }) };
+const statusCall = (id: string): { name: string; args: () => object } => ({ name: "assignment_status", args: () => ({ id }) });
 const logFile = process.env.FAKE_ACP_LOG_FILE ?? "";
 const rejectLiveLoadFile = process.env.FAKE_ACP_REJECT_LIVE_LOAD_FILE ?? "";
 function fakeLog(line: string): void {
@@ -1165,7 +1152,7 @@ function handle(msg: any) {
           {
             // Every turn hands work on the same way, the routine's and the
             // person's resumed one after the card alike.
-            name: legacyTools ? "delegate_bot" : "coordinate_bots",
+            name: "coordinate_bots",
             args: (created) => {
               const id = /id: ([\w-]+)/.exec(created)?.[1] ?? /^- Pixel\b.*?\[id: ([\w-]+)/m.exec(listed)?.[1] ?? "";
               return handoffCall("Review the new onboarding flow.", { reason: "design review" }).args(`id: ${id}`);

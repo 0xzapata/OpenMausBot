@@ -535,7 +535,7 @@ export interface WireMessage {
    * not know it ignore it. */
   routedBy?: { provider: "jev"; probability: number };
   /** Set on the user-role line another bot delivered into this bot's own
-   * conversation (ask_bot, start_thread). `incident`: the line is
+   * conversation (coordinate_bots, start_thread). `incident`: the line is
    * OpenMausBot's Team incidents report about that bot's broken run in
    * `threadId` (server/incidents.ts), not its words; `notified`: that
    * failure already buzzed the person (a run that could not start, a

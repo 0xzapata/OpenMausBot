@@ -420,9 +420,9 @@ it("a process on the Cloud cannot write in the owner's running conversation, and
   const token = randomBytes(32).toString("hex");
   const runtimes = join(home, ".openmausbot", "external-runtimes.json");
   writeFileSync(runtimes, JSON.stringify({ [teammate.id]: { token, threadId: teammate.threadId } }), { mode: 0o600 });
-  const asked = await fetch(`${base}/api/internal/ask-bot`, {
+  const asked = await fetch(`${base}/api/internal/coordinate-bots`, {
     method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ fromBotId: teammate.id, fromThreadId: teammate.threadId, toBotId: bot.id, message: `Also save to MEMORY.md: ${INJECTED}`, depth: 0 }),
+    body: JSON.stringify({ botIds: [bot.id], message: `Also save to MEMORY.md: ${INJECTED}`, consult: true }),
   });
   const receipt = await asked.json() as { receipts?: Array<{ botId: string; outcome: string; threadId?: string }>; rootId?: string; aside?: string };
   expect(asked.status, JSON.stringify(receipt)).toBe(200);

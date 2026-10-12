@@ -13,7 +13,6 @@ import { parseOptionsCardInput, WATCHER_OPTIONS_CARD_BOT_ID } from "../../shared
 import { normalizeCronSchedule } from "../../shared/routine-schedule.ts";
 
 import { peerName } from "../peer-roster.ts";
-import { renderPeerDeliveryReceipts, type PeerDeliveryOutcome, type PeerDeliveryReceipt } from "../peer-delivery.ts";
 import { catalogProfileFromEnv, SHARED_COMPUTER_TOOL_NAMES, WEEKDAYS } from "./agents-catalog.ts";
 import { harnessClientFromEnv } from "./agents-client.ts";
 import type { HarnessClient, Json } from "./agents-client.ts";
@@ -57,24 +56,6 @@ export function toolCallContextFromEnv(env: NodeJS.ProcessEnv): ToolCallContext 
   };
 }
 
-// ── The deprecated aliases (docs/runtime-contract.md §9) ───────────────────
-// Each alias still reaches its old route, which the harness now answers from
-// the runtime, and every result ends with one line naming the replacement.
-// The harness may word that line itself (`deprecation` in the body); this is
-// the line when it does not.
-const ALIAS_OF: Record<string, string> = {
-  delegate_bot: "coordinate_bots",
-  ask_bot: "coordinate_bots with consult: true",
-  send_to_bot: 'coordinate_bots with thread: "new" and reply: "none"',
-  start_thread: 'coordinate_bots with thread: "new"',
-  check_delegation: "assignment_status",
-  wait_delegation: "assignment_status with wait_ms",
-};
-function deprecationLine(name: string, r: Json): string {
-  if (typeof r.deprecation === "string" && r.deprecation.trim()) return r.deprecation.trim();
-  const replacement = ALIAS_OF[name] ?? "coordinate_bots";
-  return `Deprecated: ${name} is an alias of ${replacement} and works for this release; call ${replacement.split(" ")[0]} next time.`;
-}
 /** request_sign_in's answer names the place the person was sent to, in the
  * words the panel and the prompt use (server/surface.ts surfaceLabel). */
 const SIGN_IN_PLACES: Record<string, string> = {
@@ -83,8 +64,6 @@ const SIGN_IN_PLACES: Record<string, string> = {
   vm: "the Local VM",
   cloud: "the cloud computer",
 };
-/** Every result of a hand-off ends the same way: the result returns here. */
-const RESUMES_YOU = "The result returns here and resumes you automatically; finish your turn without checking or waiting for it.";
 
 // ── assignment_status rendering ────────────────────────────────────────────
 /** The runtime's status words as a person would say them (runtime/types.ts). */
@@ -134,21 +113,10 @@ function renderAssignmentStatus(r: Json, id: string): string {
   return lines.join("\n");
 }
 
-/** The ids a hand-off answer names, newest shape first: coordinate_bots
- * receipts carry requestId, the legacy routes a taskId. */
+/** The assignment ids a hand-off answer names: one per coordinate_bots receipt. */
 function handoffIds(r: Json): string[] {
   const receipts = Array.isArray(r.receipts) ? r.receipts.filter(jsonRecord) : [];
-  const ids = receipts.map((receipt) => receipt.requestId ?? receipt.taskId).filter((id): id is string => typeof id === "string" && id.trim().length > 0);
-  if (!ids.length && typeof r.taskId === "string" && r.taskId.trim()) ids.push(r.taskId.trim());
-  return ids;
-}
-
-/** The delivery receipts of a hand-off answer as prose: the runtime's
- * `receipts` array, or the one `receipt` the legacy routes carried. */
-function receiptsNote(r: Json): string {
-  const raw = Array.isArray(r.receipts) ? r.receipts : [r.receipt];
-  const receipts = raw.map(parseReceipt).filter((receipt): receipt is PeerDeliveryReceipt => receipt !== null);
-  return renderPeerDeliveryReceipts(receipts);
+  return receipts.map((receipt) => receipt.requestId).filter((id): id is string => typeof id === "string" && id.trim().length > 0);
 }
 /** How many entries a memory_update reply names when its write moved some
  * to the archive; the rest are counted. */
@@ -459,27 +427,6 @@ function recallSpeaker(hit: Json): string {
   return hit.role === "user" ? "user" : "you";
 }
 
-const isPeerDeliveryOutcome = (value: unknown): value is PeerDeliveryOutcome =>
-  value === "queued" || value === "injected" || value === "failed";
-
-/** One delivery receipt off the wire, or null. Unvalidated JSON stays out:
- * a malformed receipt renders nothing rather than half a line of somebody
- * else's text. */
-function parseReceipt(receipt: unknown): PeerDeliveryReceipt | null {
-  if (!receipt || typeof receipt !== "object") return null;
-  const { botId, botName, outcome, detail, taskId, requestId } = receipt as Record<string, unknown>;
-  if (typeof botId !== "string" || !botId || typeof detail !== "string" || !detail) return null;
-  if (!isPeerDeliveryOutcome(outcome)) return null;
-  return {
-    botId,
-    ...(typeof botName === "string" && botName ? { botName } : {}),
-    outcome,
-    detail,
-    ...(typeof taskId === "string" && taskId ? { taskId } : {}),
-    ...(typeof requestId === "string" && requestId ? { requestId } : {}),
-  };
-}
-
 /** When a recalled line was said, on the machine's own clock. `toISOString()`
  * answers in UTC, which disagrees with every other day the bot is shown: a
  * bare `since`/`until` date is read as local midnight (recent-work.ts
@@ -631,29 +578,6 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       text: `Outstanding assignments of this conversation (${outstanding.length}):\n${outstanding.map((a) => `- ${assignmentLine(a)}`).join("\n")}\nEach resumes you when it settles; do not wait on them in this turn.`,
     };
   }
-  if (name === "send_to_bot") {
-    const botId = String(args.bot_id ?? "").trim();
-    const title = String(args.title ?? "").trim();
-    const message = String(args.message ?? "").trim();
-    if (!botId || !title || !message) {
-      return { text: "send_to_bot needs bot_id, title and message.", isError: true };
-    }
-    if (botId === context.botId) {
-      return { text: "send_to_bot is cross-bot only. Use start_thread to send independent work to yourself.", isError: true };
-    }
-    const r = await api("/api/internal/threads", { method: "POST", body: JSON.stringify({
-      fromBotId: context.botId, fromThreadId: context.threadId, toBotId: botId,
-      title, message, depth: context.depth, oneWay: true,
-    }) });
-    if (r.error) return { text: `Couldn't send to that bot: ${String(r.error)}`, isError: true };
-    const destination = `@${String(r.botName ?? "that bot")} in #${String(r.title ?? title)} [thread id: ${String(r.threadId ?? "")}]`;
-    const state = r.approvalRequired === true
-      ? `Send to ${destination} is pending approval. The person's approval card appears after this turn ends; dispatch starts once approved.`
-      : r.state === "queued"
-        ? `Send to ${destination} is queued ${ordinal(Number(r.position) || 1)} for a free slot and can dispatch after this turn ends.`
-        : `Send to ${destination} is pending until this turn ends, then dispatch starts.`;
-    return { text: `${state} Its result stays in that thread; nothing there will resume you.\n\n${deprecationLine(name, r)}` };
-  }
   if (name === "list_bots") {
     const r = await api(`/api/internal/agents?self=${encodeURIComponent(BOT_ID)}`);
     const bots = (r.bots as Array<Json>) ?? [];
@@ -712,76 +636,6 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     return {
       text: `Posted in ${r.roomName ?? "the room"}${r.attachedVoiceNote ? " with the voice note attached" : ""}. Nobody's turn was started, so expect no reply — tell the user it is posted.`,
     };
-  }
-  if (name === "ask_bot") {
-    const toBotId = String(args.bot_id ?? "").trim();
-    const message = String(args.message ?? "").trim();
-    if (!toBotId || !message) return { text: "ask_bot needs bot_id and message.", isError: true };
-    // The alias of coordinate_bots(consult: true): the harness turns the ask
-    // into a consultation on the runtime. There is no inline wait any more;
-    // the answer resumes the asker. A `timeout` argument from an older tool
-    // list is accepted and ignored.
-    const r = await api(`/api/internal/ask-bot`, {
-      method: "POST",
-      body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, toBotId, message, depth: DEPTH }),
-    });
-    const note = receiptsNote(r);
-    const tail = `${note ? `\n\n${note}` : ""}\n\n${deprecationLine(name, r)}`;
-    if (r.error) return { text: `Couldn't reach that bot: ${r.error}${tail}`, isError: true };
-    // The alias answers with the coordinate_bots receipts: the teammate's
-    // name is on the first one (an older harness still sends toBotName).
-    const first = Array.isArray(r.receipts) && jsonRecord(r.receipts[0]) ? r.receipts[0] : undefined;
-    const who = `@${peerName(String(first?.botName ?? r.toBotName ?? r.botName ?? "")) || "that teammate"}`;
-    // A harness that still answered inline hands the words straight on.
-    if (typeof r.text === "string" && r.text.trim() && !r.taskId && !Array.isArray(r.receipts)) {
-      return { text: `${who} replied:\n${r.text}${tail}` };
-    }
-    const ids = handoffIds(r);
-    return {
-      text: `Asked ${who}; the answer resumes you after this turn ends — there is no inline wait.${ids.length ? ` Assignment id: ${ids[0]}.` : ""} Finish your turn now.${tail}`,
-    };
-  }
-  if (name === "delegate_bot") {
-    const toBotId = String(args.bot_id ?? "").trim();
-    const message = String(args.message ?? "").trim();
-    const reason = typeof args.reason === "string" ? args.reason.trim() : "";
-    if (!toBotId || !message) return { text: "delegate_bot needs bot_id and message.", isError: true };
-    const body: Record<string, unknown> = {
-      fromBotId: BOT_ID,
-      fromThreadId: THREAD_ID,
-      toBotId,
-      message,
-      depth: DEPTH,
-    };
-    if (reason) body.reason = reason;
-    // The alias of coordinate_bots: the harness answers with the same
-    // receipts, and the assignment id is the bot's claim ticket.
-    const r = await api(`/api/internal/delegate-bot`, { method: "POST", body: JSON.stringify(body) });
-    const delivery = receiptsNote(r);
-    const tail = `${delivery ? `\n\n${delivery}` : ""}\n\n${deprecationLine(name, r)}`;
-    if (r.error) return { text: `Couldn't queue the delegation: ${r.error}${tail}`, isError: true };
-    const note = typeof r.message === "string" ? r.message : "Delegation queued.";
-    const ids = handoffIds(r);
-    return { text: `${note}${ids.length ? ` Task id: ${ids[0]}.` : ""} ${RESUMES_YOU}${tail}` };
-  }
-  if (name === "check_delegation" || name === "wait_delegation") {
-    const taskId = String(args.task_id ?? "").trim();
-    if (!/^[\w-]{4,64}$/.test(taskId)) {
-      return { text: `${name} needs the "task_id" a hand-off returned, e.g. {"task_id":"1f0c2f4e-..."}; assignment_status takes it as "id".`, isError: true };
-    }
-    // The aliases of assignment_status: the same read, by the old route.
-    const timeout = Math.min(Math.max(Math.trunc(Number(args.timeout_seconds) || 60), 1), 240);
-    const waitMs = name === "wait_delegation" ? timeout * 1000 : 0;
-    const query = new URLSearchParams({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, wait_ms: String(waitMs) });
-    const { ok, status, body: r } = await apiResponse(`/api/internal/delegations/${encodeURIComponent(taskId)}?${query.toString()}`);
-    if (!ok) {
-      const why = status === 404 ? `No assignment ${taskId} is known here: check the id against the hand-off's receipt or list_threads.`
-        : status === 403 ? `Assignment ${taskId} is not this conversation's; only its requester can read it.`
-        : String(r.error ?? `HTTP ${status}`);
-      return { text: `${why}\n\n${deprecationLine(name, r)}`, isError: true };
-    }
-    const waited = waitMs && r.status !== "completed" && r.status !== "failed" && r.status !== "cancelled" ? `\n(still not settled after ${timeout}s)` : "";
-    return { text: `${renderAssignmentStatus(r, taskId)}${waited}\n\n${deprecationLine(name, r)}` };
   }
   if (name === "select_computer") {
     if (args.surface !== undefined && (typeof args.surface !== "string" || !["auto", "cloud", "vm", "local", "browser"].includes(args.surface))) {
@@ -846,11 +700,10 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       }
       return { text: `${opened} It could not start: ${String(r.error ?? "unknown reason")}. The thread exists but nothing is running in it; tell the person.`, isError: true };
     }
-    // A thread on a teammate is the alias of coordinate_bots thread "new":
-    // a hand-off into a fresh thread that starts after this turn and reports
-    // back here, so the id is a claim ticket the model must not cash in this
-    // same turn.
-    const assignmentId = typeof r.delegationId === "string" ? r.delegationId.trim() : handoffIds(r)[0] ?? "";
+    // A thread on a teammate is a hand-off into a fresh thread (coordinate_bots
+    // thread "new"): it starts after this turn and reports back here, so the
+    // id is a claim ticket the model must not cash in this same turn.
+    const assignmentId = handoffIds(r)[0] ?? "";
     const approval = r.approvalRequired === true
       ? " The person must approve this handoff first; their card appears after your turn ends."
       : "";
@@ -858,7 +711,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       ? ` @${String(r.botName ?? "that bot")} can run ${Number(r.limit) || 0} threads at once and they are all spoken for, so it waits ${ordinal(Number(r.position) || 1)} in line for a free slot after this turn ends.`
       : " It starts when this turn ends, like any handoff.";
     return {
-      text: `${opened}${timing}${approval} Its result will be delivered to this conversation automatically (assignment id: ${assignmentId || "unknown"}). Acknowledge it, mention it to the person as #${threadTitle}, and finish your turn; do not check or wait for it in this turn.\n\n${deprecationLine(name, r)}`,
+      text: `${opened}${timing}${approval} Its result will be delivered to this conversation automatically (assignment id: ${assignmentId || "unknown"}). Acknowledge it, mention it to the person as #${threadTitle}, and finish your turn; do not check or wait for it in this turn.`,
     };
   }
   if (name === "list_team_setup") {

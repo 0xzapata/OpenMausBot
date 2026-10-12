@@ -28,7 +28,9 @@ const ALREADY_COMPLETED = "This agent already completed your assignment. Do not 
 const ROOM_ANCESTOR = "A room request cannot return to an ancestor room; results are returned automatically";
 const DEPTH = "Room handoff depth limit reached";
 const BUDGET = "Room handoff budget exhausted";
-const SOURCE_FAILED = "The originating turn ended before its teammates returned.";
+/** A hand-off from a generation the host never began a root for: no turn
+ * owns it, so nothing could be resumed with the result. */
+const NO_TURN = "The requesting turn has no root (no turn)";
 
 const BRIEF_MAX = 12_000;
 /** The runtime's own depth refusal, mapped onto the legacy words. */
@@ -71,7 +73,7 @@ function legacyOrigin(origin: Origin): WorkOrigin | undefined {
 /** The root's first turn is the host's own (begin(), executions 1): the
  * legacy "source". Any later turn of a root is one the runtime dispatched
  * (a resume, a rerun), and the host must read it as running. */
-const isSourceTurn = (a: Assignment): boolean => !a.parentId && a.status === "running" && a.executions === 1;
+const hostFirstTurn = (a: Assignment): boolean => !a.parentId && a.status === "running" && a.executions === 1;
 
 /** The legacy origin of a requesting turn as the runtime records it. */
 function runtimeOrigin(origin: WorkOrigin | undefined, source: RoomAddress): Origin {
@@ -98,7 +100,7 @@ export function needsInputQuestion(text: string): string | undefined {
  * root's host-run first turn is "source"; a parked turn is "waiting". */
 export function view(a: Assignment, parent?: Assignment): HandoffView {
   const groupId = a.assignee.destination.groupId;
-  const status: HandoffView["status"] = isSourceTurn(a) ? "source" : a.status === "needs_input" ? "waiting" : a.status;
+  const status: HandoffView["status"] = hostFirstTurn(a) ? "source" : a.status === "needs_input" ? "waiting" : a.status;
   const node: HandoffView = {
     id: a.id, rootId: a.rootId, threadId: a.assignee.destination.threadId, botId: a.assignee.botId, key: a.assignee.botId,
     text: a.brief, createdAt: a.createdAt, status, result: a.result, reported: a.reportedAt !== undefined, executions: a.executions,
@@ -110,6 +112,7 @@ export function view(a: Assignment, parent?: Assignment): HandoffView {
   if (a.question !== undefined) node.question = a.question;
   if (a.cards !== undefined) node.cards = a.cards;
   if (a.continuation !== undefined) node.continuation = { ...a.continuation };
+  if (a.goalRunId !== undefined) node.goalRunId = a.goalRunId;
   if (a.parentId !== undefined) node.parentId = a.parentId;
   if (groupId !== undefined) node.groupId = groupId;
   if (a.batchKey !== undefined) node.requestBatchKey = a.batchKey;
@@ -211,31 +214,16 @@ export class RuntimeCoordinator implements Coordinator {
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, text: string,
     options: HandoffOptions = {}): { node: HandoffView; duplicate: boolean } {
     this.ready();
-    const { approvalGranted = false, rework = false, sourceText = "", requestBatchKey, origin, opener, thread } = options;
+    const { approvalGranted = false, rework = false, requestBatchKey, thread } = options;
     const mode = options.mode ?? "work";
-    let parent = parentId ? this.store.get(parentId) : this.store.get(generation);
-    if (parent && parent.status !== "running") throw new Error(NOT_RUNNING);
-    if (parentId && !parent) throw new Error(NOT_RUNNING);
-    if (parent && !sameSpeaker(parent, source)) throw new Error(WRONG_SPEAKER);
+    // The requesting node: the turn's own root (every turn begins one,
+    // beginTurn) or the teammate node whose turn hands this on.
+    const parent = parentId ? this.store.get(parentId) : this.store.get(generation);
+    if (!parent) throw new Error(parentId ? NOT_RUNNING : NO_TURN);
+    if (parent.status !== "running") throw new Error(NOT_RUNNING);
+    if (!sameSpeaker(parent, source)) throw new Error(WRONG_SPEAKER);
     const brief = clip(text, BRIEF_MAX);
     const kind: HandoffView["kind"] = target.groupId !== undefined && target.groupId === source.groupId ? "assignment" : "work";
-    if (!parent) {
-      // The requesting turn is the root. It is written only once a request
-      // under it can be: a self-assignment never creates one.
-      if (ancestorOf(source, target)) throw new Error(ANCESTOR);
-      parent = this.runtime.begin({
-        id: generation,
-        origin: opener?.origin ?? runtimeOrigin(origin, source),
-        requester: opener
-          ? { ...opener.requester, botId: opener.requester.botId ?? source.botId, threadId: opener.requester.threadId ?? source.threadId, chief: this.host.chiefOf(source) }
-          : { kind: "person", threadId: source.threadId, botId: source.botId, chief: this.host.chiefOf(source) },
-        ...(opener?.requester.kind === "external_runtime" ? { reply: "poll" as const } : {}),
-        assignee: { botId: source.botId, destination: { kind: source.groupId ? "room_thread" : "standing_thread", threadId: source.threadId,
-          ...(source.groupId ? { groupId: source.groupId } : {}) } },
-        brief: sourceText.slice(0, BRIEF_MAX),
-        level: this.host.levelOf(source).level,
-      });
-    }
     // The legacy rules, in the legacy order, with the legacy words.
     const lineage = path(this.store, parent);
     const root = lineage[0]!;
@@ -257,7 +245,7 @@ export class RuntimeCoordinator implements Coordinator {
     // children's requester, so that run's lane carries their results.
     const requester: Requester = { kind: "bot_turn", botId: parent.assignee.botId, threadId: parent.assignee.destination.threadId,
       chief: this.host.chiefOf(address(parent)), ...(parent.id === root.id && root.requester.runId !== undefined ? { runId: root.requester.runId } : {}) };
-    const level = this.host.levelOf(target);
+    const level = this.host.levelOf(target, address(parent));
     const result = this.runtime.enqueue({
       parentId: parent.id,
       origin: parent.origin,
@@ -314,6 +302,7 @@ export class RuntimeCoordinator implements Coordinator {
       brief: req.brief.slice(0, BRIEF_MAX),
       level: req.level,
       ...(opener?.requester.kind === "external_runtime" ? { reply: "poll" as const } : {}),
+      ...(req.goalRunId ? { goalRunId: req.goalRunId } : {}),
     });
     return this.project(row);
   }
@@ -365,17 +354,6 @@ export class RuntimeCoordinator implements Coordinator {
     return { id: batch[0]!.id, botIds: batch.map(c => c.assignee.botId) };
   }
 
-  // ── the requesting turn ──────────────────────────────────────────────
-
-  sourceSettled(generation: string, ok: boolean): void {
-    this.ready();
-    const root = this.store.get(generation);
-    // Only the host's own turn ends here; a resume the runtime dispatched
-    // settles through run(), and anything else is ignored as legacy does.
-    if (!root || !isSourceTurn(root)) return;
-    this.runtime.end(generation, { ok, text: ok ? "" : SOURCE_FAILED });
-  }
-
   // ── stops ────────────────────────────────────────────────────────────
 
   cancelRoom(groupId: string, threadId?: string, reason = "Stopped by user", status: "failed" | "cancelled" = "cancelled"): void {
@@ -404,26 +382,30 @@ export class RuntimeCoordinator implements Coordinator {
   }
 
   /** The conversation that assigned the unsettled direct work running in
-   * this thread, or undefined when nothing it does is awaited. */
+   * this thread, or undefined when nothing it does is awaited. A teammate
+   * still working for a conversation that stopped awaiting it (Stop: its
+   * requester node ended, the teammate keeps its process) is nobody's. */
   assignerOf(threadId: string): HandoffView | undefined {
     this.ready();
     for (const n of this.live()) {
       if (!n.parentId || !this.direct(n, threadId)) continue;
       const parent = this.store.get(n.parentId);
-      if (parent) return this.project(parent);
+      if (parent && !isTerminal(parent)) return this.project(parent);
     }
     return undefined;
   }
 
   /** Work this conversation handed out that has not settled yet and that
-   * comes back to it: a one-way notice is never outstanding. */
+   * comes back to it: a one-way notice is never outstanding, and nothing is
+   * once the requesting node ended (a Stop leaves a teammate mid-turn, but
+   * its result returns to nobody). */
   outstandingDirect(threadId: string): HandoffView[] {
     this.ready();
     const out: HandoffView[] = [];
     for (const n of this.live()) {
       if (!n.parentId || n.reply === "none") continue;
       const parent = this.store.get(n.parentId);
-      if (parent && this.direct(parent, threadId)) out.push(view(n, parent));
+      if (parent && !isTerminal(parent) && this.direct(parent, threadId)) out.push(view(n, parent));
     }
     return out;
   }
@@ -436,12 +418,13 @@ export class RuntimeCoordinator implements Coordinator {
     }));
   }
 
-  /** The turn running in this conversation is one the next start goes on
-   * with (it waits on its work, or runs again), so a shutdown's line that it
-   * was cut would be false; that start says what happened instead. */
+  /** The turn running in this conversation (a bot's thread or a room
+   * thread) is one the next start goes on with (it waits on its work, or
+   * runs again), so a shutdown's line that it was cut would be false; that
+   * start says what happened instead. */
   continuesAfterRestart(threadId: string): boolean {
     this.ready();
-    return this.live().some(n => this.direct(n, threadId) && (
+    return this.live().some(n => n.assignee.destination.threadId === threadId && (
       (n.status === "running" && (n.restart !== "rerun" || childrenSince(this.store, n).length > 0)) ||
       ((n.status === "queued" || n.status === "resume") && n.restart === "rerun")));
   }

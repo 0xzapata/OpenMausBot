@@ -572,7 +572,7 @@ export interface RecallHit {
   snippet: string;
   /** room messages: which member said it */
   from?: string;
-  /** a user-role line another bot delivered with ask_bot: that bot's name.
+  /** a user-role line another bot delivered as its request (coordinate_bots): that bot's name.
    * The stored text opens with a note saying so, but the snippet windows
    * around the match and drops it, so the reader learns it here. */
   peer?: string;
@@ -584,7 +584,7 @@ function peerAuthor(peerName: string | null, text: string): string | null {
   return peerName ?? peerProvenanceAuthor(text);
 }
 
-/** Enough of a line to see whether it opens with an ask_bot note — the
+/** Enough of a line to see whether it opens with a peer-request note — the
  * note's fixed wording plus a bot name — without reading the whole text. */
 const PEER_NOTE_HEAD_CHARS = 160;
 

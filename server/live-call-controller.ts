@@ -725,8 +725,8 @@ export class LiveCallController {
   }
 
   /** A line the caller typed in a client (every client sends a sendId with
-   * what is typed), as the same person. Not a peer bot's line (ask_bot,
-   * start_thread, an aside: the answer goes back to that bot), not a line a
+   * what is typed), as the same person. Not a peer bot's line (coordinate_bots,
+   * start_thread: the answer goes back to that bot), not a line a
    * routine, a webhook or the local API added (no sendId, or via "api"), not
    * a line a worker relayed for someone else (the Slack relay, any guarded
    * send: relayed), and not another member's line in a shared workspace. */

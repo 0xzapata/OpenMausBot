@@ -205,16 +205,12 @@ const PROPOSAL_OUTCOME = " Read the result: granted Full Access may apply the ch
  * any level (server/direct-apply.ts). */
 const SELF_CHANGE_OUTCOME = " Read the result: a change to your own routines, skills, profile or model applies immediately, and the person sees it with an Undo; a change for another bot may wait for the person's confirmation. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success without an applied result; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.";
 
-/** The one sentence every deprecated alias opens with, naming its
- * replacement. The aliases stay for one release (docs/runtime-contract.md
- * §9); their results carry the same line (agents-call.ts). */
-const DEPRECATED_ALIAS = (replacement: string) => `Deprecated alias of ${replacement}; works for this release.`;
 /** start_thread's bot_id: the schema's enum (catalogTools) holds the bot's own id. */
 const START_THREAD_SELF_ID = "Leave out, or use your own bot ID. For teammates use coordinate_bots.";
 
 /** Every tool, in the order it is listed: one wording for every turn,
  * whether a person's chat, a routine run or a standing external runtime
- * reached it. The deprecated aliases come last. */
+ * reached it. */
 const TOOL_DEFINITIONS = [
   {
     name: "create_options_card",
@@ -891,67 +887,6 @@ const TOOL_DEFINITIONS = [
       required: ["name"],
     },
   },
-  // ── Deprecated aliases: one release (docs/runtime-contract.md §9) ──────
-  // Each maps onto coordinate_bots or assignment_status (agents-call.ts), and
-  // its result carries one deprecation line. Routine prompts that name them
-  // keep working.
-  {
-    name: "delegate_bot",
-    description: `${DEPRECATED_ALIAS("coordinate_bots(bot_ids: [bot_id], message, reason)")} Hands work to one teammate; the result returns here and resumes you. Acknowledge the assignment and end your turn; do not check or wait for it in this turn.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        bot_id: { type: "string", description: "The target bot's id (from list_bots or your roster); a unique teammate name also resolves." },
-        message: { type: "string", description: "What the peer should do / answer." },
-        reason: { type: "string", description: "Optional one-line reason for the delegation (shown to the user as a chip)." },
-      },
-      required: ["bot_id", "message"],
-    },
-  },
-  {
-    name: "ask_bot",
-    description: `${DEPRECATED_ALIAS("coordinate_bots(bot_ids: [bot_id], message, consult: true)")} Asks one teammate a question; there is no inline wait any more: the answer resumes you after your turn ends, so end your turn once it is sent.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        bot_id: { type: "string", description: "The target bot's id (from list_bots or your roster); a unique teammate name also resolves." },
-        message: { type: "string", description: "What to say / ask the bot." },
-      },
-      required: ["bot_id", "message"],
-    },
-  },
-  {
-    name: "send_to_bot",
-    description: `${DEPRECATED_ALIAS("coordinate_bots(bot_ids: [bot_id], message, thread: \"new\", reply: \"none\")")} Sends work one way to another bot in a fresh thread they own; nothing there resumes you. Cross-bot only: use start_thread for a separate job on yourself.`,
-    inputSchema: { type: "object", additionalProperties: false, properties: {
-      bot_id: { type: "string", description: "One reachable teammate id from list_bots or list_room_targets." },
-      title: { type: "string", description: "A short one-line title, at most 80 characters." },
-      message: { type: "string", description: "Complete instructions; the recipient does not inherit this conversation." },
-    }, required: ["bot_id", "title", "message"] },
-  },
-  {
-    name: "check_delegation",
-    description: `${DEPRECATED_ALIAS("assignment_status(id)")} Reads one assignment's status without waiting. Results resume you on their own; use this in a later turn only when the person asks.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        task_id: { type: "string", description: "The assignment id a hand-off returned." },
-      },
-      required: ["task_id"],
-    },
-  },
-  {
-    name: "wait_delegation",
-    description: `${DEPRECATED_ALIAS("assignment_status(id, wait_ms)")} Holds for up to timeout_seconds (maximum 240) for one assignment to settle. Only a standing external runtime needs to wait; inside a turn, results resume you on their own.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        task_id: { type: "string", description: "The assignment id a hand-off returned." },
-        timeout_seconds: { type: "integer", description: "give up waiting after this many seconds; default 60, max 240" },
-      },
-      required: ["task_id"],
-    },
-  },
 ].map((tool) => {
   const annotations = agentToolAnnotations(tool.name);
   return annotations ? { ...tool, annotations } : tool;
@@ -1016,7 +951,7 @@ function catalogTools(profile: CatalogProfile) {
     });
   // start_thread opens a job on the bot itself; its schema says so with the
   // one id it accepts. A teammate's fresh thread is coordinate_bots thread
-  // "new" (the peer start_thread of older tool lists is an alias of that).
+  // "new".
   return ROLE_TOOLS.map(tool => tool.name === "start_thread" ? {
     ...tool,
     inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties,

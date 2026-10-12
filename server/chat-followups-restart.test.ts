@@ -215,11 +215,12 @@ it("survives a real server crash: queued sends keep receipts, cancellation and u
       expect.objectContaining({ role: "user", text: "Reply to a message that disappears", sender: PAIRED }),
     ]);
     expect((await api("POST", `/api/bots/${bot.id}/messages`, cancelledBody, 409)).error).toContain("cancelled");
-    // The crash cut the bot's turn: it runs again once, opening with the
-    // restart note, and the words held behind it run after it (not before).
-    expect(prompts(bot.threadId)).toHaveLength(3);
-    expect(JSON.stringify(prompts(bot.threadId)[1].message.content)).toContain("OpenMausBot restarted while your previous turn here was running");
-    expect(prompts(bot.threadId)[2].message.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image" })]));
+    // The crash cut the bot's turn while the person's next words waited
+    // behind it: the restart policy ends that cut turn with the interrupted
+    // line instead of rerunning it (#2735: the pending words carry the
+    // conversation on), and the held line runs once.
+    expect(prompts(bot.threadId)).toHaveLength(2);
+    expect(prompts(bot.threadId)[1].message.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image" })]));
 
     await expect.poll(async () => (await messages(channel.threadId)).filter((message) => message.sendId === channelBody.sendId).length, { timeout: 15_000 }).toBe(1);
     expect((await api("POST", `/api/groups/${channel.id}/messages`, channelBody, 202)).message).toMatchObject({
@@ -235,16 +236,15 @@ it("survives a real server crash: queued sends keep receipts, cancellation and u
       expect.objectContaining({ kind: "activity", tool: { name: expect.stringContaining("Review the result"), ok: false } }),
     ]);
     expect((await api("POST", `/api/bots/${uncertain.id}/messages`, uncertainBody, 202)).message.queueId).toBe(claimed.queueId);
-    // The claim itself is never replayed (one user line, one notice); the cut
-    // turn runs again once, opening with the restart note, and not again on
-    // a second boot.
-    expect(prompts(later.threadId)).toHaveLength(2);
-    expect(JSON.stringify(prompts(later.threadId)[1].message.content)).toContain("OpenMausBot restarted while your previous turn here was running");
+    // The claim itself is never replayed (one user line, one notice) and
+    // neither is its cut turn: a dispatched follow-up was that turn, so the
+    // restart policy ends it silently (#2735) and nothing runs again.
+    expect(prompts(later.threadId)).toHaveLength(1);
     // A second boot must not duplicate recovery notices or replay a claim.
     await waitForExit(restarted, { signal: "SIGTERM" });
     await restart();
     expect((await messages(later.threadId)).filter((message) => message.queueId === claimed.queueId)).toEqual(interrupted.filter((message) => message.queueId === claimed.queueId));
-    expect(prompts(later.threadId)).toHaveLength(2);
+    expect(prompts(later.threadId)).toHaveLength(1);
     evidence.push({ settled, channelSettled, journal: journal(), recoveredBot: await messages(bot.threadId), recoveredChannel: await messages(channel.threadId), interrupted });
   } finally {
     await waitForExit(restarted, { signal: "SIGTERM" });

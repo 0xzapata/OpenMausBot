@@ -18,8 +18,8 @@ import { openSse } from "./testing/sse.ts";
 //     dot, the section count, the dock badge and the phone's Updates row all
 //     opened a transcript where nothing had happened;
 //   • bot-to-bot coordination raised badges and OS banners for the hop
-//     behind one answer. A consultation (coordinate_bots with consult, or
-//     the ask_bot alias) is an assignment on the job runtime
+//     behind one answer. A consultation (coordinate_bots with consult) is
+//     an assignment on the job runtime
 //     (docs/runtime-contract.md §9): it runs in a work thread the asker's
 //     conversation has with the peer, never in the thread the person types
 //     into, and its answer resumes the asker.
@@ -388,12 +388,11 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
     try {
       const asked = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: peer.id, message: "Vellum, is the branch green?" },
+        "/api/internal/coordinate-bots",
+        { botIds: [peer.id], message: "Vellum, is the branch green?", consult: true },
         await capability(asker.id, asker.threadId),
       );
       expect(asked.status, JSON.stringify(asked.body)).toBe(200);
-      expect(asked.body.deprecation).toContain("ask_bot is replaced by coordinate_bots(consult: true)");
       expect(asked.body.receipts[0]).toMatchObject({ botId: peer.id, outcome: "queued" });
       const consult = await consultation(asked.body.receipts[0].requestId);
       expect(consult.threadId).not.toBe(peer.threadId);
@@ -429,8 +428,8 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
       })).status).toBe(200);
       const asked = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: peer.id, message: "Folio, still there?" },
+        "/api/internal/coordinate-bots",
+        { botIds: [peer.id], message: "Folio, still there?", consult: true },
         await capability(asker.id, asker.threadId),
       );
       expect(asked.status, JSON.stringify(asked.body)).toBe(200);
@@ -467,8 +466,8 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
     const stream = await openSse(`${base}/api/events`);
     const asking = api(
       "POST",
-      "/api/internal/ask-bot",
-      { fromBotId: asker.id, toBotId: peer.id, message: "Dot, can you take the deploy?" },
+      "/api/internal/coordinate-bots",
+      { botIds: [peer.id], message: "Dot, can you take the deploy?", consult: true },
       await capability(asker.id, asker.threadId),
     );
     try {
@@ -513,8 +512,8 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
       // its card in the work thread the consultation opened.
       const asked = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: peer.id, message: "Sage, which colour?" },
+        "/api/internal/coordinate-bots",
+        { botIds: [peer.id], message: "Sage, which colour?", consult: true },
         await capability(asker.id, asker.threadId),
       );
       expect(asked.status, JSON.stringify(asked.body)).toBe(200);

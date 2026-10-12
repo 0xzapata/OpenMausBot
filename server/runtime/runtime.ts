@@ -44,6 +44,8 @@ export interface BeginRequest {
   level: Level;
   /** Default "resume"; external runtimes use "poll". */
   reply?: Reply;
+  /** The room goal run this turn is a step of (types.ts Assignment.goalRunId). */
+  goalRunId?: string;
 }
 
 const BRIEF_MAX = 12_000;
@@ -162,6 +164,7 @@ export class Runtime {
       mode: "work", reply: req.reply ?? "resume", brief: clip(req.brief, BRIEF_MAX), status: "running",
       level: req.level, levelSource: "own", executions: 1, restarts: 0, createdAt: now, startedAt: now, lastActivityAt: now,
       result: "", rework: false, budgets: { since: now, requests: 0, executions: 1, wakes: 0 }, version: 1,
+      ...(req.goalRunId ? { goalRunId: req.goalRunId } : {}),
     };
     this.store.transaction(() => {
       this.store.insert(root, { kind: "enqueued", at: now, detail: "queued: root" });
