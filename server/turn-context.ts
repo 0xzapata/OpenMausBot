@@ -12,7 +12,9 @@ export const NATIVELY_REPLAYING_DRIVER_KINDS: readonly DriverKind[] = ["grok", "
 export interface TurnContextInput {
   /** the user's new message */
   text: string;
-  /** settled text turns on the active branch, oldest first, capped upstream */
+  /** settled text turns on the active branch, oldest first, capped upstream;
+   * with context.replayToolHistory on, also a line per earlier tool call
+   * (server/context-rebuild.ts) */
   transcript: Array<{ role: "user" | "assistant"; text: string }>;
   /** the visible branch changed (edit / version switch) */
   rewound: boolean;

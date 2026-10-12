@@ -63,6 +63,38 @@ Each API fixture retains exact requests, waits and bounded transcripts in
 `<server-log>.context.json`, prints that location, and closes its exact child and
 temporary home. No live account, computer or user workspace is touched.
 
+## Tool history in a rebuilt session
+
+A session rebuilt from the inline replay (an engine switched in mid-thread, a
+rewind, a session the provider lost, a compaction) is sent what was said. With
+`context.replayToolHistory: true` in config.json, or `OMB_REPLAY_TOOL_HISTORY=1`
+in the server's environment (`0` forces it off), that replay also names each
+earlier tool call on one line, between the two messages it ran between, as
+`[ran: Bash: pnpm test — failed]`. It is off by default, and off the replay is
+byte-for-byte what it was.
+
+```sh
+pnpm exec vitest run server/replay-tool-history.e2e.test.ts
+pnpm exec vitest run server/context-rebuild.test.ts server/turn-context.test.ts server/config.test.ts
+```
+
+The fixture's engine makes two tool calls a turn. The test rewinds with
+`control-omb edit` and reads the prompt the engine received: no such line while
+the setting is off, both lines in order once it is on, and the plain message for
+every turn that resumes its session. It then switches the bot to the fixture's
+Codex and reads what that engine was sent: the lines for each of Claude's turns.
+Its evidence is `<server-log>.replay-tools.json`.
+
+A line shows what the call's chip shows in the chat (the tool, and the command
+beside it) and `ok`, `failed` or `no result recorded`; never a tool result or
+the input preview. It is redacted, then clipped to 120 characters. At most 20
+lines are sent, the most recent, only for calls between the first and last
+replayed message, and only from the bytes of `rebuildBytes` that messages left
+unused: the messages selected are the same with the setting on or off. Engines
+that replay natively (API models sent the transcript itself) and room turns are
+unchanged. A file tool whose chip shows no path (Claude Code's `Read` and
+`Edit`, Pi's `read`, Codex's `edit`) is named without one.
+
 ## Bounds and limitations
 
 `context` settings in config.json are optional. `autoCompact: false` disables

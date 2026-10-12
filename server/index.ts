@@ -16,7 +16,7 @@ import { extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
 
 import { z } from "zod";
-import { selectReplay, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
+import { selectReplay, replayToolCalls, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
 import { draftSummary, foldPoint } from "./compaction-summary.ts";
 import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
@@ -11254,8 +11254,8 @@ async function startTurn(
       const contextOrder = context.map(m => m.id);
       const replayable = context.filter(m => !skipTranscript.has(m.id));
       const record = latestCompaction(activeMessages);
-      const selection = selectReplay(context, { budgetBytes: cfg.context?.rebuildBytes ?? DEFAULT_REBUILD_BYTES, excludedIds: skipTranscript, compaction: record });
-      const transcript = selection.transcript.map(({ role, text }) => ({ role, text }));
+      const selection = selectReplay(context, { budgetBytes: cfg.context?.rebuildBytes ?? DEFAULT_REBUILD_BYTES, excludedIds: skipTranscript, compaction: record, tools: replayToolCalls(activeMessages, cfg.context) });
+      const transcript = selection.transcript.map(({ role, text }) => ({ role, text })); // text only, for native replay; selection.inline may also name earlier tool calls
       const contextReset = selection.compacted > 0 && record?.id !== task.appliedCompactionId;
       // The record is durable even if a crash occurs before this bookkeeping.
       // A retry then sees the unapplied record again and rebuilds safely.
@@ -11337,7 +11337,7 @@ async function startTurn(
         const { block: unseenBlock, placed } = unseen && !handedStale ? renderUnseen(unseen) : { block: "", placed: [] };
         const { turnText: contextTurnText, resume } = buildTurnContext({
           text: userTurnText,
-          transcript,
+          transcript: selection.inline,
           rewound,
           fresh: fresh || contextReset,
           externallyUpdated: Boolean(externalContextMarker) || handedStale,
@@ -11354,8 +11354,8 @@ async function startTurn(
         // turn carrying an external update gets the replay it would have had.
         const recoveryIsReplay = resumeCursor !== undefined && externalUpdate && transcript.length > 0;
         const recoveryText = resumeCursor === undefined ? undefined : recoveryIsReplay
-          ? buildTurnContext({ text: userTurnText, transcript, rewound: false, fresh: false, externallyUpdated: true, replaysNatively: false }).turnText
-          : buildRecoveryText({ text: userTurnText, transcript });
+          ? buildTurnContext({ text: userTurnText, transcript: selection.inline, rewound: false, fresh: false, externallyUpdated: true, replaysNatively: false }).turnText
+          : buildRecoveryText({ text: userTurnText, transcript: selection.inline });
         // What this turn puts in front of the provider, for each session it can end
         // up in (server/delta-context.ts). buildTurnContext prepends a replay only
         // when it replays, so a changed text means the transcript was sent.
