@@ -370,7 +370,7 @@ import { ProPlan } from "./pro-plan.ts";
 import { recordLiveCall, spokenLineFields, titleLiveCall } from "./live-call-record.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
 import { turnStartLogLine } from "./turn-log.ts";
-import { TurnStops, stoppedTurnOutcome } from "./turn-outcome.ts";
+import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./turn-outcome.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
 import { extractTurnImages } from "./turn-images.ts";
@@ -2716,11 +2716,12 @@ const credentialUpdateText = (label: string, outcome: "provided" | "dismissed"):
   : `OpenMausBot credential update: the user declined to provide ${label}. Continue without it if possible, or briefly explain the limitation. Do not ask them to paste it into chat.`;
 
 /** The resumable cards a turn created on its thread (a team-setup review,
- * a connection request, a credential request), appended since `since`, that
- * nothing has continued from yet: what the turn's root parks on. A card the
- * person already acted on during the turn (a decision made, an app
- * connected, a key provided) is among them: the park is answered at once
- * (reconcileParkedRoot), which is the continuation the lane used to queue. */
+ * a connection request, a credential request, a sign-in request), appended
+ * since `since`, that nothing has continued from yet: what the turn's node
+ * parks on. A card the person already acted on during the turn (a decision
+ * made, an app connected, a key provided, a sign-in done) is among them:
+ * the park is answered at once (reconcileParkedNode), which is the
+ * continuation the lane used to queue. */
 function resumableCards(threadId: string, since: number): Array<{ id: string; waits: string }> {
   const open: Array<{ id: string; waits: string }> = [];
   const path = store.activePath(threadId).filter((message) => message.at >= since);
@@ -2738,41 +2739,62 @@ function resumableCards(threadId: string, since: number): Array<{ id: string; wa
     const secret = message.secret;
     if (secret && !secret.resumed && !secret.superseded) {
       open.push({ id: message.id, waits: `provide ${secret.label}` });
+      continue;
+    }
+    const signIn = message.signIn;
+    if (signIn && !signIn.resumed && !signIn.superseded) {
+      open.push({ id: message.id, waits: `sign in to ${signIn.site}` });
     }
   }
   return open;
 }
 
-/** Roots parked on cards by this process, to look at once on the next
- * tick: a card the person already acted on answers its park right away. */
-const parkedRootsToReconcile = new Set<string>();
+/** The activity rows of a node's current execution: the thread's chosen
+ * branch since that execution began. What the evidence of the turn and the
+ * restart policy's outward port read. */
+function turnRows(node: HandoffView): Message[] {
+  const since = node.startedAt ?? node.createdAt;
+  return store.activePath(node.threadId).filter((message) => message.at >= since);
+}
 
-/** A root parked on cards the person already acted on runs again now with
- * the lane's line; the cards get the flags the live paths write (once). A
- * card still open leaves the root parked. True when the root was answered. */
-function reconcileParkedRoot(root: HandoffView): boolean {
-  if (root.parentId || root.groupId || root.status !== "waiting" || !root.cards?.length) return false;
-  const messages = store.messagesFor(root.threadId);
-  for (const id of root.cards) {
+/** Direct nodes parked on cards by this process, to look at once on the
+ * next tick: a card the person already acted on answers its park right away. */
+const parkedNodesToReconcile = new Set<string>();
+
+/** A direct node (a root, or a teammate's turn in its own thread) parked on
+ * cards the person already acted on runs again now with the lane's line;
+ * the cards get the flags the live paths write (once). A card still open
+ * leaves the node parked. True when the node was answered. */
+function reconcileParkedNode(node: HandoffView): boolean {
+  if (node.groupId || node.status !== "waiting" || !node.cards?.length) return false;
+  const messages = store.messagesFor(node.threadId);
+  for (const id of node.cards) {
     const message = messages.find((item) => item.id === id);
     if (!message) continue;
     const request = message.card?.teamSetupRequest;
     if (request?.result) {
-      if (!coordinator.answerRoot(root.id, teamSetupDecisionText(request))) return false;
-      if (!request.resumed) store.patchMessage(root.threadId, message.id, { card: { ...message.card!, teamSetupRequest: { ...request, resumed: true } } });
+      if (!coordinator.answerNode(node.id, teamSetupDecisionText(request))) return false;
+      if (!request.resumed) store.patchMessage(node.threadId, message.id, { card: { ...message.card!, teamSetupRequest: { ...request, resumed: true } } });
       return true;
     }
     if (message.connector) {
-      const cards = connectorCards(root.threadId, message.connector.resumeKey);
+      const cards = connectorCards(node.threadId, message.connector.resumeKey);
       if (cards.some((item) => item.connector?.dismissed || item.connector?.status !== "connected")) continue;
-      if (!coordinator.answerRoot(root.id, connectionUpdateText(cards.map((item) => item.connector!.label)))) return false;
-      for (const item of cards) store.patchMessage(root.threadId, item.id, { connector: { ...item.connector!, resumed: true, error: undefined } });
+      if (!coordinator.answerNode(node.id, connectionUpdateText(cards.map((item) => item.connector!.label)))) return false;
+      for (const item of cards) store.patchMessage(node.threadId, item.id, { connector: { ...item.connector!, resumed: true, error: undefined } });
       return true;
     }
     const secret = message.secret;
     if (secret && !secret.superseded && (secret.provided || secret.dismissed)) {
-      if (!coordinator.answerRoot(root.id, credentialUpdateText(secret.label, secret.provided ? "provided" : "dismissed"))) return false;
-      if (!secret.resumed) store.patchMessage(root.threadId, message.id, { secret: { ...secret, resumed: true, error: undefined } });
+      if (!coordinator.answerNode(node.id, credentialUpdateText(secret.label, secret.provided ? "provided" : "dismissed"))) return false;
+      if (!secret.resumed) store.patchMessage(node.threadId, message.id, { secret: { ...secret, resumed: true, error: undefined } });
+      return true;
+    }
+    const signIn = message.signIn;
+    const signedIn = signIn && !signIn.superseded ? signInOutcome(signIn) : null;
+    if (signIn && signedIn) {
+      if (!coordinator.answerNode(node.id, signInResumePrompt(signIn.site, signedIn))) return false;
+      if (!signIn.resumed) store.patchMessage(node.threadId, message.id, { signIn: { ...signIn, resumed: true, error: undefined } });
       return true;
     }
   }
@@ -2780,21 +2802,26 @@ function reconcileParkedRoot(root: HandoffView): boolean {
 }
 
 /** What the runtime is told when a direct turn ends: the outcome as the
- * host read it, the seat the turn parked on (it continues when the seat
- * frees) and, for a root, the cards it left open (it parks on them). */
+ * host read it with what the harness saw of the execution (its evidence:
+ * the runtime's continuation guard and restart policy read it), the seat
+ * the turn parked on (it continues when the seat frees) and, for a root or
+ * a teammate's turn, the cards it left open (it parks on them; a parked
+ * teammate wakes its requester with "needs input", decision 2). A room
+ * member's turn is not a node yet (docs/runtime-contract.md §10 PR 5). */
 function hostTurnResult(node: HandoffView | undefined, generation: string, outcome: DirectTurnOutcome): DirectTurnOutcome {
   const seat = computerParks.get(generation);
   computerParks.delete(generation);
   if (!node) return outcome;
+  const result: DirectTurnOutcome = { ...outcome, evidence: { ...outcome.evidence, ...turnEvidence(turnRows(node)) } };
   if (seat) {
     parkedSeats.set(node.id, seat);
-    return { ...outcome, cap: { note: COMPUTER_FREE_NOTE } };
+    return { ...result, cap: { note: COMPUTER_FREE_NOTE } };
   }
-  if (outcome.cap || node.parentId || node.groupId) return outcome;
+  if (result.cap || node.groupId) return result;
   const cards = resumableCards(node.threadId, node.startedAt ?? node.createdAt);
-  if (!cards.length) return outcome;
-  parkedRootsToReconcile.add(node.id);
-  return { ...outcome, cards: { question: `Waiting on the person: ${cards.map((card) => card.waits).join("; ")}`, ids: cards.map((card) => card.id) } };
+  if (!cards.length) return result;
+  parkedNodesToReconcile.add(node.id);
+  return { ...result, cards: { question: `Waiting on the person: ${cards.map((card) => card.waits).join("; ")}`, ids: cards.map((card) => card.id) } };
 }
 
 function settleDirectCoordination(generation: string | undefined, outcome: DirectTurnOutcome) {
@@ -2812,26 +2839,50 @@ function settleDirectCoordination(generation: string | undefined, outcome: Direc
   else coordinator.sourceSettled(generation, outcome.ok);
 }
 
-/** The person acted on a card a root parked on: the root runs its next
- * execution with the lane's line. True when the runtime took the answer, or
- * already had it (the root is queued on it); false when nothing is parked
- * on this card (a Stop cancelled it, or it already ran). */
-function answerCardRoot(threadId: string, messageId: string, text: string): boolean {
-  const root = coordinator.all().find((n) => !n.parentId && !n.groupId && n.threadId === threadId && n.cards?.includes(messageId))
-    ?? coordinator.parkedDirect(threadId);
-  if (!root) return false;
-  if (coordinator.answerRoot(root.id, text)) return true;
-  return root.status === "queued" && root.cards?.includes(messageId) === true;
+const ENDED: ReadonlySet<HandoffView["status"]> = new Set(["completed", "failed", "cancelled"]);
+
+/** The person acted on a card a direct node (a root, or a teammate's turn
+ * in its own thread) parked on: the node runs its next execution with the
+ * lane's line. True when the runtime took the answer, or already had it
+ * (the node is queued on it); false when nothing is parked on this card (a
+ * Stop cancelled it, or it already ran). */
+function answerCardNode(threadId: string, messageId: string, text: string): boolean {
+  const node = coordinator.all().find((n) => !n.groupId && n.threadId === threadId && n.cards?.includes(messageId) && !ENDED.has(n.status));
+  if (!node) return false;
+  if (coordinator.answerNode(node.id, text)) return true;
+  return node.status === "queued";
 }
 
-/** A root parked on this card with nothing else live in its thread, when
+/** A node parked on this card with nothing else live in its thread, when
  * the card can no longer be answered (dismissed): released, so the request
  * does not read as waiting forever. */
-function releaseCardRoot(threadId: string, messageId: string, reason: string): void {
-  const live = coordinator.all().filter((n) => !n.groupId && n.threadId === threadId && !["completed", "failed", "cancelled"].includes(n.status));
-  const root = live.find((n) => !n.parentId && n.cards?.includes(messageId) && n.status === "waiting");
-  if (!root || live.length !== 1 || coordinator.children(root.id).some((child) => !["completed", "failed", "cancelled"].includes(child.status))) return;
+function releaseCardNode(threadId: string, messageId: string, reason: string): void {
+  const live = coordinator.all().filter((n) => !n.groupId && n.threadId === threadId && !ENDED.has(n.status));
+  const node = live.find((n) => n.cards?.includes(messageId) && n.status === "waiting");
+  if (!node || live.length !== 1 || coordinator.children(node.id).some((child) => !ENDED.has(child.status))) return;
   coordinator.cancelDirect(threadId, reason);
+}
+
+/** Stop means stop (decision 4): the cards a node parked in this thread
+ * waits on (or is queued on, its answer taken) offer no action any more.
+ * Their facts can still be written afterwards (a key saved, an app
+ * connected, a sign-in done) and start nothing: the node is cancelled, so no
+ * answer finds it. A team-setup card is closed by closeOpenApprovals
+ * (answered "unavailable"), as before. Read before the Stop cancels the
+ * node, which is when the cards are still its own. */
+function stopParkedCards(threadId: string): void {
+  const ids = new Set<string>();
+  for (const node of coordinator.all()) {
+    if (node.groupId || node.threadId !== threadId || !(node.status === "waiting" || node.status === "queued")) continue;
+    for (const id of node.cards ?? []) ids.add(id);
+  }
+  if (!ids.size) return;
+  for (const message of store.messagesFor(threadId)) {
+    if (!ids.has(message.id)) continue;
+    if (message.secret) store.patchMessage(threadId, message.id, { secret: { ...message.secret, stopped: true } });
+    else if (message.connector) store.patchMessage(threadId, message.id, { connector: { ...message.connector, stopped: true } });
+    else if (message.signIn) store.patchMessage(threadId, message.id, { signIn: { ...message.signIn, stopped: true } });
+  }
 }
 
 /** A direct root in this thread the runtime still owes something: parked on
@@ -3115,7 +3166,9 @@ async function interruptDirectThread(botId: string, threadId: string): Promise<v
   // and this conversation stops awaiting its teammates, so nothing resumes
   // into a stopped chat; assignments that never started are dropped. A
   // teammate already mid-turn keeps its own provider process, finishes, and
-  // its result is still recorded here.
+  // its result is still recorded here. The cards a parked node waits on
+  // offer no action any more (decision 4).
+  stopParkedCards(threadId);
   noteTeammatesLeftRunning(botId, threadId, coordinator.stopAwaitingDirect(threadId));
   const owner = botForThread(botId, threadId);
   const generation = directTurnGenerationByThread.get(threadId);
@@ -5417,7 +5470,12 @@ const coordinator: Coordinator = createCoordinator({
         if (child.outcome === "stopped") return;
         const room = child.groupId ? store.group(child.groupId) : undefined;
         if (child.groupId ? !room || !store.groupTaskByThread(room.id, child.threadId) : !store.taskByThread(child.botId, child.threadId)) return;
-        store.appendMessage(child.threadId, { role: "bot", kind: "activity", tool: failedTurnTool(child.result) });
+        // A restart that found an outward action done ends the turn instead
+        // of running it again (contract §5): the line says what was done.
+        // Its shape is the failed-turn row's, so Retry (the last row's)
+        // re-sends the person's request, as after any failed turn.
+        const cause = child.outcome === "interrupted" && child.outcomeDetail ? child.outcomeDetail : child.result;
+        store.appendMessage(child.threadId, { role: "bot", kind: "activity", tool: failedTurnTool(cause) });
         if (room) store.patchGroup(room.id, { unread: true });
         else store.patchTask(child.botId, child.threadId, { unread: true });
         return;
@@ -5643,6 +5701,10 @@ const coordinator: Coordinator = createCoordinator({
       return { level: approvalModeForTurn(running, true, target.threadId), driverKind: registry.cliTarget(running.modelSelection.instanceId)?.driverKind };
     },
     chiefOf: address => Boolean(store.bot(address.botId)?.chiefOfStaff),
+    // The restart policy's port (docs/runtime-contract.md §5): what the cut
+    // turn of this node already did outward, from the rows its execution
+    // left in the thread. Labels mean no rerun: the turn ends with them.
+    outward: node => outwardActions(turnRows(node)),
   },
 });
 // "Teammates working": work this conversation handed out and still awaits
@@ -10349,9 +10411,10 @@ async function startTurn(
   // the drain is nudged as its own error path does (M2 in drainQueuedSends).
   const personLine = !opts?.coordination && !opts?.cardContinuation && !opts?.automationSource && !opts?.compactOnly
     && !opts?.computerSelectionContinuation && !opts?.editedMessageId && !commsDepth && !opts?.peerAsk && !userMessage.peerAsk;
-  // A root parked on the person's own cards takes no typed line: the line
-  // starts a new root, and the cards stay answerable (decision 3).
-  if (personLine && !coordinator.parkedDirect(threadId)?.cards?.length && coordinator.answer(threadId, text)) {
+  // A node parked on the person's own cards (a root, a teammate's turn)
+  // takes no typed line: the line starts a new turn, and the cards stay
+  // answerable (decision 3); the runtime's answer() skips such a park.
+  if (personLine && coordinator.answer(threadId, text)) {
     store.appendMessage(threadId, { role: "bot", kind: "activity", tool: { name: "Answer passed to the waiting work", ok: true } });
     opts?.onTurnSettled?.();
     queueMicrotask(drainQueuedSends);
@@ -11993,7 +12056,9 @@ routines = new RoutineManager({
     revokeInternalCapabilitiesForThread(threadId);
     // The person stopped the run: as with a chat's Stop, its node stops
     // being awaited (work that never started is dropped, a teammate mid-turn
-    // finishes and reports, nothing resumes the stopped run).
+    // finishes and reports, nothing resumes the stopped run) and the cards
+    // it parked on offer no action any more (decision 4).
+    stopParkedCards(threadId);
     noteTeammatesLeftRunning(botId, threadId, coordinator.stopAwaitingDirect(threadId));
     try {
       await runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId);
@@ -12610,7 +12675,7 @@ function queueRoomComputerResume(groupId: string, threadId: string, bot: BotReco
     } });
 }
 /** The person acted on a card: the conversation goes on with the lane's
- * line. A direct thread answers the root parked on the card (the runtime
+ * line. A direct thread answers the node parked on the card (the runtime
  * runs its next execution); a room re-runs its member. True when the
  * runtime (or the room) took it. */
 function continueAfterCard(botId: string, threadId: string, messageId: string, prompt: string, failed: (error: string) => void): boolean {
@@ -12620,7 +12685,7 @@ function continueAfterCard(botId: string, threadId: string, messageId: string, p
     queueRoomCardResume(`${threadId}:${messageId}`, { groupId: owner.group.id, threadId, botId, prompt, failed });
     return true;
   }
-  return answerCardRoot(threadId, messageId, prompt);
+  return answerCardNode(threadId, messageId, prompt);
 }
 async function resolveAndSendTeamSetup(res: ServerResponse, args: { botId: string; threadId: string; requestId: string; behavior: string }, ownerReview: boolean): Promise<boolean> {
   const card = store.messagesFor(args.threadId).find((item) => item.card?.requestId === args.requestId && item.card.teamSetupRequest)?.card;
@@ -13014,12 +13079,12 @@ const roomHandoffTimer = setInterval(() => {
       runtimePrunedAt = Date.now();
       coordinator.prune(Date.now() - RUNTIME_KEEP_MS);
     }
-    for (const id of parkedRootsToReconcile) {
-      const root = coordinator.node(id);
-      if (!root || root.status === "completed" || root.status === "failed" || root.status === "cancelled") { parkedRootsToReconcile.delete(id); continue; }
-      if (root.status !== "waiting" || !root.cards?.length) continue;
-      parkedRootsToReconcile.delete(id);
-      reconcileParkedRoot(root);
+    for (const id of parkedNodesToReconcile) {
+      const node = coordinator.node(id);
+      if (!node || ENDED.has(node.status)) { parkedNodesToReconcile.delete(id); continue; }
+      if (node.status !== "waiting" || !node.cards?.length) continue;
+      parkedNodesToReconcile.delete(id);
+      reconcileParkedNode(node);
     }
     coordinator.tick();
   } catch (error) { console.error("coordinator:", error); }
@@ -13032,7 +13097,7 @@ roomHandoffTimer.unref();
  * still open stays answerable. Writes the cards' flags the live paths write,
  * once (decision 14). */
 function reconcileParkedRoots(): void {
-  for (const root of coordinator.all()) reconcileParkedRoot(root);
+  for (const node of coordinator.all()) reconcileParkedNode(node);
 }
 // The room-context window IS the drain's coalescing cap: a burst longer
 // than the window would append transcript lines the responder never reads,
@@ -25638,7 +25703,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         store.patchMessage(threadId, message.id, { connector: { ...connector, dismissed: true } });
         // The request will not be completed: a root waiting on nothing else
         // is released, so the conversation does not read as waiting forever.
-        releaseCardRoot(threadId, message.id, "The connection request was dismissed");
+        releaseCardNode(threadId, message.id, "The connection request was dismissed");
         return json(res, 200, { dismissed: true });
       }
       return json(res, 405, { error: "method not allowed" });
@@ -26048,17 +26113,27 @@ if (TUNNEL_SOCKET) {
 /** A quit, update or restart cuts every turn still running, and no
  * turn.completed reaches those threads. Each says so now, as a provider
  * reload's does, instead of leaving a message unanswered with no reason; the
- * line is all it adds (no unread, no push). A hand-off turn the next start
- * goes on with (the runtime's restart policy) is left to say so then:
- * a failed line with Retry there would start the job a second time. */
+ * line is all it adds (no unread, no push). A turn the runtime holds a root
+ * for is the runtime's to account for at the next start (contract §5): it
+ * runs again with the "Resuming after a restart" chip, or ends with the
+ * reason (cut twice, an outward action done), once, in its own thread; a
+ * line here would be a second account, and a failed line with Retry would
+ * start the job a second time. A teammate's thread the next start goes on
+ * with is left to say so then, as before. */
 function noteTurnsCutByShutdown(): void {
   for (const bot of store.bots) {
     for (const task of store.tasks(bot.id)) {
-      if (threadBusy(bot.id, task.threadId) && !coordinator.continuesAfterRestart(task.threadId)) {
+      if (threadBusy(bot.id, task.threadId) && !coordinator.continuesAfterRestart(task.threadId) && !runtimeHoldsRoot(task.threadId)) {
         store.appendMessage(task.threadId, { role: "bot", kind: "activity", tool: failedTurnTool("turn interrupted — OpenMausBot restarted") });
       }
     }
   }
+}
+
+/** A direct root in this thread the runtime still holds: what a restart
+ * does to it, the runtime says, in this thread, once. */
+function runtimeHoldsRoot(threadId: string): boolean {
+  return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId && !ENDED.has(n.status));
 }
 
 const gracefulShutdown = createGracefulShutdown({

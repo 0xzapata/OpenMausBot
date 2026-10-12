@@ -666,6 +666,9 @@ export interface ConnectorCardData {
   error?: string;
   dismissed?: boolean;
   resumed?: boolean;
+  /** Stop ended the turn this card paused: it offers no action, and a
+   * connection made afterwards is kept but continues nothing. */
+  stopped?: boolean;
 }
 
 export interface SecretRequestCardData {
@@ -684,6 +687,9 @@ export interface SecretRequestCardData {
   superseded?: boolean;
   resumed?: boolean;
   error?: string;
+  /** Stop ended the turn this card paused: it offers no entry, and a key
+   * saved afterwards is kept but continues nothing. */
+  stopped?: boolean;
 }
 
 /** A bot asked the person to sign in to a website themselves
@@ -705,6 +711,9 @@ export interface SignInRequestCardData {
   superseded?: boolean;
   resumed?: boolean;
   error?: string;
+  /** Stop ended the turn this card paused: it offers no Done or Cancel,
+   * and an answer given afterwards is kept but continues nothing. */
+  stopped?: boolean;
 }
 
 /** The open sign-in request a bot's computer plea stands for, so whichever

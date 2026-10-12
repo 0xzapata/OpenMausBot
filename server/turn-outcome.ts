@@ -13,8 +13,10 @@
 // it stops a turn itself, and reads it when a coordinated or delegated turn
 // settles; the wording is a pure function.
 import { errorTranscript } from "../shared/client-cancel.ts";
+import { isOutboundTool } from "../shared/outbound.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import { buildTurnDigest, digestTools } from "./digest.ts";
+import type { TurnEvidence } from "./runtime/types.ts";
 import type { Message } from "./store.ts";
 
 /** The longest cause an outcome repeats: a provider's HTML body or a stack
@@ -104,6 +106,64 @@ export function stoppedTurnOutcome(input: {
   }
   const said = input.said?.trim();
   return said ? `${parts.join(" ")}\nIts last message, quoted: ${JSON.stringify(said)}` : parts.join(" ");
+}
+
+/** A shell tool, by any engine's name for it: what it ran is in the row's
+ * input (the command) or its summary (the command on one line). */
+const SHELL_TOOL = /^(?:mcp__[\w-]+?__)?(?:bash|shell|exec|run_command|execute_command|run_shell_command|run_terminal_cmd|terminal|COMPOSIO_REMOTE_BASH_TOOL)$/i;
+/** A shell command that leaves something outside the working tree: a
+ * commit (history others pull) or a push. */
+const GIT_OUTWARD = /\bgit\s+(commit|push)\b/g;
+/** A shell command that moves money, by its words. */
+const MONEY_OUTWARD = /\b(pay|payment|charge|refund|transfer)\b/gi;
+/** The longest error text evidence keeps, and how many. */
+const ERROR_CHARS = 200;
+const ERRORS_KEPT = 3;
+
+/** A tool activity row of a turn: a bot's activity row with a tool. */
+const toolRows = (rows: readonly Message[]) =>
+  rows.filter((row) => row.role === "bot" && row.kind === "activity" && row.tool !== undefined);
+
+/** The outward actions a turn's activity rows show it completed — sends,
+ * posts, publishes, invites, payments (shared/outbound.ts) and shell
+ * commands that committed, pushed or paid — as short labels, each once, in
+ * order. The one classifier: the restart policy reads it to decide that a
+ * cut turn must not run again (docs/runtime-contract.md §5), and every
+ * turn's evidence carries it. Only rows that did not fail count: a refused
+ * send sent nothing. */
+export function outwardActions(rows: readonly Message[]): string[] {
+  const labels: string[] = [];
+  const add = (label: string) => { if (!labels.includes(label)) labels.push(label); };
+  for (const row of toolRows(rows)) {
+    const tool = row.tool!;
+    if (tool.ok === false) continue;
+    if (isOutboundTool(tool.name)) { add(tool.name); continue; }
+    if (!SHELL_TOOL.test(tool.name)) continue;
+    const command = [tool.input, tool.summary].filter((text): text is string => typeof text === "string").join("\n");
+    for (const git of command.matchAll(GIT_OUTWARD)) add(`git ${git[1]}`);
+    for (const money of command.matchAll(MONEY_OUTWARD)) add(money[1]!.toLowerCase());
+  }
+  return labels;
+}
+
+/** What the harness observed of one execution, from its activity rows:
+ * the tool calls that returned ok, the last few error texts, and the
+ * outward actions it completed. The runtime reads the first two for its
+ * continuation guard and the last for its restart policy. An error row is
+ * the harness's own line ("error: …") or a tool that failed; a failed
+ * tool's row is named for the tool, so its output's first line is kept
+ * beside the name, or three failed shell calls would read as one error
+ * three times. */
+export function turnEvidence(rows: readonly Message[]): TurnEvidence {
+  const tools = toolRows(rows);
+  const errors = tools.filter((row) => row.tool!.ok === false).map((row) => {
+    const tool = row.tool!;
+    const output = tool.itemId && typeof tool.output === "string" ? tool.output.split("\n").find((line) => line.trim()) : undefined;
+    return clip(output ? `${tool.name}: ${output}` : tool.name, ERROR_CHARS);
+  }).slice(-ERRORS_KEPT);
+  const okToolCalls = tools.filter((row) => row.tool!.ok !== false && row.tool!.itemId !== undefined).length;
+  const outward = outwardActions(rows);
+  return { toolCalls: tools.filter((row) => row.tool!.itemId !== undefined).length, okToolCalls, errors, ...(outward.length ? { outward } : {}) };
 }
 
 function clip(text: string, max: number): string {
