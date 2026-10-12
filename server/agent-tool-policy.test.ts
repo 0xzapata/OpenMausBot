@@ -9,6 +9,7 @@ describe("built-in agent tool read policy", () => {
       "list_shared_computers",
       "list_rooms",
       "list_threads",
+      "assignment_status",
       "check_delegation",
       "wait_delegation",
       "session_search",
