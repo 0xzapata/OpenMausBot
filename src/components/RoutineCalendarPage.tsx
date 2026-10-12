@@ -612,6 +612,7 @@ export function EventEditor({
     || attachments.length > 0
     || runOn === "cloud"
     || timeoutMinutes != null
+    || runOnStartup
     || overlap === "queue");
 
   useModalDialog(dialogRef, onClose);
