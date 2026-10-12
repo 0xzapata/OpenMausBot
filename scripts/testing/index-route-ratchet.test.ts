@@ -9,9 +9,10 @@ const EXACT: Record<string, number> = {
   // Internal harness routes have no server/routes module yet; moving them out is the follow-up that lowers this.
   // 160 with /api/internal/request-sign-in (#2707) and /api/internal/fill-login (saved logins),
   // minus the one-release alias routes (ask-bot, delegate-bot, delegations/:id) that went in PR 5;
-  // 157 once POST /api/bots moved to server/routes/bots-create.ts.
+  // 157 once POST /api/bots moved to server/routes/bots-create.ts; path.match( 88 -> 81 once the
+  // bot settings routes and PATCH /api/bots/:id moved to bot-settings.ts and bot-patch.ts.
   'path === "/': 157,
-  "path.match(": 88,
+  "path.match(": 81,
   "path.startsWith(": 11,
   ".exec(path)": 18,
   ".test(path)": 0,
