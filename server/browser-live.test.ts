@@ -563,17 +563,22 @@ describe("authenticated browser viewer relay", () => {
     await a.action({ type: "release" });
     await expect(a.action({ type: "take" })).rejects.toThrow("Choose Restart browser… in the browser menu");
   });
-  it("tells the panel when a take had to wait for the bot's own action", async () => {
+  it("tells the panel when a take had to wait for a bot command", async () => {
     runtime = new BrowserRuntime(); live = new BrowserLive({ runtime });
     const a = await open();
     expect(await a.action({ type: "take" })).toEqual({ ok: true, waited: false });
     await a.action({ type: "release" });
+    // A frame, not a bot command, held the browser: the person's input stands.
     let finish!: () => void;
-    const agent = runtime.withAgentAction("profile-a", () => new Promise<boolean>((resolve) => { finish = () => resolve(true); }));
-    const discarded = expect(agent).rejects.toThrow("paused");
+    const frame = runtime.previewFrame("profile-a", () => new Promise<boolean>((resolve) => { finish = () => resolve(true); }));
+    const discarded = expect(frame).rejects.toThrow("paused");
     const taking = a.action({ type: "take" });
     finish(); await discarded;
-    expect(await taking).toEqual({ ok: true, waited: true });
+    expect(await taking).toEqual({ ok: true, waited: false });
+    await a.action({ type: "release" });
+    // The runtime decides when a bot command was in the engine (browser-runtime.test.ts).
+    vi.spyOn(runtime, "take").mockResolvedValueOnce(true);
+    expect(await a.action({ type: "take" })).toEqual({ ok: true, waited: true });
   });
   it("releases Shift-only printable keys even when keyUp contains no text", async () => {
     const a = await open(); await a.action({ type: "take" });
