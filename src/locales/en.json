@@ -1281,6 +1281,7 @@
   "chat.emptyPrompt": "Send a message to start the conversation.",
   "chat.chiefOfStaff": "Chief of Staff",
   "chat.openProfile": "Open agent profile",
+  "chat.backToMainThread": "Back to your chat",
   "chat.openProfileAria": "Open {name}'s profile",
   "chat.find": "Find in conversation",
   "chat.findShortcut": "Find in conversation (⌘F)",

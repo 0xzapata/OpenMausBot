@@ -47,6 +47,8 @@ import {
   type InstanceInfo,
   type Message,
   type AppState,
+  awayFromMainThread,
+  openBot,
 } from "@/state/store";
 import { EngineSetup } from "./EngineSetup";
 import { CHATGPT_USAGE_URL } from "./ChatGptPlanStatus";
@@ -1475,6 +1477,19 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               hears when the bot starts working. */}
           <span role="status" className="sr-only" data-chathead-status>{bot.busy ? t("sidebar.preview.working") : ""}</span>
           {!bot.busy && bot.waitingForTeammates && <span className="truncate text-[12px] text-ink-secondary" role="status">Teammates working</span>}
+          {/* Threads hidden: a side thread is a visit (a notification, a chip
+              or an activity row opened it). One click goes back to the bot's
+              own conversation, so a stray click never strands the person. */}
+          {awayFromMainThread(profile, showThreads) && (
+            <button
+              type="button"
+              data-chathead-back
+              onClick={() => openBot(dispatch, profile, false)}
+              className="shrink-0 whitespace-nowrap rounded-full bg-raised px-2.5 py-0.5 text-[12px] font-medium text-ink-secondary hover:bg-raised-hover hover:text-ink"
+            >
+              {t("chat.backToMainThread")}
+            </button>
+          )}
         </div>
         <div
           data-chathead-controls

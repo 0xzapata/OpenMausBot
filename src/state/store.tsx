@@ -1468,6 +1468,13 @@ export function botOpensTo(bot: Pick<NotificationThreadOwner, "threadId" | "main
     ? bot.mainThreadId : bot.threadId;
 }
 
+/** With threads hidden the bot is one conversation, its main thread; a side
+ * thread a notification, a chip or an activity row opened is a visit, so the
+ * chat header offers the way back (ChatView). Never with threads shown. */
+export function awayFromMainThread(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): boolean {
+  return !threadsShown && botOpensTo(bot, false) !== bot.threadId;
+}
+
 /** Open a bot itself: its row, its pinned circle, the palette, the + menu,
  * ⌘1–9, the team map, a link to the bot, the bot a dead thread link falls
  * back to, the bot the app reopens at launch, Edit profile on another bot,
