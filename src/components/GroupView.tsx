@@ -88,6 +88,7 @@ import { pendingApprovals } from "./PendingApproval";
 import { DataResultChip } from "./DataResultChip";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { dayLabel, localDay } from "@/lib/transcript-derivations";
+import { roomSpeakerIds, roomThreadWorking } from "@/lib/room-threads";
 
 /** One finished tool step in a room. Same pill the 1:1 chat uses, minus the
  * status glyph — a room reads as a conversation, not a build log. A chip
@@ -381,7 +382,9 @@ export const Transcript = memo(function Transcript({
     message.kind !== "activity" || roomActivityVisible(message, showToolCalls))), [messages, showToolCalls]);
   const newestMessageId = messages.at(-1)?.id;
   const newestUserMessageId = [...messages].reverse().find((message) => message.role === "user")?.id;
-  const roomBusy = Boolean(group.busyBotId || group.working);
+  // the open thread's own turn: another thread working beside it leaves
+  // this one free to retry
+  const roomBusy = roomThreadWorking(group, group.threadId);
   let retryableId: string | undefined;
   let retryableIndex = -1;
   for (let index = transcript.length - 1; index >= 0; index -= 1) {
@@ -1163,6 +1166,10 @@ export function GroupView({ group }: { group: Group }) {
     [group.memberIds, state.bots],
   );
   const speaker = members.find((b) => b.id === group.busyBotId);
+  // The room's threads run side by side: what this view shows working is the
+  // open thread; members busy in another thread are marked apart below.
+  const threadWorking = roomThreadWorking(group, group.threadId);
+  const speakersElsewhere = new Set(roomSpeakerIds(group).filter((id) => id !== group.busyBotId));
   const setupPending = !remoteClient && roomNeedsSetup(group);
 
   // Mascot stays while a member works; the finished reply pops in above it.
@@ -1172,7 +1179,7 @@ export function GroupView({ group }: { group: Group }) {
   // A member busy elsewhere takes its turn when free; until then the room
   // works with no speaker, and the presence row names who it is waiting on.
   const awaited = members.find(
-    (b) => b.id === awaitedMemberId(group.working, group.busyBotId, lastGroupMessage),
+    (b) => b.id === awaitedMemberId(threadWorking, group.busyBotId, lastGroupMessage),
   );
   const waiting =
     Boolean(speaker && showWorkingDots(true, group.messages.at(-1), speaker.id)) || awaited !== undefined;
@@ -1214,14 +1221,14 @@ export function GroupView({ group }: { group: Group }) {
   const announcement = useMemo((): TranscriptSnapshot => {
     const approval = pendingApprovals(group.messages)[0];
     return {
-      busy: Boolean(group.working || group.busyBotId),
+      busy: threadWorking,
       reply: latestReply(group.messages, (m) => m.from?.name ?? group.name),
       failure: latestFailure(group.messages, (m) => m.from?.name ?? group.name),
       approval: approval
         ? { id: approval.requestId, name: approval.message.from?.name ?? speaker?.name ?? group.name }
         : undefined,
     };
-  }, [group.messages, group.working, group.busyBotId, group.name, speaker?.name]);
+  }, [group.messages, threadWorking, group.name, speaker?.name]);
   const presenceSpeaker =
     speaker ?? awaited ?? members.find((member) => member.id === popping?.botId) ?? members[0];
 
@@ -1266,16 +1273,18 @@ export function GroupView({ group }: { group: Group }) {
   // composer's PlaceChip live indicator.
   const memberMauses = members.map((b) => {
     const busy = group.busyBotId === b.id;
+    const busyElsewhere = !busy && speakersElsewhere.has(b.id);
     const task = b.tasks?.find((candidate) => candidate.threadId === group.threadId);
     const effective = busy ? effectivePlace(b, task) : "off";
     const showPlace = busy && effective !== "off" && effective !== "auto";
     return (
       <span
         key={b.id}
-        title={`${b.name}${busy ? " — working…" : ""}`}
+        title={busyElsewhere ? t("room.memberWorkingElsewhere", { name: b.name }) : `${b.name}${busy ? " — working…" : ""}`}
         className={cn(
           "relative inline-flex rounded-full",
           busy && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
+          busyElsewhere && "ring-1 ring-hairline ring-offset-1 ring-offset-app",
         )}
       >
         <BotAvatar bot={b} state={normalizeState(b.mascotExpression) ?? "happy"} size={24} animated={false} />
