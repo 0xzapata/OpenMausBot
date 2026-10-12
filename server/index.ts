@@ -2815,7 +2815,12 @@ function hostTurnResult(node: HandoffView | undefined, generation: string, outco
   const result: DirectTurnOutcome = { ...outcome, evidence: { ...outcome.evidence, ...turnEvidence(turnRows(node)) } };
   if (seat) {
     parkedSeats.set(node.id, seat);
-    return { ...result, cap: { note: COMPUTER_FREE_NOTE } };
+    // A seat wait is not work: whether the turn got anything done before it
+    // waited says nothing about progress, so the runtime's loop guard reads
+    // this execution as progress-unknown (never a no-progress strike). The
+    // only bound on a computer wait is the person's 30-minute hold (#2660).
+    const { okToolCalls: _unknown, ...evidence } = result.evidence ?? {};
+    return { ...result, evidence, cap: { note: COMPUTER_FREE_NOTE } };
   }
   if (result.cap || node.groupId) return result;
   const cards = resumableCards(node.threadId, node.startedAt ?? node.createdAt);
