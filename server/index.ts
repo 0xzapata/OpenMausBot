@@ -117,6 +117,7 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, effectiveRoomTurnTimeoutMinutes, parseConversationTurnTimeout, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { roomTurnEnd, type RoomClaimEnd } from "./room-turn-end.ts";
 import { applyHoldDirective, classifyHoldDirective, heldMemberLine, rememberHeldMessage, stopWordPlacement } from "./room-holds.ts";
+import { finishedWithoutSummaryLine, ROOM_SUMMARY_REASK, roomTurnNarrationIds, roomTurnReply } from "./room-reply.ts";
 import { pickComputer } from "./computer-selection.ts";
 import * as boat from "./boat.ts";
 import { cloudComputerRpc } from "./cloud-computer-tools.ts";
@@ -5683,6 +5684,9 @@ async function waitForGroupMemberBot(
 /** `${threadId}:${botId}` of a room turn interrupted because the person held
  * its speaker. The member's turn ends there; the round goes on without it. */
 const heldInterrupts = new Set<string>();
+/** `${threadId}:${botId}` of a member being re-asked for the result its
+ * turn did not post (one re-ask per turn). */
+const summaryReasks = new Set<string>();
 
 function roomHeld(group: GroupRecord | null | undefined, botId: string): boolean {
   return Boolean(group && !group.dm && group.holds?.[botId]);
@@ -12964,7 +12968,11 @@ function serializeRoomContext(
   const messages = store.messagesFor(threadId);
   const messagesById = new Map(messages.map((message) => [message.id, message]));
   const overrides = new Map(textOverrides?.map((override) => [override.messageId, override.text]));
+  // A settled member turn speaks to the room through its final message;
+  // its working notes are not its answer (room-reply.ts).
+  const narration = roomTurnNarrationIds(messages);
   return messages
+    .filter((m) => !narration.has(m.id))
     .filter((m) => (m.kind === "text" && m.text) || (m.kind === "digest" && m.digest) || m.roomRequest?.phase === "result")
     .slice(-GROUP_CONTEXT_MESSAGES)
     .map((m) => {
@@ -13786,7 +13794,10 @@ async function runClaimedGroupMemberTurn(
     }
     return false;
   }
-  let replyText = "";
+  // Every assistant message of this turn, in order. The room's reply is the
+  // final one (room-reply.ts); the rest are working notes.
+  const turnTexts: string[] = [];
+  let turnCompletedOk = false;
   let providerTurnId: string | undefined;
   let abandoned = false;
   const retirementOwner = `room-abandoned:${randomUUID()}`;
@@ -13834,8 +13845,9 @@ async function runClaimedGroupMemberTurn(
       if (shouldIgnoreProviderEvent(e)) return;
       if (e.threadId !== threadId) return;
       if (providerTurnId && e.turnId && e.turnId !== providerTurnId) return;
-      if (e.type === "item.completed" && e.itemType === "assistant_text") replyText += `\n${e.text}`;
+      if (e.type === "item.completed" && e.itemType === "assistant_text") turnTexts.push(e.text);
       else if (e.type === "turn.completed") {
+        turnCompletedOk = e.ok;
         const end = roomTurnEnd(e, Boolean(orchestration), roomClaimFailure);
         // An assignment's requester hears the runtime's cause, not "error".
         if (orchestration && end.stopReason !== undefined) {
@@ -13943,6 +13955,8 @@ async function runClaimedGroupMemberTurn(
   // work so a retained proxy from this member cannot act during the next
   // member's generation.
   revokeInternalCapabilityGeneration(threadId, internalGeneration);
+  // The room hears the turn's final message, never its working notes.
+  const replyText = roomTurnReply(turnTexts);
   // The person held this member while it worked: its turn ends here and
   // the round goes on to the next member.
   const heldMidTurn = heldInterrupts.delete(`${threadId}:${bot.id}`);
@@ -13950,7 +13964,10 @@ async function runClaimedGroupMemberTurn(
   if (!retainRoomVmLease) releaseRoomVmLease();
   roomHandoffSourceSucceeded = outcome === "settled";
   if (orchestration) {
-    orchestration.result.replyText = unansweredApprovals.annotate(threadId, providerTurnId, replyText.trim(), outcome === "settled");
+    // An orchestrated turn keeps every assistant message: a goal
+    // coordinator's private decision envelope may span several of them, and
+    // its parser reads the whole turn.
+    orchestration.result.replyText = unansweredApprovals.annotate(threadId, providerTurnId, turnTexts.map((text) => `\n${text}`).join("").trim(), outcome === "settled");
     orchestration.result.outcome = outcome;
   }
   // A timed-out provider still owns the room thread until its interrupt
@@ -14040,6 +14057,48 @@ async function runClaimedGroupMemberTurn(
   if (outcome === "provider_failed" || outcome === "parked") {
     if (skillAuthoring) skillAuthoringClaim.claimed = false;
     return false;
+  }
+
+  // A chat turn that settled without a final message leaves the room with
+  // nothing to read. Say so, and ask once for a short result: the re-ask is
+  // the member's own next turn, so it answers with what it just did.
+  if (
+    !orchestration &&
+    outcome === "settled" &&
+    turnCompletedOk &&
+    !replyText &&
+    !isCancelled?.() &&
+    !roomHeld(store.group(group.id), bot.id)
+  ) {
+    const reaskKey = `${threadId}:${bot.id}`;
+    const reasking = !summaryReasks.has(reaskKey);
+    store.appendMessage(threadId, {
+      role: "bot",
+      kind: "activity",
+      from: { botId: bot.id, name: bot.name, color: bot.color },
+      tool: { name: finishedWithoutSummaryLine(bot.name, reasking), ok: false },
+    });
+    if (!reasking) return true;
+    summaryReasks.add(reaskKey);
+    try {
+      return await runGroupMemberTurn(
+        groupId,
+        threadId,
+        bot.id,
+        hop,
+        spoken,
+        ROOM_SUMMARY_REASK,
+        onDispatchError,
+        isCancelled,
+        onProviderHandshakeStarted,
+        onProviderHandshakeSettled,
+        skillAuthoringClaim,
+        undefined,
+        operation,
+      );
+    } finally {
+      summaryReasks.delete(reaskKey);
+    }
   }
 
   // chained mentions: a member's reply can summon teammates — one hop only
@@ -14582,7 +14641,11 @@ function startGroupTurn(
   const autoCandidate = !group.dm && channelMode === "chat" && group.defaultResponder.kind === "auto" &&
     deciderReady(cfg, "roomRouting");
   const historyBeforeSend = autoCandidate
-    ? store.messagesFor(threadId).filter((m) => m.kind === "text" && m.text).slice(-GROUP_CONTEXT_MESSAGES)
+    ? (() => {
+        const before = store.messagesFor(threadId);
+        const narration = roomTurnNarrationIds(before);
+        return before.filter((m) => m.kind === "text" && m.text && !narration.has(m.id)).slice(-GROUP_CONTEXT_MESSAGES);
+      })()
     : [];
   // A coalesced drain appends every queued line under its own queueId (the
   // chips and sendId receipts stay per-item); the LAST line is the turn's

@@ -65,7 +65,8 @@ import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { ManageMembersPanel } from "./ManageMembersPanel";
-import { groupActivityRuns, isStatusActivity } from "@/lib/activity-runs";
+import { groupActivityRuns, isStatusActivity, roomTurnFolds } from "@/lib/activity-runs";
+import { TurnNarrationRun } from "./TurnNarrationRun";
 import { ActivityRun } from "./ActivityRun";
 import { useDesktopCapabilities, useCaptionChrome } from "./DesktopCapabilities";
 import { cn } from "@/lib/cn";
@@ -351,6 +352,7 @@ function RoomTextMessage({
 export const Transcript = memo(function Transcript({
   group,
   members,
+  locale,
   messages,
   transcript,
   emergingId,
@@ -376,10 +378,15 @@ export const Transcript = memo(function Transcript({
   const showThreads = useShowThreads();
   const showToolCalls = showToolCallsEnabled(state.config);
   const memberOf = (id?: string) => members.find((b) => b.id === id);
+  // A settled member turn reads as its final message: its working notes
+  // fold into one reversible row above it, as in a 1:1 chat. The locale
+  // refreshes the row's label when the language changes.
+  const folds = useMemo(() => roomTurnFolds(messages), [messages, locale]);
   // Several bots working at once turn a room into a wall of chips; fold the
   // finished ones the same way a 1:1 chat does.
   const items = useMemo(() => groupActivityRuns(messages.filter(message =>
-    message.kind !== "activity" || roomActivityVisible(message, showToolCalls))), [messages, showToolCalls]);
+    !folds.hiddenIds.has(message.id) &&
+    (message.kind !== "activity" || roomActivityVisible(message, showToolCalls)))), [messages, showToolCalls, folds]);
   const newestMessageId = messages.at(-1)?.id;
   const newestUserMessageId = [...messages].reverse().find((message) => message.role === "user")?.id;
   // the open thread's own turn: another thread working beside it leaves
@@ -536,6 +543,7 @@ export const Transcript = memo(function Transcript({
             )
           ) : null;
         if (!row) return divider && <div key={m.id} className="contents">{divider}</div>;
+        const fold = folds.byTerminalId.get(m.id);
         return (
           <div key={m.id} className="contents" data-mid={m.id}>
             {newDay && (
@@ -544,6 +552,26 @@ export const Transcript = memo(function Transcript({
               </div>
             )}
             {divider}
+            {fold && (
+              <TurnNarrationRun
+                label={fold.label}
+                forceOpen={fold.messages.some((note) => note.id === focusedId)}
+              >
+                {fold.messages.map((note) => (
+                  <div key={note.id} className="contents" data-mid={note.id}>
+                    <RoomTextMessage
+                      group={group}
+                      message={note}
+                      members={members}
+                      transcript={transcript}
+                      emerging={false}
+                      eager={false}
+                      onReply={onReply}
+                    />
+                  </div>
+                ))}
+              </TurnNarrationRun>
+            )}
             {m.from && (
               (m.kind === "text" && botTextShowsSpeaker(items, i))
               || (!user && m.kind !== "text" && newCluster && !(m.kind === "activity" && m.comm) && !laterTextOwns(items, i, m.from.botId, m.at))

@@ -9,9 +9,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { freePortBlock } from "./testing/ports.ts";
 
-// "stop @Bot" holds one room member, through a real server and the fake
-// Claude CLI: its running turn ends, every route skips it, the hold is saved,
-// and "@Bot …" or Resume brings it back with what addressed it meanwhile.
+// Two room features through a real server and the fake Claude CLI:
+//  - "stop @Bot" holds one member (its running turn ends, every route skips
+//    it, the hold is saved) until "@Bot …" or Resume brings it back, with
+//    what addressed it meanwhile;
+//  - a member's room reply is its turn's final message: earlier working
+//    notes summon nobody, and a turn that ends without one is re-asked once.
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
@@ -66,6 +69,18 @@ beforeAll(async () => {
       // echoes the prompt it was given
       patient: fixture("Patient fixture", { FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_SLOW_FINISH_GATE: slowGate }),
       quick: fixture("Quick fixture", { FAKE_CLAUDE_MODE: "happy" }),
+      // a working note that names a teammate, then the actual answer
+      narrator: fixture("Narrating fixture", {
+        FAKE_CLAUDE_MODE: "happy",
+        FAKE_CLAUDE_REPLIES: JSON.stringify([["Let me check with @Ann later.", "All done here."]]),
+        FAKE_CLAUDE_REPLY_STATE: join(home, "narrator-replies.txt"),
+      }),
+      // a turn that ends on "(pass)", then the re-ask's answer
+      passer: fixture("Passing fixture", {
+        FAKE_CLAUDE_MODE: "happy",
+        FAKE_CLAUDE_REPLIES: JSON.stringify(["(pass)", "Result: the title is fixed."]),
+        FAKE_CLAUDE_REPLY_STATE: join(home, "passer-replies.txt"),
+      }),
     },
   }));
   const port = await freePortBlock([0, 1]);
@@ -215,6 +230,50 @@ describe("stop @Bot holds one room member", { timeout: 60_000 }, () => {
       await expect.poll(async () => botTexts((await snapshot(room.id)).messages, bee.id).length, { timeout: 15_000 }).toBe(1);
     } finally {
       await cleanup(room?.id, [ann.id, bee.id]);
+    }
+  });
+});
+
+describe("a member's room reply is its final message", { timeout: 60_000 }, () => {
+  it("keeps working notes out of the reply: a teammate named in one is not summoned", async () => {
+    const nora = await createBot("Nora", "narrator");
+    const ann = await createBot("Ann", "quick");
+    const room = await createRoom("Notes room", [nora.id, ann.id], { kind: "member", botId: nora.id });
+    try {
+      await send(room.id, "How is it going?");
+      await expect.poll(async () => {
+        const { room: current, messages } = await snapshot(room.id);
+        return { working: current?.working, final: botTexts(messages, nora.id).find((message) => message.turnTerminal)?.text };
+      }, { timeout: 15_000 }).toEqual({ working: false, final: "All done here." });
+      const { messages } = await snapshot(room.id);
+      const nora_ = botTexts(messages, nora.id);
+      expect(nora_.map((message) => [message.text, Boolean(message.turnTerminal)])).toEqual([
+        ["Let me check with @Ann later.", false],
+        ["All done here.", true],
+      ]);
+      expect(botTexts(messages, ann.id)).toHaveLength(0);
+    } finally {
+      await cleanup(room?.id, [nora.id, ann.id]);
+    }
+  });
+
+  it("re-asks once for a short result when a turn ends without one", async () => {
+    const pat = await createBot("Pat", "passer");
+    const ann = await createBot("Ann", "quick");
+    const room = await createRoom("Pass room", [pat.id, ann.id], { kind: "member", botId: pat.id });
+    try {
+      await send(room.id, "Did the title get fixed?");
+      await expect.poll(async () => {
+        const { room: current, messages } = await snapshot(room.id);
+        return {
+          working: current?.working,
+          chip: chips(messages, "Pat finished without a summary — asking for a short result").length,
+          final: botTexts(messages, pat.id).at(-1)?.text,
+        };
+      }, { timeout: 15_000 }).toEqual({ working: false, chip: 1, final: "Result: the title is fixed." });
+      expect(botTexts((await snapshot(room.id)).messages, ann.id)).toHaveLength(0);
+    } finally {
+      await cleanup(room?.id, [pat.id, ann.id]);
     }
   });
 });
