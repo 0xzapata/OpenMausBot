@@ -886,6 +886,8 @@
   "teamSettings.tab.approval": "Approval level",
   "teamSettings.tab.model": "Model and effort",
   "teamSettings.customPerBot": "Custom approval stays a per-bot setting in that bot's settings.",
+  "teamSettings.allThreads": "Each bot gets this level on every one of its threads.",
+  "teamSettings.threadModels": "Threads that use their bot's model move with it. A thread with a model of its own keeps it.",
   "teamSettings.fullWarning": "Full access lets every bot listed below act without asking, on every one of its threads. Sending on your behalf still follows each bot's own rule.",
   "teamSettings.model": "Model",
   "teamSettings.effort": "Effort",

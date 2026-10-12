@@ -161,6 +161,12 @@ app.whenReady().then(async () => {
   const revoked = await coordinator.request(child, whole.id, "ask", { allThreads: true });
   assert.equal(revoked.approvalMode, "ask");
   assert.ok(revoked.tasks.every(task => task.approvalMode === "ask"));
+  // Auto and Edits reach every thread the same way, in one write with no
+  // grant phases (how a team-wide level leaves Custom).
+  const autoEverywhere = await coordinator.request(child, whole.id, "auto", { allThreads: true });
+  assert.equal(autoEverywhere.approvalMode, "auto");
+  assert.ok(autoEverywhere.tasks.every(task => task.approvalMode === "auto"));
+  assert.ok((await coordinator.request(child, whole.id, "ask", { allThreads: true })).tasks.every(task => task.approvalMode === "ask"));
   console.log(JSON.stringify({ allThreads: true, mixedProviders: true, archivedIncluded: true, futureInherits: true, unrelatedBotUnchanged: true, persisted: true }));
   if (process.argv.includes("--all-threads-only")) { await verifyUi(); return; }
   const created = await api("/api/bots", "POST", { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });

@@ -5564,7 +5564,13 @@ describe("harness HTTP API", () => {
     }));
     // A third Full bot changes engine by itself: its access must ride along.
     const carrier = { ...trustedBots[0], id: "full-carry", threadId: "full-carry-thread", name: "full carrier", createdAt: 3 };
-    writeFileSync(join(isolatedData, "bots.json"), JSON.stringify([...trustedBots, carrier]));
+    // An Ask bot with one conversation still on Custom.
+    const customThread = { ...trustedBots[0], id: "custom-thread", threadId: "custom-thread-main", name: "custom thread", createdAt: 4,
+      approvalMode: "ask", tasks: [
+        { threadId: "custom-thread-main", title: "Main", createdAt: 4, resumeCursors: {} },
+        { threadId: "custom-thread-own", title: "Own Custom", createdAt: 5, resumeCursors: {}, approvalMode: "custom", autoApprove: false },
+      ] };
+    writeFileSync(join(isolatedData, "bots.json"), JSON.stringify([...trustedBots, carrier, customThread]));
 
     let isolatedStderr = "";
     const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
@@ -5686,6 +5692,19 @@ describe("harness HTTP API", () => {
         (candidate: { id: string }) => candidate.id === custom.id,
       );
       expect(stillCustom).toMatchObject({ approvalMode: "custom", autoApprove: false });
+      // A team-wide level for every thread leaves a thread's Custom alone over
+      // HTTP too, whatever the level: only the desktop's channel may.
+      for (const approvalMode of ["ask", "auto", "full"]) {
+        const rejected = await isolatedApi("PATCH", `/api/bots/${customThread.id}`, { approvalMode, applyToAllThreads: true });
+        expect(rejected.status, approvalMode).toBe(403);
+        expect(rejected.body.error).toMatch(/packaged desktop app/i);
+        expect((await isolatedApi("PATCH", `/api/bots/${custom.id}`, { approvalMode, applyToAllThreads: true })).status, approvalMode).toBe(403);
+      }
+      const keptCustom = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === customThread.id,
+      );
+      expect(keptCustom.approvalMode).toBe("ask");
+      expect(keptCustom.tasks.find((task: { threadId: string }) => task.threadId === "custom-thread-own").approvalMode).toBe("custom");
     } finally {
       await waitForExit(isolatedChild, { signal: "SIGTERM" });
       await removeTempDir(isolatedHome);
@@ -7691,7 +7710,7 @@ describe("harness HTTP API", () => {
 
       // Bot settings' scope: every existing thread takes Full too.
       expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full", applyToAllThreads: "yes" })).status).toBe(400);
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask", applyToAllThreads: true })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { applyToAllThreads: true })).status).toBe(400);
       const everywhere = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full", applyToAllThreads: true });
       expect(everywhere.status).toBe(200);
       expect(everywhere.body.bot.tasks.map((task: { approvalMode?: string }) => task.approvalMode)).toEqual(["full", "full"]);
@@ -7731,6 +7750,116 @@ describe("harness HTTP API", () => {
       for (const id of created) await api("DELETE", `/api/bots/${id}`);
     }
   }, 60_000);
+
+  it("sets a team-wide level on every thread, New-thread threads included, the same way for every level", async () => {
+    const permissionModeOf = async (botId: string, threadId: string) => {
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "check the level", threadId })).status).toBe(202);
+      const { argv } = await readJsonFileWhenReady<{ argv: string[] }>(fakeClaudeDump, 15_000);
+      expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId })).status).toBe(200);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: { id: string }) => entry.id === botId)?.tasks
+        .find((task: { threadId: string }) => task.threadId === threadId)?.busy, { timeout: 5_000 }).toBe(false);
+      return argv[argv.indexOf("--permission-mode") + 1];
+    };
+    type WireBot = { approvalMode?: string; tasks: Array<{ threadId: string; approvalMode?: string }> };
+    const bot = (await api("POST", "/api/bots", { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } })).body.bot;
+    const opened: string[] = [];
+    // The first thread, then the New-thread ones, each at the level it runs at.
+    const levels = (saved: WireBot) => [bot.threadId, ...opened].map((threadId) =>
+      saved.tasks.find((task) => task.threadId === threadId)?.approvalMode ?? saved.approvalMode);
+    try {
+      // Threads opened with New thread save the level they started at.
+      for (const title of ["New thread one", "New thread two"]) {
+        const task = (await api("POST", `/api/bots/${bot.id}/tasks`, { title })).body.task;
+        expect(task.approvalMode).toBe("ask");
+        opened.push(task.threadId);
+      }
+      // A bot's own panel moves the default and the threads that follow it.
+      const panel = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto" });
+      expect(panel.status).toBe(200);
+      expect(levels(panel.body.bot)).toEqual(["auto", "ask", "ask"]);
+
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { applyToAllThreads: true })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", applyToAllThreads: "yes" })).status).toBe(400);
+      // A team-wide level reaches every thread, whatever the level, and the
+      // bot's standing approvals stay except under Full, where they are moot.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { alwaysAllow: ["Read"] })).status).toBe(200);
+      for (const mode of ["auto", "edits", "ask", "full"] as const) {
+        const team = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: mode, applyToAllThreads: true });
+        expect(team.status, mode).toBe(200);
+        expect(team.body.bot, mode).toMatchObject({ approvalMode: mode, autoApprove: mode === "auto" });
+        expect(levels(team.body.bot), mode).toEqual([mode, mode, mode]);
+        expect(team.body.bot.alwaysAllow, mode).toEqual(mode === "full" ? [] : ["Read"]);
+        const saved = (await api("GET", "/api/bots?messages=0")).body.bots.find((entry: { id: string }) => entry.id === bot.id);
+        expect(levels(saved), mode).toEqual([mode, mode, mode]);
+        if (mode === "auto") expect(await permissionModeOf(bot.id, opened[0]!)).toBe("auto");
+      }
+      expect(await permissionModeOf(bot.id, opened[1]!)).toBe("bypassPermissions");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  }, 60_000);
+
+  it("asks for the local-computer warning when a team-wide Auto reaches a thread not on Auto yet", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const opened = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "New thread" })).body.task;
+      expect(opened.approvalMode).toBe("ask");
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "local", approvalMode: "auto", acknowledgeLocalAuto: true })).status).toBe(200);
+      // The bot already runs Auto on this computer, but that thread does not.
+      const blind = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", applyToAllThreads: true });
+      expect(blind.status).toBe(400);
+      expect(blind.body.error).toMatch(/acknowledgeLocalAuto/);
+      const confirmed = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", applyToAllThreads: true, acknowledgeLocalAuto: true });
+      expect(confirmed.status).toBe(200);
+      expect(confirmed.body.bot.tasks.every((task: { approvalMode?: string }) => (task.approvalMode ?? "auto") === "auto")).toBe(true);
+      // Once every thread is on it, re-asserting it needs no new warning.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", applyToAllThreads: true })).status).toBe(200);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("moves a team's following threads to a new bot model and leaves each thread's own model, on screen or not", async () => {
+    const claude = (model: string) => ({ instanceId: "claude", model });
+    type WireBot = { modelSelection: { model: string }; tasks: Array<{ threadId: string; modelSelection: { model: string }; followsBotModel: boolean }> };
+    const thread = (bot: WireBot, threadId: string) => {
+      const task = bot.tasks.find((candidate) => candidate.threadId === threadId)!;
+      return { model: task.modelSelection.model, follows: task.followsBotModel };
+    };
+    const bot = (await api("POST", "/api/bots", { modelSelection: claude("team-start") })).body.bot;
+    try {
+      const own = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Own model, not on screen" })).body.task;
+      const onScreen = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Own model, on screen" })).body.task;
+      const follower = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Follows the bot" })).body.task;
+      for (const picked of [own, onScreen]) {
+        expect((await api("PATCH", `/api/bots/${bot.id}/tasks/${picked.threadId}`, { modelSelection: claude("thread-pick") })).status).toBe(200);
+      }
+      expect((await api("POST", `/api/bots/${bot.id}/tasks/${onScreen.threadId}?messages=0`)).body.bot.threadId).toBe(onScreen.threadId);
+
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { keepThreadModels: true })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: claude("team-pick"), keepThreadModels: "yes" })).status).toBe(400);
+      // There and back, as a team: followers move each time; a model picked
+      // in a thread stays, on the selected thread and on the others.
+      for (const model of ["team-pick", "team-start"]) {
+        const team = await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: claude(model), keepThreadModels: true });
+        expect(team.status, model).toBe(200);
+        expect(team.body.bot.modelSelection.model).toBe(model);
+        expect(thread(team.body.bot, onScreen.threadId), model).toEqual({ model: "thread-pick", follows: false });
+        expect(thread(team.body.bot, own.threadId), model).toEqual({ model: "thread-pick", follows: false });
+        expect(thread(team.body.bot, follower.threadId), model).toEqual({ model, follows: true });
+        expect(thread(team.body.bot, bot.threadId), model).toEqual({ model, follows: true });
+      }
+      // The bot's own panel still moves the thread on screen with it.
+      const panel = await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: claude("panel-pick") });
+      expect(panel.status).toBe(200);
+      expect(thread(panel.body.bot, onScreen.threadId)).toEqual({ model: "panel-pick", follows: true });
+      expect(thread(panel.body.bot, own.threadId)).toEqual({ model: "thread-pick", follows: false });
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
 
   it("pins provider approval support at the thread settings gate", async () => {
     const codex = (await api("POST", "/api/bots", {
