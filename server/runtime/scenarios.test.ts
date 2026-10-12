@@ -1270,3 +1270,151 @@ describe("§3 one level rule", () => {
     invariants(w);
   });
 });
+
+// ── intents ported from the legacy delegation ledger's tests ───────────
+// server/delegations.test.ts went with the ledger (PR 3). The behaviours
+// below are the ones it pinned that the runtime still owes, restated on
+// runtime state: a queue window that restarts at boot, an external
+// runtime's failed work that never wakes it, a one-way notice that
+// outlives its sender's failed turn, and one thread running one turn at a
+// time.
+
+describe("§5/§2 ported from the delegation ledger", () => {
+  it("S26 downtime is nobody's budget: a queued row older than queueMs at reopen is not expired; its window restarts at boot", async () => {
+    // The ledger's "quit Friday, open Monday": an over-age queued hand-off
+    // whose target is free at boot dispatched instead of expiring.
+    const w = world({ queueMs: 1_000, stallMs: 1e9 });
+    const root = beginChief(w);
+    w.runner.setCanStart("dev", false);
+    const child = ok(enqueueFrom(w, root, workFor("dev", "Leftover")));
+    w.rt.end(root.id, { ok: true, text: "" });
+    await drain(w);
+    expect(get(w, child.id).status).toBe("queued");
+
+    // The process is down for far longer than the queue window.
+    w.clock.advance(5_000);
+    reopen(w);
+    await drain(w);
+    expect(get(w, child.id).status).toBe("queued");
+    expect(get(w, child.id).outcome).toBeUndefined();
+    invariants(w);
+
+    // The window runs from this boot: within it the row still waits, and a
+    // target that frees in time gets the work.
+    w.clock.advance(999);
+    await drain(w);
+    expect(get(w, child.id).status).toBe("queued");
+    w.runner.setCanStart("dev", true);
+    w.runner.script("dev", complete("done on Monday"));
+    await drain(w);
+    expect(get(w, child.id)).toMatchObject({ status: "completed", outcome: "done", result: "done on Monday" });
+    expect(w.runner.runs(child.id)).toHaveLength(1);
+    expect(get(w, root.id).status).toBe("completed");
+    invariants(w);
+  });
+
+  it("S27 an external runtime's failed and expired children land in its inbox and never run the requester", async () => {
+    // The ledger recorded an external runtime's failed or expired hand-off
+    // without waking the delegator: the runtime polls, nothing wakes it.
+    const w = world({ queueMs: 1_000, stallMs: 1e9 });
+    const ext: Requester = { kind: "external_runtime", runId: "run-ext" };
+    const root = w.rt.begin({
+      origin: { kind: "outside", source: "external_runtime", ref: "run-ext" },
+      requester: ext,
+      assignee: { botId: "chief", destination: { kind: "standing_thread", threadId: "ext-thread" } },
+      brief: "Two hand-offs",
+      level: "ask",
+      reply: "poll",
+    });
+    const broken = ok(enqueueFrom(w, root, workFor("dev", "Never works", { requester: ext, reply: "poll" })));
+    const stuck = ok(enqueueFrom(w, root, workFor("qa", "Never starts", { requester: ext, reply: "poll" })));
+    w.runner.script("dev", fail("provider_error", "no such engine"));
+    w.runner.setCanStart("qa", false);
+    w.rt.end(root.id, { ok: true, text: "" });
+    await drain(w);
+    expect(get(w, broken.id)).toMatchObject({ status: "failed", outcome: "provider_error", result: "no such engine" });
+    expect(get(w, stuck.id).status).toBe("queued");
+    expect(get(w, root.id).status).toBe("waiting");
+
+    w.clock.advance(1_001);
+    await drain(w);
+    expect(get(w, stuck.id)).toMatchObject({ status: "failed", outcome: "expired" });
+    expect(w.runner.runs(stuck.id)).toHaveLength(0);
+    expect(w.runner.reports(broken.id)).toHaveLength(1);
+    expect(w.runner.reports(stuck.id)).toHaveLength(1);
+    // The root completed without a turn; nothing ran the runtime's bot.
+    expect(w.runner.runs(root.id)).toHaveLength(0);
+    expect(get(w, root.id).status).toBe("completed");
+    invariants(w);
+
+    // Both outcomes wait in the inbox, read once.
+    const polled = w.rt.poll({ runId: "run-ext" });
+    expect(polled.items.map((i) => [i.assignmentId, i.kind]).sort()).toEqual([[broken.id, "settled"], [stuck.id, "settled"]].sort());
+    expect(polled.assignments.map((a) => [a.id, a.outcome]).sort()).toEqual([[broken.id, "provider_error"], [stuck.id, "expired"]].sort());
+    expect(w.rt.poll({ runId: "run-ext" }).items).toEqual([]);
+    expect(w.rt.status(root.id)?.children.map((c) => c.status)).toEqual(["failed", "failed"]);
+    invariants(w);
+  });
+
+  it("S28 a one-way notice outlives its sender's turn that ended failed: the sender settles, the notice still runs and reports", async () => {
+    // The ledger kept an accepted one-way send when its source turn failed,
+    // and dropped its awaited hand-offs. A notice is never awaited: the
+    // sender's failure settles the sender alone.
+    const w = world();
+    const root = beginChief(w);
+    const notice = ok(enqueueFrom(w, root, workFor("dev", "FYI: the build is red", { mode: "notify", reply: "none" })));
+    w.runner.script("dev", hang());
+    w.rt.end(root.id, { ok: false, text: "the chief's turn crashed" });
+    await drain(w);
+    expect(get(w, root.id)).toMatchObject({ status: "failed", outcome: "provider_error" });
+    expect(get(w, notice.id).status).toBe("running");
+    expect(w.runner.running.has(notice.id)).toBe(true);
+    expect(w.runner.runs(notice.id)[0].signal!.aborted).toBe(false);
+    invariants(w);
+
+    w.runner.release(notice.id, complete("noted"));
+    await drain(w);
+    expect(get(w, notice.id)).toMatchObject({ status: "completed", outcome: "done", result: "noted" });
+    expect(w.runner.reports(notice.id)).toHaveLength(1);
+    expect(w.store.inbox(chiefOwner, false)).toEqual([]);
+    expect(w.runner.runs(root.id)).toHaveLength(0);
+    expect(get(w, root.id).status).toBe("failed");
+    expect(w.store.all({ nonTerminal: true })).toEqual([]);
+    invariants(w);
+  });
+
+  it("S29 two hand-offs addressed to one thread run one after the other, and the requester resumes once with both", async () => {
+    // The ledger drained a thread's queue one item at a time; the runtime's
+    // rule is the same: same-conversation turns never overlap.
+    const w = world();
+    const root = beginChief(w);
+    const devThread: Assignee = { botId: "dev", destination: { kind: "work_thread", threadId: "work-dev-shared" } };
+    const first = ok(enqueueFrom(w, root, { assignee: devThread, brief: "First" }));
+    const second = ok(enqueueFrom(w, root, { assignee: devThread, brief: "Second" }));
+    w.runner.script("dev", hang(), complete("second done"));
+    w.rt.end(root.id, { ok: true, text: "" });
+    await drain(w);
+    expect(get(w, first.id).status).toBe("running");
+    expect(get(w, second.id).status).toBe("queued");
+    expect(w.runner.runs(second.id)).toHaveLength(0);
+    for (let i = 0; i < 3; i++) {
+      w.rt.tick();
+      await flush();
+    }
+    expect(w.runner.runs(second.id)).toHaveLength(0);
+    expect(get(w, root.id).status).toBe("waiting");
+    invariants(w);
+
+    w.runner.release(first.id, complete("first done"));
+    await drain(w);
+    expect(get(w, first.id)).toMatchObject({ status: "completed", result: "first done" });
+    expect(get(w, second.id)).toMatchObject({ status: "completed", result: "second done" });
+    expect(w.runner.runs(second.id)).toHaveLength(1);
+    // Both settled before the requester reviewed anything: one resume, both results.
+    const rootRuns = w.runner.runs(root.id);
+    expect(rootRuns).toHaveLength(1);
+    expect(rootRuns[0].input!.settled?.map((a) => a.id).sort()).toEqual([first.id, second.id].sort());
+    expect(get(w, root.id).status).toBe("completed");
+    invariants(w);
+  });
+});

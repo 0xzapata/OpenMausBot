@@ -48,6 +48,11 @@ export type DestinationKind = "work_thread" | "standing_thread" | "room_thread";
 
 export interface Assignee {
   botId: string;
+  /** Where the turn runs. `threadId` is empty only on a row the legacy
+   * ledger import (import-legacy.ts) wrote for an item that named no thread
+   * (its target's standing thread at the time): the kind is then
+   * "standing_thread" and the host resolves or refuses it at dispatch.
+   * Nothing else writes an empty thread id. */
   destination: { kind: DestinationKind; threadId: string; groupId?: string };
 }
 
