@@ -45,13 +45,16 @@ export function approvalModeOptions(): ApprovalModeOption[] {
   }));
 }
 
+/** The levels this engine offers here. Full is offered wherever the engine
+ * runs it (owner decision, Oct 12); only Custom waits for the packaged
+ * desktop's private channel (`trustedModesAvailable`). */
 export function approvalModeOptionsFor(driverKind: string, trustedModesAvailable = true) {
   return approvalModeOptions()
     .filter((option) => supportsApprovalMode(driverKind, option.mode)
       // Antigravity has no native reviewer. Offer its explicit full-access
       // grant as Auto instead of a second choice that actually behaves as Ask.
       && (driverKind !== "antigravityAgent" || option.mode !== "auto")
-      && (trustedModesAvailable || option.mode === "ask" || option.mode === "edits" || option.mode === "auto"))
+      && (trustedModesAvailable || option.mode !== "custom"))
     .map((option) => {
       if (driverKind === "antigravityAgent" && option.mode === "full") {
         return {
@@ -256,13 +259,9 @@ export function ApprovalModeSelector({
               );
             })}
             {!visibleOptions.some((option) => option.mode === "full") && allowlistAction}
-            {!trustedModesAvailable && (trustedModesNotice || driverKind === "codex" || driverKind === "antigravityAgent" || requiresLocalDesktop) && (
+            {!trustedModesAvailable && (trustedModesNotice || driverKind === "codex" || requiresLocalDesktop) && (
               <div className="border-t border-hairline/20 px-4 py-2.5 text-[11.5px] leading-snug text-ink-secondary">
-                {trustedModesNotice ?? (requiresLocalDesktop
-                  ? t("approvalMode.customLocalOnlyDot")
-                  : driverKind === "antigravityAgent"
-                    ? t("approvalMode.antigravityLocalOnly")
-                    : t("approvalMode.trustedLocalOnly"))}
+                {trustedModesNotice ?? t("approvalMode.customLocalOnlyDot")}
               </div>
             )}
           </div>

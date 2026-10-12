@@ -210,6 +210,18 @@ describe("hosted bridge in the full server", () => {
     expect((await call(`/api/bots/${botId}`, { method: "PATCH", local: true,
       body: { approvalMode: "auto", acknowledgeLocalAuto: true, alwaysAllow: ["Bash:fixture-only"] } })).status).toBe(200);
     const before = (await call("/api/bots?messages=0", { local: true })).body.bots.find((bot: any) => bot.id === botId);
+    // Full over the settings routes stays closed on a company workspace, for
+    // its admins too: only this policy's new-task route grants it.
+    for (const [method, path, body] of [
+      ["PATCH", `/api/bots/${botId}`, { approvalMode: "full" }],
+      ["PATCH", `/api/bots/${botId}/tasks/${before.tasks[0].threadId}`, { approvalMode: "full" }],
+      ["POST", "/api/bots", { name: "Born Full", settings: { approvalMode: "full" } }],
+    ] as const) {
+      const refusedFull = await call(path, { method, cookie, body });
+      expect(refusedFull.status, `${method} ${path}`).toBe(403);
+      expect(refusedFull.body.error).toContain("operator's dedicated policy");
+    }
+    expect((await call("/api/bots?messages=0", { local: true })).body.bots.find((bot: any) => bot.id === botId)).toEqual(before);
     let existingTasks = before.tasks;
     for (const approvalMode of ["full", "ask"] as const) {
       const created = await call(`/api/bots/${botId}/tasks`, { method: "POST", local: true,

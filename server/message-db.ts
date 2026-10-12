@@ -237,6 +237,9 @@ export interface FollowupPayload {
   /** "api": a room line sent through the local API with no session behind
    * it. "call": a person's words relayed from a Live call. */
   via?: "api" | "call";
+  /** The Live call a "call" line was spoken on (Message.callId). Only with
+   * `via: "call"`; restore and crash recovery drop it from any other row. */
+  callId?: string;
   /** Who queued these words. Absent on the owner's own sends and on every
    * row written before this existed; both read as the profile name. */
   sender?: ResolvedSender;
@@ -250,20 +253,13 @@ export interface FollowupPayload {
    * tell a contiguous burst from hours-apart texts. Rows written before
    * this existed read as queued at restore time. */
   queuedAt?: number;
-  /** Aside-lane rows (kind "aside"): the peer whose words these are. The
-   * prompt carries the non-steering envelope; text stays the raw words. */
-  aside?: {
-    fromBotId: string;
-    fromBotName: string;
-    unattended?: boolean;
-    /** Comms depth captured when the aside was queued, so a degraded
-     * follow-up turn inherits the same one-hop chain limit. */
-    commsDepth: number;
-  };
 }
 export type FollowupStatus = "pending" | "dispatching" | "interrupted" | "cancelled";
 export interface ChatFollowup {
   id: string;
+  /** "aside" rows are what the aside lane wrote before every hand-off ran
+   * on the job runtime; nothing writes them now, and the server drops any
+   * it finds at start. */
   kind: "bot" | "channel" | "aside";
   ownerId: string;
   threadId: string;

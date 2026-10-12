@@ -2128,6 +2128,7 @@ button:disabled.bg-danger {
 :is([role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"], [role="tooltip"]),
 .fixed:has(> :is([role="dialog"], [role="alertdialog"], [aria-modal="true"])) {
   -webkit-app-region: no-drag;
+}
 
 /* Room speaker names. Each skin sets a tone of the bot's palette that clears
    4.5:1 on the thread (--color-app). The class below only picks the token. */
@@ -2154,5 +2155,4 @@ button:disabled.bg-danger {
 .user-bubble-colored *::selection {
   background-color: color-mix(in srgb, #000000 35%, var(--color-bubble-user));
   color: #ffffff;
-}
 }

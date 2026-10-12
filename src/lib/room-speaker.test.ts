@@ -77,4 +77,13 @@ describe("room speaker labels", () => {
     const run = items.findIndex((item) => item.kind === "run");
     expect(runShowsSpeaker(items, run, true)).toBe(true);
   });
+
+  it("names the returning bot after another bot's visible tool run", () => {
+    const messages = [text("a", "bot", "first", ada), tool("t", kai), tool("t2", kai), text("a2", "bot", "back", ada)];
+    const items = groupActivityRuns(messages);
+    expect(runShowsSpeaker(items, 1, true)).toBe(true);
+    expect(botTextShowsSpeaker(items, 2)).toBe(true);
+    const hidden = groupActivityRuns(messages.filter((message) => message.kind !== "activity"));
+    expect(botTextShowsSpeaker(hidden, 1)).toBe(false);
+  });
 });

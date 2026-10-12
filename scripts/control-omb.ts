@@ -388,6 +388,10 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     childEnv.OMB_OPENAI_LIVE_URL = liveUrl;
     if (parentEnv.OMB_OPENAI_LIVE_KEY) childEnv.OMB_OPENAI_LIVE_KEY = parentEnv.OMB_OPENAI_LIVE_KEY;
   }
+  // Live calls need Pro (electron/pro-plan.mjs): a recipe that starts calls
+  // says so with OMB_PRO_PLAN=1, the way any server the desktop app did not
+  // start does. Without it the fixture refuses a call with 402 needsPro.
+  if (parentEnv.OMB_PRO_PLAN?.trim() === "1") childEnv.OMB_PRO_PLAN = "1";
   // Voice-note e2e fault injection: arms the one-shot audio-append failure
   // prelude inside the fixture server (see fail-audio-append-once.mjs).
   if (parentEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE) {
@@ -400,6 +404,7 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
   // Stalled-turn e2e: the stall watchdog's window elapses on a marker file
   // instead of after 20 minutes of silence (stall-clock-hooks.mjs).
   if (parentEnv.OMB_TEST_STALL_CLOCK === "1") childEnv.OMB_TEST_STALL_CLOCK = "1";
+  // Runtime coordination e2e: the server runs teammate coordination on the
   // Desktop mode: the server runs as the desktop app runs it, and the owner
   // capability the app would hand it is this one (see desktop-parent.mjs).
   if (parentEnv.OMB_TEST_DESKTOP_OWNER_TOKEN) {

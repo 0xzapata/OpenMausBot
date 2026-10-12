@@ -25,9 +25,11 @@ export interface ToolCallContext {
   threadId: string;
   /** This turn's comms depth (the harness refuses recursion). */
   depth: number;
-  // Presentation only: the server still authenticates and scopes every call.
+  /** A standing external runtime (OMB_EXTERNAL_RUNTIME=1): same tools and
+   * wording as every turn, but its capability cannot reach the result cache,
+   * so oversized results are cut instead of saved (capResult). */
   externalRuntime: boolean;
-  coordinating: boolean;
+  // Presentation only: the server still authenticates and scopes every call.
   sharedComputers: boolean;
   client: HarnessClient;
 }
@@ -49,14 +51,97 @@ export function toolCallContextFromEnv(env: NodeJS.ProcessEnv): ToolCallContext 
     botId: profile.botId,
     threadId: env.OMB_THREAD_ID ?? "",
     depth: Number(env.OMB_TURN_DEPTH ?? "0") || 0,
-    externalRuntime: profile.externalRuntime,
-    coordinating: profile.coordinating,
+    externalRuntime: env.OMB_EXTERNAL_RUNTIME === "1",
     sharedComputers: profile.sharedComputers,
     client: harnessClientFromEnv(env),
   };
 }
 
-const EXTERNAL_STATUS_GUIDANCE = "Use check_delegation or wait_delegation with this task id to retrieve the result; polling is allowed without ending this external runtime.";
+// ── The deprecated aliases (docs/runtime-contract.md §9) ───────────────────
+// Each alias still reaches its old route, which the harness now answers from
+// the runtime, and every result ends with one line naming the replacement.
+// The harness may word that line itself (`deprecation` in the body); this is
+// the line when it does not.
+const ALIAS_OF: Record<string, string> = {
+  delegate_bot: "coordinate_bots",
+  ask_bot: "coordinate_bots with consult: true",
+  send_to_bot: 'coordinate_bots with thread: "new" and reply: "none"',
+  start_thread: 'coordinate_bots with thread: "new"',
+  check_delegation: "assignment_status",
+  wait_delegation: "assignment_status with wait_ms",
+};
+function deprecationLine(name: string, r: Json): string {
+  if (typeof r.deprecation === "string" && r.deprecation.trim()) return r.deprecation.trim();
+  const replacement = ALIAS_OF[name] ?? "coordinate_bots";
+  return `Deprecated: ${name} is an alias of ${replacement} and works for this release; call ${replacement.split(" ")[0]} next time.`;
+}
+/** Every result of a hand-off ends the same way: the result returns here. */
+const RESUMES_YOU = "The result returns here and resumes you automatically; finish your turn without checking or waiting for it.";
+
+// ── assignment_status rendering ────────────────────────────────────────────
+/** The runtime's status words as a person would say them (runtime/types.ts). */
+const STATUS_WORDS: Record<string, string> = {
+  queued: "queued, not started yet",
+  running: "running",
+  needs_input: "waiting on the person",
+  waiting: "waiting on its own hand-offs",
+  resume: "wrapping up (its hand-offs settled)",
+  completed: "completed",
+  failed: "failed",
+  cancelled: "cancelled",
+};
+/** How much of a result the status answer shows; the report that resumed
+ * the requester carried the whole of it. */
+const RESULT_HEAD = 2_000;
+
+/** One assignment as one line: id, assignee, status, outcome. */
+function assignmentLine(a: Json): string {
+  const id = typeof a.id === "string" && a.id ? a.id : "?";
+  const who = typeof a.botName === "string" && a.botName ? `@${peerName(a.botName)}`
+    : typeof a.botId === "string" && a.botId ? a.botId : "a teammate";
+  const status = String(a.status ?? "unknown");
+  const outcome = typeof a.outcome === "string" && a.outcome && a.outcome !== "done" && a.outcome !== status ? ` (${a.outcome})` : "";
+  const detail = typeof a.outcomeDetail === "string" && a.outcomeDetail.trim() ? `: ${a.outcomeDetail.trim()}` : "";
+  return `${id} → ${who}: ${STATUS_WORDS[status] ?? status}${outcome}${detail}`;
+}
+
+/** The compact text for one assignment: its line, the question it is parked
+ * on, the head of its result, and one line per hand-off of its own. Reads
+ * the assignment-status shape ({ assignment, children, inbox }) and, for the
+ * alias route, a body that is the assignment itself. */
+function renderAssignmentStatus(r: Json, id: string): string {
+  const raw = jsonRecord(r.assignment) ? r.assignment : r;
+  const a: Json = { id, ...raw, botName: raw.botName ?? r.toBotName };
+  const lines = [`Assignment ${assignmentLine(a)}`];
+  const question = typeof a.question === "string" ? a.question.trim() : "";
+  if (question && (a.status === "needs_input" || a.outcome === "needs_input")) {
+    lines.push(`It is parked on a question for the person: ${JSON.stringify(question)}. Nothing moves until the person answers it in that thread; tell them and do not keep checking.`);
+  }
+  const result = typeof a.result === "string" ? a.result.trim() : "";
+  if (result) lines.push(`Result${result.length > RESULT_HEAD ? " (first part)" : ""}: ${result.slice(0, RESULT_HEAD)}`);
+  const children = Array.isArray(r.children) ? r.children.filter(jsonRecord) : [];
+  if (children.length) lines.push("Its own hand-offs:", ...children.map((child) => `- ${assignmentLine(child)}`));
+  const settled = a.status === "completed" || a.status === "failed" || a.status === "cancelled" || a.status === "done";
+  if (!settled) lines.push("It is not settled. Its result resumes you on its own; do not wait on it in this turn.");
+  return lines.join("\n");
+}
+
+/** The ids a hand-off answer names, newest shape first: coordinate_bots
+ * receipts carry requestId, the legacy routes a taskId. */
+function handoffIds(r: Json): string[] {
+  const receipts = Array.isArray(r.receipts) ? r.receipts.filter(jsonRecord) : [];
+  const ids = receipts.map((receipt) => receipt.requestId ?? receipt.taskId).filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  if (!ids.length && typeof r.taskId === "string" && r.taskId.trim()) ids.push(r.taskId.trim());
+  return ids;
+}
+
+/** The delivery receipts of a hand-off answer as prose: the runtime's
+ * `receipts` array, or the one `receipt` the legacy routes carried. */
+function receiptsNote(r: Json): string {
+  const raw = Array.isArray(r.receipts) ? r.receipts : [r.receipt];
+  const receipts = raw.map(parseReceipt).filter((receipt): receipt is PeerDeliveryReceipt => receipt !== null);
+  return renderPeerDeliveryReceipts(receipts);
+}
 /** How many entries a memory_update reply names when its write moved some
  * to the archive; the rest are counted. */
 const MOVED_ENTRIES_SHOWN = 5;
@@ -348,12 +433,12 @@ function confirmationResult(r: Json, fallback: string, noun = "routine"): { text
 }
 
 /** Who said a recalled line, as the header of a hit or a read. A user-role
- * line another bot delivered with ask_bot is labelled as that bot's: the
- * snippet windows past the provenance note in the text, and a peer's ask
- * recalled as the user's request is the misattribution the note exists to
- * prevent. */
+ * line another bot delivered (a question, an assignment) is labelled as that
+ * bot's: the snippet windows past the provenance note in the text, and a
+ * peer's ask recalled as the user's request is the misattribution the note
+ * exists to prevent. */
 function recallSpeaker(hit: Json): string {
-  if (typeof hit.peer === "string" && hit.peer) return `@${hit.peer} (another bot, via ask_bot — not your user)`;
+  if (typeof hit.peer === "string" && hit.peer) return `@${hit.peer} (another bot — not your user)`;
   if (typeof hit.from === "string" && hit.from) return hit.from;
   return hit.role === "user" ? "user" : "you";
 }
@@ -361,16 +446,15 @@ function recallSpeaker(hit: Json): string {
 const isPeerDeliveryOutcome = (value: unknown): value is PeerDeliveryOutcome =>
   value === "queued" || value === "injected" || value === "failed";
 
-/** The delivery receipt a peer-send answer carries, as one prose line.
- * Unvalidated JSON stays out: a malformed receipt renders nothing rather
- * than half a line of somebody else's text. */
-function deliveryNote(r: Json): string {
-  const receipt = (r as { receipt?: unknown }).receipt;
-  if (!receipt || typeof receipt !== "object") return "";
+/** One delivery receipt off the wire, or null. Unvalidated JSON stays out:
+ * a malformed receipt renders nothing rather than half a line of somebody
+ * else's text. */
+function parseReceipt(receipt: unknown): PeerDeliveryReceipt | null {
+  if (!receipt || typeof receipt !== "object") return null;
   const { botId, botName, outcome, detail, taskId, requestId } = receipt as Record<string, unknown>;
-  if (typeof botId !== "string" || !botId || typeof detail !== "string" || !detail) return "";
-  if (!isPeerDeliveryOutcome(outcome)) return "";
-  const parsed: PeerDeliveryReceipt = {
+  if (typeof botId !== "string" || !botId || typeof detail !== "string" || !detail) return null;
+  if (!isPeerDeliveryOutcome(outcome)) return null;
+  return {
     botId,
     ...(typeof botName === "string" && botName ? { botName } : {}),
     outcome,
@@ -378,7 +462,6 @@ function deliveryNote(r: Json): string {
     ...(typeof taskId === "string" && taskId ? { taskId } : {}),
     ...(typeof requestId === "string" && requestId ? { requestId } : {}),
   };
-  return renderPeerDeliveryReceipts([parsed]);
 }
 
 /** When a recalled line was said, on the machine's own clock. `toISOString()`
@@ -400,7 +483,7 @@ function recallWhen(at: unknown, dateOnly: boolean): string {
 export async function callTool(name: string, args: Json, context: ToolCallContext): Promise<ToolCallResult> {
   // The names this body has always used, so it reads (and diffs) as it did
   // when these were the proxy's module-level constants.
-  const { botId: BOT_ID, threadId: THREAD_ID, depth: DEPTH, externalRuntime: EXTERNAL_RUNTIME, coordinating: COORDINATING } = context;
+  const { botId: BOT_ID, threadId: THREAD_ID, depth: DEPTH } = context;
   const { api, apiResponse } = context.client;
   if (name === "vm_exec") {
     const { ok, body } = await apiResponse("/api/internal/vm-exec", {
@@ -479,22 +562,58 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const canonical: Json = { ...args };
     delete canonical.botIds;
     delete canonical.groupId;
+    delete canonical.doneWhen;
     if (canonical.bot_ids === undefined) canonical.bot_ids = args.botIds;
     if (canonical.group_id === undefined) canonical.group_id = args.groupId;
+    if (canonical.done_when === undefined) canonical.done_when = args.doneWhen;
     const ids = canonical.bot_ids;
     const usable = Array.isArray(ids) && ids.length > 0 && ids.every((id) => typeof id === "string")
-      && typeof canonical.message === "string" && canonical.message.trim().length > 0;
+      && typeof canonical.message === "string" && canonical.message.trim().length > 0
+      && (canonical.thread === undefined || canonical.thread === "standing" || canonical.thread === "new")
+      && (canonical.reply === undefined || canonical.reply === "resume" || canonical.reply === "none")
+      && (canonical.consult === undefined || typeof canonical.consult === "boolean")
+      && (canonical.done_when === undefined || typeof canonical.done_when === "string")
+      && (canonical.reason === undefined || typeof canonical.reason === "string");
     if (!usable) {
       return {
-        text: `coordinate_bots takes snake_case arguments: bot_ids (an array of 1-4 teammate ids) and message are required; group_id and rework are optional. Received: ${Object.keys(args).join(", ") || "none"}.`,
+        text: `coordinate_bots takes snake_case arguments: bot_ids (an array of 1-4 teammate ids) and message are required; group_id, reason, rework, thread ("standing" or "new"), reply ("resume" or "none"), consult (true or false) and done_when are optional. Received: ${Object.keys(args).join(", ") || "none"}.`,
         isError: true,
       };
     }
     const r = await api("/api/internal/coordinate-bots", { method: "POST", body: JSON.stringify({
       groupId: canonical.group_id, botIds: ids, message: canonical.message,
+      reason: typeof canonical.reason === "string" && canonical.reason.trim() ? canonical.reason.trim() : undefined,
       rework: canonical.rework,
+      thread: canonical.thread, reply: canonical.reply, consult: canonical.consult,
+      done_when: typeof canonical.done_when === "string" && canonical.done_when.trim() ? canonical.done_when.trim() : undefined,
     }) });
     return { text: JSON.stringify(r), ...(r.error ? { isError: true } : {}) };
+  }
+  if (name === "assignment_status") {
+    const id = args.id === undefined || args.id === null || args.id === "" ? "" : String(args.id).trim();
+    if (id && !/^[\w-]{4,64}$/.test(id)) {
+      return { text: 'assignment_status takes an optional "id" (the assignment id from a coordinate_bots receipt or list_threads) and an optional "wait_ms" (0-240000). Omit id to list every outstanding assignment of this conversation.', isError: true };
+    }
+    if (args.wait_ms !== undefined && (typeof args.wait_ms !== "number" || !Number.isFinite(args.wait_ms) || args.wait_ms < 0)) {
+      return { text: "assignment_status wait_ms must be a whole number of milliseconds from 0 to 240000.", isError: true };
+    }
+    const waitMs = Math.min(Math.trunc(Number(args.wait_ms) || 0), 240_000);
+    const query = new URLSearchParams();
+    if (id) query.set("id", id);
+    if (waitMs > 0) query.set("wait_ms", String(waitMs));
+    const { ok, status, body: r } = await apiResponse(`/api/internal/assignment-status${query.size ? `?${query.toString()}` : ""}`);
+    if (!ok) {
+      const why = status === 404 ? `No assignment ${id || "(none given)"} is known here: check the id against your coordinate_bots receipt or list_threads.`
+        : status === 403 ? `Assignment ${id} is not this conversation's; only its requester can read it.`
+        : String(r.error ?? `HTTP ${status}`);
+      return { text: why, isError: true };
+    }
+    if (id) return { text: renderAssignmentStatus(r, id) };
+    const outstanding = Array.isArray(r.outstanding) ? r.outstanding.filter(jsonRecord) : [];
+    if (!outstanding.length) return { text: "Nothing outstanding: no assignment of this conversation is still open." };
+    return {
+      text: `Outstanding assignments of this conversation (${outstanding.length}):\n${outstanding.map((a) => `- ${assignmentLine(a)}`).join("\n")}\nEach resumes you when it settles; do not wait on them in this turn.`,
+    };
   }
   if (name === "send_to_bot") {
     const botId = String(args.bot_id ?? "").trim();
@@ -517,7 +636,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       : r.state === "queued"
         ? `Send to ${destination} is queued ${ordinal(Number(r.position) || 1)} for a free slot and can dispatch after this turn ends.`
         : `Send to ${destination} is pending until this turn ends, then dispatch starts.`;
-    return { text: `${state} Its result stays in that thread; nothing there will resume you.` };
+    return { text: `${state} Its result stays in that thread; nothing there will resume you.\n\n${deprecationLine(name, r)}` };
   }
   if (name === "list_bots") {
     const r = await api(`/api/internal/agents?self=${encodeURIComponent(BOT_ID)}`);
@@ -535,7 +654,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       return `- ${b.name}${role}${about} [id: ${b.id}, model: ${b.model}${team}${state ? `, ${state}` : ""}]`;
     });
     return {
-      text: `Reachable teammates:\n${lines.join("\n")}\n\n${COORDINATING ? "Use coordinate_bots for advice or concrete work, then end your turn. Busy teammates queue and results resume you automatically." : "Assign work with delegate_bot. Use ask_bot only for a short answer you need inline."}`,
+      text: `Reachable teammates:\n${lines.join("\n")}\n\nUse coordinate_bots for concrete work or, with consult: true, for advice, then end your turn. Busy teammates queue and results resume you automatically.`,
     };
   }
   if (name === "list_rooms") {
@@ -582,50 +701,29 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const toBotId = String(args.bot_id ?? "").trim();
     const message = String(args.message ?? "").trim();
     if (!toBotId || !message) return { text: "ask_bot needs bot_id and message.", isError: true };
+    // The alias of coordinate_bots(consult: true): the harness turns the ask
+    // into a consultation on the runtime. There is no inline wait any more;
+    // the answer resumes the asker. A `timeout` argument from an older tool
+    // list is accepted and ignored.
     const r = await api(`/api/internal/ask-bot`, {
       method: "POST",
       body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, toBotId, message, depth: DEPTH }),
     });
-    const note = deliveryNote(r);
-    if (r.timeout) {
-      // The peer's turn outlived the synchronous wait, so the harness
-      // converted the ask into a delegation — the reply is not lost.
-      const taskId = String(r.taskId ?? "").trim();
-      const waitedSeconds = Math.max(1, Math.round((Number(r.waitedMs) || 0) / 1000));
-      const amount = waitedSeconds < 60 ? waitedSeconds : Math.round(waitedSeconds / 60);
-      const unit = waitedSeconds < 60 ? "second" : "minute";
-      return {
-        text: `${r.toBotName ?? "That bot"} is still working after ${amount} ${unit}${amount === 1 ? "" : "s"} — the ask was converted to a delegation so the reply is not lost. Task id: ${taskId}. ${EXTERNAL_RUNTIME ? EXTERNAL_STATUS_GUIDANCE : "Finish your turn now; the result will be delivered to this conversation automatically. Use check_delegation in a later turn only if the user asks for status."}${note ? `\n\n${note}` : ""}`,
-      };
+    const note = receiptsNote(r);
+    const tail = `${note ? `\n\n${note}` : ""}\n\n${deprecationLine(name, r)}`;
+    if (r.error) return { text: `Couldn't reach that bot: ${r.error}${tail}`, isError: true };
+    // The alias answers with the coordinate_bots receipts: the teammate's
+    // name is on the first one (an older harness still sends toBotName).
+    const first = Array.isArray(r.receipts) && jsonRecord(r.receipts[0]) ? r.receipts[0] : undefined;
+    const who = `@${peerName(String(first?.botName ?? r.toBotName ?? r.botName ?? "")) || "that teammate"}`;
+    // A harness that still answered inline hands the words straight on.
+    if (typeof r.text === "string" && r.text.trim() && !r.taskId && !Array.isArray(r.receipts)) {
+      return { text: `${who} replied:\n${r.text}${tail}` };
     }
-    if (r.busy) {
-      // Aside lane: the teammate was mid-turn on a seam-capable engine, so
-      // the harness folded the message into their running work as peer
-      // context. No new turn started and no reply is coming back through
-      // this call — the receipt says whether the words are already in the
-      // live turn or waiting for it to settle.
-      if (r.aside === "injected") {
-        return {
-          text: `${r.toBotName ?? "That bot"} is mid-turn; your message was handed to them as an aside — peer context folded into their current work, not a request that interrupts or replies. Finish your turn and treat their eventual output as possibly informed by it.`,
-        };
-      }
-      if (r.aside === "queued") {
-        return {
-          text: `${r.toBotName ?? "That bot"} is mid-turn; your aside is queued and will reach them as context when the turn settles. No reply is expected — finish your turn.`,
-        };
-      }
-      // The harness queues the message as a delegation when it can; the
-      // task id is the asker's claim ticket for the eventual reply.
-      const taskId = String(r.taskId ?? "").trim();
-      if (taskId) {
-        return {
-          text: `${r.toBotName ?? "That bot"} is busy right now, so your message was queued as a delegation instead — ${EXTERNAL_RUNTIME ? "it waits for the peer and any required approval" : "it runs after your current turn ends"}. Task id: ${taskId}. ${EXTERNAL_RUNTIME ? EXTERNAL_STATUS_GUIDANCE : "Finish your turn now; the result will be delivered to this conversation automatically. Use check_delegation in a later turn only if the user asks for status."}${note ? `\n\n${note}` : ""}`,
-        };
-      }
-      return { text: `That bot is busy right now — try again after it finishes.${note ? `\n\n${note}` : ""}` };
-    }
-    if (r.error) return { text: `Couldn't reach that bot: ${r.error}${note ? `\n\n${note}` : ""}`, isError: true };
-    return { text: `${r.botName ?? "Bot"} replied:\n${r.text ?? "(no reply)"}${note ? `\n\n${note}` : ""}` };
+    const ids = handoffIds(r);
+    return {
+      text: `Asked ${who}; the answer resumes you after this turn ends — there is no inline wait.${ids.length ? ` Assignment id: ${ids[0]}.` : ""} Finish your turn now.${tail}`,
+    };
   }
   if (name === "delegate_bot") {
     const toBotId = String(args.bot_id ?? "").trim();
@@ -640,64 +738,34 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       depth: DEPTH,
     };
     if (reason) body.reason = reason;
+    // The alias of coordinate_bots: the harness answers with the same
+    // receipts, and the assignment id is the bot's claim ticket.
     const r = await api(`/api/internal/delegate-bot`, { method: "POST", body: JSON.stringify(body) });
-    const delivery = deliveryNote(r);
-    if (r.error) return { text: `Couldn't queue the delegation: ${r.error}${delivery ? `\n\n${delivery}` : ""}`, isError: true };
-    // Fire-and-forget by contract: the harness returns immediately, the
-    // peer turn runs after our current turn finishes. The task id is the
-    // bot's claim ticket for the outcome.
+    const delivery = receiptsNote(r);
+    const tail = `${delivery ? `\n\n${delivery}` : ""}\n\n${deprecationLine(name, r)}`;
+    if (r.error) return { text: `Couldn't queue the delegation: ${r.error}${tail}`, isError: true };
     const note = typeof r.message === "string" ? r.message : "Delegation queued.";
-    const taskId = typeof r.taskId === "string" ? r.taskId.trim() : "";
-    const suffix = taskId
-      ? ` Task id: ${taskId}. ${EXTERNAL_RUNTIME ? EXTERNAL_STATUS_GUIDANCE : "Acknowledge the assignment and finish your turn; the result will be delivered to this conversation automatically. Do not check or wait for it in this turn."}`
-      : "";
-    return { text: `${note}${suffix}${delivery ? `\n\n${delivery}` : ""}` };
+    const ids = handoffIds(r);
+    return { text: `${note}${ids.length ? ` Task id: ${ids[0]}.` : ""} ${RESUMES_YOU}${tail}` };
   }
   if (name === "check_delegation" || name === "wait_delegation") {
     const taskId = String(args.task_id ?? "").trim();
     if (!/^[\w-]{4,64}$/.test(taskId)) {
-      return { text: `${name} needs the "task_id" that delegate_bot returned, e.g. {"task_id":"1f0c2f4e-..."}.`, isError: true };
+      return { text: `${name} needs the "task_id" a hand-off returned, e.g. {"task_id":"1f0c2f4e-..."}; assignment_status takes it as "id".`, isError: true };
     }
+    // The aliases of assignment_status: the same read, by the old route.
     const timeout = Math.min(Math.max(Math.trunc(Number(args.timeout_seconds) || 60), 1), 240);
     const waitMs = name === "wait_delegation" ? timeout * 1000 : 0;
     const query = new URLSearchParams({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, wait_ms: String(waitMs) });
-    const r = await api(`/api/internal/delegations/${encodeURIComponent(taskId)}?${query.toString()}`);
-    const who = typeof r.toBotName === "string" && r.toBotName ? `@${r.toBotName}` : "the peer";
-    if (r.status === "done") return { text: `${who} finished task ${taskId}:\n${String(r.result || "(no reply text)")}` };
-    if (r.status === "queued") {
-      const why = r.targetStatus === "waiting-on-user"
-        ? ` ${who} is waiting on the user, so it goes through after they answer.`
-        : r.targetStatus === "working" ? ` ${who} is busy with other work.` : "";
-      const expiresInMs = Number(r.expiresInMs);
-      const expiry = !Number.isFinite(expiresInMs)
-        ? ""
-        : expiresInMs <= 0
-          ? " It is past its 24-hour limit and will expire the next time it cannot be delivered."
-          : ` It expires if not picked up within ${Math.ceil(expiresInMs / 3_600_000)} hour${Math.ceil(expiresInMs / 3_600_000) === 1 ? "" : "s"}.`;
-      return { text: `Task ${taskId} is still queued — ${who} hasn't picked it up yet${waitMs ? ` after ${timeout}s` : ""}.${why}${expiry} Keep working and check again later.` };
+    const { ok, status, body: r } = await apiResponse(`/api/internal/delegations/${encodeURIComponent(taskId)}?${query.toString()}`);
+    if (!ok) {
+      const why = status === 404 ? `No assignment ${taskId} is known here: check the id against the hand-off's receipt or list_threads.`
+        : status === 403 ? `Assignment ${taskId} is not this conversation's; only its requester can read it.`
+        : String(r.error ?? `HTTP ${status}`);
+      return { text: `${why}\n\n${deprecationLine(name, r)}`, isError: true };
     }
-    if (r.status === "running" && r.awaitingPerson && typeof r.awaitingPerson === "object") {
-      const card = r.awaitingPerson as { kind?: unknown; tool?: unknown; threadTitle?: unknown };
-      const what = card.kind === "approval" ? "approval" : card.kind === "review" ? "review" : "answer";
-      const where = typeof card.threadTitle === "string" && card.threadTitle ? ` in its thread "${card.threadTitle}"` : " in its own thread";
-      const tool = typeof card.tool === "string" && card.tool ? ` (to run ${card.tool})` : "";
-      return {
-        text: `Task ${taskId} is waiting on the person's ${what}: ${who} stopped at a card${where}${tool}. Nothing moves until the person answers that card there. Tell the person now and point them to that thread; do not keep waiting or checking.`,
-      };
-    }
-    if (r.status === "running") {
-      const elapsedMs = Number.isFinite(r.elapsedMs) ? Number(r.elapsedMs) : 0;
-      const minutes = Math.floor(elapsedMs / 60_000);
-      const elapsed = minutes >= 1 ? `${minutes} minute${minutes === 1 ? "" : "s"}` : `${Math.round(elapsedMs / 1000)}s`;
-      const activity = Array.isArray(r.recentActivity) ? r.recentActivity.filter((line: unknown) => typeof line === "string") : [];
-      const recent = activity.length
-        ? activity.map((line: string) => `  - ${line}`).join("\n")
-        : "  (no visible activity yet — if this stays empty, the peer may be stuck, not working; say so instead of promising progress)";
-      return {
-        text: `Task ${taskId} is running with ${who} — going on ${elapsed} now.${waitMs ? ` (still going after ${timeout}s)` : ""}\nRecent activity:\n${recent}\nJudge progress by this activity, not by waiting: real work keeps producing lines; the same silence for a long stretch usually means stuck.`,
-      };
-    }
-    return { text: `Task ${taskId} ended without a reply — ${String(r.status ?? "unknown")}${r.result ? `: ${String(r.result)}` : ""}.`, isError: true };
+    const waited = waitMs && r.status !== "completed" && r.status !== "failed" && r.status !== "cancelled" ? `\n(still not settled after ${timeout}s)` : "";
+    return { text: `${renderAssignmentStatus(r, taskId)}${waited}\n\n${deprecationLine(name, r)}` };
   }
   if (name === "select_computer") {
     if (args.surface !== undefined && (typeof args.surface !== "string" || !["auto", "cloud", "vm", "local", "browser"].includes(args.surface))) {
@@ -736,9 +804,6 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const message = String(args.message ?? "").trim();
     if (!title || !message) return { text: "start_thread needs title (one short line) and message (the complete first message).", isError: true };
     const toBotId = typeof args.bot_id === "string" ? args.bot_id.trim() : "";
-    if (COORDINATING && toBotId && toBotId !== BOT_ID) {
-      return { text: "Use coordinate_bots for teammates; start_thread only opens a separate job on yourself.", isError: true };
-    }
     const folder = typeof args.folder === "string" ? args.folder.trim() : "";
     const body: Record<string, unknown> = { fromBotId: BOT_ID, fromThreadId: THREAD_ID, title, message, depth: DEPTH };
     if (toBotId) body.toBotId = toBotId;
@@ -747,9 +812,12 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     // A refusal opened nothing. A "failed" state opened the thread and could
     // not start its turn — that one still counts, and still has an id.
     if (r.error && r.state !== "failed") return { text: `Couldn't open that thread: ${String(r.error)}`, isError: true };
-    const threadTitle = String(r.title ?? title);
-    const threadId = String(r.threadId ?? "");
-    const where = r.self === true ? "on yourself" : `on @${String(r.botName ?? "that bot")}`;
+    // A thread on a teammate answers with the coordinate_bots receipts: the
+    // thread id and the teammate's name are on the first one.
+    const receipt = r.self !== true && Array.isArray(r.receipts) && jsonRecord(r.receipts[0]) ? r.receipts[0] : undefined;
+    const threadTitle = String(r.title ?? receipt?.title ?? title);
+    const threadId = String(r.threadId ?? receipt?.threadId ?? "");
+    const where = r.self === true ? "on yourself" : `on @${String(r.botName ?? receipt?.botName ?? "that bot")}`;
     const opened = `Opened thread #${threadTitle} ${where} [thread id: ${threadId}].`;
     if (r.self === true) {
       if (r.state === "running") {
@@ -762,10 +830,11 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       }
       return { text: `${opened} It could not start: ${String(r.error ?? "unknown reason")}. The thread exists but nothing is running in it; tell the person.`, isError: true };
     }
-    // A peer thread is a handoff: like delegate_bot, it starts after this
-    // turn and reports back here, so the id is a claim ticket the model
-    // must not cash in this same turn.
-    const delegationId = typeof r.delegationId === "string" ? r.delegationId.trim() : "";
+    // A thread on a teammate is the alias of coordinate_bots thread "new":
+    // a hand-off into a fresh thread that starts after this turn and reports
+    // back here, so the id is a claim ticket the model must not cash in this
+    // same turn.
+    const assignmentId = typeof r.delegationId === "string" ? r.delegationId.trim() : handoffIds(r)[0] ?? "";
     const approval = r.approvalRequired === true
       ? " The person must approve this handoff first; their card appears after your turn ends."
       : "";
@@ -773,7 +842,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       ? ` @${String(r.botName ?? "that bot")} can run ${Number(r.limit) || 0} threads at once and they are all spoken for, so it waits ${ordinal(Number(r.position) || 1)} in line for a free slot after this turn ends.`
       : " It starts when this turn ends, like any handoff.";
     return {
-      text: `${opened}${timing}${approval} Its result will be delivered to this conversation automatically (delegation id: ${delegationId || "unknown"}). Acknowledge it, mention it to the person as #${threadTitle}, and finish your turn; do not check or wait for it in this turn.`,
+      text: `${opened}${timing}${approval} Its result will be delivered to this conversation automatically (assignment id: ${assignmentId || "unknown"}). Acknowledge it, mention it to the person as #${threadTitle}, and finish your turn; do not check or wait for it in this turn.\n\n${deprecationLine(name, r)}`,
     };
   }
   if (name === "list_team_setup") {
@@ -820,7 +889,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     }
     if (!r.id) return completedProposalResult(r, `creating @${botName}`) ?? { text: `@${botName} was not created.`, isError: true };
     return {
-      text: `Created @${r.name ?? botName} in ${r.section ?? "General"} [id: ${r.id}].${r.modelSelection ? ` Model: ${JSON.stringify(r.modelSelection)}.` : ""} Assign work with ${COORDINATING ? "coordinate_bots" : "delegate_bot"}.`,
+      text: `Created @${r.name ?? botName} in ${r.section ?? "General"} [id: ${r.id}].${r.modelSelection ? ` Model: ${JSON.stringify(r.modelSelection)}.` : ""} Assign work with coordinate_bots.`,
     };
   }
   if (name === "create_room") {

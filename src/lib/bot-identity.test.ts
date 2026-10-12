@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 import { contrastRatio, mixSrgb, toneForSurface } from "./color-contrast";
 import { MAUS_COLORS, MAUS_COLOR_NAMES } from "./mascot";
@@ -26,6 +27,19 @@ describe("room speaker colors", () => {
   it("names each bot with a class that reads the skin token", () => {
     for (const color of MAUS_COLOR_NAMES) {
       expect(css).toContain(`.bot-identity[data-bot-color="${color}"] { color: var(--identity-${color}); }`);
+    }
+  });
+
+  it("applies chat colors outside window drag controls", async () => {
+    const window = new Window();
+    try {
+      const sheet = new window.CSSStyleSheet();
+      sheet.replaceSync(css);
+      const selectors = Array.from(sheet.cssRules).flatMap((rule) => "selectorText" in rule ? [rule.selectorText] : []);
+      expect(selectors).toContain('.bot-identity[data-bot-color="blue"]');
+      expect(selectors).toContain(".user-bubble-colored .mention-highlight");
+    } finally {
+      await window.happyDOM.close();
     }
   });
 

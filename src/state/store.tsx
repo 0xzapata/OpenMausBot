@@ -21,6 +21,7 @@ import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-even
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
+import { desktopCapabilitiesNow } from "@/lib/desktop";
 import { sameModelSelection } from "../../shared/thread-model";
 import type { MascotBodyId } from "../../shared/mascot-bodies";
 import type { QuestionRequestCardData } from "../../shared/ask-question";
@@ -171,7 +172,7 @@ export interface SecretRequestCardData {
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
   text?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
@@ -186,6 +187,9 @@ export interface Message {
   routineRun?: RoutineRunCardData;
   /** Durable lifecycle receipt for a goal-driven channel run. */
   goalRun?: GroupGoalRunCardData;
+  /** call rows: one finished Live call (its id, times and length, and a
+   * title when the bot's engine named it). Never anything said on it. */
+  call?: import("../../shared/wire").LiveCallRecord;
   /** How a channel user message should be handled. Absent means ordinary chat. */
   channelMode?: "chat" | "goal";
   /** activity messages: tool name + outcome. `spoken` is the server's
@@ -198,6 +202,11 @@ export interface Message {
   /** a user message that did not come from typing here: through the
    * server's API, or spoken during a Live call. */
   via?: "api" | "call";
+  /** user lines spoken on a Live call: which call (only with via "call"). */
+  callId?: string;
+  /** The user line whose turn produced this message (activity, cards and
+   * answers), when the server could prove it. */
+  requestMessageId?: string;
   /** Provider turn that produced this message. */
   turnId?: string;
   /** Last assistant text item from a settled provider turn. */
@@ -569,7 +578,6 @@ export function currentTaskBot(bot: Bot, threadId = bot.threadId): Bot {
 }
 
 export type TaskUpdatePatch = Partial<Pick<Task, "modelSelection" | "approvalMode" | "autoApprove" | "pinnedMessageId">> & {
-  confirmFullAccess?: boolean;
   acknowledgeLocalAuto?: boolean;
   updateBotDefault?: boolean;
   resetApprovalToAsk?: boolean;
@@ -584,7 +592,7 @@ export type TaskUpdatePatch = Partial<Pick<Task, "modelSelection" | "approvalMod
 };
 
 function taskPatchFields(patch: TaskUpdatePatch): Partial<Task> {
-  const { confirmFullAccess: _fullConsent, acknowledgeLocalAuto: _localAck, updateBotDefault: _modelDefault, resetApprovalToAsk, projectId, archivedAt, snoozedUntil, surface, pinned, link, ...fields } = patch;
+  const { acknowledgeLocalAuto: _localAck, updateBotDefault: _modelDefault, resetApprovalToAsk, projectId, archivedAt, snoozedUntil, surface, pinned, link, ...fields } = patch;
   return { ...fields, ...(resetApprovalToAsk ? { approvalMode: "ask", autoApprove: false, alwaysAllow: [] } : {}),
     ...(projectId === undefined ? {} : { projectId: projectId ?? undefined }),
     ...(archivedAt === undefined ? {} : { archivedAt: archivedAt ?? undefined }),
@@ -1460,11 +1468,20 @@ export function botOpensTo(bot: Pick<NotificationThreadOwner, "threadId" | "main
     ? bot.mainThreadId : bot.threadId;
 }
 
+/** With threads hidden the bot is one conversation, its main thread; a side
+ * thread a notification, a chip or an activity row opened is a visit, so the
+ * chat header offers the way back (ChatView). Never with threads shown. */
+export function awayFromMainThread(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): boolean {
+  return !threadsShown && botOpensTo(bot, false) !== bot.threadId;
+}
+
 /** Open a bot itself: its row, its pinned circle, the palette, the + menu,
  * ⌘1–9, the team map, a link to the bot, the bot a dead thread link falls
- * back to, the bot the app reopens at launch, Edit profile, a restored bot,
- * the next one after archiving, its computer from the workspace view, or
- * its voice settings from a room. It opens where botOpensTo says. */
+ * back to, the bot the app reopens at launch, Edit profile on another bot,
+ * a restored bot, the next one after archiving, its voice settings from a
+ * room, or the chat a Cloud's setup job went to. It opens where botOpensTo
+ * says. The bot on screen is selected again where it is (its computer from
+ * the workspace view, its own Edit profile): the person sees that thread. */
 export function openBot(
   dispatch: (action: Action) => void,
   bot: Pick<NotificationThreadOwner, "id" | "threadId" | "mainThreadId" | "tasks">,
@@ -2360,7 +2377,6 @@ export function reducer(state: AppState, action: Action): AppState {
         : animated;
       const {
         acknowledgeLocalAuto: _localAck,
-        confirmFullAccess: _fullConfirmation,
         applyToAllThreads: _allThreads,
         computer,
         connectorTools,
@@ -2843,17 +2859,26 @@ type TrustedApprovalBridge = {
   ): Promise<BotAnnouncement>;
 };
 
-/** Composer changes use the same private bridge as bot settings, but never
- * change profile defaults. Confirmation is UI state, never an HTTP credential. */
+/** The packaged desktop's private approval channel, when this window has a
+ * working one. Custom needs it. Full uses it there and the app's API
+ * everywhere else: a browser, a paired client, or a development build, whose
+ * bridge has no embedded server behind it. */
+export function desktopApprovalBridge(): TrustedApprovalBridge | undefined {
+  if (typeof window === "undefined" || !window.ogb?.approvals) return undefined;
+  return desktopCapabilitiesNow().host.packaged ? window.ogb.approvals : undefined;
+}
+
+/** Composer changes use the same private bridge as bot settings when there
+ * is one, but never change profile defaults. Full needs no bridge and no
+ * confirmation (owner decision, Oct 12); Custom still needs the bridge. */
 export async function persistTaskApproval(
   botId: string, threadId: string, patch: TaskUpdatePatch,
   bridge: TrustedApprovalBridge | undefined,
   request: (path: string, init?: RequestInit) => Promise<{ bot: BotAnnouncement }> = api,
 ): Promise<BotAnnouncement> {
-  const { approvalMode, autoApprove, confirmFullAccess, acknowledgeLocalAuto, ...ordinary } = patch;
+  const { approvalMode, autoApprove, acknowledgeLocalAuto, ...ordinary } = patch;
   const mode = approvalMode ?? (autoApprove === undefined ? undefined : autoApprove ? "auto" : "ask");
-  if (mode === "full" && confirmFullAccess !== true) throw new Error("Confirm Full access for this thread first");
-  if ((mode === "full" || mode === "custom") && !bridge) throw new Error("This approval change requires the packaged desktop app");
+  if (mode === "custom" && !bridge) throw new Error("This approval change requires the packaged desktop app");
   if (mode && bridge) {
     if (Object.keys(ordinary).length) await request(`/api/bots/${botId}/tasks/${threadId}`, { method: "PATCH", body: JSON.stringify(ordinary) });
     return bridge.setMode(botId, mode, { threadId, threadOnly: true, acknowledgeLocalAuto: acknowledgeLocalAuto === true });
@@ -2862,8 +2887,10 @@ export async function persistTaskApproval(
   return result.bot;
 }
 
-/** Persist one coalesced bot edit without ever putting Full/Custom authority
- * on the bot-accessible HTTP surface. Entering a trusted mode writes ordinary
+/** Persist one coalesced bot edit without ever putting Custom authority on
+ * the bot-accessible HTTP surface. Full goes over the app's API like every
+ * other level unless this window has the desktop's private bridge (owner
+ * decision, Oct 12). Entering a mode through the bridge writes ordinary
  * fields first, then grants authority. Leaving Custom reverses that order so a
  * coalesced provider switch is validated after the bot is back in Ask/Auto.
  * Exported for a small ordering/security contract test. */
@@ -2872,39 +2899,35 @@ export async function persistBotUpdate(
   patch: BotUpdatePatch,
   signal: AbortSignal,
   request: (path: string, init?: RequestInit) => Promise<{ bot: BotAnnouncement }> = api,
-  trustedApprovals: TrustedApprovalBridge | undefined =
-    typeof window === "undefined" ? undefined : window.ogb?.approvals,
+  trustedApprovals: TrustedApprovalBridge | undefined = desktopApprovalBridge(),
   currentBot?: BotAnnouncement,
 ): Promise<BotAnnouncement> {
   const {
     approvalMode,
-    confirmFullAccess,
     applyToAllThreads,
     ...ordinaryPatch
   } = patch;
-  const trustedMode = approvalMode === "full" || approvalMode === "custom"
-    ? approvalMode
-    : null;
   const leavesCustom = approvalMode !== undefined &&
     approvalModeFor(currentBot ?? {}) === "custom" &&
     approvalMode !== "custom";
+  const viaBridge = approvalMode === "custom" || leavesCustom ||
+    (approvalMode === "full" && trustedApprovals !== undefined);
 
-  if (!trustedMode && !leavesCustom) {
+  if (!viaBridge) {
     const result = await request(`/api/bots/${botId}`, {
       method: "PATCH",
-      // The Full confirmation is renderer-local and has already been removed
-      // above, including when a rapid later Ask/Auto choice was coalesced.
       body: JSON.stringify(
-        approvalMode === undefined ? ordinaryPatch : { ...ordinaryPatch, approvalMode },
+        approvalMode === undefined ? ordinaryPatch : {
+          ...ordinaryPatch,
+          approvalMode,
+          ...(approvalMode === "full" && applyToAllThreads ? { applyToAllThreads: true } : {}),
+        },
       ),
       signal,
     });
     return result.bot;
   }
 
-  if (approvalMode === "full" && confirmFullAccess !== true) {
-    throw new Error("Confirm the Full access warning before enabling it");
-  }
   if (!trustedApprovals || approvalMode === undefined) {
     throw new Error("This approval-level change requires the packaged desktop app");
   }
@@ -3076,7 +3099,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () =>
       createBotPatchQueue({
         send: (botId, patch, signal, currentBot) =>
-          persistBotUpdate(botId, patch, signal, api, window.ogb?.approvals, currentBot),
+          persistBotUpdate(botId, patch, signal, api, desktopApprovalBridge(), currentBot),
         reconcile: async (botId, signal) => {
           const result: { bots: BotAnnouncement[] } = await api(`/api/bots?messages=${MESSAGE_PAGE_SIZE}`, { signal });
           return result.bots.find((candidate) => candidate.id === botId) ?? null;
@@ -3163,7 +3186,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               threadId, modelSelection: patch.modelSelection, updateBotDefault: Boolean(patch.updateBotDefault),
             });
           }
-          return persistTaskApproval(botId, threadId, patch, window.ogb?.approvals);
+          return persistTaskApproval(botId, threadId, patch, desktopApprovalBridge());
         });
       // Later edits still get saved after an earlier failure, but a send
       // awaiting this batch must observe every rejected setting in it. A
@@ -3790,12 +3813,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const mode = approvalModeFor(bot);
           const current = approvalModeFor(currentTaskBot(bot, action.threadId));
           const acknowledgeLocalAuto = action.acknowledgeLocalAuto === true;
-          // Full, Custom, and leaving Custom stay on the private desktop
-          // channel. Ask, Edits, and Auto can use the thread settings route.
-          const needsDesktop = mode === "full" || mode === "custom" || current === "custom";
-          const refreshed = needsDesktop
-            ? window.ogb?.approvals
-              ? window.ogb.approvals.setMode(action.botId, mode, {
+          // Custom, and leaving Custom, stay on the private desktop channel.
+          // Full takes it when this window has one; every other level, and
+          // Full without it, uses the thread settings route.
+          const bridge = desktopApprovalBridge();
+          const viaBridge = mode === "custom" || current === "custom" || (mode === "full" && bridge !== undefined);
+          const refreshed = viaBridge
+            ? bridge
+              ? bridge.setMode(action.botId, mode, {
                 threadId: action.threadId, threadOnly: true, refreshPermissions: true, acknowledgeLocalAuto,
               })
               : Promise.reject(new Error("This approval change requires the packaged desktop app"))

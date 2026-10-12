@@ -1618,8 +1618,6 @@
   "approvalMode.learnMore": "瞭解詳情",
   "approvalMode.customLocalOnly": "自訂核准必須在本機封裝的桌面版中變更",
   "approvalMode.customLocalOnlyDot": "自訂核准必須在本機封裝的桌面版 App 中變更。",
-  "approvalMode.antigravityLocalOnly": "「自動（完整存取權）」可在本機封裝的桌面版中使用。",
-  "approvalMode.trustedLocalOnly": "「完整存取權」與「自訂」可在封裝的桌面版中使用。",
   "onboarding.welcome": "歡迎使用 {app}",
   "onboarding.intro": "能在自己的電腦上實際完成工作的機器人。告訴我們你是誰，有重大更新推出時我們會通知你。",
   "onboarding.name": "你的名稱",

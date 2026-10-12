@@ -8,6 +8,7 @@ import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.
 import { request } from "../scripts/mcp-server.ts";
 import { rebuiltSessionNotice } from "./resume-recovery.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 import { openSse } from "./testing/sse.ts";
 
 /** What a fixture turn was told: the instructions its process was launched
@@ -45,7 +46,9 @@ async function fixtureSession(test: (f: any) => Promise<void>, fakeEnv: NodeJS.P
       [specialist.id]: { reply: "CSV boundary cases verified" },
     };
     const save = () => writeFileSync(planPath, JSON.stringify(plan));
-    const nodes = () => existsSync(join(session.info.dataDir, "room-handoffs.json")) ? JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8")) : [];
+    // The coordinated turns as the runtime records them (DATA_DIR/runtime.db),
+    // projected onto the node shape the server reads (coordinator.ts HandoffView).
+    const nodes = () => readHandoffs(session.info.dataDir);
     const evidence = () => existsSync(`${planPath}.evidence.jsonl`) ? readFileSync(`${planPath}.evidence.jsonl`, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
     const messages = async (threadId: string) => (await api(`/api/threads/${threadId}/messages`)).messages;
     const start = async () => { save(); return cli("send", "--bot", chief.id, "--task", chief.activeTaskId, "--text", "Please have Engineering build and independently verify a CSV export. Own the result."); };
@@ -164,11 +167,19 @@ it("coordinates a lead and its specialist from ordinary chat, returns to Clive, 
   expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text === "The requested CSV export is implemented and verified")).toBe(true);
   const bots = (await f.api("/api/bots")).bots;
   expect(bots.find((bot: any) => bot.id === f.lead.id).managedSections).toBeUndefined();
+  // One tool surface for every turn (docs/runtime-contract.md §9): the lead's
+  // coordinated turn gets coordinate_bots and assignment_status like the
+  // Chief's chat turn; start_thread is for its own threads only; the legacy
+  // names are listed last as deprecated aliases for this release.
   const turn = f.evidence().find((entry: any) => entry.botId === f.lead.id);
-  const tools = turn.evidence[0].result.tools.map((tool: any) => tool.name);
+  const leadTools = turn.evidence[0].result.tools;
+  const tools = leadTools.map((tool: any) => tool.name);
   expect(tools).toContain("coordinate_bots");
-  expect(tools).not.toContain("delegate_bot");
-  expect(tools).not.toContain("start_thread");
+  expect(tools).toContain("assignment_status");
+  const aliases = ["delegate_bot", "ask_bot", "send_to_bot", "check_delegation", "wait_delegation"];
+  expect(tools.slice(-aliases.length)).toEqual(aliases);
+  for (const alias of aliases) expect(leadTools.find((tool: any) => tool.name === alias).description).toMatch(/^Deprecated alias of (coordinate_bots|assignment_status)/);
+  expect(leadTools.find((tool: any) => tool.name === "start_thread").inputSchema.properties.bot_id.enum).toEqual([f.lead.id]);
   const chiefTools = f.evidence()[0].evidence[0].result.tools;
   const selfThread = chiefTools.find((tool: any) => tool.name === "start_thread");
   expect(selfThread.description).toContain("separate job on yourself");
@@ -266,8 +277,11 @@ it.each(["resume", "stop", "failed resume", "failed root"] as const)("keeps a gu
       expectedTurnId: waiting.activeTurnId, expectedExecutionId: waiting.executionId };
     if (action === "failed root") {
       await api("PATCH", `/api/bots/${f.chief.id}`, { chiefOfStaff: false, hidden: true });
+      // The runtime rechecks addresses before every dispatch (contract §8):
+      // the root is refused when its resume comes due, once the teammate
+      // mid-turn has settled, and nothing of it runs again.
+      writeFileSync(gate, "release the isolated teammate after its root lost its Chief");
       await expect.poll(() => f.nodes().find((node: any) => node.id === waiting.executionId)?.status, { timeout: 15_000 }).toBe("failed");
-      writeFileSync(gate, "release the isolated teammate after its root failed");
       const finalWait = await f.wait();
       evidence.push({ command: ["wait", "--bot", f.chief.id, "--task", threadId, "--timeout", "30"], result: finalWait });
       expect(finalWait.status).toBe("settled");
@@ -339,15 +353,36 @@ it.each(["resume", "stop", "failed resume", "failed root"] as const)("keeps a gu
   }
 }), 45_000);
 
-it("uses only the coordinator for teammates and lets the opener find and close the completed task", () => fixture(async f => {
-  f.plan[f.chief.id].steps.unshift({ tool: "start_thread", arguments: { bot_id: f.lead.id, title: "Wrong path", message: "Use teamwork" }, expectError: true });
+// start_thread on a teammate is an alias of coordinate_bots with thread "new"
+// for this release (docs/runtime-contract.md §9): the same assignment on the
+// runtime, in a fresh thread on the teammate titled by the call, answered
+// with one deprecation line. Nothing of it runs in the lead's own conversation.
+it("opens a fresh thread on a teammate through the start_thread alias and says it is deprecated", () => fixture(async f => {
+  const originalLead = await f.messages(f.lead.activeTaskId);
+  f.plan[f.chief.id] = { steps: [{ tool: "start_thread", arguments: { bot_id: f.lead.id, title: "Alias path", message: "ALIAS_BRIEF verify the CSV export yourself" } }],
+    reply: "Opened the alias path", resumeReply: "The alias path reported back" };
+  f.plan[f.lead.id] = { reply: "ALIAS_RESULT verified" };
+  await f.start();
+  expect((await f.wait()).status).toBe("settled");
+  const answered = f.evidence()[0].evidence.find((entry: any) => entry.step?.tool === "start_thread").response.result;
+  expect(answered.isError).toBeFalsy();
+  expect(answered.content[0].text).toContain("start_thread on a teammate is replaced by coordinate_bots(thread: \"new\")");
+  const child = f.nodes().find((node: any) => node.botId === f.lead.id);
+  expect(child).toMatchObject({ mode: "work", reply: "resume", status: "completed", text: expect.stringContaining("ALIAS_BRIEF") });
+  const lead = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id);
+  expect(lead.tasks.find((task: any) => task.threadId === child.threadId)).toMatchObject({ title: "Alias path", openedBy: { botId: f.chief.id, name: "Clive" } });
+  expect(child.threadId).not.toBe(f.lead.activeTaskId);
+  expect(await f.messages(f.lead.activeTaskId)).toEqual(originalLead);
+  expect(f.evidence().map((turn: any) => turn.botId)).toEqual([f.chief.id, f.lead.id, f.chief.id]);
+  expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.tool?.name === "Engineering lead replied" && message.tool.output === "ALIAS_RESULT verified")).toBe(true);
+}), 45_000);
+
+it("lets the opener find and close the completed task", () => fixture(async f => {
   await f.start();
   expect((await f.wait()).status).toBe("settled");
   const child = f.nodes().find((node: any) => node.botId === f.lead.id);
   const lead = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id);
   expect(lead.tasks).toHaveLength(2);
-  const rejected = f.evidence()[0].evidence.find((entry: any) => entry.step?.tool === "start_thread");
-  expect(rejected.response.result.content[0].text).toContain("Use coordinate_bots for teammates");
   f.plan[f.chief.id] = {
     steps: [
       { tool: "list_threads", arguments: {} },
@@ -378,7 +413,7 @@ it("does not treat self-opened work or an abandoned human branch as new human au
     { steps: [post("First update"), post("Second update"), { tool: "start_thread", arguments: { title: "Independent job", message: "Continue the separate check." } }], reply: "Opened the independent job" },
     { steps: [post("A self-opened job is not another human answer", true), { tool: "request_credential", arguments: { credential_id: "ttsKey", reason: "Fixture continuation" } }], reply: "Waiting for the fixture credential decision" },
     { reply: "This alternative human branch will be abandoned" },
-    { steps: [{ tool: "start_thread", arguments: { title: "Recursive job", message: "Must not start." }, expectError: true }], reply: "Continuing only the original self-opened job" },
+    { reply: "Continuing only the original self-opened job" },
     { steps: [post("A real user explicitly asked for this update")], reply: "Posted the requested update" },
   ] };
   f.save();
@@ -410,11 +445,11 @@ it("does not treat self-opened work or an abandoned human branch as new human au
   await f.api(`/api/bots/${f.chief.id}/secret-cards/${secret.id}/dismiss`, { threadId: child.threadId });
   await providerFinished(4);
   expect((await childWait()).status).toBe("settled");
+  // The continuation keeps the one tool surface (docs/runtime-contract.md
+  // §9): start_thread on itself included, with no per-thread switch; the
+  // runtime's depth limit bounds the tree. Nothing here opened one.
   const continuation = f.evidence().at(-1);
-  expect(continuation.evidence[0].result.tools.some((tool: any) => tool.name === "start_thread")).toBe(false);
-  const denied = continuation.evidence.find((entry: any) => entry.step?.tool === "start_thread");
-  expect(denied).toBeDefined();
-  expect(denied.response.error.message).toBe("Unknown tool: start_thread");
+  expect(continuation.evidence[0].result.tools.find((tool: any) => tool.name === "start_thread").inputSchema.properties.bot_id.enum).toEqual([f.chief.id]);
   expect((await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.chief.id).tasks).toHaveLength(2);
   await f.cli("send", "--bot", f.chief.id, "--task", child.threadId, "--text", "Now I want you to post one new update.");
   await providerFinished(5);
@@ -776,20 +811,24 @@ it("parks a message behind outstanding teammate work when the bot opts in, then 
   expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text === "Noted; the export is UTF-8 too")).toBe(true);
 }), 60_000);
 
-// An automation turn is not the person cancelling either: a delegated
-// (routine-driven) turn lands in the same conversation and leaves the
-// outstanding assignment alone.
-it("does not cancel a live coordination when an automation turn lands in the conversation", () => fixture(async f => {
+// A teammate's hand-off to the Chief (here a routine run's, through the
+// delegate_bot alias) is an assignment on the runtime: it runs in the Chief's
+// work thread for that sender, never in the conversation a coordination
+// lives in, so it is not the person cancelling anything there either.
+it("runs a teammate's hand-off to the Chief in the Chief's work thread for that sender, cancelling no live coordination", () => fixture(async f => {
   const ops = (await f.cli("new-bot", "--name", "Ops", "--section", "Leadership")).bot;
+  const assign = structuredClone(f.plan[f.chief.id].steps);
   f.plan[f.lead.id] = { delayMs: 6000, reply: "CSV export implemented" };
-  f.plan[f.chief.id] = { turns: [
-    { steps: structuredClone(f.plan[f.chief.id].steps), reply: "Assigned to Engineering" },
-    { reply: "The requested CSV export is implemented and verified" },
-    { reply: "Nothing further" },
+  // Turns whose order nothing pins (the hand-off beside the coordination's
+  // resume) pick their entry by what they were asked.
+  f.plan[f.chief.id] = { script: [
+    { key: "assign", match: ["Please have Engineering build"], steps: assign, reply: "Assigned to Engineering" },
+    { key: "note", match: ["Nightly note: confirm the export owner."], reply: "The export owner is Engineering." },
+    { key: "review", match: ["Your downstream room requests have settled."], reply: "The requested CSV export is implemented and verified" },
   ] };
-  f.plan[ops.id] = { turns: [
-    { steps: [{ tool: "delegate_bot", arguments: { bot_id: f.chief.id, message: "Nightly note: confirm the export owner." } }], reply: "Delegated the nightly note" },
-    { reply: "Recorded the outcome of the nightly note" },
+  f.plan[ops.id] = { script: [
+    { key: "send", match: ["Send the nightly note."], steps: [{ tool: "delegate_bot", arguments: { bot_id: f.chief.id, message: "Nightly note: confirm the export owner." } }], reply: "Delegated the nightly note" },
+    { key: "resume", match: ["Your downstream room requests have settled."], reply: "Recorded the outcome of the nightly note" },
   ] };
   await f.start();
   await expect.poll(() => f.nodes().find((node: any) => node.parentId)?.status, { timeout: 15_000 }).toBe("running");
@@ -798,12 +837,21 @@ it("does not cancel a live coordination when an automation turn lands in the con
   const { routine } = await f.api("/api/routines", { name: "Nightly note", prompt: "Send the nightly note.", botId: ops.id,
     enabled: false, schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 } });
   await f.api(`/api/routines/${routine.id}/run`, {});
-  // The delegated turn really reaches the conversation the coordination lives in.
-  await expect.poll(async () => (await f.messages(f.chief.activeTaskId)).some((message: any) => message.peerAsk?.botId === ops.id), { timeout: 25_000 }).toBe(true);
+  // The hand-off really runs on the Chief — in its work thread for Ops.
+  await expect.poll(() => f.evidence().some((turn: any) => turn.planKey === "note"), { timeout: 25_000 }).toBe(true);
+  const note = f.evidence().find((turn: any) => turn.planKey === "note");
+  expect(note.threadId).not.toBe(f.chief.activeTaskId);
+  const chief = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.chief.id);
+  expect(chief.tasks.find((task: any) => task.threadId === note.threadId)).toMatchObject({ title: "@Ops · work", openedBy: { botId: ops.id, kind: "work" } });
+  expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.peerAsk?.botId === ops.id || String(message.text ?? "").includes("Nightly note"))).toBe(false);
   expect(f.nodes().find((node: any) => node.id === assignment.id).status).not.toBe("cancelled");
 
   await expect.poll(() => f.nodes().find((node: any) => node.id === assignment.id)?.status, { timeout: 25_000 }).toBe("completed");
   await expect.poll(async () => (await f.messages(f.chief.activeTaskId)).some((message: any) => message.tool?.name === "Engineering lead replied"), { timeout: 15_000 }).toBe(true);
+  // Both trees settle: the coordination's review and Ops's own resume.
+  await expect.poll(() => f.evidence().map((turn: any) => turn.planKey).filter(Boolean).sort(), { timeout: 20_000 }).toEqual(["assign", "note", "resume", "review", "send"]);
+  // The last settlement lands a tick after its turn's end.
+  await expect.poll(() => f.nodes().every((node: any) => node.status === "completed"), { timeout: 10_000 }).toBe(true);
 }), 60_000);
 
 // Stop belongs to the conversation it was pressed in. It stops this bot and
@@ -865,15 +913,24 @@ it("deleting the waiting source cancels its tree and never recreates the deleted
 }), 45_000);
 
 it("withholds direct results when the owner's cross-team grant is revoked", () => fixture(async f => {
-  f.plan[f.lead.id] = { delayMs: 3000, reply: "PRIVATE_ENGINEERING_RESULT" };
+  // The grant goes while the teammate's engine is in its turn (its ready
+  // file is written from inside it): a record that says "running" is
+  // written at dispatch, before the turn is even set up.
+  const ready = join(f.session.info.dataDir, "private-work.ready");
+  const gate = join(f.session.info.dataDir, "private-work.gate");
+  f.plan[f.lead.id] = { readyFile: ready, gateFile: gate, reply: "PRIVATE_ENGINEERING_RESULT" };
   await f.start();
-  await expect.poll(() => f.nodes().find((node: any) => node.parentId)?.status, { timeout: 15_000 }).toBe("running");
+  await expect.poll(() => existsSync(ready), { timeout: 15_000 }).toBe(true);
   await f.api(`/api/bots/${f.chief.id}`, { managedSections: [] }, "PATCH");
+  writeFileSync(gate, "finish the private work after the grant went");
   expect((await f.wait()).status).toBe("settled");
-  expect(f.nodes().find((node: any) => node.parentId).status).toBe("failed");
+  // The Chief lost access while the teammate worked: whatever the Chief's
+  // review turn was told, the private result is not in it.
   const resumed = f.evidence().find((turn: any) => turn.botId === f.chief.id && turn.resumed);
+  expect(JSON.stringify(resumed), told(resumed).slice(-1_500)).not.toContain("PRIVATE_ENGINEERING_RESULT");
+  const child = f.nodes().find((node: any) => node.parentId);
+  expect(child.status, `${JSON.stringify(child)}\n${told(resumed).slice(-1_500)}`).toBe("failed");
   expect(resumed.prompt.message.content).toContain("Result withheld");
-  expect(JSON.stringify(resumed)).not.toContain("PRIVATE_ENGINEERING_RESULT");
 }), 45_000);
 
 it("retains returned direct reports for follow-up turns but rechecks access before replay", () => fixture(async f => {
@@ -925,7 +982,7 @@ it("runs the owed direct follow-up while the same bot works in another thread", 
   await expect.poll(async () => (await chiefTasks()).find((task: any) => task.title === "Independent hold")?.busy, { timeout: 20_000 }).toBe(true);
   // The owed follow-up belongs to this conversation alone: it must dispatch
   // even while the bot stays busy in its sibling thread.
-  const root = () => f.nodes().find((node: any) => node.key === "root");
+  const root = () => f.nodes().find((node: any) => !node.parentId);
   await expect.poll(() => root()?.status, { timeout: 10_000 }).toBe("running");
   writeFileSync(gate, "");
   await expect.poll(() => root()?.status, { timeout: 10_000 }).toBe("completed");

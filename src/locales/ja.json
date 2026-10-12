@@ -1737,8 +1737,6 @@
   "approvalMode.learnMore": "詳しく見る",
   "approvalMode.customLocalOnly": "カスタム承認は、インストール済みのデスクトップアプリでのみ変更できます",
   "approvalMode.customLocalOnlyDot": "カスタム承認は、インストール済みのデスクトップアプリでのみ変更できます。",
-  "approvalMode.antigravityLocalOnly": "自動（フルアクセス）は、インストール済みのデスクトップアプリで使えます。",
-  "approvalMode.trustedLocalOnly": "フルアクセスとカスタムは、インストール済みのデスクトップアプリで使えます。",
   "onboarding.welcome": "{app} へようこそ",
   "onboarding.intro": "自分のコンピューターで実際に仕事をするボットです。あなたのことを教えてください。大きな更新があればお知らせします。",
   "onboarding.name": "あなたの名前",

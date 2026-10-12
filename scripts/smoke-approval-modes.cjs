@@ -166,7 +166,10 @@ app.whenReady().then(async () => {
   const created = await api("/api/bots", "POST", { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
   assert.equal(created.status, 201);
   const id = created.body.bot.id;
-  assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvalMode: "full", acknowledgeFullAccess: true })).status, 403);
+  // Full needs no private channel: the API applies it at once (owner
+  // decision, Oct 12). Custom keeps the private channel (checked below).
+  assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvalMode: "full" })).status, 200);
+  assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvalMode: "ask" })).status, 200);
   for (const [mode, native] of [["full", "bypassPermissions"], ["auto", "auto"], ["edits", "acceptEdits"], ["ask", "default"]]) {
     await coordinator.request(child, id, mode);
     await until(async () => (await api("/api/bots?messages=0")).body.bots.find((bot) => bot.id === id)?.approvalMode === mode);
@@ -197,7 +200,14 @@ app.whenReady().then(async () => {
       assert.equal((await api(`/api/bots/${scoped.id}/tasks/${other.threadId}`, "PATCH", { approvalMode: "edits" })).status, 400);
     }
     assert.equal((await readScoped()).tasks.find((task) => task.threadId === old.threadId).approvalMode, "ask");
-    assert.equal((await api(`/api/bots/${scoped.id}/tasks/${old.threadId}`, "PATCH", { approvalMode: "full" })).status, 403);
+    // Any client may give one thread Full over the API; the private grant
+    // below must still work on the same thread once it is back on Ask.
+    assert.equal((await api(`/api/bots/${scoped.id}/tasks/${old.threadId}`, "PATCH", { approvalMode: "full" })).status, 200);
+    assert.equal((await api(`/api/bots/${scoped.id}/tasks/${old.threadId}`, "PATCH", { approvalMode: "ask" })).status, 200);
+    if (instanceId === "codex") {
+      assert.equal((await api(`/api/bots/${scoped.id}`, "PATCH", { approvalMode: "custom" })).status, 403);
+      assert.equal((await api(`/api/bots/${scoped.id}/tasks/${old.threadId}`, "PATCH", { approvalMode: "custom" })).status, 403);
+    }
     await coordinator.request(child, scoped.id, "full", { threadId: old.threadId });
     await until(async () => (await readScoped()).tasks.find((task) => task.threadId === old.threadId).approvalMode === "full");
     assert.equal((await readScoped()).tasks.find((task) => task.threadId === other.threadId).approvalMode, "ask");
@@ -305,7 +315,8 @@ app.whenReady().then(async () => {
   }
   for (const model of ["gemini-3.8-flash-high", "gemini-3.8-flash-low"]) {
     const agyBot = (await api("/api/bots", "POST", { modelSelection: { instanceId: "agy", model } })).body.bot;
-    assert.equal((await api(`/api/bots/${agyBot.id}`, "PATCH", { approvalMode: "full", acknowledgeFullAccess: true })).status, 403);
+    assert.equal((await api(`/api/bots/${agyBot.id}`, "PATCH", { approvalMode: "full" })).status, 200);
+    assert.equal((await api(`/api/bots/${agyBot.id}`, "PATCH", { approvalMode: "ask" })).status, 200);
     for (const [turn, mode] of ["full", "full", "ask", "auto"].entries()) {
       await coordinator.request(child, agyBot.id, mode);
       await until(async () => (await api("/api/bots?messages=0")).body.bots.find((bot) => bot.id === agyBot.id)?.approvalMode === mode);

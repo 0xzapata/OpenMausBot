@@ -20,6 +20,7 @@
 import { newId } from "./contracts.ts";
 import { chatFollowups, saveChatFollowup, settleChatFollowups } from "./message-db.ts";
 import { drainCoalesceHead } from "./admission.ts";
+import { spokenLineFields } from "./live-call-record.ts";
 import { workOriginSchema, type WorkOrigin } from "./peer-provenance.ts";
 import type { ResolvedSender, SteerQueueReason } from "../shared/wire.ts";
 import type { BotRecord, Message } from "./store.ts";
@@ -66,6 +67,8 @@ interface QueueEntry {
     /** The words were spoken in a Live call, not typed: the drained line
      * says so, like an immediate send would. */
     via?: "call";
+    /** The Live call they were spoken on (Message.callId); only with via. */
+    callId?: string;
   }>;
 }
 
@@ -87,12 +90,13 @@ export function restoreSteeredMessages(): void {
     if (row.status !== "pending") continue;
     const entry = queues.get(row.threadId) ?? { botId: row.ownerId, items: [] };
     if (entry.botId !== row.ownerId) throw new Error("queued task belongs to another bot");
-    // a 1:1 line is only ever stamped "call"; "api" belongs to channel rows
-    const { via, origin: storedOrigin, ...payload } = row.payload;
+    // A 1:1 line is only ever stamped "call" ("api" belongs to channel
+    // rows), and only a spoken line keeps the call's id.
+    const { via, callId, origin: storedOrigin, ...payload } = row.payload;
     const origin = workOriginSchema.safeParse(storedOrigin);
     entry.items.push({
       ...payload,
-      ...(via === "call" ? { via } : {}),
+      ...spokenLineFields(via, callId),
       ...(origin.success ? { origin: origin.data } : {}),
       messageId: row.id,
       prompt: row.payload.prompt ?? row.payload.text,
@@ -136,7 +140,7 @@ export function queueSteeredMessage(
   botId: string,
   threadId: string,
   text: string,
-  options: { prompt?: string; replyToId?: string; sendId?: string; dataContext?: Message["dataContext"]; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; origin?: WorkOrigin; sender?: ResolvedSender; trigger?: UsageTrigger; via?: "call" } = {},
+  options: { prompt?: string; replyToId?: string; sendId?: string; dataContext?: Message["dataContext"]; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; origin?: WorkOrigin; sender?: ResolvedSender; trigger?: UsageTrigger; callId?: string; via?: "call" } = {},
 ): QueuedSteer {
   const id = newId();
   const entry = queues.get(threadId) ?? { botId, items: [] };
@@ -157,7 +161,7 @@ export function queueSteeredMessage(
     sender: options.sender,
     trigger: options.trigger,
     queuedAt: Date.now(),
-    via: options.via,
+    ...spokenLineFields(options.via, options.callId),
   };
   saveChatFollowup({ id, kind: "bot", ownerId: botId, threadId, payload: item });
   entry.items.push(item);
@@ -256,7 +260,7 @@ export function drainSteeredMessages(
           queueId: item.messageId,
           peerAsk: item.peerAsk,
           sender: item.sender,
-          ...(item.via ? { via: item.via } : {}),
+          ...spokenLineFields(item.via, item.callId),
         }),
       );
     }
@@ -294,13 +298,17 @@ export function drainSteeredMessages(
  * transcript already names them all the same.
  * Team incidents reports are OpenMausBot's, whichever bot broke (none
  * carries a request's origin): the ones that waited behind a busy Chief are
- * answered as one turn. */
+ * answered as one turn.
+ * A spoken line never drains with a typed line or another call's line:
+ * each call's record contains only turns its own lines started. */
 function coalesceIdentity(item: QueueEntry["items"][number]): string {
   if (item.peerAsk?.incident) return "incident";
   if (item.peerAsk) return `peer:${item.peerAsk.botId}:${item.unattended === true ? "unattended" : "attended"}:${JSON.stringify(item.origin ?? null)}`;
   if (item.unattended === true) return "unattended";
-  if (item.sender) return `person:${item.sender.id ?? item.sender.name}`;
-  return "person:local";
+  const person = item.sender ? `person:${item.sender.id ?? item.sender.name}` : "person:local";
+  // the "call:" prefix cannot begin any other identity; a row from a build
+  // that kept no call id is still a spoken line, in a call of its own
+  return item.via === "call" ? `call:${item.callId ?? ""}|${person}` : person;
 }
 
 /** Find the receipt for a retry whose message is still waiting to drain. */

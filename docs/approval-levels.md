@@ -12,14 +12,27 @@ Access, OMB also applies its own configuration tools without another approval.
 | **Ask for approval** | Requests approval for commands and file changes, the way the provider's supervised mode does. |
 | **Auto-accept edits** | Approves file edits automatically; other actions can still require approval. Offered where the provider has such a mode (Claude, Grok, Antigravity). |
 | **Approve for me** | Uses the provider's automatic review on Codex, Claude, Cursor, and Grok to approve routine actions and ask about others. Providers without an equivalent fall back to asking. |
-| **Full access** | Enables the provider's permissive mode for commands, edits, and selected-computer actions, including potentially destructive or sensitive work. Residual native permission prompts are answered for you. OMB profile changes, routine actions, team setup, bot deletion, and enabled skill authoring apply without a second approval. Peer-review prompts are skipped within the bot's authorized scope. Delegation uses the receiving bot's setting, never the sender's — except from a Chief of Staff, whose level flows down (below). Actual questions and missing credentials still need your input. |
+| **Full access** | Enables the provider's permissive mode for commands, edits, and selected-computer actions, including potentially destructive or sensitive work. Residual native permission prompts are answered for you. OMB profile changes, routine actions, team setup, bot deletion, and enabled skill authoring apply without a second approval. Peer-review prompts are skipped within the bot's authorized scope. Work handed on with `coordinate_bots` uses the receiving bot's setting, never the sender's — except from a Chief of Staff, whose level flows down (below). Actual questions and missing credentials still need your input. |
 | **Custom (`config.toml`)** | Codex only. OpenMausBot reads and reapplies the effective approval and sandbox settings from your Codex configuration. |
 
-Full access is an elevated-risk standing approval. Full and Custom can only be
-enabled from a packaged local desktop app, where the choice crosses a private
-process channel rather than the bot-accessible HTTP API. They are hidden in
-development, standalone web, and remote pages. Full access does not bypass operating
-system privacy controls, authentication, CAPTCHA or MFA, service permissions,
+Full access applies the moment you pick it: no confirmation dialog, no
+second step. It can be turned on from any client that can reach the app's
+API: the desktop app, a browser, a paired phone or web client, or a bot or
+script calling the local API where local calls count as you (development, the
+CLI, a self-hosted server). Picked in bot settings, it applies to the bot
+and every one of its existing threads at once; picked in the composer, to that
+thread; Refresh permissions copies it onto one thread. An engine that cannot
+run Full access still cannot be set to it. On a hosted company workspace, Full
+access still comes only from the operator's dedicated policy
+([guarded messages](verification/guarded-messages.md)).
+
+Custom is different: it can only be entered or left from a packaged local
+desktop app, where the choice crosses a private process channel rather than the
+bot-accessible HTTP API, because it holds restrictions you wrote yourself. It
+is hidden in development, standalone web, and remote pages.
+
+Full access does not bypass operating system privacy controls,
+authentication, CAPTCHA or MFA, service permissions,
 or workspace/team ownership and computer-sharing grants. Full Access controls
 approval prompts; it does not sign in for you, enable a feature you disabled,
 or grant another bot access to a different workspace.
@@ -42,22 +55,27 @@ when such a turn asked.
 Approvals were where a team's owner spent their day: every teammate a Chief
 brought in started at "Ask for approval", so the owner either answered a card
 every few minutes or switched each new thread by hand. So **a Chief of Staff's
-level flows down**. Work it delegates — `coordinate_bots` into a teammate's
-thread, and `delegate_bot` — starts at the level of the Chief conversation it
-came from: Auto-accept edits, Approve for me, or Full access. The delegated
-thread is switched to that level, keeps it, and opens with a line saying so
-("Approve for me — delegated by Clive, a Chief of Staff on Approve for me");
-you can still change it in that thread. Work a Chief hands out inside a room
-runs at the Chief's level for that turn.
+level flows down**. Work it hands out with `coordinate_bots` (and, for one
+release, its `delegate_bot` and peer `start_thread` aliases) — into the work
+thread the Chief's conversation has with a teammate, or a fresh thread with
+`thread: "new"` — starts at the level of the Chief conversation it came from:
+Auto-accept edits, Approve for me, or Full access. The teammate's thread is
+switched to that level, keeps it, and opens with a line saying so ("Approve
+for me — delegated by Clive, a Chief of Staff on Approve for me"); you can
+still change it in that thread. Work a Chief hands out inside a room runs at
+the Chief's level for that turn. The level is computed once when the
+assignment is written and recorded on it (docs/runtime-contract.md §3); the
+turn runs with exactly that level.
 
 It only ever raises: a teammate already on a higher level keeps it, a teammate
-on Custom keeps its own configuration, and a Chief delegating from an Ask
-conversation passes nothing on. A teammate's engine caps the level: one without
-Full access gets Approve for me, and one without Auto-accept edits (Codex,
-whose Ask already writes the workspace) stays on its own level. The teammate's
-own default and its other conversations do not change, and an ordinary bot's
-delegation still uses the recipient's setting. Questions and missing
-credentials still reach you.
+on Custom keeps its own configuration, and a Chief handing work out from an
+Ask conversation passes nothing on. A teammate's engine caps the level: one
+without Full access gets Approve for me, and one without Auto-accept edits
+(Codex, whose Ask already writes the workspace) stays on its own level. The
+teammate's own default and its other conversations do not change, and an
+ordinary bot's hand-off still uses the recipient's setting. A consultation
+(`consult: true`) answers from what the teammate knows and acts on nothing, so
+no level travels with it. Questions and missing credentials still reach you.
 
 ## Answering a request
 
@@ -94,23 +112,33 @@ session runs Manual, the chat shows one notice per session naming the model.
 Choose a model the reviewer supports, Auto-accept edits, or Full access to
 stop the prompts.
 
+### Changing a bot's engine
+
+A bot at **Full access** keeps it when you switch it to another engine that
+can run Full access: no reset to Ask and no confirmation. The bot's threads
+that follow its model keep their level too. **Custom** rules belong to Codex,
+so a Custom bot goes back to Ask before it changes engine. Switching to an
+engine that cannot run the bot's level (for example Auto-accept edits on
+Codex) still asks to choose Ask first.
+
 ### Antigravity: Ask, Edits, or Auto (full access)
 
 For Antigravity, the composer and bot settings offer **Ask for approval**,
 **Auto-accept edits** (its native `auto_edit` mode), and **Auto (full access)**.
 Auto enables native `yolo` mode and automatically approves remaining
 tool-permission requests for commands, edits, and computer actions, without an
-automatic reviewer. The composer chip reads **Auto**. This uses the existing
-Full access grant and confirmation, not a separate permission setting, and
-applies to every model in that Antigravity instance, including Gemini.
+automatic reviewer. The composer chip reads **Auto**. This is the Full access
+level under another name, not a separate permission setting, applies at once
+like Full access, and covers every model in that Antigravity instance,
+including Gemini.
 
-Choose Auto explicitly in the local packaged desktop app. Old Antigravity
+Choose Auto explicitly. Old Antigravity
 `auto` / `autoApprove` settings still behave as Ask and are displayed as Ask;
 they never become unrestricted access on upgrade. Switching back to Ask
 restores prompts on the next turn. Questions and missing-credential forms
 still require an answer. A Chief or
-teammate can delegate work to this bot without downgrading its explicit Auto
-(full access) grant. It does not enable Auto on any other bot.
+teammate can hand work to this bot with `coordinate_bots` without downgrading
+its explicit Auto (full access) grant. It does not enable Auto on any other bot.
 
 ## Asking you questions
 
@@ -155,9 +183,10 @@ silently substitute unrestricted access when a mode is rejected.
 
 ### Read-only integration tools
 
-OpenMausBot's built-in agents MCP server describes nine scoped reads with
+OpenMausBot's built-in agents MCP server describes its scoped reads with
 explicit read-only, non-destructive, idempotent, closed-world metadata:
-`list_bots`, `list_rooms`, `list_threads`, `check_delegation`, `wait_delegation`,
+`list_bots`, `list_rooms`, `list_threads`, `assignment_status` (and its
+deprecated aliases `check_delegation` and `wait_delegation`),
 `session_search`, `session_read`, `list_routines`, and `skills_list`.
 Session recall still enforces own-bot access and records its existing room
 disclosure audit. These hints do not grant access to another bot's conversations.
@@ -171,8 +200,9 @@ The level set follows the provider-boundary approach in
 [T3 Code's permission modes](https://github.com/pingdotgg/t3code/blob/e16b8b059c9f5ff6dfed1addecffb831c6aee043/docs/user/permission-modes.md):
 Supervised, Auto-accept edits, Auto, and Full access, each a provider mode
 rather than an app rule, with a remembered approval that belongs to the
-provider's session. Its quieter default is Full access; OpenMausBot keeps its
-own opt-in desktop confirmation and Ask as the default.
+provider's session. Its quieter default is Full access; OpenMausBot keeps Ask
+as the default, and Full access is one pick away, applied without a
+confirmation.
 
 ## Verification for contributors
 
@@ -182,7 +212,7 @@ proxy. Its fixture also verifies that explicit Ask sibling threads still wait.
 
 Run `pnpm exec electron scripts/smoke-approval-modes.cjs` to exercise the real
 private desktop-to-server grant protocol in a disposable fixture. It verifies
-HTTP elevation rejection, Full → Auto → Ask on resumed Claude turns, and
+that Full access applies over HTTP while Custom is refused there, Full → Auto → Ask on resumed Claude turns, and
 Antigravity automatic tool approvals on new and resumed Full access turns across
 multiple model variants. It also checks that Ask and legacy Auto still prompt,
 peer-started Full turns auto-approve, switching the receiving bot back to Ask

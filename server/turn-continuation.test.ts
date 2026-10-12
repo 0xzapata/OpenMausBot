@@ -201,36 +201,28 @@ describe("makeCapContinuationSubscriber", () => {
 });
 
 // Which turns are their requester's to recover (index.ts reportsToRequester),
-// run without starting a server. Only a requester that is handed the outcome
-// can decide what to send next; where none is, the step cap continues the
-// work on its own as before, rather than leaving it stopped with no one told.
+// run without starting a server. A coordinated teammate turn is owned by its
+// assigner, which resumes with the outcome; a requesting turn (a root), a
+// turn not yet started, and a thread with no assignment are nobody's to
+// recover here, so the step cap continues the work on its own as before.
 describe("the harness's reportsToRequester", () => {
   const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  const from = source.indexOf("\nfunction reportsToRequester("), to = source.indexOf("\n/** Consume one delegated-turn watch");
+  const from = source.indexOf("\nfunction reportsToRequester("), to = source.indexOf("\n// A bot going in circles");
   if (from < 0 || to <= from) throw new Error("reportsToRequester section moved");
   const code = ts.transpileModule(source.slice(from, to), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
-  function owed(watch: Record<string, unknown>, rooms: string[] = []): boolean {
-    const context = vm.createContext({
-      delegationWatch: new Map([["work", watch]]), awaitedAsks: new Set(), roomHandoffs: { nodes: new Map() },
-      store: {
-        botByThread: (threadId: string) => threadId === "chief-dm" ? { id: "chief" } : undefined,
-        groupByThread: (threadId: string) => rooms.includes(threadId) ? { id: `group-${threadId}` } : undefined,
-        taskByThread: (botId: string, threadId: string) => botId === "chief" && threadId === "chief-dm" ? { threadId } : undefined,
-      },
-    });
+  function owed(nodes: Array<Record<string, unknown>>): boolean {
+    const context = vm.createContext({ coordinator: { all: () => nodes } });
     vm.runInContext(code, context, { filename: "index.ts (reportsToRequester fixture)" });
     return context.reportsToRequester("work") as boolean;
   }
 
-  it("owes a delegation's step cap to a requester that is woken or polls, not to a room's transcript", () => {
-    // a Chief's own conversation is woken with the outcome
-    expect(owed({ sourceBotId: "chief", sourceThreadId: "chief-dm" })).toBe(true);
-    expect(owed({ sourceThreadId: "chief-dm" })).toBe(true);
-    // an external runtime polls the receipt
-    expect(owed({ sourceBotId: "chief", sourceThreadId: "room", completionOwner: "external" }, ["room"])).toBe(true);
-    // a room or group DM wakes no one: the work continues on its own
-    expect(owed({ sourceBotId: "chief", sourceThreadId: "room" }, ["room"])).toBe(false);
-    // a one-way send hands the work over
-    expect(owed({ sourceBotId: "chief", sourceThreadId: "chief-dm", oneWay: true })).toBe(false);
+  it("owes a coordinated teammate's step cap to its assigner, and nothing else", () => {
+    expect(owed([{ status: "running", threadId: "work", parentId: "root" }])).toBe(true);
+    // a requesting turn answers its person; a queued or settled assignment runs no turn
+    expect(owed([{ status: "running", threadId: "work" }])).toBe(false);
+    expect(owed([{ status: "queued", threadId: "work", parentId: "root" }])).toBe(false);
+    expect(owed([{ status: "completed", threadId: "work", parentId: "root" }])).toBe(false);
+    expect(owed([{ status: "running", threadId: "other", parentId: "root" }])).toBe(false);
+    expect(owed([])).toBe(false);
   });
 });

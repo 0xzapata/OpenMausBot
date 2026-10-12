@@ -30,7 +30,12 @@ export function botTextShowsSpeaker(items: readonly ActivityTranscriptItem[], in
   const message = item.message;
   for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
     const prev = items[cursor];
-    if (!prev || prev.kind !== "message") continue;
+    if (!prev) continue;
+    if (prev.kind === "run") {
+      const speaker = prev.messages[0]?.from?.botId;
+      if (speaker && speaker !== message.from.botId) return true;
+      continue;
+    }
     const earlier = prev.message;
     if (earlier.role === "user") return true;
     if (isBotText(earlier)) {
