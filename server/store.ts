@@ -321,6 +321,14 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       error: out.secret.error ? redactSecretsInText(out.secret.error) : undefined,
     };
   }
+  if (out.signIn) {
+    // The bot's own words: a model can paste a secret into a reason too.
+    out.signIn = {
+      ...out.signIn,
+      reason: out.signIn.reason ? redactSecretsInText(out.signIn.reason) : undefined,
+      error: out.signIn.error ? redactSecretsInText(out.signIn.error) : undefined,
+    };
+  }
   return out;
 }
 

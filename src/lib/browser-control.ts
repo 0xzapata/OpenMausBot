@@ -49,14 +49,15 @@ function heldUntilReleased(input: Body): boolean {
 /** The server's take reply says whether the grant waited for the bot's action. */
 const waitedForBot = (reply: unknown) => (reply as { waited?: unknown } | null | undefined)?.waited === true;
 
-/** Control without a button, for one live-view connection. The first real
- * interaction takes the browser from the bot and waits, with everything after
- * it, until the server grants the lease; then it all goes through in order,
- * unless the bot's own action finished first: the page may have moved, so
- * clicks and keys aimed at it are dropped instead. Idle hands it back. The
- * server lease still never lets person and bot input interleave, and nothing
- * is handed back while a key or button is held down: the server would then
- * require a browser restart. */
+/** Control for one live-view connection. The first real interaction takes
+ * the browser from the bot and waits, with everything after it, until the
+ * server grants the lease; then it all goes through in order, unless the
+ * bot's own action finished first: the page may have moved, so clicks and
+ * keys aimed at it are dropped instead. Idle hands it back — except while the
+ * person holds it on purpose (Take control) or the bot waits for them to sign
+ * in (`keep`): then only Hand back does. The server lease still never lets
+ * person and bot input interleave, and nothing is handed back while a key or
+ * button is held down: the server would then require a browser restart. */
 export function createBrowserControl(options: {
   queue: Pick<ReturnType<typeof createBrowserInputQueue>, "enqueue" | "drain" | "settle" | "size" | "stopped">;
   /** Resolves with the server's reply; `waited: true` means the bot's own
@@ -81,8 +82,14 @@ export function createBrowserControl(options: {
   let closed = false;
   // The typing dialog is open: its text is for the field the person picked.
   let pinned = false;
-  // Hand back as soon as nothing blocks it, not after the idle wait.
+  // Held on purpose, or for an open sign-in: no idle hand-back.
+  let kept = false;
+  // Hand back as soon as nothing blocks it, not after the idle wait. An
+  // explicit hand-back wins over `kept`.
   let soon = false;
+  // The server's last word on this viewer's hold, to tell a real hand-back
+  // from elsewhere apart from an event older than the take.
+  let ownedBefore = false;
   let activity = 0;
   let chain: Promise<unknown> = Promise.resolve();
   let idle: ReturnType<typeof setTimeout> | undefined;
@@ -96,7 +103,7 @@ export function createBrowserControl(options: {
     if (isPress(input) && heldUntilReleased(input)) held.add(inputId(input));
     else if (isRelease(input)) held.delete(inputId(input));
   };
-  const quiet = () => !closed && !pinned && !flushing && !held.size && !options.busy()
+  const quiet = () => !closed && !pinned && (soon || !kept) && !flushing && !held.size && !options.busy()
     && (state === "held" || (state === "bot" && options.owned()));
   const arm = () => {
     clearTimeout(idle);
@@ -193,8 +200,32 @@ export function createBrowserControl(options: {
       buffer.push(item);
       if (!waiting) take();
     },
-    /** The server's control state changed: a hold nobody uses still goes back. */
-    observe() { if (!closed && idle === undefined && options.owned()) arm(); },
+    /** The server's control state changed: a hold nobody uses still goes
+     * back, and one handed back from elsewhere (Done on the sign-in card)
+     * leaves the next interaction to take control again. */
+    observe() {
+      if (closed) return;
+      const owned = options.owned();
+      if (ownedBefore && !owned && state === "held" && !flushing) {
+        state = "bot"; held.clear(); dropped.clear(); clearTimeout(idle); idle = undefined;
+      }
+      ownedBefore = owned;
+      if (idle === undefined && owned) arm();
+    },
+    /** Take control on purpose: Take control, or a sign-in card's Open.
+     * Nothing is sent but the take itself. */
+    takeControl() {
+      if (closed || state === "held" || state === "taking" || flushing) return;
+      soon = false;
+      take();
+    },
+    /** Hold on purpose (Take control) or while a sign-in request is open: no
+     * idle hand-back. Letting go starts the idle wait again. */
+    keep(on: boolean) {
+      if (closed || kept === on) return;
+      kept = on;
+      if (!on) arm();
+    },
     /** Hand back without the idle wait (the person is switching profiles), as
      * soon as nothing is held down, unsent or running. */
     handBack() { if (!closed) { soon = true; arm(); } },

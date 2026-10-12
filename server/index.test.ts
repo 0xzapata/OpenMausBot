@@ -6378,6 +6378,154 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("asks the person to sign in with one card and one notification, supersedes the older card, and resumes the bot on Done or Cancel", async () => {
+    let botId: string | undefined;
+    let stream: Awaited<ReturnType<typeof openSse>> | undefined;
+    try {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      // No turn is running, so the bot's Works on names the place.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computer: "browser",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      stream = await openSse(`${BASE}/api/events`);
+      await stream.until((frame) => frame.kind === "hello");
+      let token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const request = (site: unknown, reason?: string) => fetch(`${BASE}/api/internal/request-sign-in`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site, ...(reason ? { reason } : {}) }),
+      });
+      const notices = () => stream!.frames.filter((frame) => frame.kind === "notify" && frame.notification?.kind === "sign-in");
+      for (const site of ["javascript:alert(1)", "file:///etc/passwd", "https://user:pw@example.com/", "example", ""]) {
+        expect((await request(site)).status, site).toBe(400);
+      }
+      expect(notices()).toHaveLength(0);
+
+      const first = await request("https://example.com/login", "The monthly report is behind a login.");
+      expect(first.status).toBe(201);
+      const firstCard = await first.json() as { messageId: string; site: string; place: string };
+      expect(firstCard).toMatchObject({ site: "example.com", place: "browser" });
+      const notice = await stream.until((frame) => frame.kind === "notify" && frame.notification?.kind === "sign-in");
+      expect(notice.notification).toMatchObject({
+        botId: bot.id, threadId: bot.threadId,
+        title: `${bot.name} needs you to sign in to example.com`,
+        body: "The monthly report is behind a login.",
+      });
+      await stream.until((frame) => frame.kind === "computer-control" && frame.botId === bot.id && frame.help?.messageId === firstCard.messageId);
+      expect(notices()).toHaveLength(1);
+
+      const second = await request("www.example.com", "Still behind a login.");
+      expect(second.status).toBe(201);
+      const secondCard = await second.json() as { messageId: string };
+      await stream.until((frame) => frame.kind === "computer-control" && frame.help?.messageId === secondCard.messageId);
+      await expect.poll(() => notices().length).toBe(2);
+      const card = async (id: string) => (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === id);
+      expect((await card(firstCard.messageId)).signIn).toMatchObject({ site: "example.com", superseded: true });
+      expect(await card(secondCard.messageId)).toMatchObject({
+        kind: "signin",
+        text: `${bot.name} needs you to sign in to example.com. Open this conversation in OpenMausBot to sign in, then press Done.`,
+        signIn: { url: "https://www.example.com/", site: "example.com", place: "browser", reason: "Still behind a login." },
+      });
+      expect((await card(secondCard.messageId)).signIn.superseded).toBeUndefined();
+      const answer = (id: string, choice: "done" | "cancel") => api("POST", `/api/bots/${bot.id}/sign-in-cards/${id}/${choice}`, { threadId: bot.threadId });
+      expect((await answer(firstCard.messageId, "done")).status).toBe(409);
+
+      // Done hands back, drops the plea and resumes the bot with the news.
+      rmSync(fakeClaudeDump, { force: true });
+      expect(await answer(secondCard.messageId, "done")).toMatchObject({ status: 200, body: { done: true, resumed: true } });
+      const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
+      expect(JSON.stringify(resumed.prompt)).toContain("the person finished signing in to example.com. Check you are signed in, then continue");
+      expect((await card(secondCard.messageId)).signIn).toMatchObject({ done: true, resumed: true });
+      await stream.until((frame) => frame.kind === "computer-control" && frame.botId === bot.id && frame.helpReason === null && !frame.help);
+      // Pressing it again changes nothing; the other answer is refused.
+      expect(await answer(secondCard.messageId, "done")).toMatchObject({ status: 200, body: { done: true, resumed: true } });
+      expect((await answer(secondCard.messageId, "cancel")).status).toBe(409);
+      // This suite's engine hangs every turn; stop the resumed one.
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 10_000 }).toBe(false);
+
+      // Cancel resumes it too, with the person's no.
+      // The resumed turn's settling revoked that capability; a new turn has its own.
+      token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const thirdResponse = await request("mail.example.org");
+      const third = await thirdResponse.json() as { messageId: string };
+      expect(thirdResponse.status, JSON.stringify(third)).toBe(201);
+      rmSync(fakeClaudeDump, { force: true });
+      expect(await answer(third.messageId, "cancel")).toMatchObject({ status: 200, body: { cancelled: true, resumed: true } });
+      const declined = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
+      expect(JSON.stringify(declined.prompt)).toContain("the person declined to sign in to mail.example.org");
+      expect((await card(third.messageId)).signIn).toMatchObject({ cancelled: true, resumed: true });
+      await expect.poll(() => notices().length).toBe(3);
+    } finally {
+      if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      stream?.close();
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 60_000);
+
+  it("holds a sign-in's resume behind the turn still running, through the credential card's continuation", async () => {
+    let botId: string | undefined;
+    try {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computer: "browser",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      // A turn that keeps running (this suite's engine hangs every turn).
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "keep working on the dashboard" })).status).toBe(202);
+      await readJsonFileWhenReady(fakeClaudeDump);
+      rmSync(fakeClaudeDump, { force: true });
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const requested = await fetch(`${BASE}/api/internal/request-sign-in`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site: "example.com" }),
+      });
+      expect(requested.status).toBe(201);
+      const { messageId } = await requested.json() as { messageId: string };
+      expect(await api("POST", `/api/bots/${bot.id}/sign-in-cards/${messageId}/done`, { threadId: bot.threadId }))
+        .toMatchObject({ status: 200, body: { done: true, resumed: true } });
+      // The running turn keeps the thread: the resume waits in the queue
+      // the credential card's continuation uses, and is not dropped.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
+      const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump, 10_000);
+      expect(JSON.stringify(resumed.prompt)).toContain("the person finished signing in to example.com");
+    } finally {
+      if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 60_000);
+
+  it("refuses a sign-in request where nothing names a place to sign in", async () => {
+    let botId: string | undefined;
+    try {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const response = await fetch(`${BASE}/api/internal/request-sign-in`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site: "example.com" }),
+      });
+      expect(response.status).toBe(409);
+      expect((await response.json() as { error: string }).error).toMatch(/no browser or computer/);
+      const messages = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages;
+      expect(messages.some((message: { kind: string }) => message.kind === "signin")).toBe(false);
+    } finally {
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+    }
+  });
+
   it("supersedes an earlier pending credential card when the same key is asked for again", async () => {
     let botId: string | undefined;
     try {

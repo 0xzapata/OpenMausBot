@@ -246,6 +246,27 @@ function daemonSpec(): { spec: BrowserSpawnSpec; busy: string; calls: () => stri
 }
 
 describe("server-owned browser MCP runtime", () => {
+  it("captures nothing of the page while a person holds it to sign in: no screenshot, snapshot or preview frame", async () => {
+    const value = runtime();
+    const daemon = daemonSpec();
+    try {
+      // The bot was working: its engine is up and answering.
+      await value.agentRpc("signin", daemon.spec, "tools/call", { name: "agent_browser_get_url", arguments: {} });
+      await value.take("signin", "person");
+      for (const name of ["agent_browser_screenshot", "agent_browser_snapshot", "agent_browser_get_text"]) {
+        await expect(value.agentRpc("signin", daemon.spec, "tools/call", { name, arguments: {} })).rejects.toThrow(/paused while a person controls this browser/);
+      }
+      const capture = vi.fn(async () => "frame");
+      await expect(value.previewFrame("signin", capture)).rejects.toThrow(/paused/);
+      expect(capture).not.toHaveBeenCalled();
+      // Not one of those calls reached the engine.
+      expect(daemon.calls()).toEqual(["agent_browser_get_url"]);
+      // Handed back, the bot checks it is signed in.
+      value.release("signin", "person");
+      await expect(value.previewFrame("signin", capture)).resolves.toBe("frame");
+    } finally { daemon.cleanup(); }
+  });
+
   it("does not turn a failed navigation or failed observation into success", async () => {
     const value = runtime();
     await expect(value.agentRpc("refused", spec(), "tools/call", {
