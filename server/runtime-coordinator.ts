@@ -15,10 +15,10 @@ import type { Coordinator, CoordinatorHost, CoordinatorOptions, HandoffOptions, 
 import type { WorkOrigin } from "./peer-provenance.ts";
 import { composeEnvelope, composeReport, composeResume, envelopeNote } from "./runtime/envelope.ts";
 import { Runtime } from "./runtime/runtime.ts";
-import { importLegacyHandoffs } from "./runtime/import-legacy.ts";
+import { importLegacyDelegations, importLegacyHandoffs, type LegacyThreadResolver } from "./runtime/import-legacy.ts";
 import { openRuntimeStore, type RuntimeStore } from "./runtime/store.ts";
 import { childrenSince, clip, isTerminal, path } from "./runtime/tree.ts";
-import type { Assignment, Origin, Owner, RunInput, RunResult, StatusView, TurnRunner } from "./runtime/types.ts";
+import type { Assignment, Origin, Owner, Reply, Requester, RunInput, RunResult, StatusView, TurnRunner } from "./runtime/types.ts";
 
 /** Refusals the model and index.ts read; the words are the legacy tree's. */
 const NOT_RUNNING = "The originating room task is no longer running";
@@ -118,13 +118,18 @@ export class RuntimeCoordinator implements Coordinator {
   private readonly store: RuntimeStore;
   private readonly runtime: Runtime;
   private readonly legacyFile: string | undefined;
+  /** The data directory the legacy delegation ledger lived in (none for ":memory:"). */
+  private readonly legacyDir: string | undefined;
+  private readonly legacyThreads: LegacyThreadResolver | undefined;
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private opened = false;
 
   constructor(options: CoordinatorOptions) {
     this.host = options.host;
-    this.legacyFile = options.dataDir === ":memory:" ? undefined : join(options.dataDir, "room-handoffs.json");
+    this.legacyDir = options.dataDir === ":memory:" ? undefined : options.dataDir;
+    this.legacyFile = this.legacyDir === undefined ? undefined : join(this.legacyDir, "room-handoffs.json");
+    this.legacyThreads = options.legacyThreads;
     this.now = options.now ?? Date.now;
     this.log = options.log ?? ((line) => console.error("coordinator:", line));
     this.store = openRuntimeStore(options.dataDir === ":memory:" ? ":memory:" : join(options.dataDir, "runtime.db"));
@@ -150,6 +155,17 @@ export class RuntimeCoordinator implements Coordinator {
         if (imported) this.log(`imported ${imported} room-handoff rows from ${this.legacyFile}`);
       } catch (error) {
         this.log(`room-handoffs.json not imported: ${String(error)}`);
+      }
+    }
+    // The delegation ledger (queued items and receipts) comes over the same
+    // way, ids kept, so a legacy task id still answers assignment_status.
+    if (this.legacyDir) {
+      try {
+        const imported = importLegacyDelegations(this.store, this.legacyDir, this.now(),
+          { log: this.log, ...(this.legacyThreads ? { threads: this.legacyThreads } : {}) });
+        if (imported) this.log(`imported ${imported} delegation-ledger rows from ${this.legacyDir}`);
+      } catch (error) {
+        this.log(`delegations.json not imported: ${String(error)}`);
       }
     }
     this.runtime.open();
@@ -186,9 +202,8 @@ export class RuntimeCoordinator implements Coordinator {
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, text: string,
     options: HandoffOptions = {}): { node: HandoffView; duplicate: boolean } {
     this.ready();
-    const { approvalGranted = false, rework = false, sourceText = "", requestBatchKey, origin, opener } = options;
+    const { approvalGranted = false, rework = false, sourceText = "", requestBatchKey, origin, opener, thread } = options;
     const mode = options.mode ?? "work";
-    const reply = options.reply ?? (mode === "notify" ? "none" : opener?.requester.kind === "external_runtime" ? "poll" : "resume");
     let parent = parentId ? this.store.get(parentId) : this.store.get(generation);
     if (parent && parent.status !== "running") throw new Error(NOT_RUNNING);
     if (parentId && !parent) throw new Error(NOT_RUNNING);
@@ -214,20 +229,32 @@ export class RuntimeCoordinator implements Coordinator {
     }
     // The legacy rules, in the legacy order, with the legacy words.
     const lineage = path(this.store, parent);
+    const root = lineage[0]!;
     if (lineage.some(n => ancestorOf(address(n), target))) throw new Error(ANCESTOR);
     const siblings = this.store.children(parent.id);
     const existing = siblings.findLast(c => c.assignee.botId === target.botId && c.assignee.destination.groupId === target.groupId && c.brief === brief && c.mode === mode);
     if (existing && !(rework && isTerminal(existing))) return { node: view(existing, parent), duplicate: true };
-    if (!rework && siblings.some(c => kindOf(c.assignee.destination.groupId, parent) === kind && c.assignee.destination.groupId === target.groupId &&
-      c.assignee.botId === target.botId && c.status === "completed")) throw new Error(ALREADY_COMPLETED);
+    // A finished assignment takes no acknowledgement as new work; a question
+    // or a notice to that teammate is not work.
+    if (mode === "work" && !rework && siblings.some(c => c.mode === "work" && kindOf(c.assignee.destination.groupId, parent) === kind &&
+      c.assignee.destination.groupId === target.groupId && c.assignee.botId === target.botId && c.status === "completed")) throw new Error(ALREADY_COMPLETED);
     if (kind === "work" && target.groupId && lineage.some(n => n.assignee.destination.groupId === target.groupId)) throw new Error(ROOM_ANCESTOR);
+    // A one-way notice returns nothing. Under a root that polls (an external
+    // runtime, which has no turn to resume) every awaited result waits in
+    // the inbox; otherwise the requester is resumed.
+    const wanted: Reply = mode === "notify" ? "none" : options.reply ?? "resume";
+    const reply: Reply = wanted === "none" ? "none" : root.reply === "poll" ? "poll" : wanted;
+    // The root's run (a routine run, an external runtime) is on its direct
+    // children's requester, so that run's lane carries their results.
+    const requester: Requester = { kind: "bot_turn", botId: parent.assignee.botId, threadId: parent.assignee.destination.threadId,
+      chief: this.host.chiefOf(address(parent)), ...(parent.id === root.id && root.requester.runId !== undefined ? { runId: root.requester.runId } : {}) };
     const level = this.host.levelOf(target);
     const result = this.runtime.enqueue({
       parentId: parent.id,
       origin: parent.origin,
-      requester: { kind: "bot_turn", botId: parent.assignee.botId, threadId: parent.assignee.destination.threadId, chief: this.host.chiefOf(address(parent)) },
-      assignee: { botId: target.botId, destination: { kind: target.groupId ? "room_thread" : "work_thread", threadId: target.threadId,
-        ...(target.groupId ? { groupId: target.groupId } : {}) } },
+      requester,
+      assignee: { botId: target.botId, destination: { kind: target.groupId ? "room_thread" : thread === "standing" ? "standing_thread" : "work_thread",
+        threadId: target.threadId, ...(target.groupId ? { groupId: target.groupId } : {}) } },
       mode, reply, brief: text, rework,
       ...(options.doneWhen ? { doneWhen: options.doneWhen } : {}),
       levels: { own: level.level },
@@ -323,12 +350,13 @@ export class RuntimeCoordinator implements Coordinator {
     return undefined;
   }
 
-  /** Work this conversation handed out that has not settled yet. */
+  /** Work this conversation handed out that has not settled yet and that
+   * comes back to it: a one-way notice is never outstanding. */
   outstandingDirect(threadId: string): HandoffView[] {
     this.ready();
     const out: HandoffView[] = [];
     for (const n of this.live()) {
-      if (!n.parentId) continue;
+      if (!n.parentId || n.reply === "none") continue;
       const parent = this.store.get(n.parentId);
       if (parent && this.direct(parent, threadId)) out.push(view(n, parent));
     }

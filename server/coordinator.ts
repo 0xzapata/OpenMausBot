@@ -6,7 +6,10 @@
 // against. The view goes once those sites read Assignment rows directly.
 import { RuntimeCoordinator } from "./runtime-coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
+import type { LegacyThreadResolver } from "./runtime/import-legacy.ts";
 import type { EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView } from "./runtime/types.ts";
+
+export type { LegacyThreadResolver };
 
 export type HandoffStatus = "source" | "queued" | "running" | "waiting" | "resume" | "completed" | "failed" | "cancelled";
 
@@ -58,6 +61,10 @@ export interface HandoffOpener {
 export interface HandoffOptions {
   mode?: Mode;
   reply?: Reply;
+  /** Where the host put the work: the teammate's standing thread, or a
+   * (new) work thread, which is the default. The host picks the thread;
+   * this is recorded as the row's destination kind. */
+  thread?: "standing" | "new";
   /** A peer-review card allowed this before it was sent. */
   approvalGranted?: boolean;
   /** Run a finished teammate again with new work. */
@@ -161,6 +168,10 @@ export interface CoordinatorOptions {
   now?: () => number;
   runtimeLimits?: Partial<Limits>;
   log?: (line: string) => void;
+  /** Names the threads the one-time delegation-ledger import cannot (a
+   * target's standing thread, a source thread's bot); without it those
+   * rows carry an empty thread id the host's validate refuses. */
+  legacyThreads?: LegacyThreadResolver;
 }
 
 export function createCoordinator(options: CoordinatorOptions): Coordinator {

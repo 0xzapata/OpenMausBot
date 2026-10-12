@@ -250,20 +250,13 @@ export interface FollowupPayload {
    * tell a contiguous burst from hours-apart texts. Rows written before
    * this existed read as queued at restore time. */
   queuedAt?: number;
-  /** Aside-lane rows (kind "aside"): the peer whose words these are. The
-   * prompt carries the non-steering envelope; text stays the raw words. */
-  aside?: {
-    fromBotId: string;
-    fromBotName: string;
-    unattended?: boolean;
-    /** Comms depth captured when the aside was queued, so a degraded
-     * follow-up turn inherits the same one-hop chain limit. */
-    commsDepth: number;
-  };
 }
 export type FollowupStatus = "pending" | "dispatching" | "interrupted" | "cancelled";
 export interface ChatFollowup {
   id: string;
+  /** "aside" rows are what the aside lane wrote before every hand-off ran
+   * on the job runtime; nothing writes them now, and the server drops any
+   * it finds at start. */
   kind: "bot" | "channel" | "aside";
   ownerId: string;
   threadId: string;

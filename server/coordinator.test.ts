@@ -35,9 +35,17 @@ describe("createCoordinator", () => {
         "Build it", { sourceText: "Ship it", origin: { kind: "user", request: "Ship it" } });
       expect(duplicate).toBe(false);
       expect(node).toMatchObject({ status: "queued", botId: "builder", parentId: "gen-1", kind: "work" });
+      const { node: asked } = coordinator.enqueue(chief, "gen-1", undefined, { botId: "tester", threadId: "tester-work" },
+        "Is staging up?", { mode: "consult", doneWhen: "a yes or a no" });
+      const { node: told } = coordinator.enqueue(chief, "gen-1", undefined, { botId: "ops", threadId: "ops-work" }, "FYI", { mode: "notify" });
       const rows = readHandoffs(dir);
-      expect(rows.map((row) => [row.id, row.status])).toEqual([["gen-1", "source"], [node.id, "queued"]]);
-      expect(rows[0]).toMatchObject({ origin: { kind: "user", request: "Ship it" } });
+      expect(rows.map((row) => [row.id, row.status])).toEqual([["gen-1", "source"], [node.id, "queued"], [asked.id, "queued"], [told.id, "queued"]]);
+      expect(rows[0]).toMatchObject({ origin: { kind: "user", request: "Ship it" }, mode: "work", reply: "resume" });
+      // the view's mode and reply fields come through the helper; the optional ones only when set
+      expect(rows[1]).toMatchObject({ mode: "work", reply: "resume" });
+      expect(rows[2]).toMatchObject({ mode: "consult", reply: "resume" });
+      expect(rows[3]).toMatchObject({ mode: "notify", reply: "none" });
+      for (const absent of ["outcome", "outcomeDetail", "question"]) expect(absent in rows[1]!).toBe(false);
       coordinator.close();
     } finally {
       removeTempDir(dir);

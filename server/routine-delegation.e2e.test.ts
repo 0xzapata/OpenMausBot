@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb, type VerificationServer } from "../scripts/control-omb.ts";
-import { DELEGATION_WAKE_MAX_PER_WINDOW } from "./delegations.ts";
+/** The legacy ledger's wake burst budget (delegations.ts is gone; this suite is rewritten in wave 2). */
+const DELEGATION_WAKE_MAX_PER_WINDOW = 6;
 import { readHandoffs } from "./testing/handoff-rows.ts";
 
 describe("routine delegation through the isolated harness", () => {
