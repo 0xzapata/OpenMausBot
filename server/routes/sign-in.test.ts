@@ -93,6 +93,14 @@ describe("internal sign-in route", () => {
     expect(ctx.json).toHaveBeenCalledExactlyOnceWith(ctx.res, status, { error: "fixture refusal" });
   });
 
+  it.each([null, [], ["example.com"], "example.com", 0, true].map(body => ({ body })))("rejects a non-object body $body before creating a card", async ({ body }) => {
+    const request = vi.fn(() => result);
+    const ctx = context("/api/internal/request-sign-in");
+    await createInternalSignInRoutes({ readBody: async () => body, request })(ctx);
+    expect(request).not.toHaveBeenCalled();
+    expect(ctx.json).toHaveBeenCalledExactlyOnceWith(ctx.res, 400, { error: "request body must be a JSON object" });
+  });
+
   it.each([400, 401, 403])("does not dispatch when the guarded reader rejects with %s", async status => {
     const error = Object.assign(new Error("body/capability/provenance refusal"), { status });
     const request = vi.fn(() => result);
