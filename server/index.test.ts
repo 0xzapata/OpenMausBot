@@ -6584,6 +6584,13 @@ describe("harness HTTP API", () => {
         computer: "browser",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
+      // The sign-in request comes from a turn: when that turn ends with the
+      // card open, its root parks on the card, and the saved login is what
+      // runs the root again (decision 2).
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "fetch the invoices" })).status).toBe(202);
+      await readJsonFileWhenReady(fakeClaudeDump);
+      rmSync(fakeClaudeDump, { force: true });
       const token = await mintTestCapability(BASE, bot.id, bot.threadId);
       const requested = await fetch(`${BASE}/api/internal/request-sign-in`, {
         method: "POST",
@@ -6592,6 +6599,7 @@ describe("harness HTTP API", () => {
       });
       expect(requested.status).toBe(201);
       const { messageId } = await requested.json() as { messageId: string };
+      await releaseTurn(bot.id);
       const save = async (body: unknown) => {
         const response = await api("POST", `/api/bots/${bot.id}/sign-in-cards/${messageId}/save-login`, body);
         answers.push(JSON.stringify(response.body));
