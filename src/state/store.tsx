@@ -333,6 +333,7 @@ export interface Task {
   createdAt: number;
   /** The person pinned this thread above the update-ordered list. */
   pinned?: boolean;
+  link?: string;
   /** Newest message time, or createdAt. Server-derived; local bumps use max. */
   updatedAt?: number;
   /** what this task has spent, banked once per settled turn */
@@ -579,17 +580,19 @@ export type TaskUpdatePatch = Partial<Pick<Task, "modelSelection" | "approvalMod
   surface?: Task["surface"] | null;
   /** false clears the pin */
   pinned?: boolean;
+  link?: string | null;
 };
 
 function taskPatchFields(patch: TaskUpdatePatch): Partial<Task> {
-  const { confirmFullAccess: _fullConsent, acknowledgeLocalAuto: _localAck, updateBotDefault: _modelDefault, resetApprovalToAsk, projectId, archivedAt, snoozedUntil, surface, pinned, ...fields } = patch;
+  const { confirmFullAccess: _fullConsent, acknowledgeLocalAuto: _localAck, updateBotDefault: _modelDefault, resetApprovalToAsk, projectId, archivedAt, snoozedUntil, surface, pinned, link, ...fields } = patch;
   return { ...fields, ...(resetApprovalToAsk ? { approvalMode: "ask", autoApprove: false, alwaysAllow: [] } : {}),
     ...(projectId === undefined ? {} : { projectId: projectId ?? undefined }),
     ...(archivedAt === undefined ? {} : { archivedAt: archivedAt ?? undefined }),
     ...(snoozedUntil === undefined ? {} : { snoozedUntil: snoozedUntil ?? undefined }),
     // A person's pin or unpin is never the machine's record.
     ...(surface === undefined ? {} : { surface: surface ?? undefined, surfaceAuto: undefined }),
-    ...(pinned === undefined ? {} : { pinned: pinned ? true : undefined }) };
+    ...(pinned === undefined ? {} : { pinned: pinned ? true : undefined }),
+    ...(link === undefined ? {} : { link: link ?? undefined }) };
 }
 
 /** A snapshot must not move a thread backwards in the list. Local bumps can
