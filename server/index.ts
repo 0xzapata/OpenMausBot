@@ -151,6 +151,7 @@ import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./tu
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { createCacheKeepWarm, type KeepWarmStatus, type KeepWarmTarget } from "./cache-keepwarm.ts";
 import { createSkillReview, turnToolSteps } from "./skill-review.ts";
+import { createSideJobs } from "./side-jobs.ts";
 import type { CaptureTurn, RoomLine } from "./memory-capture.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
@@ -202,6 +203,7 @@ import {
   captureQuietMs,
   roomMemoryCaptureEnabled,
   tidyHour,
+  helperSelection,
   sharedComputersEnabled,
   builtInBrowserEnabled,
   llmThreadTitlesEnabled,
@@ -7385,40 +7387,28 @@ bus.subscribe((event: RuntimeEvent) => {
   }
 });
 
+// Small writing jobs (server/side-jobs.ts): the compaction summary, memory
+// upkeep and the skill review ask here for their one-off text call. A bot's
+// own engine writes whenever it can (an engine the organisation disallows
+// never receives the text); the optional helper model (config `helper`,
+// OMB_HELPER_INSTANCE) writes for a bot whose engine cannot.
+const sideJobs = createSideJobs({
+  bot: (botId) => store.bot(botId),
+  instance: (instanceId) => registry.get(instanceId),
+  refusal: (instance) => policyModelRefusal(instance),
+  helper: () => helperSelection(cfg),
+  ...(hostedModels ? { modelAllowed: (selection: ModelSelection) => hostedModels.allows(selection) } : {}),
+  assertWithinBudget: () => assertWithinBudget(cfg, DATA_DIR),
+  book: bookTurnUsage,
+  log: (line) => console.log(line),
+});
+
 // Memory upkeep (server/memory-upkeep.ts): background capture, About me
 // suggestions and the nightly tidy-up, for bots with the switch on.
 const memoryUpkeep = createMemoryUpkeep({
   bots: () => store.bots,
   bot: (id) => store.bot(id) ?? undefined,
-  engine: (botId) => {
-    const bot = store.bot(botId);
-    const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
-    // an engine the organisation disallows never receives memory text
-    if (!bot || !instance || policyModelRefusal(instance)) return null;
-    // generateMemoryText: the ACP engines' and Codex's background-only one-shot, on their own provider
-    const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
-    return generate ? {
-      generateText: async (prompt, options) => {
-        // Check every capture, organize and contradiction call, including
-        // consecutive calls within one upkeep pass.
-        assertWithinBudget(cfg, DATA_DIR);
-        const threadId = `memory-${randomUUID()}`;
-        return generate(prompt, { ...options, onUsage: (usage) => bookTurnUsage({
-          botId: bot.id,
-          botName: bot.name,
-          threadId,
-          instanceId: instance.instanceId,
-          driverKind: instance.driverKind,
-          model: usage.model,
-          input: usage.input ?? 0,
-          output: usage.output ?? 0,
-          ...(usage.cachedInput !== undefined ? { cachedInput: usage.cachedInput } : {}),
-          costUsd: usage.costUsd ?? null,
-          trigger: { kind: "bot", botId: bot.id },
-        }, usage.input !== undefined && usage.output !== undefined, bot.threadId) });
-      },
-    } : {};
-  },
+  engine: (botId) => sideJobs.text("memory", botId),
   busy: (botId) => botHasActiveTurn(botId),
   addToAboutMe: (from, texts) => {
     const current = cfg.profile?.aboutMe ?? "";
@@ -7671,8 +7661,9 @@ bus.subscribe((event: RuntimeEvent) => {
 });
 
 // Learn skills automatically (server/skill-review.ts): tool steps are counted
-// per bot and conversation, and past the threshold the bot's own engine
-// reviews the conversation in the background. Its changes go through the
+// per bot and conversation, and past the threshold the bot's own engine (or
+// the helper model, for an engine with no one-off text call) reviews the
+// conversation in the background. Its changes go through the
 // skill_manage staging path and show as receipts with Undo. Same gates as a
 // bot writing its own skills: skill authoring on, an engine that mounts the
 // agents tools, a turn the person started (not a peer hop, routine or
@@ -7681,33 +7672,7 @@ const skillReview = createSkillReview({
   enabled: () => skillReviewEnabled(cfg),
   threshold: () => skillReviewSteps(cfg),
   bot: (botId) => store.bot(botId) ?? undefined,
-  engine: (botId) => {
-    const bot = store.bot(botId);
-    const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
-    if (!bot || !instance || policyModelRefusal(instance) || instance.adapter.capabilities.agentsMcp !== true) return null;
-    const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
-    if (!generate) return null;
-    return {
-      generateText: async (prompt, options) => {
-        // a workspace at its spend limit runs no review
-        assertWithinBudget(cfg, DATA_DIR);
-        const threadId = `skill-review-${randomUUID()}`;
-        return generate(prompt, { ...options, onUsage: (usage) => bookTurnUsage({
-          botId: bot.id,
-          botName: bot.name,
-          threadId,
-          instanceId: instance.instanceId,
-          driverKind: instance.driverKind,
-          model: usage.model,
-          input: usage.input ?? 0,
-          output: usage.output ?? 0,
-          ...(usage.cachedInput !== undefined ? { cachedInput: usage.cachedInput } : {}),
-          costUsd: usage.costUsd ?? null,
-          trigger: { kind: "bot", botId: bot.id },
-        }, usage.input !== undefined && usage.output !== undefined, bot.threadId) });
-      },
-    };
-  },
+  engine: (botId) => sideJobs.text("skill-review", botId),
   busy: (botId) => workspaceMaintenance.active || botHasActiveTurn(botId),
   transcript: (botId, threadId) => {
     const owned = connectorThread(botId, threadId);
@@ -10134,7 +10099,7 @@ async function compactConversation(input: {
   const controller = new AbortController();
   compactionControllers.set(threadId, { generation, controller });
   try {
-    const summary = await draftSummary(fold.folded, { signal: controller.signal, generateText: instance.generateText?.bind(instance) });
+    const summary = await draftSummary(fold.folded, { signal: controller.signal, generateText: sideJobs.text("compaction", bot.id, { instance })?.generateText });
     if (!directTurnClaimIsCurrent(bot.id, generation, threadId)) throw new DirectTurnSetupCancelled("context summarization stopped");
     controller.signal.throwIfAborted();
     // Appended teammate results remain after the fold. A changed prefix is

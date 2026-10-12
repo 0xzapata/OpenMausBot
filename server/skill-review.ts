@@ -5,7 +5,8 @@
 // Every finished turn adds the tool steps it ran to a counter kept per bot
 // and conversation, saved to disk so restarts and many short turns still add
 // up. Once a counter reaches the threshold ("Review after N tool steps",
-// default 10), the bot's own engine makes one tool-free model call that
+// default 10), the bot's own engine (or the helper model, for an engine with
+// no one-off text call: server/side-jobs.ts) makes one tool-free model call that
 // reads the conversation (bounded) beside the bot's current skills and
 // answers with at most three skill changes. Each change goes through the
 // same staging path as skill_manage (scan, redaction, size cap), so it
@@ -352,9 +353,10 @@ export interface SkillReviewDeps {
   /** Tool steps between reviews. */
   threshold: () => number;
   bot: (botId: string) => { id: string; name: string } | undefined;
-  /** The bot's engine when it can make the one-shot call and may receive
-   * this text (capability, policy); null otherwise. Spend-cap checks and
-   * usage booking happen inside its generateText. */
+  /** Whoever writes the review: the bot's engine when it can make the
+   * one-shot call and may receive this text (capability, policy), else the
+   * helper model when one is set (server/side-jobs.ts); null otherwise.
+   * Spend-cap checks and usage booking happen inside its generateText. */
   engine: (botId: string) => ReviewEngine | null;
   /** The bot has a turn running (or the workspace is under maintenance):
    * a review neither starts nor applies now. */
