@@ -3,7 +3,7 @@
 // trial or Add a Cloud, which open the Add a Cloud dialog), or, for someone
 // with a plan, that plan and the way to it. The card after the update is the
 // notice queue's (AppNotices, CloudTrialIntro).
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Cloud, Crown } from "lucide-react";
 import type { CloudAccountState } from "../../electron/cloud-account.mjs";
 import { CLOUD_LINK_SETTINGS, useStore } from "@/state/store";
@@ -75,5 +75,41 @@ export function ProSettingsCard() {
         <p className="mt-1 text-[12px] text-ink-secondary">{view.kind === "reauth" ? t("pro.reauthShort") : line}</p></div>
     </div>
     <button type="button" className="ui-button" onClick={() => dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" })}>{t("pro.openCloudSettings")}</button>
+  </section>;
+}
+
+/** Live calls need a Pro plan (the harness's 402 `needsPro`): the Pro card,
+ * in the call button's pop-up where the key form would be. The same rule as
+ * the card in Settings: an offer only where buyOfferAllowed says (signed
+ * out, signing in first); anyone who pays, may pay, or whose plan is not
+ * known yet sees that plan, when there is one to name, and the way to it. A
+ * window that cannot read the plan (a browser, a server's page) says only
+ * what Live calls need. */
+export function LiveProPrompt() {
+  const { dispatch } = useStore();
+  const plan = useCloudPlan();
+  const view = plan?.view;
+  const titleId = useId();
+  const offering = !!view && buyOfferAllowed(view);
+  const offer = useCloudOffer(offering, plan?.account?.offer);
+  const cheapest = offer ? Math.min(...offer.plans.map(entry => entry.amount)) : null;
+  const line = !view || offering ? null : view.kind === "reauth" ? t("pro.reauthShort") : cloudPlanLine(view);
+  return <section aria-labelledby={titleId} data-cloud-plan={view?.kind} className="flex flex-col gap-2.5 rounded-xl border border-hairline bg-panel p-4 text-left">
+    <div className="flex items-center gap-2.5">
+      <Crown size={16} className="shrink-0 text-ink-secondary" aria-hidden="true" />
+      <h2 id={titleId} className="text-[13.5px] font-medium text-ink">{t("call.live.proTitle")}</h2>
+    </div>
+    <p className="text-[12.5px] leading-[1.45] text-ink-secondary">{t("call.live.proExplain")}</p>
+    {offering ? <>
+      {view?.kind === "signed-out" && <button type="button" className="text-left text-[12.5px] text-accent-text underline underline-offset-2" onClick={() => dispatch(CLOUD_LINK_SETTINGS)}>{t("cloudAccount.signIn")}</button>}
+      {cheapest !== null && <p className="text-[12px] text-ink-secondary">{t("pro.fromPrice", { price: usd(cheapest / 100) })}</p>}
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" className="ui-button" onClick={() => dispatch({ type: "openCloudAdd", source: "app_settings" })}>{t(offerTrialDays(offer) !== null ? "cloudIntro.start" : "cloudAccount.upgrade")}</button>
+        <button type="button" className="text-[12.5px] text-ink-secondary underline underline-offset-2" onClick={() => void openExternalLink(withSource(PRICING_URL, "app_settings")).catch(() => {})}>{t("pro.seePlans")}</button>
+      </div>
+    </> : view && <>
+      {line && <p className="text-[12.5px] text-ink">{line}</p>}
+      <button type="button" className="ui-button self-start" onClick={() => dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" })}>{t("pro.openCloudSettings")}</button>
+    </>}
   </section>;
 }
