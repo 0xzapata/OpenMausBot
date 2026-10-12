@@ -14361,10 +14361,13 @@ async function runGroupMemberTurn(
   revokeInternalCapabilityGeneration(threadId, internalGeneration);
   retainRoomVmLease = outcome === "timed_out" || outcome === "stalled";
   if (!retainRoomVmLease) releaseRoomVmLease();
+  // What the turn said, with the note on approvals nobody answered (the
+  // same annotation the direct fold settles with): the result of the
+  // member's root or node, and what a requester reads.
   roomOutcome = outcome;
-  roomReply = replyText.trim();
+  roomReply = unansweredApprovals.annotate(threadId, providerTurnId, replyText.trim(), outcome === "settled");
   if (orchestration) {
-    orchestration.result.replyText = unansweredApprovals.annotate(threadId, providerTurnId, replyText.trim(), outcome === "settled");
+    orchestration.result.replyText = roomReply;
     orchestration.result.outcome = outcome;
   }
   // A timed-out provider still owns the room thread until its interrupt
