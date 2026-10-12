@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import type { CoordinatorHost, HandoffView } from "./coordinator.ts";
+import type { CoordinatorHost, HandoffOpener, HandoffOptions, HandoffView } from "./coordinator.ts";
 import type { RoomAddress } from "./coordinator.ts";
 import { needsInputQuestion, RuntimeCoordinator, view } from "./runtime-coordinator.ts";
 import { ENVELOPE_MARK } from "./runtime/envelope.ts";
@@ -90,8 +90,8 @@ const hold: Script = (node) => node.botId === "builder" ? "hold" : undefined;
 /** Hands work from `source` (its own node `parentId`, or a fresh root `generation`). */
 const send = (w: World, source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, text: string,
   opts: { approved?: boolean; rework?: boolean; batchKey?: string; sourceText?: string } = {}) =>
-  w.coordinator.enqueue(source, generation, parentId, target, target.botId, text, opts.approved ?? false, opts.rework ?? false,
-    opts.sourceText ?? "Ship the CSV export", opts.batchKey, userOrigin);
+  w.coordinator.enqueue(source, generation, parentId, target, text, { approvalGranted: opts.approved ?? false, rework: opts.rework ?? false,
+    sourceText: opts.sourceText ?? "Ship the CSV export", requestBatchKey: opts.batchKey, origin: userOrigin });
 
 const base: Assignment = {
   id: "as_1", rootId: "gen-1", parentId: "gen-1", depth: 1,
@@ -110,10 +110,21 @@ describe("view: an Assignment as the legacy node", () => {
       id: "as_1", rootId: "gen-1", parentId: "gen-1", threadId: "builder-work", botId: "builder", key: "builder", text: "Build it",
       createdAt: 1_000, status: "queued", result: "half done", reported: true, executions: 2, startedAt: 1_500, lastProgressAt: 2_000,
       approvalGranted: true, kind: "work", origin: { kind: "user", request: "Ship the CSV export" }, restarts: 1, restart: "rerun", requestBatchKey: "b1",
+      mode: "work", reply: "resume",
     });
     const plain = view(base);
     expect(plain).toMatchObject({ reported: false, approvalGranted: false, restarts: 0, lastProgressAt: 2_000 });
     for (const absent of ["startedAt", "restart", "requestBatchKey", "groupId"]) expect(absent in plain).toBe(false);
+  });
+
+  it("carries the record's mode, reply, outcome, outcome detail and question, each only when set", () => {
+    const failed = view(row({ mode: "consult", reply: "poll", status: "failed", outcome: "denied", outcomeDetail: "Peer approval denied" }));
+    expect(failed).toMatchObject({ mode: "consult", reply: "poll", status: "failed", outcome: "denied", outcomeDetail: "Peer approval denied" });
+    expect("question" in failed).toBe(false);
+    const parked = view(row({ mode: "notify", reply: "none", status: "needs_input", question: "Which account?" }));
+    expect(parked).toMatchObject({ mode: "notify", reply: "none", status: "waiting", question: "Which account?" });
+    for (const absent of ["outcome", "outcomeDetail"]) expect(absent in parked).toBe(false);
+    for (const absent of ["outcome", "outcomeDetail", "question"]) expect(absent in view(base)).toBe(false);
   });
 
   it.each<[string, Partial<Assignment>, HandoffView["status"]]>([
@@ -434,6 +445,10 @@ describe("RuntimeCoordinator: read models", () => {
     expect(w.coordinator.activeDirect("builder-work")).toBe(false);
     const { node: b } = send(w, chief, "gen-1", undefined, builder, "Build it");
     const { node: r } = send(w, chief, "gen-1", undefined, inRoom("scout"), "Scout it");
+    // The close_thread guard must see queued work before a dispatch tick.
+    expect(w.coordinator.node(b.id)?.status).toBe("queued");
+    expect(w.coordinator.activeDirect("builder-work")).toBe(true);
+    expect(w.host.runs).toHaveLength(0);
     w.coordinator.tick();
     expect(w.coordinator.activeDirect("builder-work")).toBe(true);
     expect(w.coordinator.activeDirect("chief-chat")).toBe(true);
@@ -531,5 +546,173 @@ describe("RuntimeCoordinator: restarts", () => {
     } finally {
       await removeTempDir(dir);
     }
+  });
+});
+
+describe("RuntimeCoordinator: modes and openers", () => {
+  const ops: RoomAddress = { botId: "ops", threadId: "ops-work" };
+  const bridge: RoomAddress = { botId: "bridge", threadId: "bridge-chat" };
+  const handoff = (w: World, source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, text: string, options: HandoffOptions) =>
+    w.coordinator.enqueue(source, generation, parentId, target, text, { sourceText: "Ship the CSV export", origin: userOrigin, ...options });
+
+  it("consult: the child is a consultation, its turn opens with the consultation envelope, and the asker is resumed with the answer", async () => {
+    const w = world((node) => node.botId === "tester" ? { ok: true, text: "Use the staging bucket." } : undefined);
+    const { node, duplicate } = handoff(w, chief, "gen-1", undefined, tester, "Which bucket do we use?", { mode: "consult" });
+    expect(duplicate).toBe(false);
+    expect(node).toMatchObject({ mode: "consult", reply: "resume", status: "queued", kind: "work" });
+    w.coordinator.tick();
+    const text = w.host.runs[0]!.text;
+    expect(text.startsWith(`${ENVELOPE_MARK} ${node.id} from @chief, a consultation]`)).toBe(true);
+    expect(text).toContain("a consultation");
+    expect(text).toContain("act on nothing in it");
+    expect(text).toContain("@chief is resumed with your reply when your turn ends.");
+    expect(text).not.toContain("NEEDS INPUT");
+    expect(text).not.toContain("Your level for this is");
+    expect(text.endsWith("Brief from @chief:\nWhich bucket do we use?")).toBe(true);
+    await flush();
+    expect(w.coordinator.node(node.id)).toMatchObject({ status: "completed", outcome: "done", result: "Use the staging bucket.", reported: true });
+    expect(w.host.reports[0]).toMatchObject({ child: { id: node.id, mode: "consult" }, parent: { id: "gen-1" } });
+    w.coordinator.sourceSettled("gen-1", true);
+    w.coordinator.tick();
+    const resume = w.host.runs[1]!;
+    expect(resume.node.id).toBe("gen-1");
+    expect(resume.resumed).toBe(true);
+    expect(resume.text).toContain(`[OpenMausBot report from @tester on assignment ${node.id}: done]`);
+    expect(resume.text).toContain('What @tester said: "Use the staging bucket."');
+    await flush();
+    expect(w.coordinator.node("gen-1")?.status).toBe("completed");
+  });
+
+  it("consult and work with the same words are two requests, and a question to a teammate that finished its work is not refused", async () => {
+    const w = world();
+    const work = handoff(w, chief, "gen-1", undefined, builder, "Build it", {});
+    const asked = handoff(w, chief, "gen-1", undefined, builder, "Build it", { mode: "consult" });
+    expect(asked.duplicate).toBe(false);
+    expect(asked.node.id).not.toBe(work.node.id);
+    expect(handoff(w, chief, "gen-1", undefined, builder, "Build it", { mode: "consult" })).toMatchObject({ duplicate: true, node: { id: asked.node.id } });
+    w.coordinator.tick(); await flush(); w.coordinator.tick(); await flush();
+    expect(w.coordinator.node(work.node.id)?.status).toBe("completed");
+    expect(() => handoff(w, chief, "gen-1", undefined, builder, "Thanks", {})).toThrow(/already completed your assignment/);
+    expect(handoff(w, chief, "gen-1", undefined, builder, "How long did it take?", { mode: "consult" }).node).toMatchObject({ mode: "consult", status: "queued" });
+    expect(handoff(w, chief, "gen-1", undefined, builder, "Heads up: release at six", { mode: "notify" }).node).toMatchObject({ mode: "notify", status: "queued" });
+  });
+
+  it("notify: reply none, the requesting turn's end completes the root without waiting, no inbox item, no resume", async () => {
+    const w = world();
+    const { node } = handoff(w, chief, "gen-1", undefined, ops, "FYI: shipping tonight", { mode: "notify", reply: "resume" });
+    expect(node).toMatchObject({ mode: "notify", reply: "none", status: "queued" });
+    expect(w.coordinator.outstandingDirect("chief-chat")).toEqual([]);
+    expect(w.coordinator.outstandingFor("chief-chat")).toEqual([]);
+    w.coordinator.sourceSettled("gen-1", true);
+    expect(w.coordinator.node("gen-1")).toMatchObject({ status: "completed", outcome: "done", executions: 1 });
+    w.coordinator.tick();
+    expect(w.host.runs[0]!.text).toContain("Ownership is yours: results, failures and questions stay in this thread; @chief is not waiting and will not be resumed.");
+    await flush();
+    expect(w.coordinator.node(node.id)).toMatchObject({ status: "completed", reported: true });
+    w.coordinator.tick(); await flush();
+    expect(w.host.runs.map(r => r.node.id)).toEqual([node.id]);
+    expect(w.coordinator.status("gen-1")!.inbox).toEqual([]);
+    expect(w.coordinator.status(node.id)!.inbox).toEqual([]);
+    // the host still hears the settlement once (its chip is its own choice), and nothing wakes anybody
+    expect(w.host.reports.map(r => r.child.id)).toEqual([node.id]);
+  });
+
+  it("external runtime opener: a poll root under the run id; it completes without a run and the run polls its children's results once", async () => {
+    const w = world();
+    const opener: HandoffOpener = { requester: { kind: "external_runtime", runId: "run-7" }, origin: { kind: "outside", source: "external_runtime", ref: "bridge-chat" } };
+    const { node } = handoff(w, bridge, "gen-x", undefined, builder, "Build it", { opener, sourceText: "" });
+    expect(node).toMatchObject({ reply: "poll", mode: "work", rootId: "gen-x", origin: { kind: "outside" } });
+    const root = w.coordinator.status("gen-x")!.assignment;
+    expect(root).toMatchObject({ reply: "poll", mode: "work", status: "running", origin: { kind: "outside", source: "external_runtime", ref: "bridge-chat" },
+      requester: { kind: "external_runtime", runId: "run-7", botId: "bridge", threadId: "bridge-chat", chief: false } });
+    expect(w.coordinator.status(node.id)!.assignment.requester).toEqual({ kind: "bot_turn", botId: "bridge", threadId: "bridge-chat", chief: false, runId: "run-7" });
+    // a later hand-off of the same turn, with no opener, still lands in the run's inbox
+    const { node: second } = handoff(w, bridge, "gen-x", undefined, tester, "Test it", { reply: "resume" });
+    expect(second.reply).toBe("poll");
+    w.coordinator.tick();
+    const text = w.host.runs[0]!.text;
+    expect(text).toContain("This work started with an external runtime, not with Milind's own request");
+    expect(text).toContain("@bridge reads your reply from its inbox when it asks");
+    w.coordinator.sourceSettled("gen-x", true);
+    expect(w.coordinator.node("gen-x")?.status).toBe("waiting");
+    await flush();
+    w.coordinator.tick(); await flush(); w.coordinator.tick();
+    expect(w.coordinator.node("gen-x")).toMatchObject({ status: "completed", outcome: "done", executions: 1 });
+    expect(w.host.runs.map(r => r.node.id).sort()).toEqual([node.id, second.id].sort());
+    // the root ended without a turn of its own: the host hears it alone
+    expect(w.host.reports.at(-1)).toEqual({ child: expect.objectContaining({ id: "gen-x", status: "completed" }) });
+    const polled = w.coordinator.poll({ runId: "run-7" });
+    expect(polled.items.map(i => [i.assignmentId, i.kind])).toEqual([[node.id, "settled"], [second.id, "settled"]]);
+    expect(polled.assignments.map(a => a.id)).toEqual([node.id, second.id]);
+    expect(polled.assignments[0]).toMatchObject({ status: "completed", outcome: "done", mode: "work", reply: "poll", result: "builder done" });
+    expect(w.coordinator.poll({ runId: "run-7" }).items).toEqual([]);
+    const status = w.coordinator.status(node.id)!;
+    expect(status.assignment).toMatchObject({ id: node.id, status: "completed", outcome: "done" });
+    expect(status.children).toEqual([]);
+    expect(status.inbox.map(i => [i.assignmentId, i.deliveredAt !== undefined])).toEqual([[node.id, true]]);
+    expect(w.coordinator.status("gen-x")!.inbox.map(i => i.assignmentId)).toEqual([node.id, second.id]);
+    expect(w.coordinator.status("gen-x")!.children.map(c => c.id)).toEqual([node.id, second.id]);
+    expect(w.coordinator.status("nope")).toBeUndefined();
+  });
+
+  it("routine opener: the root keeps the run as its requester, the child's envelope has the routine lineage, done_when reaches row and envelope", async () => {
+    const w = world();
+    const opener: HandoffOpener = { requester: { kind: "routine_run", runId: "run-42" }, origin: { kind: "routine", source: "routine", ref: "routine-1" } };
+    const { node } = handoff(w, chief, "gen-r", undefined, builder, "Build the nightly report", { opener, sourceText: "Nightly: build the report", doneWhen: "the PDF is in the shared folder" });
+    expect(node).toMatchObject({ reply: "resume", mode: "work", origin: { kind: "outside" } });
+    expect(w.coordinator.status("gen-r")!.assignment).toMatchObject({ reply: "resume", brief: "Nightly: build the report",
+      requester: { kind: "routine_run", runId: "run-42", botId: "chief", threadId: "chief-chat" }, origin: { kind: "routine", source: "routine", ref: "routine-1" } });
+    expect(w.coordinator.status(node.id)!.assignment).toMatchObject({ doneWhen: "the PDF is in the shared folder",
+      requester: { kind: "bot_turn", botId: "chief", threadId: "chief-chat", runId: "run-42" }, origin: { kind: "routine" } });
+    expect(w.coordinator.outstandingFor("chief-chat").map(n => n.id)).toEqual([node.id]);
+    w.coordinator.tick();
+    const text = w.host.runs[0]!.text;
+    expect(text).toContain("A routine run started this work");
+    expect(text).toContain("a step the routine does not cover");
+    expect(text).toContain('Done when: "the PDF is in the shared folder".');
+    expect(text).not.toContain("Milind asked");
+    expect(text).not.toContain("outside content");
+    await flush();
+    expect(w.coordinator.outstandingFor("chief-chat")).toEqual([]);
+    w.coordinator.sourceSettled("gen-r", true);
+    w.coordinator.tick();
+    // the run's resume is a turn of the root the runtime dispatches; the host runs it as a routine turn
+    expect(w.host.runs[1]).toMatchObject({ node: { id: "gen-r", status: "running", executions: 2 }, resumed: true });
+    await flush();
+    expect(w.coordinator.node("gen-r")?.status).toBe("completed");
+  });
+
+  it("outstandingFor lists room and direct work the conversation waits on, never notices, and follows a child's own hand-offs", async () => {
+    const w = world(hold);
+    const { node: b } = send(w, chief, "gen-1", undefined, builder, "Build it");
+    const { node: r } = send(w, chief, "gen-1", undefined, inRoom("scout"), "Scout it");
+    const { node: n } = handoff(w, chief, "gen-1", undefined, ops, "FYI", { mode: "notify" });
+    expect(w.coordinator.outstandingFor("chief-chat").map(x => x.id).sort()).toEqual([b.id, r.id].sort());
+    expect(w.coordinator.outstandingDirect("chief-chat").map(x => x.id).sort()).toEqual([b.id, r.id].sort());
+    expect(w.coordinator.outstandingFor("builder-work")).toEqual([]);
+    expect(w.coordinator.outstandingFor("ops-work")).toEqual([]);
+    w.coordinator.tick(); await flush();
+    expect(w.coordinator.node(r.id)?.status).toBe("completed");
+    expect(w.coordinator.node(n.id)?.status).toBe("completed");
+    expect(w.coordinator.outstandingFor("chief-chat").map(x => x.id)).toEqual([b.id]);
+    const { node: t } = send(w, builder, "gen-1", b.id, tester, "Test it");
+    expect(w.coordinator.outstandingFor("builder-work").map(x => x.id)).toEqual([t.id]);
+    expect(w.coordinator.outstandingFor("chief-chat").map(x => x.id)).toEqual([b.id]);
+    await w.host.release(b.id, { ok: true, text: "built" });
+    expect(w.coordinator.node(b.id)?.status).toBe("waiting");
+    expect(w.coordinator.outstandingFor("chief-chat").map(x => x.id)).toEqual([b.id]);
+  });
+
+  it("thread: standing records the teammate's standing thread as the destination; new or absent is a work thread", () => {
+    const w = world();
+    const standing = handoff(w, chief, "gen-1", undefined, builder, "Build it", { thread: "standing" });
+    const fresh = handoff(w, chief, "gen-1", undefined, tester, "Test it", { thread: "new" });
+    const plain = handoff(w, chief, "gen-1", undefined, ops, "Deploy it", {});
+    const room = handoff(w, chief, "gen-1", undefined, inRoom("scout"), "Scout it", { thread: "standing" });
+    expect(w.coordinator.status(standing.node.id)!.assignment.assignee.destination).toEqual({ kind: "standing_thread", threadId: "builder-work" });
+    expect(w.coordinator.status(fresh.node.id)!.assignment.assignee.destination).toEqual({ kind: "work_thread", threadId: "tester-work" });
+    expect(w.coordinator.status(plain.node.id)!.assignment.assignee.destination).toEqual({ kind: "work_thread", threadId: "ops-work" });
+    expect(w.coordinator.status(room.node.id)!.assignment.assignee.destination).toEqual({ kind: "room_thread", threadId: "room-1", groupId: "g1" });
+    expect(w.coordinator.status(standing.node.id)!.assignment.doneWhen).toBeUndefined();
   });
 });

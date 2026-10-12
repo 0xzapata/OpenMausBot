@@ -44,11 +44,14 @@ const assignmentSchema = z.object({
   }),
   assignee: z.object({
     botId: z.string().min(1),
+    // An empty thread id is a legacy-ledger import whose item named no
+    // thread (types.ts, Assignee): allowed on a standing_thread destination
+    // only, so the host resolves or refuses it instead of the read failing.
     destination: z.object({
       kind: z.enum(["work_thread", "standing_thread", "room_thread"]),
-      threadId: z.string().min(1),
+      threadId: z.string(),
       groupId: z.string().optional(),
-    }),
+    }).refine(d => d.threadId.length > 0 || d.kind === "standing_thread", { message: "threadId must not be empty" }),
   }),
   mode: z.enum(["work", "consult", "notify"]),
   reply: z.enum(["resume", "poll", "none"]),

@@ -646,8 +646,6 @@
   "approvalMode.learnMore": "और जानें",
   "approvalMode.customLocalOnly": "कस्टम मंज़ूरी सिर्फ़ इंस्टॉल किए गए डेस्कटॉप ऐप में बदली जा सकती है",
   "approvalMode.customLocalOnlyDot": "कस्टम मंज़ूरी सिर्फ़ इंस्टॉल किए गए डेस्कटॉप ऐप में बदली जा सकती है।",
-  "approvalMode.antigravityLocalOnly": "स्वचालित (पूर्ण पहुँच) इंस्टॉल किए गए डेस्कटॉप ऐप में उपलब्ध है।",
-  "approvalMode.trustedLocalOnly": "पूर्ण पहुँच और कस्टम इंस्टॉल किए गए डेस्कटॉप ऐप में उपलब्ध हैं।",
   "approval.someone": "कोई",
   "approval.tool.action": "एक कार्रवाई",
   "approval.tool.runCommand": "कमांड चलाना",

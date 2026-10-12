@@ -44,13 +44,26 @@ let roomsResponse: unknown = {
     { id: "room-launch", name: "Launch", members: ["Asker", "Helper"] },
   ],
 };
-/** What the stub harness returns from /api/internal/ask-bot. */
-type StubAskResponse = { botName?: string; text?: string; busy?: boolean; timeout?: boolean; waitedMs?: number; taskId?: string; toBotName?: string; error?: string; receipt?: PeerDeliveryReceipt };
+/** What the stub harness returns from /api/internal/ask-bot: the runtime's
+ * receipts and deprecation line, or an older harness's inline reply. */
+type StubAskResponse = {
+  botName?: string; text?: string; taskId?: string; toBotName?: string; error?: string;
+  receipt?: PeerDeliveryReceipt; receipts?: PeerDeliveryReceipt[]; deprecation?: string;
+};
 let askResponse: StubAskResponse = { botName: "Helper", text: "hi from helper" };
 let lastDelegateBody: any = null;
 let lastDelegationUrl: string | null = null;
-let delegationStatusResponse: unknown = { status: "done", toBotName: "Helper", result: "All done." };
+/** What the alias route GET /api/internal/delegations/:id answers: the
+ * assignment-status shape, as the harness now serves it from the runtime. */
+const DONE_ASSIGNMENT = {
+  assignment: { id: "task-earlier123", botId: "bot-helper", botName: "Helper", status: "completed", outcome: "done", result: "All done.", mode: "work", reply: "resume" },
+  children: [], inbox: [],
+};
+let delegationStatusResponse: unknown = DONE_ASSIGNMENT;
 let delegationStatusCode = 200;
+let lastAssignmentStatusUrl: string | null = null;
+let assignmentStatusResponse: unknown = DONE_ASSIGNMENT;
+let assignmentStatusCode = 200;
 let delegateResponse: unknown = { queued: true, message: "Delegation queued." };
 let lastThreadBody: any = null;
 let threadCalls = 0;
@@ -275,6 +288,12 @@ beforeAll(async () => {
       lastDelegationUrl = req.url;
       res.writeHead(delegationStatusCode, { "content-type": "application/json" });
       res.end(JSON.stringify(delegationStatusResponse));
+      return;
+    }
+    if (req.method === "GET" && req.url?.startsWith("/api/internal/assignment-status")) {
+      lastAssignmentStatusUrl = req.url;
+      res.writeHead(assignmentStatusCode, { "content-type": "application/json" });
+      res.end(JSON.stringify(assignmentStatusResponse));
       return;
     }
     if (req.method === "POST" && req.url === "/api/internal/threads") {
@@ -622,12 +641,11 @@ describe("agents-proxy MCP surface", () => {
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
+      "list_room_targets",
+      "coordinate_bots",
+      "assignment_status",
       "list_bots",
       "list_rooms",
-      "ask_bot",
-      "delegate_bot",
-      "check_delegation",
-      "wait_delegation",
       "select_computer",
       "list_threads",
       "close_thread",
@@ -656,17 +674,42 @@ describe("agents-proxy MCP surface", () => {
       "skills_list",
       "skill_manage",
       "add_mcp_server",
+      // the deprecated aliases, one release, listed last
+      "delegate_bot",
+      "ask_bot",
+      "send_to_bot",
+      "check_delegation",
+      "wait_delegation",
     ]);
-    const ask = list.result.tools.find((tool: { name: string }) => tool.name === "ask_bot");
-    const delegate = list.result.tools.find((tool: { name: string }) => tool.name === "delegate_bot");
-    const wait = list.result.tools.find((tool: { name: string }) => tool.name === "wait_delegation");
-    const credential = list.result.tools.find((tool: { name: string }) => tool.name === "request_credential");
-    expect(ask.description).toContain("Brief synchronous consultation");
-    expect(ask.description).toContain("slow replies become asynchronous delegations");
-    expect(ask.description).toContain("Do not use for assigning work");
-    expect(delegate.description).toContain("DEFAULT FOR ASSIGNING WORK");
-    expect(delegate.description).toContain("delivered automatically");
-    expect(wait.description).toContain("Never call it in the same turn as delegate_bot");
+    const tool = (name: string) => list.result.tools.find((entry: { name: string }) => entry.name === name);
+    const coordinate = tool("coordinate_bots");
+    expect(coordinate.description).toContain("The one way to hand work on");
+    expect(coordinate.description).toContain("consult true asks a question");
+    expect(coordinate.description).toContain('reply "none" is a one-way notice');
+    expect(coordinate.description).toContain("never call assignment_status in the same turn");
+    expect(Object.keys(coordinate.inputSchema.properties)).toEqual(["group_id", "bot_ids", "message", "reason", "rework", "thread", "reply", "consult", "done_when"]);
+    expect(coordinate.inputSchema.properties.thread.enum).toEqual(["standing", "new"]);
+    expect(coordinate.inputSchema.properties.reply.enum).toEqual(["resume", "none"]);
+    expect(coordinate.inputSchema.properties.consult.type).toBe("boolean");
+    const status = tool("assignment_status");
+    expect(status.description).toContain("Read-only");
+    expect(status.description).toContain("never needs this to wait");
+    expect(status.inputSchema.properties.wait_ms).toMatchObject({ type: "integer", minimum: 0, maximum: 240_000 });
+    expect(status.inputSchema.required ?? []).toEqual([]);
+    // every alias opens by naming its replacement, and none teaches the legacy wait
+    expect(tool("delegate_bot").description).toMatch(/^Deprecated alias of coordinate_bots\(bot_ids: \[bot_id\], message, reason\); works for this release\./);
+    expect(tool("ask_bot").description).toMatch(/^Deprecated alias of coordinate_bots\(bot_ids: \[bot_id\], message, consult: true\); works for this release\./);
+    expect(tool("ask_bot").description).toContain("no inline wait any more");
+    expect(tool("send_to_bot").description).toMatch(/^Deprecated alias of coordinate_bots\(bot_ids: \[bot_id\], message, thread: "new", reply: "none"\); works for this release\./);
+    expect(tool("check_delegation").description).toMatch(/^Deprecated alias of assignment_status\(id\); works for this release\./);
+    expect(tool("wait_delegation").description).toMatch(/^Deprecated alias of assignment_status\(id, wait_ms\); works for this release\./);
+    expect(JSON.stringify(list.result.tools)).not.toMatch(/Brief synchronous consultation|DEFAULT FOR ASSIGNING WORK|BLOCKING status tool|Never call it in the same turn as delegate_bot/);
+    // the other tools name coordinate_bots, not an alias
+    for (const name of ["post_to_room", "create_bot", "retry_thread", "list_bots"]) {
+      expect(tool(name).description, name).toContain("coordinate_bots");
+      expect(tool(name).description, name).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
+    }
+    const credential = tool("request_credential");
     expect(credential.description).toContain("freshly QR-paired mobile app show a secure entry card");
     expect(credential.description).toContain("Never claim a secure field opened unless this request succeeds");
   });
@@ -721,9 +764,10 @@ describe("agents-proxy MCP surface", () => {
     const readNames = [
       "tool_result_read",
       "list_shared_computers",
-      "list_bots", "list_rooms", "check_delegation", "wait_delegation", "list_threads",
+      "assignment_status", "list_bots", "list_rooms", "list_threads",
       "list_team_setup",
       "session_search", "session_read", "list_routines", "skills_list",
+      "check_delegation", "wait_delegation",
     ];
     expect(list.result.tools.filter((tool: any) => tool.annotations?.readOnlyHint)
       .map((tool: any) => tool.name)).toEqual(readNames);
@@ -788,8 +832,8 @@ describe("agents-proxy MCP surface", () => {
     const text = res.result.content[0].text;
     expect(text).toContain("Helper");
     expect(text).toContain("bot-helper");
-    expect(text).toContain("Assign work with delegate_bot");
-    expect(text).toContain("Use ask_bot only for a short answer");
+    expect(text).toContain("Use coordinate_bots for concrete work or, with consult: true, for advice, then end your turn.");
+    expect(text).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
     expect(lastAuth).toBe(`Bearer ${TOKEN}`);
   });
 
@@ -939,12 +983,23 @@ describe("agents-proxy MCP surface", () => {
     expect(postCalls).toBe(before + 4);
   });
 
-  it("ask_bot forwards sender + depth and returns the reply", async () => {
-    askResponse = { botName: "Helper", text: "hi from helper" };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    expect(res.result.content[0].text).toContain("Helper replied:");
-    expect(res.result.content[0].text).toContain("hi from helper");
-    expect(lastAskBody).toMatchObject({
+  // ── ask_bot: the alias of coordinate_bots(consult: true) ────────────────
+  // There is no inline wait any more: the harness enqueues a consultation
+  // and the answer resumes the asker. The result says so and names the
+  // replacement.
+  const ASK_DEPRECATION = "Deprecated: ask_bot is an alias of coordinate_bots with consult: true and works for this release; call coordinate_bots next time.";
+
+  it("ask_bot forwards sender + depth, says the answer resumes the asker, and names its replacement", async () => {
+    askResponse = { toBotName: "Helper", receipts: [{ botId: "bot-helper", botName: "Helper", outcome: "queued", detail: "handed to the coordinator; the teammate's turn has not started yet", requestId: "asg-ask-1" }] };
+    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping", timeout: 30 });
+    const text = res.result.content[0].text;
+    expect(res.result.isError).toBeFalsy();
+    expect(text).toContain("Asked @Helper; the answer resumes you after this turn ends — there is no inline wait. Assignment id: asg-ask-1. Finish your turn now.");
+    expect(text).toContain("Delivery to Helper: queued — handed to the coordinator");
+    expect(text.endsWith(ASK_DEPRECATION)).toBe(true);
+    expect(text).not.toMatch(/check_delegation|wait_delegation|converted to a delegation|still working after/);
+    // the old `timeout` argument is accepted and ignored: it never reaches the wire
+    expect(lastAskBody).toEqual({
       fromBotId: "bot-asker",
       fromThreadId: "thread-asker-routine",
       toBotId: "bot-helper",
@@ -953,37 +1008,21 @@ describe("agents-proxy MCP surface", () => {
     });
   });
 
-  it("renders a busy peer as a clean answer, not an error", async () => {
-    askResponse = { busy: true };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    expect(res.result.content[0].text).toContain("busy");
-    expect(res.result.isError).toBeFalsy();
-  });
-
-  it("turns a busy+queued reply into delegation guidance with the task id", async () => {
-    askResponse = { busy: true, taskId: "task-9", toBotName: "Helper" };
+  it("ask_bot prefers the harness's own deprecation line when the route sends one", async () => {
+    askResponse = { toBotName: "Helper", deprecation: "ask_bot is deprecated: the harness says so." };
     const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
     const text = res.result.content[0].text;
-    expect(text).toContain("Helper is busy");
-    expect(text).toContain("queued as a delegation");
-    expect(text).toContain("task-9");
-    expect(text).toContain("check_delegation");
-    expect(text).toContain("delivered to this conversation automatically");
-    expect(text).not.toContain("wait_delegation");
-    expect(res.result.isError).toBeFalsy();
+    expect(text.endsWith("ask_bot is deprecated: the harness says so.")).toBe(true);
+    expect(text).not.toContain(ASK_DEPRECATION);
   });
 
-  it.each([[15_000, "15 seconds"], [240_000, "4 minutes"]])("renders a timeout conversion after %s ms with the task id and guidance", async (waitedMs, duration) => {
-    askResponse = { timeout: true, taskId: "task-42", toBotName: "Helper", waitedMs };
+  it("ask_bot still hands an inline reply on, should a harness answer one", async () => {
+    askResponse = { botName: "Helper", text: "hi from helper", receipt: { botId: "bot-helper", botName: "Helper", outcome: "injected", detail: "the teammate's turn ran to completion" } };
     const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
     const text = res.result.content[0].text;
-    expect(text).toContain(`Helper is still working after ${duration}`);
-    expect(text).toContain("converted to a delegation");
-    expect(text).toContain("task-42");
-    expect(text).toContain("check_delegation");
-    expect(text).toContain("delivered to this conversation automatically");
-    expect(text).not.toContain("wait_delegation");
-    expect(res.result.isError).toBeFalsy();
+    expect(text).toContain("@Helper replied:\nhi from helper");
+    expect(text).toContain("Delivery to Helper: injected — the teammate's turn ran to completion");
+    expect(text.endsWith(ASK_DEPRECATION)).toBe(true);
   });
 
   it("surfaces the harness's depth refusal as a tool error", async () => {
@@ -991,58 +1030,35 @@ describe("agents-proxy MCP surface", () => {
     const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
     expect(res.result.isError).toBe(true);
     expect(res.result.content[0].text).toContain("one hop");
+    expect(res.result.content[0].text).toContain(ASK_DEPRECATION);
   });
 
-  it("appends the ask_bot delivery receipt after the reply prose", async () => {
+  it("renders a failed receipt on an ask the runtime refused, without claiming delivery", async () => {
     askResponse = {
-      botName: "Helper", text: "hi from helper",
-      receipt: { botId: "bot-helper", botName: "Helper", outcome: "injected", detail: "the teammate's turn ran to completion" },
+      error: "nothing was sent",
+      receipts: [{ botId: "bot-helper", botName: "Helper", outcome: "failed", detail: "the teammate no longer exists — the message was not delivered" }],
     };
     const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
     const text = res.result.content[0].text;
-    expect(text).toContain("Helper replied:");
-    expect(text).toContain("Delivery to Helper: injected — the teammate's turn ran to completion");
-  });
-
-  it("renders a failed receipt on a busy ask the queue refused, without claiming delivery", async () => {
-    askResponse = {
-      busy: true,
-      receipt: {
-        botId: "bot-helper", botName: "Helper", outcome: "failed",
-        detail: "the teammate was busy and the delegation queue refused the fallback — the message was not delivered",
-      },
-    };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    const text = res.result.content[0].text;
-    expect(text).toContain("busy");
+    expect(res.result.isError).toBe(true);
     expect(text).toContain("Delivery to Helper: failed");
     expect(text).toContain("the message was not delivered");
-    expect(res.result.isError).toBeFalsy();
   });
 
-  it("keeps a dispatch failure honest: the prose reads like a reply, the receipt says failed", async () => {
-    askResponse = {
-      botName: "Helper", text: "(couldn't start that bot: provider offline)",
-      receipt: {
-        botId: "bot-helper", botName: "Helper", outcome: "failed",
-        detail: "the teammate's turn could not start — the message was not delivered",
-      },
-    };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    const text = res.result.content[0].text;
-    expect(text).toContain("(couldn't start that bot: provider offline)");
-    expect(text).toContain("Delivery to Helper: failed — the teammate's turn could not start");
-    expect(res.result.isError).toBeFalsy();
-  });
+  // ── delegate_bot: the alias of coordinate_bots ───────────────────────────
+  const DELEGATE_DEPRECATION = "Deprecated: delegate_bot is an alias of coordinate_bots and works for this release; call coordinate_bots next time.";
 
-  it("forwards the source thread when queueing a delegation", async () => {
+  it("forwards the source thread when queueing a delegation, and names its replacement", async () => {
     delegateResponse = { queued: true, message: "Delegation queued." };
     const res = await callTool("delegate_bot", {
       bot_id: "bot-helper",
       message: "take this",
       reason: "follow-up",
     });
-    expect(res.result.content[0].text).toContain("Delegation queued");
+    const text = res.result.content[0].text;
+    expect(text).toContain("Delegation queued");
+    expect(text).toContain("The result returns here and resumes you automatically; finish your turn without checking or waiting for it.");
+    expect(text.endsWith(DELEGATE_DEPRECATION)).toBe(true);
     expect(lastDelegateBody).toMatchObject({
       fromBotId: "bot-asker",
       fromThreadId: "thread-asker-routine",
@@ -1058,9 +1074,27 @@ describe("agents-proxy MCP surface", () => {
     const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "take this" });
     expect(res.result.isError).toBe(true);
     expect(res.result.content[0].text).toContain("do this one yourself");
+    expect(res.result.content[0].text).toContain(DELEGATE_DEPRECATION);
   });
 
-  it("appends the delegate_bot delivery receipt under the queue guidance", async () => {
+  it("renders the runtime's receipts under the queue guidance, with the assignment id as the task id", async () => {
+    delegateResponse = {
+      receipts: [{
+        botId: "bot-helper", botName: "Helper", outcome: "queued", requestId: "asg-77", threadId: "thread-helper-work",
+        detail: 'sent to "@Asker · work"; it runs after anything still running there',
+      }],
+      message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait.",
+      deprecation: "delegate_bot is a deprecated alias of coordinate_bots; it works for this release.",
+    };
+    const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "take this" });
+    const text = res.result.content[0].text;
+    expect(text).toContain("End your turn after sending all work.");
+    expect(text).toContain("Task id: asg-77.");
+    expect(text).toContain('Delivery to Helper: queued — sent to "@Asker · work"; it runs after anything still running there');
+    expect(text.endsWith("delegate_bot is a deprecated alias of coordinate_bots; it works for this release.")).toBe(true);
+  });
+
+  it("still renders a legacy single receipt and task id", async () => {
     delegateResponse = {
       queued: true, taskId: "task-77", message: "Delegation queued.",
       receipt: {
@@ -1070,18 +1104,39 @@ describe("agents-proxy MCP surface", () => {
     };
     const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "take this" });
     const text = res.result.content[0].text;
-    expect(text).toContain("Delegation queued");
+    expect(text).toContain("Delegation queued. Task id: task-77.");
     expect(text).toContain("Delivery to Helper: queued — the teammate's turn runs after your current turn finishes");
   });
 
-  it("start_thread: tells the model what a thread is for and what it is not for", async () => {
+  it("start_thread: a job on yourself, with the one bot_id it accepts, and the teammate case pointed at coordinate_bots", async () => {
     const list = await rpc("tools/list");
     const start = list.result.tools.find((tool: { name: string }) => tool.name === "start_thread");
     expect(start.inputSchema.required).toEqual(["title", "message"]);
     expect(Object.keys(start.inputSchema.properties)).toEqual(["title", "message", "bot_id", "folder"]);
-    expect(start.description).toContain("Leave bot_id out to open it on yourself");
-    expect(start.description).toContain("Do not use it for a question you need answered right now");
+    expect(start.inputSchema.properties.bot_id).toEqual({ type: "string", enum: ["bot-asker"], description: "Leave out, or use your own bot ID. For teammates use coordinate_bots." });
+    expect(start.description).toContain("Open a separate job on yourself");
+    expect(start.description).toContain('use coordinate_bots for teammates (thread "new" opens a fresh thread on them)');
     expect(start.description).toContain("do not retry it");
+    expect(start.description).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
+  });
+
+  it("start_thread on a teammate still works as the alias of coordinate_bots thread \"new\", and says so", async () => {
+    const previous = threadResponse;
+    threadResponse = { threadId: "thread-peer", title: "QA: PR #9", botId: "bot-helper", botName: "Helper", self: false, state: "pending", delegationId: "asg-peer-9" };
+    try {
+      const res = await callTool("start_thread", { title: "QA: PR #9", message: "Review the login fix.", bot_id: "bot-helper" });
+      const text = res.result.content[0].text;
+      expect(res.result.isError).toBeFalsy();
+      expect(text).toContain("Opened thread #QA: PR #9 on @Helper [thread id: thread-peer]. It starts when this turn ends, like any handoff.");
+      expect(text).toContain("(assignment id: asg-peer-9)");
+      expect(text).toContain("do not check or wait for it in this turn");
+      expect(text.endsWith('Deprecated: start_thread is an alias of coordinate_bots with thread: "new" and works for this release; call coordinate_bots next time.')).toBe(true);
+      expect(lastThreadBody).toEqual({
+        fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", title: "QA: PR #9", message: "Review the login fix.", depth: 0, toBotId: "bot-helper",
+      });
+    } finally {
+      threadResponse = previous;
+    }
   });
 
   it("start_thread on yourself forwards the sender and says whether it runs or waits in line", async () => {
@@ -1231,9 +1286,8 @@ describe("agents-proxy MCP surface", () => {
     };
     const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "do the thing" });
     expect(res.result.content[0].text).toContain("Task id: task-abc123");
-    expect(res.result.content[0].text).toContain("delivered to this conversation automatically");
-    expect(res.result.content[0].text).toContain("Do not check or wait for it in this turn");
-    expect(res.result.content[0].text).not.toContain("wait_delegation");
+    expect(res.result.content[0].text).toContain("The result returns here and resumes you automatically");
+    expect(res.result.content[0].text).toContain("without checking or waiting for it");
 
     // Which turn made it is the harness's to know: a warm proxy serves many.
     delegationStatusCode = 409;
@@ -1245,18 +1299,20 @@ describe("agents-proxy MCP surface", () => {
         expect(status.result.isError).toBe(true);
         expect(status.result.content[0].text).toContain("delegated during this turn");
         expect(status.result.content[0].text).toContain("Finish your response now");
+        expect(status.result.content[0].text).toContain(`Deprecated: ${name} is an alias of assignment_status`);
         expect(lastDelegationUrl).toContain("/api/internal/delegations/task-abc123?");
       }
     } finally {
       delegationStatusCode = 200;
-      delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
+      delegationStatusResponse = DONE_ASSIGNMENT;
     }
     delegateResponse = { queued: true, message: "Delegation queued." };
   });
 
-  it("check/wait_delegation: flat schemas, guided errors, and the read-back wire", async () => {
+  // ── check_delegation / wait_delegation: the aliases of assignment_status ──
+  it("check/wait_delegation: flat schemas, guided errors, and the read-back wire with the deprecation line", async () => {
     const list = await rpc("tools/list");
-    for (const name of ["check_delegation", "wait_delegation"]) {
+    for (const name of ["check_delegation", "wait_delegation", "assignment_status"]) {
       const tool = list.result.tools.find((t: { name: string }) => t.name === name);
       expect(JSON.stringify(tool.inputSchema)).not.toMatch(/"(oneOf|anyOf|allOf|const|format)":/);
     }
@@ -1265,73 +1321,145 @@ describe("agents-proxy MCP surface", () => {
     const bad = await callTool("check_delegation", { task_id: "!" });
     expect(bad.result.isError).toBe(true);
     expect(bad.result.content[0].text).toContain('"task_id"');
+    expect(bad.result.content[0].text).toContain("assignment_status");
     expect(lastDelegationUrl).toBeNull(); // guidance is free
 
     const done = await callTool("check_delegation", { task_id: "task-earlier123" });
-    expect(done.result.content[0].text).toContain("@Helper finished task task-earlier123");
-    expect(done.result.content[0].text).toContain("All done.");
+    const doneText = done.result.content[0].text;
+    expect(doneText).toContain("Assignment task-earlier123 → @Helper: completed");
+    expect(doneText).toContain("Result: All done.");
+    expect(doneText).not.toContain("not settled");
+    expect(doneText.endsWith("Deprecated: check_delegation is an alias of assignment_status and works for this release; call assignment_status next time.")).toBe(true);
     expect(lastDelegationUrl).toContain("/api/internal/delegations/task-earlier123?");
     expect(lastDelegationUrl).toContain("wait_ms=0");
     expect(lastDelegationUrl).toContain("fromBotId=bot-asker");
 
-    delegationStatusResponse = { status: "queued", toBotName: "Helper" };
+    delegationStatusResponse = { assignment: { id: "task-earlier123", botId: "bot-helper", botName: "Helper", status: "queued" }, children: [], inbox: [] };
     const waiting = await callTool("wait_delegation", { task_id: "task-earlier123", timeout_seconds: 45 });
-    expect(waiting.result.content[0].text).toContain("still queued");
-    expect(waiting.result.content[0].text).toContain("after 45s");
+    const waitingText = waiting.result.content[0].text;
+    expect(waitingText).toContain("Assignment task-earlier123 → @Helper: queued, not started yet");
+    expect(waitingText).toContain("It is not settled. Its result resumes you on its own; do not wait on it in this turn.");
+    expect(waitingText).toContain("(still not settled after 45s)");
+    expect(waitingText.endsWith("Deprecated: wait_delegation is an alias of assignment_status with wait_ms and works for this release; call assignment_status next time.")).toBe(true);
     expect(lastDelegationUrl).toContain("wait_ms=45000");
+    delegationStatusResponse = DONE_ASSIGNMENT;
+  });
+
+  it("check_delegation reads a legacy flat body too, so an older harness still answers", async () => {
     delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
-  });
-
-  it("check_delegation says when the teammate is stopped on the person's approval", async () => {
-    delegationStatusResponse = {
-      status: "running",
-      toBotName: "Helper",
-      elapsedMs: 90_000,
-      recentActivity: ["Bash: echo hi"],
-      awaitingPerson: { kind: "approval", tool: "Bash", threadTitle: "Guarded task" },
-    };
     try {
-      const text = (await callTool("check_delegation", { task_id: "task-later456" })).result.content[0].text;
-      expect(text).toContain("is waiting on the person's approval");
-      expect(text).toContain('@Helper stopped at a card in its thread "Guarded task" (to run Bash)');
-      expect(text).toContain("Tell the person now");
-      expect(text).not.toContain("is running with");
+      const text = (await callTool("check_delegation", { task_id: "task-earlier123" })).result.content[0].text;
+      expect(text).toContain("Assignment task-earlier123 → @Helper: done");
+      expect(text).toContain("Result: All done.");
     } finally {
-      delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
+      delegationStatusResponse = DONE_ASSIGNMENT;
     }
   });
 
-  it("check_delegation explains a queued handoff: who it is waiting on, and when it expires", async () => {
+  it("check_delegation says when the assignment is parked on a question for the person", async () => {
     delegationStatusResponse = {
-      status: "queued",
-      toBotName: "Helper",
-      targetStatus: "waiting-on-user",
-      expiresInMs: 5 * 3_600_000 - 1,
+      assignment: { id: "task-later456", botId: "bot-helper", botName: "Helper", status: "needs_input", question: "May I delete the old branch?" },
+      children: [], inbox: [],
     };
     try {
       const text = (await callTool("check_delegation", { task_id: "task-later456" })).result.content[0].text;
-      expect(text).toContain("still queued");
-      expect(text).toContain("@Helper is waiting on the user, so it goes through after they answer.");
-      expect(text).toContain("It expires if not picked up within 5 hours.");
+      expect(text).toContain("Assignment task-later456 → @Helper: waiting on the person");
+      expect(text).toContain('It is parked on a question for the person: "May I delete the old branch?". Nothing moves until the person answers it in that thread; tell them and do not keep checking.');
     } finally {
-      delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
+      delegationStatusResponse = DONE_ASSIGNMENT;
     }
   });
 
-  it("check_delegation never says 'within 0 hours' once a queued handoff's expiry has already elapsed", async () => {
-    delegationStatusResponse = {
-      status: "queued",
-      toBotName: "Helper",
-      targetStatus: "working",
-      expiresInMs: 0,
-    };
+  it("check_delegation relays an unknown id as a plain refusal", async () => {
+    delegationStatusCode = 404;
+    delegationStatusResponse = { error: "unknown task id" };
     try {
-      const text = (await callTool("check_delegation", { task_id: "task-later456" })).result.content[0].text;
-      expect(text).not.toContain("within 0 hours");
-      expect(text).toContain("past its 24-hour limit");
-      expect(text).toContain("will expire the next time it cannot be delivered");
+      const res = await callTool("check_delegation", { task_id: "task-gone-789" });
+      expect(res.result.isError).toBe(true);
+      expect(res.result.content[0].text).toContain("No assignment task-gone-789 is known here");
     } finally {
-      delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
+      delegationStatusCode = 200;
+      delegationStatusResponse = DONE_ASSIGNMENT;
+    }
+  });
+
+  // ── assignment_status: the one read ──────────────────────────────────────
+  it("assignment_status with no id lists every outstanding assignment, one line each", async () => {
+    assignmentStatusResponse = { outstanding: [
+      { id: "asg-1", botId: "bot-helper", botName: "Helper", status: "running" },
+      { id: "asg-2", botId: "bot-quill", botName: "Quill", status: "needs_input", outcome: "needs_input" },
+      { id: "asg-3", botId: "bot-old", status: "waiting" },
+    ] };
+    lastAssignmentStatusUrl = null;
+    const res = await callTool("assignment_status", {});
+    const text = res.result.content[0].text;
+    expect(res.result.isError).toBeFalsy();
+    expect(text).toBe([
+      "Outstanding assignments of this conversation (3):",
+      "- asg-1 → @Helper: running",
+      "- asg-2 → @Quill: waiting on the person",
+      "- asg-3 → bot-old: waiting on its own hand-offs",
+      "Each resumes you when it settles; do not wait on them in this turn.",
+    ].join("\n"));
+    // the caller is the capability's: nothing about it rides the query
+    expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status");
+    expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+
+    assignmentStatusResponse = { outstanding: [] };
+    expect((await callTool("assignment_status", {})).result.content[0].text).toBe("Nothing outstanding: no assignment of this conversation is still open.");
+    assignmentStatusResponse = DONE_ASSIGNMENT;
+  });
+
+  it("assignment_status with an id renders status, outcome, the result head and the assignment's own hand-offs", async () => {
+    assignmentStatusResponse = {
+      assignment: { id: "asg-9", botId: "bot-helper", botName: "Helper", status: "failed", outcome: "provider_error", outcomeDetail: "the engine exited early", result: "x".repeat(2_500) },
+      children: [{ id: "asg-9-1", botId: "bot-quill", botName: "Quill", status: "completed", outcome: "done" }],
+      inbox: [],
+    };
+    lastAssignmentStatusUrl = null;
+    const res = await callTool("assignment_status", { id: "asg-9" });
+    const text = res.result.content[0].text;
+    expect(res.result.isError).toBeFalsy();
+    expect(text).toContain("Assignment asg-9 → @Helper: failed (provider_error): the engine exited early");
+    expect(text).toContain(`Result (first part): ${"x".repeat(2_000)}`);
+    expect(text).not.toContain("x".repeat(2_001));
+    expect(text).toContain("Its own hand-offs:\n- asg-9-1 → @Quill: completed");
+    expect(text).not.toContain("not settled");
+    expect(text).not.toMatch(/Deprecated/);
+    expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status?id=asg-9");
+    assignmentStatusResponse = DONE_ASSIGNMENT;
+  });
+
+  it("assignment_status long-polls with wait_ms, capped at 240000, and refuses a bad wait", async () => {
+    lastAssignmentStatusUrl = null;
+    const res = await callTool("assignment_status", { id: "task-earlier123", wait_ms: 900_000 });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("Assignment task-earlier123 → @Helper: completed");
+    expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status?id=task-earlier123&wait_ms=240000");
+
+    lastAssignmentStatusUrl = null;
+    for (const args of [{ id: "task-earlier123", wait_ms: -1 }, { id: "task-earlier123", wait_ms: "soon" }, { id: "!" }]) {
+      const bad = await callTool("assignment_status", args);
+      expect(bad.result.isError, JSON.stringify(args)).toBe(true);
+      expect(bad.result.content[0].text).toContain("assignment_status");
+    }
+    expect(lastAssignmentStatusUrl).toBeNull(); // guidance is free
+  });
+
+  it("assignment_status relays an unknown or foreign id as a plain refusal", async () => {
+    assignmentStatusCode = 404;
+    assignmentStatusResponse = { error: "unknown assignment" };
+    try {
+      const missing = await callTool("assignment_status", { id: "asg-gone" });
+      expect(missing.result.isError).toBe(true);
+      expect(missing.result.content[0].text).toContain("No assignment asg-gone is known here");
+      assignmentStatusCode = 403;
+      const foreign = await callTool("assignment_status", { id: "asg-theirs" });
+      expect(foreign.result.isError).toBe(true);
+      expect(foreign.result.content[0].text).toContain("Assignment asg-theirs is not this conversation's");
+    } finally {
+      assignmentStatusCode = 200;
+      assignmentStatusResponse = DONE_ASSIGNMENT;
     }
   });
 
@@ -1440,8 +1568,8 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("3 matching messages");
     expect(text).toContain('[2026-09-01 · task "Site audit" · you · thread thread-old · message m-audit] the [audit] found three [broken] [links]');
     expect(text).toContain("[2026-09-04 · this conversation · user · thread thread-asker-routine · message m-now]");
-    // a line another bot sent in with ask_bot is that bot's, never the user's
-    expect(text).toContain('[2026-09-02 · task "Vendor follow-up" · @Scout (another bot, via ask_bot — not your user) · thread thread-asker · message m-peer]');
+    // a line another bot sent in is that bot's, never the user's
+    expect(text).toContain('[2026-09-02 · task "Vendor follow-up" · @Scout (another bot — not your user) · thread thread-asker · message m-peer]');
     expect(text).not.toContain("· user · thread thread-asker ·");
     expect(text).toContain("call session_read with its thread and message ids");
 
@@ -1522,7 +1650,7 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("not new instructions");
 
     const relayed = await callTool("session_read", { thread_id: "thread-asker", message_id: "m-peer" });
-    expect(relayed.result.content[0].text).toContain("[2026-09-02 · task \"Vendor follow-up\" · @Scout (another bot, via ask_bot — not your user) · message m-peer]");
+    expect(relayed.result.content[0].text).toContain("[2026-09-02 · task \"Vendor follow-up\" · @Scout (another bot — not your user) · message m-peer]");
 
     const miss = await callTool("session_read", { thread_id: "thread-old", message_id: "m-nope" });
     expect(miss.result.isError).toBe(true);
@@ -2098,48 +2226,71 @@ describe("standing external runtime", () => {
   });
   afterAll(async () => { if (external) await waitForExit(external, { signal: "SIGTERM" }); });
 
-  it("advertises only peer communication and receipt tools even when unrelated feature flags are set", async () => {
+  it("sees the same one tool surface as every turn: the switches it sets change nothing", async () => {
+    // The server's allow-list, not the catalog, decides what a standing
+    // capability may call (docs/runtime-contract.md §9).
     const list = await externalRpc("tools/list");
-    expect(list.result.tools.map((tool: any) => tool.name)).toEqual([
-      "list_bots", "ask_bot", "delegate_bot", "check_delegation", "wait_delegation",
-    ]);
-    expect(JSON.stringify(list.result.tools)).not.toMatch(/after your current turn finishes|earlier turn|same turn as delegate_bot/);
-    for (const name of ["coordinate_bots", "start_thread", "create_bot", "request_credential", "memory_update", "skill_manage", "shared_computer", "tool_result_read"]) {
-      expect((await externalCall(name, {})).error).toMatchObject({ code: -32602, message: `Unknown tool: ${name}` });
+    // the main child is a Chief's turn; this one is not, so only the role differs
+    const chiefOnly = ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"];
+    const everyTurn = (await rpc("tools/list")).result.tools.filter((tool: any) => !chiefOnly.includes(tool.name));
+    const names = list.result.tools.map((tool: any) => tool.name);
+    expect(names).toEqual(everyTurn.map((tool: any) => tool.name));
+    const teamwork = ["list_room_targets", "coordinate_bots", "assignment_status", "list_bots", "list_rooms", "list_threads", "close_thread", "start_thread", "post_to_room", "delegate_bot", "ask_bot", "send_to_bot", "check_delegation", "wait_delegation"];
+    for (const name of teamwork) {
+      expect(list.result.tools.find((tool: any) => tool.name === name), name).toEqual(everyTurn.find((tool: any) => tool.name === name));
     }
+    expect(JSON.stringify(list.result.tools)).not.toMatch(/Brief synchronous consultation|BLOCKING status tool|same turn as delegate_bot/);
     const roster = (await externalCall("list_bots", {})).result.content[0].text;
-    expect(roster).toContain("Assign work with delegate_bot");
-    expect(roster).not.toContain("coordinate_bots");
+    expect(roster).toContain("Use coordinate_bots for concrete work");
+    expect(roster).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
   });
 
-  it("checks and waits for a newly delegated task in the same standing process", async () => {
+  it("long-polls assignment_status for what it handed on, in the same standing process", async () => {
+    coordinateResponse = { receipts: [{ botId: "bot-helper", botName: "Helper", outcome: "queued", detail: "handed to the coordinator; the teammate's turn has not started yet", requestId: "external-asg-123" }],
+      message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait." };
+    try {
+      const sent = await externalCall("coordinate_bots", { bot_ids: ["bot-helper"], message: "A standing assignment", done_when: "the report is filed" });
+      expect(sent.result.isError).toBeFalsy();
+      expect(lastCoordinateBody).toMatchObject({ botIds: ["bot-helper"], message: "A standing assignment", done_when: "the report is filed" });
+      expect(JSON.parse(sent.result.content[0].text).receipts[0].requestId).toBe("external-asg-123");
+      assignmentStatusResponse = { assignment: { id: "external-asg-123", botId: "bot-helper", botName: "Helper", status: "completed", outcome: "done", result: "All done." }, children: [], inbox: [] };
+      lastAssignmentStatusUrl = null;
+      const status = await externalCall("assignment_status", { id: "external-asg-123", wait_ms: 1_000 });
+      expect(status.result.isError).toBeFalsy();
+      expect(status.result.content[0].text).toContain("Assignment external-asg-123 → @Helper: completed");
+      expect(status.result.content[0].text).toContain("Result: All done.");
+      expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status?id=external-asg-123&wait_ms=1000");
+      expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+    } finally {
+      coordinateResponse = { ok: true };
+      assignmentStatusResponse = DONE_ASSIGNMENT;
+    }
+  });
+
+  it("still answers the aliases, with their deprecation line, for a runtime written against the old names", async () => {
     delegateResponse = { queued: true, taskId: "external-task-123", message: "Delegated — @Helper is picking it up now." };
     try {
       const result = await externalCall("delegate_bot", { bot_id: "bot-helper", message: "A standing assignment" });
-      expect(result.result.content[0].text).toContain("check_delegation or wait_delegation");
-      expect(result.result.content[0].text).not.toContain("finish your turn");
+      expect(result.result.content[0].text).toContain("Task id: external-task-123");
+      expect(result.result.content[0].text).toContain("Deprecated: delegate_bot is an alias of coordinate_bots");
       for (const name of ["check_delegation", "wait_delegation"]) {
         lastDelegationUrl = null;
         const status = await externalCall(name, { task_id: "external-task-123", timeout_seconds: 1 });
         expect(status.result.isError).toBeFalsy();
         expect(status.result.content[0].text).toContain("All done.");
+        expect(status.result.content[0].text).toContain(`Deprecated: ${name} is an alias of assignment_status`);
         expect(lastDelegationUrl).toContain(`/api/internal/delegations/external-task-123?`);
         expect(lastDelegationUrl).toContain(`wait_ms=${name === "wait_delegation" ? 1000 : 0}`);
         expect(lastAuth).toBe(`Bearer ${TOKEN}`);
       }
-    } finally { delegateResponse = { queued: true, message: "Delegation queued." }; }
-  });
-
-  it.each(["busy", "timeout"])("can poll a %s ask converted into a delegation without ending the standing process", async outcome => {
-    askResponse = { [outcome]: true, taskId: `external-${outcome}-123`, toBotName: "Helper", waitedMs: 15_000 };
-    try {
-      const result = await externalCall("ask_bot", { bot_id: "bot-helper", message: "A short question" });
-      expect(result.result.content[0].text).toContain("check_delegation or wait_delegation");
-      expect(result.result.content[0].text).not.toMatch(/Finish your turn|after your current turn ends|later turn/);
-      const status = await externalCall("check_delegation", { task_id: `external-${outcome}-123` });
-      expect(status.result.isError).toBeFalsy();
-      expect(status.result.content[0].text).toContain("All done.");
-    } finally { askResponse = { botName: "Helper", text: "hi from helper" }; }
+      askResponse = { toBotName: "Helper", receipts: [{ botId: "bot-helper", botName: "Helper", outcome: "queued", detail: "handed to the coordinator", requestId: "external-ask-123" }] };
+      const asked = await externalCall("ask_bot", { bot_id: "bot-helper", message: "A short question" });
+      expect(asked.result.content[0].text).toContain("Assignment id: external-ask-123");
+      expect(asked.result.content[0].text).toContain("Deprecated: ask_bot is an alias of coordinate_bots with consult: true");
+    } finally {
+      delegateResponse = { queued: true, message: "Delegation queued." };
+      askResponse = { botName: "Helper", text: "hi from helper" };
+    }
   });
 
   it("bounds large replies without calling the out-of-scope result-cache route", async () => {
@@ -2249,80 +2400,65 @@ describe("with computer sharing off and no Chief of Staff (the defaults)", () =>
   });
 });
 
-// coordinate_bots exists only in room turns, so its argument handling needs
-// its own child with the room flag on; the stub harness records the wire body.
-describe("coordinate_bots arguments (room turn)", () => {
-  let room: ChildProcess;
-  const roomPending = new Map<number, (msg: any) => void>();
-  let roomId = 700;
-  const roomRpc = (method: string, params?: unknown): Promise<any> =>
-    new Promise((resolve, reject) => {
-      const id = roomId++;
-      roomPending.set(id, resolve);
-      room.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-      setTimeout(() => {
-        if (roomPending.delete(id)) reject(new Error(`${method} timed out`));
-      }, 10_000).unref?.();
-    });
-
-  beforeAll(async () => {
-    room = spawn(process.execPath, [PROXY], {
-      env: {
-        ...childEnv(),
-        OMB_HARNESS_URL: `http://127.0.0.1:${stubPort}`,
-        OMB_BOT_ID: "bot-asker",
-        OMB_THREAD_ID: "thread-asker-routine",
-        OMB_COMMS_TOKEN: TOKEN,
-        OMB_TURN_DEPTH: "0",
-        OMB_ROOM_TURN: "1",
-      },
-      stdio: ["pipe", "pipe", "inherit"],
-    });
-    let buf = "";
-    room.stdout!.on("data", (c) => {
-      buf += c;
-      let nl;
-      while ((nl = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        const msg = JSON.parse(line);
-        roomPending.get(msg.id)?.(msg);
-        roomPending.delete(msg.id);
-      }
-    });
-    await roomRpc("initialize", { protocolVersion: "2024-11-05" });
-  });
-
-  afterAll(() => {
-    room?.kill();
-  });
-
+// coordinate_bots is in every turn's catalog (docs/runtime-contract.md §9);
+// the stub harness records the wire body.
+describe("coordinate_bots arguments", () => {
   it("maps camelCase aliases onto the canonical snake_case fields", async () => {
-    const res = await roomRpc("tools/call", { name: "coordinate_bots", arguments: {
+    const res = await callTool("coordinate_bots", {
       botIds: ["bot-helper"], message: "please review the patch",
-    } });
+    });
     expect(res.result.isError).toBeFalsy();
     expect(lastCoordinateBody).toMatchObject({
       botIds: ["bot-helper"], message: "please review the patch",
     });
   });
 
-  it("sends cross-bot work one way through the existing thread route", async () => {
-    const listed = await roomRpc("tools/list");
+  it("forwards the contract's fields: reason, thread, reply, consult and done_when", async () => {
+    const res = await callTool("coordinate_bots", {
+      bot_ids: ["bot-helper"], message: "Is the export idempotent?", reason: "need to know before shipping",
+      thread: "new", reply: "resume", consult: true, done_when: "a yes or no with the line that proves it",
+    });
+    expect(res.result.isError).toBeFalsy();
+    expect(lastCoordinateBody).toEqual({
+      botIds: ["bot-helper"], message: "Is the export idempotent?", reason: "need to know before shipping",
+      thread: "new", reply: "resume", consult: true, done_when: "a yes or no with the line that proves it",
+    });
+    // the camelCase spelling of done_when resolves too; blanks are dropped
+    await callTool("coordinate_bots", { bot_ids: ["bot-helper"], message: "notice", reply: "none", doneWhen: "  ", reason: " " });
+    expect(lastCoordinateBody).toEqual({ botIds: ["bot-helper"], message: "notice", reply: "none" });
+  });
+
+  it("refuses a thread, reply or consult value outside the contract before contacting the server", async () => {
+    for (const args of [
+      { bot_ids: ["bot-helper"], message: "m", thread: "fresh" },
+      { bot_ids: ["bot-helper"], message: "m", reply: "poll" },
+      { bot_ids: ["bot-helper"], message: "m", consult: "yes" },
+      { bot_ids: ["bot-helper"], message: "m", done_when: ["x"] },
+    ]) {
+      lastCoordinateBody = null;
+      const res = await callTool("coordinate_bots", args);
+      expect(res.result.isError, JSON.stringify(args)).toBe(true);
+      expect(res.result.content[0].text).toContain('thread ("standing" or "new"), reply ("resume" or "none"), consult (true or false) and done_when are optional');
+      expect(lastCoordinateBody).toBeNull();
+    }
+  });
+
+  it("sends cross-bot work one way through the existing thread route, naming the replacement", async () => {
+    const listed = await rpc("tools/list");
     const send = listed.result.tools.find((tool: { name: string }) => tool.name === "send_to_bot");
-    expect(send.description).toContain("cross-bot only");
+    expect(send.description).toContain("Cross-bot only");
     const previous = threadResponse;
     threadResponse = { threadId: "thread-sent", title: "Ship it", botId: "bot-helper", botName: "Helper", self: false };
     try {
-      const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
+      const result = await callTool("send_to_bot", {
         bot_id: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.",
-      } });
+      });
       expect(result.result.isError).toBeFalsy();
       expect(lastThreadBody).toMatchObject({
         toBotId: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.", oneWay: true,
       });
       expect(result.result.content[0].text).toContain("nothing there will resume you");
+      expect(result.result.content[0].text.endsWith('Deprecated: send_to_bot is an alias of coordinate_bots with thread: "new" and reply: "none" and works for this release; call coordinate_bots next time.')).toBe(true);
     } finally {
       threadResponse = previous;
     }
@@ -2335,9 +2471,9 @@ describe("coordinate_bots arguments (room turn)", () => {
       self: false, state: "pending", approvalRequired: true,
     };
     try {
-      const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
+      const result = await callTool("send_to_bot", {
         bot_id: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.",
-      } });
+      });
       expect(result.result.isError).toBeFalsy();
       expect(result.result.content[0].text).toContain("pending approval");
       expect(result.result.content[0].text).not.toContain("Ownership moved");
@@ -2348,19 +2484,19 @@ describe("coordinate_bots arguments (room turn)", () => {
 
   it("refuses send_to_bot to self without contacting the server", async () => {
     lastThreadBody = null;
-    const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
+    const result = await callTool("send_to_bot", {
       bot_id: "bot-asker", title: "Separate work", message: "Do it.",
-    } });
+    });
     expect(result.result.isError).toBe(true);
     expect(result.result.content[0].text).toContain("cross-bot only");
     expect(lastThreadBody).toBeNull();
   });
 
   it("keeps the documented snake_case key when both spellings arrive", async () => {
-    const res = await roomRpc("tools/call", { name: "coordinate_bots", arguments: {
+    const res = await callTool("coordinate_bots", {
       bot_ids: ["bot-helper"], botIds: ["bot-other"], group_id: "room-right", groupId: "room-wrong",
       message: "m", request_key: "from an older tool list", label: "from an older tool list",
-    } });
+    });
     expect(res.result.isError).toBeFalsy();
     expect(lastCoordinateBody).toMatchObject({
       botIds: ["bot-helper"], groupId: "room-right",
@@ -2373,12 +2509,12 @@ describe("coordinate_bots arguments (room turn)", () => {
 
   it("names the expected snake_case fields when arguments are unusable", async () => {
     lastCoordinateBody = null;
-    const res = await roomRpc("tools/call", { name: "coordinate_bots", arguments: {
+    const res = await callTool("coordinate_bots", {
       botIds: "bot-helper", message: "ids is not an array",
-    } });
+    });
     expect(res.result.isError).toBe(true);
     const text = res.result.content[0].text;
-    for (const field of ["bot_ids", "message", "group_id", "rework"]) {
+    for (const field of ["bot_ids", "message", "group_id", "reason", "rework", "thread", "reply", "consult", "done_when"]) {
       expect(text).toContain(field);
     }
     expect(text).toContain("botIds");

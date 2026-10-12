@@ -109,7 +109,7 @@ describe("bot patch queue", () => {
 
     queue.enqueue(
       "bot-1",
-      { approvalMode: "full", confirmFullAccess: true },
+      { approvalMode: "full" },
       bot({ approvalMode: "ask" }),
     );
     await vi.runAllTicks();
@@ -121,7 +121,7 @@ describe("bot patch queue", () => {
     await queue.flush("bot-1");
 
     expect(sent).toEqual([
-      { approvalMode: "full", confirmFullAccess: true },
+      { approvalMode: "full" },
       { approvalMode: "ask" },
     ]);
   });
@@ -339,7 +339,7 @@ describe("bot patch queue", () => {
     for (const overlay of overlays) expect(overlay).not.toHaveProperty("acknowledgeLocalAuto");
   });
 
-  it("keeps the Full access confirmation out of optimistic bot state", async () => {
+  it("keeps the all-threads scope out of optimistic bot state", async () => {
     const sent: BotUpdatePatch[] = [];
     const overlays: BotUpdatePatch[] = [];
     const queue = createBotPatchQueue({
@@ -354,7 +354,7 @@ describe("bot patch queue", () => {
 
     queue.enqueue(
       "bot-1",
-      { approvalMode: "full", confirmFullAccess: true },
+      { approvalMode: "full", applyToAllThreads: true },
       bot(),
     );
     queue.enqueue("bot-1", { title: "Ops" }, bot());
@@ -363,10 +363,10 @@ describe("bot patch queue", () => {
     await queue.flush("bot-1");
 
     expect(sent).toEqual([
-      { approvalMode: "full", confirmFullAccess: true },
+      { approvalMode: "full", applyToAllThreads: true },
       { title: "Ops" },
     ]);
-    for (const overlay of overlays) expect(overlay).not.toHaveProperty("confirmFullAccess");
+    for (const overlay of overlays) expect(overlay).not.toHaveProperty("applyToAllThreads");
   });
 
   it("sends null to select Auto but normalizes it to an absent state field", async () => {
