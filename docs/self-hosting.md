@@ -865,6 +865,35 @@ The CSV has one line per decision (time, decision, source, bot, tool,
 summary, rule, unattended, answered by, thread, request); cells that would
 start a spreadsheet formula are prefixed with `'`.
 
+### The safety floor
+
+Full access answers every permission request for a bot, and a saved command
+answers one. The safety floor is a short never-list that neither can answer:
+a recursive delete of the filesystem root, of the home directory or of a
+top-level system directory (`rm -rf /`, `rm -rf ~`, `rd /s /q C:\Windows`);
+formatting or overwriting a disk (`mkfs` on a disk, `diskutil eraseDisk`,
+`format C:`, `dd of=/dev/sda`, a redirection into a disk device); and a fork
+bomb. It is off unless you switch it on: set `safetyFloor.enabled` to `true`
+in `config.json` (or through `PUT /api/config`), or start the server with
+`OMB_SAFETY_FLOOR=1`, which turns it on whatever the file says.
+`GET /api/config` reports the result as `safetyFloor.enabled`.
+
+With it on, a command on the list that a grant was about to allow is denied
+instead. The bot is told why, the conversation shows `Blocked by the safety
+floor: …`, and the decision log gets an `auto-denied` row with source
+`safety-floor`. A card you answer yourself is not overridden: at "Ask for
+approval" the request still reaches you, and your Allow stands.
+
+It holds wherever the engine asks the server, and only there. API-key models
+(the chat runtime) are covered in full, at Full access and under "Always
+allow this session". So is any shell request Claude Code, Codex, Muse Code or
+an ACP agent sends, whether a saved command, a kept session allow or Full
+access would have answered it. An engine running its own no-ask mode never
+sends a request, so the floor does not see the command: at Full access that
+is Claude Code (`bypassPermissions`), Codex (approvals off) and the ACP
+agents started in their own yolo mode. Treat it as a net under saved commands
+and API-key bots, not as a sandbox.
+
 ### Admin activity
 
 On a workspace several people share — a hosted workspace, an email sign-in
