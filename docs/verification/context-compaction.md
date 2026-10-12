@@ -10,6 +10,7 @@ A visible, expandable note explains what was summarized, even with tool chips of
 ```sh
 pnpm exec vitest run server/context-compaction.e2e.test.ts
 pnpm exec vitest run server/context-rebuild.test.ts server/compaction-summary.test.ts server/context-budget.test.ts server/delta-context.e2e.test.ts
+pnpm exec vitest run server/side-jobs.test.ts server/helper-model.e2e.test.ts
 pnpm exec vitest run server/store.test.ts server/config.test.ts src/components/DigestChip.test.ts
 pnpm test:packaged-server
 ```
@@ -57,6 +58,7 @@ Evidence covers:
 - A later send keeps that replacement session instead of injecting the summary again.
 - Editing an old message replays its selected branch, not the abandoned summary.
 - Stop aborts a hanging helper without a late record; a new send still works.
+- With the `helper` setting naming an instance, a bot on an engine with no tool-free one-shot for the summary (the fake Pi and the fake Codex) gets a model-written summary from that instance, booked as a helper call; without the setting the Pi bot keeps the excerpt summary.
 - Private session bookkeeping stays off the task wire shape; stored summaries redact secrets.
 
 Each API fixture retains exact requests, waits and bounded transcripts in
@@ -82,6 +84,15 @@ a 20-second timeout and source-labelled fallback when unavailable. Summaries
 are capped at 6,000 bytes and retain recent source corrections. The helper may
 incur provider usage; its one-shot cost is not separately reported by the current
 provider interface. Summaries are not verified facts and can omit details.
+
+An engine with no tool-free helper for the summary (Pi and Muse Code, which have
+none at all, and Codex and the ACP engines, whose one-shot starts a whole agent
+process and is kept for background work) keeps the source-labelled fallback
+unless a helper model is set ([the memory guide](../memory.md), "The helper
+model"). That instance then writes the summary under the same 20-second timeout
+and fallback, and its call is one usage row with the trigger `helper`.
+`server/helper-model.e2e.test.ts` boots its own server in a throwaway home with
+the fake Claude, Codex and Pi engines, once with the setting and once without.
 
 This slice covers direct threads. It does not add channel compaction, change
 provider-native compaction, prove live-model summary quality, or ship native
