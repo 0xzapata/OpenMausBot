@@ -450,6 +450,29 @@ describe("MCP tool execution", () => {
     expect(result).toMatchObject({ status: "needs-user", messages: [{ text: "Approve?" }] });
   });
 
+  it("reads a failed turn that left a quota-switch offer as failed: nothing waits on the offer", async () => {
+    const wait = (card: Record<string, unknown>) => handleToolCall("wait_for_conversation", {
+      target_type: "bot", target_id: "bot-1", timeout_seconds: 1,
+    }, vi.fn(async (path: string) => {
+      if (path === "/api/bots?messages=0") return {
+        bots: [{ id: "bot-1", name: "Mira", busy: false, activity: "idle", threadId: "task-1", tasks: [] }],
+      };
+      if (path === "/api/threads/task-1/messages?limit=10") return { messages: [
+        { id: "u1", at: 1, role: "user", kind: "text", text: "Summarise the quarter" },
+        { id: "e1", at: 2, role: "bot", kind: "activity", tool: { name: "error: This Claude account has reached its usage limit.", ok: false } },
+        { id: "c1", at: 3, role: "bot", kind: "options", card },
+      ] };
+      throw new Error(`unexpected path ${path}`);
+    }));
+    const question = { title: "Which quarter?", subtitle: "", options: ["Q3", "Q4"], requestId: "r1" };
+    // a question the bot asked waits on the person; an offer to go on elsewhere does not
+    expect(await wait(question)).toMatchObject({ status: "needs-user" });
+    expect(await wait({
+      ...question, title: "Claude is out of quota", options: ["Codex", "Not now"], fixedOptions: true,
+      quotaSwitch: { engines: [{ instanceId: "codex", name: "Codex" }], messageId: "u1" },
+    })).toMatchObject({ status: "failed" });
+  });
+
   it("changes an idle task model while another task of the same bot works", async () => {
     const modelSelection = { instanceId: "codex", model: "gpt-5.6-sol" };
     const fetcher = vi.fn(async (path: string, options?: RequestInit) => {

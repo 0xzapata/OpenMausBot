@@ -257,6 +257,7 @@ import {
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
 import { dismissQuestionCard } from "./card-dismissal.ts";
+import { createQuotaSwitch, quotaSwitchEnabled } from "./quota-switch.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
   addDisabledMcpServer,
@@ -9561,7 +9562,9 @@ bus.subscribe((event: RuntimeEvent) => {
       if (!event.ok && !stopped && !lazyClaimAlreadyReported && !computerParked && !capContinues && !routines?.runForThread(event.threadId)) {
         const broken = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
         if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: turnStops.failureCause(event) ?? "the run ended without a result" });
-      }
+        // The same broken run, when its engine ran out, gets one offer to go on elsewhere (quota-switch.ts).
+        if (bot) void quotaSwitch.turnFailed({ bot, threadId: event.threadId, cause: turnStops.failureCause(event), internal, request: directRequestOwners.get(event.threadId), generation: directTurnGenerationByThread.get(event.threadId) });
+      } else if (bot && event.ok) quotaSwitch.turnSucceeded({ bot, threadId: event.threadId });
       const lastReported = turnUsage.get(event.threadId);
       turnUsage.delete(event.threadId);
       const lastContext = turnContext.get(event.threadId);
@@ -13869,6 +13872,27 @@ const ROOM_POST_MAX_CHARS = 4_000;
 // them — its pending map lives in the module so the two respond endpoints
 // can call resolvePeerComms without holding a reference back to here.
 const approvalBus: ApprovalBus = { store, broadcast, notify, autoApply: fullAccessForSource };
+
+// quota-switch (server/quota-switch.ts): a person's turn that ends on its
+// engine's usage limit offers another engine. What only the server has: the
+// thread's model-switch gate, what the job runtime still holds, a person's send.
+const quotaSwitch = createQuotaSwitch({
+  store, enabled: () => quotaSwitchEnabled(cfg), engines: () => registry.instances(), refusal: policyModelRefusal,
+  access: instanceId => providerConfigs()[instanceId]?.access ?? registry.access(instanceId),
+  gate: (thread, selection) => checkedTaskModelSwitch(thread, selection, false, false, true),
+  reset: (from, to) => hostedModels?.resetTask(from, to),
+  held: (botId, threadId) => threadBusy(botId, threadId) || coordinator.activeDirect(threadId),
+  resend: (botId, threadId, message, replyTo) => startOrQueueDirectMessage(botId, threadId, message.text ?? "", replyTo, undefined, message.sender, undefined, undefined, undefined, message.dataContext),
+});
+
+/** A card the harness raised itself, on this thread: a peer approval or a
+ * quota-switch offer. Settled here, with the outcome a respond endpoint
+ * answers; undefined for any other card, which the endpoint goes on to deliver. */
+function harnessCardOutcome(threadId: string, requestId: string, behavior: "allow" | "deny" | "answer", message: unknown): string | undefined {
+  if (!store.messagesFor(threadId).some(candidate => candidate.card?.requestId === requestId)) return undefined;
+  if (resolvePeerComms(approvalBus, requestId, behavior)) return behavior === "allow" ? "allowed-once" : "rejected";
+  return quotaSwitch.answer(threadId, requestId, typeof message === "string" ? message : undefined) ? "answered" : undefined;
+}
 
 // Approvals live only in memory, so any peer card still open on disk is one
 // whose resolver died with the previous process. Left alone it can never be
@@ -24238,14 +24262,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           behavior,
           reviewedSha256,
         }))) return;
-        // peer-approval intercept: harness-native cards carry a requestId
-        // that lives in peer-approval's pending map. Resolve them here so
+        // The harness's own cards are resolved here (harnessCardOutcome), so
         // the provider adapter never sees a request it didn't raise.
-        if (store.messagesFor(bot.threadId).some((message) => message.card?.requestId === String(body.requestId)) &&
-          resolvePeerComms(approvalBus, String(body.requestId), behavior)) {
-          return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
-        }
         const requestId = String(body.requestId);
+        const own = harnessCardOutcome(bot.threadId, requestId, behavior, body.message);
+        if (own) return json(res, 200, { ok: true, outcome: own });
         const pending = store.messagesFor(bot.threadId).find((message) => message.card?.requestId === requestId);
         const dismissed = dismissQuestionCard(store, bot.threadId, pending, body);
         if (dismissed) return json(res, dismissed.status, dismissed.body);
@@ -24354,13 +24375,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             behavior,
           })) return;
         }
-        // peer-approval intercept (see /api/bots/:id/respond above). A peer card
+        // The harness's own cards (see /api/bots/:id/respond above). A peer card
         // belongs to the bus rather than to a speaker, so resolve it before we go
         // looking for one — a room between turns has no speaker to find.
-        if (store.messagesFor(threadId).some((message) => message.card?.requestId === requestId) &&
-          resolvePeerComms(approvalBus, requestId, behavior)) {
-          return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
-        }
+        const own = harnessCardOutcome(threadId, requestId, behavior, body.message);
+        if (own) return json(res, 200, { ok: true, outcome: own });
         const group = store.groupByThread(threadId);
         // busyBotId is in-memory only, so an approval that outlives its turn — or
         // the process — leaves a durable card with no speaker behind it. Fall back

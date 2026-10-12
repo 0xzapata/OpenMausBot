@@ -722,7 +722,7 @@ function taskBelongsTo(owner: Record<string, any>, taskId: string): boolean {
 }
 
 function messageNeedsInput(message: Record<string, any>): boolean {
-  const card = isRecord(message.card) && message.card.requestId && !message.card.answered && !message.card.dismissed && !message.card.expired;
+  const card = isRecord(message.card) && message.card.requestId && !message.card.answered && !message.card.dismissed && !message.card.expired && !message.card.quotaSwitch; // a quota-switch offer is optional: its turn already failed, nothing waits on it
   const connector = isRecord(message.connector) &&
     !message.connector.dismissed &&
     !message.connector.resumed &&

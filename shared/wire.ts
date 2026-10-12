@@ -619,6 +619,17 @@ export interface OptionCardData {
    * quota-switch offer) rather than an open question a person could answer
    * in their own words. */
   fixedOptions?: boolean;
+  /** A quota-switch offer (server/quota-switch.ts). */
+  quotaSwitch?: QuotaSwitchCardData;
+}
+
+/** What a quota-switch card offers, kept on the card itself so the offer can
+ * still be answered after a restart: the engines, in the order of the card's
+ * options, and the person's message whose turn ran into the limit (absent
+ * when there is none to send again). */
+export interface QuotaSwitchCardData {
+  engines: Array<{ instanceId: string; name: string }>;
+  messageId?: string;
 }
 
 /** Which app holds the microphone of a Live call: the desktop app (its own
