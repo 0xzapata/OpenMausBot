@@ -5246,7 +5246,10 @@ const coordinator: Coordinator = createCoordinator({
         // A cut resume running again already sent its notification, and a
         // quiet report's review stays quiet (turnAnswers).
         const quiet = turnAnswers(node.threadId, { cardContinuation: true, coordination: node }).quiet;
-      if (node.restart !== "rerun" && !quiet) {
+        // A routine run's resume is part of the run: the run's own result
+        // notifies when it ends, so its teammates' results raise nothing.
+        const routineRoot = !node.parentId && activeRoutineRunForThread(node.threadId) !== null;
+        if (node.restart !== "rerun" && !quiet && !routineRoot) {
           notify(buildNotification("delegation-settled", bot, node.threadId, `Results in from ${who}`, { avatarUrl: bot.avatarUrl }));
         }
       if (!node.parentId && !quiet) reviewAnswerThreads.add(node.threadId);
@@ -11681,6 +11684,10 @@ routines = new RoutineManager({
     const bot = botForThread(botId, threadId);
     cancelDirectTurnDispatch(botId, threadId);
     revokeInternalCapabilitiesForThread(threadId);
+    // The person stopped the run: as with a chat's Stop, its node stops
+    // being awaited (work that never started is dropped, a teammate mid-turn
+    // finishes and reports, nothing resumes the stopped run).
+    noteTeammatesLeftRunning(botId, threadId, coordinator.stopAwaitingDirect(threadId));
     try {
       await runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId);
     } finally {
@@ -14772,7 +14779,7 @@ function roomPostEligibility(
     return {
       ok: false,
       status: 400,
-      error: "that is a one-to-one bot channel, not a room — use ask_bot or delegate_bot to reach a single bot",
+      error: "that is a one-to-one bot channel, not a room — use coordinate_bots to reach a single bot",
     };
   }
   if (!group.memberIds.includes(bot.id)) {
@@ -18002,7 +18009,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // through the same two functions and add one deprecation line to their
       // answer. Nothing outside the runtime keeps hand-off state.
       const EXTERNAL = internalCapability.generation === EXTERNAL_RUNTIME_GENERATION;
-      const deprecated = (old: string, replacement: string) => `${old} is replaced by ${replacement}; it keeps working for this release.`;
+      const deprecated = (old: string, replacement: string) => `${old} ${/ and /.test(old) ? "are" : "is"} replaced by ${replacement}; ${/ and /.test(old) ? "they keep" : "it keeps"} working for this release.`;
       type HandoffCall = {
         groupId?: string;
         botIds: string[];
@@ -18180,7 +18187,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             if (createdThread) store.deleteTask(target.botId, createdThread);
             const said = error instanceof Error ? error.message : String(error);
             refused.push(said);
-            receipts.push(peerDeliveryReceipt({ botId: target.botId, botName: store.bot(target.botId)?.name, outcome: "failed", detail: said }));
+            // A bot hidden since the call was admitted is not the sender's to
+            // see: the receipt keeps the id it addressed and no current name.
+            const current = store.bot(target.botId);
+            receipts.push(peerDeliveryReceipt({ botId: target.botId, ...(current && !current.hidden ? { botName: current.name } : {}), outcome: "failed", detail: said }));
           }
         }
         const sent = refused.length < receipts.length;

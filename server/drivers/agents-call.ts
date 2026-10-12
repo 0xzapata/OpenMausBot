@@ -712,7 +712,10 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const note = receiptsNote(r);
     const tail = `${note ? `\n\n${note}` : ""}\n\n${deprecationLine(name, r)}`;
     if (r.error) return { text: `Couldn't reach that bot: ${r.error}${tail}`, isError: true };
-    const who = `@${peerName(String(r.toBotName ?? r.botName ?? "")) || "that teammate"}`;
+    // The alias answers with the coordinate_bots receipts: the teammate's
+    // name is on the first one (an older harness still sends toBotName).
+    const first = Array.isArray(r.receipts) && jsonRecord(r.receipts[0]) ? r.receipts[0] : undefined;
+    const who = `@${peerName(String(first?.botName ?? r.toBotName ?? r.botName ?? "")) || "that teammate"}`;
     // A harness that still answered inline hands the words straight on.
     if (typeof r.text === "string" && r.text.trim() && !r.taskId && !Array.isArray(r.receipts)) {
       return { text: `${who} replied:\n${r.text}${tail}` };
@@ -809,9 +812,12 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     // A refusal opened nothing. A "failed" state opened the thread and could
     // not start its turn — that one still counts, and still has an id.
     if (r.error && r.state !== "failed") return { text: `Couldn't open that thread: ${String(r.error)}`, isError: true };
-    const threadTitle = String(r.title ?? title);
-    const threadId = String(r.threadId ?? "");
-    const where = r.self === true ? "on yourself" : `on @${String(r.botName ?? "that bot")}`;
+    // A thread on a teammate answers with the coordinate_bots receipts: the
+    // thread id and the teammate's name are on the first one.
+    const receipt = r.self !== true && Array.isArray(r.receipts) && jsonRecord(r.receipts[0]) ? r.receipts[0] : undefined;
+    const threadTitle = String(r.title ?? receipt?.title ?? title);
+    const threadId = String(r.threadId ?? receipt?.threadId ?? "");
+    const where = r.self === true ? "on yourself" : `on @${String(r.botName ?? receipt?.botName ?? "that bot")}`;
     const opened = `Opened thread #${threadTitle} ${where} [thread id: ${threadId}].`;
     if (r.self === true) {
       if (r.state === "running") {
