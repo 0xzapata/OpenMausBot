@@ -22,7 +22,7 @@ const BUSY_LIMIT_MS = 10 * 60_000;
 // The native press resolver supplies the virtual key codes and Enter/Tab text
 // that its raw input_keyboard relay omits. Keep unknown keys literal.
 const DISCRETE_KEYS = new Set(["Backspace", "Enter", "Tab", "Escape", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
-// The panel has no take-control button: interacting takes control, and an
+// Interacting takes control, as does the panel's Take control; an
 // interrupted action is recovered from the panel's menu.
 const RESTART_NEEDED = "A browser action was interrupted. Choose Restart browser… in the browser menu before continuing.";
 
@@ -603,6 +603,17 @@ export class BrowserLive {
   /** Why this viewer cannot act now: an interrupted browser needs a restart. */
   private refusal(viewer: Viewer, otherwise: string): BrowserLiveError {
     return new BrowserLiveError(this.runtime.interrupted(viewer.session) ? RESTART_NEEDED : otherwise, 409);
+  }
+
+  /** Done on a sign-in card, from any window or device: whichever view holds
+   * this browser hands it back, exactly as its own Hand back would. */
+  handBack(session: string): void {
+    const holder = this.runtime.heldBy(session);
+    const viewer = holder ? this.viewers.get(holder) : undefined;
+    if (!viewer || viewer.session !== session) return;
+    this.abandonPressedInput(viewer);
+    this.runtime.release(session, viewer.id);
+    this.control(session);
   }
 
   closeForSession(session: string): void { for (const viewer of this.viewers.values()) if (viewer.session === session) this.close(viewer); }

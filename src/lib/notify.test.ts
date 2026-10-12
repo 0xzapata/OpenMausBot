@@ -76,14 +76,15 @@ describe("desktop notifications", () => {
     expect(requestPermission).not.toHaveBeenCalled();
   });
 
-  it("mutes completion notifications without hiding required approval or spend notices", () => {
+  it("mutes completion notifications without hiding required approval, sign-in or spend notices", () => {
     const { notices } = installNotification("granted");
     sounds.messages = false;
     showNotification(frame, vi.fn());
     expect(notices).toHaveLength(0);
     showNotification({ ...frame, kind: "approval" }, vi.fn());
+    showNotification({ ...frame, kind: "sign-in" }, vi.fn());
     showNotification({ ...frame, kind: "spend" }, vi.fn());
-    expect(notices).toHaveLength(2);
+    expect(notices).toHaveLength(3);
   });
 
   it("shows a notification after permission is granted", () => {
