@@ -106,7 +106,13 @@ it("stamps askedAt where a person writes, never for a routine, a webhook, start_
     const handoff = await thread(bot.id, "Hand-off");
     await replied(bot.id, handoff.threadId, "Hand-off done.");
     await idle(teammate.id);
-    expect((await said(handoff.threadId)).some((line) => line.startsWith("@Teammate: ") && line.includes("Take this over."))).toBe(true);
+    // The hand-off (send_to_bot, an alias of coordinate_bots with thread "new"
+    // and reply "none") is an assignment on the job runtime: its request line
+    // in the opened thread is the teammate's, never the person's.
+    const handed = (await api("GET", `/api/threads/${handoff.threadId}/messages?limit=50`)).messages as any[];
+    expect(handed.some((message) => message.from?.botId === teammate.id && message.roomRequest?.phase === "request" && String(message.text).includes("Take this over."))).toBe(true);
+    expect(handed.filter((message) => message.role === "user")).toEqual([]);
+    expect(handoff.openedBy).toMatchObject({ botId: teammate.id });
 
     // Nothing since the person's one line stamped anything: not the side
     // job, the Slack thread, the routine's or webhook's run, or the hand-off.
