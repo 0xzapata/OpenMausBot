@@ -30,6 +30,7 @@ import { assertRequestTarget, guardedRequestPath, requestConflict, requestNeedsI
 import { botAvatarUrlFromStoredPath } from "../shared/bot-avatar.ts";
 import { BOT_PROFILE_LIMITS } from "../shared/bot-profile.ts";
 import { CLOUD_COMPUTER_BUSY_ERROR } from "../shared/computer-contention.ts";
+import { threadLinkUrl } from "../shared/thread-link.ts";
 import { failedTurnTool } from "../shared/failed-turn.ts";
 import { STOPPED_TURN_NAME, assistantTranscript, errorTranscript } from "../shared/client-cancel.ts";
 import { phonePairingLink } from "../shared/pairing-link.ts";
@@ -8545,6 +8546,9 @@ bus.subscribe((event: RuntimeEvent) => {
       if (completedTurnId) {
         const terminal = store.markTerminalAssistantMessage(event.threadId, completedTurnId);
         if (terminal) store.patchMessage(event.threadId, terminal.id, { turnSucceeded: event.ok });
+        if (bot) store.suggestTaskLink(bot.id, event.threadId, store.activePath(event.threadId)
+          .filter((message) => message.role === "bot" && message.kind === "text" && message.turnId === completedTurnId)
+          .map((message) => message.text ?? "").join("\n"));
       }
       const reply = lastReply.get(event.threadId) ?? "";
       lastReply.delete(event.threadId);
@@ -24103,7 +24107,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
       const current = store.projectBotForTask(m[1], m[2]);
       if (!current) return json(res, 404, { error: "no such task" });
-      const allowed = new Set(["title", "projectId", "modelSelection", "updateBotDefault", "resetApprovalToAsk", "approvalMode", "autoApprove", "requireAvailableModel", "pinnedMessageId", "acknowledgeLocalAuto", "archivedAt", "pinned", "snoozedUntil", "surface", "refreshPermissions"]);
+      const allowed = new Set(["title", "projectId", "modelSelection", "updateBotDefault", "resetApprovalToAsk", "approvalMode", "autoApprove", "requireAvailableModel", "pinnedMessageId", "acknowledgeLocalAuto", "archivedAt", "pinned", "snoozedUntil", "surface", "refreshPermissions", "link"]);
       if (Object.keys(body).some((key) => !allowed.has(key))) return json(res, 400, { error: "unsupported thread setting" });
       const notYours = cloudThreadRefusal(auth, m[2]);
       if (notYours) return json(res, 403, { error: notYours });
@@ -24183,6 +24187,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (body.snoozedUntil === null) patch.snoozedUntil = undefined;
         else if (typeof body.snoozedUntil === "number" && Number.isFinite(body.snoozedUntil) && body.snoozedUntil >= 0) patch.snoozedUntil = body.snoozedUntil;
         else return json(res, 400, { error: "snoozedUntil must be a timestamp, 0 to snooze until activity, or null to wake now" });
+      }
+      if (body.link !== undefined) {
+        const link = body.link === null ? undefined : threadLinkUrl(body.link);
+        if (link === null) return json(res, 400, { error: "link must be an http(s) address of at most 2048 characters, or null to remove it" });
+        patch.link = link;
+        patch.linkAuto = link ? undefined : false;
       }
       if (body.surface !== undefined) {
         if (threadBusy(current.id, current.threadId)) return json(res, 409, { error: "Stop this thread before changing its computer destination." });

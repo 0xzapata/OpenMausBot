@@ -142,6 +142,8 @@ export interface WireTask {
   /** The person pinned this thread above the update-ordered list. Only true
    * is stored; absence means unpinned. */
   pinned?: boolean;
+  link?: string;
+  linkAuto?: boolean;
   /** Epoch ms of the newest message, or createdAt when the thread has none.
    * Server-derived. Clients must not write it. */
   updatedAt?: number;
