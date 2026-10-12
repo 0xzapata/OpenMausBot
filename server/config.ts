@@ -572,6 +572,11 @@ const appConfigSchema = z.object({
      * context in that room reaches this (fraction below 1, or a token
      * count). Default 0.9; autoCompact: false turns it off too. */
     roomCompactAt: z.number().positive().max(10_000_000).optional(),
+    /** A session rebuilt from an inline replay (an engine switched in
+     * mid-thread, a rewind, a lost session, a compaction) is also told which
+     * tools already ran, one line per call (server/context-rebuild.ts). Off
+     * unless true; OMB_REPLAY_TOOL_HISTORY=1 or =0 wins when set. */
+    replayToolHistory: z.boolean().optional(),
   }).optional(),
   /** Memory upkeep timing, for bots with Memory upkeep switched on. */
   memory: z.object({
@@ -663,7 +668,7 @@ export interface AppConfig {
   rooms?: { turnTimeoutMinutes: number };
   mcp?: { callTimeoutMinutes?: number };
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
-  context?: { rebuildBytes?: number; compactAt?: number; autoCompact?: boolean; roomCompactAt?: number };
+  context?: { rebuildBytes?: number; compactAt?: number; autoCompact?: boolean; roomCompactAt?: number; replayToolHistory?: boolean };
   memory?: { captureQuietMs?: number; tidyHour?: number };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. Pool runs N
