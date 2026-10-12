@@ -766,6 +766,26 @@ export interface WireGroup {
   /** A direct-message channel's turn ceiling. Null on the wire means the
    * global group limit. Channel conversations store theirs on each task. */
   turnTimeoutMinutes?: number | null;
+  /** Members the person stopped in this room ("stop @Bot"), by bot id.
+   * A held member gets no turn until it is @mentioned again or resumed.
+   * Room-wide, persisted (server/room-holds.ts). */
+  holds?: Record<string, RoomHold>;
+  /** Room messages addressed to a member while it was held, by bot id;
+   * its next turn is shown them, then they are cleared. */
+  heldMessages?: Record<string, RoomHeldMessage[]>;
+}
+
+/** One member's hold in a room: when the person stopped it, and whether the
+ * room has already said so (the held line is written once per hold). */
+export interface RoomHold {
+  at: number;
+  noted?: boolean;
+}
+
+/** A room message that reached a member while it was held. */
+export interface RoomHeldMessage {
+  threadId: string;
+  messageId: string;
 }
 
 // ── live wire frames ───────────────────────────────────────────────────

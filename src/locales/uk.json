@@ -2143,5 +2143,10 @@
   "settings.sendKey.subtitle": "Оберіть Shift+Enter або {key}, щоб Enter починав новий рядок, — зручно, коли метод введення підтверджує текст клавішею Enter, як-от під час введення японською. {key} надсилає за будь-якого вибору. Лише на цьому пристрої.",
   "computer.files.homeFolder": "Домашня папка",
   "computer.files.changeDefaultFolder": "Змінити типову папку",
-  "computer.files.pinnedFolderHint": "Ця розмова зберігає свою поточну папку. Змініть типову папку для нових розмов."
+  "computer.files.pinnedFolderHint": "Ця розмова зберігає свою поточну папку. Змініть типову папку для нових розмов.",
+  "room.holds.banner": "Зупинені вами: {names}. Згадайте бота через @ або напишіть resume, щоб повернути його.",
+  "room.holds.resume": "Відновити {name}",
+  "room.holds.stop": "Зупинити {name}",
+  "room.holds.stopTitle": "Зупинити лише {name}; решта кімнати працює далі",
+  "room.holds.avatarHeld": "{name} — призупинено (зупинено вами)"
 }

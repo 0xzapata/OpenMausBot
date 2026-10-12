@@ -1597,5 +1597,10 @@
   "computer.files.homeFolder": "Carpeta personal",
   "computer.files.changeDefaultFolder": "Cambiar carpeta predeterminada",
   "computer.files.pinnedFolderHint": "Esta conversación conserva su carpeta actual. Cambia la carpeta predeterminada para las nuevas conversaciones.",
-  "task.workingElsewhere": "Trabajando en otros hilos: {count}"
+  "task.workingElsewhere": "Trabajando en otros hilos: {count}",
+  "room.holds.banner": "Detenidos por ti: {names}. Menciona un bot con @ o escribe resume para recuperarlo.",
+  "room.holds.resume": "Reanudar a {name}",
+  "room.holds.stop": "Detener a {name}",
+  "room.holds.stopTitle": "Detener solo a {name}; el resto de la sala sigue",
+  "room.holds.avatarHeld": "{name}: en pausa (detenido por ti)"
 }
