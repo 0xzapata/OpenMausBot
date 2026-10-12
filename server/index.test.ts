@@ -5513,7 +5513,7 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("keeps Full and Custom bots on Codex when the paired model route changes providers", async () => {
+  it("carries a Full bot's access across engines silently, and keeps Custom bots on Codex", async () => {
     const isolatedHome = mkdtempSync(join(tmpdir(), "omb-trusted-mode-model-"));
     const isolatedData = join(isolatedHome, ".openmausbot");
     const isolatedStatic = join(isolatedHome, "static");
@@ -5543,7 +5543,9 @@ describe("harness HTTP API", () => {
       approvalMode,
       autoApprove: false,
     }));
-    writeFileSync(join(isolatedData, "bots.json"), JSON.stringify(trustedBots));
+    // A third Full bot changes engine by itself: its access must ride along.
+    const carrier = { ...trustedBots[0], id: "full-carry", threadId: "full-carry-thread", name: "full carrier", createdAt: 3 };
+    writeFileSync(join(isolatedData, "bots.json"), JSON.stringify([...trustedBots, carrier]));
 
     let isolatedStderr = "";
     const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
@@ -5581,14 +5583,28 @@ describe("harness HTTP API", () => {
       const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
       const targetSelection = { instanceId: claude.instanceId, model: claude.models.default };
 
-      for (const seeded of trustedBots) {
+      // Full carries silently to an engine that runs it (owner, Oct 12): no
+      // reset to Ask, no confirmation, on the bot and its selected thread.
+      const carried = await isolatedApi("PATCH", `/api/bots/${carrier.id}/model`, targetSelection);
+      expect(carried.status, JSON.stringify(carried.body)).toBe(200);
+      const afterCarry = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === carrier.id,
+      );
+      expect(afterCarry).toMatchObject({ approvalMode: "full", modelSelection: targetSelection });
+      const carriedThread = afterCarry.tasks.find((task: { threadId: string }) => task.threadId === carrier.threadId);
+      expect(carriedThread.modelSelection).toEqual(targetSelection);
+      // the thread keeps no level of its own: it runs at the bot's Full
+      expect(carriedThread.approvalMode ?? afterCarry.approvalMode).toBe("full");
+
+      // Custom's rules belong to Codex: it never crosses engines.
+      for (const seeded of trustedBots.filter((candidate) => candidate.approvalMode === "custom")) {
         const rejected = await isolatedApi("PATCH", `/api/bots/${seeded.id}/model`, targetSelection);
         expect(rejected.status, seeded.approvalMode).toBe(400);
         expect(rejected.body.error).toMatch(/requires choosing Ask first/i);
         const scoped = await isolatedApi("PATCH", `/api/bots/${seeded.id}/tasks/${seeded.threadId}`, {
           modelSelection: targetSelection, updateBotDefault: true, approvalMode: "ask",
         });
-        expect(scoped.status, seeded.approvalMode).toBe(seeded.approvalMode === "custom" ? 403 : 400);
+        expect(scoped.status, seeded.approvalMode).toBe(403);
         expect(scoped.body.error).toMatch(/Custom approval|resetApprovalToAsk/i);
         const unchanged = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
           (candidate: { id: string }) => candidate.id === seeded.id,
@@ -5622,10 +5638,10 @@ describe("harness HTTP API", () => {
       expect(switched.status).toBe(200);
       expect(switched.body.bot).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", autoApprove: false });
       expect(switched.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", alwaysAllow: [] });
-      // The sibling follows the bot onto Claude. Its Full access belonged to
-      // Codex, so it goes back to Ask in the same write, never rides along.
+      // The sibling follows the bot onto Claude and keeps its own Full: Full
+      // carries across engines, and the reset was the bot's and this thread's.
       expect(switched.body.bot.tasks.find((task: { threadId: string }) => task.threadId === sibling.threadId))
-        .toMatchObject({ modelSelection: targetSelection, followsBotModel: true, approvalMode: "ask", alwaysAllow: [] });
+        .toMatchObject({ modelSelection: targetSelection, followsBotModel: true, approvalMode: "full" });
       const created = await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "New defaults" });
       expect(created.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask" });
       const refusedCustom = trustedBots.find(candidate => candidate.approvalMode === "custom")!;
