@@ -190,6 +190,22 @@ revocation. They cover both named-section and sectionless Chiefs; the posting
 suite independently checks room listing and transcript writes. These are
 server workflow checks, not UI or live-model verification.
 
+### Parallel threads in one room
+
+A room's threads run side by side; turns stay serial within a thread, and a
+member works one thread at a time (`server/room-member-lock.ts`): a member
+asked in several threads finishes one, then takes the next, and no waiting
+thread is skipped because they all woke on the same release. Stop reaches only
+its own thread.
+
+```sh
+pnpm exec vitest run server/room-member-lock.test.ts server/room-parallel-threads.e2e.test.ts src/lib/room-threads.test.ts
+```
+
+The e2e holds every fake-Claude reply behind a gate file and asserts each
+thread's own `working` and `busyBotId` on the wire. It is a server workflow
+check with the fake engine, not a UI or live-model check.
+
 ### Broader coordination checks
 
 ```sh

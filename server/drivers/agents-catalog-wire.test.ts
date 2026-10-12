@@ -105,27 +105,27 @@ const FULL = "skills+shared+voice";
 // PR 3 (one tool surface): every profile carries coordinate_bots and
 // assignment_status AND the five deprecated aliases for one release, so the
 // catalog is ~5.7 KB heavier than the old direct profile. Lower these again
-// when the aliases go.
+// when the aliases go. fill_login (saved website logins) adds 670 bytes.
 const BUDGET_BASELINE: Record<string, number> = {
-  "default": 54651,
-  "voice": 55392,
-  "shared": 56396,
-  "shared+voice": 57137,
-  "skills": 56704,
-  "skills+voice": 57445,
-  "skills+shared": 58449,
-  "skills+shared+voice": 59190,
-  "non-chief": 45001,
-  "voice+non-chief": 45742,
-  "shared+non-chief": 46746,
-  "shared+voice+non-chief": 47487,
-  "skills+non-chief": 47054,
-  "skills+voice+non-chief": 47795,
-  "skills+shared+non-chief": 48799,
-  "skills+shared+voice+non-chief": 49540,
-  "skills+shared+voice+cloud-home": 58245,
-  "skills+shared+voice+non-chief+cloud-home": 48595,
-  "default+legacy-switches": 54651,
+  "default": 55321,
+  "voice": 56062,
+  "shared": 57066,
+  "shared+voice": 57807,
+  "skills": 57374,
+  "skills+voice": 58115,
+  "skills+shared": 59119,
+  "skills+shared+voice": 59860,
+  "non-chief": 45671,
+  "voice+non-chief": 46412,
+  "shared+non-chief": 47416,
+  "shared+voice+non-chief": 48157,
+  "skills+non-chief": 47724,
+  "skills+voice+non-chief": 48465,
+  "skills+shared+non-chief": 49469,
+  "skills+shared+voice+non-chief": 50210,
+  "skills+shared+voice+cloud-home": 58915,
+  "skills+shared+voice+non-chief+cloud-home": 49265,
+  "default+legacy-switches": 55321,
 };
 
 const RPC_PREFIX = '{"jsonrpc":"2.0","id":1,"result":';

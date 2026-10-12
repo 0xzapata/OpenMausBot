@@ -998,6 +998,15 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       text: `The person was asked to sign in to ${r.site ?? site} on ${SIGN_IN_PLACES[String(r.place)] ?? "the place you work"}. Your turn ends now: say in one short line that you are waiting for them, then stop. OpenMausBot resumes you when they finish or decline. Never ask for the password or a code in chat.`,
     };
   }
+  if (name === "fill_login") {
+    const username = typeof args.username === "string" ? args.username.trim().slice(0, 512) : "";
+    const r = await api("/api/internal/fill-login", {
+      method: "POST",
+      body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, ...(username ? { username } : {}) }),
+    });
+    // The answer is a status in words; it never carries a value.
+    return { text: typeof r.text === "string" && r.text ? r.text : "fill_login did not answer. Call request_sign_in instead.", ...(r.ok === true ? {} : { isError: true }) };
+  }
   if (name === "send_voice_note") {
     if (typeof args.text !== "string" || !args.text.trim()) {
       return { text: "send_voice_note needs text: the short speakable note, at most 1000 characters.", isError: true };

@@ -1181,6 +1181,7 @@
   "room.pinHint": "Fixar esta mensagem no topo do grupo",
   "room.fallbackBot": "Bot",
   "room.aBot": "Um bot",
+  "room.memberWorkingElsewhere": "{name} está trabalhando em outra conversa",
   "room.responder.everyone": "Mensagens simples vão para todos os membros do grupo; @menções têm prioridade",
   "room.responder.mentions": "Só respondem os bots explicitamente @mencionados",
   "room.responder.lead": "Mensagens simples vão para {name}; @menções têm prioridade",
@@ -1609,5 +1610,11 @@
   "settings.sendKey.subtitle": "Escolha Shift+Enter ou {key} para que Enter comece uma nova linha, útil quando seu método de entrada confirma o texto com Enter, como na digitação em japonês. {key} envia em qualquer opção. Só neste dispositivo.",
   "computer.files.homeFolder": "Pasta pessoal",
   "computer.files.changeDefaultFolder": "Alterar padrão",
-  "computer.files.pinnedFolderHint": "Esta conversa mantém a pasta atual. Altere a pasta padrão para novas conversas."
+  "computer.files.pinnedFolderHint": "Esta conversa mantém a pasta atual. Altere a pasta padrão para novas conversas.",
+  "task.workingElsewhere": "Trabalhando em outras conversas: {count}",
+  "room.holds.banner": "Parados por você: {names}. Mencione um bot com @ ou escreva resume para trazê-lo de volta.",
+  "room.holds.resume": "Retomar {name}",
+  "room.holds.stop": "Parar {name}",
+  "room.holds.stopTitle": "Parar só {name}; o resto da sala continua",
+  "room.holds.avatarHeld": "{name} — em pausa (parado por você)"
 }

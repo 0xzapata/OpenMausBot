@@ -32,6 +32,18 @@ desktop app, where the choice crosses a private process channel rather than the
 bot-accessible HTTP API, because it holds restrictions you wrote yourself. It
 is hidden in development, standalone web, and remote pages.
 
+A team's sidebar menu has **Set for all bots in this team…**, for the owner
+or an admin. It sets one approval level (Ask, Auto-accept edits, Approve for
+me or Full access), or one model and effort, on every bot in that team. It
+lists what each bot will get before anything changes, then saves the bots one
+at a time with the same request and checks as each bot's own settings. A bot
+that is working, or whose engine does not offer the level, model or effort,
+is skipped and the summary gives the reason. A skipped bot is not changed
+later: once its turn ends, run the team change again or set that bot in its
+own settings. Choosing Auto for a bot on this computer shows the same warning
+as its own settings. Model changes keep each bot on its own engine. Custom
+stays a per-bot setting.
+
 Full access does not bypass operating system privacy controls,
 authentication, CAPTCHA or MFA, service permissions,
 or workspace/team ownership and computer-sharing grants. Full Access controls

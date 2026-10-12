@@ -244,11 +244,14 @@ describe("a room turn belongs to the room", () => {
     }
   }, 40_000);
 
-  it("sends a takeover raised mid-room to the room, not to the bot's DM", async () => {
+  it("sends a sign-in request raised mid-room to the room, not to the bot's DM", async () => {
     const bot = await createBot("Handsy", "stuck");
     let roomId: string | undefined;
-    let requestId: string | undefined;
     try {
+      // a sign-in needs a place to sign in on: this bot works in its built-in browser
+      expect((await api("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
+      const placed = await api("PATCH", `/api/bots/${bot.id}`, { computer: "browser" });
+      expect(placed.status, JSON.stringify(placed.body)).toBe(200);
       const room = (await api("POST", "/api/groups", {
         name: "War Room",
         memberIds: [bot.id],
@@ -256,46 +259,38 @@ describe("a room turn belongs to the room", () => {
       })).body.group;
       roomId = room.id;
       expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "take the wheel" })).status).toBe(202);
-      // the room must actually own the bot before it asks for hands
+      // the room must actually own the bot before it asks the person to sign in
       await expect.poll(async () => (await groupState(room.id))?.busyBotId, { timeout: 20_000 }).toBe(bot.id);
 
       const stream = await openSse(`${base}/api/events`);
       try {
         const asked = await api(
           "POST",
-          `/api/internal/computer-control?botId=${bot.id}`,
-          { reason: "the login page wants a code" },
-          await capability(bot.id, room.threadId, "computer"),
+          "/api/internal/request-sign-in",
+          { site: "example.com", reason: "the login page wants a code" },
+          await capability(bot.id, room.threadId),
         );
-        expect(asked.status).toBe(200);
-        requestId = asked.body.requestId;
+        expect(asked.status).toBe(201);
 
         const frame = await stream.until(
-          (candidate) => candidate.kind === "notify" && candidate.notification?.kind === "takeover",
+          (candidate) => candidate.kind === "notify" && candidate.notification?.kind === "sign-in",
           15_000,
         );
         expect(frame.notification).toMatchObject({
           botId: bot.id,
           threadId: room.threadId,
           groupId: room.id,
-          title: "Handsy in War Room needs your hands",
+          title: "Handsy in War Room needs you to sign in to example.com",
           body: "the login page wants a code",
         });
-        // the DM is exactly where the person must NOT be sent: the screen
-        // that needs hands is attached to the room's turn
+        // the DM is exactly where the person must NOT be sent: the page that
+        // needs signing in belongs to the room's turn
         expect(frame.notification.threadId).not.toBe(bot.threadId);
       } finally {
         stream.close();
       }
     } finally {
-      if (requestId) {
-        await api(
-          "DELETE",
-          `/api/internal/computer-control?botId=${bot.id}`,
-          { requestId },
-          await capability(bot.id, roomId ? (await groupState(roomId)).threadId : bot.threadId, "computer"),
-        ).catch(() => undefined);
-      }
+      await api("PATCH", "/api/config", { features: { browser: false } }).catch(() => undefined);
       await cleanup([roomId], [bot.id]);
     }
   }, 45_000);
