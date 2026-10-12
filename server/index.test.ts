@@ -6570,6 +6570,104 @@ describe("harness HTTP API", () => {
     }
   }, 60_000);
 
+  it("saves a login from the sign-in card for its exact host, resumes the bot to fill it, and never hands the password back", async () => {
+    // Obvious fakes only.
+    const password = "fake-card-Passw0rd!";
+    const twoFactorKey = "JBSWY3DPEHPK3PXP";
+    let botId: string | undefined;
+    let loginId: string | undefined;
+    const answers: string[] = [];
+    try {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computer: "browser",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const requested = await fetch(`${BASE}/api/internal/request-sign-in`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site: "https://accounts.example.com/login", reason: "The invoices are behind a login." }),
+      });
+      expect(requested.status).toBe(201);
+      const { messageId } = await requested.json() as { messageId: string };
+      const save = async (body: unknown) => {
+        const response = await api("POST", `/api/bots/${bot.id}/sign-in-cards/${messageId}/save-login`, body);
+        answers.push(JSON.stringify(response.body));
+        return response;
+      };
+      const card = async () => (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === messageId);
+
+      // A refused save leaves the card open and saves nothing.
+      expect(await save({ threadId: bot.threadId, username: "alice@example.com", password, totp: "not a key" }))
+        .toMatchObject({ status: 400, body: { error: expect.stringContaining("2FA key is not valid") } });
+      expect(await save({ threadId: bot.threadId, username: "alice@example.com", password: "" })).toMatchObject({ status: 400 });
+      expect((await card()).signIn.done).toBeUndefined();
+      expect((await api("GET", "/api/logins")).body.logins).toEqual([]);
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect(await save({ threadId: bot.threadId, username: "alice@example.com", password, totp: twoFactorKey }))
+        .toMatchObject({ status: 200, body: { done: true, resumed: true, saved: true, host: "accounts.example.com" } });
+      const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
+      expect(JSON.stringify(resumed.prompt)).toContain("the person saved a login for accounts.example.com. Open its login page in your browser and call fill_login there");
+      expect((await card()).signIn).toMatchObject({ done: true, savedLogin: "accounts.example.com", resumed: true });
+      // Answered once: a second save is refused.
+      expect((await save({ threadId: bot.threadId, username: "bob", password: "fake-other-pass" })).status).toBe(409);
+
+      // Settings lists it for this bot only, by host and username.
+      const listed = await api("GET", "/api/logins");
+      answers.push(JSON.stringify(listed.body));
+      expect(listed.body.logins).toEqual([expect.objectContaining({
+        host: "accounts.example.com", username: "alice@example.com", hasTotp: true, source: "card", bots: [bot.id],
+      })]);
+      loginId = listed.body.logins[0].id;
+      expect(listed.body.onePassword).toEqual({ connected: false });
+
+      // Nothing the server answered, stored or put in the transcript holds the secrets.
+      const transcript = JSON.stringify((await api("GET", `/api/threads/${bot.threadId}/messages`)).body);
+      const sealed = readFileSync(join(home, ".openmausbot", "logins.json.enc"));
+      for (const secret of [password, twoFactorKey]) {
+        for (const answer of answers) expect(answer).not.toContain(secret);
+        expect(transcript).not.toContain(secret);
+        expect(JSON.stringify(resumed.prompt)).not.toContain(secret);
+        expect(sealed.includes(Buffer.from(secret))).toBe(false);
+      }
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
+    } finally {
+      if (loginId) await api("DELETE", `/api/logins/${loginId}`);
+      if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 60_000);
+
+  it("fill_login answers where it cannot reach with a status that sends the bot to request_sign_in", async () => {
+    let botId: string | undefined;
+    try {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      const fill = async () => {
+        const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+        const response = await fetch(`${BASE}/api/internal/fill-login`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId }),
+        });
+        expect(response.status).toBe(200);
+        return await response.json() as { ok: boolean; text: string };
+      };
+      expect(await fill()).toEqual({ ok: false, text: "fill_login works in the built-in browser, and this conversation has none. Call request_sign_in instead." });
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "browser" })).status).toBe(200);
+      const inBrowser = await fill();
+      expect(inBrowser.ok).toBe(false);
+      expect(inBrowser.text).toContain("request_sign_in");
+    } finally {
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+    }
+  });
+
   it("refuses a sign-in request where nothing names a place to sign in", async () => {
     let botId: string | undefined;
     try {
@@ -9091,6 +9189,42 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("tells a /setup turn to connect an app itself when its connected-apps tools are mounted, and names the switch when they are off", async () => {
+    // This suite's server has the managed connected-apps service (the stub
+    // broker), so connected apps are set up for the workspace.
+    type Dump = { systemPrompt: string; mcpConfig: { mcpServers: Record<string, unknown> } };
+    const setupTurn = async (botId: string) => {
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "/setup set up my Gmail" })).status).toBe(202);
+      return readJsonFileWhenReady<Dump>(fakeClaudeDump, 15_000);
+    };
+    const on = (await api("POST", "/api/bots", { name: "Inbox" })).body.bot;
+    const off = (await api("POST", "/api/bots", { name: "Quiet inbox" })).body.bot;
+    try {
+      for (const bot of [on, off]) {
+        expect((await api("PATCH", `/api/bots/${bot.id}`, {
+          modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+        })).status).toBe(200);
+      }
+      const mounted = await setupTurn(on.id);
+      expect(mounted.mcpConfig.mcpServers.composio).toBeDefined();
+      expect(mounted.systemPrompt).toContain("make COMPOSIO_MANAGE_CONNECTIONS for its toolkit (for example gmail) your last tool call");
+      expect(mounted.systemPrompt).toContain("The user gets a Connect card in this chat");
+      expect(mounted.systemPrompt).not.toContain("point them to the Access section");
+
+      expect((await api("PATCH", `/api/bots/${off.id}`, { composio: false })).status).toBe(200);
+      const switchedOff = await setupTurn(off.id);
+      expect(switchedOff.mcpConfig.mcpServers.composio).toBeUndefined();
+      expect(switchedOff.systemPrompt).toContain("ask the user to turn on Connected apps in your settings under Access");
+      expect(switchedOff.systemPrompt).not.toContain("COMPOSIO_MANAGE_CONNECTIONS");
+    } finally {
+      for (const bot of [on, off]) {
+        await api("POST", `/api/bots/${bot.id}/interrupt`);
+        await api("DELETE", `/api/bots/${bot.id}`);
+      }
+    }
+  });
+
   it("never lets an out-of-band SOUL.md edit reach the prompt, and surfaces it as drift instead", async () => {
     const bot = (await api("POST", "/api/bots", { name: "Kiwi", title: "Tracker" })).body.bot;
     try {
@@ -9568,7 +9702,7 @@ describe("harness HTTP API", () => {
       const browser = dump.mcpConfig.mcpServers.browser;
       expect(browser.command).toBe(process.execPath);
       expect(browser.args).toEqual([expect.stringMatching(/harness-mcp-proxy\.(?:ts|js|mjs)$/), "browser"]);
-      expect(browser.env.OMB_MCP_TOKEN).toEqual(expect.any(String));
+      expect(browser.env.OMB_MCP_TOKEN_BROWSER).toEqual(expect.any(String));
       expect(browser.env.OMB_HARNESS_URL).toBe(BASE);
       // Only the server-owned proxy knows native sessions and saved-login keys.
       expect(browser.env.AGENT_BROWSER_SESSION).toBeUndefined();

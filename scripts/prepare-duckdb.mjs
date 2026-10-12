@@ -1,7 +1,10 @@
 // Stage the Data engine's native modules outside ASAR, one tree per platform
 // and CPU: dist-native/duckdb/<platform>-<arch>/node_modules/ holding
-// @duckdb/{node-api,node-bindings,node-bindings-<platform>-<arch>} and
-// @resvg/{resvg-js,resvg-js-<target>} (the chart rasteriser, server/data/render.ts).
+// @duckdb/{node-api,node-bindings,node-bindings-<platform>-<arch>},
+// @resvg/{resvg-js,resvg-js-<target>} (the chart rasteriser, server/data/render.ts)
+// and @1password/{sdk,sdk-core} (saved logins from 1Password,
+// server/onepassword.ts: CommonJS that reads its WebAssembly core from beside
+// itself, so it cannot be bundled either; the same files on every platform).
 // The packaged app ships no node_modules (the server is an esbuild bundle), so
 // both travel as one extraResources tree that server/data/engine.ts loads
 // through createRequire; the Docker build stages the same way and points
@@ -26,6 +29,19 @@ const run = promisify(execFile);
 const SCOPE = "@duckdb";
 export const DUCKDB_PACKAGES = ["node-api", "node-bindings"];
 export const LIBRARY_FILE = { darwin: "libduckdb.dylib", linux: "libduckdb.so", win32: "duckdb.dll" };
+
+/** The 1Password SDK and the core it requires, pinned together. */
+export const ONEPASSWORD_SCOPE = "@1password";
+export const ONEPASSWORD_PACKAGES = ["sdk", "sdk-core"];
+
+export function pinnedOnePasswordVersion(root) {
+  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const pin = manifest.dependencies?.[`${ONEPASSWORD_SCOPE}/sdk`];
+  if (!pin || !/^\d+\.\d+\.\d+$/.test(pin)) {
+    throw new Error(`package.json must pin ${ONEPASSWORD_SCOPE}/sdk to an exact x.y.z version; found ${pin ?? "nothing"}`);
+  }
+  return pin;
+}
 
 export function platformPackage(platform, arch) {
   return `node-bindings-${platform}-${arch}`;
@@ -128,7 +144,7 @@ function requireRegularFile(file) {
 
 /** A staged or packaged tree is complete, pinned, and holds only this
  *  platform's and arch's native code. */
-export async function verifyDuckdbTree(directory, platform, arch, version, resvgVersion = null) {
+export async function verifyDuckdbTree(directory, platform, arch, version, resvgVersion = null, onePasswordVersion = null) {
   const scope = join(directory, "node_modules", SCOPE);
   const native = platformPackage(platform, arch);
   for (const name of [...DUCKDB_PACKAGES, native]) {
@@ -157,6 +173,22 @@ export async function verifyDuckdbTree(directory, platform, arch, version, resvg
   requireRegularFile(join(resvg, RESVG_PACKAGE, "index.js"));
   const resvgBinary = join(resvg, resvgNative.name, resvgNative.binary);
   requireRegularFile(resvgBinary);
+  // 1Password rides along too; without it Connect 1Password says it is
+  // missing from this build only when someone tries it.
+  const onePassword = join(directory, "node_modules", ONEPASSWORD_SCOPE);
+  for (const name of ONEPASSWORD_PACKAGES) {
+    requireRegularFile(join(onePassword, name, "package.json"));
+    if (onePasswordVersion && name === "sdk" && packageVersion(join(onePassword, name)) !== onePasswordVersion) {
+      throw new Error(`${ONEPASSWORD_SCOPE}/${name} in ${directory} is ${packageVersion(join(onePassword, name))}; package.json pins ${onePasswordVersion}`);
+    }
+  }
+  requireRegularFile(join(onePassword, "sdk", "dist", "sdk.js"));
+  requireRegularFile(join(onePassword, "sdk-core", "nodejs", "core.js"));
+  requireRegularFile(join(onePassword, "sdk-core", "nodejs", "core_bg.wasm"));
+  const wanted = JSON.parse(readFileSync(join(onePassword, "sdk", "package.json"), "utf8")).dependencies?.[`${ONEPASSWORD_SCOPE}/sdk-core`];
+  if (wanted && packageVersion(join(onePassword, "sdk-core")) !== wanted) {
+    throw new Error(`${ONEPASSWORD_SCOPE}/sdk-core in ${directory} is ${packageVersion(join(onePassword, "sdk-core"))}; ${ONEPASSWORD_SCOPE}/sdk needs ${wanted}`);
+  }
   if (platform === "darwin") {
     const wanted = LIPO_ARCH[arch];
     if (!wanted) throw new Error(`Unsupported macOS architecture for DuckDB: ${arch}`);
@@ -180,6 +212,7 @@ export async function stageDuckdb({
 }) {
   const version = pinnedDuckdbVersion(root);
   const resvgVersion = pinnedResvgVersion(root);
+  const onePasswordVersion = pinnedOnePasswordVersion(root);
   const staged = [];
   for (const { platform, arch } of targets) {
     const destination = join(stage, `${platform}-${arch}`);
@@ -209,6 +242,13 @@ export async function stageDuckdb({
       if (found !== resvgVersion) throw new Error(`${RESVG_SCOPE}/${name} at ${source} is ${found}; package.json pins ${resvgVersion}`);
       cpSync(source, join(resvgScope, name), { recursive: true, dereference: true });
     }
+    const onePasswordScope = join(destination, "node_modules", ONEPASSWORD_SCOPE);
+    mkdirSync(onePasswordScope, { recursive: true });
+    for (const name of ONEPASSWORD_PACKAGES) {
+      const source = installedPackage(nodeModules, name, ONEPASSWORD_SCOPE, ["sdk"]);
+      if (!source) throw new Error(`${ONEPASSWORD_SCOPE}/${name} is not installed; run pnpm install`);
+      cpSync(source, join(onePasswordScope, name), { recursive: true, dereference: true });
+    }
     if (platform === "darwin") {
       const native = join(scope, platformPackage(platform, arch));
       for (const file of ["duckdb.node", LIBRARY_FILE.darwin]) {
@@ -221,7 +261,7 @@ export async function stageDuckdb({
       // resvg ships one single-arch binary per package; only the signature is ours to add.
       if (sign) await run("/usr/bin/codesign", ["--force", "--sign", "-", join(resvgScope, resvgNative.name, resvgNative.binary)]);
     }
-    await verifyDuckdbTree(destination, platform, arch, version, resvgVersion);
+    await verifyDuckdbTree(destination, platform, arch, version, resvgVersion, onePasswordVersion);
     staged.push(destination);
     log?.(`Staged DuckDB ${version} for ${platform}-${arch} at ${destination}`);
   }

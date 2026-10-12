@@ -50,6 +50,9 @@ writeFileSync(
       license: "Apache-2.0",
       type: "module",
       bin: { openmausbot: "cli.js" },
+      // Never bundled (server/onepassword.ts): plain JS with a WebAssembly
+      // core, the same on every platform, so npm installs it beside the server.
+      dependencies: { "@1password/sdk": app.dependencies["@1password/sdk"] },
       files: ["cli.js", "dist-server", "dist", "skills", "enterprise", "LICENSE", "README.md"],
       engines: { node: ">=24" },
       repository: { type: "git", url: "https://github.com/milind-soni/OpenMausBot.git" },

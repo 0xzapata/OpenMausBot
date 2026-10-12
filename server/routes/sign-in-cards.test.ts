@@ -17,10 +17,15 @@ afterEach(async () => {
 
 async function serve() {
   const settled: Array<{ botId: string; threadId: string; messageId: string; outcome: SignInOutcome }> = [];
+  const saved: Array<{ botId: string; threadId: string; messageId: string; body: Record<string, unknown> }> = [];
   const routes = [createSignInCardRoutes({
     settle: (botId, threadId, messageId, outcome) => {
       settled.push({ botId, threadId, messageId, outcome });
       return messageId === "gone" ? { status: 404, body: { error: "no such sign-in request" } } : { status: 200, body: { resumed: true } };
+    },
+    saveLogin: (botId, threadId, messageId, body) => {
+      saved.push({ botId, threadId, messageId, body });
+      return { status: 200, body: { done: true, resumed: true, saved: true, host: "accounts.example.com" } };
     },
   })];
   const server = createServer(async (req, res) => {
@@ -31,8 +36,8 @@ async function serve() {
   servers.push(server);
   await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  return { base, settled, post };
+  const post = (path: string, body: unknown, type = "application/json") => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": type }, body: JSON.stringify(body) });
+  return { base, settled, saved, post };
 }
 
 describe("sign-in card routes", () => {
@@ -60,5 +65,22 @@ describe("sign-in card routes", () => {
     expect(await (await fetch(`${base}/api/bots/scout/sign-in-cards/m1/done`)).json()).toEqual({ from: "inline routes" });
     expect(await (await post("/api/bots/scout/sign-in-cards/m1/open", { threadId: "t1" })).json()).toEqual({ from: "inline routes" });
     expect(settled).toEqual([]);
+  });
+
+  it("saves a login for the card and answers with the host only, never the password", async () => {
+    const { saved, settled, post } = await serve();
+    const response = await post("/api/bots/scout/sign-in-cards/m1/save-login", { threadId: "t1", username: "alice", password: "fake-card-pass" });
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({ done: true, resumed: true, saved: true, host: "accounts.example.com" });
+    expect(text).not.toContain("fake-card-pass");
+    expect(saved).toEqual([{ botId: "scout", threadId: "t1", messageId: "m1", body: { threadId: "t1", username: "alice", password: "fake-card-pass" } }]);
+    expect(settled).toEqual([]);
+  });
+
+  it("takes a login as JSON only, so another page's form cannot post one", async () => {
+    const { saved, post } = await serve();
+    expect((await post("/api/bots/scout/sign-in-cards/m1/save-login", { threadId: "t1", password: "fake-card-pass" }, "text/plain")).status).toBe(415);
+    expect(saved).toEqual([]);
   });
 });
