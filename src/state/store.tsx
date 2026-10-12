@@ -265,6 +265,8 @@ export type GroupDefaultResponder = import("../../shared/wire").GroupDefaultResp
 /** A room: several bots + you in one shared thread. */
 export interface Group {
   usage?: GroupThreadUsage | null;
+  /** Each member's context in the active thread (WireGroup.memberContext). */
+  memberContext?: import("../../shared/wire").WireGroup["memberContext"];
   id: string;
   threadId: string;
   name: string;

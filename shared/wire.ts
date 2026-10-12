@@ -760,6 +760,10 @@ export interface GroupTask {
 export interface WireGroup {
   /** Computed from the usage ledger, not stored in groups.json. */
   usage?: GroupThreadUsage | null;
+  /** transient: each member's context in the active thread, from its last
+   * turn there (server/room-context.ts), and whether its next turn there
+   * was asked to start compacted. Absent until a member reports one. */
+  memberContext?: Record<string, { tokens: number; window: number; compactRequested?: true }> | null;
   id: string;
   /** The active task's thread. Direct-message channels stay single-threaded. */
   threadId: string;

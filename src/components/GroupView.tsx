@@ -46,6 +46,8 @@ import { botEngine, failedTurnCause } from "@/lib/failed-turn";
 import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 import { Composer } from "./Composer";
 import { ChatErrorBanner, ChatNotice } from "./ChatErrorBanner";
+import { RoomContextBadge, RoomContextWarnings } from "./ContextWarning";
+import { roomContextWarnings } from "@/lib/context-warning";
 import { ChatFindBar } from "./ChatFindBar";
 import { ConversationTurnLimit } from "./ConversationTurnLimit";
 import { GroupTaskPicker } from "./TaskPicker";
@@ -1267,21 +1269,24 @@ export function GroupView({ group }: { group: Group }) {
   // working. A member actively driving a computer/browser session for this
   // room gets the place icon instead of the plain dot, matching the 1:1
   // composer's PlaceChip live indicator.
+  const contextWarnings = roomContextWarnings(group, members);
   const memberMauses = members.map((b) => {
     const busy = group.busyBotId === b.id;
+    const contextWarning = contextWarnings.find((warning) => warning.bot.id === b.id);
     const task = b.tasks?.find((candidate) => candidate.threadId === group.threadId);
     const effective = busy ? effectivePlace(b, task) : "off";
     const showPlace = busy && effective !== "off" && effective !== "auto";
     return (
       <span
         key={b.id}
-        title={`${b.name}${busy ? " — working…" : ""}`}
+        title={`${b.name}${busy ? " — working…" : ""}${contextWarning ? ` — ${t("contextWarning.short", { percent: contextWarning.percent })}` : ""}`}
         className={cn(
           "relative inline-flex rounded-full",
           busy && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
         )}
       >
         <BotAvatar bot={b} state={normalizeState(b.mascotExpression) ?? "happy"} size={24} animated={false} />
+        {contextWarning && <RoomContextBadge percent={contextWarning.percent} />}
         {busy && (
           showPlace ? (
             <span
@@ -1394,6 +1399,7 @@ export function GroupView({ group }: { group: Group }) {
       {findOpen && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
       <ChatErrorBanner message={state.error} onDismiss={() => dispatch({ type: "error", message: null })} />
       <ChatNotice notice={state.notice} />
+      {!setupPending && <RoomContextWarnings group={group} members={members} />}
 
       {/* An Auto room answers like lead mode while the decision model is off: say so, once. */}
       {!setupPending && !group.dm && !remoteClient && state.config && group.defaultResponder.kind === "auto" && !jevRoomRoutingOn(state.config) && (
