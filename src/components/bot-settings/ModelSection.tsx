@@ -69,14 +69,14 @@ export function ModelSection({ bot }: { bot: Bot }) {
 function KeepWarmRow({ bot, workspaceOn, onChange }: { bot: Bot; workspaceOn: boolean; onChange: (value: boolean | null) => void }) {
   const value = bot.cacheKeepWarm === true ? "on" : bot.cacheKeepWarm === false ? "off" : "follow";
   return (
-    <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
-      <div className="min-w-0">
-        <label htmlFor="bot-cache-keepwarm" className="text-[15px] font-medium text-ink">{t("bot.keepWarm.title")}</label>
-        <div className="mt-0.5 text-[13px] text-ink-secondary">{t("bot.keepWarm.help")}</div>
-      </div>
+    // Stacked like the backup-models card above: the settings panel is
+    // narrow, and a select beside the text squeezes it into a thin column.
+    <div className="rounded-xl bg-card p-4">
+      <label htmlFor="bot-cache-keepwarm" className="text-[15px] font-medium text-ink">{t("bot.keepWarm.title")}</label>
+      <div className="mt-0.5 text-[13px] text-ink-secondary">{t("bot.keepWarm.help")}</div>
       <select id="bot-cache-keepwarm" value={value}
         onChange={(event) => onChange(event.target.value === "on" ? true : event.target.value === "off" ? false : null)}
-        className="shrink-0 cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink">
+        className="mt-3 max-w-full cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink">
         <option value="follow">{t("bot.keepWarm.follow", { state: t(workspaceOn ? "bot.keepWarm.on" : "bot.keepWarm.off") })}</option>
         <option value="on">{t("bot.keepWarm.on")}</option>
         <option value="off">{t("bot.keepWarm.off")}</option>

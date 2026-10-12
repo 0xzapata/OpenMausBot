@@ -1528,7 +1528,7 @@
   "settings.keepWarm.hours": "{hours} h",
   "settings.keepWarm.error": "Could not save keep-warm. Please try again.",
   "bot.keepWarm.title": "Keep prompt cache warm",
-  "bot.keepWarm.help": "Idle Claude threads with a big context get one cache read every 50 minutes for the window set in Settings → Engines.",
+  "bot.keepWarm.help": "Idle Claude threads with a big context get one cache read every 50 minutes for the window set in Settings → Model providers.",
   "bot.keepWarm.follow": "Same as Settings ({state})",
   "bot.keepWarm.on": "On",
   "bot.keepWarm.off": "Off",
