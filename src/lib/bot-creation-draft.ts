@@ -42,7 +42,7 @@ export class BotCreationDraft {
   }
 
   patch(value: BotUpdatePatch & Partial<BotDefaultsProfile> & { acknowledgePeerScope?: boolean }) {
-    const { acknowledgeLocalAuto, acknowledgePeerScope, applyToAllThreads: _all,
+    const { acknowledgeLocalAuto, acknowledgePeerScope, applyToAllThreads: _all, keepThreadModels: _keep,
       autoApprove, ...profile } = value;
     if (acknowledgeLocalAuto !== undefined) this.consent.acknowledgeLocalAuto = acknowledgeLocalAuto;
     if (acknowledgePeerScope !== undefined) this.consent.acknowledgePeerScope = acknowledgePeerScope;

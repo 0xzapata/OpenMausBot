@@ -149,7 +149,7 @@ export function TeamSettingsDialog({ team, onClose }: { team: string; onClose: (
                     </span>
                   </label>
                 ))}
-                <p className="mt-1 text-[12px] text-ink-secondary">{t("teamSettings.customPerBot")}</p>
+                <p className="mt-1 text-[12px] text-ink-secondary">{t("teamSettings.allThreads")} {t("teamSettings.customPerBot")}</p>
                 {mode === "full" && <p role="note" className="mt-1 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[12.5px] text-ink">{t("teamSettings.fullWarning")}</p>}
               </fieldset>
             ) : (
@@ -167,6 +167,7 @@ export function TeamSettingsDialog({ team, onClose }: { team: string; onClose: (
                     {efforts.map((level) => <option key={level} value={level}>{effortLabel(level)}</option>)}
                   </select>
                 </label>
+                <p className="text-[12px] text-ink-secondary">{t("teamSettings.threadModels")}</p>
               </fieldset>
             )}
             {change && (

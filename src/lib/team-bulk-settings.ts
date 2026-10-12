@@ -8,8 +8,15 @@
 // still applies and still has the last word. This module only decides, before
 // anything is sent, which bots would be refused anyway and why, so the
 // summary can say so instead of failing them one by one.
+//
+// Two scopes differ from a bot's own panel, because the person chose them
+// for the team rather than for the thread they have open. A level reaches
+// every thread of every bot, the same way for every level
+// (applyToAllThreads). A model moves the threads that follow each bot and
+// leaves a thread's own model alone, the selected thread included
+// (keepThreadModels): the panel instead moves the selected thread with it.
 import { t } from "@/lib/i18n";
-import type { Bot, InstanceInfo } from "@/state/store";
+import { threadApprovalModes, type Bot, type InstanceInfo } from "@/state/store";
 import type { BotUpdatePatch } from "@/state/bot-patch-queue";
 import { approvalModeFor, supportsApprovalMode, type ApprovalMode } from "../../shared/approval-mode";
 import type { EffortLevel, ModelSelection } from "../../shared/wire";
@@ -89,16 +96,13 @@ export function planTeamChange(bots: readonly Bot[], instances: readonly Instanc
     const engine = engineOf(bot, instances);
     const engineName = engine?.displayName ?? bot.modelSelection.instanceId;
     if (change.kind === "approval") {
-      if (approvalModeFor(bot) === change.mode) return { bot, status: "unchanged" };
-      if (bot.busy) return { bot, status: "skip", reason: t("teamSettings.skip.busy") };
+      // Already set only when the bot and every one of its threads are.
+      if ([approvalModeFor(bot), ...threadApprovalModes(bot)].every((mode) => mode === change.mode)) return { bot, status: "unchanged" };
+      if (bot.busy || bot.tasks?.some((task) => task.busy)) return { bot, status: "skip", reason: t("teamSettings.skip.busy") };
       if (!teamModeOffered(engine?.driverKind, change.mode)) {
         return { bot, status: "skip", reason: t("teamSettings.skip.modeUnsupported", { engine: engineName }) };
       }
-      return {
-        bot, status: "apply",
-        // Full applies to the bot and every thread, like its own panel's choice.
-        patch: { approvalMode: change.mode, ...(change.mode === "full" ? { applyToAllThreads: true } : {}) },
-      };
+      return { bot, status: "apply", patch: { approvalMode: change.mode, applyToAllThreads: true } };
     }
     const current = bot.modelSelection;
     if (!engine) return { bot, status: "skip", reason: t("teamSettings.skip.engineMissing") };
@@ -124,7 +128,7 @@ export function planTeamChange(bots: readonly Bot[], instances: readonly Instanc
       return { bot, status: "unchanged" };
     }
     if (bot.busy) return { bot, status: "skip", reason: t("teamSettings.skip.busy") };
-    return { bot, status: "apply", patch: { modelSelection: next } };
+    return { bot, status: "apply", patch: { modelSelection: next, keepThreadModels: true } };
   });
 }
 
