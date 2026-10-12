@@ -1,11 +1,13 @@
 // Noticing a bot that is going in circles: the same tool call, the same
 // arguments, again and again in one turn. Nothing watched for that, and
-// it is the user's money. This file only COUNTS, and stays pure: what is
-// done about a count is server/loop-guard.ts — a chip in the chat always
-// and, with the loop guard switched on, a note steered into the running
-// turn (adapters take a message mid-turn now: ProviderAdapter.steer) and
-// then the person's Stop. Cutting off the one call itself is still not the
-// harness's to do: a CLI driver owns its calls.
+// it is the user's money. This file only COUNTS, across the whole turn, and
+// stays pure: what is done about a count is server/loop-guard.ts, a chip in
+// the chat. A count is not grounds to act: a healthy turn runs its tests ten
+// times. With the loop guard switched on, the note steered into the running
+// turn (adapters take a message mid-turn now: ProviderAdapter.steer) and the
+// stop after it follow a narrower thing, repeat-streak.ts: the same command
+// coming back the same, back to back. Cutting off the one call itself is
+// still not the harness's to do: a CLI driver owns its calls.
 
 /** Tool name plus its arguments, whitespace-normalized. A bare tool name
  * is not a call worth counting: "Bash" five times may be five different

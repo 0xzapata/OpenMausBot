@@ -1,9 +1,9 @@
 // The loop guard end to end, through a real harness server and the fake
-// Claude engine playing a turn that runs one shell command twelve times and
-// then holds. Off, the turn is left exactly as it always was. On, the
-// harness's note reaches the engine inside the same turn and never the
-// transcript, and at the stop count the turn ends on a failed-turn line
-// that Retry belongs to.
+// Claude engine playing a turn that runs one shell command twelve times,
+// failing the same way every time, and then holds. Off, the turn is left
+// exactly as it always was. On, the harness's note reaches the engine inside
+// the same turn and never the transcript, and at the stop count the turn
+// ends on a failed-turn line that Retry belongs to.
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,11 +15,12 @@ import { lastNonReceipt } from "../src/lib/receipts.ts";
 import { openSse } from "./testing/sse.ts";
 
 const CALLS = 12;
-const NOTE = "[OpenMausBot: this exact call has now run 5 times in this turn with the same arguments: Bash: git status. Change approach, or stop and report what is blocking.]";
-const STOPPED = "the same call ran 10 times in this turn (Bash: git status) — the turn was stopped";
-const chip = (count: number) => `Same call repeated ${count}× — Bash: git status — it may be stuck`;
+const NOTE = "[OpenMausBot: this exact call has returned the same result 5 times in a row: Bash: git status. Change approach, or stop and report what is blocking.]";
+const STOPPED = "the same call returned the same result 10 times in a row (Bash: git status) — the turn was stopped";
+/** What the command prints, every time. Never in anything the harness writes. */
+const OUTPUT = "fatal: not a git repository (or any of the parent directories): .git";
 
-it("leaves a looping turn alone when off; tells it at 5 and stops it at 10 when on", async () => {
+it("leaves a stuck turn alone when off; tells it at 5 in a row and stops it at 10 when on", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "omb-loop-guard-"));
   // the engine holds its turn open until this file exists, and says here
   // when it has read a message steered into that turn
@@ -29,7 +30,7 @@ it("leaves a looping turn alone when off; tells it at 5 and stops it at 10 when 
     FAKE_CLAUDE_MODE: "slow",
     FAKE_CLAUDE_SLOW_FINISH_GATE: gate,
     FAKE_CLAUDE_STEER_RECEIVED: received,
-    FAKE_CLAUDE_TOOL_CALLS: JSON.stringify(Array.from({ length: CALLS }, () => ({ name: "Bash", input: { command: "git status" } }))),
+    FAKE_CLAUDE_TOOL_CALLS: JSON.stringify(Array.from({ length: CALLS }, () => ({ name: "Bash", input: { command: "git status" }, ok: false, output: OUTPUT }))),
   }).catch((error) => {
     rmSync(scratch, { recursive: true, force: true });
     throw error;
@@ -75,7 +76,7 @@ it("leaves a looping turn alone when off; tells it at 5 and stops it at 10 when 
   const isReply = (message: any) => message.role === "bot" && message.kind === "text" && String(message.text).startsWith("reply to:");
 
   try {
-    // ── off, the default: twelve identical calls, and nothing is done ──
+    // ── off, the default: the same failure twelve times, and nothing is done ──
     const quiet = await start("Quiet");
     writeFileSync(gate, "ok");
     const untouched = await row(quiet.thread, isReply);
@@ -87,10 +88,9 @@ it("leaves a looping turn alone when off; tells it at 5 and stops it at 10 when 
     expect(names(await messages(quiet.thread)).filter((name) => name !== "Bash")).toEqual([]);
     rmSync(gate);
 
-    // ── on: the note goes into the running turn at the fifth call ──
+    // ── on: the note goes into the running turn at the fifth in a row ──
     await api("PATCH", "/api/config", { loopGuard: { enabled: true, stopAt: 50 } });
     const told = await start("Told");
-    await row(told.thread, (message) => message.tool?.name === chip(10));
     await vi.waitFor(() => {
       if (!existsSync(received)) throw new Error("waiting for the engine to read the note");
     }, { timeout: 60_000, interval: 50 });
@@ -103,12 +103,12 @@ it("leaves a looping turn alone when off; tells it at 5 and stops it at 10 when 
     const toldRows = await messages(told.thread);
     // harness text, never the person's: their one line is still the only one
     expect(toldRows.filter((message) => message.role === "user").map((message) => message.text)).toEqual(["go"]);
-    expect(names(toldRows).filter((name) => name.startsWith("Same call repeated"))).toEqual([chip(5), chip(10)]);
-    expect(names(toldRows).some((name) => failedTurnCause(name) !== null)).toBe(false);
+    // the chip is the one it always was, and it never counted a bare "Bash"
+    expect(names(toldRows).filter((name) => name !== "Bash")).toEqual([]);
     rmSync(gate);
     rmSync(received);
 
-    // ── on, and it keeps going: stopped at the tenth call ──
+    // ── on, and it keeps going: stopped at the tenth in a row ──
     // a patch of one knob keeps the others: the guard is still on
     await api("PATCH", "/api/config", { loopGuard: { stopAt: 10 } });
     const stopped = await start("Stopped", 10);
@@ -117,6 +117,8 @@ it("leaves a looping turn alone when off; tells it at 5 and stops it at 10 when 
     const stoppedRows = await messages(stopped.thread);
     const failed = stoppedRows.filter((message) => failedTurnCause(message.tool?.name ?? "") !== null);
     expect(failed.map((message) => failedTurnCause(message.tool.name))).toEqual([STOPPED]);
+    // what the command printed is in its own rows and nowhere the harness spoke
+    expect(names(stoppedRows).filter((name) => name !== "Bash").join("\n")).not.toContain("not a git repository");
     // the turn never got to answer, and Retry belongs to the line that says why
     expect(stoppedRows.some(isReply)).toBe(false);
     expect(lastNonReceipt(stoppedRows)?.id).toBe(failed[0].id);

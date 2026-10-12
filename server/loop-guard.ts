@@ -1,40 +1,46 @@
 // A bot going in circles: the same call, with the same arguments, again and
 // again in one turn. Nothing else watches for that, and it is the person's
 // money. The harness always says so in the chat, a chip at 5, 10 and 20
-// repeats. With the loop guard switched on (config `loopGuard`, off by
-// default) it also acts:
+// repeats across the turn (repeat-detector.ts), exactly as before and
+// whatever the setting.
 //
-//   steerAt  one short note steered into the running turn, where the engine
-//            takes a message mid-turn: the model reads it before its next
-//            call and can change approach on its own. Once per repeated call.
-//   stopAt   the turn is stopped the way the person's Stop stops it, and a
-//            failed-turn line says what was repeated and how often, so Retry
-//            is there. On an engine that cannot be steered this is the only
-//            action. Once per turn.
+// With the loop guard switched on (config `loopGuard`, off by default) it
+// also acts, and on something narrower than that count. A healthy turn runs
+// its tests ten times; what it does not do is get the same result ten times
+// running. So the guard acts on a streak (repeat-streak.ts): the same shell
+// command completing with the same outcome as the time before, back to back.
 //
+//   steerAt  in a row: one short note steered into the running turn, where
+//            the engine takes a message mid-turn. The model reads it before
+//            its next call and can change approach on its own. Once per
+//            command.
+//   stopAt   in a row: the turn is stopped the way the person's Stop stops
+//            it, and a failed-turn line says what kept coming back the same
+//            and how often, so Retry is there. On an engine that cannot be
+//            steered this is the only action. Once per turn.
+//
+// A streak is made only of shell commands the harness can see all of, with
+// a result it can see all of (shellCall below, outcomeDigest). An engine
+// that reports no output for a command gives the guard nothing to act on.
 // A turn that is waiting on a person or on a computer is left alone: it is
 // spending nothing, and the person is already looking at it.
 //
-// What counts as "the same call" is stricter once a count can stop a turn.
-// With the guard off the chip counts what it always did. With it on, a tool
-// start is counted only when it runs a shell command and the harness can
-// see all of it (exactCall below), on every engine alike.
-//
-// The counting is repeat-detector.ts and stays pure; everything this
-// touches is handed in, so server/index.ts only wires it.
+// The counting and the streak are pure and live in their own files;
+// everything this touches is handed in, so server/index.ts only wires it.
 import { failedTurnTool } from "../shared/failed-turn.ts";
 import { nameIsCommand } from "../shared/tool-name.ts";
 import type { RuntimeEvent, SteerOutcome } from "./contracts.ts";
 import { quoteInNote } from "./peer-provenance.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
+import { RepeatStreak, outcomeDigest } from "./repeat-streak.ts";
 import { COMMAND_SUMMARY_MAX, previewIsPartial } from "./tool-summary.ts";
 
 export interface LoopGuardSettings {
   enabled: boolean;
-  /** Identical calls in one turn before the model is told. */
+  /** Times in a row a command comes back the same before the model is told. */
   steerAt: number;
-  /** Identical calls in one turn before the turn is stopped. At or below
-   * `steerAt`, the turn is stopped without a note first. */
+  /** Times in a row before the turn is stopped. At or below `steerAt`, the
+   * turn is stopped without a note first. */
   stopAt: number;
 }
 
@@ -63,8 +69,8 @@ export interface LoopGuardDeps {
    * subscriber sat, after the fold that writes the call's own row, so the
    * chip still follows the call it is about. */
   subscribe(listener: (event: RuntimeEvent) => void): void;
-  /** The setting as it stands now. Read on every tool start and permission
-   * ask, so a change reaches a turn that is already running. */
+  /** The setting as it stands now. Read on every tool start and completion,
+   * so a change reaches a turn that is already running. */
   settings(): LoopGuardSettings;
   /** One activity row in the thread's transcript. */
   append(threadId: string, tool: ActivityTool): void;
@@ -85,7 +91,7 @@ export interface LoopGuardDeps {
 
 export interface LoopGuard {
   /** The turn ended without a turn.completed the guard could see (the stall
-   * watchdog stopped it): the next turn starts its own count. */
+   * watchdog stopped it): the next turn starts its own count and streak. */
   settle(threadId: string): void;
 }
 
@@ -121,29 +127,42 @@ function shown(key: string | null): CountedCall | null {
 
 type ToolStart = Extract<RuntimeEvent, { type: "item.started" }>;
 
-/** A tool start the guard may act on. The chip can afford to be loose; a
- * stop cannot, so with the guard on a start is counted only when
+/** The call an event starts, when it is one the chip counts. Keyed on tool
+ * plus arguments, so a bare tool name is never counted: five "Bash" may be
+ * five different commands. Arguments come from a tool start whose title
+ * carries them (ACP: "echo hi", "Read src/x.ts"; Codex titles a command with
+ * the command) and from every permission ask's summary (the command being
+ * approved). The same with the guard on as with it off. */
+function countedCall(event: RuntimeEvent): CountedCall | null {
+  if (event.type === "request.opened" && event.requestType === "permission") return shown(callKey(event.tool, event.summary));
+  if (event.type !== "item.started" || event.itemType !== "tool") return null;
+  // a title with more than a bare identifier is a call with arguments;
+  // a bare "Bash" is not countable
+  const title = event.title ?? "";
+  return /\s|\//.test(title.trim()) ? shown(callKey("tool", title)) : null;
+}
+
+/** The shell command a tool start runs, for the streak. The chip can afford
+ * to be loose; a stop cannot. Undefined when the start runs no command:
+ * every driver reports a shell command (`summary`), and Codex and ACP also
+ * title the call with it, so a call with neither (a read, a click, a
+ * scroll, a wait) is not one, repeats for good reasons, and is left out of
+ * the streak altogether. Null for a command the harness cannot see all of.
+ * Two starts are the same command when the title, the command and the
+ * arguments the driver reported are the same, and one whose arguments were
+ * shortened, masked or left out, or that has only a title or a command cut
+ * at its limit, cannot be told from another that starts the same way: ACP
+ * cuts a title at 80 characters, and a long `cd` puts every command's
+ * difference after that. It still ran, so it ends the streak.
  *
- * - it runs a shell command. Every driver reports that command (`summary`);
- *   Codex and ACP also title the call with it. A call that runs none (a
- *   read, a click, a scroll, a wait) repeats for good reasons and is never
- *   counted, the same as before on the engines that name such a call by its
- *   tool; and
- * - the harness can see all of it. Two starts are the same call when the
- *   title, the command and the arguments the driver reported are the same.
- *   One whose arguments were shortened, masked or left out, or that has
- *   only a title or a command cut at its limit, cannot be told from another
- *   that starts the same way: ACP cuts a title at 80 characters, and a long
- *   `cd` puts every command's difference after that.
- *
- * This is also what lets a Claude Code, pi or Muse turn be counted at all:
- * they title a shell call "Bash", which says nothing. */
-function exactCall(event: ToolStart): CountedCall | null {
+ * This is also what lets a Claude Code, pi or Muse turn be acted on at all:
+ * they title a shell call "Bash", which the chip has never counted. */
+function shellCall(event: ToolStart): CountedCall | null | undefined {
   const title = oneLine(event.title ?? "");
   const titled = nameIsCommand(title);
   const { summary, input } = event;
   const command = summary !== undefined ? oneLine(summary) : titled ? title : "";
-  if (!command) return null;
+  if (!command) return undefined;
   const cut = input !== undefined ? previewIsPartial(input)
     : summary !== undefined ? summary.length >= COMMAND_SUMMARY_MAX || previewIsPartial(summary)
       : title.length >= TITLE_MAX;
@@ -152,46 +171,32 @@ function exactCall(event: ToolStart): CountedCall | null {
   return key ? { key, tool: titled || !title ? "tool" : title, args: command } : null;
 }
 
-/** The call an event starts, when it is one worth counting. Keyed on tool
- * plus arguments, so a bare tool name is never counted: five "Bash" may be
- * five different commands. With the guard off this is what the chip always
- * counted: a tool start whose title carries its arguments (ACP: "echo hi",
- * "Read src/x.ts"; Codex titles a command with the command), and every
- * permission ask's summary (the command being approved). With it on, tool
- * starts are held to exactCall. */
-function countedCall(event: RuntimeEvent, exact: boolean): CountedCall | null {
-  if (event.type === "request.opened" && event.requestType === "permission") return shown(callKey(event.tool, event.summary));
-  if (event.type !== "item.started" || event.itemType !== "tool") return null;
-  if (exact) return exactCall(event);
-  // a title with more than a bare identifier is a call with arguments;
-  // a bare "Bash" is not countable
-  const title = event.title ?? "";
-  return /\s|\//.test(title.trim()) ? shown(callKey("tool", title)) : null;
-}
-
 /** The note steered into a looping turn. The harness's own words, opened
  * the way its other notes are (`[OpenMausBot …]`, which model-written text
  * cannot open: peer-provenance.ts escapes every imitation), so the model
  * never reads it as the person speaking. `call` is quoted as a note quotes
  * anything a model wrote (quoteInNote): one line, secrets masked, no
- * bracket that could close the note early. */
-function loopNote(call: string, count: number): string {
-  return `[OpenMausBot: this exact call has now run ${count} times in this turn with the same arguments: ${call}. Change approach, or stop and report what is blocking.]`;
+ * bracket that could close the note early. What the command printed is
+ * never in it: the harness holds only a digest of that. */
+function loopNote(call: string, streak: number): string {
+  return `[OpenMausBot: this exact call has returned the same result ${streak} times in a row: ${call}. Change approach, or stop and report what is blocking.]`;
 }
 
 /** Why the guard stopped a turn: the failed-turn line, and what the turn's
  * requester and a routine's run are told. Shaped like the stall's cause. */
-function loopCause(call: string, count: number): string {
-  return `the same call ran ${count} times in this turn (${call}) — the turn was stopped`;
+function loopCause(call: string, streak: number): string {
+  return `the same call returned the same result ${streak} times in a row (${call}) — the turn was stopped`;
 }
 
 export function startLoopGuard(deps: LoopGuardDeps): LoopGuard {
   const repeats = new RepeatDetector({ thresholds: NOTICE_AT, maxKeysPerThread: MAX_CALLS_PER_TURN });
+  const streaks = new RepeatStreak<CountedCall>({ maxPending: MAX_CALLS_PER_TURN });
   /** What the guard has done to the turn in flight on each thread. */
   const acted = new Map<string, { stopped: boolean; steered: Set<string> }>();
 
   const settle = (threadId: string) => {
     repeats.settle(threadId);
+    streaks.settle(threadId);
     acted.delete(threadId);
   };
 
@@ -228,44 +233,60 @@ export function startLoopGuard(deps: LoopGuardDeps): LoopGuard {
     void stopping.catch(() => {});
   };
 
-  deps.subscribe((event) => {
-    if (event.type === "turn.completed" || event.type === "session.exited") return settle(event.threadId);
-    // every other event (a turn streams thousands) is none of the guard's business
-    if (event.type !== "item.started" && event.type !== "request.opened") return;
-    const settings = deps.settings();
-    const call = countedCall(event, settings.enabled);
-    if (!call) return;
-    const { threadId } = event;
-    const { count, threshold } = repeats.record(threadId, call.key);
-    if (threshold) {
-      const { tool, args } = call;
-      deps.append(threadId, { name: `Same call repeated ${threshold}× — ${tool}: ${args.slice(0, 80)}${args.length > 80 ? "…" : ""} — it may be stuck`, ok: false });
-    }
-
-    if (!settings.enabled || count < Math.min(settings.steerAt, settings.stopAt)) return;
-    // An ask is the turn stopping for a person (or for the approval the app
-    // gives on their behalf): counted and said, never acted on.
-    if (event.type === "request.opened") return;
+  /** A shell command came back the same as the time before, `streak` times
+   * in a row now. */
+  const act = (threadId: string, call: CountedCall, streak: number, settings: LoopGuardSettings) => {
+    if (streak < Math.min(settings.steerAt, settings.stopAt)) return;
     let turn = acted.get(threadId);
     if (turn?.stopped || deps.exempt(threadId)) return;
     if (!turn) acted.set(threadId, (turn = { stopped: false, steered: new Set() }));
     // Masked before it is cut: a command line is where credentials get
     // pasted, and a key sliced in half would slip past the shapes redaction
-    // knows. The chip above stays as it always was, beside the call's own row.
+    // knows.
     const quoted = quoteInNote(`${call.tool}: ${call.args}`, CALL_QUOTE_MAX);
-    // At or past, not exactly at: a count that passed while the turn was
-    // waiting is acted on at the first repeat after the wait.
-    if (count >= settings.stopAt) {
+    // At or past, not exactly at: a streak that passed the mark while the
+    // turn was waiting is acted on at the first run after the wait.
+    if (streak >= settings.stopAt) {
       turn.stopped = true;
-      stop(threadId, loopCause(quoted, count));
+      stop(threadId, loopCause(quoted, streak));
       return;
     }
-    // Bounded like the counts: a turn looping on more distinct calls than
+    // Bounded like the counts: a turn stuck on more distinct commands than
     // the detector remembers gets no further notes, never a second one for
-    // a call it was already told about.
+    // a command it was already told about.
     if (turn.steered.has(call.key) || turn.steered.size >= MAX_CALLS_PER_TURN || !deps.canSteer(threadId)) return;
     turn.steered.add(call.key);
-    steer(threadId, loopNote(quoted, count));
+    steer(threadId, loopNote(quoted, streak));
+  };
+
+  deps.subscribe((event) => {
+    if (event.type === "turn.completed" || event.type === "session.exited") return settle(event.threadId);
+    const { threadId } = event;
+
+    // The chip: the count across the turn, as it always was.
+    const counted = countedCall(event);
+    if (counted) {
+      const { threshold } = repeats.record(threadId, counted.key);
+      if (threshold) {
+        const { tool, args } = counted;
+        deps.append(threadId, { name: `Same call repeated ${threshold}× — ${tool}: ${args.slice(0, 80)}${args.length > 80 ? "…" : ""} — it may be stuck`, ok: false });
+      }
+    }
+
+    // The guard: a tool's start and its end, and nothing else. An ask is the
+    // turn stopping for a person; a turn streams thousands of other events.
+    if ((event.type !== "item.started" && event.type !== "item.completed") || event.itemType !== "tool") return;
+    const settings = deps.settings();
+    // Nothing is tracked while it is off, so a streak never spans commands
+    // the guard did not see.
+    if (!settings.enabled) return streaks.settle(threadId);
+    if (event.type === "item.started") {
+      const call = shellCall(event);
+      if (call !== undefined) streaks.started(threadId, event.itemId, call);
+      return;
+    }
+    const run = streaks.completed(threadId, event.itemId, outcomeDigest(event.ok, event.output));
+    if (run) act(threadId, run.call, run.streak, settings);
   });
 
   return { settle };
