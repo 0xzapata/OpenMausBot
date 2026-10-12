@@ -790,11 +790,17 @@ export interface BrowserEngineSummary {
   version?: string;
   installing?: boolean;
   installError?: string;
+  /** Whether a browser profile can use "My Chrome", the person's own running
+   * Chrome: only where the bots run on their computer (the desktop app). */
+  myChrome?: boolean;
 }
 
 export interface BrowserProfile {
   id: string;
   name: string;
+  /** "chrome": the profile's bots use the person's own Chrome (My Chrome).
+   * Absent is the built-in browser. */
+  browser?: "chrome";
   /** Read-only durable Electron routing inherited from legacy profiles.
    * Config PATCH payloads must omit it. */
   partitionId?: string;
