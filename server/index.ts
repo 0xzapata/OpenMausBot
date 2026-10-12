@@ -2934,6 +2934,15 @@ function stopParkedCards(threadId: string): void {
 /** A direct root in this thread the runtime still owes something: parked on
  * the person's cards, waiting on teammates, due a resume, or queued to
  * continue in place. Never a root whose own turn is running. */
+/** The runtime still owes this conversation a turn of its own: a cut turn
+ * it reruns after a restart, or a continuation queued on the computer seat.
+ * Held words wait behind it, as they waited behind the turn it continues;
+ * a root waiting on teammates or parked on cards holds nothing back (a
+ * typed line there is its own turn, decision 3). */
+function directRootQueued(threadId: string): boolean {
+  return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId && n.status === "queued");
+}
+
 function directRootPending(threadId: string): boolean {
   return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId &&
     (n.status === "waiting" || n.status === "resume" || n.status === "queued"));
@@ -10037,8 +10046,23 @@ bus.subscribe((event: RuntimeEvent) => {
   drainQueuedSends();
 });
 
+// One drain at a time. A drain's blocked check reads the runtime, whose
+// first read at boot opens it and reconciles the restart; that fires the
+// coordinator's `changed` hook, which calls this drain again while the
+// outer pass is still on the same queue entry — both passes would append
+// the same held line. A nested call marks a rerun and returns; the outer
+// pass runs once more when it is done.
+let drainingQueuedSends = false, queuedSendsDrainOwed = false;
 function drainQueuedSends() {
   if (!followupsReady) return;
+  if (drainingQueuedSends) { queuedSendsDrainOwed = true; return; }
+  drainingQueuedSends = true;
+  try { drainQueuedSendsNow(); } finally {
+    drainingQueuedSends = false;
+    if (queuedSendsDrainOwed) { queuedSendsDrainOwed = false; drainQueuedSends(); }
+  }
+}
+function drainQueuedSendsNow() {
   drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds, unattended, head) =>
     // A plain attended turn — no automationSource, no comms depth: exactly
     // what typing the same words into an idle bot would run. Self-opened
@@ -10073,7 +10097,7 @@ function drainQueuedSends() {
     // Team incidents reports never park behind handed-on work (admission's
     // "incident" surface says why).
     (botId, threadId, head) => threadBusy(botId, threadId) || botAtThreadCapacity(botId) || Boolean(activeGroupTurnForBot(botId))
-      || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
+      || directRootQueued(threadId) || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
   );
 }
 
@@ -15582,8 +15606,18 @@ function startGroupTurn(
   return message;
 }
 
+let drainingQueuedChannelSends = false, queuedChannelSendsDrainOwed = false;
 function drainQueuedChannelSends(): void {
   if (!followupsReady) return;
+  // Same one-at-a-time rule as drainQueuedSends.
+  if (drainingQueuedChannelSends) { queuedChannelSendsDrainOwed = true; return; }
+  drainingQueuedChannelSends = true;
+  try { drainQueuedChannelSendsNow(); } finally {
+    drainingQueuedChannelSends = false;
+    if (queuedChannelSendsDrainOwed) { queuedChannelSendsDrainOwed = false; drainQueuedChannelSends(); }
+  }
+}
+function drainQueuedChannelSendsNow(): void {
   drainChannelMessages(
     (groupId, threadId) => groupThreadIsWorking(groupId, threadId),
     ({ groupId, threadId, items }) => {
