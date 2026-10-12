@@ -12,12 +12,12 @@ describe("thread links", () => {
     expect(threadLinkUrl(`https://example.com/${"a".repeat(2_048)}`)).toBeNull();
   });
 
-  it("labels pull requests, issues, merge requests and other sites", () => {
+  it("labels pull requests, issues, merge requests and nothing else", () => {
     expect(threadLinkLabel("https://github.com/o/r/pull/123")).toBe("#123");
     expect(threadLinkLabel("https://github.com/o/r/pull/123/files")).toBe("#123");
     expect(threadLinkLabel("https://github.com/o/r/issues/7")).toBe("#7");
     expect(threadLinkLabel("https://gitlab.com/group/sub/repo/-/merge_requests/45")).toBe("!45");
-    expect(threadLinkLabel("https://www.linear.app/team/issue/ABC-1")).toBe("linear.app");
+    expect(threadLinkLabel("https://www.linear.app/team/issue/ABC-1")).toBeNull();
   });
 
   it("finds the last pull or merge request a reply names", () => {

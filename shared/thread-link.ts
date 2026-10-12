@@ -13,16 +13,11 @@ export function threadLinkUrl(value: unknown): string | null {
   }
 }
 
-export function threadLinkLabel(url: string): string {
+export function threadLinkLabel(url: string): string | null {
   const github = GITHUB.exec(url);
   if (github) return `#${github[1]}`;
   const mergeRequest = GITLAB_MR.exec(url);
-  if (mergeRequest) return `!${mergeRequest[1]}`;
-  try {
-    return new URL(url).hostname.replace(/^www\./i, "");
-  } catch {
-    return url;
-  }
+  return mergeRequest ? `!${mergeRequest[1]}` : null;
 }
 
 export function lastChangeRequestUrl(text: string): string | null {

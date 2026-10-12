@@ -655,6 +655,10 @@ describe("Thread link", () => {
     walk(closed, (element) => { if (element.type === "a") chip = element; });
     expect(chip?.props).toMatchObject({ href: task.link, target: "_blank", "aria-label": "Open #42" });
     expect(textOf(chip)).toBe("#42");
+    let other: RowNode | undefined;
+    walk(renderRow({ ...task, link: "https://docs.example.com/plan" }, "scout", true, { onLink }), (element) => { if (element.type === "a") other = element; });
+    expect(textOf(other)).toBe("Link");
+    expect(other?.props?.["aria-label"]).toBe("Open https://docs.example.com/plan");
     (moreMenuButton(closed)!.props!.onClick as (event: unknown) => void)({ currentTarget: { getBoundingClientRect: () => ({ left: 100, bottom: 200 }) } });
     (buttonWithLabel(renderRow(task, "scout", false, { onLink }), "Remove link")!.props!.onClick as () => void)();
     expect(onLink).toHaveBeenCalledWith(task, null);

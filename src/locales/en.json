@@ -1661,6 +1661,7 @@
   "task.closed": "Closed",
   "task.archive": "Archive",
   "task.copyLink": "Copy link",
+  "task.link": "Link",
   "task.openLink": "Open {link}",
   "task.removeLink": "Remove link",
   "task.assignLink": "Assign to thread",
