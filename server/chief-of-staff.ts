@@ -20,9 +20,6 @@ export function chiefOfStaffSystemPrompt(
   chiefId: string,
   bots: ChiefTeamMember[],
   canDelegate: boolean,
-  // Every turn hands work on the same way (docs/runtime-contract.md §9), so
-  // this argument, which once picked a legacy wording, changes nothing.
-  _coordinating = true,
 ): string {
   const chief = bots.find((bot) => bot.id === chiefId);
   const chiefSection = sectionKey(chief?.section);

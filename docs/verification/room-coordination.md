@@ -199,6 +199,7 @@ pnpm exec vitest run server/room-recovery.e2e.test.ts server/testing/room-handof
 pnpm exec vitest run server/direct-coordination.e2e.test.ts --maxWorkers=1
 pnpm exec vitest run server/turn-dispatch-guard.test.ts
 pnpm exec vitest run server/comms.test.ts server/thread-aware-bots.e2e.test.ts server/routine-delegation.e2e.test.ts server/independent-threads-api.test.ts server/peer-allowlist.e2e.test.ts server/steer-queue.test.ts
+pnpm exec vitest run server/runtime-paths.e2e.test.ts server/notification-routing.e2e.test.ts server/post-to-room.test.ts
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/direct-coordination-ui.e2e.test.ts
 ```
 
@@ -222,11 +223,11 @@ revocation. The UI test sends from the real
 composer and clicks the existing handoff receipt into the exact recipient task,
 with ordinary tool chips hidden. Screenshots and JSON are retained beside the
 fixture's printed server log; all fixture processes and temporary data are closed.
-The legacy routine `ask_bot` path is covered by `server/comms.test.ts`: a
-gated peer outlives the production 15-second inline budget, the caller finishes
-with an asynchronous receipt, and releasing the peer delivers its late reply
-to the original conversation. This budget releases the caller, not the peer;
-it does not impose a 15-second limit on delegated work.
+A consultation (`coordinate_bots` with `consult: true`, or its `ask_bot`
+alias) is covered by `server/comms.test.ts` and `server/runtime-paths.e2e.test.ts`:
+there is no inline wait; the asker finishes its turn with a receipt and the
+teammate's answer resumes it, in a work thread of the asker's conversation
+(docs/runtime-contract.md §9).
 Follow-up checks cover retained report context and withholding after peer access
 is revoked, without mirroring a second visible transcript.
 Addressing checks cover what a bot may put in a `bot_ids` slot: an id is always
@@ -235,9 +236,9 @@ work runs as if the id had been sent; a name nobody has is refused with the
 argument echoed and `list_bots` named (`No bot with id or name "…"`); a hidden
 teammate's id is refused as no longer available; a name two reachable teammates
 share is refused with the count and the way to the ids, never guessed. The same
-resolution serves `ask_bot` and `delegate_bot`, and every roster line the Chief
-and its peers read carries the teammate's `[id: …]`, so the tools can be called
-straight from the prompt.
+resolution serves the deprecated aliases (`ask_bot`, `delegate_bot`), and every
+roster line the Chief and its peers read carries the teammate's `[id: …]`, so
+the tools can be called straight from the prompt.
 Unit checks cover bounded depth/fan-out, idempotent retry, original request
 retention, automatic return, cancellation, restart recovery (one rerun in
 place, a second cut ending it, the requester told, budgets restarted at boot,
@@ -255,11 +256,12 @@ The recovery fixture restarts the same disposable server with an interrupted
 routine and verifies its source-room card and error-free recovery broadcasts.
 The subprocess fixture checks malformed output, unexpected exit and bounded
 cleanup so an agent-process failure cannot silently pass or hang these tests.
-Legacy comms checks enter through real routine execution, where ask/delegate
-remain supported. Ordinary-chat checks assert that calling a replaced tool is
-an explicit protocol error, never an empty successful reply. Thread checks also
-cover self-owned jobs, queued provenance and the transition from a completed
-routine back to a normal user conversation.
+Routine checks enter through real routine execution, where `coordinate_bots`
+and, for one release, the `delegate_bot` / `ask_bot` aliases hand work on; the
+run's root names the run as its requester (docs/runtime-contract.md §9). The
+aliases answer with a deprecation line, never an error or an empty reply.
+Thread checks also cover self-owned jobs, queued provenance and the transition
+from a completed routine back to a normal user conversation.
 
 ## Real-model and UI checks
 
@@ -284,15 +286,17 @@ preview/server processes afterward; retain evidence without credentials.
 ## Limits and safety
 
 Existing peer allow-lists/approvals and every room reader's section still apply.
-Ordinary chats use one bounded coordination tool for teammate work instead of
-the competing ask/delegate/peer-thread execution paths. A top-level direct turn
-can still use `start_thread` to open separate work on itself, without moving the
-person's selected conversation. That tool is not an alternative way to dispatch
-teammates or recursively fan out from model-opened threads and coordinated children.
-Direct routines, webhooks and legacy peer delivery
-retain their existing lifecycle: their completion is not claimed early by this
-new loop, and a turn of theirs that lands in a conversation cancels no
-coordination there. Finish together remains separate too. Cancelling a request
+Every turn — a chat, a room, a routine run, a webhook run, a goal run, a Cloud
+guest's turn, a standing external runtime — hands teammate work on with the
+one `coordinate_bots` tool (work, a question with `consult`, a one-way notice
+with `reply: "none"`, a fresh thread with `thread: "new"`) and reads it with
+`assignment_status`; the deprecated aliases map onto it for one release
+(docs/runtime-contract.md §9). Any turn can still use `start_thread` to open
+separate work on itself, without moving the person's selected conversation;
+the runtime's depth limit bounds the tree. A teammate's hand-off to a bot
+runs in that bot's work thread for the sender, never in a conversation a
+coordination lives in, so it cancels no coordination there. Finish together
+remains separate too. Cancelling a request
 stops the descendants it is still waiting on, except a teammate whose turn had
 already started when the person stopped the conversation above it: that process
 is left alone and reports its result. A restart runs each teammate turn it

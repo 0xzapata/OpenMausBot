@@ -10909,18 +10909,13 @@ async function startTurn(
       // told about coordinate_bots, whether a person, a routine, a webhook
       // or a teammate started it (docs/runtime-contract.md §9).
       const coordinationPrompt = bot.chiefOfStaff
-        ? chiefOfStaffSystemPrompt(
-            bot.id,
-            store.bots,
-            Boolean(integrations.agents),
-            true,
-          )
+        ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents))
         : integrations.agents && sectionPeers.length > 0
           // Ordinary bots could always CALL the peer tools; until now the
           // one generic sentence they got never named a teammate, so the
           // first move of any collaboration was a list_bots round trip the
           // model mostly did not think to make.
-          ? peerRosterSystemPrompt(sectionPeers, true)
+          ? peerRosterSystemPrompt(sectionPeers)
           : "";
       const credentialPrompt = integrations.agents ? CREDENTIAL_PROMPT + THREADS_PROMPT : "";
       const routinePrompt = integrations.agents ? ROUTINE_PROMPT : "";

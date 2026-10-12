@@ -73,10 +73,8 @@ describe("chiefOfStaffSystemPrompt", () => {
     expect(prompt).not.toContain("coordinate_bots");
   });
 
-  it.each([false, true])("follows staffing result states whatever the fourth argument says (%s)", coordinating => {
-    const prompt = chiefOfStaffSystemPrompt("chief", bots, true, coordinating);
-    // the argument once picked a legacy wording; it changes nothing now
-    expect(prompt).toBe(chiefOfStaffSystemPrompt("chief", bots, true));
+  it("follows staffing result states", () => {
+    const prompt = chiefOfStaffSystemPrompt("chief", bots, true);
     expect(prompt).toContain("after an applied result, continue already-requested work without another confirmation");
     expect(prompt).toContain("Only if review is pending, end your turn");
     expect(prompt).toContain("Report failed or cancelled results honestly");

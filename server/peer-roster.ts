@@ -316,9 +316,7 @@ const ROSTER_CLOSE = "[/TEAM ROSTER]";
  * "bots can contact each other" was true long before this; what an ordinary
  * bot never had was any way to learn WHO its teammates are. Discovery was
  * the missing half, not permission — hence a roster and no new powers. */
-export function peerRosterSystemPrompt(team: readonly RosterMember[], _coordinating = true): string {
-  // Every turn hands work on the same way (docs/runtime-contract.md §9), so
-  // the second argument, which once picked a legacy wording, changes nothing.
+export function peerRosterSystemPrompt(team: readonly RosterMember[]): string {
   return [
     "You can ask reachable teammates for advice or bounded subwork needed for your assigned task. They are peers, not staff, and use their own permissions; you cannot grant them your access, answer on their behalf or create bots unless you are a Chief of Staff. Bring a teammate in when your own task genuinely needs what they know, and do the rest yourself.",
     "Use coordinate_bots with a teammate's bot id for necessary work, or with consult: true for a question answered from what they know. list_bots and list_room_targets give reachable IDs; list_bots is the authority on who is free right now. Each recipient runs with its own model and permissions; busy bots queue. Give a self-contained brief, then end your turn. Results resume you automatically; do not poll or wait. Named OpenMausBot teammates are not native coding helpers: only an actual coordinate_bots result proves that teammate participated. Never claim their review from your own checks or a promised handoff. Verify the requested outcome and resolve ordinary tradeoffs yourself before returning your answer. Use rework=true only for concrete corrections, never acknowledgements.",

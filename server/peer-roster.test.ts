@@ -255,8 +255,6 @@ describe("peerRosterSystemPrompt", () => {
     expect(prompt).toContain("consult: true");
     // one surface: the legacy tool names are not what a bot is taught
     expect(prompt).not.toMatch(/\b(delegate_bot|ask_bot|send_to_bot|check_delegation|wait_delegation)\b/);
-    // the second argument once picked a legacy wording; it changes nothing now
-    expect(peerRosterSystemPrompt(reachablePeers(fleet, self), false)).toBe(prompt);
     // the authority the Chief has and an ordinary bot must not be handed
     expect(prompt).toContain("peers, not staff");
     expect(prompt).not.toContain("create_bot");
@@ -389,8 +387,8 @@ describe("teammate availability stays out of the cached prompt half", () => {
       teamAvailabilityPart(members),
     ]);
     return {
-      peer: build(peerRosterSystemPrompt(peers, true), peers),
-      chief: build(chiefOfStaffSystemPrompt("chief", bots, true, true), chiefTeam),
+      peer: build(peerRosterSystemPrompt(peers), peers),
+      chief: build(chiefOfStaffSystemPrompt("chief", bots, true), chiefTeam),
     };
   };
 
