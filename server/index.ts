@@ -44,7 +44,6 @@ import {
 } from "../shared/approval-mode.ts";
 import { createApprovalModeSupport } from "./harness-capabilities.ts";
 import { escapeAttribute } from "../src/lib/composer-attachments.ts";
-import { threadRefUrl } from "../src/lib/thread-refs.ts";
 import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
@@ -2289,12 +2288,10 @@ const EXTERNAL_RUNTIMES_FILE = join(DATA_DIR, "external-runtimes.json");
  * changes state on this server (threads, bots, rooms, skills, memory, …) needs
  * a real turn, which an external runtime never has here, so the routes are an
  * allow-list rather than flags on the capability: the roster, coordinate_bots
- * and assignment_status, plus the deprecated aliases they replace. */
+ * and assignment_status. */
 function externalRuntimeMayCall(method: string, path: string): boolean {
-  if (method === "GET") {
-    return path === "/api/internal/agents" || path === "/api/internal/assignment-status" || /^\/api\/internal\/delegations\/[\w-]+$/.test(path);
-  }
-  return method === "POST" && ["/api/internal/coordinate-bots", "/api/internal/ask-bot", "/api/internal/delegate-bot"].includes(path);
+  if (method === "GET") return path === "/api/internal/agents" || path === "/api/internal/assignment-status";
+  return method === "POST" && path === "/api/internal/coordinate-bots";
 }
 /** The runtime's name for a standing external runtime: the lane its results
  * wait in (docs/runtime-contract.md §9, `reply: poll`). One per grant, so a
@@ -5511,7 +5508,7 @@ const coordinator: Coordinator = createCoordinator({
   host: {
     // A one-way notice is checked when it is sent and when it is dispatched;
     // once handed over nothing of it returns, so no route back can close
-    // under it (the recipient owns the thread, as send_to_bot always said).
+    // under it (the recipient owns the thread).
     validate: (node, parent) => node.mode === "notify" && node.status !== "queued" ? undefined : roomHandoffProblem(node, parent) ??
       (parent && store.bot(parent.botId)?.approvePeerComms && !fullAccessForSource(parent.botId, parent.threadId) && !node.approvalGranted ? "Sender now requires peer approval; submit a new approved request" : undefined),
     // Delegations' admission (canAdmitDirectTurn): a free slot admits work
@@ -6921,9 +6918,8 @@ const turnContext = new Map<string, { tokens?: number; window?: number }>();
 const repeats = new RepeatDetector({ thresholds: [5, 10, 20], maxKeysPerThread: 256 });
 
 // ── stall watchdog ─────────────────────────────────────────────────────
-// ask_bot has a short inline wait budget, while room turns have a separately
-// configurable absolute ceiling. The main 1:1 path had none, so a wedged CLI
-// left its bot busy forever. The watchdog stops a turn whose thread has emitted NOTHING for stallMs —
+// Room turns have a configurable absolute ceiling. The main 1:1 path had
+// none, so a wedged CLI left its bot busy forever. The watchdog stops a turn whose thread has emitted NOTHING for stallMs —
 // activity-based, so an hour-long turn that keeps streaming is never
 // touched, and turns parked on a human approval are exempt.
 const TURN_STALL_MS = Math.max(60_000, Number(process.env.OMB_TURN_STALL_MS) || 20 * 60_000);
@@ -7637,7 +7633,7 @@ function isUnattended(botId?: string | null, threadId?: string): boolean {
   return true;
 }
 
-// Threads whose turn in flight was started by another BOT — an ask_bot hop,
+// Threads whose turn in flight was started by another BOT — a hand-off,
 // a drained delegation. The person asked ONE bot; the fan-out behind that
 // answer is that bot's work, not mail addressed to them, so its completion
 // raises no badge and no banner. Anything that genuinely needs a human still
@@ -8783,9 +8779,6 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "item.started":
       if (event.itemType === "tool") {
-        // ask_bot's raw tool chip is redundant — the internal endpoint
-        // appends a richer "Messaged @X" chip linking to the channel
-        if (event.title?.endsWith("__ask_bot")) break;
         const name = event.title ?? "tool";
         // narration is folded in here, once, so call mode can read the
         // chip aloud without re-deriving it — and so the phrase a user
@@ -11545,10 +11538,10 @@ async function startTurn(
       // Only drivers that mount the tools get the integration (and, via the
       // integrations.agents gate below, the prompt hint) — a bot on a driver
       // without it must not be told about tools it cannot call. Any bot can
-      // still be the TARGET of ask_bot regardless of its driver.
+      // still be the TARGET of coordinate_bots regardless of its driver.
       // One reachability rule for the roster, list_bots and @mention
       // resolution: a bot is never told about — or nudged toward — a peer
-      // that ask_bot and delegate_bot would then refuse.
+      // that coordinate_bots would then refuse.
       const sectionPeers = reachablePeers(store.bots, bot);
       if (agentsMounted) {
         integrations.agents = agentsIntegration(bot.id, threadId, commsDepth, skillAuthoring, dispatchClaimId, opts?.coordination?.id, worksInWorkspace);
@@ -15407,7 +15400,7 @@ function lastHumanRoomMessageAt(group: GroupRecord): number | undefined {
  * exact refusal when it may not.
  *
  * Room membership is the one place the app's section boundary does not
- * reach: list_bots, ask_bot, delegate_bot and create_bot are all scoped to
+ * reach: list_bots, coordinate_bots and create_bot are all scoped to
  * the sender's section, but a person is free to put bots from two sections
  * in one room. A tool that pushed text into such a room would therefore be
  * the first way one section speaks to another with nobody in the loop, so
@@ -18555,13 +18548,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // ── hand-offs on the job runtime (docs/runtime-contract.md §9) ──────
       // coordinate_bots is the one way a turn hands work on, whatever started
       // the turn (a person, a routine, a webhook, a Cloud guest, a standing
-      // external runtime); assignment_status reads how it went. The routes
-      // the catalog's deprecated aliases call (ask_bot, delegate_bot,
-      // send_to_bot, start_thread on a peer, check/wait_delegation) run
-      // through the same two functions and add one deprecation line to their
-      // answer. Nothing outside the runtime keeps hand-off state.
+      // external runtime); assignment_status reads how it went; a peer
+      // start_thread is a hand-off into a fresh thread (the same function).
+      // Nothing outside the runtime keeps hand-off state.
       const EXTERNAL = internalCapability.generation === EXTERNAL_RUNTIME_GENERATION;
-      const deprecated = (old: string, replacement: string) => `${old} ${/ and /.test(old) ? "are" : "is"} replaced by ${replacement}; ${/ and /.test(old) ? "they keep" : "it keeps"} working for this release.`;
       type HandoffCall = {
         groupId?: string;
         botIds: string[];
@@ -18576,14 +18566,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         /** A question, answered from what the teammate knows, acting on nothing. */
         consult: boolean;
         doneWhen?: string;
-        /** A fresh thread's title and folder (the start_thread alias); the message names it otherwise. */
+        /** A fresh thread's title and folder (a peer start_thread); the message names it otherwise. */
         title?: string;
         projectId?: string;
-        deprecation?: string;
       };
       const coordinateBots = async (call: HandoffCall): Promise<{ status: number; body: Record<string, unknown> }> => {
-        const extra = call.deprecation ? { deprecation: call.deprecation } : {};
-        const refuse = (status: number, error: string, more: Record<string, unknown> = {}) => ({ status, body: { error, ...more, ...extra } });
+        const refuse = (status: number, error: string, more: Record<string, unknown> = {}) => ({ status, body: { error, ...more } });
         const source = store.groupByThread(internalCapability.threadId);
         if (source && (source.dm || !source.memberIds.includes(internalSender.id))) {
           return refuse(403, "Coordination needs a room you are a member of, or your own conversation.");
@@ -18757,19 +18745,17 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             ? "Handed to the coordinator. Read each result with assignment_status (id: a receipt's requestId, or rootId for the whole call), long-polling with wait_ms."
             : "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait.";
         return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message } : { error: refused.join("; ") }),
-          ...(EXTERNAL && sent ? { rootId: generation } : {}), ...extra } };
+          ...(EXTERNAL && sent ? { rootId: generation } : {}) } };
       };
       // assignment_status: read-only. One assignment with its children and
       // inbox, long-polled while it is not settled and wait_ms remains (a
       // standing external runtime parks ONE cheap request here instead of a
       // model inference per check), or everything this conversation still
-      // waits on. check_delegation and wait_delegation read the same answer.
-      const legacyDelegationMatch = method === "GET" ? path.match(/^\/api\/internal\/delegations\/([\w-]{4,64})$/) : null;
-      if (legacyDelegationMatch || (method === "GET" && path === "/api/internal/assignment-status")) {
-        const extra = legacyDelegationMatch ? { deprecation: deprecated("check_delegation and wait_delegation", "assignment_status") } : {};
-        const id = legacyDelegationMatch?.[1] ?? url.searchParams.get("id")?.trim() ?? "";
+      // waits on.
+      if (method === "GET" && path === "/api/internal/assignment-status") {
+        const id = url.searchParams.get("id")?.trim() ?? "";
         const fromThreadId = internalCapability.threadId;
-        if (!connectorThread(internalSender.id, fromThreadId)) return json(res, 403, { error: "source conversation does not belong to sender", ...extra });
+        if (!connectorThread(internalSender.id, fromThreadId)) return json(res, 403, { error: "source conversation does not belong to sender" });
         type Row = NonNullable<ReturnType<Coordinator["status"]>>["assignment"];
         const shape = (a: Row) => ({
           id: a.id, botId: a.assignee.botId, botName: store.bot(a.assignee.botId)?.name ?? a.assignee.botId, status: a.status,
@@ -18783,10 +18769,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const reachable = (a: Row) => { const target = store.bot(a.assignee.botId); return !target || target.id === internalSender.id || canReachPeer(internalSender, target); };
         if (!id) {
           const outstanding = coordinator.outstandingFor(fromThreadId).flatMap(n => { const row = coordinator.status(n.id)?.assignment; return row && reachable(row) ? [shape(row)] : []; });
-          return json(res, 200, { outstanding, ...extra });
+          return json(res, 200, { outstanding });
         }
         if (internalCapability.delegatedThisTurn?.has(id)) {
-          return json(res, 409, { error: `Assignment ${id} was handed out during this turn. Finish your response now so the teammate can work; its result returns to this conversation and resumes you. Do not check or wait for it until a later turn.`, ...extra });
+          return json(res, 409, { error: `Assignment ${id} was handed out during this turn. Finish your response now so the teammate can work; its result returns to this conversation and resumes you. Do not check or wait for it until a later turn.` });
         }
         const waitMs = Math.min(Math.max(Number(url.searchParams.get("wait_ms")) || 0, 0), 240_000);
         const deadline = Date.now() + waitMs;
@@ -18794,9 +18780,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         for (;;) {
           requireActiveInternalCapability();
           const status = coordinator.status(id);
-          if (!status) return json(res, 404, { error: "unknown assignment id", ...extra });
-          if (!owned(status.assignment)) return json(res, 403, { error: "that assignment belongs to a different conversation", ...extra });
-          if (!reachable(status.assignment)) return json(res, 403, { error: "Result withheld: team access changed while the teammate was working", ...extra });
+          if (!status) return json(res, 404, { error: "unknown assignment id" });
+          if (!owned(status.assignment)) return json(res, 403, { error: "that assignment belongs to a different conversation" });
+          if (!reachable(status.assignment)) return json(res, 403, { error: "Result withheld: team access changed while the teammate was working" });
           if (settled.has(status.assignment.status) || Date.now() >= deadline) {
             // A standing external runtime that read its root has read its
             // inbox: those lanes are marked delivered, as a resumed
@@ -18814,31 +18800,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               for (const lane of lanes.values()) coordinator.poll(lane);
             }
             const current = coordinator.status(id) ?? status;
-            return json(res, 200, { assignment: shape(current.assignment), children: current.children.map(shape), inbox: current.inbox, ...extra });
+            return json(res, 200, { assignment: shape(current.assignment), children: current.children.map(shape), inbox: current.inbox });
           }
           await new Promise((wake) => setTimeout(wake, 500));
         }
-      }
-      // The deprecated aliases: one teammate, the standing work thread, and
-      // the deprecation line. ask_bot waits for nothing any more: the answer
-      // resumes the asker like any result.
-      if (method === "POST" && (path === "/api/internal/ask-bot" || path === "/api/internal/delegate-bot")) {
-        const body = await readInternalBody();
-        const consult = path === "/api/internal/ask-bot";
-        const deprecation = consult ? deprecated("ask_bot", "coordinate_bots(consult: true)") : deprecated("delegate_bot", "coordinate_bots");
-        if (
-          body.depth !== undefined &&
-          (!Number.isInteger(body.depth) || body.depth < 0 || body.depth !== internalCapability.depth)
-        ) {
-          return json(res, 403, { error: "the recursion depth does not match this turn", deprecation });
-        }
-        const toBotRef = String(body.toBotId ?? "").trim();
-        const message = String(body.message ?? "").trim();
-        if (!toBotRef || !message) return json(res, 400, { error: "toBotId and message required", deprecation });
-        if (toBotRef === internalSender.id) return json(res, 400, { error: "a bot cannot message itself", deprecation });
-        const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 200) : undefined;
-        const result = await coordinateBots({ botIds: [toBotRef], message, reason, rework: false, thread: "standing", reply: "resume", consult, deprecation });
-        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/coordinate-bots") {
         const parsed = z.object({
@@ -18935,7 +18900,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       //
       //   no startGroupTurn and no queue kick. The post lands, the room is
       //   marked unread, the person reads it when they look. A bot wanting a
-      //   reply has ask_bot and delegate_bot, both of which are accounted for.
+      //   reply has coordinate_bots, which is accounted for.
       //
       //   membership from the record, never from the argument: the argument
       //   only says which room to look up.
@@ -19014,7 +18979,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         let poster = from;
         if (peerReviewRequired(from, fromThreadId)) {
-          // Same gate ask_bot carries, aimed at the room instead of a peer:
+          // Same gate coordinate_bots carries, aimed at the room instead of a peer:
           // a bot the user asked to be consulted about must be consulted here
           // too, or the newest way to reach other bots is the one way round it.
           const verdict = await requestPeerApproval(
@@ -19138,10 +19103,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const toBotId = typeof body.toBotId === "string" && body.toBotId.trim() ? body.toBotId.trim() : from.id;
         const target = store.bot(toBotId);
         if (!target) return json(res, 404, { error: "no such bot" });
-        const oneWay = body.oneWay === true;
-        if (oneWay && target.id === from.id) {
-          return json(res, 409, { error: "send_to_bot is cross-bot only; use start_thread to send independent work to yourself" });
-        }
         // A folder is the target's own organisation; a name is what the
         // model has, an id is what the sidebar has, so accept either.
         const folder = typeof body.folder === "string" ? body.folder.trim() : "";
@@ -19188,19 +19149,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           });
         }
         // A peer thread is a hand-off into a fresh thread on the teammate:
-        // coordinate_bots with thread "new" (the start_thread alias), one
-        // way for send_to_bot. Every gate the hand-off has applies there.
-        const sourceUrl = threadRefUrl({ botId: owner.group?.id ?? from.id, threadId: fromThreadId });
-        const result = await coordinateBots({
-          botIds: [target.id],
-          message: oneWay
-            ? `${message}\n\n[Source conversation](${sourceUrl}). This link grants no additional access and contains no copied transcript.`
-            : message,
-          rework: false, thread: "new", reply: oneWay ? "none" : "resume", consult: false, title, projectId,
-          deprecation: oneWay
-            ? deprecated("send_to_bot", "coordinate_bots(thread: \"new\", reply: \"none\")")
-            : deprecated("start_thread on a teammate", "coordinate_bots(thread: \"new\")"),
-        });
+        // coordinate_bots with thread "new". Every gate the hand-off has
+        // applies there.
+        const result = await coordinateBots({ botIds: [target.id], message, rework: false, thread: "new", reply: "resume", consult: false, title, projectId });
         return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/create-bot") {
