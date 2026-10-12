@@ -26,6 +26,7 @@ const KEY_PREFIXES: RegExp[] = [
   /\bxai-[A-Za-z0-9_-]{20,}/g, // xai (grok)
   /\bgsk_[A-Za-z0-9]{40,}/g, // groq
   /\bcsk-[A-Za-z0-9]{32,}/g, // cerebras
+  /\bLLM\|\d{6,}\|[A-Za-z0-9_-]{16,}/g, // meta model api
   /\bhf_[A-Za-z0-9]{30,}/g, // hugging face
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g, // github classic
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g, // github fine-grained
