@@ -115,8 +115,9 @@ export interface CoordinatorHost {
   /** Display names for the envelope of a turn. */
   names(node: HandoffView, parent?: HandoffView): EnvelopeNames;
   /** A teammate ended its turn on a question for the person: show it where
-   * the work was asked for (and again after a restart). */
-  park(node: HandoffView, question: string): void;
+   * the work was asked for. `restored` is the restart's re-park, which shows
+   * it again only if the first showing never happened. */
+  park(node: HandoffView, question: string, restored?: boolean): void;
   /** The permission level the target thread will actually run with, after
    * the host applied any delegated level, and its engine kind. Recorded on
    * the assignment so the envelope states the truth (invariant I6). */
@@ -160,6 +161,8 @@ export interface Coordinator {
    * true when the assignment took the text as its answer and the host must
    * not start an ordinary turn. */
   answer(threadId: string, text: string): boolean;
+  /** Whether this thread's assignment is parked on a question for the person. */
+  awaitingAnswer(threadId: string): boolean;
 }
 
 export interface CoordinatorOptions {
