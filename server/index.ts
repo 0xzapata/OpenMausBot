@@ -131,7 +131,7 @@ import { DataSheetRegistry } from "./data/sheet.ts";
 import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
-import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
+import { isPersistentQuestionCard, shouldSettleRequestCard } from "../shared/ask-question.ts";
 import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot, retireDeletedBoatCreate } from "./boat-create-idempotency.ts";
@@ -256,6 +256,7 @@ import {
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
+import { dismissQuestionCard } from "./card-dismissal.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
   addDisabledMcpServer,
@@ -7139,16 +7140,6 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 // the last settled assistant text per thread, so a "finished" notification
 // can carry what the bot actually said
 const lastReply = new Map<string, string>();
-/** Why a settled turn failed, for the person's incident and the bot's work
- * log: the turn's own last error as TurnStops holds it ("This Claude account
- * has reached its weekly limit, which resets …"), else the provider's stop
- * token, which alone says little ("stop_sequence", "quota"). Undefined for a
- * turn that did not fail. Requesters read the whole account
- * (stoppedTurnText). */
-function turnFailureCause(event: { threadId: string; turnId?: string; ok: boolean; stopReason?: string | null }): string | undefined {
-  if (event.ok) return undefined;
-  return turnStops.read(event.threadId, event.turnId)?.error ?? (event.stopReason?.trim() || undefined);
-}
 /** Threads whose running turn a client abort ended (the abort sentence as
  * assistant text or as runtime.error), with that turn's id when known.
  * turn.completed reads it as a stop, not a failure, whatever stopReason the
@@ -7783,7 +7774,7 @@ bus.subscribe((event: RuntimeEvent) => {
     const tools = messages
       .filter((message) => message.kind === "activity" && message.turnId === event.turnId && message.tool?.name)
       .map((message) => message.tool!.name);
-    const line = turnOutcomeLine({ ok: event.ok, reply: reply?.text, stopReason: turnFailureCause(event), tools });
+    const line = turnOutcomeLine({ ok: event.ok, reply: reply?.text, stopReason: turnStops.failureCause(event), tools });
     if (!line) return;
     // A room fewer people can see than this bot leaves no line in its log:
     // session_search would hand it back in a chat anyone who sees the bot has.
@@ -9569,7 +9560,7 @@ bus.subscribe((event: RuntimeEvent) => {
       const capContinues = !event.ok && turnStops.read(event.threadId, completedTurnId)?.handoffPath !== undefined;
       if (!event.ok && !stopped && !lazyClaimAlreadyReported && !computerParked && !capContinues && !routines?.runForThread(event.threadId)) {
         const broken = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
-        if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: turnFailureCause(event) ?? "the run ended without a result" });
+        if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: turnStops.failureCause(event) ?? "the run ended without a result" });
       }
       const lastReported = turnUsage.get(event.threadId);
       turnUsage.delete(event.threadId);
@@ -24256,14 +24247,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         const requestId = String(body.requestId);
         const pending = store.messagesFor(bot.threadId).find((message) => message.card?.requestId === requestId);
-        if (isPersistentQuestionCard(pending?.card) && (body.dismiss === true || body.message === QUESTION_DISMISS_MESSAGE)) {
-          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
-          if (pending.card.answered !== "answer" || pending.card.dismissed) {
-            return json(res, 409, { error: "answer this question before dismissing it" });
-          }
-          store.patchMessage(bot.threadId, pending.id, { card: { ...pending.card, dismissed: true } });
-          return json(res, 200, { ok: true, dismissed: true });
-        }
+        const dismissed = dismissQuestionCard(store, bot.threadId, pending, body);
+        if (dismissed) return json(res, dismissed.status, dismissed.body);
         const outcome = await answerRequest(bot.threadId, bot.modelSelection.instanceId, requestId, behavior, body.message, { id: bot.id, name: bot.name }, body.always === true, body.rememberCommand === true);
         if (outcome === "unavailable" && isPersistentQuestionCard(pending?.card) && behavior === "answer") {
           if (!pending) return json(res, 404, { error: "this question is no longer available" });
@@ -24383,14 +24368,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // answerRequest closes an unreachable card, and a pending approval owns
         // the composer, so a dead end here locks the room for good.
         const pending = store.messagesFor(threadId).find((message) => message.card?.requestId === requestId);
-        if (isPersistentQuestionCard(pending?.card) && (body.dismiss === true || body.message === QUESTION_DISMISS_MESSAGE)) {
-          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
-          if (pending.card.answered !== "answer" || pending.card.dismissed) {
-            return json(res, 409, { error: "answer this question before dismissing it" });
-          }
-          store.patchMessage(threadId, pending.id, { card: { ...pending.card, dismissed: true } });
-          return json(res, 200, { ok: true, dismissed: true });
-        }
+        const dismissed = dismissQuestionCard(store, threadId, pending, body);
+        if (dismissed) return json(res, dismissed.status, dismissed.body);
         const persistentQuestion = isPersistentQuestionCard(pending?.card);
         const owner = group
           ? persistentQuestion

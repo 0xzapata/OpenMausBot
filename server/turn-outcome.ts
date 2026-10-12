@@ -75,6 +75,17 @@ export class TurnStops {
     return stop && (!turnId || !stop.turnId || stop.turnId === turnId) ? stop : undefined;
   }
 
+  /** Why a settled turn failed, for the person's incident, the bot's work
+   * log and the quota-switch card: the turn's own last error ("This Claude
+   * account has reached its weekly limit, which resets …"), else the
+   * provider's stop token, which alone says little ("stop_sequence",
+   * "quota"). Undefined for a turn that did not fail. Requesters read the
+   * whole account (stoppedTurnOutcome). */
+  failureCause(event: { threadId: string; turnId?: string; ok: boolean; stopReason?: string | null }): string | undefined {
+    if (event.ok) return undefined;
+    return this.read(event.threadId, event.turnId)?.error ?? (event.stopReason?.trim() || undefined);
+  }
+
   /** The thread is gone: nothing reads its last stop again. */
   forget(threadId: string): void {
     this.#byThread.delete(threadId);
