@@ -9,6 +9,7 @@ describe("built-in agent tool read policy", () => {
       "list_shared_computers",
       "list_rooms",
       "list_threads",
+      "assignment_status",
       "check_delegation",
       "wait_delegation",
       "session_search",
@@ -30,7 +31,7 @@ describe("built-in agent tool read policy", () => {
 
   it.each([
     "shared_computer", "ask_bot", "delegate_bot", "start_thread", "close_thread", "post_to_room",
-    "create_bot", "request_credential", "memory_update", "propose_routine",
+    "create_bot", "request_credential", "request_sign_in", "memory_update", "propose_routine",
     "propose_routine_action", "propose_profile", "skill_manage",
     "propose_team_setup", "propose_bot_deletion",
     "list_secrets", "read_credentials", "list_bots_and_delete", "unknown", "",

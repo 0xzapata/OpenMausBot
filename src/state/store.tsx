@@ -21,6 +21,7 @@ import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-even
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
+import { desktopCapabilitiesNow } from "@/lib/desktop";
 import { sameModelSelection } from "../../shared/thread-model";
 import type { MascotBodyId } from "../../shared/mascot-bodies";
 import type { QuestionRequestCardData } from "../../shared/ask-question";
@@ -40,6 +41,7 @@ import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib
 import { botShowsUnread } from "@/lib/bot-unread";
 import { firstUnreadMessageId, threadOpensUnread, threadReadCursor } from "@/lib/unread-divider";
 import type { ComputerStart } from "@/lib/computer-start";
+import { parseComputerHelp } from "@/lib/computer-control";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
@@ -168,10 +170,15 @@ export interface SecretRequestCardData {
   error?: string;
 }
 
+/** Who is driving a bot's computer: held = the person has the wheel (the
+ * bot's hands are refused server-side); helpReason = the bot's open plea for
+ * the person to take over, and help = the sign-in card it stands for. */
+export type ComputerControlState = { held: boolean; helpReason: string | null; help?: import("../../shared/wire").ComputerHelpRef | null };
+
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "signin" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
   text?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
@@ -182,6 +189,7 @@ export interface Message {
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
+  signIn?: import("../../shared/wire").SignInRequestCardData;
   /** Lifecycle mirror for a routine whose real work lives in a fresh task. */
   routineRun?: RoutineRunCardData;
   /** Durable lifecycle receipt for a goal-driven channel run. */
@@ -577,7 +585,6 @@ export function currentTaskBot(bot: Bot, threadId = bot.threadId): Bot {
 }
 
 export type TaskUpdatePatch = Partial<Pick<Task, "modelSelection" | "approvalMode" | "autoApprove" | "pinnedMessageId">> & {
-  confirmFullAccess?: boolean;
   acknowledgeLocalAuto?: boolean;
   updateBotDefault?: boolean;
   resetApprovalToAsk?: boolean;
@@ -592,7 +599,7 @@ export type TaskUpdatePatch = Partial<Pick<Task, "modelSelection" | "approvalMod
 };
 
 function taskPatchFields(patch: TaskUpdatePatch): Partial<Task> {
-  const { confirmFullAccess: _fullConsent, acknowledgeLocalAuto: _localAck, updateBotDefault: _modelDefault, resetApprovalToAsk, projectId, archivedAt, snoozedUntil, surface, pinned, link, ...fields } = patch;
+  const { acknowledgeLocalAuto: _localAck, updateBotDefault: _modelDefault, resetApprovalToAsk, projectId, archivedAt, snoozedUntil, surface, pinned, link, ...fields } = patch;
   return { ...fields, ...(resetApprovalToAsk ? { approvalMode: "ask", autoApprove: false, alwaysAllow: [] } : {}),
     ...(projectId === undefined ? {} : { projectId: projectId ?? undefined }),
     ...(archivedAt === undefined ? {} : { archivedAt: archivedAt ?? undefined }),
@@ -790,11 +797,17 @@ export interface BrowserEngineSummary {
   version?: string;
   installing?: boolean;
   installError?: string;
+  /** Whether a browser profile can use "My Chrome", the person's own running
+   * Chrome: only where the bots run on their computer (the desktop app). */
+  myChrome?: boolean;
 }
 
 export interface BrowserProfile {
   id: string;
   name: string;
+  /** "chrome": the profile's bots use the person's own Chrome (My Chrome).
+   * Absent is the built-in browser. */
+  browser?: "chrome";
   /** Read-only durable Electron routing inherited from legacy profiles.
    * Config PATCH payloads must omit it. */
   partitionId?: string;
@@ -1062,10 +1075,7 @@ export interface AppState {
   /** Bot removals waiting for the server to verify that no persistent
    * computer would be orphaned. The bot stays visible until that succeeds. */
   deletingBots: Record<string, true>;
-  /** who is driving each bot's computer: held = the person has the wheel
-   * (the bot's hands are refused server-side); helpReason = the bot's open
-   * plea for the person to take over */
-  computerControl: Record<string, { held: boolean; helpReason: string | null }>;
+  computerControl: Record<string, ComputerControlState>;
   /** Each bot's data sheet (cards and loaded tables, never rows), loaded
    * when its Data tab first opens and replaced whole by every `data` frame.
    * The grid pages rows itself, so a sheet stays small. */
@@ -1074,6 +1084,9 @@ export interface AppState {
    * list, not a copy on the sheet, so a load and a CREATE agree. */
   dataTables: Record<string, DataTable[]>;
   dataResultFocus: { botId: string; id: string; requestId: number; consumed: boolean } | null;
+  /** A sign-in card's Open: the Computer panel goes to the place the bot
+   * works, the Browser tab already in the person's control. */
+  signInFocus: { botId: string; messageId: string; url: string; site: string; place: import("../../shared/wire").Surface; requestId: number; consumed: boolean } | null;
   /** Only the currently mounted Data view, not the last Open in Data request. */
   dataView: import("@/lib/composer-attachments").DataViewContext | null;
   /** a search hit to scroll to once its thread is on screen; nonce lets the
@@ -1198,7 +1211,7 @@ export type Action =
       bots: Bot[];
       groups: Group[];
       sections?: string[];
-      computerControl: Record<string, { held: boolean; helpReason: string | null }>;
+      computerControl: Record<string, ComputerControlState>;
       botQueuedMessages?: AppState["pendingQueued"];
       /** the conversation open on this device last launch, for the first hydrate */
       resumeId?: string;
@@ -1338,7 +1351,7 @@ export type Action =
    * plain send falls back to the removed row's parent. */
   | { type: "optimisticMessageRemoved"; threadId: string; sendId: string; restoreLeafId?: string | null }
   | { type: "computerStart"; botId: string; start: ComputerStart | null }
-  | { type: "computerControl"; botId: string; held: boolean; helpReason: string | null }
+  | ({ type: "computerControl"; botId: string } & ComputerControlState)
   /** A whole sheet from the server: a `data` frame or the first GET. */
   | { type: "dataSheet"; sheet: DataSheet; tables?: DataTable[] }
   | { type: "dataView"; view: AppState["dataView"] }
@@ -1357,6 +1370,8 @@ export type Action =
   | { type: "toggleComputer"; open?: boolean }
   | { type: "openDataResult"; botId: string; cardId: string }
   | { type: "dataResultFocusConsumed"; requestId: number }
+  | { type: "openSignIn"; botId: string; messageId: string; url: string; site: string; place: import("../../shared/wire").Surface }
+  | { type: "signInFocusConsumed"; requestId: number }
   | { type: "toggleInspector"; open?: boolean }
   | { type: "toggleActivity"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
@@ -2140,7 +2155,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         computerControl: {
           ...state.computerControl,
-          [action.botId]: { held: action.held, helpReason: action.helpReason },
+          [action.botId]: { held: action.held, helpReason: action.helpReason, help: action.help ?? null },
         },
       };
     case "modelVariantRuntime": {
@@ -2278,6 +2293,17 @@ export function reducer(state: AppState, action: Action): AppState {
     case "dataResultFocusConsumed":
       return state.dataResultFocus?.requestId === action.requestId
         ? { ...state, dataResultFocus: { ...state.dataResultFocus, consumed: true } } : state;
+    case "openSignIn": {
+      if (!state.bots.some((bot) => bot.id === action.botId)) return state;
+      // As Open in Data: the bot's own view (a room's card leaves the room),
+      // then its Computer panel at the place the sign-in must happen.
+      const selected = reducer(reducer(state, { type: "select", id: action.botId }), { type: "toggleComputer", open: true });
+      const { type: _, ...request } = action;
+      return { ...selected, signInFocus: { ...request, requestId: (state.signInFocus?.requestId ?? 0) + 1, consumed: false } };
+    }
+    case "signInFocusConsumed":
+      return state.signInFocus?.requestId === action.requestId
+        ? { ...state, signInFocus: { ...state.signInFocus, consumed: true } } : state;
     case "toggleComputer": {
       const open = action.open ?? !state.computerOpen;
       return {
@@ -2377,7 +2403,6 @@ export function reducer(state: AppState, action: Action): AppState {
         : animated;
       const {
         acknowledgeLocalAuto: _localAck,
-        confirmFullAccess: _fullConfirmation,
         applyToAllThreads: _allThreads,
         computer,
         connectorTools,
@@ -2748,6 +2773,7 @@ export const initialState: AppState = {
   dataSheets: {},
   dataTables: {},
   dataResultFocus: null,
+  signInFocus: null,
   dataView: null,
   focusMessage: null,
   unreadDivider: null,
@@ -2860,17 +2886,26 @@ type TrustedApprovalBridge = {
   ): Promise<BotAnnouncement>;
 };
 
-/** Composer changes use the same private bridge as bot settings, but never
- * change profile defaults. Confirmation is UI state, never an HTTP credential. */
+/** The packaged desktop's private approval channel, when this window has a
+ * working one. Custom needs it. Full uses it there and the app's API
+ * everywhere else: a browser, a paired client, or a development build, whose
+ * bridge has no embedded server behind it. */
+export function desktopApprovalBridge(): TrustedApprovalBridge | undefined {
+  if (typeof window === "undefined" || !window.ogb?.approvals) return undefined;
+  return desktopCapabilitiesNow().host.packaged ? window.ogb.approvals : undefined;
+}
+
+/** Composer changes use the same private bridge as bot settings when there
+ * is one, but never change profile defaults. Full needs no bridge and no
+ * confirmation (owner decision, Oct 12); Custom still needs the bridge. */
 export async function persistTaskApproval(
   botId: string, threadId: string, patch: TaskUpdatePatch,
   bridge: TrustedApprovalBridge | undefined,
   request: (path: string, init?: RequestInit) => Promise<{ bot: BotAnnouncement }> = api,
 ): Promise<BotAnnouncement> {
-  const { approvalMode, autoApprove, confirmFullAccess, acknowledgeLocalAuto, ...ordinary } = patch;
+  const { approvalMode, autoApprove, acknowledgeLocalAuto, ...ordinary } = patch;
   const mode = approvalMode ?? (autoApprove === undefined ? undefined : autoApprove ? "auto" : "ask");
-  if (mode === "full" && confirmFullAccess !== true) throw new Error("Confirm Full access for this thread first");
-  if ((mode === "full" || mode === "custom") && !bridge) throw new Error("This approval change requires the packaged desktop app");
+  if (mode === "custom" && !bridge) throw new Error("This approval change requires the packaged desktop app");
   if (mode && bridge) {
     if (Object.keys(ordinary).length) await request(`/api/bots/${botId}/tasks/${threadId}`, { method: "PATCH", body: JSON.stringify(ordinary) });
     return bridge.setMode(botId, mode, { threadId, threadOnly: true, acknowledgeLocalAuto: acknowledgeLocalAuto === true });
@@ -2879,8 +2914,10 @@ export async function persistTaskApproval(
   return result.bot;
 }
 
-/** Persist one coalesced bot edit without ever putting Full/Custom authority
- * on the bot-accessible HTTP surface. Entering a trusted mode writes ordinary
+/** Persist one coalesced bot edit without ever putting Custom authority on
+ * the bot-accessible HTTP surface. Full goes over the app's API like every
+ * other level unless this window has the desktop's private bridge (owner
+ * decision, Oct 12). Entering a mode through the bridge writes ordinary
  * fields first, then grants authority. Leaving Custom reverses that order so a
  * coalesced provider switch is validated after the bot is back in Ask/Auto.
  * Exported for a small ordering/security contract test. */
@@ -2889,39 +2926,35 @@ export async function persistBotUpdate(
   patch: BotUpdatePatch,
   signal: AbortSignal,
   request: (path: string, init?: RequestInit) => Promise<{ bot: BotAnnouncement }> = api,
-  trustedApprovals: TrustedApprovalBridge | undefined =
-    typeof window === "undefined" ? undefined : window.ogb?.approvals,
+  trustedApprovals: TrustedApprovalBridge | undefined = desktopApprovalBridge(),
   currentBot?: BotAnnouncement,
 ): Promise<BotAnnouncement> {
   const {
     approvalMode,
-    confirmFullAccess,
     applyToAllThreads,
     ...ordinaryPatch
   } = patch;
-  const trustedMode = approvalMode === "full" || approvalMode === "custom"
-    ? approvalMode
-    : null;
   const leavesCustom = approvalMode !== undefined &&
     approvalModeFor(currentBot ?? {}) === "custom" &&
     approvalMode !== "custom";
+  const viaBridge = approvalMode === "custom" || leavesCustom ||
+    (approvalMode === "full" && trustedApprovals !== undefined);
 
-  if (!trustedMode && !leavesCustom) {
+  if (!viaBridge) {
     const result = await request(`/api/bots/${botId}`, {
       method: "PATCH",
-      // The Full confirmation is renderer-local and has already been removed
-      // above, including when a rapid later Ask/Auto choice was coalesced.
       body: JSON.stringify(
-        approvalMode === undefined ? ordinaryPatch : { ...ordinaryPatch, approvalMode },
+        approvalMode === undefined ? ordinaryPatch : {
+          ...ordinaryPatch,
+          approvalMode,
+          ...(approvalMode === "full" && applyToAllThreads ? { applyToAllThreads: true } : {}),
+        },
       ),
       signal,
     });
     return result.bot;
   }
 
-  if (approvalMode === "full" && confirmFullAccess !== true) {
-    throw new Error("Confirm the Full access warning before enabling it");
-  }
   if (!trustedApprovals || approvalMode === undefined) {
     throw new Error("This approval-level change requires the packaged desktop app");
   }
@@ -3093,7 +3126,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () =>
       createBotPatchQueue({
         send: (botId, patch, signal, currentBot) =>
-          persistBotUpdate(botId, patch, signal, api, window.ogb?.approvals, currentBot),
+          persistBotUpdate(botId, patch, signal, api, desktopApprovalBridge(), currentBot),
         reconcile: async (botId, signal) => {
           const result: { bots: BotAnnouncement[] } = await api(`/api/bots?messages=${MESSAGE_PAGE_SIZE}`, { signal });
           return result.bots.find((candidate) => candidate.id === botId) ?? null;
@@ -3180,7 +3213,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               threadId, modelSelection: patch.modelSelection, updateBotDefault: Boolean(patch.updateBotDefault),
             });
           }
-          return persistTaskApproval(botId, threadId, patch, window.ogb?.approvals);
+          return persistTaskApproval(botId, threadId, patch, desktopApprovalBridge());
         });
       // Later edits still get saved after an earlier failure, but a send
       // awaiting this batch must observe every rejected setting in it. A
@@ -3807,12 +3840,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const mode = approvalModeFor(bot);
           const current = approvalModeFor(currentTaskBot(bot, action.threadId));
           const acknowledgeLocalAuto = action.acknowledgeLocalAuto === true;
-          // Full, Custom, and leaving Custom stay on the private desktop
-          // channel. Ask, Edits, and Auto can use the thread settings route.
-          const needsDesktop = mode === "full" || mode === "custom" || current === "custom";
-          const refreshed = needsDesktop
-            ? window.ogb?.approvals
-              ? window.ogb.approvals.setMode(action.botId, mode, {
+          // Custom, and leaving Custom, stay on the private desktop channel.
+          // Full takes it when this window has one; every other level, and
+          // Full without it, uses the thread settings route.
+          const bridge = desktopApprovalBridge();
+          const viaBridge = mode === "custom" || current === "custom" || (mode === "full" && bridge !== undefined);
+          const refreshed = viaBridge
+            ? bridge
+              ? bridge.setMode(action.botId, mode, {
                 threadId: action.threadId, threadOnly: true, refreshPermissions: true, acknowledgeLocalAuto,
               })
               : Promise.reject(new Error("This approval change requires the packaged desktop app"))
@@ -4306,6 +4341,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             botId: frame.botId,
             held: frame.held === true,
             helpReason: typeof frame.helpReason === "string" ? frame.helpReason : null,
+            help: parseComputerHelp(frame.help),
           });
           break;
         case "data":

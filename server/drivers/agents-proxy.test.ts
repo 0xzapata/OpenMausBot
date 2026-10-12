@@ -75,6 +75,7 @@ let lastCreateBody: any = null;
 let lastCreateRoomBody: unknown = null;
 let lastManageRoomBody: unknown = null;
 let lastCredentialBody: any = null;
+let lastSignInBody: any = null;
 let lastRoutineQuery = "";
 let routinesResponse: unknown = {
   now: "2026-08-28T10:30:00.000Z",
@@ -354,6 +355,16 @@ beforeAll(async () => {
         lastCredentialBody = JSON.parse(data);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ messageId: "msg-key", label: "OpenCode API key" }));
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/internal/request-sign-in") {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        lastSignInBody = JSON.parse(data);
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify({ messageId: "msg-sign-in", site: "example.com", place: "browser" }));
       });
       return;
     }
@@ -660,6 +671,7 @@ describe("agents-proxy MCP surface", () => {
       "create_room",
       "manage_room",
       "request_credential",
+      "request_sign_in",
       "memory_update",
       "retry_thread",
       "memory_log",
@@ -816,6 +828,7 @@ describe("agents-proxy MCP surface", () => {
     expect(create.inputSchema.properties).not.toHaveProperty("duration_minutes");
     expect(create.inputSchema.properties.timeout_minutes).toMatchObject({ minimum: 5, maximum: 240 });
     expect(create.inputSchema.properties.continuity).toMatchObject({ type: "boolean" });
+    expect(create.inputSchema.properties.run_on_startup).toMatchObject({ type: "boolean" });
     expect(create.inputSchema.properties.clear_timeout.type).toBe("boolean");
     expect(schedule.properties.every_minutes).toMatchObject({ minimum: 5, maximum: 1_440 });
     expect(schedule.properties.window_start.type).toBe("string");
@@ -1271,6 +1284,24 @@ describe("agents-proxy MCP surface", () => {
     expect(JSON.stringify(lastCredentialBody)).not.toContain("secret");
   });
 
+  it("asks for a sign-in with only the site and the bot's reason, and ends the turn", async () => {
+    const res = await callTool("request_sign_in", { site: " https://example.com/login ", reason: "The report is behind a login." });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("The person was asked to sign in to example.com on your built-in browser.");
+    expect(res.result.content[0].text).toContain("Your turn ends now");
+    expect(res.result.content[0].text).toContain("resumes you when they finish or decline");
+    expect(res.result.content[0].text).toContain("Never ask for the password or a code in chat");
+    expect(lastSignInBody).toEqual({
+      fromBotId: "bot-asker",
+      fromThreadId: "thread-asker-routine",
+      site: "https://example.com/login",
+      reason: "The report is behind a login.",
+    });
+    lastSignInBody = null;
+    expect((await callTool("request_sign_in", { site: "  " })).result.isError).toBe(true);
+    expect(lastSignInBody).toBeNull();
+  });
+
   it("rejects credential ids outside the fixed allowlist locally", async () => {
     lastCredentialBody = null;
     const res = await callTool("request_credential", { credential_id: "arbitrary.config.path" });
@@ -1705,6 +1736,7 @@ describe("agents-proxy MCP surface", () => {
       duration_minutes: 45,
       timeout_minutes: 15,
       continuity: true,
+      run_on_startup: true,
     });
     expect(lastRoutineRequestBody).toEqual({
       fromBotId: "bot-asker",
@@ -1717,6 +1749,7 @@ describe("agents-proxy MCP surface", () => {
         runOn: "maus",
         timeoutMinutes: 15,
         continuity: true,
+        runOnStartup: true,
       },
     });
     expect(res.result.content[0].text).toContain("confirmation card");
@@ -1796,6 +1829,8 @@ describe("agents-proxy MCP surface", () => {
     { timeout_minutes: 10, timeoutMinutes: 20 },
     { clear_timeout: true, timeoutMinutes: 10 },
     { continuity: "true" },
+    { run_on_startup: "yes" },
+    { run_on_startup: true, runOnStartup: false },
     { clear_timeout: "true" },
   ])("refuses malformed execution settings without silently dropping them: %j", async (settings) => {
     lastRoutineRequestBody = null;
@@ -1895,14 +1930,14 @@ describe("agents-proxy MCP surface", () => {
     const update = await callTool("propose_routine_action", {
       routine_id: "routine-1",
       action: "update",
-      changes: { name: "Weekday brief", clear_timeout: true, continuity: false },
+      changes: { name: "Weekday brief", clear_timeout: true, continuity: false, run_on_startup: false },
     });
     expect(lastRoutineRequestBody).toEqual({
       fromBotId: "bot-asker",
       fromThreadId: "thread-asker-routine",
       action: "update",
       routineId: "routine-1",
-      changes: { name: "Weekday brief", timeoutMinutes: null, continuity: false },
+      changes: { name: "Weekday brief", timeoutMinutes: null, continuity: false, runOnStartup: false },
     });
     expect(update.result.content[0].text).toContain("has not been applied");
 

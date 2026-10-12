@@ -65,7 +65,6 @@
   "server/create-bot-model.e2e.test.ts": 7,
   "server/decider-included.e2e.test.ts": 4,
   "server/decider-rooms.e2e.test.ts": 5,
-  "server/delegations.test.ts": 14,
   "server/delta-context.e2e.test.ts": 316,
   "server/digest-control.e2e.test.ts": 5,
   "server/digest.e2e.test.ts": 1,

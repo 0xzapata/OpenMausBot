@@ -28,7 +28,8 @@ import { showToolCallsEnabled } from "@/lib/feature-flags";
 import { CompactionChip, DigestChip } from "./DigestChip";
 import { roomActivityVisible } from "@/lib/room-activity";
 import { StatusActivityRow } from "@/components/StatusActivityRow";
-import { normalizeState } from "@/lib/mascot";
+import { MAUS_COLOR_NAMES, normalizeState, type MausColor } from "@/lib/mascot";
+import { botTextShowsSpeaker, laterTextOwns, runShowsSpeaker } from "@/lib/room-speaker";
 import { defaultResponderName, effectiveDefaultResponder, groupResponseHint, jevRoomRoutingOn } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { CopyButton, FailedTurnRow, MessageBoundary, ReplyAction } from "./ChatView";
@@ -54,6 +55,7 @@ import { ExportTranscriptMenu } from "./ExportTranscriptMenu";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
+import { SignInRequestCard } from "./SignInRequestCard";
 import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { GoalRunCard } from "./GoalRunCard";
 import { AttachmentGallery, MessageAttachmentGallery, replyAttachmentGroup } from "./AttachmentGallery";
@@ -145,8 +147,14 @@ export function RoomToolChip({ message, roomId }: { message: Message; roomId?: s
   );
 }
 
-/** 16px profile avatar + name, shown once per sender cluster. */
+function isPaletteColor(color: string): color is MausColor {
+  return (MAUS_COLOR_NAMES as readonly string[]).includes(color);
+}
+
+/** 16px profile avatar + name, shown once per sender cluster. The name uses
+ * that bot's color, deepened or lightened per skin so it stays readable. */
 function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: string }) {
+  const known = isPaletteColor(color);
   return (
     <div className="mt-1 flex items-center gap-1.5 pl-0.5">
       <BotAvatar
@@ -156,8 +164,12 @@ function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: st
         motion="none"
         motionKey={0}
         animated={false}
+        readable={known}
       />
-      <span className="text-[11px] font-medium text-ink-secondary">{name}</span>
+      <span
+        className={cn("text-[11px] font-medium", known ? "bot-identity" : "text-ink-secondary")}
+        data-bot-color={known ? color : undefined}
+      >{name}</span>
     </div>
   );
 }
@@ -419,7 +431,7 @@ export const Transcript = memo(function Transcript({
         const divider = dividerAbove(item.kind === "run" ? item.messages : [item.message]);
         if (item.kind === "run") {
           if (!showToolCalls) return divider && <div key={item.id} className="contents">{divider}</div>;
-          const cluster = !prev || prev.role !== first.role || prev.from?.botId !== first.from?.botId || newDay;
+          const cluster = runShowsSpeaker(items, i, showToolCalls);
           return (
             <div key={item.id} className="contents">
               {newDay && (
@@ -462,6 +474,8 @@ export const Transcript = memo(function Transcript({
           // one of those questions, and answers in its own card.
           m.kind === "secret" && m.secret && m.from?.botId ? (
             <SecretRequestCard botId={m.from.botId} threadId={group.threadId} message={m} />
+          ) : m.kind === "signin" && m.signIn && m.from?.botId ? (
+            <SignInRequestCard botId={m.from.botId} botName={m.from.name} threadId={group.threadId} message={m} />
           ) : m.kind === "connector" && m.connector && m.from?.botId ? (
             <ConnectorCard botId={m.from.botId} threadId={group.threadId} message={m} />
           ) : m.kind === "options" && m.card?.requestId && m.card.questionRequest ? (
@@ -530,7 +544,10 @@ export const Transcript = memo(function Transcript({
               </div>
             )}
             {divider}
-            {!user && m.from && newCluster && !(m.kind === "activity" && m.comm) && (
+            {m.from && (
+              (m.kind === "text" && botTextShowsSpeaker(items, i))
+              || (!user && m.kind !== "text" && newCluster && !(m.kind === "activity" && m.comm) && !laterTextOwns(items, i, m.from.botId, m.at))
+            ) && (
               <ClusterLabel bot={memberOf(m.from.botId)} name={m.from.name} color={m.from.color} />
             )}
             {row}

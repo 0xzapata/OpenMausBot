@@ -435,6 +435,36 @@ describe("authenticated browser viewer relay", () => {
     expect(b.res.writableEnded).toBe(false);
     expect(held.get("profile-a")).toBe(b.res.id);
   });
+  it("sends a typed password to the page only: never logged, echoed or sent to another view", async () => {
+    const secret = "hunter2-correct-horse";
+    const logs = (["log", "info", "warn", "error", "debug"] as const).map((level) => vi.spyOn(console, level).mockImplementation(() => {}));
+    const a = await open(); const b = await open({ botId: "bot-b" });
+    await a.action({ type: "take" });
+    const reply = await a.action({ type: "input_keyboard", eventType: "char", text: secret });
+    expect(reply).toEqual({ ok: true });
+    expect(nativeInput.mock.calls.map((call) => JSON.parse(call[1].body))).toEqual([{ action: "keyboard", subaction: "insertText", text: secret }]);
+    // A failing page does not repeat it either, in its error or in a log.
+    nativeInput.mockImplementationOnce(async () => Response.json({ success: false, error: `bad input ${secret}` }));
+    const failure = await a.action({ type: "input_keyboard", eventType: "char", text: secret }).catch((error: Error) => error);
+    expect(String(failure)).not.toContain(secret);
+    for (const log of logs) expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+    expect([...a.res.chunks, ...b.res.chunks].join("")).not.toContain(secret);
+    expect(JSON.stringify([a.socket.messages, b.socket.messages])).not.toContain(secret);
+  });
+  it("hands back whichever view holds the browser when its sign-in card is answered elsewhere", async () => {
+    const a = await open(); const b = await open({ botId: "bot-b" });
+    await a.action({ type: "take" });
+    live.handBack("profile-b");
+    expect(held.get("profile-a")).toBe(a.res.id);
+    live.handBack("profile-a");
+    expect(held.has("profile-a")).toBe(false);
+    expect(a.res.events("control").at(-1)).toEqual({ held: false, owned: false, controlling: false });
+    expect(b.res.events("control").at(-1)).toEqual({ held: false, owned: false, controlling: false });
+    // The view stays open: the person can take it again.
+    expect(a.res.writableEnded).toBe(false);
+    await a.action({ type: "take" });
+    expect(held.get("profile-a")).toBe(a.res.id);
+  });
   it("inserts pasted text literally and preserves modifier shortcuts via native acknowledged actions", async () => {
     const a = await open(); await a.action({ type: "take" });
     await a.action({ type: "input_keyboard", eventType: "char", text: "--cdp=secret\nhello" });

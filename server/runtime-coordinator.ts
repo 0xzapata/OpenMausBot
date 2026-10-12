@@ -485,8 +485,14 @@ export class RuntimeCoordinator implements Coordinator {
    * those cards (answerRoot), and the typed line starts a new root instead. */
   answer(threadId: string, text: string): boolean {
     this.ready();
+    // Roots parked on their own cards answer through answerRoot.
     const parked = this.live().find(n => n.parentId !== undefined && n.status === "needs_input" && n.assignee.destination.threadId === threadId);
     return parked ? this.runtime.answer(parked.id, text) : false;
+  }
+
+  awaitingAnswer(threadId: string): boolean {
+    this.ready();
+    return this.parkedIn(threadId) !== undefined;
   }
 
   // ── the TurnRunner the Runtime drives ────────────────────────────────
@@ -497,7 +503,7 @@ export class RuntimeCoordinator implements Coordinator {
       validate: (a, parent) => host.validate(view(a, parent), parent && this.project(parent)),
       canStart: a => !host.busy(this.project(a)),
       run: (a, input, signal) => this.run(a, input, signal),
-      park: (a, question) => host.park(this.project(a), question),
+      park: (a, question, restored) => host.park(this.project(a), question, restored),
       report: (a, parent) => host.report(view(a, parent), parent && this.project(parent)),
       changed: rows => {
         const groups = new Set<string>();
@@ -557,6 +563,11 @@ export class RuntimeCoordinator implements Coordinator {
 
   private live(): Assignment[] {
     return this.store.all({ nonTerminal: true });
+  }
+
+  /** The assignment in this thread that is parked on the person's answer. */
+  private parkedIn(threadId: string): Assignment | undefined {
+    return this.live().find(n => n.status === "needs_input" && n.assignee.destination.threadId === threadId);
   }
 
   private direct(a: Assignment, threadId: string): boolean {

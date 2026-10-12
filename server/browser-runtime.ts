@@ -52,11 +52,17 @@ export function browserRuntimeEnv(overrides: Record<string, string | undefined>)
 export const BROWSER_VIEWPORT = { width: 1280, height: 720 } as const;
 export const BROWSER_VIEWPORT_ARGS = ["set", "viewport", String(BROWSER_VIEWPORT.width), String(BROWSER_VIEWPORT.height)] as const;
 
+/** A session attached to a Chrome that is already running: the person's own
+ * (My Chrome), found automatically or at a configured address. */
+export function attachesToChrome(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.AGENT_BROWSER_CDP || env.AGENT_BROWSER_AUTO_CONNECT);
+}
+
 /** Only a headless browser this server launches is OMB's to size. A browser
  * attached over CDP is someone's own Chrome, and a headed window is the
  * user's to size. */
 export function ownsBrowserViewport(env: NodeJS.ProcessEnv): boolean {
-  return env.AGENT_BROWSER_HEADLESS === "1" && !env.AGENT_BROWSER_CDP;
+  return env.AGENT_BROWSER_HEADLESS === "1" && !attachesToChrome(env);
 }
 
 export class TransportError extends Error {}

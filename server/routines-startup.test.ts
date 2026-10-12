@@ -61,6 +61,14 @@ it("recovers queued/due work and a waiting routine's imported hand-off after res
       name: "Waiting on peer work", prompt: "Resume once the peer reports", botId: interruptedBot.id,
       enabled: false, schedule: { type: "daily", time: "09:00", weekdays: [1] },
     })).routine;
+    // #325: not due for days, but marked to run whenever the app starts.
+    const startupBot = (await api("POST", "/api/bots", { name: "Restart on startup" })).bot;
+    const onStartup = (await api("POST", "/api/routines", {
+      name: "Runs when the app starts", prompt: "Report once at startup", botId: startupBot.id,
+      runOnStartup: true, schedule: { type: "interval", everyMinutes: 1440, anchorAt: Date.now() + 2 * 24 * 60 * 60_000 },
+    })).routine;
+    expect(onStartup.runOnStartup).toBe(true);
+    expect((await api("GET", "/api/routines")).runs.some((run: RoutineRun) => run.routineId === onStartup.id)).toBe(false);
     await waitForExit(fixture.child, { signal: "SIGTERM" });
 
     // The original child is gone; only its owned temporary store is edited.
@@ -72,6 +80,8 @@ it("recovers queued/due work and a waiting routine's imported hand-off after res
     await scheduler.tick();
     expect(scheduler.listRuns().find((run) => run.id === queued.id)?.status).toBe("queued");
     const disk = JSON.parse(readFileSync(file, "utf8"));
+    // A standalone process ignores a desktop launch id left in its environment.
+    disk.startupLaunchId = "previous-desktop-launch";
     const dueAt = Date.now() - 1_000;
     const cronDueAt = Math.floor(Date.now() / 60_000) * 60_000 - 5 * 60_000;
     disk.routines.find((routine: { id: string }) => routine.id === cron.id).enabled = true;
@@ -117,6 +127,7 @@ it("recovers queued/due work and a waiting routine's imported hand-off after res
       TEMP: join(dataDir, "tmp"), TMP: join(dataDir, "tmp"), TMPDIR: join(dataDir, "tmp"),
       OMB_PORT: new URL(url).port, OMB_WEBHOOK_PORT: String(Number(new URL(url).port) + 1),
       PATH: dirname(process.execPath), FAKE_CLAUDE_MODE: "happy",
+      OMB_DESKTOP_LAUNCH_ID: "previous-desktop-launch",
     });
     const log = openSync(logPath, "a", 0o600);
     restarted = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./index.ts", import.meta.url))], {
@@ -129,7 +140,7 @@ it("recovers queued/due work and a waiting routine's imported hand-off after res
       expect(restarted.exitCode, `restarted server exited; see ${logPath}`).toBeNull();
       try {
         runs = (await api("GET", "/api/routines")).runs;
-        if ([scheduled.id, manual.id, cron.id, interrupted.id].every((id) => runs.some((run) => run.routineId === id && run.status === "completed"))) break;
+        if ([scheduled.id, manual.id, cron.id, interrupted.id, onStartup.id].every((id) => runs.some((run) => run.routineId === id && run.status === "completed"))) break;
       } catch {
         // The exact replacement child is still starting its listener.
       }
@@ -141,8 +152,10 @@ it("recovers queued/due work and a waiting routine's imported hand-off after res
       expect.objectContaining({ routineId: scheduled.id, scheduledFor: dueAt, status: "completed" }),
       expect.objectContaining({ routineId: cron.id, scheduledFor: cronDueAt, status: "completed" }),
       expect.objectContaining({ id: queued.id, routineId: manual.id, status: "completed" }),
+      expect.objectContaining({ routineId: onStartup.id, triggerSource: "startup", status: "completed" }),
       expect.objectContaining({ id: "interrupted-run", status: "completed" }),
     ]));
+    expect(runs.filter(run => run.routineId === onStartup.id)).toHaveLength(1);
     const resumedRun = runs.find((run) => run.id === "interrupted-run")!;
     expect(resumedRun.error).toBeUndefined();
     expect(resumedRun.finishedAt).toBeGreaterThan(dueAt);
