@@ -1,0 +1,189 @@
+// Small writing jobs: the one-off, tool-free text calls the harness makes
+// around a bot's turns. Three jobs ask here for whoever writes theirs:
+//   - the compaction summary (server/compaction-summary.ts), while a turn
+//     waits for it;
+//   - memory upkeep's capture, organize and contradiction steps
+//     (server/memory-upkeep.ts), in the background;
+//   - the automatic skill review (server/skill-review.ts), in the background.
+//
+// The bot's own engine writes whenever it can, as it did before this module
+// existed: Claude and the chat-completion engines through `generateText`,
+// Codex and the ACP engines through `generateMemoryText` for the two
+// background jobs (never for the summary: that call starts a whole agent
+// process, and a turn is waiting). Those calls are made, bounded and booked
+// exactly as before.
+//
+// An engine that cannot write a job (Pi and Muse Code have no one-off call;
+// Codex and the ACP engines have none for the summary) used to mean the
+// job's mechanical fallback: an excerpt summary, no capture, no review. The
+// optional helper model fills that gap: one connected provider instance,
+// named in config.json or the environment (config.ts helperSelection), whose
+// `generateText` writes for those bots. It is unset by default, because it
+// sends their conversation text to a second provider (docs/memory.md). The
+// order never reverses: the helper is not asked while the bot's own engine
+// can write.
+//
+// The helper is skipped, and the job falls back as it does with no helper,
+// when the bot's own engine is missing or disallowed, or when the helper
+// instance is not connected, switched off, disallowed by the organisation,
+// not assigned on a hosted workspace, or has no `generateText` of its own. A
+// helper call that fails, hangs or meets the spend limit is an ordinary
+// failed call to the job, which already bounds it and falls back.
+//
+// A helper call is its own usage row: the bot it wrote for, the helper's
+// instance and model, and the trigger `helper` (server/usage-ledger.ts), so
+// what the helper costs is read apart from the bot's own turns.
+import { randomUUID } from "node:crypto";
+
+import type { ProviderAdapter, ProviderInstance, TextGenerationOptions } from "./contracts.ts";
+import type { UsageRow, UsageTrigger } from "./usage-ledger.ts";
+
+export type SideJob = "compaction" | "memory" | "skill-review";
+
+/** What a job needs to know of a provider instance. */
+export type SideJobInstance = Pick<ProviderInstance, "instanceId" | "driverKind" | "enabled" | "generateText" | "generateMemoryText"> & {
+  adapter: { capabilities: Pick<ProviderAdapter["capabilities"], "agentsMcp"> };
+};
+
+export interface SideJobBot {
+  id: string;
+  name: string;
+  /** The bot's main conversation, where a spend alert a call raises is shown. */
+  threadId: string;
+  modelSelection: { instanceId: string };
+}
+
+export interface SideJobText {
+  /** Who writes: the bot's own engine, or the helper instance. */
+  via: "engine" | "helper";
+  generateText: (prompt: string, options?: { signal?: AbortSignal }) => Promise<string>;
+}
+
+export interface SideJobsDeps {
+  bot: (botId: string) => SideJobBot | null | undefined;
+  /** A connected provider instance, or null. */
+  instance: (instanceId: string) => SideJobInstance | null | undefined;
+  /** Why the organisation refuses this instance for bots, or undefined. */
+  refusal: (instance: SideJobInstance) => string | undefined;
+  /** The helper setting, or null while none is set. */
+  helper: () => { instanceId: string; model?: string } | null;
+  /** A hosted workspace only: whether this instance may run this model.
+   * Absent everywhere else, where any model the instance has may be named. */
+  modelAllowed?: (selection: { instanceId: string; model: string }) => boolean;
+  /** Throws once the workspace is at its monthly spend limit. */
+  assertWithinBudget: () => void;
+  /** Write one call to the usage ledger (bookTurnUsage in server/index.ts). */
+  book: (row: Omit<UsageRow, "at" | "costSource">, tokensReported: boolean, notificationThreadId: string) => void;
+  log?: (line: string) => void;
+}
+
+export interface SideJobs {
+  /** Whoever writes this job for this bot now, or null when nobody can and
+   * the job keeps its fallback. `at.instance` is the engine a conversation
+   * is running on, when that is not the bot's default (the summary). Asked
+   * again before every call: the answer follows the setting and the engines. */
+  text(job: SideJob, botId: string, at?: { instance?: SideJobInstance }): SideJobText | null;
+}
+
+type TextCall = (prompt: string, options?: TextGenerationOptions) => Promise<string>;
+
+/** The bot's own one-off call for a job, when its engine has one. */
+function ownCall(job: SideJob, instance: SideJobInstance): TextCall | undefined {
+  // generateMemoryText is the ACP engines' and Codex's one-shot for
+  // background work only, on their own provider (server/contracts.ts): never
+  // the summary a turn is waiting on.
+  const call = job === "compaction" ? instance.generateText : instance.generateText ?? instance.generateMemoryText;
+  return call?.bind(instance);
+}
+
+export function createSideJobs(deps: SideJobsDeps): SideJobs {
+  // What was last said about the helper, so the log says where the text
+  // goes, or why it does not, once per change and not once per call.
+  let said: string | null = null;
+  const say = (line: string | null) => {
+    if (line && line !== said) deps.log?.(`helper model: ${line}`);
+    said = line;
+  };
+
+  /** One call, checked against the spend limit first and booked when the
+   * engine reports its usage. Every call checks: one upkeep pass makes
+   * several in a row. Each gets a thread id of its own, so two calls in one
+   * millisecond are still two rows. */
+  const booked = (job: SideJob, bot: SideJobBot, instance: SideJobInstance, call: TextCall, trigger: UsageTrigger, model?: string): SideJobText["generateText"] =>
+    async (prompt, options) => {
+      deps.assertWithinBudget();
+      const threadId = `${job}-${randomUUID()}`;
+      return call(prompt, {
+        ...options,
+        ...(model ? { model } : {}),
+        onUsage: (usage) => deps.book({
+          botId: bot.id,
+          botName: bot.name,
+          threadId,
+          instanceId: instance.instanceId,
+          driverKind: instance.driverKind,
+          model: usage.model,
+          input: usage.input ?? 0,
+          output: usage.output ?? 0,
+          ...(usage.cachedInput !== undefined ? { cachedInput: usage.cachedInput } : {}),
+          costUsd: usage.costUsd ?? null,
+          trigger,
+        }, usage.input !== undefined && usage.output !== undefined, bot.threadId),
+      });
+    };
+
+  /** The helper instance when it may write now, and with which model. */
+  function usableHelper(): { instance: SideJobInstance; call: TextCall; model?: string } | null {
+    const helper = deps.helper();
+    if (!helper) {
+      say(null);
+      return null;
+    }
+    const name = JSON.stringify(helper.instanceId);
+    const unused = (why: string) => {
+      say(`${why}, so bots whose engine has no one-off text call keep their fallback`);
+      return null;
+    };
+    const instance = deps.instance(helper.instanceId);
+    if (!instance) return unused(`the helper instance ${name} is not connected`);
+    if (!instance.enabled) return unused(`the helper instance ${name} is switched off`);
+    // Only `generateText`: Codex's or an ACP engine's background call starts
+    // a whole agent process per call and serves that engine's own bots only.
+    if (!instance.generateText) return unused(`the helper instance ${name} cannot make a one-off text call`);
+    // The helper is an engine like any other: one the organisation disallows
+    // never receives a bot's text, and a hosted workspace's models stay the
+    // ones it was assigned.
+    const refusal = deps.refusal(instance);
+    if (refusal) return unused(`the helper instance ${name} is not used (${refusal})`);
+    if (helper.model && deps.modelAllowed && !deps.modelAllowed({ instanceId: helper.instanceId, model: helper.model })) {
+      return unused(`the helper model ${JSON.stringify(helper.model)} is not assigned to this workspace`);
+    }
+    say(`small writing jobs for bots whose engine has no one-off text call are written by ${name}${helper.model ? ` (${helper.model})` : ""}`);
+    return { instance, call: instance.generateText.bind(instance), ...(helper.model ? { model: helper.model } : {}) };
+  }
+
+  return {
+    text(job, botId, at = {}) {
+      const bot = deps.bot(botId);
+      const own = at.instance ?? (bot ? deps.instance(bot.modelSelection.instanceId) : null);
+      // A bot without an engine, or on one the organisation disallows, gets no
+      // model step at all. That holds for the helper too: it stands in for an
+      // engine that cannot write, never for one that may not be used.
+      if (!bot || !own || deps.refusal(own)) return null;
+      // The review's changes are written with the bot's own skill tools,
+      // whoever read the conversation: an engine that cannot mount them is
+      // not reviewed (server/index.ts, the skill review's gates).
+      if (job === "skill-review" && own.adapter.capabilities.agentsMcp !== true) return null;
+      const call = ownCall(job, own);
+      if (call) {
+        // The summary is part of a turn that already passed the spend limit,
+        // and is not booked on its own (docs/verification/context-compaction.md).
+        if (job === "compaction") return { via: "engine", generateText: call };
+        return { via: "engine", generateText: booked(job, bot, own, call, { kind: "bot", botId: bot.id }) };
+      }
+      const helper = usableHelper();
+      if (!helper) return null;
+      return { via: "helper", generateText: booked(job, bot, helper.instance, helper.call, { kind: "helper", botId: bot.id, job }, helper.model) };
+    },
+  };
+}
