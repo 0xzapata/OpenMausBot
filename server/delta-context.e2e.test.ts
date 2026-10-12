@@ -414,17 +414,17 @@ it("keeps provenance and exactly-once delivery across rework rounds to the same 
   }
 }), hostTimeout(90_000));
 
-it("keeps the person's request on work a send_to_bot recipient hands on", () => fixture(async (f) => {
-  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: { bot_id: f.lead.id, title: "Export", message: "SEND_BRIEF own the export" } }], reply: "Sent" };
+it("keeps the person's request on work a one-way notice's recipient hands on", () => fixture(async (f) => {
+  f.plan[f.chief.id] = { steps: [{ arguments: { bot_ids: [f.lead.id], message: "SEND_BRIEF own the export", thread: "new", reply: "none" } }], reply: "Sent" };
   f.plan[f.lead.id] = { steps: [{ arguments: { bot_ids: [f.qa.id], request_key: "check", message: "QA_BRIEF check the export" } }], reply: "Assigned", resumeReply: "Done" };
   f.plan[f.qa.id] = { reply: "QA_RESULT" };
   await f.send("PERSON_LINEAGE please get the export owned and checked");
   await f.wait();
   await expect.poll(() => f.turns(f.qa.id).length, { timeout: 30_000 }).toBe(1);
   const request = "PERSON_LINEAGE please get the export owned and checked";
-  // send_to_bot is an alias of coordinate_bots with thread "new" and reply
-  // "none" (contract §9): a one-way notice on the runtime, whose envelope
-  // keeps the person's lineage and says nobody is waiting (contract §4).
+  // coordinate_bots with thread "new" and reply "none" (contract §9) is a
+  // one-way notice on the runtime, whose envelope keeps the person's
+  // lineage and says nobody is waiting (contract §4).
   const owned = f.prompt(f.turns(f.lead.id)[0]);
   expect(owned).toMatch(assignedBy(f.chief.name));
   expect(owned).toContain(personLineage(request));
