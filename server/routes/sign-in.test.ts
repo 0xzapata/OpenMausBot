@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
-import { createInternalSignInRoutes, createSignInCardRoutes } from "./sign-in.ts";
+import { createInternalSignInRoutes } from "./sign-in.ts";
+import { createSignInCardRoutes } from "./sign-in-cards.ts";
 import { dispatchRoutes, PASS, type RouteContext } from "./table.ts";
 
 function context(path: string, method = "POST", body: unknown = {}): RouteContext {
@@ -149,5 +150,5 @@ it("keeps internal dispatch inside the capability gate with its guarded reader",
   ]) expect(before).toContain(guard);
   expect(call.arguments[0]!.getText(source)).toContain("readBody: readInternalBody");
   expect(call.arguments[0]!.getText(source)).toContain("requestSignIn(internalSender, internalCapability.threadId, site, reason)");
-  expect(text).toContain("ROUTES.push(createSignInCardRoutes({ settle: settleSignIn }))");
+  expect(text.match(/ROUTES\.push\(createSignInCardRoutes\(\{ settle: settleSignIn \}\)\)/g)).toHaveLength(1);
 });

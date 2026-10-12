@@ -734,8 +734,11 @@ it.each(["SIGTERM", "SIGKILL"] as const)("runs each teammate turn a restart cut 
       // The final text precedes turn completion and the runtime's durable settlement.
       await expect.poll(() => f.nodes().map((node: any) => node.status), { timeout: 30_000 })
         .toEqual(["completed", "completed", "completed"]);
+      // A later bot frame fences every notification already emitted on this SSE stream.
+      await f.api(`/api/bots/${f.qa.id}`, { name: "QA restart observed" }, "PATCH");
+      await stream.until((frame) => frame.kind === "bot" && frame.bot?.id === f.qa.id && frame.bot?.name === "QA restart observed", 30_000);
       // The job's one notification, as a job no restart touched sends.
-      await expect.poll(() => stream.frames.filter((frame) => frame.kind === "notify").map((frame) => [frame.notification?.kind, frame.notification?.body]), { timeout: 30_000 })
+      expect(stream.frames.filter((frame) => frame.kind === "notify").map((frame) => [frame.notification?.kind, frame.notification?.body]))
         .toEqual([["delegation-settled", "Results in from Engineering lead, Ops"]]);
     } finally {
       stream.close();
