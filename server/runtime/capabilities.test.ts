@@ -3,11 +3,12 @@
 // continuation rule read these flags, never driver names. The expected
 // table is written out in full so a change in shared/approval-mode.ts or
 // in a driver's resume path is a visible diff here, not a silent shift.
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { BUILT_IN_DRIVERS } from "../drivers/builtIn.ts";
-import { ENGINE_KINDS, engineCapabilities, type EngineCapabilities } from "./capabilities.ts";
+import { ENGINE_KINDS, engineCapabilities, replaysTranscriptNatively, type EngineCapabilities } from "./capabilities.ts";
 
 const chat: EngineCapabilities = { resume: false, nativeReviewer: false, full: true, edits: false, stepCap: 64, subagents: false };
 const bare: EngineCapabilities = { resume: true, nativeReviewer: false, full: false, edits: false, subagents: false };
@@ -78,5 +79,30 @@ describe("engineCapabilities", () => {
     const found = /^const MAX_CHAT_ROUNDS = (\d+);/m.exec(source);
     expect(found, "MAX_CHAT_ROUNDS moved or was renamed; update server/runtime/capabilities.ts").not.toBeNull();
     expect(engineCapabilities("openai-compat").stepCap).toBe(Number(found![1]));
+  });
+});
+
+// A driver built on createOpenAIChatRuntime sends the thread as transcript
+// messages, so its turn text must not replay it too. The set is read off the
+// driver sources, so a chat driver added later without the transcript flag
+// fails here instead of silently doubling its input tokens.
+describe("replaysTranscriptNatively", () => {
+  const dir = new URL("../drivers/", import.meta.url);
+  const chatKinds = BUILT_IN_DRIVERS.map((driver) => driver.driverKind).filter((kind) => {
+    const file = readdirSync(fileURLToPath(dir)).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+      .find((name) => new RegExp(`(driverKind: |DRIVER_KIND = )"${kind}"`).test(readFileSync(new URL(name, dir), "utf8")));
+    return file !== undefined && readFileSync(new URL(file, dir), "utf8").includes("createOpenAIChatRuntime(");
+  });
+
+  it("finds the chat-completions family", () => {
+    expect(chatKinds.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it("is true for every driver built on createOpenAIChatRuntime, and for no other", () => {
+    for (const kind of BUILT_IN_DRIVERS.map((driver) => driver.driverKind)) {
+      expect(replaysTranscriptNatively(kind), kind).toBe(chatKinds.includes(kind));
+    }
+    expect(replaysTranscriptNatively("someFutureEngine")).toBe(false);
+    expect(replaysTranscriptNatively(undefined)).toBe(false);
   });
 });

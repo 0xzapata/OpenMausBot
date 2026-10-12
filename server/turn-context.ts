@@ -1,7 +1,13 @@
 import type { DriverKind } from "./contracts.ts";
+import { replaysTranscriptNatively } from "./runtime/capabilities.ts";
 
-// All three use createOpenAIChatRuntime and get history via SendTurnInput.transcript.
-export const NATIVELY_REPLAYING_DRIVER_KINDS: readonly DriverKind[] = ["grok", "openai-compat", "minimax"];
+/** Does this driver kind get history through SendTurnInput.transcript? The
+ * answer lives in the engine table (server/runtime/capabilities.ts), where
+ * every createOpenAIChatRuntime driver has its row. A hand-kept list here once
+ * named three of the seven, and the other four got the conversation twice. */
+export function replaysNatively(kind: DriverKind): boolean {
+  return replaysTranscriptNatively(kind);
+}
 
 // Building the text a driver actually receives. Three situations force an
 // inline replay of the active branch: a rewind (the visible branch changed),
