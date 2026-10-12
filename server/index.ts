@@ -5486,6 +5486,29 @@ function runRootTurn(node: HandoffView, bot: BotRecord, signal: AbortSignal, com
   });
 }
 
+/** What the follow-up journal held for each direct thread when this process
+ * started, read once, before the boot recovery below settles its rows (the
+ * runtime may open before or after that recovery). A `dispatched` follow-up
+ * (row still `dispatching`, or `interrupted` by an earlier boot) is that
+ * thread's cut turn, outcome unknown: the recovery gives back the person's
+ * words with a review notice and never hands them to a model again. A
+ * `pending` one is the person's next words, which the drain starts first. */
+let bootFollowups: Map<string, "dispatched" | "pending"> | undefined;
+function followupAtBoot(threadId: string): "dispatched" | "pending" | undefined {
+  if (!bootFollowups) {
+    bootFollowups = new Map();
+    for (const row of chatFollowups("bot")) {
+      if (row.status === "dispatching" || row.status === "interrupted") bootFollowups.set(row.threadId, "dispatched");
+      else if (row.status === "pending" && !bootFollowups.has(row.threadId)) bootFollowups.set(row.threadId, "pending");
+    }
+  }
+  return bootFollowups.get(threadId);
+}
+/** Cut roots the restart policy ended because of a follow-up (outward port
+ * below), with the line their conversation gets instead of the outward one:
+ * none after a dispatched follow-up, whose review notice already says it. */
+const followupEndedRoots = new Map<string, string | undefined>();
+
 // The coordinator runs every hand-off between bots on the job runtime
 // (server/runtime/, docs/runtime-contract.md). Every call site below talks
 // to the seam; the host hooks are what the server does for it: addresses,
@@ -5544,14 +5567,17 @@ const coordinator: Coordinator = createCoordinator({
       // they pressed it, and the transcript already shows the stop.
       if (!parent) {
         parkedSeats.delete(child.id);
-        if (child.outcome === "stopped") return;
+        const followupEnded = followupEndedRoots.has(child.id);
+        const followupLine = followupEndedRoots.get(child.id);
+        followupEndedRoots.delete(child.id);
+        if (child.outcome === "stopped" || (followupEnded && !followupLine)) return;
         const room = child.groupId ? store.group(child.groupId) : undefined;
         if (child.groupId ? !room || !store.groupTaskByThread(room.id, child.threadId) : !store.taskByThread(child.botId, child.threadId)) return;
         // A restart that found an outward action done ends the turn instead
         // of running it again (contract §5): the line says what was done.
         // Its shape is the failed-turn row's, so Retry (the last row's)
         // re-sends the person's request, as after any failed turn.
-        const cause = child.outcome === "interrupted" && child.outcomeDetail ? child.outcomeDetail : child.result;
+        const cause = followupLine ?? (child.outcome === "interrupted" && child.outcomeDetail ? child.outcomeDetail : child.result);
         store.appendMessage(child.threadId, { role: "bot", kind: "activity", tool: failedTurnTool(cause) });
         if (room) store.patchGroup(room.id, { unread: true });
         else store.patchTask(child.botId, child.threadId, { unread: true });
@@ -5781,7 +5807,18 @@ const coordinator: Coordinator = createCoordinator({
     // The restart policy's port (docs/runtime-contract.md §5): what the cut
     // turn of this node already did outward, from the rows its execution
     // left in the thread. Labels mean no rerun: the turn ends with them.
-    outward: node => outwardActions(turnRows(node)),
+    // A person's cut root never reruns after a follow-up in its thread: a
+    // dispatched one was that very turn (a rerun would hand the person's
+    // words to a model again); a pending one starts first and carries the
+    // conversation on, so a rerun after it would redo the older request.
+    outward: node => {
+      const followup = node.parentId || node.groupId ? undefined : followupAtBoot(node.threadId);
+      if (followup) {
+        followupEndedRoots.set(node.id, followup === "pending" ? "turn interrupted — OpenMausBot restarted" : undefined);
+        return [followup === "pending" ? "queued follow-up waiting" : "queued follow-up dispatched"];
+      }
+      return outwardActions(turnRows(node));
+    },
   },
 });
 // "Teammates working": work this conversation handed out and still awaits
@@ -26852,6 +26889,9 @@ setInterval(sweepThreadEventLogsNow, THREAD_LOG_RETENTION_SWEEP_MS).unref();
 // A dispatch claim is deliberately committed before transcript/provider work.
 // If we died after that point, its outcome is unknown: recover the user's words
 // and a review notice, never hand them to a model for a second execution.
+// Before any row below settles: the restart policy reads the journal as
+// this process found it, whenever the runtime opens.
+followupAtBoot("");
 for (const row of chatFollowups()) {
   // The aside lane is gone: a peer's words reach a teammate through the
   // runtime now. A row it left behind is dropped, never run.
