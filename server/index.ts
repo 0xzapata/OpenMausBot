@@ -57,6 +57,7 @@ import {
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode } from "./auto-approve.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
+import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
 import { updateClaudeCli } from "./claude-update.ts";
 import { configuredAccountDirectory, assertSeparateClaudeAccount, claudeAccountInfo, createClaudeAccountSchema, instanceSettingsSchema, newClaudeAccount } from "./claude-accounts.ts";
@@ -8281,7 +8282,8 @@ bus.subscribe((event: RuntimeEvent) => {
       const permission = event.requestType === "permission" && !event.questions?.length;
       // A permission request here is one the provider left for a person: its
       // own mode already ran (Ask, Edits, Auto's reviewer, Custom's config).
-      // Only the person's explicit Full access or exact saved command answers.
+      // Only the person's explicit Full access, exact saved command, or exact
+      // remembered MCP read tool answers.
       // Approve for me allows a web search. The app does not guess whether
       // the action is safe. A QUESTION always reaches the human — even Full
       // access never invents an answer.
@@ -8302,10 +8304,24 @@ bus.subscribe((event: RuntimeEvent) => {
       const command = permission && asker && event.requestId && !event.requiresExplicitApproval && event.command && !guestDriven
         ? commandAllowlistCandidate({ ...event.command, providerInstanceId: event.providerInstanceId ?? asker.modelSelection.instanceId })
         : null;
+      // A person may remember one exact read-shaped tool from one configured
+      // MCP server. Bind it to the provider and current server config: a
+      // provider switch or server edit invalidates the grant rather than
+      // silently transferring it. Built-in tools and unconfigured/spoofed
+      // server names never get a durable key.
+      const providerInstanceId = asker ? event.providerInstanceId ?? asker.modelSelection.instanceId : "";
+      const providerTool = permission && asker && event.requestId && !event.requiresExplicitApproval && !guestDriven
+        ? providerMcpTool(event.tool)
+        : null;
+      const configuredMcp = providerTool && asker ? engineMcpServers(asker)[providerTool.server] : undefined;
+      const toolAllowKey = configuredMcp === undefined
+        ? null
+        : providerToolAllowKey(providerInstanceId, event.tool, configuredMcp);
       const verdict = permission && asker && event.requestId
         ? autoVerdict(effectiveApprovalMode, event.tool, {
           requiresExplicitApproval: event.requiresExplicitApproval,
           commandAllowed: Boolean(command && commandAllowlist.matches(asker.id, command)),
+          toolAllowed: Boolean(toolAllowKey && asker.alwaysAllow?.includes(toolAllowKey)),
         })
         : null;
       // Auto's reviewer is the engine's own. Claude accepts `--permission-mode
@@ -8355,7 +8371,11 @@ bus.subscribe((event: RuntimeEvent) => {
             if (outcome !== "unavailable") pushMessage({
               role: "bot", kind: "activity",
               tool: outcome === "rejected"
-                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist" ? "the saved command permission" : "Full access"}.`, ok: false }
+                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist"
+                  ? "the saved command permission"
+                  : verdict.source === "tool-allowlist"
+                    ? "the saved tool permission"
+                    : "Full access"}.`, ok: false }
                 : failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting."),
             });
             return;
@@ -8375,6 +8395,7 @@ bus.subscribe((event: RuntimeEvent) => {
             summary,
             decision: "auto-approved",
             source: verdict.source,
+            rule: verdict.source === "tool-allowlist" ? toolAllowKey ?? undefined : undefined,
           });
         })().catch(() => {
           // A receipt failure must neither crash the server nor manufacture
@@ -8407,6 +8428,10 @@ bus.subscribe((event: RuntimeEvent) => {
             ? { version: 1, questions, ...(event.origin === "output" ? { origin: "output" as const } : {}) }
             : undefined,
           commandAllowlist: command ?? undefined,
+          // Unlike the provider's session-only allow, this exact MCP read
+          // grant survives restarts and remains visible/revocable under the
+          // bot's Access settings.
+          allowKey: toolAllowKey ?? undefined,
           // Provider-owned session grants remain separate from exact commands.
           // Never on a guest's turn: an "always" for it would outlive it.
           allowSession: permission && event.allowSession && !event.requiresExplicitApproval && !guestDriven ? true : undefined,
