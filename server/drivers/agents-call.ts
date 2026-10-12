@@ -716,7 +716,8 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (!threads.length) return { text: "No threads yet: you have none of your own beyond this one, and you have not opened any on a teammate." };
     const stateWord: Record<string, string> = { running: "running", "waiting-on-you": "waiting on the person", queued: "queued", idle: "idle" };
     const lines = threads.map((thread) => {
-      const where = thread.own === true ? "yours" : `on @${String(thread.botName)}`;
+      const opener = typeof thread.openedBy === "string" && thread.openedBy ? `, opened by @${thread.openedBy}` : "";
+      const where = thread.own === true ? "yours" : `on @${String(thread.botName)}${opener}`;
       const state = stateWord[String(thread.state)] ?? String(thread.state);
       const unread = thread.unread === true ? ", unread for the person" : "";
       const handoff = typeof thread.delegationId === "string" && thread.delegationId ? ` [delegation id: ${thread.delegationId}]` : "";

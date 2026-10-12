@@ -614,6 +614,54 @@ describe("list_threads", () => {
   });
 });
 
+describe("a Chief of Staff tidying its team (MOCA-202)", () => {
+  it("lists and closes threads one teammate opened on another, never a person's thread or for a non-Chief", async () => {
+    const chief = await createBot("Charlie", "gated");
+    const pm = await createBot("Parker", "gated");
+    const qa = await createBot("Quinn", "gated");
+    const rio = await createBot("Rio", "gated");
+    try {
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
+      const theirs = (await api("POST", `/api/bots/${qa.id}/tasks`, { title: "Quinn's own audit" })).body.task.threadId as string;
+      // Parker hands Quinn work, and Quinn's turn is stopped: the handoff
+      // never completes, so nothing auto-closes the thread Parker opened.
+      const child = await coordinated(await heldTurn(pm, "Ask QA to check PR #90."), qa.id, "QA: PR #90");
+      await expect.poll(async () => (await taskOf(qa.id, child.threadId))?.busy, { timeout: 15_000 }).toBe(true);
+      expect((await api("POST", `/api/bots/${qa.id}/interrupt`, { threadId: child.threadId })).status).toBe(200);
+      await expect.poll(() => handoffs().find(node => node.id === child.id)?.status, { timeout: 15_000 })
+        .not.toMatch(/^(queued|running)$/);
+      await expect.poll(async () => (await taskOf(qa.id, child.threadId))?.busy, { timeout: 15_000 }).toBe(false);
+      expect((await taskOf(qa.id, child.threadId)).closedBy).toBeUndefined();
+
+      const close = (threadId: string, headers: Record<string, string>) =>
+        api("POST", `/api/internal/threads/${threadId}/close`, {}, headers);
+      // An ordinary teammate still sees and closes only its own work.
+      const asRio = await mintedToken(rio.id, rio.threadId);
+      const rioRows = (await api("GET", "/api/internal/threads", undefined, asRio)).body.threads as any[];
+      expect(rioRows.map((row) => row.threadId)).not.toContain(child.threadId);
+      expect((await close(child.threadId, asRio)).status).toBe(403);
+
+      const asChief = await heldTurn(chief, "Tidy the team's finished threads.");
+      const rows = (await api("GET", "/api/internal/threads", undefined, asChief)).body.threads as any[];
+      expect(rows.find((row) => row.threadId === child.threadId))
+        .toMatchObject({ botName: "Quinn", openedBy: "Parker", own: false, state: "idle" });
+      expect(rows.map((row) => row.threadId)).not.toContain(theirs);
+      expect((await proxyCall(chief.threadId, "list_threads", {})).content[0].text)
+        .toContain("on @Quinn, opened by @Parker, idle");
+
+      expect((await close(theirs, asChief)).status).toBe(403);
+      const closed = await close(child.threadId, asChief);
+      expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+      expect((await taskOf(qa.id, child.threadId)).closedBy).toMatchObject({ botId: chief.id, name: "Charlie" });
+      expect((await taskOf(qa.id, theirs)).closedBy).toBeUndefined();
+    } finally {
+      release(chief.threadId);
+      release(pm.threadId);
+      await cleanup([chief.id, pm.id, qa.id, rio.id]);
+    }
+  }, 60_000);
+});
+
 describe("close_thread", () => {
   it("closes your own thread, auto-closes completed peer work, and refuses other or running threads", async () => {
     const pm = await createBot("Parker", "gated");

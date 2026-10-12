@@ -15308,6 +15308,14 @@ async function attachmentVmForTurn(capability: InternalCapability): Promise<Loca
   return vm;
 }
 
+/** Whether `from` may list and close a reachable teammate's thread it did not
+ * open itself: only a Chief of Staff, and only a thread another bot opened
+ * (MOCA-202). A thread the person started stays theirs, and a routine run is
+ * reached through its receipt. Reachability is checked by the caller. */
+function chiefTidies(from: Pick<BotRecord, "chiefOfStaff">, task: Pick<TaskRecord, "openedBy" | "routineRunId">): boolean {
+  return from.chiefOfStaff === true && Boolean(task.openedBy) && !task.routineRunId;
+}
+
 function connectorThread(botId: string, threadId: string) {
   const bot = store.bot(botId);
   if (!bot) return null;
@@ -17946,8 +17954,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // list_threads: the caller's own threads, plus — on every peer it can
       // reach — only the threads the caller itself opened. A peer's other
       // threads are its own business (and the person's), so the scope is
-      // "what you started", never "what that bot is doing". State is read
-      // the way the sidebar reads it, so the bot and the person agree.
+      // "what you started", never "what that bot is doing". The one widening
+      // is a Chief of Staff (chiefTidies). State is read the way the sidebar
+      // reads it, so the bot and the person agree.
       if (method === "GET" && path === "/api/internal/threads") {
         const from = internalSender;
         const fromThreadId = internalCapability.threadId;
@@ -17958,6 +17967,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           threadId: string; botId: string; botName: string; title: string;
           state: "running" | "waiting-on-you" | "queued" | "idle" | "closed";
           unread: boolean; openedAt: number; delegationId?: string; own: boolean;
+          /** The opener's name, when it is another bot's thread a Chief may tidy. */
+          openedBy?: string;
         }> = [];
         const stateOf = (bot: BotRecord, task: TaskRecord) => {
           if (task.activity === "waiting-on-you") return "waiting-on-you" as const;
@@ -17981,11 +17992,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         for (const peer of reachablePeers(store.bots, from)) {
           for (const task of store.tasks(peer.id)) {
-            if (task.openedBy?.botId !== from.id || !shown(task.threadId)) continue;
+            const opener = task.openedBy;
+            if (!opener || !shown(task.threadId)) continue;
+            const mine = opener.botId === from.id;
+            if (!mine && !chiefTidies(from, task)) continue;
             rows.push({
               threadId: task.threadId, botId: peer.id, botName: peer.name, title: task.title,
-              state: stateOf(peer, task), unread: task.unread === true, openedAt: task.openedBy.at,
-              delegationId: task.openedBy.delegationId, own: false,
+              state: stateOf(peer, task), unread: task.unread === true, openedAt: opener.at,
+              delegationId: opener.delegationId, own: false,
+              ...(mine ? {} : { openedBy: opener.name }),
             });
           }
         }
@@ -17993,7 +18008,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 200, { threads: rows.slice(0, 100) });
       }
       // close_thread: a bot tidies a thread it opened (or one of its own)
-      // once its result has been read. Closing is the sidebar's idle state
+      // once its result has been read, and a Chief of Staff any thread a bot
+      // opened on its team (chiefTidies). Closing is the sidebar's idle state
       // plus a chip saying who closed it — never a deletion, which stays a
       // person's confirmed action, and never while the thread is running.
       const closeMatch = method === "POST" ? path.match(/^\/api\/internal\/threads\/([\w-]+)\/close$/) : null;
@@ -18007,8 +18023,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const owner = [from, ...reachablePeers(store.bots, from)].find((bot) => store.taskByThread(bot.id, threadId));
         const task = owner ? store.taskByThread(owner.id, threadId) : undefined;
         if (!owner || !task) return json(res, 404, { error: "no such thread — call list_threads for the ones you can see" });
-        if (owner.id !== from.id && task.openedBy?.botId !== from.id) {
-          return json(res, 403, { error: "that thread is not yours to close — only the bot that opened it, or its own bot, can" });
+        if (owner.id !== from.id && task.openedBy?.botId !== from.id && !chiefTidies(from, task)) {
+          return json(res, 403, { error: "that thread is not yours to close — only the bot that opened it, its own bot, or (for a thread a bot opened) a Chief of Staff can" });
         }
         if (threadId === fromThreadId) return json(res, 400, { error: "you cannot close the thread you are speaking in — finish your turn instead" });
         if (threadBusy(owner.id, threadId) || queuedThreadPosition(owner.id, threadId) !== null || coordinator.activeDirect(threadId)) {
