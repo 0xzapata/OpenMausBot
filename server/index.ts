@@ -474,7 +474,8 @@ import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
-import { BrowserRuntime, browserRuntimeEnv } from "./browser-runtime.ts";
+import { BrowserRuntime, attachesToChrome, browserRuntimeEnv } from "./browser-runtime.ts";
+import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { BrowserLive } from "./browser-live.ts";
 import {
   agentBrowserFrame,
@@ -648,6 +649,7 @@ import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
+import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
@@ -3120,7 +3122,7 @@ const usedBrowserSessions = new Map<string, { command: string; env: Record<strin
 async function closeServerBrowsers(): Promise<void> {
   await Promise.all([...usedBrowserSessions].map(async ([session, spec]) => {
     // A Chrome attached over CDP is the person's own; it is not ours to close.
-    if (spec.env.AGENT_BROWSER_CDP) return;
+    if (attachesToChrome(spec.env)) return;
     // Closing saves the session's logins, which come back on its next use.
     const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }), 4_000);
     if (!closed) console.warn(`browser ${session}: could not close its browser at shutdown`);
@@ -3154,6 +3156,32 @@ async function forgetTemporaryBrowser(botId: string): Promise<void> {
   if (closed) await browserRuntime.close(session);
   else console.warn(`temporary browser ${session}: could not close its session; run agent-browser --session ${session} close on this server`);
 }
+/** "My Chrome" (a profile attached to the person's own running Chrome) is
+ * offered where the bots run on that person's computer: the desktop app. A
+ * server or Cloud has no such Chrome, unless its operator names one in
+ * config.json (browserEngine.attachCdpUrl). */
+function myChromeAvailable(): boolean {
+  return DESKTOP_MANAGED || browserEngineAttachCdpUrl(cfg) !== null;
+}
+/** Whether a profile's bots use My Chrome here; elsewhere the profile keeps
+ * the built-in browser. */
+function usesMyChrome(profileId: string | undefined): boolean {
+  return Boolean(profileId) && myChromeAvailable()
+    && cfg.browserProfiles?.some((profile) => profile.id === profileId && profile.browser === "chrome") === true;
+}
+/** The launch settings of one browser session: the bot's turn, the live
+ * view, and the signed-in sites list all address it through this. */
+function browserSessionSpec(binaryPath: string, session: string, profile: string | undefined) {
+  const attachCdpUrl = browserEngineAttachCdpUrl(cfg);
+  return agentBrowserIntegration({
+    binaryPath,
+    session,
+    encryptionKey: browserEngineEncryptionKey(),
+    persistent: profile !== "guest",
+    env: { ...process.env, PATH: augmentedPath() },
+    ...(usesMyChrome(profile) ? { attach: attachCdpUrl ? { cdpUrl: attachCdpUrl } : {} } : {}),
+  });
+}
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
   const status = browserEngineStatus();
   if (status.kind !== "ready") {
@@ -3167,16 +3195,9 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
   const profileTarget = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
   const partitionId = profile === "guest" ? "guest" : (profileTarget?.partitionId ?? "");
   const session = currentBrowserSession(botId, profile);
-  const spec = agentBrowserIntegration({
-      binaryPath: status.binaryPath,
-      session,
-      encryptionKey: browserEngineEncryptionKey(),
-      persistent: profile !== "guest",
-      env: { ...process.env, PATH: augmentedPath() },
-      attachCdpUrl: browserEngineAttachCdpUrl(cfg) ?? undefined,
-    });
+  const spec = browserSessionSpec(status.binaryPath, session, profileTarget?.profileId ?? profile);
   usedBrowserSessions.set(session, spec);
-  await prepareBrowserSessionState(status.binaryPath, session, { env: spec.env, persistent: profile !== "guest", isCurrent: () => {
+  await prepareBrowserSessionState(status.binaryPath, session, { env: spec.env, persistent: profile !== "guest" && !attachesToChrome(spec.env), isCurrent: () => {
     const current = store.bot(botId);
     return !!current && current.browser !== false && builtInBrowserEnabled(cfg)
       && currentBrowserSession(current.id, current.browserProfile) === session
@@ -3233,9 +3254,9 @@ function dataIntegration(botId: string, turn: { threadId: string; generation: st
 
 let browserEngineInstall: Promise<void> | null = null;
 let browserEngineInstallError: string | null = null;
-export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; installing?: boolean; installError?: string } {
+export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; installing?: boolean; installError?: string; myChrome: boolean } {
   const status = browserEngineStatus();
-  const progress = { ...(browserEngineInstall ? { installing: true } : {}), ...(browserEngineInstallError ? { installError: browserEngineInstallError } : {}) };
+  const progress = { myChrome: myChromeAvailable(), ...(browserEngineInstall ? { installing: true } : {}), ...(browserEngineInstallError ? { installError: browserEngineInstallError } : {}) };
   return status.kind === "ready"
     ? { kind: "engine", version: status.version, ...progress }
     : { kind: "unavailable", reason: status.reason, installable: status.installable, ...progress };
@@ -16519,6 +16540,30 @@ ROUTES.push(createBotMemoryRoutes({
   },
 }));
 ROUTES.push(createDeciderRoutes({ decider }));
+ROUTES.push(createBrowserSiteRoutes({
+  target: (which) => {
+    const engine = browserEngineStatus();
+    if (engine.kind !== "ready") return { status: 409, error: engine.reason };
+    let session: string;
+    let profile: string | undefined;
+    if ("profile" in which) {
+      const target = browserProfilePartitionTarget(cfg, which.profile);
+      if (!target) return { status: 404, error: "This browser profile was removed." };
+      session = browserSessionId("", target.partitionId);
+      profile = target.profileId;
+    } else {
+      const bot = store.bot(which.bot);
+      if (!bot) return { status: 404, error: "no such bot" };
+      if (bot.browserProfile === "guest") return { status: 409, error: "A temporary browser saves no sign-ins." };
+      session = currentBrowserSession(bot.id, bot.browserProfile);
+      profile = bot.browserProfile;
+    }
+    if (usesMyChrome(profile)) return { status: 409, error: "This profile uses your own Chrome. Sign in and out of sites there." };
+    return { binaryPath: engine.binaryPath, session, env: browserSessionSpec(engine.binaryPath, session, profile).env, encryptionKey: browserEngineEncryptionKey() };
+  },
+  list: (target) => listSignedInSites(target),
+  signOut: (target, site) => signOutOfSites(target, site),
+}));
 // The usage ledger (JSON and CSV). Admin scope stays in server/request-auth.ts.
 ROUTES.push(createUsageRoutes({
   dataDir: DATA_DIR,
@@ -24850,7 +24895,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       if (patch.browserProfiles !== undefined && body.expectedBrowserProfiles !== undefined) {
-        const current = (cfg.browserProfiles ?? []).map(({ id, name }) => ({ id, name }));
+        const current = (cfg.browserProfiles ?? []).map(({ id, name, browser }) => ({ id, name, ...(browser ? { browser } : {}) }));
         if (JSON.stringify(body.expectedBrowserProfiles) !== JSON.stringify(current)) {
           return json(res, 409, { error: "Browser profiles changed in another window. Review the refreshed list and try again." });
         }
@@ -24861,11 +24906,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         : (cfg.browserProfiles ?? [])
             .map((profile) => profile.id)
             .filter((id) => !patch.browserProfiles!.some((profile) => profile.id === id));
+      // Profiles whose browser changes between built-in and My Chrome: their
+      // open browser closes after the save, so the next turn uses the new one.
+      const browserChoiceChanged = (patch.browserProfiles ?? []).filter((profile) => {
+        const current = cfg.browserProfiles?.find((candidate) => candidate.id === profile.id);
+        return current !== undefined && (current.browser ?? null) !== (profile.browser ?? null);
+      }).map((profile) => profile.id);
       const profileControlConflict = () => removedBrowserProfileIds.some((id) => {
         const target = browserProfilePartitionTarget(cfg, id);
         return target && browserRuntime.heldBy(browserSessionId("", target.partitionId));
       });
       if (profileControlConflict()) return json(res, 409, { error: "Release browser control before deleting its profile." });
+      if (browserChoiceChanged.some((id) => {
+        const target = browserProfilePartitionTarget(cfg, id);
+        return target && browserRuntime.heldBy(browserSessionId("", target.partitionId));
+      })) return json(res, 409, { error: "Release browser control before changing its browser." });
       if (patch.browserProfiles !== undefined) {
         const currentProfiles = new Map((cfg.browserProfiles ?? []).map((profile) => [profile.id, profile]));
         const nextProfiles = patch.browserProfiles.map((profile) => {
@@ -25160,6 +25215,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             error: `stop ${activeReference.name}'s turn before removing its browser profile`,
           });
         }
+        // Built-in and My Chrome are different browsers: a turn keeps the
+        // one it started with, so the switch waits for it.
+        const switching = store.bots.find((bot) => bot.busy && bot.browserProfile && browserChoiceChanged.includes(bot.browserProfile));
+        if (switching) return json(res, 409, { error: `stop ${switching.name}'s turn before changing its browser` });
       }
       // Provider validation above awaits remote services. The transition flag
       // blocks new work, while this second observation catches any operation
@@ -25196,6 +25255,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const next = patch[kind]?.key;
         return next === undefined ? [] : [cfg[kind]?.key, next];
       });
+      const engineForSwitch = browserEngineStatus();
+      const browsersToClose = engineForSwitch.kind === "ready" ? browserChoiceChanged.flatMap((id) => {
+        const target = browserProfilePartitionTarget(cfg, id);
+        if (!target) return [];
+        const session = browserSessionId("", target.partitionId);
+        return [{ session, spec: usedBrowserSessions.get(session) ?? browserSessionSpec(engineForSwitch.binaryPath, session, id) }];
+      }) : [];
       let configWriteCommitted = false;
       // What each engine is launched with before this write (reloadProviders).
       const enginesBefore = engineLaunches(providerConfigs());
@@ -25266,6 +25332,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (disablingBuiltInBrowser) browserLive.closeAll();
       for (const request of browserCleanupRequests) {
         if (request.kind === "profile") browserLive.closeForSession(browserSessionId("", request.partitionId));
+      }
+      for (const { session, spec } of browsersToClose) {
+        browserLive.closeForSession(session);
+        usedBrowserSessions.delete(session);
+        // Closing a built-in browser saves its sign-ins for when it comes
+        // back; closing an attached one only lets go of the person's Chrome.
+        void closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })).then((closed) => {
+          if (!closed) console.warn(`browser ${session}: could not close it after its browser changed; the next turn may still use the old one`);
+        });
       }
       if (patch.browserProfiles !== undefined) {
         const retained = new Set(patch.browserProfiles.map((profile) => profile.id));
