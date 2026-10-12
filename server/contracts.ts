@@ -313,6 +313,11 @@ export interface ProviderAdapter {
      * others keep the queue-one-and-wait behaviour. Same rule as the other
      * flags: never show a control the driver cannot honour. */
     queueing?: boolean;
+    /** True when steer() delivers `images` into the running turn as
+     * structured provider input, the way sendTurn does for a new turn.
+     * Requires queueing and nativeImageInput. Without it, words that carry
+     * attachments wait in the queue for a real turn, as they always did. */
+    steerImages?: boolean;
     /** True only when local MCP calls can reach the human approval channel.
      * Full-auto/bypass provider instances must leave this false. */
     localComputerMcp?: boolean;
@@ -367,8 +372,12 @@ export interface ProviderAdapter {
    * - "indeterminate" — delivered, but the outcome is unknown (the RPC
    *   timed out after accept, transport failed, or the turn settled while
    *   the answer was in flight). The caller must NOT re-queue: the words
-   *   may already be running, and replaying them would execute them twice. */
-  steer?(threadId: ThreadId, text: string): Promise<SteerOutcome>;
+   *   may already be running, and replaying them would execute them twice.
+   *
+   * `images` are admitted attachments (as SendTurnInput.images). Callers pass
+   * them only to drivers with `capabilities.steerImages`; a driver that cannot
+   * read one refuses the whole steer rather than drop the picture. */
+  steer?(threadId: ThreadId, text: string, images?: readonly TurnImageInput[]): Promise<SteerOutcome>;
   hasSession(threadId: ThreadId): boolean;
   stopAll(): Promise<void>;
   onEvent(listener: RuntimeEventListener): () => void;
