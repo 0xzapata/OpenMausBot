@@ -48,6 +48,13 @@
   color: var(--color-ink);
   background: var(--color-raised-hover);
 }
+/* Safari zooms smaller form text on focus. In a standalone phone window that
+   can leave the header under the status bar after the keyboard closes. Keep
+   the native editor and its mention mirror at the same readable touch size. */
+@media (pointer: coarse) {
+  .mention-editor textarea,
+  .mention-editor-mirror { font-size: 16px; }
+}
 @media (forced-colors: active) {
   .mention-editor-mirror { display: none; }
   .mention-editor textarea { color: CanvasText; caret-color: CanvasText; }
@@ -154,6 +161,11 @@
 
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Segoe UI", system-ui, sans-serif;
+
+  /* Add a rounded transition class.
+     For situations where multiple transition-properties need to be set simultaneously,
+     please use transition-[...], for example, transition-[color,background,border-radius] */
+  --transition-property-rounded: border-radius;
 }
 
 /* Tokens that no utility generates — declared outside `@theme` so Tailwind
@@ -673,6 +685,14 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+/* Standalone phone windows can reach behind the notch and home indicator.
+   Keep the app's existing h-full layout inside the usable area. Desktop
+   browsers and Electron report zero insets. */
+#root {
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 
 /* ────────────────────────────────────────────────────────────────────────

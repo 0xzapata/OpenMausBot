@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { CONTROL_WAITED } from "./control-client.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { freePortBlock } from "./testing/ports.ts";
 import { openSse, type SseRecorder } from "./testing/sse.ts";
@@ -307,11 +308,19 @@ describe("a cloud computer starts only when the bot uses it", () => {
 
     // Asleep since: the next turn's first call wakes it, once, without a
     // create, and waits for the wake rather than reading it as contention.
+    // The wake (four looks, ten seconds here) outlasts CONTROL_ACT_WITHIN_MS,
+    // so that call is answered unperformed — an action started that late
+    // could outlive the engine's limit for one call — and the next one acts
+    // at once, on the computer the wake left this turn's.
     rows.find(row => row.name && row.state === "ready")!.state = "archived";
     const next = await startTurn(bot.id, "Look again");
     expect(resumes()).toBe(0);
+    const waited = await computerCall(next, "tools/call", { name: "screenshot", arguments: {} });
+    expect(waited.body.result).toEqual({ isError: true, content: [{ type: "text", text: CONTROL_WAITED }] });
+    expect(resumes()).toBe(1);
     const woken = await computerCall(next, "tools/call", { name: "screenshot", arguments: {} });
     expect(woken.body.result.isError, JSON.stringify(woken.body)).toBeFalsy();
+    expect(woken.body.result.content[0]).toMatchObject({ type: "image", mimeType: "image/jpeg" });
     expect(resumes()).toBe(1);
     expect(creates()).toBe(1);
     expect(starts(bot.id)).toEqual([{ state: "provisioning", place: "cloud" }, { state: "waking", place: "cloud" }]);

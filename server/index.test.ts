@@ -448,6 +448,7 @@ beforeAll(async () => {
   mkdirSync(join(home, ".openmausbot"), { recursive: true });
   mkdirSync(join(staticDir, "assets"), { recursive: true });
   writeFileSync(join(staticDir, "index.html"), "<!doctype html><title>Packaged OpenMausBot</title>");
+  writeFileSync(join(staticDir, "manifest.webmanifest"), '{"name":"Fixture web app","display":"standalone","start_url":"/"}');
   writeFileSync(join(staticDir, "assets", "smoke.css"), "body { color: white; }");
   writeFileSync(
     join(home, ".openmausbot", "config.json"),
@@ -1737,6 +1738,11 @@ describe("harness HTTP API", () => {
     const index = await fetch(`${BASE}/index.html`);
     expect(index.headers.get("cache-control")).toBe("no-cache");
     await index.arrayBuffer();
+
+    const manifest = await fetch(`${BASE}/manifest.webmanifest`, { headers: { host: "workspace.example.test" } });
+    expect(manifest.status).toBe(200);
+    expect(manifest.headers.get("content-type")).toBe("application/manifest+json");
+    expect(await manifest.json()).toMatchObject({ display: "standalone" });
 
     // Content-hashed build output: the browser keeps it instead of
     // downloading the whole bundle again on every load.
@@ -5507,7 +5513,7 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("keeps Full and Custom bots on Codex when the paired model route changes providers", async () => {
+  it("carries a Full bot's access across engines silently, and keeps Custom bots on Codex", async () => {
     const isolatedHome = mkdtempSync(join(tmpdir(), "omb-trusted-mode-model-"));
     const isolatedData = join(isolatedHome, ".openmausbot");
     const isolatedStatic = join(isolatedHome, "static");
@@ -5537,7 +5543,9 @@ describe("harness HTTP API", () => {
       approvalMode,
       autoApprove: false,
     }));
-    writeFileSync(join(isolatedData, "bots.json"), JSON.stringify(trustedBots));
+    // A third Full bot changes engine by itself: its access must ride along.
+    const carrier = { ...trustedBots[0], id: "full-carry", threadId: "full-carry-thread", name: "full carrier", createdAt: 3 };
+    writeFileSync(join(isolatedData, "bots.json"), JSON.stringify([...trustedBots, carrier]));
 
     let isolatedStderr = "";
     const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
@@ -5575,14 +5583,28 @@ describe("harness HTTP API", () => {
       const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
       const targetSelection = { instanceId: claude.instanceId, model: claude.models.default };
 
-      for (const seeded of trustedBots) {
+      // Full carries silently to an engine that runs it (owner, Oct 12): no
+      // reset to Ask, no confirmation, on the bot and its selected thread.
+      const carried = await isolatedApi("PATCH", `/api/bots/${carrier.id}/model`, targetSelection);
+      expect(carried.status, JSON.stringify(carried.body)).toBe(200);
+      const afterCarry = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === carrier.id,
+      );
+      expect(afterCarry).toMatchObject({ approvalMode: "full", modelSelection: targetSelection });
+      const carriedThread = afterCarry.tasks.find((task: { threadId: string }) => task.threadId === carrier.threadId);
+      expect(carriedThread.modelSelection).toEqual(targetSelection);
+      // the thread keeps no level of its own: it runs at the bot's Full
+      expect(carriedThread.approvalMode ?? afterCarry.approvalMode).toBe("full");
+
+      // Custom's rules belong to Codex: it never crosses engines.
+      for (const seeded of trustedBots.filter((candidate) => candidate.approvalMode === "custom")) {
         const rejected = await isolatedApi("PATCH", `/api/bots/${seeded.id}/model`, targetSelection);
         expect(rejected.status, seeded.approvalMode).toBe(400);
         expect(rejected.body.error).toMatch(/requires choosing Ask first/i);
         const scoped = await isolatedApi("PATCH", `/api/bots/${seeded.id}/tasks/${seeded.threadId}`, {
           modelSelection: targetSelection, updateBotDefault: true, approvalMode: "ask",
         });
-        expect(scoped.status, seeded.approvalMode).toBe(seeded.approvalMode === "custom" ? 403 : 400);
+        expect(scoped.status, seeded.approvalMode).toBe(403);
         expect(scoped.body.error).toMatch(/Custom approval|resetApprovalToAsk/i);
         const unchanged = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
           (candidate: { id: string }) => candidate.id === seeded.id,
@@ -5616,10 +5638,10 @@ describe("harness HTTP API", () => {
       expect(switched.status).toBe(200);
       expect(switched.body.bot).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", autoApprove: false });
       expect(switched.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", alwaysAllow: [] });
-      // The sibling follows the bot onto Claude. Its Full access belonged to
-      // Codex, so it goes back to Ask in the same write, never rides along.
+      // The sibling follows the bot onto Claude and keeps its own Full: Full
+      // carries across engines, and the reset was the bot's and this thread's.
       expect(switched.body.bot.tasks.find((task: { threadId: string }) => task.threadId === sibling.threadId))
-        .toMatchObject({ modelSelection: targetSelection, followsBotModel: true, approvalMode: "ask", alwaysAllow: [] });
+        .toMatchObject({ modelSelection: targetSelection, followsBotModel: true, approvalMode: "full" });
       const created = await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "New defaults" });
       expect(created.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask" });
       const refusedCustom = trustedBots.find(candidate => candidate.approvalMode === "custom")!;
@@ -7276,7 +7298,7 @@ describe("harness HTTP API", () => {
     await api("DELETE", `/api/bots/${bot.id}`);
   });
 
-  it("stores safe approval levels and refuses trusted modes over HTTP", async () => {
+  it("stores safe approval levels and Full over HTTP, and keeps Custom on the desktop", async () => {
     const bot = (await api("POST", "/api/bots", {
       modelSelection: { instanceId: "codex", model: "fixture-codex-model" },
     })).body.bot;
@@ -7293,19 +7315,24 @@ describe("harness HTTP API", () => {
       expect(ask.status).toBe(200);
       expect(ask.body.bot).toMatchObject({ approvalMode: "ask", autoApprove: false });
 
-      // Both modes are equivalent to native Codex configuration grants. A
-      // tool can call this loopback route, so even a forged renderer-only
-      // acknowledgement must not cross the trusted desktop boundary.
-      for (const approvalMode of ["full", "custom"]) {
-        for (const body of [
-          { approvalMode },
-          { approvalMode, acknowledgeFullAccess: true },
-        ]) {
-          const rejected = await api("PATCH", `/api/bots/${bot.id}`, body);
-          expect(rejected.status, JSON.stringify(body)).toBe(403);
-          expect(rejected.body.error).toMatch(/desktop app/i);
-        }
+      // Full needs no desktop channel and no consent field (owner decision,
+      // Oct 12): any client that can reach this API turns it on.
+      const full = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" });
+      expect(full.status).toBe(200);
+      expect(full.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask" })).status).toBe(200);
+
+      // Custom still crosses only the desktop's private channel: a tool can
+      // call this loopback route, and even a forged acknowledgement must not
+      // get it past the trusted desktop boundary.
+      for (const body of [{ approvalMode: "custom" }, { approvalMode: "custom", acknowledgeFullAccess: true }]) {
+        const rejected = await api("PATCH", `/api/bots/${bot.id}`, body);
+        expect(rejected.status, JSON.stringify(body)).toBe(403);
+        expect(rejected.body.error).toMatch(/desktop app/i);
       }
+      const thread = await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { approvalMode: "custom" });
+      expect(thread.status).toBe(403);
+      expect(thread.body.error).toMatch(/Custom access requires trusted desktop confirmation/);
 
       const stored = (await api("GET", "/api/bots")).body.bots.find(
         (candidate: { id: string }) => candidate.id === bot.id,
@@ -7316,27 +7343,82 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("requires private desktop consent for Claude Full and rejects Codex-only Custom", async () => {
-    const bot = (await api("POST", "/api/bots", {
-      modelSelection: { instanceId: "claude", model: "fixture-claude-model" },
-    })).body.bot;
+  it("applies Full access over HTTP at once, and the bot's next turns run at Full", async () => {
+    const created: string[] = [];
+    const permissionModeOf = async (botId: string, threadId: string) => {
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "check the level", threadId })).status).toBe(202);
+      // The first turn on a fresh engine waits on its CLI probes.
+      const { argv } = await readJsonFileWhenReady<{ argv: string[] }>(fakeClaudeDump, 15_000);
+      expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId })).status).toBe(200);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: { id: string }) => entry.id === botId)?.tasks
+        .find((task: { threadId: string }) => task.threadId === threadId)?.busy, { timeout: 5_000 }).toBe(false);
+      return argv[argv.indexOf("--permission-mode") + 1];
+    };
+    const threadMode = (bot: { tasks: Array<{ threadId: string; approvalMode?: string }> }, threadId: string) =>
+      bot.tasks.find((task) => task.threadId === threadId)?.approvalMode;
     try {
-      for (const approvalMode of ["full", "custom"]) {
-        const rejected = await api("PATCH", `/api/bots/${bot.id}`, {
-          approvalMode,
-          acknowledgeFullAccess: true,
-        });
-        expect(rejected.status, approvalMode).toBe(approvalMode === "full" ? 403 : 400);
-        expect(rejected.body.error).toMatch(approvalMode === "full" ? /desktop app/i : /does not support/i);
-      }
-      const stored = (await api("GET", "/api/bots")).body.bots.find(
-        (candidate: { id: string }) => candidate.id === bot.id,
-      );
-      expect(stored.approvalMode).toBeUndefined();
+      const bot = (await api("POST", "/api/bots", {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).body.bot;
+      created.push(bot.id);
+      // A conversation that already holds its own Ask level.
+      const older = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Older Ask thread" })).body.task;
+      expect(older.approvalMode).toBe("ask");
+
+      // The bot, and the thread that follows it, run at Full on the next turn.
+      const full = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" });
+      expect(full.status).toBe(200);
+      expect(full.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      // The first conversation holds no level of its own: it follows the bot.
+      expect(threadMode(full.body.bot, bot.threadId) ?? full.body.bot.approvalMode).toBe("full");
+      expect(threadMode(full.body.bot, older.threadId)).toBe("ask");
+      expect(await permissionModeOf(bot.id, bot.threadId)).toBe("bypassPermissions");
+      expect(await permissionModeOf(bot.id, older.threadId)).toBe("default");
+
+      // Bot settings' scope: every existing thread takes Full too.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full", applyToAllThreads: "yes" })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask", applyToAllThreads: true })).status).toBe(400);
+      const everywhere = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full", applyToAllThreads: true });
+      expect(everywhere.status).toBe(200);
+      expect(everywhere.body.bot.tasks.map((task: { approvalMode?: string }) => task.approvalMode)).toEqual(["full", "full"]);
+      expect(await permissionModeOf(bot.id, older.threadId)).toBe("bypassPermissions");
+
+      // One thread from the composer, and Refresh permissions from the sidebar.
+      expect((await api("PATCH", `/api/bots/${bot.id}/tasks/${older.threadId}`, { approvalMode: "ask" })).status).toBe(200);
+      const thread = await api("PATCH", `/api/bots/${bot.id}/tasks/${older.threadId}`, { approvalMode: "full" });
+      expect(thread.status).toBe(200);
+      expect(thread.body.task).toMatchObject({ approvalMode: "full", autoApprove: false });
+      expect((await api("PATCH", `/api/bots/${bot.id}/tasks/${older.threadId}`, { approvalMode: "ask" })).status).toBe(200);
+      const refreshed = await api("PATCH", `/api/bots/${bot.id}/tasks/${older.threadId}`, { refreshPermissions: true });
+      expect(refreshed.status).toBe(200);
+      expect(refreshed.body.task).toMatchObject({ approvalMode: "full" });
+
+      // An engine without a Custom mapping still cannot be set to Custom.
+      const custom = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "custom" });
+      expect(custom.status).toBe(400);
+      expect(custom.body.error).toMatch(/does not support/i);
+
+      // Creation takes Full too, and the new bot's first conversation runs at it.
+      const born = await api("POST", "/api/bots", {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, settings: { approvalMode: "full" },
+      });
+      expect(born.status).toBe(201);
+      created.push(born.body.bot.id);
+      expect(born.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      expect(await permissionModeOf(born.body.bot.id, born.body.bot.threadId)).toBe("bypassPermissions");
+      const customBirth = await api("POST", "/api/bots", {
+        modelSelection: { instanceId: "codex", model: "fixture-codex-model" }, settings: { approvalMode: "custom" },
+      });
+      expect(customBirth.status).toBe(403);
+      expect((await api("POST", "/api/bots", {
+        modelSelection: { instanceId: "ghost", model: "fixture-ghost-model" }, settings: { approvalMode: "full" },
+      })).status).toBe(400);
     } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
+      for (const id of created) await api("DELETE", `/api/bots/${id}`);
     }
-  });
+  }, 60_000);
 
   it("pins provider approval support at the thread settings gate", async () => {
     const codex = (await api("POST", "/api/bots", {

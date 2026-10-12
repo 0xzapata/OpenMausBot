@@ -390,6 +390,10 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     childEnv.OMB_OPENAI_LIVE_URL = liveUrl;
     if (parentEnv.OMB_OPENAI_LIVE_KEY) childEnv.OMB_OPENAI_LIVE_KEY = parentEnv.OMB_OPENAI_LIVE_KEY;
   }
+  // Live calls need Pro (electron/pro-plan.mjs): a recipe that starts calls
+  // says so with OMB_PRO_PLAN=1, the way any server the desktop app did not
+  // start does. Without it the fixture refuses a call with 402 needsPro.
+  if (parentEnv.OMB_PRO_PLAN?.trim() === "1") childEnv.OMB_PRO_PLAN = "1";
   // Voice-note e2e fault injection: arms the one-shot audio-append failure
   // prelude inside the fixture server (see fail-audio-append-once.mjs).
   if (parentEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE) {
@@ -399,6 +403,10 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
   // file in the fixture's home instead of after 15 minutes
   // (approval-clock-hooks.mjs).
   if (parentEnv.OMB_TEST_APPROVAL_CLOCK === "1") childEnv.OMB_TEST_APPROVAL_CLOCK = "1";
+  // Stalled-turn e2e: the stall watchdog's window elapses on a marker file
+  // instead of after 20 minutes of silence (stall-clock-hooks.mjs).
+  if (parentEnv.OMB_TEST_STALL_CLOCK === "1") childEnv.OMB_TEST_STALL_CLOCK = "1";
+  // Runtime coordination e2e: the server runs teammate coordination on the
   // Desktop mode: the server runs as the desktop app runs it, and the owner
   // capability the app would hand it is this one (see desktop-parent.mjs).
   if (parentEnv.OMB_TEST_DESKTOP_OWNER_TOKEN) {
@@ -406,6 +414,21 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     childEnv.OMB_DESKTOP_PARENT = "1";
   }
   return childEnv;
+}
+
+/** The node arguments of a verification server child: the fixture hooks its
+ * environment asks for, then the server. A test that restarts its own
+ * fixture server on the same data starts it with these too. */
+export function verificationServerArgs(childEnv: NodeJS.ProcessEnv): string[] {
+  const hook = (file: string) => ["--import", pathToFileURL(join(ROOT, "server", "testing", file)).href];
+  return [
+    "--experimental-strip-types",
+    ...(childEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE === "1" ? hook("fail-audio-append-once.mjs") : []),
+    ...(childEnv.OMB_TEST_DESKTOP_OWNER_TOKEN ? hook("desktop-parent.mjs") : []),
+    ...(childEnv.OMB_TEST_APPROVAL_CLOCK === "1" ? hook("approval-clock-hooks.mjs") : []),
+    ...(childEnv.OMB_TEST_STALL_CLOCK === "1" ? hook("stall-clock-hooks.mjs") : []),
+    join(ROOT, "server", "index.ts"),
+  ];
 }
 
 /** Start one foreground-owned, fake-engine server with no access to user data. */
@@ -419,9 +442,11 @@ export async function launchVerificationServer(
   enterprise?: { dir: string; licenseKey: string },
   room?: { scripted: boolean },
   /** Optional repository-owned fake providers for multi-engine setup checks. */
-  extraProviders: Array<"codex"> = [],
+  extraProviders: Array<"codex" | "cline"> = [],
   /** Programmatic tests only: an owned loopback Boat provider, never a live account. */
   boatFixtureApi?: string,
+  /** Programmatic web UI qualification against the fixture's static server. */
+  staticDir?: string,
 ): Promise<VerificationServer> {
   if (boatFixtureApi) {
     if (!/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(boatFixtureApi)) {
@@ -454,6 +479,12 @@ export async function launchVerificationServer(
       ...(extraProviders.includes("codex") ? { codex: {
         driver: "codex", displayName: "Verification Codex", config: { cli: fileURLToPath(new URL("../server/testing/fake-codex-app-server.ts", import.meta.url)) },
       } } : {}),
+      ...(extraProviders.includes("cline") ? { cline: {
+        driver: "clineAgent", displayName: "Verification Cline",
+        config: { cli: fileURLToPath(new URL("../server/testing/fake-acp-cli.ts", import.meta.url)) },
+        environment: { CLINE_PROVIDER: "openai-compatible", CLINE_MODEL: "fixture-model", CLINE_API_KEY: "fixture-only",
+          FAKE_ACP_DUMP: join(dataDir, "cline-launch.json") },
+      } } : {}),
       claude: {
         driver: "claudeAgent",
         displayName: "Verification fixture",
@@ -479,18 +510,8 @@ export async function launchVerificationServer(
     AGENT_BROWSER_EXECUTABLE_PATH: browser.executablePath,
   });
   if (boatFixtureApi) childEnv.OMB_BOX_API = boatFixtureApi;
-  const serverArgs = ["--experimental-strip-types"];
-  if (childEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE === "1") {
-    serverArgs.push("--import", pathToFileURL(join(ROOT, "server", "testing", "fail-audio-append-once.mjs")).href);
-  }
-  if (childEnv.OMB_TEST_DESKTOP_OWNER_TOKEN) {
-    serverArgs.push("--import", pathToFileURL(join(ROOT, "server", "testing", "desktop-parent.mjs")).href);
-  }
-  if (childEnv.OMB_TEST_APPROVAL_CLOCK === "1") {
-    serverArgs.push("--import", pathToFileURL(join(ROOT, "server", "testing", "approval-clock-hooks.mjs")).href);
-  }
-  serverArgs.push(join(ROOT, "server", "index.ts"));
-  const child = spawn(process.execPath, serverArgs, {
+  if (staticDir) childEnv.OMB_STATIC_DIR = staticDir;
+  const child = spawn(process.execPath, verificationServerArgs(childEnv), {
     cwd: ROOT,
     env: childEnv,
     stdio: ["ignore", log, log],

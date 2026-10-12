@@ -1,9 +1,10 @@
 // The Team map reads live work through the actual route under the disposable
 // launcher. The only provider is its fake CLI; the teammate waits on a gate.
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 
 it("shows coordinate_bots work on the team map while it runs, with ids only", async () => {
   const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, { scripted: true });
@@ -21,7 +22,7 @@ it("shows coordinate_bots work on the team map while it runs, with ids only", as
       [teammate.id]: { gateFile: gate, reply: "PRIVATE_RESULT_TEXT" },
     }));
     await control(["send", "--bot", sender.id, "--task", sender.activeTaskId, "--text", "Ask the teammate to check the map."]);
-    const nodes = () => JSON.parse(readFileSync(join(fixture.info.dataDir, "room-handoffs.json"), "utf8")) as Array<{ botId: string; status: string; threadId: string }>;
+    const nodes = () => readHandoffs(fixture.info.dataDir);
     await expect.poll(() => { try { return nodes().find(node => node.botId === teammate.id)?.status; } catch { return undefined; } }, { timeout: 15_000 }).toBe("running");
     const workThread = nodes().find(node => node.botId === teammate.id)!.threadId;
 

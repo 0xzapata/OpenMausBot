@@ -93,7 +93,7 @@ describe("Grok cannot run here: an xAI key instead", () => {
     expect(html.match(/<button/g)).toHaveLength(1);
     expect(html).toContain("Add xAI key");
     expect(html).not.toContain(CURL);
-    expect(html).not.toContain("Install Grok");
+    expect(html).not.toContain("Set up Grok");
     expect(html).not.toContain("Terminal");
   });
 
@@ -112,7 +112,7 @@ describe("Grok cannot run here: an xAI key instead", () => {
   it("keeps the install on the desktop, where a terminal can run it", () => {
     const html = render(missing, desktop);
     expect(grokKeyInstead(missing, false)).toBe(false);
-    expect(html).toContain("Install Grok");
+    expect(html).toContain("Set up Grok");
     expect(html).toContain(CURL);
     expect(html).not.toContain("Add xAI key");
   });

@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserRuntime, TransportError, browserRuntimeEnv, formatBrowserTiming, type BrowserSpawnSpec, type BrowserTiming } from "./browser-runtime.ts";
 
@@ -161,6 +164,18 @@ describe("browser takeover gate", () => {
     await expect(value.withAgentAction("s", async () => "recovered")).resolves.toBe("recovered");
   });
 
+  it("skips a preview frame while an agent action runs, so frames cannot queue behind it", async () => {
+    const value = runtime();
+    const busy = deferred();
+    const action = value.withAgentAction("s", () => busy.promise);
+    const capture = vi.fn(async () => "frame");
+    await expect(value.previewFrame("s", capture)).rejects.toThrow(/busy/);
+    expect(capture).not.toHaveBeenCalled();
+    busy.resolve();
+    await action;
+    await expect(value.previewFrame("s", capture)).resolves.toBe("frame");
+  });
+
   it("will not restart active actions or another person's held browser", async () => {
     const value = runtime();
     const nativeClose = vi.fn(async () => {});
@@ -177,6 +192,7 @@ describe("browser takeover gate", () => {
 
 const FAKE_MCP = `
 const lines = require('node:readline').createInterface({input:process.stdin});
+const fs = require('node:fs');
 let initialized = false;
 let rpcTimeoutCalls = 0;
 let pageText = 'Ready';
@@ -184,9 +200,17 @@ lines.on('line', line => {
   const m = JSON.parse(line);
   if (m.method === 'notifications/initialized') { initialized = true; return; }
   let result;
+  if (m.method === 'tools/call' && process.env.CALL_LOG) fs.appendFileSync(process.env.CALL_LOG, m.params.name + '\\n');
   if (m.method === 'initialize') result = { protocolVersion:'2024-11-05',capabilities:{tools:{}} };
   else if (m.method === 'tools/list') result = { tools:[{name:'echo'}],pid:process.pid,initialized };
-  else if (m.params.name === 'hang') return;
+  // BUSY_FILE models agent-browser's one daemon per session, shared by every
+  // MCP process: a hung command keeps it busy, and a read waits behind it.
+  else if (m.params.name === 'hang') { if (process.env.BUSY_FILE) fs.writeFileSync(process.env.BUSY_FILE, 'busy'); return; }
+  else if (m.params.name === 'agent_browser_get_url') {
+    const answer = () => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{content:[{type:'text',text:'http://fixture.test/after'}]}})+'\\n');
+    const wait = () => process.env.BUSY_FILE && fs.existsSync(process.env.BUSY_FILE) ? setTimeout(wait, 20) : answer();
+    return wait();
+  }
   else if (m.params.name === 'crash') process.exit(23);
   else if (m.params.name === 'oversized') { process.stdout.write('x'.repeat(16777217)); return; }
   else if (m.params.name === 'bulky') result = { content:[{type:'text',text:'x'.repeat(50000)},{type:'image',data:'AAAA',mimeType:'image/png'}], structuredContent:{ huge: 'y'.repeat(200000) } };
@@ -206,6 +230,20 @@ lines.on('line', line => {
 });
 `;
 const spec = (): BrowserSpawnSpec => ({ command: process.execPath, args: ["-e", FAKE_MCP], env: { PATH: process.env.PATH } });
+/** A fake engine whose daemon is shared by every MCP process (BUSY_FILE),
+ * with a log of the commands that reached it (CALL_LOG). */
+function daemonSpec(): { spec: BrowserSpawnSpec; busy: string; calls: () => string[]; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "omb-daemon-"));
+  const busy = join(dir, "busy"), log = join(dir, "calls");
+  const value = spec();
+  value.env.BUSY_FILE = busy;
+  value.env.CALL_LOG = log;
+  return {
+    spec: value, busy,
+    calls: () => existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [],
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
 
 describe("server-owned browser MCP runtime", () => {
   it("does not turn a failed navigation or failed observation into success", async () => {
@@ -236,9 +274,10 @@ describe("server-owned browser MCP runtime", () => {
   it("keeps transport uncertainty when post-navigation observation times out", async () => {
     const value = runtime({ requestTimeoutMs: 1_000 }), failing = spec();
     failing.env.HANG_VERIFICATION = "1";
+    // The bot hears about its own call, not the runtime's snapshot.
     await expect(value.agentRpc("hung-snapshot", failing, "tools/call", {
       name: "agent_browser_open", arguments: { url: "https://example.com" },
-    })).rejects.toBeInstanceOf(TransportError);
+    })).resolves.toMatchObject({ isError: true, content: [{ text: expect.stringContaining("did not answer this agent_browser_open call") }] });
     await expect(value.withAgentAction("hung-snapshot", async () => "no")).rejects.toThrow(/Restart/);
   });
   it("does not claim page verification when the snapshot is empty", async () => {
@@ -307,33 +346,63 @@ describe("server-owned browser MCP runtime", () => {
     expect(value.canControl("s", "owner")).toBe(true);
   });
   it("does not assume an MCP timeout stopped an accepted daemon action", async () => {
-    const value = runtime({ requestTimeoutMs: 60 });
-    // Advance only the deliberately hung request's deadline. Real subprocess
-    // startup/stdio remain live, so a loaded runner cannot time out a healthy
-    // recovery echo merely because its 60 ms scheduling window elapsed.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // The real daemon detaches from its MCP parent: transport exit is not
+    // proof that a navigation or submission stopped. Nothing reaches the
+    // engine and nothing is replayed until the engine answers again.
+    const value = runtime({ requestTimeoutMs: 2_000, recoveryCheckMs: 1_500 });
+    const daemon = daemonSpec();
     try {
-      await expect(value.agentRpc("s", spec(), "tools/list", {})).resolves.toMatchObject({ initialized: true });
-      const pending = value.agentRpc("s", spec(), "tools/call", { name: "hang" });
-      const observed = expect(pending).rejects.toThrow(/timed out/);
-      await vi.advanceTimersByTimeAsync(60);
-      await observed;
-      // The real daemon detaches from its MCP parent. Transport exit is not
-      // proof that a navigation or submission stopped; do not replay it.
-      await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" })).resolves.toMatchObject({
-        isError: true,
-        content: [{ type: "text", text: expect.stringMatching(/Browser panel/) }],
-      });
+      await expect(value.agentRpc("s", daemon.spec, "tools/list", {})).resolves.toMatchObject({ initialized: true });
+      const lost = await value.agentRpc("s", daemon.spec, "tools/call", { name: "hang" }) as { isError: boolean; content: Array<{ text: string }> };
+      expect(lost.isError).toBe(true);
+      expect(lost.content[0].text).toContain("did not answer this hang call");
+      expect(lost.content[0].text).toContain("may already have taken effect");
+      expect(value.interrupted("s")).toBe(true);
       await expect(value.take("s", "owner")).rejects.toThrow(/Restart/);
-      await value.restart("s", "owner", async () => {});
-      await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo", arguments: { text: "back" } }))
+      value.release("s", "owner");
+      // Still busy: two calls share one check, and neither runs.
+      const busy = await Promise.all([1, 2].map(() => value.agentRpc("s", daemon.spec, "tools/call", { name: "echo" }))) as Array<{ isError: boolean; content: Array<{ text: string }> }>;
+      for (const result of busy) {
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("still busy with an earlier hang call");
+      }
+      expect(daemon.calls()).toEqual(["hang", "agent_browser_get_url"]);
+      expect(value.interrupted("s")).toBe(true);
+      // The hung command ends: the next call finds the engine answering.
+      rmSync(daemon.busy);
+      const recovered = await value.agentRpc("s", daemon.spec, "tools/call", { name: "echo" }) as { isError?: boolean; content: Array<{ text: string }> };
+      expect(recovered.isError).toBeUndefined();
+      expect(recovered.content[0].text).toContain("has ended, and it may have taken effect");
+      expect(recovered.content[0].text).toContain("This call did not run");
+      expect(recovered.content[0].text).toContain("http://fixture.test/after");
+      expect(value.interrupted("s")).toBe(false);
+      // Never replayed, and the recovering call did not run either.
+      expect(daemon.calls().filter((name) => name !== "agent_browser_get_url")).toEqual(["hang"]);
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "echo", arguments: { text: "back" } }))
         .resolves.toMatchObject({ content: [{ text: expect.stringContaining("back") }] });
       await value.take("s", "owner");
       expect(value.canControl("s", "owner")).toBe(true);
     } finally {
-      // Process-tree cleanup polls real child exits with timers of its own.
-      vi.useRealTimers();
       await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+
+  it("does not let an engine check clear uncertainty a person left behind", async () => {
+    const value = runtime({ recoveryCheckMs: 1_000 });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/list", {});
+      await value.take("s", "owner");
+      value.abandonHumanInput("s", "owner"); // a key may still be held down
+      value.release("s", "owner");
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "echo" }))
+        .resolves.toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/Browser panel/) }] });
+      expect(daemon.calls()).toEqual([]);
+      expect(value.interrupted("s")).toBe(true);
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
     }
   });
 
@@ -398,31 +467,38 @@ describe("server-owned browser MCP runtime", () => {
 
   it("lets the agent restart an interrupted browser itself, then resume", async () => {
     const closeBrowser = vi.fn(async () => true);
-    const value = runtime({ closeBrowser });
-    await value.agentRpc("s", spec(), "tools/list", {});
-    await expect(value.agentRpc("s", spec(), "tools/call", { name: "crash" })).rejects.toThrow();
-    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" })).resolves.toMatchObject({
-      isError: true,
-      content: [{ text: expect.stringMatching(/restart_browser/) }],
-    });
-    // A new turn lists tools without reaching the engine: the engine's tools
-    // from the last list, plus the one way out.
-    const listed = await value.agentRpc("s", spec(), "tools/list", {}) as { tools: Array<{ name: string }> };
-    expect(listed.tools.map((tool) => tool.name)).toEqual(["echo", "restart_browser"]);
-    const check = vi.fn();
-    await expect(value.agentRpc("s", spec(), "tools/call", { name: "restart_browser", arguments: {} }, check))
-      .resolves.toMatchObject({ content: [{ text: expect.stringContaining("Browser restarted") }] });
-    expect(closeBrowser).toHaveBeenCalledWith("s", expect.objectContaining({ command: process.execPath }));
-    expect(check).toHaveBeenCalledTimes(2);
-    expect(value.heldBy("s")).toBeNull();
-    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo", arguments: { text: "back" } }))
-      .resolves.toMatchObject({ content: [{ text: expect.stringContaining("back") }] });
+    const value = runtime({ closeBrowser, recoveryCheckMs: 300 });
+    const daemon = daemonSpec();
+    writeFileSync(daemon.busy, "busy"); // the engine never answers again
+    const spec = () => daemon.spec;
+    try {
+      await value.agentRpc("s", spec(), "tools/list", {});
+      await expect(value.agentRpc("s", spec(), "tools/call", { name: "crash" })).resolves.toMatchObject({ isError: true });
+      await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" })).resolves.toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringMatching(/restart_browser/) }],
+      });
+      // A new turn lists tools without reaching the engine: the engine's tools
+      // from the last list, plus the one way out.
+      const listed = await value.agentRpc("s", spec(), "tools/list", {}) as { tools: Array<{ name: string }> };
+      expect(listed.tools.map((tool) => tool.name)).toEqual(["echo", "restart_browser"]);
+      const check = vi.fn();
+      await expect(value.agentRpc("s", spec(), "tools/call", { name: "restart_browser", arguments: {} }, check))
+        .resolves.toMatchObject({ content: [{ text: expect.stringContaining("Browser restarted") }] });
+      expect(closeBrowser).toHaveBeenCalledWith("s", expect.objectContaining({ command: process.execPath }));
+      expect(check).toHaveBeenCalledTimes(2);
+      expect(value.heldBy("s")).toBeNull();
+      await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo", arguments: { text: "back" } }))
+        .resolves.toMatchObject({ content: [{ text: expect.stringContaining("back") }] });
+    } finally {
+      daemon.cleanup();
+    }
   });
 
   it("stays uncertain without holding the browser when the agent's restart cannot close it", async () => {
     const value = runtime({ closeBrowser: async () => false });
     await value.agentRpc("s", spec(), "tools/list", {});
-    await expect(value.agentRpc("s", spec(), "tools/call", { name: "crash" })).rejects.toThrow();
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "crash" })).resolves.toMatchObject({ isError: true });
     await expect(value.agentRpc("s", spec(), "tools/call", { name: "restart_browser" })).rejects.toThrow(/could not be closed/);
     await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" })).resolves.toMatchObject({
       isError: true,
@@ -478,7 +554,7 @@ describe("server-owned browser MCP runtime", () => {
 
     // A frame still capturing when the bot's call starts is work the call waits behind.
     const frame = deferred<{ png: string }>();
-    const capturing = value.agentFrame("s", () => frame.promise);
+    const capturing = value.previewFrame("s", () => frame.promise);
     const click = value.agentRpc("s", spec(), "tools/call", { name: "agent_browser_click", arguments: { selector: "@e1" } });
     frame.resolve({ png: "AAAA" });
     await Promise.all([capturing, click]);
@@ -514,7 +590,8 @@ describe("server-owned browser MCP runtime", () => {
 
   it.each(["hang", "crash", "oversized"])("fails closed on %s, and can reconnect after explicit close", async (name) => {
     const value = runtime({ requestTimeoutMs: 250 });
-    await expect(value.agentRpc("s", spec(), "tools/call", { name })).rejects.toThrow(/Browser/);
+    await expect(value.agentRpc("s", spec(), "tools/call", { name }))
+      .resolves.toMatchObject({ isError: true, content: [{ text: expect.stringContaining(`did not answer this ${name} call`) }] });
     await expect(value.take("s", "owner")).rejects.toThrow(/may still be running/);
     expect(value.canControl("s", "owner")).toBe(false);
     value.release("s", "owner");
@@ -533,7 +610,7 @@ describe("server-owned browser MCP runtime", () => {
     const value = runtime({ maxPending: 1, requestTimeoutMs: 250 });
     await value.agentRpc("s", spec(), "tools/list", {});
     const pending = value.agentRpc("s", spec(), "tools/call", { name: "hang" });
-    const observed = expect(pending).rejects.toThrow(/timed out/);
+    const observed = expect(pending).resolves.toMatchObject({ isError: true });
     await Promise.resolve();
     await expect(value.agentRpc("s", spec(), "tools/list", {})).rejects.toThrow(/Too many pending/);
     await observed;

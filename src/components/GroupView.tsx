@@ -4,6 +4,7 @@
 // default responder; @mentions override that routing.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { activeLocale, t } from "@/lib/i18n";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pin, Plus, Search, X } from "lucide-react";
 import {
   api,
@@ -43,7 +44,7 @@ import { roomRetryRequest } from "@/lib/room-retry";
 import { botEngine, failedTurnCause } from "@/lib/failed-turn";
 import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 import { Composer } from "./Composer";
-import { ChatErrorBanner } from "./ChatErrorBanner";
+import { ChatErrorBanner, ChatNotice } from "./ChatErrorBanner";
 import { ChatFindBar } from "./ChatFindBar";
 import { ConversationTurnLimit } from "./ConversationTurnLimit";
 import { GroupTaskPicker } from "./TaskPicker";
@@ -360,6 +361,7 @@ export const Transcript = memo(function Transcript({
   onReply: (message: Message) => void;
 }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const showToolCalls = showToolCallsEnabled(state.config);
   const memberOf = (id?: string) => members.find((b) => b.id === id);
   // Several bots working at once turn a room into a wall of chips; fold the
@@ -492,7 +494,7 @@ export const Transcript = memo(function Transcript({
               <RoutineRunCard
                 message={m}
                 onOpen={routineTarget
-                  ? () => openNotificationTarget(dispatch, routineTarget, state)
+                  ? () => openNotificationTarget(dispatch, routineTarget, state, showThreads)
                   : undefined}
               />
             </div>
@@ -1374,6 +1376,7 @@ export function GroupView({ group }: { group: Group }) {
 
       {findOpen && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
       <ChatErrorBanner message={state.error} onDismiss={() => dispatch({ type: "error", message: null })} />
+      <ChatNotice notice={state.notice} />
 
       {/* An Auto room answers like lead mode while the decision model is off: say so, once. */}
       {!setupPending && !group.dm && !remoteClient && state.config && group.defaultResponder.kind === "auto" && !jevRoomRoutingOn(state.config) && (

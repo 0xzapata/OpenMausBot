@@ -1,5 +1,7 @@
 import { Component, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode } from "react";
 import { useAdvancedMode } from "@/lib/interface-mode";
+import { ThreadLinkContext } from "@/components/ThreadLinkMenu";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { useCopyFeedback } from "@/lib/copy-text";
 import {
   AlertTriangle,
@@ -45,6 +47,8 @@ import {
   type InstanceInfo,
   type Message,
   type AppState,
+  awayFromMainThread,
+  openBot,
 } from "@/state/store";
 import { EngineSetup } from "./EngineSetup";
 import { CHATGPT_USAGE_URL } from "./ChatGptPlanStatus";
@@ -67,6 +71,7 @@ import { showToolCallsEnabled, skillAuthoringEnabled } from "@/lib/feature-flags
 import { normalizeState, stateForBot } from "@/lib/mascot";
 import { peerLine, peerRequest, type PeerLine } from "@/lib/peer-message";
 import { showWorkingDots } from "@/lib/turn-tail";
+import { lastNonReceipt } from "@/lib/receipts";
 import { liveActivityPhrases } from "@/lib/live-activity";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { VoiceNoteBubble, type VoiceNoteAttachment } from "./VoiceNoteBubble";
@@ -83,12 +88,13 @@ import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { Composer } from "./Composer";
-import { ChatErrorBanner } from "./ChatErrorBanner";
+import { ChatErrorBanner, ChatNotice } from "./ChatErrorBanner";
 import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
 import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
+import { CallRecordRow } from "./CallRecordRow";
 import { AttachmentGallery, collectMessageFiles, replyAttachmentGroup, splitMessageAttachments } from "./AttachmentGallery";
 import { ScreenFrame } from "./ScreenFrame";
 import { CompactionChip, DigestChip } from "./DigestChip";
@@ -157,6 +163,8 @@ interface ChatRows {
   localVoice: boolean;
   /** Editing, regenerating and switching versions wait for the turn. */
   busy: boolean;
+  /** Older messages remain on the server, beyond the page the thread holds. */
+  hasMore: boolean;
   /** Every bot, for who wrote a relayed line or sits across a bot⇄bot chip. */
   bots: readonly Bot[];
   /** Every other bot, for @mentions. */
@@ -814,6 +822,7 @@ const ActivityChip = memo(function ActivityChip({ message, place = "auto" }: { m
  * the whole store to know whether that thread is still there. */
 function RoutineRunRow({ message, botId }: { message: Message; botId: string }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const executionThreadId = message.routineRun?.executionThreadId;
   const canOpen = executionThreadId && state.bots.some((candidate) =>
     candidate.threadId === executionThreadId || hasRoutineExecutionTask(candidate.tasks, executionThreadId)
@@ -822,7 +831,7 @@ function RoutineRunRow({ message, botId }: { message: Message; botId: string }) 
     <RoutineRunCard
       message={message}
       onOpen={canOpen && executionThreadId
-        ? () => openNotificationTarget(dispatch, { botId, threadId: executionThreadId }, state)
+        ? () => openNotificationTarget(dispatch, { botId, threadId: executionThreadId }, state, showThreads)
         : undefined}
     />
   );
@@ -905,7 +914,7 @@ const MessagesList = memo(function MessagesList({
   onRegenerate: () => void;
   onReply: (message: Message) => void;
 }) {
-  const { botId, threadId, botName, focus, showToolCalls, locale } = useChatRows();
+  const { botId, threadId, botName, busy, hasMore, focus, showToolCalls, locale } = useChatRows();
   // Finished tool chips become compact runs; settled assistant narration
   // becomes one reversible turn row while the terminal answer stays visible.
   // The locale refreshes the turn labels when the language changes.
@@ -1016,6 +1025,9 @@ const MessagesList = memo(function MessagesList({
             }
             case "routine.run":
               return <RoutineRunRow message={m} botId={botId} />;
+            case "call":
+              // a finished Live call's record; its spoken lines stay inline
+              return m.call ? <CallRecordRow message={m} transcript={transcript} botName={botName} busy={busy} hasMore={hasMore} /> : null;
             case "activity": {
               // a Data receipt first: its title is a person's words, never a status or error marker
               if (m.dataResult) return <DataResultChip message={m} />;
@@ -1151,6 +1163,7 @@ function chiefOfStaffBadge(bot: Bot) {
 export function ChatView({ bot: profile }: { bot: Bot }) {
   const bot = useMemo(() => currentTaskBot(profile), [profile]);
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   // Simple mode reaches other threads from the sidebar; the header picker is Advanced only.
   // Without a native title bar (macOS inset lights, frameless Windows) this
@@ -1253,9 +1266,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const branch = useRef(messages);
   branch.current = messages;
   const onBranch = useCallback((messageId: string) => branch.current.some((m) => m.id === messageId), []);
+  const hasMore = Boolean(bot.hasMore);
   const rows = useMemo<ChatRows>(
-    () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch }),
-    [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch],
+    () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch }),
+    [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch],
   );
   // Where this conversation works, for the place icon on screen and page tools.
   const place = effectivePlace(bot, bot.tasks?.find((task) => task.threadId === bot.threadId));
@@ -1286,7 +1300,9 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
   // Mascot while the turn works. Streaming stays invisible — when the reply
   // is finished, the whole bubble pops in above the mascot.
-  const lastMessage = messages.at(-1);
+  // The working line reads the last real message: a finished call's record
+  // (and a turn's receipts) can trail a turn that is still working.
+  const lastMessage = lastNonReceipt(messages);
   const toolInFlight = lastMessage?.kind === "activity" && lastMessage.tool?.ok === undefined;
   const activity = liveActivityPhrases(lastMessage);
   const waiting = Boolean(
@@ -1346,11 +1362,17 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     }
   }, [lastUserMessage, bot.busy, bot.id, bot.threadId, dispatch]);
 
+  const currentLink = profile.tasks?.find((task) => task.threadId === bot.threadId)?.link;
+  const threadLink = useMemo(() => canWrite !== false
+    ? { link: currentLink, assign: (link: string | null) => dispatch({ type: "updateTask", botId: bot.id, threadId: bot.threadId, patch: { link } }) }
+    : null, [canWrite, currentLink, bot.id, bot.threadId, dispatch]);
+
   const routineExecution = state.routineRuns.find((run) => run.target === "bot" && run.botId === bot.id && run.threadId === bot.threadId);
   const resultsThreadId = routineExecution?.resultsThreadId ?? routineExecution?.sourceThreadId;
   const canOpenResults = resultsThreadId && [...state.bots, ...state.groups].some((owner) => owner.threadId === resultsThreadId || owner.tasks?.some((task) => task.threadId === resultsThreadId));
 
   return (
+    <ThreadLinkContext value={threadLink}>
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
       {/* A take-turns call covers the thread while the bot is on the line */}
       <CallOverlay bot={bot} />
@@ -1455,6 +1477,19 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               hears when the bot starts working. */}
           <span role="status" className="sr-only" data-chathead-status>{bot.busy ? t("sidebar.preview.working") : ""}</span>
           {!bot.busy && bot.waitingForTeammates && <span className="truncate text-[12px] text-ink-secondary" role="status">Teammates working</span>}
+          {/* Threads hidden: a side thread is a visit (a notification, a chip
+              or an activity row opened it). One click goes back to the bot's
+              own conversation, so a stray click never strands the person. */}
+          {awayFromMainThread(profile, showThreads) && (
+            <button
+              type="button"
+              data-chathead-back
+              onClick={() => openBot(dispatch, profile, false)}
+              className="shrink-0 whitespace-nowrap rounded-full bg-raised px-2.5 py-0.5 text-[12px] font-medium text-ink-secondary hover:bg-raised-hover hover:text-ink"
+            >
+              {t("chat.backToMainThread")}
+            </button>
+          )}
         </div>
         <div
           data-chathead-controls
@@ -1479,7 +1514,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           )}
           {!remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
           {/* below md the sidebar (and its Live call pill) is hidden */}
-          <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state)} />
+          <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state, showThreads)} />
           <button
             data-tour="computer"
             onClick={() => dispatch({ type: "toggleComputer" })}
@@ -1501,19 +1536,13 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       <BotActivityPicker bot={bot} />
       {routineExecution && <div className="mx-5 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[11.5px] text-ink-secondary">
         <span className="min-w-0 flex-1 truncate">{t("routines.executionDetails", { name: routineExecution.routineName })}</span>
-        {canOpenResults && resultsThreadId && <button type="button" onClick={() => openNotificationTarget(dispatch, { botId: bot.id, threadId: resultsThreadId }, state)} className="rounded px-2 py-1 text-accent hover:bg-raised">{t("routines.results.back")}</button>}
+        {canOpenResults && resultsThreadId && <button type="button" onClick={() => openNotificationTarget(dispatch, { botId: bot.id, threadId: resultsThreadId }, state, showThreads)} className="rounded px-2 py-1 text-accent hover:bg-raised">{t("routines.results.back")}</button>}
         <button type="button" onClick={() => dispatch({ type: "showRoutines", section: "logs", routineId: routineExecution.routineId, botId: bot.id })} className="rounded px-2 py-1 hover:bg-raised hover:text-ink">{t("routines.logs")}</button>
       </div>}
       {findOpen && <ChatFindBar threadId={bot.threadId} onClose={() => setFindOpen(false)} />}
 
       <ChatErrorBanner message={state.error} onDismiss={() => dispatch({ type: "error", message: null })} />
-      {state.notice && (
-        <div className="w-full px-5">
-          <div role="status" className="mb-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[13px] text-ink-secondary">
-            {state.notice.botName ? t("thread.goneShowing", { name: state.notice.botName }) : t("thread.gone")}
-          </div>
-        </div>
-      )}
+      <ChatNotice notice={state.notice} />
 
       {/* Pinned message banner */}
       <PinnedBanner
@@ -1692,6 +1721,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       </GlassScrollFrame>
 
     </main>
+    </ThreadLinkContext>
   );
 }
 

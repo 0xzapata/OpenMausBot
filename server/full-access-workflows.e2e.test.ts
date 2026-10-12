@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 
 it("applies requested Full Access workflows through MCP without duplicate approvals, while exact Ask tasks still wait", async () => {
   const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, { scripted: true });
@@ -194,7 +195,9 @@ it("applies requested Full Access workflows through MCP without duplicate approv
     await run(chief, chief.activeTaskId, "Have Ada independently verify the fixture reporting instructions and return the result.", [
       step("coordinate_bots", { bot_ids: [peer.id], request_key: "verify-monthly", message: "Verify the fixture reporting instructions and state your result." }),
     ], { guarded: "full", resumeReply: "Ada verified the fixture reporting instructions; requested work is complete." });
-    const handoffs = JSON.parse(readFileSync(join(dataDir, "room-handoffs.json"), "utf8"));
+    // The coordinated turns as the runtime records them (DATA_DIR/runtime.db).
+    const handoffs = readHandoffs(dataDir);
+    expect(handoffs.length).toBeGreaterThan(0);
     expect(handoffs.every((node: any) => node.status === "completed")).toBe(true);
     expect(providerTurns().filter(turn => turn.botId === peer.id)).toHaveLength(1);
     // A Full-access Chief's delegation runs Full: Ada's own level is Ask,
@@ -260,9 +263,10 @@ it("applies requested Full Access workflows through MCP without duplicate approv
     // and no execution owner survives a restart. Completed requests survive.
     const interrupted = (await api("POST", `/api/bots/${chief.id}/tasks`, { title: "Restart while awaiting teammate" }, 201)).task;
     const gate = join(dataDir, "restart-peer.gate");
+    const peerWorking = join(dataDir, "restart-peer.ready");
     plans[chief.id].turns.push({ steps: [step("coordinate_bots", { bot_ids: [peer.id], request_key: "restart-proof", message: "Wait at the isolated fixture gate." })],
       reply: "Assigned the restart check" }, { reply: "Reviewed the resumed check" });
-    plans[peer.id].turns.push({ gateFile: gate, reply: "The gated check finished" });
+    plans[peer.id].turns.push({ gateFile: gate, readyFile: peerWorking, reply: "The gated check finished" });
     writeFileSync(planPath, JSON.stringify(plans));
     const pendingInput = { threadId: interrupted.threadId, text: "Coordinate the gated restart check.", sendId: randomUUID(), expectedActiveLeafId: null, expectedApprovalMode: "full" };
     const pendingReceipt = await api("POST", `/api/bots/${chief.id}/messages/guarded`, pendingInput, 202);
@@ -274,6 +278,10 @@ it("applies requested Full Access workflows through MCP without duplicate approv
     const beforeSnapshot = await api("GET", pendingRoute);
     expect(beforeSnapshot.messages[0]).toMatchObject({ id: pendingReceipt.message.id, requestPending: true });
     expect(beforeSnapshot.executionId).toEqual(expect.any(String));
+    // Ada's turn is running in its engine. Ada's request can still be queued
+    // when the Chief's turn ends, and a restart then cuts nothing: it simply
+    // runs once afterwards, with nothing to say about a restart.
+    await expect.poll(() => existsSync(peerWorking), { timeout: 25_000 }).toBe(true);
     await waitForExit(restarted, { signal: "SIGTERM" });
     const beforeRestart = providerTurns().length;
     await restart();

@@ -215,7 +215,7 @@ describe("shared sentences", () => {
   it("mentionPrompt names every tagged bot with its id, and is empty for none", () => {
     expect(mentionPrompt([])).toBe("");
     expect(mentionPrompt([{ id: "a1", name: "Ana" }, { id: "b2", name: "Bo" }])).toBe(
-      " The user tagged @Ana (bot_id a1) and @Bo (bot_id b2) in their message. If they assigned independent work, use delegate_bot and finish your turn without waiting; use ask_bot only if their short reply is required in this answer.",
+      " The user tagged @Ana (bot_id a1) and @Bo (bot_id b2) in their message. If they assigned independent work, use coordinate_bots and finish your turn without waiting; for a question, use coordinate_bots with consult: true — the answer resumes you.",
     );
   });
 

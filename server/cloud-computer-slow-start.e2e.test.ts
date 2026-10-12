@@ -157,7 +157,7 @@ describe("a slow cloud computer start", () => {
         OMB_BOX_API: `${relayBase}/own-key-must-not-be-used`,
         OMB_CLOUD_BOAT_URL: `${relayBase}/relay/api/box/v1`,
         OMB_CLOUD_BOAT_TOKEN: INCLUDED,
-        OMB_CLOUD_COMPUTER_START_WAIT_MS: String(CALL_WAIT_MS),
+        OMB_COMPUTER_CALL_WAIT_MS: String(CALL_WAIT_MS),
         OMB_CLOUD_COMPUTER_START_BUDGET_MS: String(START_BUDGET_MS),
       },
       stdio: ["ignore", "pipe", "pipe"],

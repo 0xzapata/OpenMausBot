@@ -35,6 +35,7 @@ import { TRANSCRIPT_WINDOW_SIZE } from "../lib/transcript-window";
 import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
 import { githubRefFromProps, remarkGithubRefs } from "@/lib/github-refs";
 import { GITHUB_REF_ICONS, LinkHoverCard } from "@/components/LinkHoverCard";
+import { useThreadLinkMenu } from "@/components/ThreadLinkMenu";
 import { looksLikeThreadRefUrl, parseThreadRefUrl, resolveThreadRefAddress, remarkThreadRefs } from "../lib/thread-refs";
 import { MarkdownImagePreview, MessageFolderFiles, OutsideWorkspaceFile, saveFailureText, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
 import { ThreadLink, ThreadRefsContext, threadLinkFromProps, type ThreadRefsValue } from "./ThreadRefs";
@@ -1039,6 +1040,7 @@ function MarkdownLink({ href, children, ...rest }: { href?: string; children?: R
   // SAFETY: react-markdown hands hast data-* attributes through as string props
   const props = rest as Record<string, unknown>;
   const { threads, currentBotId, message, delivered } = useContext(MessageScopeContext);
+  const linkMenu = useThreadLinkMenu(href);
   // a canonical thread link is a chip whatever text carries it;
   // a dead one keeps its label as plain text rather than handing
   // the app's own scheme to the shell
@@ -1062,7 +1064,7 @@ function MarkdownLink({ href, children, ...rest }: { href?: string; children?: R
   const Icon = github ? GITHUB_REF_ICONS[github.kind] : null;
   return (
     <LinkHoverCard href={href} github={github}>
-      {(anchor) => Icon ? (
+      {(hoverAnchor) => { const anchor = linkMenu.onContextMenu ? { ...hoverAnchor, onContextMenu: linkMenu.onContextMenu } : hoverAnchor; return <>{linkMenu.menu}{Icon ? (
         // a GitHub reference reads as a small pill. Left to right and
         // isolated, so "#2547" never turns into "2547#" in a right-to-left
         // line. The full address is the tooltip.
@@ -1074,7 +1076,7 @@ function MarkdownLink({ href, children, ...rest }: { href?: string; children?: R
         <a {...anchor} href={href} target="_blank" rel="noreferrer" dir="auto" className={LINK_CLASS}>
           {children}
         </a>
-      )}
+      )}</>; }}
     </LinkHoverCard>
   );
 }
