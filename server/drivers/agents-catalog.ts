@@ -193,7 +193,7 @@ const ROUTINE_FIELDS_SCHEMA = {
   },
   run_on_startup: {
     type: "boolean",
-    description: "Repeating routines only: also run once each time OpenMausBot starts, as well as on the schedule. For a computer that is often off when the routine is due. Defaults to false; set false in an update to stop it.",
+    description: "Repeating routines only: also run once each time OpenMausBot starts, besides the schedule, for a computer often off when it is due. Defaults to false.",
   },
 } as const;
 
