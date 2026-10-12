@@ -19,8 +19,8 @@ it("names earlier tool calls in a rebuilt session only when switched on", async 
     ...process.env,
     // every turn runs a failing command and a read before it replies
     FAKE_CLAUDE_TOOL_CALLS: JSON.stringify([
-      { name: "Bash", input: { command: "pnpm test" }, output: "RESULT_BODY 3 failed", ok: false },
-      { name: "Read", input: { file_path: "/fixture/INPUT_PREVIEW.md" }, output: "RESULT_BODY notes", ok: true },
+      { name: "Bash", input: { command: "pnpm test", description: "INPUT_PREVIEW_ONLY" }, output: "RESULT_BODY 3 failed", ok: false },
+      { name: "Read", input: { file_path: "/fixture/notes.md", limit: 40 }, output: "RESULT_BODY notes", ok: true },
     ]),
   }, undefined, undefined, undefined, undefined, undefined, ["codex"]);
   const evidence: unknown[] = [{ fixture: fixture.info }];
@@ -59,6 +59,9 @@ it("names earlier tool calls in a rebuilt session only when switched on", async 
     await send("FIRST_REQUEST run the tests");
     const calls = (await messages()).filter(message => message.tool?.itemId);
     expect(calls.map(message => [message.tool?.name, message.tool?.ok])).toEqual([["Bash", false], ["Read", true]]);
+    // the Read's chip shows no file: the path is only in the stored input preview
+    expect(calls[1]!.tool).toMatchObject({ name: "Read", input: expect.stringContaining('"file_path": "/fixture/notes.md"') });
+    expect(calls[1]!.tool?.summary).toBeUndefined();
 
     // A turn that resumes its session is sent the message, and no replay.
     expect(await send("SECOND_REQUEST anything else?")).toBe("SECOND_REQUEST anything else?");
@@ -72,13 +75,14 @@ it("names earlier tool calls in a rebuilt session only when switched on", async 
     await request("/api/config", { method: "PATCH", body: JSON.stringify({ context: { replayToolHistory: true } }) }, fixture.info.url);
 
     // On: the same replay, plus one line per earlier call, between the
-    // request it followed and the reply it led to.
+    // request it followed and the reply it led to: the command that ran,
+    // and the file that was read.
     const on = await rewind("SECOND_REQUEST, edited again");
-    expect(toolLines(on)).toEqual(["Assistant: [ran: Bash: pnpm test — failed]", "Assistant: [ran: Read — ok]"]);
-    expect(on).toMatch(/User: FIRST_REQUEST run the tests\nAssistant: \[ran: Bash: pnpm test — failed\]\nAssistant: \[ran: Read — ok\]\nAssistant: (?!\[)/);
-    // no tool result, and nothing of the input preview behind the chip
+    expect(toolLines(on)).toEqual(["Assistant: [ran: Bash: pnpm test — failed]", "Assistant: [ran: Read: /fixture/notes.md — ok]"]);
+    expect(on).toMatch(/User: FIRST_REQUEST run the tests\nAssistant: \[ran: Bash: pnpm test — failed\]\nAssistant: \[ran: Read: \/fixture\/notes\.md — ok\]\nAssistant: (?!\[)/);
+    // no tool result, and of the input preview behind the chip only its target
     expect(on).not.toContain("RESULT_BODY");
-    expect(on).not.toContain("INPUT_PREVIEW");
+    expect(on).not.toContain("INPUT_PREVIEW_ONLY");
     // and nothing else moved: without those lines it is the replay sent while off
     expect(on.split("\n").filter(line => !line.startsWith("Assistant: [ran: ")).join("\n"))
       .toBe(off.replace("SECOND_REQUEST, edited", "SECOND_REQUEST, edited again"));

@@ -11,6 +11,7 @@ import {
   type ReplayToolCall,
 } from "./context-rebuild.ts";
 import type { Message } from "./store.ts";
+import { toolDetailPreview } from "./tool-summary.ts";
 
 const entries = (texts: string[]): ReplayEntry[] => texts.map((text, i) => ({ id: String(i), role: i % 2 ? "assistant" : "user", text }));
 const size = (result: ReturnType<typeof selectReplay>) => result.transcript.reduce((n, entry) => n + Buffer.byteLength(entry.text) + 16, 0);
@@ -131,7 +132,7 @@ describe("tool history in a rebuilt session", () => {
       expect(toolReplayLine({ name: "Bash", summary: "echo a\n  echo b\tc", ok: true })).toBe("[ran: Bash: echo a echo b c — ok]");
     });
 
-    it("carries no tool result or input body", () => {
+    it("carries no tool result, and nothing of the input preview but its target", () => {
       expect(toolReplayLine({
         name: "Bash", summary: "cat notes.txt", ok: true,
         input: '{\n  "command": "cat notes.txt",\n  "description": "INPUT_PREVIEW"\n}', output: "RESULT_BODY",
@@ -168,6 +169,117 @@ describe("tool history in a rebuilt session", () => {
       const line = toolReplayLine({ name: "𠮷".repeat(300), ok: true });
       expect([...line]).toHaveLength(TOOL_LINE_MAX_CHARS);
       expect(Buffer.from(line, "utf8").toString("utf8")).toBe(line);
+    });
+
+    // A Read's chip shows no path: what it read is only in the input preview
+    // behind the chip. Without it the line says a tool ran, not on what.
+    describe("what the call acted on, from its input preview", () => {
+      // as every driver builds `tool.input`: the arguments, redacted, as indented JSON
+      const preview = (input: unknown) => toolDetailPreview(input)!;
+      const line = (name: string, input: unknown, tool: Partial<NonNullable<Message["tool"]>> = {}) =>
+        toolReplayLine({ name, ok: true, input: preview(input), ...tool });
+
+      it("names the file a Claude-style Read acted on", () => {
+        expect(line("Read", { file_path: "/repo/server/config.ts", offset: 10, limit: 40 })).toBe("[ran: Read: /repo/server/config.ts — ok]");
+      });
+
+      it("names the search pattern, the query, the URL or the command where that is the target", () => {
+        expect(line("Grep", { pattern: "replayToolHistory", path: "/repo/server", output_mode: "content" })).toBe("[ran: Grep: replayToolHistory — ok]");
+        expect(line("Glob", { path: "/repo", pattern: "**/*.test.ts" })).toBe("[ran: Glob: **/*.test.ts — ok]");
+        expect(line("read", { path: "server/index.ts" })).toBe("[ran: read: server/index.ts — ok]");
+        expect(line("NotebookEdit", { notebook_path: "/repo/a.ipynb", new_source: "SOURCE_BODY" })).toBe("[ran: NotebookEdit: /repo/a.ipynb — ok]");
+        expect(line("WebSearch", { query: "vitest fake timers" })).toBe("[ran: WebSearch: vitest fake timers — ok]");
+        expect(line("WebFetch", { url: "https://example.test/docs", prompt: "PROMPT_BODY" })).toBe("[ran: WebFetch: https://example.test/docs — ok]");
+        // an API model's tool call has no command beside its chip, only this
+        expect(line("computer_exec", { command: "ls -la" }, { ok: false })).toBe("[ran: computer_exec: ls -la — failed]");
+      });
+
+      it("still yields the bare line for a row with no preview, or a preview that names no target", () => {
+        expect(toolReplayLine({ name: "Read", ok: true })).toBe("[ran: Read — ok]");
+        expect(toolReplayLine({ name: "Read", ok: true, input: "" })).toBe("[ran: Read — ok]");
+        expect(toolReplayLine({ name: "Read", ok: true, input: "not a preview: \"file_path\": \"/x\"" })).toBe("[ran: Read — ok]");
+        expect(line("TodoWrite", { todos: [{ content: "TODO_BODY", path: "/nested/not-a-target" }] })).toBe("[ran: TodoWrite — ok]");
+        expect(line("Agent", { description: "DESCRIPTION_BODY", prompt: "PROMPT_BODY" })).toBe("[ran: Agent — ok]");
+        expect(line("edit", [{ path: "/repo/a.ts", diff: "DIFF_BODY" }])).toBe("[ran: edit — ok]");
+        expect(line("Read", { file_path: 42, path: "   " })).toBe("[ran: Read — ok]");
+      });
+
+      it("shows a command once: the one beside the chip, or the title that already is it", () => {
+        expect(line("Bash", { command: "pnpm test", description: "DESCRIPTION_BODY" }, { summary: "pnpm test", ok: false }))
+          .toBe("[ran: Bash: pnpm test — failed]");
+        // Codex: the title is the command
+        expect(line("git status --short", { command: "git status --short", cwd: "/repo" }, { summary: "git status --short" }))
+          .toBe("[ran: git status --short — ok]");
+        // ACP: the title is the command, cut at 80 characters
+        const command = `pnpm exec vitest run ${"server/some-long-test-name.test.ts ".repeat(4)}`.trim();
+        expect(line(command.slice(0, 80), { command }, { summary: command })).toBe(`[ran: ${command.slice(0, 80)} — ok]`);
+        // ACP: a title that already names the file
+        expect(line("Read /repo/a.ts", { path: "/repo/a.ts" })).toBe("[ran: Read /repo/a.ts — ok]");
+      });
+
+      it("adds the target to a title that does not have it", () => {
+        // ACP: a spoken title, the file only in the arguments
+        expect(line("Read file", { path: "/repo/a.ts" })).toBe("[ran: Read file: /repo/a.ts — ok]");
+      });
+
+      it("masks a secret-shaped value, whether or not the preview was redacted before it was stored", () => {
+        const key = `sk-ant-${"a".repeat(32)}`;
+        // as drivers store it: already redacted
+        const fetched = line("WebFetch", { url: `https://api.example.test/v1/models?api_key=${key}` });
+        expect(fetched).not.toContain(key);
+        expect(fetched).toMatch(/^\[ran: WebFetch: https:\/\/api\.example\.test\/v1\/models\?api_key=«redacted \d+ chars» — ok\]$/);
+        // a preview that reached the store unredacted is redacted here
+        for (const unredacted of [
+          { name: "Read", input: { file_path: `/repo/${key}.txt` } },
+          { name: "Grep", input: { pattern: "password=hunter2hunter2" } },
+          { name: "WebFetch", input: { url: "https://deploy:hunter2hunter2@example.test/hook" } },
+          { name: "computer_exec", input: { command: `curl -H "Authorization: Bearer ${key}" https://api.example.test` } },
+        ]) {
+          const raw = JSON.stringify(unredacted.input, null, 2);
+          expect(raw).toMatch(/hunter2hunter2|sk-ant-a/);
+          const shown = toolReplayLine({ name: unredacted.name, ok: true, input: raw });
+          expect(shown).not.toMatch(/hunter2hunter2|sk-ant-a/);
+          expect(shown).toContain("«redacted");
+        }
+      });
+
+      it("carries nothing else of the preview, and never the result", () => {
+        expect(line("Write", { file_path: "/repo/notes.md", content: "CONTENT_BODY" }, { output: "RESULT_BODY" })).toBe("[ran: Write: /repo/notes.md — ok]");
+        expect(line("Edit", { file_path: "/repo/notes.md", old_string: "OLD_BODY", new_string: "NEW_BODY" }, { output: "RESULT_BODY" }))
+          .toBe("[ran: Edit: /repo/notes.md — ok]");
+        // a secret under its own key is masked by name in the preview, and is not a target anyway
+        expect(line("deploy", { path: "/repo", token: "hunter2" })).toBe("[ran: deploy: /repo — ok]");
+      });
+
+      it("still names the file when the preview was shortened", () => {
+        const input = preview({ file_path: "/repo/big.ts", content: "x".repeat(20_000) });
+        expect(input).toContain("preview shortened");
+        expect(() => JSON.parse(input) as unknown).toThrow();
+        expect(toolReplayLine({ name: "Write", ok: true, input })).toBe("[ran: Write: /repo/big.ts — ok]");
+        // a target the cut ran through is no target
+        const cut = preview({ content: "x".repeat(5_950), file_path: `/repo/${"deep/".repeat(40)}cut.ts` });
+        expect(cut).toContain('"file_path": "/repo/deep/');
+        expect(toolReplayLine({ name: "Write", ok: true, input: cut })).toBe("[ran: Write — ok]");
+      });
+
+      it("clips to the length a title is clipped to: a path keeps its end, anything else its start", () => {
+        for (const ok of [true, false, undefined]) {
+          const read = line("Read", { file_path: `/repo/${"deep/".repeat(40)}context-rebuild.ts` }, { ok });
+          expect([...read]).toHaveLength(TOOL_LINE_MAX_CHARS);
+          expect(read).toMatch(/^\[ran: Read: …[a-z/]*deep\/context-rebuild\.ts — (ok|failed|no result recorded)\]$/);
+          const grep = line("Grep", { pattern: "p".repeat(300) }, { ok });
+          expect([...grep]).toHaveLength(TOOL_LINE_MAX_CHARS);
+          expect(grep).toMatch(/^\[ran: Grep: p+… — (ok|failed|no result recorded)\]$/);
+        }
+        // redacted first: cut first, the end that is kept would be the back
+        // half of this key, with nothing left to recognise it by
+        const keyed = toolReplayLine({ name: "Read", ok: true, input: JSON.stringify({ file_path: `/repo/sk-ant-${"a".repeat(200)}` }, null, 2) });
+        expect(keyed).toBe("[ran: Read: /repo/«redacted 207 chars» — ok]");
+      });
+
+      it("stays on one line", () => {
+        expect(line("Grep", { pattern: "first\n  second\tthird" })).toBe("[ran: Grep: first second third — ok]");
+      });
     });
   });
 

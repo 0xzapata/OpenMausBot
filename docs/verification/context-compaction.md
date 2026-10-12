@@ -70,30 +70,34 @@ rewind, a session the provider lost, a compaction) is sent what was said. With
 `context.replayToolHistory: true` in config.json, or `OMB_REPLAY_TOOL_HISTORY=1`
 in the server's environment (`0` forces it off), that replay also names each
 earlier tool call on one line, between the two messages it ran between, as
-`[ran: Bash: pnpm test — failed]`. It is off by default, and off the replay is
-byte-for-byte what it was.
+`[ran: Bash: pnpm test — failed]` or `[ran: Read: server/config.ts — ok]`. It is
+off by default, and off the replay is byte-for-byte what it was.
 
 ```sh
 pnpm exec vitest run server/replay-tool-history.e2e.test.ts
 pnpm exec vitest run server/context-rebuild.test.ts server/turn-context.test.ts server/config.test.ts
 ```
 
-The fixture's engine makes two tool calls a turn. The test rewinds with
-`control-omb edit` and reads the prompt the engine received: no such line while
-the setting is off, both lines in order once it is on, and the plain message for
-every turn that resumes its session. It then switches the bot to the fixture's
-Codex and reads what that engine was sent: the lines for each of Claude's turns.
-Its evidence is `<server-log>.replay-tools.json`.
+The fixture's engine runs a command and reads a file each turn. The test rewinds
+with `control-omb edit` and reads the prompt the engine received: no such line
+while the setting is off, both lines in order once it is on (the command, and
+the file read), and the plain message for every turn that resumes its session.
+It then switches the bot to the fixture's Codex and reads what that engine was
+sent: the lines for each of Claude's turns. Its evidence is
+`<server-log>.replay-tools.json`.
 
-A line shows what the call's chip shows in the chat (the tool, and the command
-beside it) and `ok`, `failed` or `no result recorded`; never a tool result or
-the input preview. It is redacted, then clipped to 120 characters. At most 20
-lines are sent, the most recent, only for calls between the first and last
-replayed message, and only from the bytes of `rebuildBytes` that messages left
-unused: the messages selected are the same with the setting on or off. Engines
-that replay natively (API models sent the transcript itself) and room turns are
-unchanged. A file tool whose chip shows no path (Claude Code's `Read` and
-`Edit`, Pi's `read`, Codex's `edit`) is named without one.
+A line shows the tool, what it acted on and `ok`, `failed` or `no result
+recorded`. What it acted on is the command beside the chip in the chat, or, for
+a call whose chip shows none (a `Read`, a search), one argument from the input
+preview behind the chip: the command, file, search pattern, query or URL. Never
+a tool result, and nothing else of the preview (a `Write`'s content, an `Edit`'s
+old and new text). It is redacted, then clipped to 120 characters; a long path
+keeps its end. At most 20 lines are sent, the most recent, only for calls
+between the first and last replayed message, and only from the bytes of
+`rebuildBytes` that messages left unused: the messages selected are the same
+with the setting on or off. Engines that replay natively (API models sent the
+transcript itself) and room turns are unchanged. A call is still named without a
+target when its preview holds none of those as a top-level argument.
 
 ## Bounds and limitations
 

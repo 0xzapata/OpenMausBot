@@ -48,24 +48,68 @@ export function replayToolHistoryEnabled(
   return settings?.replayToolHistory === true;
 }
 
-/** One tool call on one line: what its chip shows in the chat, and how it
- * ended. The chip's own rule decides what is shown (src/components/
+/** The argument that names what a call acted on, most telling first: a
+ * search's pattern says more than the folder it searched. */
+const TARGET_KEYS = ["command", "file_path", "notebook_path", "pattern", "query", "url", "path"] as const;
+const PATH_KEYS: ReadonlySet<string> = new Set(["file_path", "notebook_path", "path"]);
+/** A target argument on its own line of the preview. Drivers build
+ * `tool.input` with toolDetailPreview (server/tool-summary.ts): the call's
+ * arguments as JSON indented by two, so exactly two spaces mark a top-level
+ * argument, and a quote inside a value is always escaped. Read by line
+ * rather than parsed, because a long preview is cut off mid-document (a
+ * Write's content) while the line naming the file is still whole. */
+const TARGET_LINE = new RegExp(`^ {2}"(${TARGET_KEYS.join("|")})": ("(?:[^"\\\\]|\\\\.)*"),?$`, "gm");
+
+/** What a call acted on, read from its input preview: the file, the search
+ * pattern, the command. Only a target argument's own value; never the rest
+ * of the preview (a Write's content, an Edit's old and new text). Undefined
+ * when the preview names none, or is not arguments at all. */
+function inputTarget(preview: string | undefined): { key: string; value: string } | undefined {
+  if (!preview) return undefined;
+  const found = new Map<string, string>();
+  for (const [, key, literal] of preview.matchAll(TARGET_LINE)) {
+    if (found.has(key!)) continue;
+    try { found.set(key!, String(JSON.parse(literal!))); } catch { /* not a complete value: no target */ }
+  }
+  const key = TARGET_KEYS.find((candidate) => found.get(candidate)?.trim());
+  return key ? { key, value: found.get(key)! } : undefined;
+}
+
+/** One tool call on one line: the tool, what it acted on, and how it ended.
+ * The chip's own rule decides what is shown of the chip (src/components/
  * ToolActivity.tsx): the title, and the command beside it unless the title
- * already is the command (Codex, ACP). Never the call's result or its input
- * preview. Stored titles are redacted already; this redacts again, because
- * the line leaves for another provider, and BEFORE it clips: a key cut in
- * half is no longer a shape redaction knows. A call with no recorded result
- * (its turn was stopped mid-call) says so rather than claim it worked. */
+ * already is the command (Codex, ACP). A call whose chip shows no target (a
+ * Read, a search) gets it from the input preview behind the chip, unless
+ * its title already carries it. Never the call's result, and of the preview
+ * only that one value. Titles are redacted when stored and previews when
+ * built; this redacts again, because the line leaves for another provider,
+ * and BEFORE it clips: a key cut in half is no longer a shape redaction
+ * knows. A call with no recorded result (its turn was stopped mid-call)
+ * says so rather than claim it worked. */
 export function toolReplayLine(tool: NonNullable<Message["tool"]>): string {
   const oneLine = (text: string) => redactSecretsInText(text.replace(/\s+/g, " ").trim());
+  // by character, not UTF-16 unit: a cut must not leave half of one behind
+  const clip = (text: string, room: number, keepEnd = false) => {
+    const characters = [...text];
+    if (characters.length <= room) return text;
+    return keepEnd ? `…${characters.slice(1 - room).join("")}` : `${characters.slice(0, room - 1).join("")}…`;
+  };
   const name = oneLine(tool.name) || "tool";
   const summary = tool.summary ? oneLine(tool.summary) : "";
-  const shown = summary && summary !== name && !nameIsCommand(name) ? `${name}: ${summary}` : name;
+  const target = inputTarget(tool.input);
+  const targeted = target ? oneLine(target.value) : "";
+  // A title that is the command (ACP's is the command's first 80
+  // characters), or a phrase naming the file, already has the target.
+  const titled = nameIsCommand(name) && (name.includes(targeted) || targeted.startsWith(name));
+  const detail = summary && summary !== name && !nameIsCommand(name) ? { text: summary, path: false }
+    : targeted && !titled ? { text: targeted, path: PATH_KEYS.has(target!.key) }
+      : undefined;
   const tail = ` — ${tool.ok === true ? "ok" : tool.ok === false ? "failed" : "no result recorded"}]`;
   const room = TOOL_LINE_MAX_CHARS - "[ran: ".length - tail.length;
-  // by character, not UTF-16 unit: a cut must not leave half of one behind
-  const characters = [...shown];
-  return `[ran: ${characters.length > room ? `${characters.slice(0, room - 1).join("")}…` : shown}${tail}`;
+  // What is left for the detail after "name: ". A path is cut at its start:
+  // its end is the file. A title too long to leave any is shown alone.
+  const left = detail ? room - [...name].length - 2 : 0;
+  return `[ran: ${left > 1 ? `${name}: ${clip(detail!.text, left, detail!.path)}` : clip(name, room)}${tail}`;
 }
 
 /** Every tool call on the active branch (`messages`, oldest first), each
