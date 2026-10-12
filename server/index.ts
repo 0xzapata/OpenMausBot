@@ -3673,6 +3673,13 @@ function checkedModelSelection(
   return { ok: true, selection };
 }
 
+/** Whether moving onto `to` must first drop `mode` to Ask: the shared rule
+ * (modelSwitchNeedsAsk), so every route agrees. Full carries to any engine
+ * that runs it; Custom never crosses engines. */
+function engineSwitchNeedsAsk(mode: ApprovalMode, from: ModelSelection, to: ModelSelection): boolean {
+  return modelSwitchNeedsAsk(mode, registry.cliTarget(from.instanceId)?.driverKind, registry.cliTarget(to.instanceId)?.driverKind);
+}
+
 function checkedTaskModelSwitch(current: BotRecord, raw: unknown, updateBotDefault: boolean,
   resetApprovalToAsk: boolean, requireAvailableModel = false, trusted = false) {
   if (current.approvalGrant) return { ok: false as const, status: 409, error: "Wait for the approval change to finish before switching models" };
@@ -22402,8 +22409,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if ([existing, selected].some((owner) => {
         const mode = approvalModeFor(owner);
         return (mode === "full" || mode === "custom") &&
-          (!supportsApprovalMode(checked.selection, mode) ||
-            registry.cliTarget(checked.selection.instanceId)?.driverKind !== registry.cliTarget(owner.modelSelection.instanceId)?.driverKind);
+          (!supportsApprovalMode(checked.selection, mode) || engineSwitchNeedsAsk(mode, owner.modelSelection, checked.selection));
       })) {
         return json(res, 400, {
           error: "Changing providers with elevated permissions requires choosing Ask first",
@@ -22783,8 +22789,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (normalizedSelection && selectedTask) {
         const mode = approvalModeFor(selectedTask);
         if ((mode === "full" || mode === "custom") &&
-          (!supportsApprovalMode(normalizedSelection, mode) ||
-            registry.cliTarget(normalizedSelection.instanceId)?.driverKind !== registry.cliTarget(selectedTask.modelSelection.instanceId)?.driverKind)) {
+          (!supportsApprovalMode(normalizedSelection, mode) || engineSwitchNeedsAsk(mode, selectedTask.modelSelection, normalizedSelection))) {
           return json(res, 400, { error: "Choose Ask for the selected thread before changing providers with elevated permissions" });
         }
       }
@@ -22792,7 +22797,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         (requestedApprovalMode === "full" || requestedApprovalMode === "custom") &&
         (body.approvalMode !== undefined || normalizedSelection !== undefined) &&
         (!targetSelection || !supportsApprovalMode(targetSelection, requestedApprovalMode) ||
-          (existingBot && normalizedSelection && registry.cliTarget(normalizedSelection.instanceId)?.driverKind !== registry.cliTarget(existingBot.modelSelection.instanceId)?.driverKind))
+          (existingBot && normalizedSelection && engineSwitchNeedsAsk(requestedApprovalMode, existingBot.modelSelection, normalizedSelection)))
       ) {
         return json(res, 400, {
           error: "This provider does not support the selected approval level, or changing providers requires choosing Ask first",

@@ -94,6 +94,15 @@ session runs Manual, the chat shows one notice per session naming the model.
 Choose a model the reviewer supports, Auto-accept edits, or Full access to
 stop the prompts.
 
+### Changing a bot's engine
+
+A bot at **Full access** keeps it when you switch it to another engine that
+can run Full access: no reset to Ask and no confirmation. The bot's threads
+that follow its model keep their level too. **Custom** rules belong to Codex,
+so a Custom bot goes back to Ask before it changes engine. Switching to an
+engine that cannot run the bot's level (for example Auto-accept edits on
+Codex) still asks to choose Ask first.
+
 ### Antigravity: Ask, Edits, or Auto (full access)
 
 For Antigravity, the composer and bot settings offer **Ask for approval**,
