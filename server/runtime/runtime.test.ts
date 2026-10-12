@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { checkInvariants } from "./invariants.ts";
 import { Runtime, type BeginRequest } from "./runtime.ts";
 import { openRuntimeStore, type RuntimeStore } from "./store.ts";
-import { CUT_TWICE } from "./tree.ts";
+import { CUT_TWICE, INTERRUPTED_OUTWARD, loopStop, nextGuard, outwardDetail } from "./tree.ts";
 import type { Assignment, Clock, EnqueueRequest, Limits, RunInput, RunResult, TurnRunner } from "./types.ts";
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -79,8 +79,9 @@ const toBot = (botId: string, parentId: string, brief = `Build it, ${botId}`, pa
 });
 
 interface World { store: RuntimeStore; runner: Fake; clock: FakeClock; runtime: Runtime; logs: string[]; limits: Partial<Limits> }
-function world(script?: Script, limits: Partial<Limits> = {}, store = openRuntimeStore(":memory:")): World {
+function world(script?: Script, limits: Partial<Limits> = {}, store = openRuntimeStore(":memory:"), ports: Pick<TurnRunner, "outward"> = {}): World {
   const runner = fakeRunner(script);
+  if (ports.outward) runner.outward = ports.outward;
   const clock = fakeClock();
   const logs: string[] = [];
   const runtime = new Runtime(store, runner, { clock, limits, log: line => logs.push(line) });
@@ -893,5 +894,97 @@ describe("Runtime: a root's later executions (every turn a root)", () => {
     expect(w.store.get("parked")).toMatchObject({ status: "needs_input", cards: ["msg-1", "msg-2"] });
     expect(w.runtime.prune(w.clock.t)).toBe(0);
     invariants(w);
+  });
+});
+
+describe("Runtime: a cut turn that already acted outward (contract §5)", () => {
+  it("open() asks the host once per cut node, ends one that acted outward failed(interrupted) with what it did, and the requester's note names it", async () => {
+    const store = openRuntimeStore(":memory:");
+    const first = world(() => "hold", {}, store);
+    const root = first.runtime.begin(beginReq());
+    const sender = ok(first.runtime.enqueue(toBot("sender", root.id)));
+    const quiet = ok(first.runtime.enqueue(toBot("quiet", root.id)));
+    first.runtime.tick();
+    expect(first.runner.runs).toHaveLength(2);
+    first.runtime.end(root.id, { ok: true, text: "handed out" });
+    first.runtime.close();
+
+    const asked: string[] = [];
+    const second = world(undefined, {}, store, { outward: a => { asked.push(a.assignee.botId); return a.assignee.botId === "sender" ? ["GMAIL_SEND_EMAIL"] : []; } });
+    expect(asked.sort()).toEqual(["quiet", "sender"]);
+    expect(store.get(sender.id)).toMatchObject({ status: "failed", outcome: "interrupted", restarts: 0, executions: 1,
+      outcomeDetail: `${INTERRUPTED_OUTWARD} sent an email (GMAIL_SEND_EMAIL); not resumed, so nothing is done twice.` });
+    expect(store.get(sender.id)?.restart).toBeUndefined();
+    expect(store.events(sender.id).map(e => e.kind)).toEqual(["enqueued", "admitted", "started", "restart_reconciled", "settled", "reported", "woken"]);
+    expect(store.events(sender.id).find(e => e.kind === "restart_reconciled")?.detail).toBe("failed: outward action done");
+    expect(store.get(quiet.id)).toMatchObject({ status: "queued", restart: "rerun", restarts: 1 });
+    expect(second.runner.reports.map(r => [r.a.id, r.parent?.id])).toEqual([[sender.id, root.id]]);
+    expect(store.get(root.id)).toMatchObject({ status: "waiting", restart: "teammates" });
+    invariants(second);
+
+    second.runtime.tick(); await flush();
+    expect(store.get(quiet.id)).toMatchObject({ status: "completed", restarts: 1 });
+    second.runtime.tick();
+    const resume = second.runner.runs.find(r => r.a.id === root.id)!;
+    expect(resume.input.turn).toBe("resume");
+    expect(resume.input.settled?.map(s => [s.id, s.outcome])).toEqual([[sender.id, "interrupted"], [quiet.id, "done"]]);
+    expect(resume.input.restartNote).toBe("A restart cut these teammates' turns: sender (cut after an outward action, not resumed: see its result); quiet (resumed once in place and told to check what it had already done). Check their results as usual.\n");
+    await flush();
+    expect(store.get(root.id)?.status).toBe("completed");
+    invariants(second);
+    store.close();
+  });
+
+  it("a root cut during its own turn that acted outward ends alone, reported into its own conversation, and is never run", async () => {
+    const store = openRuntimeStore(":memory:");
+    const first = world(undefined, {}, store);
+    const root = first.runtime.begin(beginReq());
+    first.runtime.close();
+    const second = world(undefined, {}, store, { outward: () => ["git push"] });
+    expect(store.get(root.id)).toMatchObject({ status: "failed", outcome: "interrupted", restarts: 0, executions: 1, result: `${INTERRUPTED_OUTWARD} pushed (git push); not resumed, so nothing is done twice.` });
+    expect(second.runner.reports).toEqual([{ a: expect.objectContaining({ id: root.id, outcome: "interrupted" }) }]);
+    expect(store.inbox({ threadId: "chief-chat" })).toEqual([]);
+    second.runtime.tick(); await flush();
+    expect(second.runner.runs).toEqual([]);
+    invariants(second);
+    store.close();
+  });
+});
+
+describe("tree.ts: the outward wording and the loop guard", () => {
+  it("outwardDetail dedupes, trims and clips the labels, names at most four as verb phrases, and keeps the exact prefix and close", () => {
+    expect(outwardDetail(["git push", "git push", "  GMAIL_SEND_EMAIL  "]))
+      .toBe("Interrupted by an OpenMausBot restart after it already pushed (git push), sent an email (GMAIL_SEND_EMAIL); not resumed, so nothing is done twice.");
+    expect(outwardDetail(["git commit", "STRIPE_CREATE_REFUND", "SLACK_SEND_MESSAGE", "TWITTER_CREATION_OF_A_POST", "COMPOSIO_PROXY_EXECUTE", "x"]))
+      .toBe(`${INTERRUPTED_OUTWARD} committed (git commit), made a payment (STRIPE_CREATE_REFUND), sent a message (SLACK_SEND_MESSAGE), posted (TWITTER_CREATION_OF_A_POST) and 2 more; not resumed, so nothing is done twice.`);
+    expect(outwardDetail(["COMPOSIO_PROXY_EXECUTE"])).toContain("completed an outward action (COMPOSIO_PROXY_EXECUTE)");
+    const long = outwardDetail([`git push ${"origin/".repeat(20)}`, "", "   "]);
+    expect(long).toMatch(/^Interrupted by an OpenMausBot restart after it already pushed \(git push [^)]{0,40}\); not resumed, so nothing is done twice\.$/);
+    expect(long.length).toBeLessThan(200);
+    expect(outwardDetail(["a\nb\tc"])).toContain("(a b c)");
+  });
+
+  it("nextGuard counts consecutive no-progress continuations, resets on progress, leaves unknown evidence alone, and keeps the last three errors clipped", () => {
+    expect(nextGuard(undefined, undefined)).toEqual({ stale: 0, errors: [] });
+    expect(nextGuard(undefined, { okToolCalls: 0 })).toEqual({ stale: 1, errors: [] });
+    expect(nextGuard({ stale: 1, errors: [] }, { okToolCalls: 0 })).toEqual({ stale: 2, errors: [] });
+    expect(nextGuard({ stale: 1, errors: ["E"] }, { okToolCalls: 2 })).toEqual({ stale: 0, errors: ["E"] });
+    expect(nextGuard({ stale: 1, errors: ["E"] }, { commands: 3 })).toEqual({ stale: 1, errors: ["E"] });
+    expect(nextGuard({ stale: 1, errors: ["E"] }, undefined)).toEqual({ stale: 1, errors: ["E"] });
+    expect(nextGuard({ stale: 0, errors: ["A", "B"] }, { errors: ["C", "D"] })).toEqual({ stale: 0, errors: ["B", "C", "D"] });
+    expect(nextGuard(undefined, { errors: ["", "  ", " E "] })).toEqual({ stale: 0, errors: ["E"] });
+    expect(nextGuard(undefined, { errors: ["x".repeat(300)] }).errors[0]).toHaveLength(200);
+  });
+
+  it("loopStop stops on two stale continuations or three identical errors, with the reason for the event and the detail for the outcome", () => {
+    expect(loopStop({ stale: 0, errors: [] }, "x")).toBeUndefined();
+    expect(loopStop({ stale: 1, errors: ["E", "E"] }, "x")).toBeUndefined();
+    expect(loopStop({ stale: 0, errors: ["E", "F", "E"] }, "x")).toBeUndefined();
+    expect(loopStop({ stale: 2, errors: [] }, ` still going ${"y".repeat(400)}`))
+      .toEqual({ reason: "2 continuations without a successful tool call", detail: `Stopped after 2 continuations without progress: ${`still going ${"y".repeat(400)}`.slice(0, 300)}` });
+    expect(loopStop({ stale: 3, errors: [] }, "x")?.detail).toBe("Stopped after 3 continuations without progress: x");
+    expect(loopStop({ stale: 0, errors: ["E", "E", "E"] }, "x")).toEqual({ reason: "the same error 3 times", detail: "Stopped after 3 identical errors: E" });
+    // the stale rule is read first when both hold
+    expect(loopStop({ stale: 2, errors: ["E", "E", "E"] }, "x")?.reason).toBe("2 continuations without a successful tool call");
   });
 });

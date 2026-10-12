@@ -211,3 +211,23 @@ describe("runtime store: a root's cards and continuation", () => {
     expect(() => store.get("bad-count")).toThrow(/does not match the record schema/);
   });
 });
+
+describe("runtime store: evidence fields and the loop guard", () => {
+  it("round-trips okToolCalls, errors and outward on the evidence, and the guard record, and refuses the wrong shapes", () => {
+    const store = open();
+    const evidence = { commands: 1, toolCalls: 4, okToolCalls: 3, errors: ["ENOENT config.json"], outward: ["GMAIL_SEND_EMAIL", "git push"] };
+    const seen = assignment("seen", { status: "queued", evidence, guard: { stale: 1, errors: ["ENOENT config.json"] },
+      continuation: { note: "Cap.", count: 1 } });
+    store.insert(seen, { kind: "enqueued", at: 1_000 });
+    expect(store.get("seen")?.evidence).toEqual(evidence);
+    expect(store.get("seen")?.guard).toEqual({ stale: 1, errors: ["ENOENT config.json"] });
+    const plain = assignment("plain", { evidence: { toolCalls: 1 } });
+    store.insert(plain, { kind: "enqueued", at: 2_000 });
+    expect("guard" in store.get("plain")!).toBe(false);
+    for (const absent of ["okToolCalls", "errors", "outward"]) expect(absent in store.get("plain")!.evidence!).toBe(false);
+    store.insert(assignment("bad-guard", { guard: { stale: -1, errors: [] } }), { kind: "enqueued", at: 3_000 });
+    expect(() => store.get("bad-guard")).toThrow(/does not match the record schema/);
+    store.insert(assignment("bad-outward", { evidence: { outward: "git push" as unknown as string[] } }), { kind: "enqueued", at: 4_000 });
+    expect(() => store.get("bad-outward")).toThrow(/does not match the record schema/);
+  });
+});

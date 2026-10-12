@@ -14,7 +14,7 @@ import { Runtime, type BeginRequest } from "./runtime.ts";
 import { openRuntimeStore, type RuntimeStore } from "./store.ts";
 import { FakeClock } from "./testing/fake-clock.ts";
 import { complete, continueTurn, custom, fail, FakeRunner, handOut, hang, needsInput, type ChildSpec } from "./testing/fake-runner.ts";
-import { CUT_TWICE } from "./tree.ts";
+import { CUT_TWICE, INTERRUPTED_OUTWARD } from "./tree.ts";
 import {
   terminal,
   type Assignment,
@@ -51,10 +51,10 @@ interface World {
 
 const worlds: World[] = [];
 
-function world(limits: Partial<Limits> = {}): World {
+function world(limits: Partial<Limits> = {}, ports: { outward?: boolean } = {}): World {
   const store = openRuntimeStore(":memory:");
   const clock = new FakeClock();
-  const runner = new FakeRunner(BOTS);
+  const runner = new FakeRunner(BOTS, ports);
   const logs: string[] = [];
   const rt = new Runtime(store, runner, { clock, limits, log: (line) => logs.push(line) });
   runner.attach(rt);
@@ -1850,6 +1850,342 @@ describe("§2/§5 every turn a root", () => {
     expect(() => w.rt.end(child.id, { ok: true, text: "" })).not.toThrow();
     expect(get(w, child.id).status).toBe("running");
     expect(w.logs.filter((line) => /not a running root/.test(line))).toHaveLength(4);
+    invariants(w);
+  });
+});
+
+// ── §5 outward / §2 loop guard ─────────────────────────────────────────
+// Reruns everywhere except where a rerun could repeat something outward,
+// and long work continues until it stops making progress. The host says
+// what a cut turn already did (TurnRunner.outward) and what each continued
+// execution showed (TurnEvidence); the runtime decides from that alone.
+
+describe("§5 outward / §2 loop guard", () => {
+  const NO_PROGRESS = { okToolCalls: 0, toolCalls: 2 };
+  const PROGRESS = { okToolCalls: 3, toolCalls: 3 };
+  const SAME_ERROR = "ENOENT: no such file or directory, open 'config.json'";
+
+  it("R-S8 a cut turn whose outward list is empty reruns once in place, as before: the port is asked once per cut node", async () => {
+    const w = world();
+    const root = beginChief(w);
+    const child = ok(enqueueFrom(w, root, workFor("dev", "Build")));
+    w.runner.script("dev", hang(), complete("built"));
+    w.runner.script("chief", complete("reviewed"));
+    w.rt.end(root.id, { ok: true, text: "" });
+    await drain(w);
+    expect(get(w, child.id).status).toBe("running");
+    w.runner.setOutward(child.id, []);
+
+    reopen(w);
+    expect(w.runner.callsOf("outward").map((c) => [c.id, c.answer])).toEqual([[child.id, []]]);
+    expect(get(w, child.id)).toMatchObject({ status: "queued", restart: "rerun", restarts: 1 });
+    expect(get(w, root.id)).toMatchObject({ status: "waiting", restart: "teammates" });
+    invariants(w);
+    await drain(w);
+    const runs = w.runner.runs(child.id);
+    expect(runs).toHaveLength(2);
+    expect(runs[1].input!.turn).toBe("rerun");
+    expect(runs[1].input!.restartNote).toMatch(/^OpenMausBot restarted while your previous turn here was running/);
+    expect(get(w, child.id)).toMatchObject({ status: "completed", result: "built", restarts: 1 });
+    expect(w.runner.runs(root.id)[0].input!.restartNote).toContain("Dev (resumed once in place and told to check what it had already done)");
+    expect(get(w, root.id).status).toBe("completed");
+    invariants(w);
+  });
+
+  it("R-S9 a cut turn that already acted outward is not rerun: failed(interrupted) with what it did, reported; a root into its own conversation, a child to its requester with the restart note", async () => {
+    // a root cut during its own turn, after it had sent an email and pushed
+    const w = world();
+    const root = beginChief(w);
+    w.runner.setOutward(root.id, ["GMAIL_SEND_EMAIL", "git push"]);
+    reopen(w);
+    const ended = get(w, root.id);
+    expect(ended).toMatchObject({ status: "failed", outcome: "interrupted", restarts: 0, executions: 1 });
+    expect(ended.restart).toBeUndefined();
+    expect(ended.outcomeDetail).toBe(`${INTERRUPTED_OUTWARD} sent an email (GMAIL_SEND_EMAIL), pushed (git push); not resumed, so nothing is done twice.`);
+    expect(ended.outcomeDetail!.startsWith("Interrupted by an OpenMausBot restart after it already")).toBe(true);
+    expect(ended.result).toBe(ended.outcomeDetail);
+    expect(kinds(w, root.id)).toEqual(["enqueued", "started", "restart_reconciled", "settled", "reported"]);
+    expect(w.store.events(root.id).map((e) => e.detail)).toEqual(["queued: root", "running: turn 1 (host), level auto", "failed: outward action done",
+      `failed: interrupted — ${ended.outcomeDetail}`, "reported"]);
+    expect(w.runner.callsOf("outward").map((c) => c.id)).toEqual([root.id]);
+    // the host's root report hook shows the interrupted line; nobody is woken
+    expect(w.runner.reports(root.id)).toHaveLength(1);
+    expect(w.runner.reports(root.id)[0].parent).toBeUndefined();
+    expect(w.runner.reports(root.id)[0].a!.outcomeDetail).toBe(ended.outcomeDetail);
+    expect(w.store.inbox(chiefOwner, false)).toEqual([]);
+    invariants(w);
+    await drain(w);
+    expect(w.runner.runs(root.id)).toHaveLength(0);
+    expect(get(w, root.id).status).toBe("failed");
+    invariants(w);
+
+    // a child cut mid-turn after it posted: its requester hears it like any failed child, and its restart note names it
+    const v = world();
+    const vroot = beginChief(v);
+    const child = ok(enqueueFrom(v, vroot, workFor("dev", "Announce the release")));
+    v.runner.script("dev", hang(), complete("never"));
+    v.runner.script("chief", complete("reviewed"));
+    v.rt.end(vroot.id, { ok: true, text: "" });
+    await drain(v);
+    expect(get(v, child.id).status).toBe("running");
+    v.runner.setOutward(child.id, ["SLACK_SEND_MESSAGE"]);
+    reopen(v);
+    const cut = get(v, child.id);
+    expect(cut).toMatchObject({ status: "failed", outcome: "interrupted", restarts: 0, executions: 1 });
+    expect(cut.outcomeDetail).toBe(`${INTERRUPTED_OUTWARD} sent a message (SLACK_SEND_MESSAGE); not resumed, so nothing is done twice.`);
+    expect(v.store.events(child.id).find((e) => e.kind === "restart_reconciled")?.detail).toBe("failed: outward action done");
+    expect(v.runner.reports(child.id)).toHaveLength(1);
+    expect(v.runner.reports(child.id)[0].parent?.id).toBe(vroot.id);
+    expect(v.store.inbox(chiefOwner, false).map((i) => [i.assignmentId, i.kind])).toEqual([[child.id, "settled"]]);
+    expect(get(v, vroot.id)).toMatchObject({ status: "waiting", restart: "teammates" });
+    invariants(v);
+    await drain(v);
+    expect(v.runner.runs(child.id)).toHaveLength(1);
+    const resume = v.runner.runs(vroot.id);
+    expect(resume).toHaveLength(1);
+    expect(resume[0].input!.turn).toBe("resume");
+    expect(resume[0].input!.settled?.map((a) => [a.id, a.outcome, a.outcomeDetail])).toEqual([[child.id, "interrupted", cut.outcomeDetail]]);
+    expect(resume[0].input!.restartNote).toBe("A restart cut these teammates' turns: Dev (cut after an outward action, not resumed: see its result). Check their results as usual.\n");
+    expect(get(v, vroot.id)).toMatchObject({ status: "completed", result: "reviewed" });
+    invariants(v);
+
+    // a rerun cut again that acted outward during the rerun ends with what it did, not with the cut-twice line
+    const u = world();
+    const uroot = beginChief(u);
+    const twice = ok(enqueueFrom(u, uroot, workFor("dev", "Deploy")));
+    u.runner.script("dev", hang(), hang());
+    u.rt.end(uroot.id, { ok: true, text: "" });
+    await drain(u);
+    reopen(u);
+    await drain(u);
+    expect(get(u, twice.id)).toMatchObject({ status: "running", restarts: 1, executions: 2 });
+    u.runner.setOutward(twice.id, ["git commit", "git push"]);
+    reopen(u);
+    expect(get(u, twice.id)).toMatchObject({ status: "failed", outcome: "interrupted", restarts: 1, executions: 2,
+      outcomeDetail: `${INTERRUPTED_OUTWARD} committed (git commit), pushed (git push); not resumed, so nothing is done twice.` });
+    expect(get(u, twice.id).result).not.toBe(CUT_TWICE);
+    await drain(u);
+    expect(u.runner.runs(uroot.id)[0].input!.restartNote).toContain("Dev (cut after an outward action, not resumed: see its result)");
+    expect(get(u, uroot.id).status).toBe("completed");
+    invariants(u);
+  });
+
+  it("R-S10 a host without the port, or one that throws, reruns the cut turn as before; a turn that handed out work is never asked", async () => {
+    // no port at all
+    const w = world({}, { outward: false });
+    expect(w.runner.outward).toBeUndefined();
+    const root = beginChief(w);
+    reopen(w);
+    expect(get(w, root.id)).toMatchObject({ status: "queued", restart: "rerun", restarts: 1 });
+    expect(w.runner.callsOf("outward")).toEqual([]);
+    await drain(w);
+    expect(w.runner.runs(root.id)[0].input!.turn).toBe("rerun");
+    expect(get(w, root.id).status).toBe("completed");
+    invariants(w);
+
+    // a port that throws is "not now": the turn reruns, the throw is logged
+    // (the override outlives reboot(), which clears a one-shot throw)
+    const v = world();
+    const vroot = beginChief(v);
+    v.runner.outward = () => { throw new Error("activity rows locked"); };
+    reopen(v);
+    expect(get(v, vroot.id)).toMatchObject({ status: "queued", restart: "rerun", restarts: 1 });
+    expect(v.logs.some((line) => /outward threw/.test(line))).toBe(true);
+    await drain(v);
+    expect(get(v, vroot.id).status).toBe("completed");
+    invariants(v);
+
+    // a turn that handed out work goes to waiting without the port being asked, even when it acted outward
+    const u = world();
+    const uroot = beginChief(u);
+    const child = ok(enqueueFrom(u, uroot, workFor("dev", "Build")));
+    u.runner.script("dev", hang(), complete("built"));
+    u.runner.script("chief", complete("reviewed"));
+    u.runner.setOutward(uroot.id, ["git push"]);
+    u.rt.tick();
+    await flush();
+    expect(get(u, child.id).status).toBe("running");
+    reopen(u);
+    expect(get(u, uroot.id)).toMatchObject({ status: "waiting", restart: "cut" });
+    expect(u.runner.callsOf("outward").map((c) => c.id)).toEqual([child.id]);
+    await drain(u);
+    expect(get(u, uroot.id).status).toBe("completed");
+    invariants(u);
+  });
+
+  it("R-S11 two continuations in a row without a successful tool call stop the node: failed(stalled), reported; a child wakes its requester as stalled", async () => {
+    const w = world();
+    const root = beginChief(w);
+    w.runner.script(root.id, continueTurn("still nothing", "The step cap was reached again.", undefined, NO_PROGRESS), complete("never"));
+    w.rt.end(root.id, { ok: true, text: "nothing yet", evidence: NO_PROGRESS, continue: { note: "The step cap was reached." } });
+    expect(get(w, root.id)).toMatchObject({ status: "queued", guard: { stale: 1, errors: [] } });
+    invariants(w);
+    await drain(w);
+    expect(w.runner.runs(root.id)).toHaveLength(1);
+    const stopped = get(w, root.id);
+    expect(stopped).toMatchObject({ status: "failed", outcome: "stalled", executions: 2, result: "still nothing", guard: { stale: 2, errors: [] } });
+    expect(stopped.outcomeDetail).toBe("Stopped after 2 continuations without progress: still nothing");
+    expect(stopped.continuation).toBeUndefined();
+    expect(kinds(w, root.id)).toEqual(["enqueued", "started", "continued", "admitted", "started", "stalled", "settled", "reported"]);
+    expect(w.store.events(root.id).at(-3)?.detail).toBe("no progress: 2 continuations without a successful tool call");
+    expect(w.store.events(root.id).at(-2)?.detail).toBe("failed: stalled — Stopped after 2 continuations without progress: still nothing");
+    expect(replayStatus(w.store.events(root.id))).toBe("failed");
+    // the host's root report shows it; nobody is woken
+    expect(w.runner.reports(root.id)).toHaveLength(1);
+    expect(w.runner.reports(root.id)[0].parent).toBeUndefined();
+    expect(w.store.inbox(chiefOwner, false)).toEqual([]);
+    invariants(w);
+
+    // a child: its requester resumes once with the stalled result
+    const v = world();
+    const vroot = beginChief(v);
+    const child = ok(enqueueFrom(v, vroot, workFor("dev", "Build")));
+    v.runner.script("dev", continueTurn("spinning", "Cap.", "/h/1.md", NO_PROGRESS), continueTurn("still spinning", "Cap.", "/h/2.md", NO_PROGRESS), complete("never"));
+    v.runner.script("chief", complete("gave up"));
+    v.rt.end(vroot.id, { ok: true, text: "" });
+    await drain(v);
+    expect(v.runner.runs(child.id)).toHaveLength(2);
+    expect(get(v, child.id)).toMatchObject({ status: "failed", outcome: "stalled", result: "still spinning",
+      outcomeDetail: "Stopped after 2 continuations without progress: still spinning" });
+    expect(v.runner.reports(child.id)).toHaveLength(1);
+    expect(v.store.inbox(chiefOwner, false).map((i) => i.kind)).toEqual(["stalled"]);
+    expect(v.runner.runs(vroot.id)[0].input!.settled?.map((a) => [a.id, a.outcome])).toEqual([[child.id, "stalled"]]);
+    expect(get(v, vroot.id)).toMatchObject({ status: "completed", result: "gave up" });
+    invariants(v);
+  });
+
+  it("R-S12 the same error three times across continuing executions stops the node, even with ok tool calls between; three different errors do not", async () => {
+    const w = world();
+    const root = beginChief(w);
+    w.runner.script(root.id,
+      continueTurn("retrying", "Cap.", undefined, { okToolCalls: 1, errors: [SAME_ERROR] }),
+      continueTurn("retrying again", "Cap.", undefined, { okToolCalls: 4, errors: [SAME_ERROR] }),
+      complete("never"));
+    w.rt.end(root.id, { ok: true, text: "first try", evidence: { okToolCalls: 2, errors: [SAME_ERROR] }, continue: { note: "Cap." } });
+    expect(get(w, root.id).guard).toEqual({ stale: 0, errors: [SAME_ERROR] });
+    await drain(w);
+    expect(w.runner.runs(root.id)).toHaveLength(2);
+    const stopped = get(w, root.id);
+    expect(stopped).toMatchObject({ status: "failed", outcome: "stalled", executions: 3, result: "retrying again", guard: { stale: 0, errors: [SAME_ERROR, SAME_ERROR, SAME_ERROR] } });
+    expect(stopped.outcomeDetail).toBe(`Stopped after 3 identical errors: ${SAME_ERROR}`);
+    expect(w.store.events(root.id).filter((e) => e.kind === "stalled").map((e) => e.detail)).toEqual(["no progress: the same error 3 times"]);
+    expect(w.runner.reports(root.id)).toHaveLength(1);
+    invariants(w);
+
+    // the tail is read across executions: one execution with two, the next with one
+    const v = world();
+    const vroot = beginChief(v);
+    v.runner.script(vroot.id, continueTurn("again", "Cap.", undefined, { okToolCalls: 1, errors: [SAME_ERROR] }), complete("never"));
+    v.rt.end(vroot.id, { ok: true, text: "twice", evidence: { okToolCalls: 1, errors: ["a different one", SAME_ERROR, SAME_ERROR] }, continue: { note: "Cap." } });
+    await drain(v);
+    expect(get(v, vroot.id)).toMatchObject({ status: "failed", outcome: "stalled", outcomeDetail: `Stopped after 3 identical errors: ${SAME_ERROR}`, executions: 2 });
+    invariants(v);
+
+    // errors that differ are not a loop
+    const u = world();
+    const uroot = beginChief(u);
+    u.runner.script(uroot.id,
+      continueTurn("b", "Cap.", undefined, { okToolCalls: 1, errors: ["error B"] }),
+      continueTurn("a", "Cap.", undefined, { okToolCalls: 1, errors: ["error A"] }),
+      complete("done at last"));
+    u.rt.end(uroot.id, { ok: true, text: "a", evidence: { okToolCalls: 1, errors: ["error A"] }, continue: { note: "Cap." } });
+    await drain(u);
+    expect(get(u, uroot.id)).toMatchObject({ status: "completed", result: "done at last", executions: 4 });
+    expect(get(u, uroot.id).guard).toBeUndefined();
+    invariants(u);
+  });
+
+  it("R-S13 a continuation that made progress resets the strike, and any other end of a turn clears the guard", async () => {
+    const w = world();
+    const root = beginChief(w);
+    w.runner.script(root.id,
+      continueTurn("made progress", "Cap.", undefined, PROGRESS),
+      continueTurn("nothing this time", "Cap.", undefined, NO_PROGRESS),
+      complete("finished"));
+    w.rt.end(root.id, { ok: true, text: "nothing yet", evidence: NO_PROGRESS, continue: { note: "Cap." } });
+    expect(get(w, root.id).guard).toEqual({ stale: 1, errors: [] });
+    await drain(w);
+    const done = get(w, root.id);
+    expect(done).toMatchObject({ status: "completed", result: "finished", executions: 4 });
+    expect(done.guard).toBeUndefined();
+    expect(w.runner.runs(root.id).map((r) => r.a!.guard)).toEqual([{ stale: 1, errors: [] }, { stale: 0, errors: [] }, { stale: 1, errors: [] }]);
+    expect(kinds(w, root.id)).not.toContain("stalled");
+    invariants(w);
+
+    // a park between continuations starts the count over: the person's act is a fresh start
+    const v = world();
+    const vroot = beginChief(v);
+    v.runner.script(vroot.id, needsInput("Connect GitHub", ["msg-1"]), continueTurn("after the card", "Cap.", undefined, NO_PROGRESS), complete("done"));
+    v.rt.end(vroot.id, { ok: true, text: "", evidence: NO_PROGRESS, continue: { note: "Cap." } });
+    await drain(v);
+    expect(get(v, vroot.id)).toMatchObject({ status: "needs_input", cards: ["msg-1"] });
+    expect(get(v, vroot.id).guard).toBeUndefined();
+    expect(v.rt.answer(vroot.id, "The user connected GitHub.")).toBe(true);
+    await drain(v);
+    expect(get(v, vroot.id)).toMatchObject({ status: "completed", result: "done", executions: 4 });
+    invariants(v);
+  });
+
+  it("R-S14 continuations without evidence, or whose evidence has no ok count, are not strikes: the executions budget is the backstop", async () => {
+    const w = world({ executions: 4 });
+    const root = beginChief(w);
+    w.runner.script(root.id,
+      continueTurn("two", "Cap."),
+      continueTurn("three", "Cap.", undefined, { commands: 2, toolCalls: 5 }),
+      continueTurn("four", "Cap."),
+      complete("never"));
+    w.rt.end(root.id, { ok: true, text: "one", continue: { note: "Cap." } });
+    await drain(w);
+    expect(w.runner.runs(root.id)).toHaveLength(3);
+    const failed = get(w, root.id);
+    expect(failed).toMatchObject({ status: "failed", outcome: "budget", executions: 4, outcomeDetail: "4 turns without progress", guard: { stale: 0, errors: [] } });
+    expect(kinds(w, root.id)).not.toContain("stalled");
+    expect(w.runner.reports(root.id)).toHaveLength(1);
+    invariants(w);
+
+    // an execution without evidence between two strikes neither counts nor resets
+    const v = world();
+    const vroot = beginChief(v);
+    v.runner.script(vroot.id, continueTurn("unknown", "Cap."), continueTurn("nothing again", "Cap.", undefined, NO_PROGRESS), complete("never"));
+    v.rt.end(vroot.id, { ok: true, text: "nothing", evidence: NO_PROGRESS, continue: { note: "Cap." } });
+    await drain(v);
+    expect(get(v, vroot.id)).toMatchObject({ status: "failed", outcome: "stalled", executions: 3, guard: { stale: 2, errors: [] } });
+    invariants(v);
+  });
+
+  it("R-S15 a queued continuation has no queue bound and no stall window: it waits for the host however long; a plain queued row still expires", async () => {
+    const w = world({ queueMs: 1_000, stallMs: 60_000 });
+    const root = beginChief(w);
+    w.runner.setCanStart("chief", false);
+    w.rt.end(root.id, { ok: true, text: "waiting for the computer", continue: { note: "The computer is taken. Continue when it is free." } });
+    expect(get(w, root.id)).toMatchObject({ status: "queued", continuation: { note: "The computer is taken. Continue when it is free.", count: 1 } });
+    // a plain queued hand-off in another tree, for contrast
+    const other = w.rt.begin({ origin: { kind: "person", source: "chat", ref: "thread-other", quote: "Other" },
+      requester: { kind: "person", threadId: "thread-other" }, assignee: { botId: "ops", destination: { kind: "standing_thread", threadId: "thread-other" } },
+      brief: "Other", level: "ask" });
+    const child = ok(enqueueFrom(w, other, workFor("dev", "Never starts")));
+    w.runner.setCanStart("dev", false);
+    w.rt.end(other.id, { ok: true, text: "" });
+    await drain(w);
+    expect(get(w, child.id).status).toBe("queued");
+
+    w.clock.advance(10 * 24 * 60 * 60_000);
+    await drain(w);
+    expect(get(w, root.id)).toMatchObject({ status: "queued", continuation: { count: 1 } });
+    expect(get(w, root.id).outcome).toBeUndefined();
+    expect(kinds(w, root.id)).not.toContain("stalled");
+    expect(w.runner.runs(root.id)).toHaveLength(0);
+    expect(get(w, child.id)).toMatchObject({ status: "failed", outcome: "expired", outcomeDetail: "never started" });
+    expect(get(w, other.id)).toMatchObject({ status: "completed" });
+    invariants(w);
+
+    // the seat frees: the continued turn opens with its note
+    w.runner.setCanStart("chief", true);
+    w.runner.script(root.id, complete("done on the computer"));
+    await drain(w);
+    expect(w.runner.runs(root.id)).toHaveLength(1);
+    expect(w.runner.runs(root.id)[0].input).toMatchObject({ turn: "continued", continuation: { note: "The computer is taken. Continue when it is free." } });
+    expect(get(w, root.id)).toMatchObject({ status: "completed", result: "done on the computer", executions: 2 });
     invariants(w);
   });
 });

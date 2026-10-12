@@ -69,3 +69,24 @@ describe("createCoordinator", () => {
     }
   });
 });
+
+describe("createCoordinator: wave-2 seam fields", () => {
+  it("reads a continued root back with its continuation, and a host may carry the optional outward port", () => {
+    const dir = mkdtempSync(join(tmpdir(), "coordinator-"));
+    try {
+      const host: CoordinatorHost = { ...fakeHost(), outward: vi.fn(() => []) };
+      const coordinator = createCoordinator({ dataDir: dir, host, log: () => {} });
+      coordinator.beginTurn({ id: "gen-1", address: { botId: "chief", threadId: "chief-chat" }, brief: "Fill the sheet", level: "auto",
+        origin: { kind: "user", request: "Fill the sheet" } });
+      coordinator.endTurn("gen-1", { ok: true, text: "half", cap: { note: "The step cap was reached.", handoffPath: "/handoffs/1.md" } });
+      const rows = readHandoffs(dir);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: "gen-1", status: "queued", result: "half", continuation: { note: "The step cap was reached.", handoffPath: "/handoffs/1.md", count: 1 } });
+      expect(coordinator.answerNode("gen-1", "x")).toBe(false);
+      expect(host.outward).not.toHaveBeenCalled();
+      coordinator.close();
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+});

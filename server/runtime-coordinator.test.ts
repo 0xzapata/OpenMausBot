@@ -1054,3 +1054,133 @@ describe("RuntimeCoordinator: every turn a root (beginTurn, endTurn, answerRoot,
     coordinator.close();
   });
 });
+
+describe("RuntimeCoordinator: outward restart policy, answerNode, continuation on the view", () => {
+  const CONNECTED = "OpenMausBot connection update: the user securely connected GitHub. Continue the task.";
+  const beginRoot = (w: World, id: string, address: RoomAddress = chief) =>
+    w.coordinator.beginTurn({ id, address, brief: "Ship the CSV export", level: "auto", origin: userOrigin });
+
+  it("a cut turn that already acted outward is not rerun: host.outward decides, it ends interrupted with what it did, a root is reported into its own conversation, a child to its requester with the note; a port that says nothing reruns", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "runtime-coordinator-outward-"));
+    try {
+      // a root cut during its own turn
+      const before = world(undefined, {}, dir);
+      beginRoot(before, "gen-1");
+      before.coordinator.close();
+      const after = world(undefined, {}, dir);
+      const asked: string[] = [];
+      after.host.outward = node => { asked.push(node.id); return node.id === "gen-1" ? ["GMAIL_SEND_EMAIL", "git push"] : []; };
+      expect(after.coordinator.node("gen-1")).toMatchObject({ status: "failed", outcome: "interrupted", restarts: 0, executions: 1,
+        outcomeDetail: "Interrupted by an OpenMausBot restart after it already sent an email (GMAIL_SEND_EMAIL), pushed (git push); not resumed, so nothing is done twice." });
+      expect(asked).toEqual(["gen-1"]);
+      expect("restart" in after.coordinator.node("gen-1")!).toBe(false);
+      expect(after.host.reports).toEqual([{ child: expect.objectContaining({ id: "gen-1", status: "failed", outcome: "interrupted" }) }]);
+      expect(after.coordinator.continuesAfterRestart("chief-chat")).toBe(false);
+      expect(after.coordinator.activeDirect("chief-chat")).toBe(false);
+      after.coordinator.tick();
+      expect(after.host.runs).toEqual([]);
+      after.coordinator.close();
+
+      // a child cut mid-turn after it posted: the requester's resume carries the report and the restart note
+      const again = world(hold, {}, dir);
+      const { node } = send(again, chief, "gen-2", undefined, builder, "Announce it");
+      again.coordinator.tick();
+      expect(again.host.held.has(node.id)).toBe(true);
+      again.coordinator.sourceSettled("gen-2", true);
+      again.coordinator.close();
+      const last = world(undefined, {}, dir);
+      last.host.outward = n => n.id === node.id ? ["SLACK_SEND_MESSAGE"] : [];
+      expect(last.coordinator.node(node.id)).toMatchObject({ status: "failed", outcome: "interrupted", restarts: 0, reported: true,
+        outcomeDetail: "Interrupted by an OpenMausBot restart after it already sent a message (SLACK_SEND_MESSAGE); not resumed, so nothing is done twice." });
+      expect(last.host.reports.map(r => [r.child.id, r.parent?.id])).toEqual([[node.id, "gen-2"]]);
+      expect(last.coordinator.node("gen-2")).toMatchObject({ status: "waiting", restart: "teammates" });
+      last.coordinator.tick();
+      const resume = last.host.runs[0]!;
+      expect(resume.node.id).toBe("gen-2");
+      expect(resume.composed.turn).toBe("resume");
+      expect(resume.composed.restartNote).toBe("A restart cut these teammates' turns: builder (cut after an outward action, not resumed: see its result). Check their results as usual.\n");
+      expect(resume.text).toContain(`[OpenMausBot report from @builder on assignment ${node.id}: failed (interrupted): Interrupted by an OpenMausBot restart after it already sent a message (SLACK_SEND_MESSAGE)`);
+      await flush();
+      expect(last.coordinator.node("gen-2")?.status).toBe("completed");
+      expect(last.host.runs).toHaveLength(1);
+      last.coordinator.close();
+
+      // a port that knows nothing: today's rerun
+      const quiet = world(undefined, {}, dir);
+      beginRoot(quiet, "gen-3", { botId: "chief", threadId: "other-chat" });
+      quiet.coordinator.close();
+      const rerun = world(undefined, {}, dir);
+      rerun.host.outward = () => [];
+      expect(rerun.coordinator.node("gen-3")).toMatchObject({ status: "queued", restart: "rerun", restarts: 1 });
+      expect(rerun.coordinator.continuesAfterRestart("other-chat")).toBe(true);
+      rerun.coordinator.tick();
+      expect(rerun.host.runs.map(r => [r.node.id, r.composed.turn])).toEqual([["gen-3", "rerun"]]);
+      await flush();
+      expect(rerun.coordinator.node("gen-3")?.status).toBe("completed");
+      rerun.coordinator.close();
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
+  it("answerNode answers a child parked on cards: the requester is woken needs_input, a typed line does not answer it, the card does; answerRoot is the same call", async () => {
+    let parks = 0;
+    const w = world((node) => node.botId === "builder" && parks++ === 0
+      ? { ok: true, text: "Please connect GitHub.", evidence: { toolCalls: 2 }, cards: { question: "connect GitHub", ids: ["msg-c1"] } } : undefined);
+    const { node } = send(w, chief, "gen-1", undefined, builder, "Build it");
+    w.coordinator.tick(); await flush();
+    expect(w.coordinator.node(node.id)).toMatchObject({ status: "waiting", question: "connect GitHub", cards: ["msg-c1"], executions: 1 });
+    expect(w.host.parks).toEqual([{ node: expect.objectContaining({ id: node.id, status: "waiting", cards: ["msg-c1"] }), question: "connect GitHub" }]);
+    expect(w.coordinator.status("gen-1")!.inbox.map(i => [i.assignmentId, i.kind])).toEqual([[node.id, "needs_input"]]);
+    expect(w.coordinator.parkedDirect("builder-work")).toBeUndefined();
+    expect(w.coordinator.outstandingDirect("chief-chat").map(n => n.id)).toEqual([node.id]);
+    expect(w.coordinator.awaitingAnswer("builder-work")).toBe(true);
+    // a typed line in the child's thread never answers a card park; the cards' path does, once
+    expect(w.coordinator.answer("builder-work", "typed while the card waits")).toBe(false);
+    expect(w.coordinator.node(node.id)).toMatchObject({ status: "waiting", cards: ["msg-c1"] });
+    expect(w.coordinator.answerNode("ghost", CONNECTED)).toBe(false);
+    expect(w.coordinator.answerNode("gen-1", CONNECTED)).toBe(false);
+    expect(w.coordinator.answerNode(node.id, CONNECTED)).toBe(true);
+    expect(w.coordinator.answerNode(node.id, CONNECTED)).toBe(false);
+    expect(w.coordinator.answerRoot(node.id, CONNECTED)).toBe(false);
+    w.coordinator.tick();
+    const run = w.host.runs[1]!;
+    expect(run.node).toMatchObject({ id: node.id, status: "running", executions: 2 });
+    expect("cards" in run.node).toBe(false);
+    expect(run.composed.turn).toBe("answered");
+    // a child's answered turn is its assignment again, with the person's act as the harness-quoted answer
+    // (the question is consumed with the answer, as for a NEEDS INPUT park)
+    expect(run.text.startsWith(`${ENVELOPE_MARK} ${node.id} from @chief for Milind]`)).toBe(true);
+    expect(run.text.endsWith('The person answered: "OpenMausBot connection update: the user securely connected GitHub. Continue the task.".')).toBe(true);
+    expect(run.text).not.toContain("Your question was");
+    await flush();
+    expect(w.coordinator.node(node.id)).toMatchObject({ status: "completed", result: "builder done", executions: 2, reported: true });
+    expect(w.host.reports.map(r => r.child.id)).toEqual([node.id]);
+    w.coordinator.sourceSettled("gen-1", true);
+    w.coordinator.tick(); await flush();
+    expect(w.coordinator.node("gen-1")?.status).toBe("completed");
+    expect(w.host.runs).toHaveLength(3);
+
+    // answerRoot stays as the same call for a root parked on its cards
+    beginRoot(w, "gen-2", { botId: "chief", threadId: "other-chat" });
+    w.coordinator.endTurn("gen-2", { ok: true, text: "", cards: { question: "Connect GitHub", ids: ["msg-r1"] } });
+    expect(w.coordinator.parkedDirect("other-chat")?.id).toBe("gen-2");
+    expect(w.coordinator.answerRoot("gen-2", CONNECTED)).toBe(true);
+    expect(w.coordinator.answerNode("gen-2", CONNECTED)).toBe(false);
+    w.coordinator.tick(); await flush();
+    expect(w.coordinator.node("gen-2")).toMatchObject({ status: "completed", executions: 2 });
+  });
+
+  it("the view carries a queued continuation (note, handoff path, count) and drops it once the turn is dispatched", async () => {
+    expect(view(row({ continuation: { note: "Cap.", handoffPath: "/h/1.md", count: 2 } })).continuation).toEqual({ note: "Cap.", handoffPath: "/h/1.md", count: 2 });
+    expect("continuation" in view(base)).toBe(false);
+    const w = world();
+    beginRoot(w, "gen-1");
+    w.coordinator.endTurn("gen-1", { ok: true, text: "half", cap: { note: "The computer is taken.", } });
+    expect(w.coordinator.node("gen-1")).toMatchObject({ status: "queued", continuation: { note: "The computer is taken.", count: 1 } });
+    expect("handoffPath" in w.coordinator.node("gen-1")!.continuation!).toBe(false);
+    w.coordinator.tick();
+    expect("continuation" in w.coordinator.node("gen-1")!).toBe(false);
+    expect(w.host.runs[0]!.composed.turn).toBe("continued");
+  });
+});

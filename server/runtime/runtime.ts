@@ -315,14 +315,15 @@ export class Runtime {
       this.cancelTree(n, problem, "failed", "refused");
     }
     // A tree with no durable or visible progress stalls as a whole, unless
-    // it is parked on the person: that time is charged to no window.
+    // it is parked on the person or queued to continue behind something the
+    // host holds it for (a seat): that time is charged to no window.
     for (const rootId of new Set(live.map(n => n.rootId))) {
       const root = this.store.get(rootId);
       if (!root || isTerminal(root)) continue;
       const anchor = Math.max(this.since(root.lastActivityAt), this.rootActivity.get(rootId) ?? 0);
       if (now - anchor <= this.limits.stallMs) continue;
       const tree = this.store.all({ rootId });
-      if (tree.some(n => n.status === "needs_input")) continue;
+      if (tree.some(n => n.status === "needs_input" || (n.status === "queued" && n.continuation !== undefined))) continue;
       this.store.update(root, { kind: "stalled", at: now, detail: `no progress for ${duration(now - anchor)}` });
       this.cancelTree(root, `no progress for ${duration(this.limits.stallMs)}`, "failed", "stalled");
     }

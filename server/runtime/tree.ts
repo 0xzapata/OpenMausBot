@@ -21,9 +21,11 @@ const OUTWARD_LABEL_MAX = 48;
 /** A short label of an outward action as a verb phrase: the host names the
  * tool ("GMAIL_SEND_EMAIL", "git push"); the person reads what it did. */
 function describeOutward(label: string): string {
+  // Tool slugs join words with underscores, which are word characters, so
+  // the money words are matched bare rather than on word boundaries.
   if (/\bgit\s+push\b/i.test(label)) return `pushed (${label})`;
   if (/\bgit\s+commit\b/i.test(label)) return `committed (${label})`;
-  if (/\b(pay|payment|charge|refund|transfer)\b/i.test(label)) return `made a payment (${label})`;
+  if (/pay|charge|refund|transfer/i.test(label)) return `made a payment (${label})`;
   if (/mail/i.test(label)) return `sent an email (${label})`;
   if (/send|message|reply/i.test(label)) return `sent a message (${label})`;
   if (/post|publish|tweet/i.test(label)) return `posted (${label})`;
