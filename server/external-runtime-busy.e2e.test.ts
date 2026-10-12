@@ -9,11 +9,11 @@ import { readHandoffs } from "./testing/handoff-rows.ts";
 const TOKEN = "external-runtime-busy-fixture-0123456789abcdef";
 
 // An idle external caller consults a peer that is busy (docs/runtime-contract.md
-// §2 admission, §9). The ask_bot alias is coordinate_bots(consult: true) on
+// §2 admission, §9). A consultation is coordinate_bots(consult: true) on
 // the runtime: the person's approval is asked once, before anything is
 // queued; the row then waits for the peer's slot, runs when it frees, and
-// the gateway reads the answer through the delegations/:id alias. Its own
-// engine never runs. Both orders of "busy" and "approval" end the same way.
+// the gateway reads the answer through assignment_status. Its own engine
+// never runs. Both orders of "busy" and "approval" end the same way.
 it.each(["already busy", "became busy during approval"])(
   "queues an idle external caller's ask behind a peer that is %s, without losing or repeating approval",
   async scenario => {
@@ -46,11 +46,11 @@ it.each(["already busy", "became busy during approval"])(
       const peerRequests = async (threadId: string) => (await messages(threadId))
         .filter(message => message.roomRequest?.phase === "request" && message.from?.botId === source.id);
       const sourceState = async () => (await api("GET", "/api/bots?messages=0")).bots.find((bot: any) => bot.id === source.id);
-      const receipt = (id: string) => api("GET", `/api/internal/delegations/${id}`, undefined, true);
+      const receipt = (id: string) => api("GET", `/api/internal/assignment-status?id=${id}`, undefined, true);
       const row = (id: string) => readHandoffs(session.info.dataDir).find(node => node.id === id);
       const withholdAfterRevocation = async (id: string) => {
         await api("PATCH", `/api/bots/${source.id}`, { peers: [] });
-        const response = await fetch(`${session.info.url}/api/internal/delegations/${id}`, { headers: { authorization: `Bearer ${TOKEN}` } });
+        const response = await fetch(`${session.info.url}/api/internal/assignment-status?id=${id}`, { headers: { authorization: `Bearer ${TOKEN}` } });
         expect(response.status).toBe(403);
         expect(await response.json()).toMatchObject({ error: "Result withheld: team access changed while the teammate was working" });
         await api("PATCH", `/api/bots/${source.id}`, { peers: [peer.id], acknowledgePeerScope: true });
@@ -71,7 +71,7 @@ it.each(["already busy", "became busy during approval"])(
       // immediately: fixture teardown must not turn a failed assertion into
       // an unhandled in-flight HTTP rejection.
       if (scenario === "already busy") await occupy();
-      const pendingAsk = api("POST", "/api/internal/ask-bot", { toBotId: peer.id, message: requestText }, true)
+      const pendingAsk = api("POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: requestText, consult: true }, true)
         .then(value => ({ value }), error => ({ error }));
       await expect.poll(async () => (await sourceCards()).length, { timeout: 15_000 }).toBe(1);
       const [card] = await sourceCards();
@@ -85,9 +85,9 @@ it.each(["already busy", "became busy during approval"])(
       const outcome = await pendingAsk;
       if ("error" in outcome) throw outcome.error;
       const queued = outcome.value;
-      // No inline wait: the answer is the runtime's receipt and the deprecation line.
+      // No inline wait: the answer is the runtime's receipt.
       expect(queued).toMatchObject({ rootId: expect.any(String), receipts: [{ botId: peer.id, outcome: "queued", requestId: expect.any(String) }] });
-      expect(queued.deprecation).toContain("ask_bot is replaced by coordinate_bots(consult: true)");
+      expect(queued.deprecation).toBeUndefined();
       expect(queued.text).toBeUndefined();
       const id: string = queued.receipts[0].requestId;
       evidence.push({ scenario, queued, sourceThread, peerThread });
@@ -102,7 +102,7 @@ it.each(["already busy", "became busy during approval"])(
       expect((await messages(sourceThread)).filter(message => message.role === "user")).toHaveLength(0);
       const early = await receipt(id);
       expect(early.assignment).toMatchObject({ id, botId: peer.id, status: "queued", mode: "consult", reply: "poll" });
-      expect(early.deprecation).toContain("replaced by assignment_status");
+      expect(early.deprecation).toBeUndefined();
       evidence.push({ scenario, queued, early, beforeRelease: await sourceCards() });
 
       writeFileSync(gate, "release only the isolated provider");

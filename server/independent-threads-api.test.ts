@@ -269,9 +269,9 @@ describe("independent bot tasks through the isolated control surface", () => {
     const chief = (await tool("create_bot", { name: "Delegating Chief", instance_id: "claude", model: models[0] })).bot;
     const peer = (await tool("create_bot", { name: "Delegated Peer", instance_id: "claude", model: models[1] })).bot;
     expect((await api("PATCH", `/api/bots/${peer.id}`, { approvalMode: "ask" })).status).toBe(200);
-    // A routine turn, through the delegate_bot alias: the same assignment on
-    // the job runtime a chat's coordinate_bots makes, with a routine run as
-    // its requester (docs/runtime-contract.md §9).
+    // A routine turn's coordinate_bots: the same assignment on the job
+    // runtime a chat's makes, with a routine run as its requester
+    // (docs/runtime-contract.md §9).
     const routine = await api("POST", "/api/routines", {
       name: "Release checks", prompt: "Delegate the release checks to the reviewer.", botId: chief.id, enabled: false,
       schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 },
@@ -281,10 +281,9 @@ describe("independent bot tasks through the isolated control surface", () => {
     const runThread = async () => (await api("GET", "/api/routines")).body.runs.find((candidate: any) => candidate.id === run.id)?.threadId as string | undefined;
     await expect.poll(runThread).toBeTruthy();
     const token = (await dump(models[0])).mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
-    const delegated = await internal(token, "POST", "/api/internal/delegate-bot", { toBotId: peer.id, message: "RELEASE_CHECKS: run the release checks." });
+    const delegated = await internal(token, "POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "RELEASE_CHECKS: run the release checks." });
     expect(delegated.status).toBe(200);
     expect(delegated.body.receipts).toEqual([expect.objectContaining({ botId: peer.id, outcome: "queued", requestId: expect.any(String) })]);
-    expect(delegated.body.deprecation).toContain("delegate_bot is replaced by coordinate_bots");
     const requestId = delegated.body.receipts[0].requestId as string;
     const handoff = () => readHandoffs(session.info.dataDir).find((node) => node.id === requestId);
     expect(handoff()).toMatchObject({ botId: peer.id, mode: "work", reply: "resume" });
@@ -363,8 +362,8 @@ describe("independent bot tasks through the isolated control surface", () => {
     expect(handoff()!.result.startsWith("[OpenMausBot: nobody answered the approval for “Bash: npm run release-check” in time, so it did not run.")).toBe(true);
   }, 60_000);
 
-  // A one-way notice (send_to_bot, an alias of coordinate_bots with reply
-  // "none") is never awaited and returns nothing to its sender (docs/
+  // A one-way notice (coordinate_bots with thread "new" and reply "none")
+  // is never awaited and returns nothing to its sender (docs/
   // runtime-contract.md §2), so a recipient thread the person deletes before
   // the notice starts ends the notice on the runtime, tells the sender
   // nothing, and restarts nobody.
@@ -381,11 +380,10 @@ describe("independent bot tasks through the isolated control surface", () => {
       await control(["send", "--bot", sender.id, "--text", "Prepare independent work."]);
       const launched = await dump(models[0]);
       const token = launched.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
-      const sent = await internal(token, "POST", "/api/internal/threads", {
-        toBotId: recipient.id, title: "Deleted independent work", message: "Own this work.", oneWay: true,
+      const sent = await internal(token, "POST", "/api/internal/coordinate-bots", {
+        botIds: [recipient.id], message: "Own this work.", thread: "new", reply: "none",
       });
       expect(sent.status, JSON.stringify(sent.body)).toBe(200);
-      expect(sent.body.deprecation).toContain("send_to_bot is replaced by coordinate_bots(thread: \"new\", reply: \"none\")");
       const receipt = sent.body.receipts[0];
       expect(receipt).toMatchObject({ botId: recipient.id, outcome: "queued", threadId: expect.any(String), requestId: expect.any(String) });
       const threadId = receipt.threadId as string;

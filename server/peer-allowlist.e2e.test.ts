@@ -151,7 +151,7 @@ const botMessages = async (botId: string): Promise<any[]> => {
 };
 
 /** Drive a bot through one turn so it owns a task its own thread id resolves
- * to — /api/internal/ask-bot refuses a source thread that has none. */
+ * to — /api/internal/coordinate-bots refuses a source thread that has none. */
 const warmUp = async (botId: string) => {
   expect((await api("POST", `/api/bots/${botId}/messages`, { text: "Warm up" })).status).toBe(202);
   await expect.poll(() => botBusy(botId), { timeout: 15_000 }).toBe(false);
@@ -212,7 +212,7 @@ describe("peer allow-list", () => {
       expect((await state()).managedSections).toEqual([]);
       expect((await api("POST", "/api/sidebar-sections", { name: team, botIds: [engineer.id] })).status).toBe(200);
       expect(await peerNames(clive.id, token)).toEqual([]);
-      const refused = await api("POST", "/api/internal/ask-bot", { toBotId: engineer.id, message: "Old grants must not return" }, { authorization: `Bearer ${token}` });
+      const refused = await api("POST", "/api/internal/coordinate-bots", { botIds: [engineer.id], message: "Old grants must not return", consult: true }, { authorization: `Bearer ${token}` });
       expect(refused.status).toBe(403);
     } finally {
       for (const bot of [clive, engineer]) {
@@ -222,7 +222,7 @@ describe("peer allow-list", () => {
     }
   }, 45_000);
 
-  it("requires an explicit Chief grant for a consultation through the ask_bot alias and revokes it on demotion", async () => {
+  it("requires an explicit Chief grant for a consultation and revokes it on demotion", async () => {
     await hideSeededBot();
     const clive = await createBot("Clive", "plain");
     const specialist = await createBot("Engineer", "plain");
@@ -236,12 +236,11 @@ describe("peer allow-list", () => {
       await warmUp(clive.id);
       const token = await mintCapability(clive.id, clive.threadId);
       expect(await peerNames(clive.id, token)).toEqual(["Engineer"]);
-      const outcome = await api("POST", "/api/internal/ask-bot", { toBotId: specialist.id, message: "Review this small test plan" }, { authorization: `Bearer ${token}` });
+      const outcome = await api("POST", "/api/internal/coordinate-bots", { botIds: [specialist.id], message: "Review this small test plan", consult: true }, { authorization: `Bearer ${token}` });
       expect(outcome.status, JSON.stringify(outcome.body)).toBe(200);
       expect(outcome.body.error).toBeUndefined();
       // a consultation on the runtime: accepted now, answered in a later turn
       expect(outcome.body.receipts).toEqual([expect.objectContaining({ botId: specialist.id, outcome: "queued" })]);
-      expect(String(outcome.body.deprecation)).toContain("ask_bot is replaced by coordinate_bots(consult: true)");
       await api("PATCH", `/api/bots/${clive.id}`, { chiefOfStaff: false });
       await api("PATCH", `/api/bots/${clive.id}`, { chiefOfStaff: true });
       expect(await peerNames(clive.id, token)).toEqual([]);
@@ -300,8 +299,8 @@ describe("peer allow-list", () => {
       expect(await peerNames(asker.id, token)).toEqual(["Patch", "Quill"]);
       const openAsk = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: patch.id, message: "Patch, still there?" },
+        "/api/internal/coordinate-bots",
+        { botIds: [patch.id], message: "Patch, still there?", consult: true },
         { authorization: `Bearer ${token}` },
       );
       expect(openAsk.status).toBe(200);
@@ -314,16 +313,16 @@ describe("peer allow-list", () => {
       // …and both endpoints, for the peer that is now off the list
       const refusedAsk = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: patch.id, message: "Patch, one more thing" },
+        "/api/internal/coordinate-bots",
+        { botIds: [patch.id], message: "Patch, one more thing", consult: true },
         { authorization: `Bearer ${token}` },
       );
       expect(refusedAsk.status).toBe(403);
       expect(String(refusedAsk.body.error)).toContain(REFUSED);
       const refusedDelegation = await api(
         "POST",
-        "/api/internal/delegate-bot",
-        { fromBotId: asker.id, toBotId: patch.id, message: "Patch, take this" },
+        "/api/internal/coordinate-bots",
+        { botIds: [patch.id], message: "Patch, take this" },
         { authorization: `Bearer ${token}` },
       );
       expect(refusedDelegation.status).toBe(403);
@@ -335,8 +334,8 @@ describe("peer allow-list", () => {
       // 403s above would still be green.
       const allowedAsk = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: quill.id, message: "Quill, still there?" },
+        "/api/internal/coordinate-bots",
+        { botIds: [quill.id], message: "Quill, still there?", consult: true },
         { authorization: `Bearer ${token}` },
       );
       expect(allowedAsk.status).toBe(200);
@@ -345,13 +344,12 @@ describe("peer allow-list", () => {
 
       const allowedDelegation = await api(
         "POST",
-        "/api/internal/delegate-bot",
-        { fromBotId: asker.id, toBotId: quill.id, message: "Quill, take this" },
+        "/api/internal/coordinate-bots",
+        { botIds: [quill.id], message: "Quill, take this" },
         { authorization: `Bearer ${token}` },
       );
       expect(allowedDelegation.status, JSON.stringify(allowedDelegation.body)).toBe(200);
       expect(allowedDelegation.body.receipts).toEqual([expect.objectContaining({ botId: quill.id, outcome: "queued" })]);
-      expect(String(allowedDelegation.body.deprecation)).toContain("delegate_bot is replaced by coordinate_bots");
     } finally {
       for (const bot of [asker, quill, patch]) {
         await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => undefined);
@@ -373,7 +371,7 @@ describe("peer allow-list", () => {
 
       const systemPrompt = String(readDump(boundDump)()!.systemPrompt);
       expect(systemPrompt).toContain(`- Near — General assistant [id: ${near.id}]`);
-      // the roster can never name a peer this bot's own ask_bot would refuse
+      // the roster can never name a peer this bot's own coordinate_bots would refuse
       expect(systemPrompt).not.toContain("Farside");
     } finally {
       for (const bot of [bound, near, far]) {
@@ -406,8 +404,8 @@ describe("peer allow-list", () => {
       // parks inside requestPeerApproval until the card below is answered
       const parked = api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: helper.id, message: "Hedge, a quick one" },
+        "/api/internal/coordinate-bots",
+        { botIds: [helper.id], message: "Hedge, a quick one", consult: true },
         { authorization: `Bearer ${token}` },
       );
 
