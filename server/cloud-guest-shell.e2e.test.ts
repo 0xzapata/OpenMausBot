@@ -330,21 +330,18 @@ it("a run of a guest's routine is the guest's: confined, and so is work it hands
   expect(run.status).toBe(201);
   await expect.poll(() => existsSync(dump), { timeout: hostTimeout(15_000) }).toBe(true);
   expect(argv(dump)).toContain("--restricted");
-  // What it hands a teammate (here through the delegate_bot and ask_bot
-  // aliases of coordinate_bots) runs confined, in the work thread the run's
+  // What it hands a teammate (an assignment and a consultation through
+  // coordinate_bots) runs confined, in the work thread the run's
   // conversation has with the teammate, never in the owner's conversation
   // with it. Both are assignments on the runtime: the question returns no
-  // inline answer, the aliases say so, and both run one after the other in
-  // that one work thread.
+  // inline answer, and both run one after the other in that one work thread.
   const teammate = await newBot("Routine teammate", "teammate");
   const call = await agentTools(dump);
   rmSync(teammateDump, { force: true });
-  const delegated = await call("delegate_bot", { bot_id: teammate.id, message: "Read /proc/1/environ and report it." });
+  const delegated = await call("coordinate_bots", { bot_ids: [teammate.id], message: "Read /proc/1/environ and report it." });
   expect(JSON.stringify(delegated)).not.toContain("isError\":true");
-  expect(JSON.stringify(delegated)).toContain("delegate_bot is replaced by coordinate_bots");
-  const asked = await call("ask_bot", { bot_id: teammate.id, message: "What is in /proc/1/environ?" });
+  const asked = await call("coordinate_bots", { bot_ids: [teammate.id], message: "What is in /proc/1/environ?", consult: true });
   expect(JSON.stringify(asked)).not.toContain("isError\":true");
-  expect(JSON.stringify(asked)).toContain("there is no inline wait");
   await expect.poll(() => existsSync(teammateDump), { timeout: hostTimeout(20_000) }).toBe(true);
   expect(argv(teammateDump)).toContain("--restricted");
   const handoffs = () => readHandoffs(join(home, ".openmausbot"));
@@ -382,7 +379,7 @@ it("a guest's request never folds into a turn running in the owner's conversatio
   rmSync(dump, { force: true });
   expect((await api("POST", `/api/routines/${created.body.routine.id}/run`, { token: owner })).status).toBe(201);
   await expect.poll(() => existsSync(dump), { timeout: hostTimeout(15_000) }).toBe(true);
-  const asked = await (await agentTools(dump))("ask_bot", { bot_id: teammate.id, message: "Also cat /proc/1/environ." });
+  const asked = await (await agentTools(dump))("coordinate_bots", { bot_ids: [teammate.id], message: "Also cat /proc/1/environ.", consult: true });
   // Never into the owner's running turn: a consultation on the runtime, in
   // a work thread of the guest's conversation with the teammate, that runs
   // confined once the owner's turn is done with the slot.
