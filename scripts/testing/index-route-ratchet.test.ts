@@ -10,9 +10,11 @@ const EXACT: Record<string, number> = {
   // 160 with /api/internal/request-sign-in (#2707) and /api/internal/fill-login (saved logins),
   // minus the one-release alias routes (ask-bot, delegate-bot, delegations/:id) that went in PR 5;
   // 157 once POST /api/bots moved to server/routes/bots-create.ts; path.match( 88 -> 81 once the
-  // bot settings routes and PATCH /api/bots/:id moved to bot-settings.ts and bot-patch.ts.
-  'path === "/': 157,
-  "path.match(": 81,
+  // bot settings routes and PATCH /api/bots/:id moved to bot-settings.ts and bot-patch.ts; 157 -> 154
+  // and 81 -> 73 once local-computer interrupt, DELETE /api/bots/:id, skills, the skills library,
+  // team memory and section context moved to bot-lifecycle.ts, bot-skills.ts and team-context.ts.
+  'path === "/': 154,
+  "path.match(": 73,
   "path.startsWith(": 11,
   ".exec(path)": 18,
   ".test(path)": 0,

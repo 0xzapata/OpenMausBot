@@ -409,10 +409,8 @@ import {
   readSectionContext,
   readSections,
   sectionContextKey,
-  sectionContextLabel,
   sectionContextSystemPrompt,
   writeSectionContext,
-  SECTION_CONTEXT_MAX_BYTES,
 } from "./section-context.ts";
 import {
   applyStagedSkillWrite,
@@ -420,7 +418,6 @@ import {
   getStagedSkillWrite,
   installOrgSkill,
   installSkill,
-  listBotSkillsWithOrigin,
   resolveBotSkills,
   parseSkillMd,
   scanSkillText,
@@ -429,7 +426,6 @@ import {
   isSkillName,
   readSkillFile,
   rejectStagedSkillWrite,
-  removeSkill,
   setSkillEnabled,
   skillPackageStamps,
   skillsSystemPrompt,
@@ -537,18 +533,13 @@ import type { WebhookTrigger } from "../shared/webhooks.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { harnessMcpTokenEnv } from "./harness-mcp-token.ts";
 import {
-  installLibrarySkill,
-  listLibrarySkills,
   loadBundledSkills,
   loadUserSkills,
   mergeSkills,
   readLibrarySkillFile,
-  readSkillLibraryIndex,
   renderSkillInstructions,
   selectBundledSkills,
-  setLibrarySkillReviewState,
 } from "./skill-library.ts";
-import type { SkillsLibrarySkillWire } from "../shared/wire.ts";
 import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport, createLibraryPackageExport, createTeamPackageExport, picture as sharedPicture, TeamExportError, type ExportablePackageSkill, type TeamExportSkip } from "./package-export.ts";
@@ -663,6 +654,9 @@ import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createBotCreateRoutes } from "./routes/bots-create.ts";
 import { createBotSettingsRoutes, pinnedClientThreadGuard } from "./routes/bot-settings.ts";
 import { createBotPatchRoutes } from "./routes/bot-patch.ts";
+import { createBotLifecycleRoutes } from "./routes/bot-lifecycle.ts";
+import { createBotSkillsRoutes } from "./routes/bot-skills.ts";
+import { createTeamContextRoutes } from "./routes/team-context.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
@@ -17509,6 +17503,15 @@ ROUTES.push(createBotPatchRoutes({
   checkedModelSelection, engineSwitchNeedsAsk, currentBrowserSession, interruptAllDirectThreads, cancelGroupTurnOperations,
   revokeInternalCapabilitiesForThread, runningTurnInstance, closeOpenApprovals, assertTeamComputerChangeIdle, forgetTemporaryBrowser,
 }));
+// Stopping every bot on this computer and deleting a bot (bot-lifecycle.ts),
+// a bot's skills and the skills library (bot-skills.ts), a team's brief and
+// shared memory (team-context.ts).
+ROUTES.push(createBotLifecycleRoutes({
+  store, routines: () => routines, interruptAllDirectThreads, cancelDirectTurnDispatch, revokeInternalCapabilitiesForThread,
+  activeGroupTurnForBot, cancelGroupTurnOperations, runningTurnInstance, closeOpenApprovals, deleteBotWithLifecycle,
+}));
+ROUTES.push(createBotSkillsRoutes({ store, cfg, listBotSkills, readBotSkillFile, stagedSkillListing }));
+ROUTES.push(createTeamContextRoutes({ store, teamMemory }));
 // The bot-memory panel's routes (MEMORY.md, memory/ topics, journal); the
 // store lookups — the 404 precheck and journal thread titles — stay explicit.
 ROUTES.push(createBotMemoryRoutes({
@@ -22426,286 +22429,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // A preview belongs to the draft. Upload it through the existing image
       // endpoint only when the user commits the new bot or its defaults.
       return json(res, 200, { dataUrl: `data:${generated.mime};base64,${generated.bytes.toString("base64")}` });
-    }
-
-    if (method === "POST" && path === "/api/local-computer/interrupt") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      await Promise.allSettled(
-        store.bots
-          .filter((bot) => bot.computer === "local")
-          .map(async (bot) => {
-            await interruptAllDirectThreads(bot.id);
-            const routineRun = routines!.activeBotRunForBot(bot.id);
-            if (routineRun) {
-              cancelDirectTurnDispatch(bot.id, routineRun.threadId);
-              if (routineRun.threadId) {
-                revokeInternalCapabilitiesForThread(routineRun.threadId);
-              }
-              await routines!.cancelRun(routineRun.id);
-            }
-            const groupTurn = activeGroupTurnForBot(bot.id);
-            if (groupTurn) {
-              cancelGroupTurnOperations(groupTurn.group.id, groupTurn.threadId);
-              revokeInternalCapabilitiesForThread(groupTurn.threadId);
-              await runningTurnInstance(bot, groupTurn.threadId)?.adapter.interruptTurn(groupTurn.threadId).catch(() => {});
-              closeOpenApprovals(groupTurn.threadId);
-            }
-          }),
-      );
-      return json(res, 200, { ok: true });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)$/);
-    if (m && method === "DELETE") {
-      const result = await deleteBotWithLifecycle(m[1]);
-      return json(res, result.status, result.body);
-    }
-
-    // ── bot skills: imported Agent Skills (SKILL.md) ────────────────────
-    // Import lands DISABLED; the UI shows SKILL.md + scan warnings and a
-    // person enables after reading. See server/skills.ts for the policy.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/skill-template$/);
-    if (m && method === "POST") {
-      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      const checked = botSkillTemplateSchema.safeParse(await readBody(req));
-      if (!checked.success) return json(res, 400, { error: checked.error.message });
-      const input = checked.data;
-      const parsed = parseSkillMd(input.text);
-      if ("error" in parsed || parsed.name !== input.name) return json(res, 400, { error: "Skill name does not match its contents" });
-      const installed = installSkill(m[1], input.source, [{ path: "SKILL.md", content: input.text }]);
-      if ("error" in installed) return json(res, 422, { error: installed.error });
-      if (input.enabled) {
-        const enabled = setSkillEnabled(m[1], input.name, true);
-        if ("error" in enabled) return json(res, 422, { error: enabled.error });
-      }
-      return json(res, 201, { installed });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/skills$/);
-    if (m && method === "GET") {
-      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      if (skillsLibraryEnabled(cfg)) {
-        const { skills, library } = listBotSkillsWithOrigin(m[1]!, store.bot(m[1])!.assignedSkills);
-        return json(res, 200, {
-          skills,
-          library,
-          // the authoritative assignment list: merged rows hide
-          // assignments a same-name private skill shadows
-          assignedSkills: store.bot(m[1])!.assignedSkills,
-          staged: listStagedSkillWrites(m[1]).map(stagedSkillListing),
-        });
-      }
-      return json(res, 200, {
-        skills: listBotSkills(store.bot(m[1])!),
-        staged: listStagedSkillWrites(m[1]).map(stagedSkillListing),
-      });
-    }
-    if (m && method === "POST") {
-      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      const parsed = z.object({ source: z.string().min(1).max(2000) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "source must be a GitHub or skills.sh URL, or owner/repo" });
-      const fetched = await fetchSkillFromSource(parsed.data.source);
-      if ("error" in fetched) return json(res, 422, { error: fetched.error });
-      const results = fetched.skills.map((skill) => installSkill(m![1]!, skill.source, skill.files));
-      const installed = results.filter((entry): entry is Exclude<typeof entry, { error: string }> => !("error" in entry));
-      const errors = results.flatMap((entry) => ("error" in entry ? [entry.error] : []));
-      if (!installed.length) return json(res, 422, { error: errors.join("; ") || "nothing importable found" });
-      return json(res, 201, { installed, errors });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/skills\/([a-z0-9-]+)$/);
-    if (m && method === "GET") {
-      const bot = store.bot(m[1]);
-      const text = bot ? readBotSkillFile(bot, m[2]!) : null;
-      if (text === null) return json(res, 404, { error: "no such skill" });
-      return json(res, 200, { text });
-    }
-    if (m && method === "PATCH") {
-      const parsed = z.object({ enabled: z.boolean() }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "enabled must be true or false" });
-      const result = setSkillEnabled(m[1]!, m[2]!, parsed.data.enabled);
-      if ("error" in result) return json(res, 404, { error: result.error });
-      return json(res, 200, { skill: result });
-    }
-    if (m && method === "DELETE") {
-      const result = removeSkill(m[1]!, m[2]!);
-      if ("error" in result) return json(res, 404, { error: result.error });
-      return json(res, 200, { ok: true });
-    }
-
-    // ── skills library (features.skillsLibrary): local browse surface ────
-    // Everything here is local: the library on disk, assignments on bot
-    // records, imports from pasted SKILL.md text. No registry, no network.
-    m = path.match(/^\/api\/skills-library$/);
-    if (m && method === "GET") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      const index = readSkillLibraryIndex();
-      const skills: SkillsLibrarySkillWire[] = listLibrarySkills()
-        .map((listing): SkillsLibrarySkillWire => ({
-          name: listing.name,
-          description: listing.description,
-          source: listing.source,
-          enabled: listing.enabled,
-          tags: listing.tags ?? [],
-          version: index[listing.name]?.package?.release ?? null,
-          importedAt: listing.importedAt,
-          ...(listing.license ? { license: listing.license } : {}),
-          ...(listing.compatibility ? { compatibility: listing.compatibility } : {}),
-          warnings: listing.warnings,
-          assignedBots: store.bots
-            .filter((bot) => bot.assignedSkills?.includes(listing.name))
-            .map((bot) => ({ id: bot.id, name: bot.name })),
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      return json(res, 200, { skills });
-    }
-    if (m && method === "POST") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      const parsed = z.object({ text: z.string().min(1) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "text must be the SKILL.md contents to import" });
-      const skill = parseSkillMd(parsed.data.text);
-      if ("error" in skill) return json(res, 400, { error: skill.error });
-      // Imports land disabled with their scan warnings attached: enabling is
-      // a separate, explicit review step on the row.
-      const installed = installLibrarySkill({
-        name: skill.name,
-        instructions: parsed.data.text,
-        source: "local-import",
-        license: skill.license,
-        compatibility: skill.compatibility,
-        tags: skill.tags,
-        warnings: scanSkillText(parsed.data.text),
-        reviewState: "disabled",
-      });
-      if ("error" in installed) return json(res, 422, { error: installed.error });
-      return json(res, 201, { skill: installed });
-    }
-    m = path.match(/^\/api\/skills-library\/([a-z0-9-]+)$/);
-    if (m && method === "GET") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      const text = readLibrarySkillFile(m[1]!);
-      if (text === null) return json(res, 404, { error: "no such skill" });
-      return json(res, 200, { text });
-    }
-    if (m && method === "PATCH") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      const parsed = z.object({ enabled: z.boolean() }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "enabled must be true or false" });
-      const result = setLibrarySkillReviewState(m[1]!, parsed.data.enabled ? "approved" : "disabled");
-      if ("error" in result) return json(res, 404, { error: result.error });
-      return json(res, 200, { skill: result });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/skills-library$/);
-    if (m && method === "PUT") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      const parsed = z.object({ skills: z.array(z.string().min(1).max(64)).max(200) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "skills must be a list of skill names" });
-      const index = readSkillLibraryIndex();
-      const names = [...new Set(parsed.data.skills)];
-      const unknown = names.filter((name) => !index[name]);
-      if (unknown.length) return json(res, 422, { error: "not in the library: " + unknown.join(", ") });
-      store.patchBot(m[1]!, { assignedSkills: names });
-      return json(res, 200, { assignedSkills: names });
-    }
-
-    // ── section context: a user-owned team brief ────────────────────────
-    // Bots receive this in their system context, but no agent tool can write
-    // it. That keeps one bot from silently changing every teammate's future
-    // turns. The section query parameter is required even for General (""),
-    // so a malformed client cannot accidentally read or replace that brief.
-    // ── team memory: the section's shared people, places, decisions, terms ──
-    // The person's view and their edits. Same section rule as the brief:
-    // the query parameter is required even for General.
-    if (path === "/api/team-memory" && (method === "GET" || method === "POST")) {
-      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
-      const section = sectionContextKey(url.searchParams.get("section") ?? "");
-      if (section.length > 60) return json(res, 400, { error: "section must be at most 60 characters" });
-      if (method === "GET") {
-        return json(res, 200, { section, label: sectionContextLabel(section), entries: teamMemory.list(section) });
-      }
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || !(TEAM_MEMORY_KINDS as readonly string[]).includes(String(body.kind))) {
-        return json(res, 400, { error: `kind must be one of ${TEAM_MEMORY_KINDS.join(", ")}` });
-      }
-      try {
-        const proposed = teamMemory.propose(
-          section,
-          { kind: body.kind as TeamMemoryKind, name: String(body.name ?? ""), detail: String(body.detail ?? ""), aliases: Array.isArray(body.aliases) ? body.aliases.map(String) : undefined },
-          { botId: "", botName: "you", threadId: "", at: Date.now() },
-        );
-        // the person's own entry never waits on the person
-        if (proposed.status === "proposed") teamMemory.resolve(section, proposed.entry.id, "accept");
-        return json(res, 201, { entries: teamMemory.list(section) });
-      } catch (error) {
-        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-    m = path.match(/^\/api\/team-memory\/([\w-]+)$/);
-    if (m && (method === "PATCH" || method === "DELETE")) {
-      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
-      const section = sectionContextKey(url.searchParams.get("section") ?? "");
-      if (method === "DELETE") {
-        if (!teamMemory.remove(section, m[1])) return json(res, 404, { error: "no such entry" });
-        return json(res, 200, { entries: teamMemory.list(section) });
-      }
-      const body = await readBody(req);
-      if (!body || typeof body !== "object") return json(res, 400, { error: "body must be a JSON object" });
-      if (body.accept === true) {
-        const result = teamMemory.resolve(section, m[1], "accept");
-        if (!result.claimed) return json(res, 404, { error: "no such entry" });
-        return json(res, 200, { entries: teamMemory.list(section) });
-      }
-      const patch: { name?: string; detail?: string; aliases?: string[]; kind?: TeamMemoryKind } = {};
-      if (typeof body.name === "string") patch.name = body.name;
-      if (typeof body.detail === "string") patch.detail = body.detail;
-      if (Array.isArray(body.aliases)) patch.aliases = body.aliases.map(String);
-      if (typeof body.kind === "string" && (TEAM_MEMORY_KINDS as readonly string[]).includes(body.kind)) patch.kind = body.kind as TeamMemoryKind;
-      try {
-        const updated = teamMemory.update(section, m[1], patch);
-        if (!updated) return json(res, 404, { error: "no such entry" });
-        return json(res, 200, { entry: updated, entries: teamMemory.list(section) });
-      } catch (error) {
-        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-
-    if (path === "/api/section-context" && (method === "GET" || method === "PUT")) {
-      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
-      const requested = url.searchParams.get("section") ?? "";
-      const section = sectionContextKey(requested);
-      if (section.length > 60) return json(res, 400, { error: "section must be at most 60 characters" });
-      const exists =
-        section === "" ||
-        store.sections.includes(section) ||
-        store.bots.some((bot) => !bot.hidden && sectionKey(bot.section) === section) ||
-        store.groups.some((group) => sectionKey(group.section) === section);
-      if (!exists) return json(res, 404, { error: "no such team" });
-
-      if (method === "GET") {
-        const context = readSectionContext(section);
-        return json(res, 200, {
-          section,
-          label: sectionContextLabel(section),
-          text: context?.text ?? "",
-          updatedAt: context?.updatedAt ?? null,
-          maxBytes: SECTION_CONTEXT_MAX_BYTES,
-        });
-      }
-
-      const parsed = z.object({ text: z.string() }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "text must be a string" });
-      if (Buffer.byteLength(parsed.data.text, "utf8") > SECTION_CONTEXT_MAX_BYTES) {
-        return json(res, 400, { error: `section context is capped at ${SECTION_CONTEXT_MAX_BYTES / 1000}KB` });
-      }
-      const context = writeSectionContext(section, parsed.data.text);
-      return json(res, 200, {
-        ok: true,
-        section,
-        label: sectionContextLabel(section),
-        text: context?.text ?? "",
-        updatedAt: context?.updatedAt ?? null,
-        maxBytes: SECTION_CONTEXT_MAX_BYTES,
-      });
     }
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/soul$/);
