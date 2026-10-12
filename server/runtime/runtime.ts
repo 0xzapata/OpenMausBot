@@ -14,9 +14,9 @@ import { composeEnvelope } from "./envelope.ts";
 import { assignmentLevel } from "./level.ts";
 import type { RuntimeStore } from "./store.ts";
 import { awaited, childrenSince, clip, CUT_TWICE, duration, isTerminal, ownsConversation, path, restartNote, wakeOwner } from "./tree.ts";
-import { DEFAULT_LIMITS, type Assignment, type Assignee, type Clock, type EnqueueRequest, type EnqueueResult, type EnvelopeNames,
+import { DEFAULT_LIMITS, type Assignment, type Assignee, type Clock, type EndResult, type EnqueueRequest, type EnqueueResult, type EnvelopeNames,
   type EventKind, type InboxItem, type InboxKind, type Level, type Limits, type LiveEdge, type Origin, type Outcome, type Owner,
-  type Reply, type Requester, type RunInput, type RunResult, type StatusView, type TurnEvidence, type TurnRunner } from "./types.ts";
+  type Reply, type Requester, type RunInput, type RunResult, type StatusView, type TurnRunner } from "./types.ts";
 
 export interface RuntimeOptions {
   /** Default: Date.now and performance.now. */
@@ -163,15 +163,25 @@ export class Runtime {
   }
 
   /** That requesting turn ended. */
-  end(rootId: string, result: { ok: boolean; text: string; evidence?: TurnEvidence }): void {
+  end(rootId: string, result: EndResult): void {
     const n = this.store.get(rootId);
     if (!n || n.status !== "running") { this.log(`end(${rootId}): not a running root`); return; }
     // A turn the teardown fails is left for the next open() to find cut.
-    if (!result.ok && this.closing) return;
-    const outcome: RunResult = result.ok
-      ? { kind: "completed", text: result.text, ...(result.evidence ? { evidence: result.evidence } : {}) }
-      : { kind: "failed", outcome: "provider_error", text: result.text, ...(result.evidence ? { evidence: result.evidence } : {}) };
+    if (!result.ok && !result.needsInput && !result.continue && this.closing) return;
+    const evidence = result.evidence ? { evidence: result.evidence } : {};
+    const outcome: RunResult = result.needsInput
+      ? { kind: "needs_input", question: result.needsInput.question, ...(result.needsInput.cards ? { cards: result.needsInput.cards } : {}), ...evidence }
+      : result.continue
+        ? { kind: "continue", text: result.text, note: result.continue.note, ...(result.continue.handoffPath ? { handoffPath: result.continue.handoffPath } : {}), ...evidence }
+        : result.ok
+          ? { kind: "completed", text: result.text, ...evidence }
+          : { kind: "failed", outcome: "provider_error", text: result.text, ...evidence };
     this.withBatch(() => this.finishTurn(n, outcome));
+  }
+
+  /** Remove terminal trees that finished before `before`. Returns rows removed. */
+  prune(before: number): number {
+    return this.store.prune(before);
   }
 
   /** Hand work to a teammate from a running node. Never throws. */
@@ -370,13 +380,15 @@ export class Runtime {
       // it replays, so a session that lost them still hears them here.
       const settled = awaited(children).filter(isTerminal);
       const names = this.names(n, parent);
-      const turn: RunInput["turn"] = resumed ? "resume" : n.restart === "rerun" ? "rerun" : n.answer !== undefined ? "answered" : "first";
+      const turn: RunInput["turn"] = resumed ? "resume" : n.restart === "rerun" ? "rerun" : n.answer !== undefined ? "answered"
+        : n.continuation ? "continued" : "first";
       input = {
         turn,
         resumed: turn !== "first",
         restartNote: restartNote(n, children, child => this.names(child, n).assignee),
         envelope: composeEnvelope(n, names, parent),
         ...(n.answer !== undefined ? { answer: n.answer } : {}),
+        ...(n.continuation ? { continuation: { note: n.continuation.note, ...(n.continuation.handoffPath ? { handoffPath: n.continuation.handoffPath } : {}) } } : {}),
         ...(settled.length ? { settled } : {}),
         level: n.level, mode: n.mode,
       };
@@ -388,6 +400,8 @@ export class Runtime {
       return false;
     }
     n.status = "running"; n.startedAt = now; n.executions += 1; n.lastActivityAt = now;
+    // What the turn continues from rides RunInput; the row carries it no further.
+    delete n.continuation; delete n.cards;
     if (root.id !== n.id) root.lastActivityAt = now;
     if (root.budgets) root.budgets.executions += 1;
     try {
@@ -448,8 +462,22 @@ export class Runtime {
     if (!this.lastThrew && problem) { this.settle(n, "failed", "refused", problem); return; }
     if (result.evidence) n.evidence = result.evidence;
     const root = n.parentId ? this.store.get(n.rootId) : n;
+    if (result.kind === "continue") {
+      // The turn stopped short of done, not of its budget: the same node
+      // runs again in place, told why and where the steps so far are.
+      n.status = "queued"; n.result = clip(result.text, RESULT_MAX); n.lastActivityAt = now;
+      n.continuation = { note: result.note, ...(result.handoffPath ? { handoffPath: result.handoffPath } : {}), count: (n.continuation?.count ?? 0) + 1 };
+      if (root) this.renew(root, now);
+      this.store.transaction(() => {
+        this.store.update(n, { kind: "continued", at: now, detail: `queued: ${clip(result.note, DETAIL_MAX)}` });
+        if (root && root.id !== n.id) this.store.update(root);
+      });
+      this.touch(n, ...root && root.id !== n.id ? [root] : []);
+      return;
+    }
     if (result.kind === "needs_input") {
       n.status = "needs_input"; n.question = clip(result.question, BRIEF_MAX); n.lastActivityAt = now;
+      if (result.cards?.length) n.cards = result.cards; else delete n.cards;
       this.store.update(n, { kind: "parked", at: now, detail: `needs_input: ${clip(result.question, DETAIL_MAX)}` });
       this.touch(n);
       this.safe("park", () => this.runner.park(n, n.question ?? ""));

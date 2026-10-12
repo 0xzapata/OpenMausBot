@@ -196,3 +196,20 @@ export function envelopeNote(envelope: string): string {
   const answer = /\n\n((?:Your question was: |The person answered: )[^\n]*)$/.exec(rest);
   return envelope.slice(0, at) + (answer ? `\n\n${answer[1]}` : "");
 }
+
+/** The text a root's later execution opens with: its own turn run again
+ * after a restart, the turn after the person acted on its cards, or a turn
+ * that continues one that stopped short. A root is the person's own
+ * conversation, so there is no envelope: only what the harness knows. */
+export function composeRootTurn(a: Assignment, input: { turn: "rerun" | "answered" | "continued" | "first"; restartNote: string; answer?: string;
+  continuation?: { note: string; handoffPath?: string } }): string {
+  const brief = quote(a.brief, QUOTE_MAX);
+  const lines: string[] = [];
+  if (input.restartNote) lines.push(input.restartNote.trim());
+  if (input.answer !== undefined) lines.push(input.answer);
+  else if (input.continuation) {
+    lines.push(input.continuation.note.trim() + (input.continuation.handoffPath
+      ? ` Every step so far is listed in ${input.continuation.handoffPath}; read it before going on.` : ""));
+  } else if (brief) lines.push(`Continue the request you were working on: "${brief}".`);
+  return lines.join("\n\n");
+}

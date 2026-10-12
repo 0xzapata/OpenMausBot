@@ -7,7 +7,7 @@
 import { RuntimeCoordinator } from "./runtime-coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
 import type { LegacyThreadResolver } from "./runtime/import-legacy.ts";
-import type { EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView } from "./runtime/types.ts";
+import type { EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView, TurnEvidence } from "./runtime/types.ts";
 
 export type { LegacyThreadResolver };
 
@@ -48,6 +48,30 @@ export interface HandoffView {
   outcomeDetail?: string;
   /** While parked: the exact question for the person. */
   question?: string;
+  /** While parked on the person's cards (a root): the cards' message ids. */
+  cards?: string[];
+}
+
+/** A person's or a routine's own turn, as a root (one per request). */
+export interface BeginTurnRequest {
+  /** The turn's dispatch claim id: the root id, and what coordinate_bots keys its hand-offs on. */
+  id: string;
+  address: RoomAddress;
+  /** The person's message or the routine's instructions. */
+  brief: string;
+  level: Level;
+  opener?: HandoffOpener;
+  origin?: WorkOrigin;
+}
+
+/** How a host-run turn ended. `cap` continues the same node in place (a
+ * step cap, a seat the turn could not get); `cards` parks it on the person. */
+export interface HostTurnResult {
+  ok: boolean;
+  text: string;
+  evidence?: TurnEvidence;
+  cap?: { note: string; handoffPath?: string };
+  cards?: { question: string; ids: string[] };
 }
 
 /** Who hands the work on, as the host knows it from the turn's capability:
@@ -90,6 +114,8 @@ export interface ComposedTurn {
   text: string;
   note: string;
   restartNote: string;
+  /** Which execution of the node this is (runtime types.ts RunInput.turn). */
+  turn: "first" | "resume" | "rerun" | "answered" | "continued";
 }
 
 export interface LiveHandoffEdge {
@@ -107,15 +133,18 @@ export interface CoordinatorHost {
   validate(node: HandoffView, parent?: HandoffView): string | undefined;
   /** The assignee cannot take a turn now (slot-aware admission). */
   busy(node: HandoffView): boolean;
-  /** Run one turn of the assignee with the composed text; resolves when the engine settles. */
-  run(node: HandoffView, resumed: boolean, signal: AbortSignal, composed: ComposedTurn): Promise<{ ok: boolean; text: string }>;
+  /** Run one turn of the assignee with the composed text; resolves when the
+   * engine settles. For a root (no parentId) this is the person's own
+   * conversation continuing: person-visible, never internal. */
+  run(node: HandoffView, resumed: boolean, signal: AbortSignal, composed: ComposedTurn): Promise<HostTurnResult>;
   /** A settled child, to its requester; a root the runtime ended, alone. */
   report(child: HandoffView, parent?: HandoffView): void;
   changed(groupIds: ReadonlySet<string>, directThreadIds: ReadonlySet<string>): void;
   /** Display names for the envelope of a turn. */
   names(node: HandoffView, parent?: HandoffView): EnvelopeNames;
   /** A teammate ended its turn on a question for the person: show it where
-   * the work was asked for (and again after a restart). */
+   * the work was asked for (and again after a restart). For a root parked on
+   * its own cards, the cards already show; show nothing more. */
   park(node: HandoffView, question: string): void;
   /** The permission level the target thread will actually run with, after
    * the host applied any delegated level, and its engine kind. Recorded on
@@ -139,6 +168,17 @@ export interface Coordinator {
   poll(owner: Owner): { items: StatusView["inbox"]; assignments: HandoffView[] };
   /** Non-terminal work the conversation in this thread is waiting on, rooms included. */
   outstandingFor(threadId: string): HandoffView[];
+  /** A person's or routine's own turn begins: its root, running. */
+  beginTurn(req: BeginTurnRequest): HandoffView;
+  /** That turn ended (completed, failed, parked on cards, or continuing in place). */
+  endTurn(id: string, result: HostTurnResult): void;
+  /** The person acted on a parked root's cards: the root runs its next
+   * execution with the harness text. False when the root is not parked. */
+  answerRoot(id: string, text: string): boolean;
+  /** The root parked on the person's cards in this thread, if any. */
+  parkedDirect(threadId: string): HandoffView | undefined;
+  /** Remove terminal trees that finished before `before`. */
+  prune(before: number): number;
   sharedRequest(node: HandoffView): { id: string; botIds: string[] };
   sourceSettled(generation: string, ok: boolean): void;
   cancelRoom(groupId: string, threadId?: string, reason?: string, status?: "failed" | "cancelled"): void;

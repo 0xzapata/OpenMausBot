@@ -11,14 +11,14 @@
 // as "not now" by the Runtime, so nothing here wraps it again.
 import { join } from "node:path";
 
-import type { Coordinator, CoordinatorHost, CoordinatorOptions, HandoffOptions, HandoffView, LiveHandoffEdge, RoomAddress } from "./coordinator.ts";
+import type { BeginTurnRequest, Coordinator, CoordinatorHost, CoordinatorOptions, HandoffOptions, HandoffView, HostTurnResult, LiveHandoffEdge, RoomAddress } from "./coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
-import { composeEnvelope, composeReport, composeResume, envelopeNote } from "./runtime/envelope.ts";
+import { composeEnvelope, composeReport, composeResume, composeRootTurn, envelopeNote } from "./runtime/envelope.ts";
 import { Runtime } from "./runtime/runtime.ts";
 import { importLegacyDelegations, importLegacyHandoffs, type LegacyThreadResolver } from "./runtime/import-legacy.ts";
 import { openRuntimeStore, type RuntimeStore } from "./runtime/store.ts";
 import { childrenSince, clip, isTerminal, path } from "./runtime/tree.ts";
-import type { Assignment, Origin, Owner, Reply, Requester, RunInput, RunResult, StatusView, TurnRunner } from "./runtime/types.ts";
+import type { Assignment, EndResult, Origin, Owner, Reply, Requester, RunInput, RunResult, StatusView, TurnRunner } from "./runtime/types.ts";
 
 /** Refusals the model and index.ts read; the words are the legacy tree's. */
 const NOT_RUNNING = "The originating room task is no longer running";
@@ -103,6 +103,7 @@ export function view(a: Assignment, parent?: Assignment): HandoffView {
   if (a.outcome !== undefined) node.outcome = a.outcome;
   if (a.outcomeDetail !== undefined) node.outcomeDetail = a.outcomeDetail;
   if (a.question !== undefined) node.question = a.question;
+  if (a.cards !== undefined) node.cards = a.cards;
   if (a.parentId !== undefined) node.parentId = a.parentId;
   if (groupId !== undefined) node.groupId = groupId;
   if (a.batchKey !== undefined) node.requestBatchKey = a.batchKey;
@@ -289,6 +290,52 @@ export class RuntimeCoordinator implements Coordinator {
     return live.filter(a => a.parentId !== undefined && mine.has(a.parentId) && a.reply !== "none").map(a => this.project(a));
   }
 
+  beginTurn(req: BeginTurnRequest): HandoffView {
+    this.ready();
+    const existing = this.store.get(req.id);
+    if (existing) return this.project(existing);
+    const { address, opener } = req;
+    const row = this.runtime.begin({
+      id: req.id,
+      origin: opener?.origin ?? runtimeOrigin(req.origin, address),
+      requester: opener
+        ? { ...opener.requester, botId: opener.requester.botId ?? address.botId, threadId: opener.requester.threadId ?? address.threadId, chief: this.host.chiefOf(address) }
+        : { kind: "person", threadId: address.threadId, botId: address.botId, chief: this.host.chiefOf(address) },
+      assignee: { botId: address.botId, destination: { kind: address.groupId ? "room_thread" : "standing_thread", threadId: address.threadId,
+        ...(address.groupId ? { groupId: address.groupId } : {}) } },
+      brief: req.brief.slice(0, BRIEF_MAX),
+      level: req.level,
+      ...(opener?.requester.kind === "external_runtime" ? { reply: "poll" as const } : {}),
+    });
+    return this.project(row);
+  }
+
+  endTurn(id: string, result: HostTurnResult): void {
+    this.ready();
+    const end: EndResult = { ok: result.ok, text: result.text, ...(result.evidence ? { evidence: result.evidence } : {}),
+      ...(result.cards ? { needsInput: { question: result.cards.question, cards: result.cards.ids } } : {}),
+      ...(result.cap ? { continue: { note: result.cap.note, ...(result.cap.handoffPath ? { handoffPath: result.cap.handoffPath } : {}) } } : {}) };
+    this.runtime.end(id, end);
+  }
+
+  answerRoot(id: string, text: string): boolean {
+    this.ready();
+    const a = this.store.get(id);
+    if (!a || a.parentId !== undefined || a.status !== "needs_input") return false;
+    return this.runtime.answer(id, text);
+  }
+
+  parkedDirect(threadId: string): HandoffView | undefined {
+    this.ready();
+    const a = this.live().find(n => n.parentId === undefined && n.status === "needs_input" && this.direct(n, threadId));
+    return a && this.project(a);
+  }
+
+  prune(before: number): number {
+    this.ready();
+    return this.runtime.prune(before);
+  }
+
   /** A room brief is displayed once; each recipient keeps its own execution and result. */
   sharedRequest(node: HandoffView): { id: string; botIds: string[] } {
     this.ready();
@@ -446,20 +493,29 @@ export class RuntimeCoordinator implements Coordinator {
     // those open with the envelope again (and the restart note first).
     const resumed = input.turn === "resume";
     const settled = input.settled ?? [];
+    const root = a.parentId === undefined;
+    // A root is the person's own conversation: its later executions carry
+    // what the harness knows (a restart, the person's act, a continuation),
+    // never an assignment envelope. A resume carries its reports either way.
     const body = resumed
       ? composeResume(a, this.host.names(node, parent && this.project(parent)),
         settled.map(child => composeReport(this.readable(child, a, node), this.host.names(view(child, a), node))))
-      : input.envelope;
-    // A room whose transcript already carries the brief gets the note alone;
-    // a resume carries its reports either way.
-    const note = resumed ? body : envelopeNote(body);
+      : root
+        ? composeRootTurn(a, { turn: input.turn === "resume" ? "first" : input.turn, restartNote: "", ...(input.answer !== undefined ? { answer: input.answer } : {}),
+          ...(input.continuation ? { continuation: input.continuation } : {}) })
+        : input.envelope;
+    // A room whose transcript already carries the brief gets the note alone.
+    const note = resumed || root ? body : envelopeNote(body);
+    const evidence = (result: HostTurnResult) => result.evidence ? { evidence: result.evidence } : {};
     const result = await this.host.run(node, resumed, signal,
-      { text: `${input.restartNote}${body}`, note: `${input.restartNote}${note}`, restartNote: input.restartNote });
+      { text: `${input.restartNote}${body}`, note: `${input.restartNote}${note}`, restartNote: input.restartNote, turn: input.turn });
     if (signal.aborted) return { kind: "failed", outcome: "stopped", text: result.text };
-    if (!result.ok) return { kind: "failed", outcome: "provider_error", text: result.text };
+    if (result.cap) return { kind: "continue", text: result.text, note: result.cap.note, ...(result.cap.handoffPath ? { handoffPath: result.cap.handoffPath } : {}), ...evidence(result) };
+    if (result.cards) return { kind: "needs_input", question: result.cards.question, cards: result.cards.ids, ...evidence(result) };
+    if (!result.ok) return { kind: "failed", outcome: "provider_error", text: result.text, ...evidence(result) };
     const question = needsInputQuestion(result.text);
-    if (question !== undefined) return { kind: "needs_input", question };
-    return { kind: "completed", text: result.text };
+    if (question !== undefined) return { kind: "needs_input", question, ...evidence(result) };
+    return { kind: "completed", text: result.text, ...evidence(result) };
   }
 
   // ── small helpers ────────────────────────────────────────────────────
