@@ -150,7 +150,7 @@ export function outwardActions(rows: readonly Message[]): string[] {
  * the tool calls that returned ok, the last few error texts, and the
  * outward actions it completed. The runtime reads the first two for its
  * continuation guard and the last for its restart policy. An error row is
- * the harness's own line ("error: …") or a tool that failed; a failed
+ * the harness's own error row or a tool that failed; a failed
  * tool's row is named for the tool, so its output's first line is kept
  * beside the name, or three failed shell calls would read as one error
  * three times. */

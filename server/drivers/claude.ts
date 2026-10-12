@@ -52,6 +52,7 @@ import {
   resolveInjectId,
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
+import { runKeepWarmPing, type KeepWarmContract } from "./claude-keepwarm.ts";
 import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
@@ -425,6 +426,11 @@ export const CLAUDE_FLAG_FLOORS = {
   // A guest's turn on a Cloud home (GUEST_CLAUDE_TOOLS): 2.1.248 takes
   // --restricted, 2.1.257 honours blockReadsOutsideWorkingDirectories.
   "--restricted": [2, 1, 257],
+  // Prompt-cache keep-warm pings (claude-keepwarm.ts) only. Not bisected:
+  // both are in every 2.1 build checked. A CLI that lacks one rejects the
+  // ping as an argument error, which ends the keep-warm window, nothing else.
+  "--fork-session": [2, 1, 0],
+  "--no-session-persistence": [2, 1, 0],
 } as const satisfies Record<string, ClaudeCliVersion>;
 
 /** The only built-in tools a guest's turn on a Cloud home gets
@@ -1416,6 +1422,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       closed: Promise<void>;
     }
     const sessions = new Map<string, Session>();
+    // Prompt-cache keep-warm (claude-keepwarm.ts): what each live process
+    // was launched with, so a ping can replay the exact request prefix, and
+    // how long a keep-warm window wants that process kept past its idle
+    // close (the next real turn must reuse it: a relaunch recomputes the
+    // volatile system prompt and would miss the cache anyway).
+    const warmContracts = new Map<string, KeepWarmContract>();
+    const warmHolds = new Map<string, number>();
     const { idleMs: SESSION_IDLE_MS } = sessionIdlePolicy("CLAUDE");
 
     const stopSession = (session: Session) => {
@@ -1427,6 +1440,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const s = sessions.get(threadId);
       if (!s || s.closing) return;
       s.closing = true;
+      warmContracts.delete(threadId);
+      warmHolds.delete(threadId);
       if (s.idleTimer) clearTimeout(s.idleTimer);
       // Broker ownership belongs to this session. Detach and close it now,
       // before a replacement can bind the same per-thread socket; the old
@@ -1448,7 +1463,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const s = sessions.get(threadId);
       if (!s) return;
       if (s.idleTimer) clearTimeout(s.idleTimer);
-      s.idleTimer = setTimeout(() => closeSession(threadId, "idle"), SESSION_IDLE_MS);
+      const held = (warmHolds.get(threadId) ?? 0) - Date.now();
+      s.idleTimer = setTimeout(() => closeSession(threadId, "idle"), Math.min(2_147_483_647, Math.max(SESSION_IDLE_MS, held)));
       s.idleTimer.unref?.();
     };
     const writeUser = (s: Session, threadId: string, promptMsg: ClaudeUserMessage): Promise<boolean> => {
@@ -1993,6 +2009,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       } catch (error) {
         cleanupUnownedLaunch();
         throw error;
+      }
+      // The contract a keep-warm ping replays. Never for a guest's turn.
+      if (turn.guestConfined) warmContracts.delete(threadId);
+      else {
+        warmContracts.set(threadId, {
+          args: [...args], env: { ...env }, cwd, system: turn.system ?? null,
+          mcpServers: mcpConfigPath ? JSON.parse(JSON.stringify(mcpServers)) : null,
+          settings: authSettingsPath ? JSON.parse(JSON.stringify(settings)) : null,
+        });
       }
       let markClosed!: () => void;
       const session: Session = {
@@ -2853,6 +2878,29 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return behavior === "allow" ? "allowed-once" : behavior === "answer" ? "answered" : "rejected";
         },
         hasSession: (threadId) => active.has(threadId),
+        cacheKeepWarm: {
+          ping: async (threadId, options) => {
+            const live = sessions.get(threadId);
+            const contract = warmContracts.get(threadId);
+            if (!live || live.closing || live.child.exitCode !== null || !contract || !live.sessionId) {
+              return { ok: false, reason: "the conversation's Claude session has closed" };
+            }
+            if (live.turn || active.has(threadId)) return { ok: false, reason: "a turn is running", busy: true };
+            if (cliVersion !== null && !(claudeCliSupports(cliVersion, "--fork-session") && claudeCliSupports(cliVersion, "--no-session-persistence"))) {
+              return { ok: false, reason: "this Claude Code is too old to fork a session; update Claude Code" };
+            }
+            return runKeepWarmPing({ cli: config.cli, contract, sessionId: live.sessionId, signal: options?.signal });
+          },
+          hold: (threadId, until) => {
+            if (until === null) warmHolds.delete(threadId);
+            else warmHolds.set(threadId, until);
+            const live = sessions.get(threadId);
+            if (!live || live.closing || live.child.exitCode !== null) return false;
+            // re-time an idle process's close; a busy one re-arms at settle
+            if (!live.turn) armIdle(threadId);
+            return true;
+          },
+        },
         stopAll: async () => {
           for (const { stop } of active.values()) stop();
           for (const threadId of Array.from(sessions.keys())) closeSession(threadId, "stopAll");

@@ -103,28 +103,28 @@ const FULL = "skills+shared+voice";
  * catalog is the goal, so lock the win in by lowering the number. */
 // PR 5 (rooms as roots): the five one-release aliases of coordinate_bots and
 // assignment_status (delegate_bot, ask_bot, send_to_bot, check_delegation,
-// wait_delegation) are gone, so every profile is 3,175 B lighter than PR 3's
+// wait_delegation) are gone, so every profile is 3,175 B lighter than PR 3's (fill_login, saved website logins, adds 670 B)
 // and carries the one surface alone (docs/runtime-contract.md §9).
 const BUDGET_BASELINE: Record<string, number> = {
-  "default": 51882,
-  "voice": 52623,
-  "shared": 53627,
-  "shared+voice": 54368,
-  "skills": 53935,
-  "skills+voice": 54676,
-  "skills+shared": 55680,
-  "skills+shared+voice": 56421,
-  "non-chief": 42232,
-  "voice+non-chief": 42973,
-  "shared+non-chief": 43977,
-  "shared+voice+non-chief": 44718,
-  "skills+non-chief": 44285,
-  "skills+voice+non-chief": 45026,
-  "skills+shared+non-chief": 46030,
-  "skills+shared+voice+non-chief": 46771,
-  "skills+shared+voice+cloud-home": 55476,
-  "skills+shared+voice+non-chief+cloud-home": 45826,
-  "default+legacy-switches": 51882,
+  "default": 52552,
+  "voice": 53293,
+  "shared": 54297,
+  "shared+voice": 55038,
+  "skills": 54605,
+  "skills+voice": 55346,
+  "skills+shared": 56350,
+  "skills+shared+voice": 57091,
+  "non-chief": 42902,
+  "voice+non-chief": 43643,
+  "shared+non-chief": 44647,
+  "shared+voice+non-chief": 45388,
+  "skills+non-chief": 44955,
+  "skills+voice+non-chief": 45696,
+  "skills+shared+non-chief": 46700,
+  "skills+shared+voice+non-chief": 47441,
+  "skills+shared+voice+cloud-home": 56146,
+  "skills+shared+voice+non-chief+cloud-home": 46496,
+  "default+legacy-switches": 52552,
 };
 
 const RPC_PREFIX = '{"jsonrpc":"2.0","id":1,"result":';

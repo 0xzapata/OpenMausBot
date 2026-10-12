@@ -3,10 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { installedPackage, pinnedDuckdbVersion, pinnedResvgVersion, platformPackage, resvgPlatformPackage, stageDuckdb, targetsFor, verifyDuckdbTree } from "./prepare-duckdb.mjs";
+import { installedPackage, pinnedDuckdbVersion, pinnedOnePasswordVersion, pinnedResvgVersion, platformPackage, resvgPlatformPackage, stageDuckdb, targetsFor, verifyDuckdbTree } from "./prepare-duckdb.mjs";
 
 const PIN = "9.9.9-r.9";
 const RESVG_PIN = "8.8.8";
+const OP_PIN = "7.7.7";
 const temporaryDirectories = [];
 
 function temporary(prefix) {
@@ -25,10 +26,10 @@ function writePackage(directory, name, version, files, scope = "@duckdb") {
   }
 }
 
-/** A flat node_modules (npm's layout) holding the DuckDB and resvg packages for one target. */
-function flatInstall({ version = PIN, platform = "linux", arch = "x64", nativeFiles, resvgBinary = "node" } = {}) {
+/** A flat node_modules (npm's layout) holding the DuckDB, resvg and 1Password packages for one target. */
+function flatInstall({ version = PIN, platform = "linux", arch = "x64", nativeFiles, resvgBinary = "node", onePasswordCore = OP_PIN } = {}) {
   const root = temporary("omb-duckdb-root-");
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ dependencies: { "@duckdb/node-api": PIN, "@resvg/resvg-js": RESVG_PIN } }));
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ dependencies: { "@duckdb/node-api": PIN, "@resvg/resvg-js": RESVG_PIN, "@1password/sdk": OP_PIN } }));
   const nodeModules = path.join(root, "node_modules");
   const scope = path.join(nodeModules, "@duckdb");
   writePackage(path.join(scope, "node-api"), "node-api", version, { "lib/index.js": "module.exports = {};" });
@@ -39,7 +40,11 @@ function flatInstall({ version = PIN, platform = "linux", arch = "x64", nativeFi
   const resvgNative = resvgPlatformPackage(platform, arch);
   writePackage(path.join(resvg, "resvg-js"), "resvg-js", RESVG_PIN, { "index.js": "module.exports = require('./js-binding.js');" }, "@resvg");
   writePackage(path.join(resvg, resvgNative.name), resvgNative.name, RESVG_PIN, { [resvgNative.binary]: resvgBinary }, "@resvg");
-  return { root, nodeModules, scope, resvg };
+  const onePassword = path.join(nodeModules, "@1password");
+  writePackage(path.join(onePassword, "sdk"), "sdk", OP_PIN, { "dist/sdk.js": "module.exports = require('@1password/sdk-core');" }, "@1password");
+  fs.writeFileSync(path.join(onePassword, "sdk", "package.json"), JSON.stringify({ name: "@1password/sdk", version: OP_PIN, dependencies: { "@1password/sdk-core": OP_PIN } }));
+  writePackage(path.join(onePassword, "sdk-core"), "sdk-core", onePasswordCore, { "nodejs/core.js": "module.exports = {};", "nodejs/core_bg.wasm": Buffer.from([0, 97, 115, 109]) }, "@1password");
+  return { root, nodeModules, scope, resvg, onePassword };
 }
 
 afterEach(() => {
@@ -65,6 +70,13 @@ describe("the pin", () => {
     expect(pinnedResvgVersion(root)).toBe(RESVG_PIN);
     fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ dependencies: { "@duckdb/node-api": PIN, "@resvg/resvg-js": "^8.8.8" } }));
     expect(() => pinnedResvgVersion(root)).toThrow(/exact x\.y\.z version/);
+  });
+
+  it("requires an exact x.y.z version of @1password/sdk", () => {
+    const { root } = flatInstall();
+    expect(pinnedOnePasswordVersion(root)).toBe(OP_PIN);
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ dependencies: { "@1password/sdk": "^7.7.7" } }));
+    expect(() => pinnedOnePasswordVersion(root)).toThrow(/exact x\.y\.z version/);
   });
 
   it("requires an exact x.y.z-r.n version of @duckdb/node-api", () => {
@@ -98,9 +110,31 @@ describe("staging from an install", () => {
     const resvg = path.join(tree, "node_modules", "@resvg");
     expect(fs.readdirSync(resvg).sort()).toEqual(["resvg-js", "resvg-js-linux-x64-gnu"]);
     expect(fs.existsSync(path.join(resvg, "resvg-js-linux-x64-gnu", "resvgjs.linux-x64-gnu.node"))).toBe(true);
-    await verifyDuckdbTree(tree, "linux", "x64", PIN, RESVG_PIN);
+    // So does the 1Password SDK, with the WebAssembly core it reads from beside itself.
+    const onePassword = path.join(tree, "node_modules", "@1password");
+    expect(fs.readdirSync(onePassword).sort()).toEqual(["sdk", "sdk-core"]);
+    expect(fs.existsSync(path.join(onePassword, "sdk-core", "nodejs", "core_bg.wasm"))).toBe(true);
+    await verifyDuckdbTree(tree, "linux", "x64", PIN, RESVG_PIN, OP_PIN);
     fs.rmSync(path.join(resvg, "resvg-js-linux-x64-gnu"), { recursive: true });
     await expect(verifyDuckdbTree(tree, "linux", "x64", PIN, RESVG_PIN)).rejects.toThrow(/resvg-js-linux-x64-gnu/);
+  });
+
+  it("finds the 1Password core beside the SDK in pnpm's store, and refuses a tree without the core it needs", async () => {
+    const root = temporary("omb-duckdb-pnpm-1p-");
+    const nodeModules = path.join(root, "node_modules");
+    const store = path.join(nodeModules, ".pnpm", `@1password+sdk@${OP_PIN}`, "node_modules", "@1password");
+    writePackage(path.join(store, "sdk"), "sdk", OP_PIN, {}, "@1password");
+    const core = path.join(nodeModules, ".pnpm", `@1password+sdk-core@${OP_PIN}`, "node_modules", "@1password", "sdk-core");
+    writePackage(core, "sdk-core", OP_PIN, {}, "@1password");
+    fs.symlinkSync(core, path.join(store, "sdk-core"), "dir");
+    fs.mkdirSync(path.join(nodeModules, "@1password"));
+    fs.symlinkSync(path.join(store, "sdk"), path.join(nodeModules, "@1password", "sdk"), "dir");
+    expect(installedPackage(nodeModules, "sdk", "@1password", ["sdk"])).toBe(fs.realpathSync(path.join(store, "sdk")));
+    expect(installedPackage(nodeModules, "sdk-core", "@1password", ["sdk"])).toBe(fs.realpathSync(core));
+
+    const { root: other } = flatInstall({ onePasswordCore: "7.7.6" });
+    await expect(stageDuckdb({ root: other, targets: [{ platform: "linux", arch: "x64" }], sign: false, log: null }))
+      .rejects.toThrow(/sdk-core .* is 7\.7\.6; @1password\/sdk needs 7\.7\.7/);
   });
 
   it("finds the packages through pnpm's store links", () => {
@@ -187,6 +221,14 @@ describe("verifying a tree", () => {
     fs.renameSync(path.join(native, "duckdb.node.bak"), path.join(native, "duckdb.node"));
     fs.unlinkSync(path.join(native, "libduckdb.so"));
     await expect(verifyDuckdbTree(tree, "linux", "x64", PIN)).rejects.toThrow(/libduckdb\.so/);
+  });
+
+  it("fails without the 1Password core's WebAssembly, or with another SDK version", async () => {
+    const { tree } = await stagedTree();
+    await verifyDuckdbTree(tree, "linux", "x64", PIN, RESVG_PIN, OP_PIN);
+    await expect(verifyDuckdbTree(tree, "linux", "x64", PIN, RESVG_PIN, "7.7.8")).rejects.toThrow(/@1password\/sdk .* pins 7\.7\.8/);
+    fs.unlinkSync(path.join(tree, "node_modules", "@1password", "sdk-core", "nodejs", "core_bg.wasm"));
+    await expect(verifyDuckdbTree(tree, "linux", "x64", PIN, RESVG_PIN, OP_PIN)).rejects.toThrow(/core_bg\.wasm/);
   });
 });
 

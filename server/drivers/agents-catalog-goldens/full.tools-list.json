@@ -733,6 +733,21 @@
       }
     },
     {
+      "name": "fill_login",
+      "description": "Sign in with a login the person saved in OpenMausBot. Call it on the login page open in your browser: OpenMausBot types the username, password and any one-time code into the page itself, and you never see them. The page's host must be exactly the saved login's. On a two-step login it fills what is visible; go on to the next step and call it again. Then submit the form yourself. With no saved login for the site, call request_sign_in.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "Which saved login to use when the site has more than one."
+          }
+        }
+      }
+    },
+    {
       "name": "send_voice_note",
       "description": "Send the user a voice note: a short spoken message synthesized with your configured voice, stored as audio, and attached to your reply when the turn ends. Write the note as speakable words, exactly as it should be said — no lists, links or markdown meant for screens. The same text becomes the note's visible caption and transcript, so the person can read or listen. Use it for warmth, tone or emphasis a written line cannot carry; use ordinary text otherwise.",
       "inputSchema": {
