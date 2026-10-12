@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { CoordinatorHost, HandoffView } from "./coordinator.ts";
-import type { RoomAddress } from "./room-handoffs.ts";
+import type { RoomAddress } from "./coordinator.ts";
 import { needsInputQuestion, RuntimeCoordinator, view } from "./runtime-coordinator.ts";
 import { ENVELOPE_MARK } from "./runtime/envelope.ts";
 import type { Assignment, Level, Limits } from "./runtime/types.ts";
@@ -506,7 +506,6 @@ describe("RuntimeCoordinator: restarts", () => {
       expect(before.coordinator.continuesAfterRestart("builder-work")).toBe(true);
       expect(before.coordinator.continuesAfterRestart("chief-chat")).toBe(true);
       expect(before.coordinator.continuesAfterRestart("tester-work")).toBe(false);
-      expect(before.coordinator.restartNote(node, () => "Builder")).toBe("");
       before.coordinator.close();
       // the process died with the builder mid-turn; the next start reconciles
       const after = world(undefined, {}, dir);
@@ -515,7 +514,6 @@ describe("RuntimeCoordinator: restarts", () => {
       expect(after.coordinator.node("gen-1")).toMatchObject({ status: "waiting", restart: "cut" });
       expect(after.coordinator.continuesAfterRestart("builder-work")).toBe(true);
       expect(after.coordinator.continuesAfterRestart("chief-chat")).toBe(false);
-      expect(after.coordinator.restartNote(rerun, () => "Builder")).toMatch(/^OpenMausBot restarted while your previous turn here was running and cut it off;/);
       after.coordinator.tick();
       expect(after.host.runs).toHaveLength(1);
       expect(after.host.runs[0]!.resumed).toBe(true);
@@ -526,7 +524,6 @@ describe("RuntimeCoordinator: restarts", () => {
       const resume = after.host.runs[1]!;
       expect(resume.node.id).toBe("gen-1");
       expect(resume.text).toMatch(/^OpenMausBot restarted before your previous turn here finished, after it sent work to teammates\..*A restart cut these teammates' turns: builder \(resumed once in place and told to check what it had already done\)\. Check their results as usual\.\nYour downstream room requests have settled\./);
-      expect(after.coordinator.restartNote(after.coordinator.node("gen-1")!, id => id)).toContain("A restart cut these teammates' turns: builder");
       await flush();
       expect(after.coordinator.node("gen-1")?.status).toBe("completed");
       after.coordinator.close();

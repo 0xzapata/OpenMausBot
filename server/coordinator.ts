@@ -1,27 +1,54 @@
-// The seam between the server and whichever coordinator runs teammate
-// work: the legacy room-handoff tree (room-handoffs.ts) or the job runtime
-// (server/runtime/, docs/runtime-contract.md). index.ts talks to this
-// interface only, so the cut-over is one switch (features.runtime, or
-// OMB_RUNTIME=1) and the legacy path is deleted without touching call sites.
-//
-// HandoffView is the legacy node shape, kept as the read model for the
-// cut-over releases: the runtime coordinator projects its Assignment rows
-// onto it. When the legacy coordinator goes, the view goes with it.
-import { join } from "node:path";
-
-import type { WorkOrigin } from "./peer-provenance.ts";
-import { RoomHandoffs, type RoomAddress, type RoomHandoff, type RoomHandoffHooks, ROOM_HANDOFF_LIMITS } from "./room-handoffs.ts";
+// The seam between the server and the coordinator that runs teammate work:
+// the job runtime (server/runtime/, docs/runtime-contract.md), reached
+// through RuntimeCoordinator. index.ts talks to this interface only; the
+// room-handoff tree it replaced is gone, and its node shape survives here
+// as the read model (HandoffView) the server's call sites were written
+// against. The view goes once those sites read Assignment rows directly.
 import { RuntimeCoordinator } from "./runtime-coordinator.ts";
+import type { WorkOrigin } from "./peer-provenance.ts";
 import type { EnvelopeNames, Level, Limits } from "./runtime/types.ts";
 
-export type HandoffView = RoomHandoff;
-export type CoordinatorKind = "legacy" | "runtime";
+export type HandoffStatus = "source" | "queued" | "running" | "waiting" | "resume" | "completed" | "failed" | "cancelled";
 
-/** The turn text the runtime path composed (one envelope, one report) for
- * the host to run as it is; absent on the legacy path, where the host
- * builds its own coordination text. */
+/** A coordinated turn as the server reads it: who runs it where, what it
+ * was asked, how far it got. Projected from an Assignment row. */
+export interface HandoffView {
+  id: string;
+  rootId: string;
+  parentId?: string;
+  groupId?: string;
+  threadId: string;
+  botId: string;
+  key: string;
+  text: string;
+  createdAt: number;
+  requestBatchKey?: string;
+  status: HandoffStatus;
+  result: string;
+  reported: boolean;
+  executions: number;
+  startedAt?: number;
+  lastProgressAt?: number;
+  approvalGranted: boolean;
+  kind: "work" | "assignment";
+  /** On a root: where the tree's work started (peer-provenance.ts); absent is outside. */
+  origin?: WorkOrigin;
+  /** Turns of this node a restart cut and ran again in place. */
+  restarts: number;
+  /** Its next turn, or the one running now, follows a restart (runtime types.ts). */
+  restart?: "rerun" | "cut" | "teammates";
+}
+
+export type RoomAddress = Pick<HandoffView, "groupId" | "threadId" | "botId">;
+
+/** The turn text the runtime composed (one envelope, one report), run by
+ * the host as it is. `note` is the same without the brief, for a room
+ * whose transcript already carries the words; `restartNote` is what a
+ * restart did to this turn ("" when nothing), already at the front of `text`. */
 export interface ComposedTurn {
   text: string;
+  note: string;
+  restartNote: string;
 }
 
 export interface LiveHandoffEdge {
@@ -32,11 +59,18 @@ export interface LiveHandoffEdge {
   groupId?: string;
 }
 
-/** What the server gives a coordinator: the legacy hooks, plus what only
- * the runtime path asks for (names, parking, the level a thread really
- * runs with). Every method may throw; the runtime path logs and retries. */
-export interface CoordinatorHost extends Omit<RoomHandoffHooks, "run"> {
-  run(node: HandoffView, resumed: boolean, signal: AbortSignal, composed?: ComposedTurn): Promise<{ ok: boolean; text: string }>;
+/** What the server gives the coordinator. Every method may throw; the
+ * runtime logs and reads a throw as "not now". */
+export interface CoordinatorHost {
+  /** Recheck addresses and route permission immediately before every dispatch. */
+  validate(node: HandoffView, parent?: HandoffView): string | undefined;
+  /** The assignee cannot take a turn now (slot-aware admission). */
+  busy(node: HandoffView): boolean;
+  /** Run one turn of the assignee with the composed text; resolves when the engine settles. */
+  run(node: HandoffView, resumed: boolean, signal: AbortSignal, composed: ComposedTurn): Promise<{ ok: boolean; text: string }>;
+  /** A settled child, to its requester; a root the runtime ended, alone. */
+  report(child: HandoffView, parent?: HandoffView): void;
+  changed(groupIds: ReadonlySet<string>, directThreadIds: ReadonlySet<string>): void;
   /** Display names for the envelope of a turn. */
   names(node: HandoffView, parent?: HandoffView): EnvelopeNames;
   /** A teammate ended its turn on a question for the person: show it where
@@ -51,13 +85,11 @@ export interface CoordinatorHost extends Omit<RoomHandoffHooks, "run"> {
 }
 
 export interface Coordinator {
-  readonly kind: CoordinatorKind;
   node(id: string): HandoffView | undefined;
   has(id: string): boolean;
   all(): HandoffView[];
   children(id: string): HandoffView[];
-  /** Same contract as RoomHandoffs.enqueue: throws an Error whose message is
-   * the typed refusal the caller shows the model. */
+  /** Throws an Error whose message is the typed refusal the caller shows the model. */
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, key: string, text: string,
     approvalGranted?: boolean, rework?: boolean, sourceText?: string, requestBatchKey?: string, origin?: WorkOrigin): { node: HandoffView; duplicate: boolean };
   sharedRequest(node: HandoffView): { id: string; botIds: string[] };
@@ -70,15 +102,16 @@ export interface Coordinator {
   liveEdges(): LiveHandoffEdge[];
   stopAwaitingDirect(threadId: string, reason?: string): HandoffView[];
   continuesAfterRestart(threadId: string): boolean;
-  restartNote(node: HandoffView, nameOf: (botId: string) => string): string;
+  /** The note a request arrived under (its envelope without the brief), for
+   * a replay of that request line; undefined when the row is gone. */
+  note(id: string): string | undefined;
   tick(): void;
   close(): void;
-  /** Runtime path: the host saw activity on a coordinated turn in this
-   * thread (an engine event). No-op on the legacy path. */
+  /** The host saw activity on a coordinated turn in this thread (an engine event). */
   progress(threadId: string): void;
-  /** Runtime path: the person wrote in a thread whose assignment is parked
-   * on a question; true when the assignment took the text as its answer and
-   * the host must not start an ordinary turn. Always false on legacy. */
+  /** The person wrote in a thread whose assignment is parked on a question:
+   * true when the assignment took the text as its answer and the host must
+   * not start an ordinary turn. */
   answer(threadId: string, text: string): boolean;
 }
 
@@ -86,60 +119,10 @@ export interface CoordinatorOptions {
   dataDir: string;
   host: CoordinatorHost;
   now?: () => number;
-  /** Legacy tree limits (config roomHandoffLimits) and the runtime's. */
-  legacyLimits?: Partial<typeof ROOM_HANDOFF_LIMITS>;
   runtimeLimits?: Partial<Limits>;
   log?: (line: string) => void;
 }
 
-/** The legacy coordinator: the room-handoff tree, unchanged, behind the
- * seam. Deleted when the runtime carries every path. */
-export class LegacyCoordinator implements Coordinator {
-  readonly kind = "legacy" as const;
-  private readonly tree: RoomHandoffs;
-
-  constructor(options: CoordinatorOptions) {
-    const host = options.host;
-    const hooks: RoomHandoffHooks = {
-      validate: (node, parent) => host.validate(node, parent),
-      busy: node => host.busy(node),
-      run: (node, resumed, signal) => host.run(node, resumed, signal),
-      report: (child, parent) => host.report(child, parent),
-      changed: (groups, threads) => host.changed(groups, threads),
-    };
-    this.tree = new RoomHandoffs(join(options.dataDir, "room-handoffs.json"), hooks, options.now ?? Date.now, options.legacyLimits ?? {});
-  }
-
-  node(id: string) { return this.tree.nodes.get(id); }
-  has(id: string) { return this.tree.nodes.has(id); }
-  all() { return [...this.tree.nodes.values()]; }
-  children(id: string) { return this.tree.children(id); }
-  enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, key: string, text: string,
-    approvalGranted = false, rework = false, sourceText = "", requestBatchKey?: string, origin?: WorkOrigin) {
-    return this.tree.enqueue(source, generation, parentId, target, key, text, approvalGranted, rework, sourceText, requestBatchKey, origin);
-  }
-  sharedRequest(node: HandoffView) { return this.tree.sharedRequest(node); }
-  sourceSettled(generation: string, ok: boolean) { this.tree.sourceSettled(generation, ok); }
-  cancelRoom(groupId: string, threadId?: string, reason?: string, status?: "failed" | "cancelled") { this.tree.cancelRoom(groupId, threadId, reason, status); }
-  cancelDirect(threadId: string, reason?: string) { this.tree.cancelDirect(threadId, reason); }
-  activeDirect(threadId: string) { return this.tree.activeDirect(threadId); }
-  assignerOf(threadId: string) { return this.tree.assignerOf(threadId); }
-  outstandingDirect(threadId: string) { return this.tree.outstandingDirect(threadId); }
-  liveEdges() { return this.tree.liveEdges(); }
-  stopAwaitingDirect(threadId: string, reason?: string) { return this.tree.stopAwaitingDirect(threadId, reason); }
-  continuesAfterRestart(threadId: string) { return this.tree.continuesAfterRestart(threadId); }
-  restartNote(node: HandoffView, nameOf: (botId: string) => string) { return this.tree.restartNote(node, nameOf); }
-  tick() { this.tree.tick(); }
-  close() { this.tree.close(); }
-  progress(_threadId: string) {}
-  answer(_threadId: string, _text: string) { return false; }
-}
-
-/** The runtime coordinator: Assignment rows in DATA_DIR/runtime.db,
- * projected onto HandoffView for the cut-over releases.
- * STUB: implemented in runtime-coordinator.ts; the signature is final. */
-export function createCoordinator(kind: CoordinatorKind, options: CoordinatorOptions): Coordinator {
-  if (kind === "legacy") return new LegacyCoordinator(options);
-  if (kind === "runtime") return new RuntimeCoordinator(options);
-  throw new Error(`unknown coordinator kind: ${String(kind)}`);
+export function createCoordinator(options: CoordinatorOptions): Coordinator {
+  return new RuntimeCoordinator(options);
 }

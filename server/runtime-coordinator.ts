@@ -11,13 +11,13 @@
 // as "not now" by the Runtime, so nothing here wraps it again.
 import { join } from "node:path";
 
-import type { Coordinator, CoordinatorHost, CoordinatorOptions, HandoffView, LiveHandoffEdge } from "./coordinator.ts";
+import type { Coordinator, CoordinatorHost, CoordinatorOptions, HandoffView, LiveHandoffEdge, RoomAddress } from "./coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
-import type { RoomAddress } from "./room-handoffs.ts";
-import { composeReport, composeResume } from "./runtime/envelope.ts";
+import { composeEnvelope, composeReport, composeResume, envelopeNote } from "./runtime/envelope.ts";
 import { Runtime } from "./runtime/runtime.ts";
+import { importLegacyHandoffs } from "./runtime/import-legacy.ts";
 import { openRuntimeStore, type RuntimeStore } from "./runtime/store.ts";
-import { childrenSince, clip, isTerminal, path, restartNote as treeRestartNote } from "./runtime/tree.ts";
+import { childrenSince, clip, isTerminal, path } from "./runtime/tree.ts";
 import type { Assignment, Origin, RunInput, RunResult, TurnRunner } from "./runtime/types.ts";
 
 /** Refusals the model and index.ts read; the words are the legacy tree's. */
@@ -110,18 +110,22 @@ export function view(a: Assignment, parent?: Assignment): HandoffView {
 }
 
 export class RuntimeCoordinator implements Coordinator {
-  readonly kind = "runtime" as const;
   private readonly host: CoordinatorHost;
   private readonly store: RuntimeStore;
   private readonly runtime: Runtime;
+  private readonly legacyFile: string | undefined;
+  private readonly now: () => number;
+  private readonly log: (line: string) => void;
   private opened = false;
 
   constructor(options: CoordinatorOptions) {
     this.host = options.host;
+    this.legacyFile = options.dataDir === ":memory:" ? undefined : join(options.dataDir, "room-handoffs.json");
+    this.now = options.now ?? Date.now;
+    this.log = options.log ?? ((line) => console.error("coordinator:", line));
     this.store = openRuntimeStore(options.dataDir === ":memory:" ? ":memory:" : join(options.dataDir, "runtime.db"));
-    const now = options.now ?? Date.now;
     this.runtime = new Runtime(this.store, this.runner(), {
-      clock: { now: () => now(), monotonic: () => performance.now() },
+      clock: { now: () => this.now(), monotonic: () => performance.now() },
       limits: { depth: 4, requests: 24, executions: 48, turnStallMs: TURN_STALL_MS, ...options.runtimeLimits },
       ...(options.log ? { log: options.log } : {}),
     });
@@ -133,6 +137,17 @@ export class RuntimeCoordinator implements Coordinator {
   private ready(): void {
     if (this.opened) return;
     this.opened = true;
+    // A tree the room-handoff file left behind comes over once, then the
+    // file is renamed; the restart policy below then treats its cut turns
+    // like any other (docs/runtime-contract.md §5).
+    if (this.legacyFile) {
+      try {
+        const imported = importLegacyHandoffs(this.store, this.legacyFile, this.now());
+        if (imported) this.log(`imported ${imported} room-handoff rows from ${this.legacyFile}`);
+      } catch (error) {
+        this.log(`room-handoffs.json not imported: ${String(error)}`);
+      }
+    }
     this.runtime.open();
   }
 
@@ -307,14 +322,16 @@ export class RuntimeCoordinator implements Coordinator {
       ((n.status === "queued" || n.status === "resume") && n.restart === "rerun")));
   }
 
-  restartNote(node: HandoffView, nameOf: (botId: string) => string): string {
-    this.ready();
-    const a = this.store.get(node.id);
-    if (!a) return "";
-    return treeRestartNote(a, this.store.children(a.id), child => nameOf(child.assignee.botId));
-  }
 
   // ── the host's schedule ──────────────────────────────────────────────
+
+  note(id: string): string | undefined {
+    this.ready();
+    const a = this.store.get(id);
+    if (!a) return undefined;
+    const parent = a.parentId ? this.store.get(a.parentId) : undefined;
+    return envelopeNote(composeEnvelope(a, this.host.names(this.project(a), parent && this.project(parent)), parent));
+  }
 
   tick(): void {
     this.ready();
@@ -370,7 +387,11 @@ export class RuntimeCoordinator implements Coordinator {
       ? composeResume(a, this.host.names(node, parent && this.project(parent)),
         settled.map(child => composeReport(child, this.host.names(view(child, a), node))))
       : input.envelope;
-    const result = await this.host.run(node, input.resumed, signal, { text: `${input.restartNote}${body}` });
+    // A room whose transcript already carries the brief gets the note alone;
+    // a resume carries its reports either way.
+    const note = settled.length ? body : envelopeNote(body);
+    const result = await this.host.run(node, input.resumed, signal,
+      { text: `${input.restartNote}${body}`, note: `${input.restartNote}${note}`, restartNote: input.restartNote });
     if (signal.aborted) return { kind: "failed", outcome: "stopped", text: result.text };
     if (!result.ok) return { kind: "failed", outcome: "provider_error", text: result.text };
     const question = needsInputQuestion(result.text);

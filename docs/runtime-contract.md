@@ -102,10 +102,8 @@ Engine drivers declare capabilities (`server/runtime/capabilities.ts`): `resume`
 
 ## 9. Delivery
 
-This lands as one PR at a time, each to `main`, each green on the suite before merge:
+This lands one PR at a time, each to `main`, each green on the suite before merge:
 
-1. **Runtime core** (this PR): contract, types, store, runtime, level, envelope, capabilities, invariants, scenario suite. No behavior change.
-2. **Chat coordination on the runtime** behind `features.runtime`: `coordinate_bots` enqueues; the host implements `TurnRunner`; the room-handoff tree is read-only for display.
-3. **Every other path on the runtime**: routines, webhooks, goal turn 1, external runtimes, `delegate_bot`/`ask_bot`/`send_to_bot` as aliases of one tool surface.
-4. **Default on**, with the one-time importer for `room-handoffs.json`, `delegations.json` and `delegation-receipts.json` (renamed `*.migrated`, never deleted).
-5. **Delete**: `delegations.ts`, `room-handoffs.ts`, `aside-queue.ts`, `comms-visibility.ts` DM mirroring, `turn-continuation.ts` `Continue:` tasks, the card-resume maps, the `boundedCoordination` switch, the ten trust wordings, the seven 15-minute timeouts, the profile split.
+1. **Runtime core and chat coordination** (this PR): contract, types, store, runtime, level, envelope, capabilities, invariants, scenario suite; `coordinate_bots` runs on the runtime through `server/coordinator.ts`; the room-handoff tree is deleted and an in-flight `room-handoffs.json` is imported once at boot (renamed `*.migrated`).
+2. **Every other path on the runtime**: routines, webhooks, goal turn 1, external runtimes, `delegate_bot`/`ask_bot`/`send_to_bot` as aliases of one tool surface; the legacy ledger imported once.
+3. **Delete**: `delegations.ts`, `aside-queue.ts`, `comms-visibility.ts` DM mirroring, `turn-continuation.ts` `Continue:` tasks, the card-resume maps, the `boundedCoordination` switch, the remaining trust wordings and 15-minute timeouts.

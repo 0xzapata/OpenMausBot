@@ -1,5 +1,5 @@
 // Teammate coordination on the job runtime (docs/runtime-contract.md), end
-// to end: the real server with OMB_RUNTIME=1, the scripted fake Claude
+// to end: the real server, the scripted fake Claude
 // (server/testing/room-handoff-agent.ts) as every engine. Clive is the Chief
 // (Leadership, managing Engineering); Mira is the teammate. Graded on
 // runtime state (DATA_DIR/runtime.db read with node:sqlite), the stored
@@ -60,7 +60,7 @@ const chipText = (message: any): string => [message.tool?.name, message.tool?.ou
 async function scenario(test: (f: any) => Promise<void>) {
   // The runtime path, through launchVerificationServer's passthrough; the
   // same env restarts the fixture server on the same data.
-  const parentEnv: NodeJS.ProcessEnv = { ...process.env, OMB_RUNTIME: "1" };
+  const parentEnv: NodeJS.ProcessEnv = { ...process.env };
   const session = await launchVerificationServer(parentEnv, undefined, undefined, undefined, undefined, { scripted: true });
   const url = session.info.url;
   const dataDir = session.info.dataDir;

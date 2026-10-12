@@ -38,9 +38,6 @@ export const MAX_ROOM_TURN_TIMEOUT_MINUTES = 1_440;
 export const DEFAULT_MCP_CALL_TIMEOUT_MINUTES = 10;
 export const MIN_MCP_CALL_TIMEOUT_MINUTES = 1;
 export const MAX_MCP_CALL_TIMEOUT_MINUTES = 60;
-export const DEFAULT_ROOM_HANDOFF_LIFETIME_MINUTES = 30;
-export const DEFAULT_ROOM_HANDOFF_MIN_RUNWAY_MINUTES = 10;
-export const DEFAULT_ROOM_HANDOFF_HARD_CAP_MINUTES = 240;
 export const DEFAULT_MAX_CONCURRENT_BOT_THREADS = 3;
 export const MAX_CONCURRENT_BOT_THREADS = 10;
 /** Bounds for threads.eventLogMaxBytes: the floor keeps the kept tail large
@@ -111,20 +108,7 @@ const roomConfigSchema = z.object({
     .int()
     .min(MIN_ROOM_TURN_TIMEOUT_MINUTES)
     .max(MAX_ROOM_TURN_TIMEOUT_MINUTES),
-  /** Room handoff tree lifetime. Active execution pauses this clock; the
-   * hard cap is the maximum stall window, measured wall-clock from the
-   * tree's last durable progress. */
-  handoffLifetimeMinutes: z.number().int().min(1).max(MAX_ROOM_TURN_TIMEOUT_MINUTES).optional(),
-  handoffMinRunwayMinutes: z.number().int().min(1).max(MAX_ROOM_TURN_TIMEOUT_MINUTES).optional(),
-  handoffHardCapMinutes: z.number().int().min(1).max(7 * MAX_ROOM_TURN_TIMEOUT_MINUTES).optional(),
-}).refine(
-  (rooms) =>
-    (rooms.handoffMinRunwayMinutes ?? DEFAULT_ROOM_HANDOFF_MIN_RUNWAY_MINUTES) <=
-      (rooms.handoffLifetimeMinutes ?? DEFAULT_ROOM_HANDOFF_LIFETIME_MINUTES) &&
-    (rooms.handoffLifetimeMinutes ?? DEFAULT_ROOM_HANDOFF_LIFETIME_MINUTES) <=
-      (rooms.handoffHardCapMinutes ?? DEFAULT_ROOM_HANDOFF_HARD_CAP_MINUTES),
-  { message: "rooms handoff bounds must satisfy handoffMinRunwayMinutes <= handoffLifetimeMinutes <= handoffHardCapMinutes" },
-);
+});
 const mcpConfigSchema = z.object({
   /** Ceiling (minutes) for one bot MCP tool call. Missing values resolve to
    * 10, preserving the historic chat-mcp-tools constant. */
@@ -342,11 +326,6 @@ const featureConfigSchema = z.object({
    * read by assignment instead of per-workspace copies. Off until
    * explicitly enabled — see skillsLibraryEnabled. */
   skillsLibrary: z.boolean().optional(),
-  /** The job runtime (docs/runtime-contract.md) carries teammate
-   * coordination instead of the room-handoff tree. Off until explicitly
-   * enabled; a cut-over switch, not a setting, removed once the runtime is
-   * the only path — see runtimeEnabled. */
-  runtime: z.boolean().optional(),
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
  * it survives cleared site data and is shared by every paired client. Hint
@@ -649,7 +628,7 @@ export interface AppConfig {
   imageGen?: ImageGenerationConfig;
   live?: { key?: string; voice?: string; readTypedReplies?: boolean; idleMinutes?: number };
   profile?: { name?: string; email?: string; aboutMe?: string };
-  rooms?: { turnTimeoutMinutes: number; handoffLifetimeMinutes?: number; handoffMinRunwayMinutes?: number; handoffHardCapMinutes?: number };
+  rooms?: { turnTimeoutMinutes: number };
   mcp?: { callTimeoutMinutes?: number };
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
   context?: { rebuildBytes?: number; compactAt?: number; autoCompact?: boolean };
@@ -659,7 +638,7 @@ export interface AppConfig {
    * seats shared by all conversations, with per-thread affinity (#1654). */
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; runtime?: boolean };
+  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean };
   /** First-run progress; see onboardingConfigSchema. */
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   /** Named browser sessions any bot can be pointed at. */
@@ -808,23 +787,6 @@ export function liveSettingsFor(cfg: AppConfig): LiveSettings {
   };
 }
 
-export interface RoomHandoffLimitsMs {
-  lifetimeMs: number;
-  minRunwayMs: number;
-  hardCapMs: number;
-}
-
-/** Room handoff tree budgets in milliseconds. The tree lifetime pauses
- * while a node is actively executing; the hard cap is the maximum stall
- * window, measured wall-clock from the tree's last durable progress. Read
- * when the server starts. */
-export function roomHandoffLimits(cfg: AppConfig): RoomHandoffLimitsMs {
-  return {
-    lifetimeMs: (cfg.rooms?.handoffLifetimeMinutes ?? DEFAULT_ROOM_HANDOFF_LIFETIME_MINUTES) * 60_000,
-    minRunwayMs: (cfg.rooms?.handoffMinRunwayMinutes ?? DEFAULT_ROOM_HANDOFF_MIN_RUNWAY_MINUTES) * 60_000,
-    hardCapMs: (cfg.rooms?.handoffHardCapMinutes ?? DEFAULT_ROOM_HANDOFF_HARD_CAP_MINUTES) * 60_000,
-  };
-}
 
 /** Accepts a full config or a parsed patch: the concurrency limit may be
  * read from either, and a patch may legitimately omit it. */
@@ -928,12 +890,6 @@ export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
   return cfg.features?.llmThreadTitles === true;
 }
 
-/** Teammate coordination runs on the job runtime (server/runtime/) instead
- * of the room-handoff tree: the config switch, or OMB_RUNTIME=1 so an e2e
- * run can start a server with it on (scripts/control-omb.ts passes it). */
-export function runtimeEnabled(cfg: AppConfig): boolean {
-  return process.env.OMB_RUNTIME === "1" || cfg.features?.runtime === true;
-}
 
 /** Opt-in shared skills library (skills lane S1): one store at the data dir
  * that bots reference by assignment instead of per-workspace copies. Off

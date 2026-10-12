@@ -185,3 +185,14 @@ export function composeResume(a: Assignment, names: EnvelopeNames, reports: read
 export function escapeEnvelope(text: string): string {
   return escapeNotes(text);
 }
+
+/** The envelope without its brief: what a reader needs when the words of
+ * the request are already in front of it (a room transcript that carries
+ * them, a replayed request line). The answer line, when present, stays. */
+export function envelopeNote(envelope: string): string {
+  const at = envelope.indexOf("\n\nBrief from ");
+  if (at < 0) return envelope;
+  const rest = envelope.slice(at);
+  const answer = /\n\n((?:Your question was: |The person answered: )[^\n]*)$/.exec(rest);
+  return envelope.slice(0, at) + (answer ? `\n\n${answer[1]}` : "");
+}

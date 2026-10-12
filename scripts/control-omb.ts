@@ -401,8 +401,6 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
   // instead of after 20 minutes of silence (stall-clock-hooks.mjs).
   if (parentEnv.OMB_TEST_STALL_CLOCK === "1") childEnv.OMB_TEST_STALL_CLOCK = "1";
   // Runtime coordination e2e: the server runs teammate coordination on the
-  // job runtime instead of the room-handoff tree (config.ts runtimeEnabled).
-  if (parentEnv.OMB_RUNTIME === "1") childEnv.OMB_RUNTIME = "1";
   // Desktop mode: the server runs as the desktop app runs it, and the owner
   // capability the app would hand it is this one (see desktop-parent.mjs).
   if (parentEnv.OMB_TEST_DESKTOP_OWNER_TOKEN) {
