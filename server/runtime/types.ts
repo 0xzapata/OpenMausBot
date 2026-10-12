@@ -207,7 +207,9 @@ export type EnqueueResult =
 // ── ports the host implements ──────────────────────────────────────────
 
 export interface RunInput {
-  /** The turn follows a restart (its own rerun or a resume after cut work). */
+  /** Not the node's first turn: a resume with settled children, its own
+   * rerun after a restart, or the turn after an answer. The first turn of a
+   * node is never `resumed`. */
   resumed: boolean;
   /** What the restart did, for the first line of the turn ("" when nothing). */
   restartNote: string;

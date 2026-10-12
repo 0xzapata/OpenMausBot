@@ -35,8 +35,8 @@ queued ──admit──> running ──turn ends──> completed | failed | ca
 - **Enqueue** checks the parent is running (or there is no parent), refuses work back to an ancestor, dedupes (same brief, same assignee, same parent, unless `rework`), checks depth and the root's budgets, computes the level, writes the row with event `enqueued`. Refusals return a typed reason; they never throw into a turn.
 - **Admission** is one rule for every path: the runtime asks the host `canStart`; the host answers from its slots (a sibling waiting on the person does not hold its sibling). Same-conversation turns never overlap.
 - **A turn** is one `run` of the assignee. Its result is `completed`, `failed(outcome)` or `needs_input(question)`. If it handed out work, the node goes to `waiting` instead; when every child has settled and been reported, it goes to `resume` and runs once more with the children's results.
-- **Terminal outcome** is written exactly once, then `report` is called exactly once, then (if `reply` is `resume` or `poll`) one inbox item is written for the requester.
-- **Wake**: the requester is woken when idle, with every undelivered item in one coalesced delivery, on terminal outcomes, `needs_input` and `stalled`, never on progress. One wake per inbox item at most.
+- **Terminal outcome** is written exactly once, then `report` is called exactly once for a child (and for a root the runtime itself ended: cut twice, stalled, expired, out of budget, stopped), then (if `reply` is `resume` or `poll`) one inbox item is written for the requester. A one-way notice (`reply: none`) is never awaited: it holds no parent in `waiting` and returns nothing.
+- **Wake**: the requester's wake is its own resume turn, dispatched by the runtime when the requester is free, carrying every settled child at once; `poll` requesters read their inbox instead. Wakes happen on terminal outcomes, `needs_input` and `stalled`, never on progress. At most one wake for a result.
 - **Cancel** cascades down the tree, aborts running turns, and is itself a terminal outcome (`stopped`) that is reported.
 - **Stop awaiting** (the person stops the requester's conversation): children that never started are cancelled; running children keep their process and still report; the requester's node is cancelled and nothing resumes it.
 
@@ -84,7 +84,7 @@ Three clocks and no others: a queue bound (`queueMs`, expired means `failed(expi
 The suite asserts these after every scenario (`server/runtime/invariants.ts`):
 
 - **I1** No non-terminal assignment without a live owner: a running turn, a queue entry, a parked question or a waiting parent.
-- **I2** Every terminal assignment with `reply: resume` has exactly one report and at most one wake.
+- **I2** Every terminal assignment with `reply: resume` has exactly one report and at most one wake for its result.
 - **I3** No result is delivered twice; no brief is dispatched twice except by explicit `rework`.
 - **I4** Every root ends in a terminal outcome, and a root a restart ended alone is reported to its own conversation.
 - **I5** Nothing claims "approved" without an allow: `expired` is never `completed`.
@@ -96,7 +96,7 @@ The suite asserts these after every scenario (`server/runtime/invariants.ts`):
 
 ## 8. Ports
 
-The host (today `server/index.ts`) implements `TurnRunner`: `validate`, `canStart`, `run`, `park`, `idle`, `deliver`, `report`, `changed`. The runtime owns the record and the decisions; the host owns engines, threads, chips, cards and notifications. A host method that throws is logged and read as "not now"; the next tick retries.
+The host (today `server/index.ts`) implements `TurnRunner`: `validate`, `canStart`, `run`, `park`, `report`, `changed`, `names`. The runtime owns the record and the decisions; the host owns engines, threads, chips, cards, names and notifications. A host method that throws is logged and read as "not now"; the next tick retries. The host calls `tick()` on its own schedule and `progress(id)` when it sees activity on a turn; `progress` writes no event (per-tool-call rows would be noise), every status change does.
 
 Engine drivers declare capabilities (`server/runtime/capabilities.ts`): `resume` (keeps a native session), `nativeReviewer`, `full`, `edits`, `stepCap`, `subagents`. The level rule and the continuation rule read these flags, never driver names.
 
