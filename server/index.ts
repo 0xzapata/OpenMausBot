@@ -2903,7 +2903,10 @@ function directRootPending(threadId: string): boolean {
  * a root parked on the person's cards or queued on a seat: those are not
  * teammates (a typed line starts a new root there, decision 3). */
 function awaitingTeammates(threadId: string): boolean {
-  if (coordinator.outstandingDirect(threadId).length > 0) return true;
+  // A teammate still working for a conversation that stopped awaiting it
+  // (Stop: its requester node is cancelled, the teammate keeps its process
+  // and reports) is nobody's wait: its parent has ended.
+  if (coordinator.outstandingDirect(threadId).some((child) => !ENDED.has(coordinator.node(child.parentId!)?.status ?? "cancelled"))) return true;
   return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId &&
     (n.status === "resume" || (n.status === "waiting" && n.question === undefined && !n.cards?.length)));
 }
@@ -6302,9 +6305,12 @@ function settleTrackedRequest(threadId: string, incoming: ReadonlySet<string> = 
   const bot = store.botByThread(threadId);
   if (!owner?.messageId || owner.stopped || !bot || threadBusy(bot.id, threadId) || coordinator.parkedDirect(threadId)) return;
   // A failed coordination root never supplies the promised return, even if
-  // its original provider successfully said it had assigned the work.
-  if (coordinator.all().some(node => !node.parentId && node.threadId === threadId &&
-      owner.generations.has(node.id) && node.status !== "completed")) return;
+  // its original provider successfully said it had assigned the work. The
+  // request's newest root is the one that counts: an attempt that could not
+  // start ended its root and the backup engine's turn began its own.
+  const newest = coordinator.all().filter(node => !node.parentId && node.threadId === threadId && owner.generations.has(node.id))
+    .sort((a, b) => a.createdAt - b.createdAt).at(-1);
+  if (newest && newest.status !== "completed") return;
   const path = store.activePath(threadId).filter(message => !incoming.has(message.id));
   const source = path.findLast(message => message.role === "user");
   if (source?.id !== owner.messageId || source.requestCancelled || source.requestPending !== true) return;
@@ -11680,9 +11686,14 @@ async function startTurn(
             store.appendMessage(threadId, { role: "bot", kind: "activity", tool: {
               name: `recovery: Automatic recovery: ${instance.displayName || instance.driverKind} could not start. Trying ${target.displayName || target.driverKind} · ${checked.selection.model} once in this thread.`, ok: true,
             } });
-            // The attempt that could not start ends its root (silently: its
-            // own turn produced the outcome); the backup's turn begins its own.
-            settleDirectCoordination(dispatchClaimId, { ok: false, text: message });
+            // A host-begun root's attempt that could not start ends its root
+            // (silently: its own turn produced the outcome); the backup's
+            // turn begins its own, the request's newest. A turn the runtime
+            // dispatched keeps its node: the backup's turn re-registers the
+            // same settle under its own generation, and the node hears one
+            // result, the backup's.
+            if (opts?.coordination) directCoordinationSettlers.delete(dispatchClaimId);
+            else settleDirectCoordination(dispatchClaimId, { ok: false, text: message });
             await startTurn(bot.id, text, { ...opts, threadId, userMessage, editedMessageId: undefined,
               automaticRecoveryAttempted: true, automaticRecoveryIndex: nextIndex + 1 });
             // The backup now owns these callbacks; don't publish a failed
