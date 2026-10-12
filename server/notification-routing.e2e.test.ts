@@ -326,8 +326,11 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
       await expect.poll(async () => ((await botState(asker.id))?.messages ?? []).some(
         (message: { text?: string }) => message.text === "woke after delegation: saw the result",
       ), { timeout: 40_000 }).toBe(true);
-      await expect.poll(() => handoffs().map((node) => node.status), { timeout: 20_000 }).toEqual(["completed", "completed"]);
-      const consult = handoffs().find((node) => node.parentId)!;
+      // Every turn is a root now, so earlier tests in this file left rows of
+      // their own: read only this pair's.
+      const mine = () => handoffs().filter((node) => node.botId === asker.id || node.botId === peer.id);
+      await expect.poll(() => mine().map((node) => node.status), { timeout: 20_000 }).toEqual(["completed", "completed"]);
+      const consult = mine().find((node) => node.parentId)!;
       expect(consult).toMatchObject({ botId: peer.id, mode: "consult", reply: "resume", result: expect.stringContaining("hello from fake claude") });
 
       const current = await state(40);
