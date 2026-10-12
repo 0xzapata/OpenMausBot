@@ -480,6 +480,18 @@ describe("configuration boundaries", () => {
     expect(browserEngineAttachCdpUrl({ browserEngine: { attachCdpUrl: "" } })).toBeNull();
   });
 
+  it("keeps a browser profile's My Chrome choice through saving, loading and migration, and nothing else", () => {
+    const mine = { id: "profile-mine", name: "Mine", browser: "chrome" };
+    expect(parseConfigPatch({ browserProfiles: [mine, { id: "profile-work", name: "Work" }] })).toEqual({ browserProfiles: [mine, { id: "profile-work", name: "Work" }] });
+    expect(parseStoredConfig({ browserProfiles: [mine] }).browserProfiles).toEqual([mine]);
+    // A legacy profile migrated to its canonical id keeps the choice too.
+    expect(parseStoredConfig({ browserProfiles: [{ id: "Mine", name: "Mine", browser: "chrome" }] }).browserProfiles)
+      .toEqual([{ id: "mine", name: "Mine", browser: "chrome", partitionId: "Mine" }]);
+    for (const browser of ["edge", "firefox", "", true]) {
+      expect(() => parseConfigPatch({ browserProfiles: [{ ...mine, browser }] })).toThrow("browserProfiles.0.browser");
+    }
+  });
+
   it("accepts a persisted global room turn timeout and supplies the legacy default", () => {
     expect(parseStoredConfig({ rooms: { turnTimeoutMinutes: 20 } })).toEqual({
       rooms: { turnTimeoutMinutes: 20 },
