@@ -109,6 +109,7 @@ export function view(a: Assignment, parent?: Assignment): HandoffView {
   if (a.outcomeDetail !== undefined) node.outcomeDetail = a.outcomeDetail;
   if (a.question !== undefined) node.question = a.question;
   if (a.cards !== undefined) node.cards = a.cards;
+  if (a.continuation !== undefined) node.continuation = { ...a.continuation };
   if (a.parentId !== undefined) node.parentId = a.parentId;
   if (groupId !== undefined) node.groupId = groupId;
   if (a.batchKey !== undefined) node.requestBatchKey = a.batchKey;
@@ -330,11 +331,16 @@ export class RuntimeCoordinator implements Coordinator {
     this.runtime.end(id, end);
   }
 
-  answerRoot(id: string, text: string): boolean {
+  /** The person acted on a parked node's cards: a root or a child, by id. */
+  answerNode(id: string, text: string): boolean {
     this.ready();
     const a = this.store.get(id);
-    if (!a || a.parentId !== undefined || a.status !== "needs_input") return false;
+    if (!a || a.status !== "needs_input") return false;
     return this.runtime.answer(id, text);
+  }
+
+  answerRoot(id: string, text: string): boolean {
+    return this.answerNode(id, text);
   }
 
   parkedDirect(threadId: string): HandoffView | undefined {
@@ -481,12 +487,13 @@ export class RuntimeCoordinator implements Coordinator {
   }
 
   /** A typed line answers a coordinated child parked on its NEEDS INPUT
-   * question; a root parked on the person's cards is answered only through
-   * those cards (answerRoot), and the typed line starts a new root instead. */
+   * question; a node parked on the person's cards (a root, or a child whose
+   * turn left cards) is answered only through those cards (answerNode), and
+   * the typed line starts an ordinary turn instead. */
   answer(threadId: string, text: string): boolean {
     this.ready();
-    // Roots parked on their own cards answer through answerRoot.
-    const parked = this.live().find(n => n.parentId !== undefined && n.status === "needs_input" && n.assignee.destination.threadId === threadId);
+    const parked = this.live().find(n => n.parentId !== undefined && n.status === "needs_input" && !(n.cards && n.cards.length > 0) &&
+      n.assignee.destination.threadId === threadId);
     return parked ? this.runtime.answer(parked.id, text) : false;
   }
 
@@ -515,6 +522,9 @@ export class RuntimeCoordinator implements Coordinator {
         host.changed(groups, threads);
       },
       names: (a, parent) => host.names(view(a, parent), parent && this.project(parent)),
+      // A host without the port knows nothing of what a cut turn did: the
+      // runtime then reruns it once, as before.
+      outward: a => host.outward ? host.outward(this.project(a)) : [],
     };
   }
 

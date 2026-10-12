@@ -50,6 +50,10 @@ export interface HandoffView {
   question?: string;
   /** While parked on the person's cards (a root): the cards' message ids. */
   cards?: string[];
+  /** While queued to continue in place (after a step cap, or a seat the
+   * host holds it for): why, where the steps so far are, and how many
+   * continuations so far including this one. */
+  continuation?: { note: string; handoffPath?: string; count: number };
 }
 
 /** A person's or a routine's own turn, as a root (one per request). */
@@ -153,6 +157,12 @@ export interface CoordinatorHost {
   levelOf(target: RoomAddress): { level: Level; driverKind?: string };
   /** The conversation is a Chief of Staff's. */
   chiefOf(address: RoomAddress): boolean;
+  /** What the cut turn of this node already did outward (sent, posted,
+   * pushed, paid), as short labels, read from the thread's activity since
+   * the turn began. Asked once at startup for a running node a restart
+   * cut, before any rerun: a turn that acted outward is not run again.
+   * Optional; absent or empty means nothing known. */
+  outward?(node: HandoffView): string[];
 }
 
 export interface Coordinator {
@@ -173,8 +183,12 @@ export interface Coordinator {
   beginTurn(req: BeginTurnRequest): HandoffView;
   /** That turn ended (completed, failed, parked on cards, or continuing in place). */
   endTurn(id: string, result: HostTurnResult): void;
-  /** The person acted on a parked root's cards: the root runs its next
-   * execution with the harness text. False when the root is not parked. */
+  /** The person acted on a parked node's cards (a root or a child): the
+   * node runs its next execution with the harness text. False when the
+   * node is not parked. */
+  answerNode(id: string, text: string): boolean;
+  /** The same as answerNode; kept one release for the card paths that
+   * were written against it. */
   answerRoot(id: string, text: string): boolean;
   /** The root parked on the person's cards in this thread, if any. */
   parkedDirect(threadId: string): HandoffView | undefined;

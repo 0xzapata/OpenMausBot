@@ -134,7 +134,16 @@ function evidenceLine(evidence: TurnEvidence | undefined): string {
     const more = files.length > FILES_SHOWN ? `, +${files.length - FILES_SHOWN} more` : "";
     parts.push(files.length ? `${count(files.length, "file")} changed (${shown.join(", ")}${more})` : "no files changed");
   }
-  if (evidence.toolCalls !== undefined) parts.push(count(evidence.toolCalls, "tool call"));
+  if (evidence.toolCalls !== undefined) parts.push(`${count(evidence.toolCalls, "tool call")}${evidence.okToolCalls !== undefined ? ` (${evidence.okToolCalls} ok)` : ""}`);
+  else if (evidence.okToolCalls !== undefined) parts.push(`${count(evidence.okToolCalls, "tool call")} ok`);
+  if (evidence.errors?.length) parts.push(count(evidence.errors.length, "tool error"));
+  // What already went out (sent, posted, pushed, paid) is exactly what a
+  // requester must not redo: it is named, not counted.
+  if (evidence.outward?.length) {
+    const shown = evidence.outward.slice(0, FILES_SHOWN).map((label) => quote(label, NAME_MAX)).filter(Boolean);
+    const more = evidence.outward.length > FILES_SHOWN ? `, +${evidence.outward.length - FILES_SHOWN} more` : "";
+    if (shown.length) parts.push(`outward actions done (${shown.join(", ")}${more})`);
+  }
   const summary = quote(evidence.summary, QUOTE_MAX);
   if (!parts.length && !summary) return "The harness observed nothing of this turn.";
   return `Observed by the harness: ${parts.join(", ")}${summary ? `${parts.length ? "; " : ""}${summary}` : ""}.`;

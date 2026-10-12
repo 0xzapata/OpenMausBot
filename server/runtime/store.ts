@@ -21,6 +21,9 @@ const evidenceSchema = z.object({
   filesChanged: z.array(z.string()).optional(),
   toolCalls: z.number().int().nonnegative().optional(),
   summary: z.string().optional(),
+  okToolCalls: z.number().int().nonnegative().optional(),
+  errors: z.array(z.string()).optional(),
+  outward: z.array(z.string()).optional(),
 });
 
 const assignmentSchema = z.object({
@@ -82,6 +85,8 @@ const assignmentSchema = z.object({
   // read (the schema strips what it does not name).
   cards: z.array(z.string()).optional(),
   continuation: z.object({ note: z.string(), handoffPath: z.string().optional(), count: z.number().int().nonnegative() }).optional(),
+  // The loop guard's record outlives the continuation the dispatch consumes.
+  guard: z.object({ stale: z.number().int().nonnegative(), errors: z.array(z.string()) }).optional(),
   approved: z.boolean().optional(),
   batchKey: z.string().optional(),
   version: z.literal(1),

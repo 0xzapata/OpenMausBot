@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { composeEnvelope } from "./envelope.ts";
 import { assignmentLevel } from "./level.ts";
 import type { RuntimeStore } from "./store.ts";
-import { awaited, childrenSince, clip, continuations, CUT_TWICE, duration, isTerminal, ownsConversation, path, restartNote, wakeOwner } from "./tree.ts";
+import { awaited, childrenSince, clip, continuations, CUT_TWICE, duration, isTerminal, loopStop, nextGuard, outwardDetail, ownsConversation, path, restartNote, wakeOwner } from "./tree.ts";
 import { DEFAULT_LIMITS, type Assignment, type Assignee, type Clock, type EndResult, type EnqueueRequest, type EnqueueResult, type EnvelopeNames,
   type EventKind, type InboxItem, type InboxKind, type Level, type Limits, type LiveEdge, type Origin, type Outcome, type Owner,
   type Reply, type Requester, type RunInput, type RunResult, type StatusView, type TurnRunner } from "./types.ts";
@@ -117,11 +117,20 @@ export class Runtime {
           continue;
         }
         if (n.status !== "running") continue;
-        if (childrenSince(this.store, n).length > 0) {
+        // The host is asked what the cut turn did outward only when a rerun
+        // is on the table: a turn that handed out work never runs again.
+        const handedOut = childrenSince(this.store, n).length > 0;
+        const outward = handedOut ? [] : this.outwardOf(n);
+        if (handedOut) {
           // It handed out work: nothing of it runs again; its resume says so.
           n.status = "waiting"; n.restart = "cut"; n.lastActivityAt = now;
           this.store.update(n, { kind: "restart_reconciled", at: now, detail: "waiting: cut after handing out work" });
           this.touch(n);
+        } else if (outward.length > 0) {
+          // It already sent, posted, pushed or paid: a rerun could do that
+          // twice, so it ends here with what it did, and is reported.
+          this.store.update(n, { kind: "restart_reconciled", at: now, detail: "failed: outward action done" });
+          this.settle(n, "failed", "interrupted", outwardDetail(outward));
         } else if (n.restart === "rerun") {
           this.store.update(n, { kind: "restart_reconciled", at: now, detail: "failed: cut twice" });
           this.settle(n, "failed", "interrupted", CUT_TWICE);
@@ -279,7 +288,10 @@ export class Runtime {
     for (const snapshot of [...live].sort((a, b) => b.depth - a.depth)) {
       const n = this.store.get(snapshot.id);
       if (!n || isTerminal(n)) continue;
-      if (n.status === "queued" && now - this.since(n.lastActivityAt) > this.limits.queueMs) {
+      // A node that continues in place is not waiting to start: it waits
+      // for what it stopped on (a seat the host holds it for), and that
+      // wait has no clock here.
+      if (n.status === "queued" && !n.continuation && now - this.since(n.lastActivityAt) > this.limits.queueMs) {
         this.cancelTree(n, n.executions > 0 ? "not resumed" : "never started", "failed", "expired");
       } else if (n.status === "needs_input" && this.inputExpires(n) && now - this.since(n.lastActivityAt) > this.limits.inputWaitMs) {
         this.cancelTree(n, "the person did not answer", "failed", "expired");
@@ -483,7 +495,18 @@ export class Runtime {
       // progress (nothing settled), so the root's budgets run on and bound
       // how long a node can continue; the count is the node's own, read from
       // its events so it outlives the continuation the dispatch consumes.
-      n.status = "queued"; n.result = clip(result.text, RESULT_MAX); n.lastActivityAt = now;
+      // It continues only while it makes progress: two continuations in a
+      // row with no successful tool call, or the same error three times
+      // over, end it stalled (the guard's record rides the row).
+      n.result = clip(result.text, RESULT_MAX);
+      n.guard = nextGuard(n.guard, result.evidence);
+      const stop = loopStop(n.guard, result.text);
+      if (stop) {
+        this.store.update(n, { kind: "stalled", at: now, detail: `no progress: ${stop.reason}` });
+        this.settle(n, "failed", "stalled", stop.detail);
+        return;
+      }
+      n.status = "queued"; n.lastActivityAt = now;
       n.continuation = { note: result.note, ...(result.handoffPath ? { handoffPath: result.handoffPath } : {}), count: continuations(this.store, n.id) + 1 };
       if (root && root.id !== n.id) root.lastActivityAt = now;
       this.store.transaction(() => {
@@ -493,6 +516,8 @@ export class Runtime {
       this.touch(n, ...root && root.id !== n.id ? [root] : []);
       return;
     }
+    // Any other end of a turn is progress of a kind: the guard starts over.
+    delete n.guard;
     if (result.kind === "needs_input") {
       n.status = "needs_input"; n.question = clip(result.question, BRIEF_MAX); n.lastActivityAt = now;
       if (result.cards?.length) n.cards = result.cards; else delete n.cards;
@@ -738,6 +763,16 @@ export class Runtime {
    * however late, resumes it), and never under a non-finite inputWaitMs. */
   private inputExpires(n: Assignment): boolean {
     return Number.isFinite(this.limits.inputWaitMs) && !(n.cards && n.cards.length > 0);
+  }
+
+  /** What the cut turn of this node already did outward, as the host knows
+   * it: nothing when the host has no such record (the port is optional) or
+   * cannot say now (a throw is "not now", and the turn reruns as before). */
+  private outwardOf(n: Assignment): string[] {
+    const port = this.runner.outward;
+    if (!port) return [];
+    const labels = this.safe("outward", () => port.call(this.runner, n));
+    return Array.isArray(labels) ? labels.filter(label => typeof label === "string" && label.trim() !== "") : [];
   }
 
   private names(n: Assignment, parent: Assignment | undefined): EnvelopeNames {

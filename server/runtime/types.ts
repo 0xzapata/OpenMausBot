@@ -150,6 +150,12 @@ export interface Assignment {
   /** The next execution continues the last one in place: after a step cap,
    * or a wait the host could not hold (a computer seat). Cleared at dispatch. */
   continuation?: { note: string; handoffPath?: string; count: number };
+  /** While a node continues in place: what its continuing executions showed,
+   * for the loop guard (tree.ts loopStop). `stale` is the run of consecutive
+   * continuations whose evidence showed no successful tool call; `errors`
+   * the last three tool error texts across them. Cleared when a turn ends
+   * any other way. */
+  guard?: { stale: number; errors: string[] };
   /** A peer-review card allowed this before it was sent. */
   approved?: boolean;
   /** A room brief shown once per call: every recipient of that call shares it. */
@@ -163,6 +169,13 @@ export interface TurnEvidence {
   filesChanged?: string[];
   toolCalls?: number;
   summary?: string;
+  /** Tool calls of this execution that returned ok. */
+  okToolCalls?: number;
+  /** The tool error texts of this execution, oldest first, at most 3, each clipped to 200 chars. */
+  errors?: string[];
+  /** Outward actions this execution completed — sends, posts, publishes, commits, pushes, payments —
+   * as short labels ("GMAIL_SEND_EMAIL", "git push", "COMPOSIO_PROXY_EXECUTE"). */
+  outward?: string[];
 }
 
 export type EventKind =
@@ -306,6 +319,12 @@ export interface TurnRunner {
   changed(assignments: readonly Assignment[]): void;
   /** Display names for the envelope of a turn (ids are the fallback). */
   names(a: Assignment, parent?: Assignment): EnvelopeNames;
+  /** What the cut turn of this node already did outward (sent, posted,
+   * pushed, paid), as short labels. Read at open() only, for a running node
+   * with no children started since its turn began: a turn that acted
+   * outward is not run again (contract §5). Absent or empty: nothing known,
+   * so the turn reruns once. */
+  outward?(a: Assignment): string[];
 }
 
 export interface Clock {

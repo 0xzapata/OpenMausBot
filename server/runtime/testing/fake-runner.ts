@@ -62,7 +62,7 @@ export const handOut = (children: ChildSpec[], after: Script): Script => ({ kind
 export const hang = (): Script => ({ kind: "hang" });
 export const custom = (fn: (ctx: TurnContext) => RunResult | Promise<RunResult>): Script => ({ kind: "custom", fn });
 
-export type RunnerMethod = "validate" | "canStart" | "run" | "park" | "report" | "changed" | "names";
+export type RunnerMethod = "validate" | "canStart" | "run" | "park" | "report" | "changed" | "names" | "outward";
 
 export interface RunnerCall {
   method: RunnerMethod;
@@ -121,10 +121,15 @@ export class FakeRunner implements TurnRunner {
   readonly canStartAnswers = new Map<string, true | false | string>();
   /** Reasons validate refuses with, keyed by assignment id or bot id. */
   readonly validateReasons = new Map<string, string>();
+  /** What outward() says a cut turn already did, keyed by assignment id (first) or bot id. */
+  readonly outwardAnswers = new Map<string, string[]>();
   readonly bots: Record<string, BotInfo>;
   personName = "Milind";
   /** Lets a scenario see the stored row at the moment run() is invoked. */
   lookup?: (id: string) => Assignment | undefined;
+  /** The optional port (types.ts TurnRunner.outward); a host without it is
+   * modelled by `new FakeRunner(bots, { outward: false })`. */
+  outward?: (a: Assignment) => string[];
 
   #port?: EnqueuePort;
   #scripts = new Map<string, Script[]>();
@@ -132,8 +137,9 @@ export class FakeRunner implements TurnRunner {
   #throwOnce = new Set<RunnerMethod>();
   #rejectRunOnce = false;
 
-  constructor(bots: Record<string, BotInfo> = {}) {
+  constructor(bots: Record<string, BotInfo> = {}, options: { outward?: boolean } = {}) {
     this.bots = bots;
+    if (options.outward !== false) this.outward = (a) => this.#outward(a);
   }
 
   // ── scripting ──────────────────────────────────────────────────────────
@@ -153,6 +159,11 @@ export class FakeRunner implements TurnRunner {
 
   setCanStart(key: string, answer: true | false | string): void {
     this.canStartAnswers.set(key, answer);
+  }
+
+  /** What the host saw a node's cut turn do outward (read at open()). */
+  setOutward(key: string, labels: string[]): void {
+    this.outwardAnswers.set(key, labels);
   }
 
   /** The next call of this method throws (a host bug the runtime must absorb). */
@@ -293,6 +304,13 @@ export class FakeRunner implements TurnRunner {
   }
 
   // ── internals ──────────────────────────────────────────────────────────
+
+  #outward(a: Assignment): string[] {
+    this.#maybeThrow("outward");
+    const answer = this.outwardAnswers.get(a.id) ?? this.outwardAnswers.get(a.assignee.botId) ?? [];
+    this.calls.push({ method: "outward", id: a.id, a: clone(a), answer });
+    return answer;
+  }
 
   #maybeThrow(method: RunnerMethod): void {
     if (!this.#throwOnce.has(method)) return;
