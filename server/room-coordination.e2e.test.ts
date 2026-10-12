@@ -241,11 +241,21 @@ it.each(["rename", "delete"])("withholds an in-flight result after team %s and r
   f.plan[f.target.id] = { gateFile, reply: "PRIVATE_RESULT_AFTER_TEAM_RECREATION" };
   await f.start();
   await expect.poll(() => f.nodes().find((n: any) => n.parentId)?.status, { timeout: 30_000 }).toBe("running");
+  const child = f.nodes().find((n: any) => n.parentId);
+  await expect.poll(async () => {
+    const chief = (await f.api("/api/bots?messages=0")).bots.find((bot: any) => bot.id === f.sender.id);
+    const nodes = f.nodes();
+    return { root: nodes.find((n: any) => n.id === child.parentId)?.status,
+      child: nodes.find((n: any) => n.id === child.id)?.status,
+      chiefBusy: chief?.busy, taskBusy: chief?.tasks?.some((task: any) => task.busy) ?? false };
+  }, { timeout: 30_000 }).toEqual({ root: "waiting", child: "running", chiefBusy: false, taskBusy: false });
   // The owner empties the team while this particular task is in flight,
   // removes its old identity, then puts the same bot under the reused name.
   const move = (section: string) => request(`/api/bots/${f.target.id}`, { method: "PATCH", headers: { Origin: f.session.info.url },
     body: JSON.stringify({ section }) }, f.session.info.url);
-  await move("Parking");
+  // Keep the held child authorized until recreation, without resuming its Chief early.
+  await move(f.sender.section);
+  expect(f.nodes().find((n: any) => n.id === child.id)?.status).toBe("running");
   await f.api("/api/sidebar-sections?section=Engineering", mode === "rename" ? { name: "Renamed" } : {}, mode === "rename" ? "PATCH" : "DELETE");
   await f.api("/api/sidebar-sections", { name: "Engineering" });
   await move("Engineering");
