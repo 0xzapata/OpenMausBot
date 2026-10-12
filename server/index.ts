@@ -441,7 +441,7 @@ import { fetchSkillFromSource } from "./skill-fetch.ts";
 import { pickBotName } from "./names.ts";
 import { botSkillTemplateSchema, newBotDefaultsSchema, resolveBotCreationDefaults } from "./new-bot-defaults.ts";
 import { expandLearnTurnText, learnSource } from "./skill-learn.ts";
-import { expandSetupTurnText, setupModeActive, setupSystemPrompt } from "./setup-mode.ts";
+import { connectedAppsForSetup, expandSetupTurnText, setupModeActive, setupSystemPrompt, type SetupConnectedApps } from "./setup-mode.ts";
 import type { SkillRequestCardData } from "../shared/skill-request.ts";
 import { checkSoulDrift, readSoulDrift, soulFile, writeSoulMirror } from "./bot-folder.ts";
 import {
@@ -3317,6 +3317,21 @@ function connectedAppsIntegration(bot: Pick<BotRecord, "id" | "connectorTools">,
   });
 }
 
+/** What connected apps can do for a /setup turn (server/setup-mode.ts):
+ * `mounted` is whether this turn mounted their tools; the rest says why not.
+ * The desktop app and a Cloud get the managed service, so its absence there
+ * is an outage, while a server never given a key still needs one. */
+function setupConnectedApps(bot: Pick<BotRecord, "composio" | "connectorTools">, engine: boolean, mounted: boolean): SetupConnectedApps {
+  return connectedAppsForSetup({
+    mounted,
+    engine,
+    configured: composio.configured(cfg),
+    enabled: bot.composio !== false,
+    grants: bot.connectorTools,
+    host: CLOUD_HOME ? "cloud" : DESKTOP_MANAGED ? "desktop" : "server",
+  });
+}
+
 // ── computer control (who is driving) ──────────────────────────────────
 // The person can take the wheel of a bot's computer from the panel; while
 // they hold it, the bot's computer proxies refuse every action. The record
@@ -4088,6 +4103,8 @@ function previewSystemPrompt(bot: BotRecord) {
       text: setupSystemPrompt(agentsMounted && setupModeActive({ soul: bot.soul, description: bot.description, text: "" }), {
         skills: skillAuthoringEnabled(cfg),
         cwd: bot.cwd,
+        connectedApps: setupConnectedApps(bot, caps?.composioMcp === true,
+          caps?.composioMcp === true && bot.composio !== false && composio.configured(cfg)),
       }),
     },
     { id: "computer", label: "Computer", text: computerPrompt(computerPromptKind) },
@@ -11321,7 +11338,13 @@ async function startTurn(
         // first after the soul: the block names agent tools, so it only goes
         // to a turn whose engine actually mounted them (setupMode is already
         // false when they are not — see agentsMounted above)
-        { id: "setup", label: "Setup", text: setupSystemPrompt(setupMode, { skills: skillAuthoring, cwd: liveBot?.cwd ?? bot.cwd }) },
+        // it names the connection tool only when this turn mounted it, read
+        // from the same bot record the mount used
+        { id: "setup", label: "Setup", text: setupSystemPrompt(setupMode, {
+          skills: skillAuthoring,
+          cwd: liveBot?.cwd ?? bot.cwd,
+          connectedApps: setupConnectedApps(bot, instance.adapter.capabilities.composioMcp === true, Boolean(integrations.composio)),
+        }) },
         { id: "files", label: "File locations", text: worksInWorkspace ? workspaceLocationsPrompt(bot.id, cwd, liveBot?.cwd ?? bot.cwd, { attachFile: Boolean(integrations.agents) && !CLOUD_HOME && !HOSTED_WORKSPACE }) : "" },
         { id: "computer", label: "Computer", text: computerPrompt(computerPromptKind) },
         { id: "team-computer", label: "Team computer", text: teamComputerPrompt(teamComputer) },
