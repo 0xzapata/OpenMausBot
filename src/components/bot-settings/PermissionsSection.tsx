@@ -6,11 +6,12 @@
 // approvals ~1013-1050).
 //
 // The Auto branch of LocalComputerAutoWarning (choosing Auto while
-// bot.computer === "local") and the FullAccessWarning live here with their
-// triggers; the Works-on-picker branch (turning computer to "local" while
-// already on Auto) stays with AccessSection, next to that picker. The
-// warnings remember which bot they were opened for, so a bot switch while
-// one is up never applies the choice to the newly selected bot.
+// bot.computer === "local") lives here with its trigger; the Works-on-picker
+// branch (turning computer to "local" while already on Auto) stays with
+// AccessSection, next to that picker. The warning remembers which bot it was
+// opened for, so a bot switch while it is up never applies the choice to the
+// newly selected bot. Full access has no warning: it applies at once, to the
+// bot and every thread (owner decision, Oct 12).
 import { useEffect, useState } from "react";
 import { Crown } from "lucide-react";
 
@@ -22,7 +23,6 @@ import type { ApprovalMode } from "../../../shared/approval-mode";
 import { DEFAULT_OUTBOUND_POLICY, type OutboundPolicy } from "../../../shared/outbound";
 import { ApprovalModeSelector } from "../ApprovalModeSelector";
 import { CommandAllowlistDialog } from "../CommandAllowlistDialog";
-import { FullAccessWarning } from "../FullAccessWarning";
 import { LocalComputerAutoWarning } from "../LocalComputerAutoWarning";
 import { Switch } from "../SettingsPrimitives";
 import { ManagedTeamsSettings } from "./ManagedTeamsSettings";
@@ -42,14 +42,13 @@ export function PermissionsSection({
   const ownerOrAdmin = useOwnerOrAdmin();
   const { draft } = useBotEditor();
   const [localAutoWarning, setLocalAutoWarning] = useState<string | null>(null);
-  const [fullAccessTarget, setFullAccessTarget] = useState<string | null>(null);
-  const [allThreads, setAllThreads] = useState(true);
   const [commandAllowlistTarget, setCommandAllowlistTarget] = useState<{ botId: string; botName: string } | null>(null);
+  const applyFullEverywhere = () =>
+    dispatch({ type: "updateBot", botId: bot.id, patch: { approvalMode: "full", applyToAllThreads: true } });
   const setApprovalMode = (mode: ApprovalMode) => {
     if (bot.busy || mode === approvalMode) return;
     if (mode === "full") {
-      setAllThreads(true);
-      setFullAccessTarget(bot.id);
+      applyFullEverywhere();
       return;
     }
     if (mode === "auto" && bot.computer === "local") {
@@ -134,7 +133,7 @@ export function PermissionsSection({
       <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Approval level</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">
-          {draft ? "Default for the new bot's threads, routines and delegated work." : "Default for new threads, routines and delegated work. When enabling Full access, you can also apply it to every existing thread. Use Refresh permissions on a thread to apply the current level to that conversation."}
+          {draft ? "Default for the new bot's threads, routines and delegated work." : "Default for new threads, routines and delegated work. Full access also applies at once to every existing thread. Use Refresh permissions on a thread to apply the current level to that conversation."}
         </div>
         <ProposalStatus bot={bot} kind="owner" />
         <div className="mt-3">
@@ -151,10 +150,10 @@ export function PermissionsSection({
             onManageCommandAllowlist={!draft && ownerOrAdmin === true ? () => setCommandAllowlistTarget({ botId: bot.id, botName: bot.name }) : undefined}
           />
         </div>
-        {!draft && approvalMode === "full" && trustedModesAvailable && <button
+        {!draft && approvalMode === "full" && <button
           type="button" disabled={Boolean(bot.busy)}
           className="mt-3 text-[13px] text-accent hover:underline disabled:opacity-40"
-          onClick={() => { setAllThreads(true); setFullAccessTarget(bot.id); }}
+          onClick={applyFullEverywhere}
         >Apply Full access to all threads</button>}
         {!draft && ownerOrAdmin === true && <button
           type="button"
@@ -177,18 +176,6 @@ export function PermissionsSection({
           setLocalAutoWarning(null);
           if (!target) return;
           dispatch({ type: "updateBot", botId: target, patch: { approvalMode: "auto", acknowledgeLocalAuto: true } });
-        }}
-      />
-      <FullAccessWarning
-        open={fullAccessTarget !== null}
-        allThreads={allThreads}
-        onAllThreadsChange={draft ? undefined : setAllThreads}
-        onCancel={() => setFullAccessTarget(null)}
-        onConfirm={() => {
-          const target = fullAccessTarget;
-          setFullAccessTarget(null);
-          if (!target) return;
-          dispatch({ type: "updateBot", botId: target, patch: { approvalMode: "full", confirmFullAccess: true, applyToAllThreads: allThreads } });
         }}
       />
     </div>

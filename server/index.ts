@@ -798,6 +798,10 @@ let workspaceAccess: WorkspaceAccess | null = null;
 const DESKTOP_MANAGED = process.env.OMB_DESKTOP_PARENT === "1";
 const SHARED_WORKSPACE_FULL_ACCESS = sharedWorkspaceFullAccessConfigured();
 const sharedWorkspaceFullAccessEnabled = () => SHARED_WORKSPACE_FULL_ACCESS && Boolean(workspaceAccess) && entitled("admin");
+/** Full access goes over the HTTP API like any other level (owner decision,
+ * Oct 12), except on a hosted company workspace: there only the operator's
+ * dedicated policy grants it, for new tasks (POST /api/bots/:id/tasks). */
+const HOSTED_FULL_ACCESS_REFUSAL = "On a shared company workspace Full access comes only from the operator's dedicated policy";
 // Who a loopback request without a session is (server/request-auth.ts
 // LoopbackTrust): the owner on a desktop or a one-person server; a service on
 // a shared workspace, where every bot's shell is a loopback caller too.
@@ -4271,10 +4275,11 @@ function roomTurnApprovalMode(bot: BotRecord, threadId: string, orchestration?: 
   return (from && source && delegatedLevel(from, source.threadId, bot, own)) || own;
 }
 
-/** Privileged approval-mode transitions are deliberately absent from the
- * loopback HTTP authority model: a bot with shell access can curl that
- * surface itself. Only Electron's private utility-process channel can deliver
- * this message. */
+/** Custom approval transitions are deliberately absent from the loopback
+ * HTTP authority model: a bot with shell access can curl that surface itself.
+ * Only Electron's private utility-process channel can deliver this message.
+ * The packaged desktop sends Full here too, but Full is no longer private:
+ * the HTTP routes apply it as well (owner decision, Oct 12). */
 function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const message = raw as Record<string, unknown>;
@@ -12184,8 +12189,8 @@ const validateModelProposal = (selection: ModelSelection, current?: BotRecord): 
   if (current?.approvalGrant) return "Wait for the approval-level confirmation before changing this bot's model";
   if (current) {
     const mode = approvalModeFor(current);
-    const driver = registry.cliTarget(selection.instanceId)?.driverKind;
-    if (!supportsApprovalMode(selection, mode) || ((mode === "full" || mode === "custom") && driver !== registry.cliTarget(current.modelSelection.instanceId)?.driverKind)) {
+    // The same rule as every other model switch: Full carries, Custom never crosses engines.
+    if (!supportsApprovalMode(selection, mode) || engineSwitchNeedsAsk(mode, current.modelSelection, selection)) {
       return `@${current.name}'s existing permissions are incompatible with that provider. Change its permissions in bot settings, then propose the model change again.`;
     }
   }
@@ -21264,9 +21269,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const preset = resolvedPreset && presetOffered(resolvedPreset.row, orgInstallStatuses()) ? resolvedPreset : null;
       if (body.preset !== undefined && !preset) return json(res, 404, { error: PRESET_UNAVAILABLE_MESSAGE });
       body = { ...body, ...settings, name: settings.name };
-      if (settings.approvalMode === "full" || settings.approvalMode === "custom") {
-        return json(res, 403, { error: "This approval level requires the desktop permission flow. Use the bot creation dialog or explicitly choose Ask/Auto for API creation." });
+      // Full is applied like any other level; its first conversation follows
+      // the bot. Custom still comes only through the desktop's private channel.
+      if (settings.approvalMode === "custom") {
+        return json(res, 403, { error: "Custom approval requires the desktop permission flow. Use the bot creation dialog or choose another level for API creation." });
       }
+      if (settings.approvalMode === "full" && HOSTED_WORKSPACE) return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
       if (settings.computer === "local" && settings.approvalMode === "auto" && body.acknowledgeLocalAuto !== true) {
         return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
       }
@@ -21320,6 +21328,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         selection = checked.selection;
       }
       if (hostedModels && !hostedModels.allows(selection)) return json(res, 400, { error: hostedModels.error() });
+      if (settings.approvalMode === "full" && !supportsApprovalMode(selection, "full")) {
+        return json(res, 400, { error: "This provider does not support Full access" });
+      }
       // Keep the capacity check immediately beside the synchronous write.
       // Awaiting provider discovery before this point cannot race the cap.
       if (store.bots.length >= MAX_WORKSPACE_BOTS) {
@@ -21892,14 +21903,39 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           error: "This provider does not support the selected approval level, or changing providers requires choosing Ask first",
         });
       }
+      // Full access applies at once from any client that can reach this API
+      // (owner decision, Oct 12): no desktop channel, no consent field.
+      // Custom keeps the packaged desktop's private channel, into it and out
+      // of it, because it holds restrictions the person wrote themselves.
       const requiresPrivateApprovalTransition =
-        ((requestedApprovalMode === "full" || requestedApprovalMode === "custom") &&
-          currentApprovalMode !== requestedApprovalMode) ||
+        (requestedApprovalMode === "custom" && currentApprovalMode !== "custom") ||
         (currentApprovalMode === "custom" && requestedApprovalMode !== "custom");
       if (requiresPrivateApprovalTransition) {
         return json(res, 403, {
           error: "This approval-level change can only be made from the packaged desktop app",
         });
+      }
+      if (HOSTED_WORKSPACE && requestedApprovalMode === "full" &&
+        (currentApprovalMode !== "full" || body.applyToAllThreads === true)) {
+        return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
+      }
+      // Full for the bot and every one of its conversations, the way bot
+      // settings turns it on; without it only the default (and the threads
+      // that follow it) changes, as for every other level.
+      if (body.applyToAllThreads !== undefined) {
+        if (typeof body.applyToAllThreads !== "boolean") return json(res, 400, { error: "applyToAllThreads must be true or false" });
+        if (body.applyToAllThreads && body.approvalMode !== "full") {
+          return json(res, 400, { error: "applyToAllThreads goes with approvalMode full" });
+        }
+      }
+      if (body.applyToAllThreads === true && existingBot) {
+        const threads = store.tasks(existingBot.id);
+        if (threads.some((task) => threadBusy(existingBot.id, task.threadId))) {
+          return json(res, 409, { error: "stop this bot's turns before changing its approval level" });
+        }
+        if (threads.some((task) => !supportsApprovalMode(task.modelSelection ?? targetSelection, "full"))) {
+          return json(res, 400, { error: "Every thread's provider must support Full access" });
+        }
       }
       // "Auto on this Mac" hands a bot the user's real session, so the grant
       // must prove a human saw the warning. The desktop dialog is the only
@@ -22137,6 +22173,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         bot = store.patchBot(m[1], patch);
       }
       if (!bot) return json(res, 404, { error: "no such bot" });
+      // The same one durable write the desktop's all-threads grant commits.
+      if (body.applyToAllThreads === true) store.setAllThreadApprovalMode(bot.id, "full");
       if (body.memoryUpkeep === false || body.memoryEnabled === false) memoryUpkeep.dropBot(bot.id);
       // A defined Works on is the newest explicit choice: this bot's
       // auto-recorded pins that now point elsewhere give way immediately, so
@@ -23371,11 +23409,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (profile.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
         if (threadBusy(profile.id, m[2])) return json(res, 409, { error: "stop this thread before changing its approval mode" });
         const nextMode = approvalModeFor({ ...profile, approvalGrant: undefined });
-        // Full and Custom never travel over the bot-reachable HTTP surface.
-        // The desktop's private channel copies those levels, and it is also
-        // the only way to leave Custom.
-        if (nextMode === "full" || nextMode === "custom") {
-          return json(res, 403, { error: "Refresh Full or Custom access from the packaged desktop app" });
+        // Custom never travels over the bot-reachable HTTP surface: the
+        // desktop's private channel copies it, and it is also the only way
+        // to leave Custom. Full is copied here like any other level.
+        if (nextMode === "custom") {
+          return json(res, 403, { error: "Refresh Custom access from the packaged desktop app" });
+        }
+        if (nextMode === "full" && HOSTED_WORKSPACE && approvalModeFor(current) !== "full") {
+          return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
         }
         if (approvalModeFor(current) === "custom") {
           return json(res, 403, { error: "Leaving Custom approval requires the packaged desktop app" });
@@ -23390,7 +23431,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const widensMode = approvalRank[nextMode] > approvalRank[approvalModeFor(current)];
         const nextAllow = profile.alwaysAllow ?? [];
         const widensAllow = nextAllow.some((key) => !(current.alwaysAllow ?? []).includes(key));
-        if ((widensMode || widensAllow) && auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin && store.bots.some((bot) => bot.busy)) {
+        // Full has no OMB-side guard (owner decision, Oct 12), here as on
+        // the bot and thread routes; the narrower levels keep this one.
+        if (nextMode !== "full" && (widensMode || widensAllow) && auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin && store.bots.some((bot) => bot.busy)) {
           return json(res, 409, { error: "Change approval mode from the app or a paired device while bots are working." });
         }
         const task = store.refreshTaskPermissions(profile.id, m[2]);
@@ -23453,10 +23496,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (body.approvalMode !== undefined || body.autoApprove !== undefined) {
         if (body.autoApprove !== undefined && typeof body.autoApprove !== "boolean") return json(res, 400, { error: "autoApprove must be a boolean" });
-        const mode = body.approvalMode ?? (body.autoApprove ? "auto" : "ask");
-        // Elevated modes still require the trusted desktop transition. A
-        // thread settings PATCH cannot manufacture that grant.
-        if (mode !== "ask" && mode !== "auto" && mode !== "edits") return json(res, 403, { error: "Full and Custom access require trusted desktop confirmation" });
+        const mode: unknown = body.approvalMode ?? (body.autoApprove ? "auto" : "ask");
+        if (!isApprovalMode(mode)) return json(res, 400, { error: "approvalMode must be ask, edits, auto, full, or custom" });
+        // Full applies here like any other level. Custom still needs the
+        // trusted desktop transition: a thread PATCH cannot manufacture it.
+        if (mode === "custom") return json(res, 403, { error: "Custom access requires trusted desktop confirmation" });
+        if (mode === "full" && HOSTED_WORKSPACE && approvalModeFor(current) !== "full") return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
         if (approvalModeFor(current) === "custom") return json(res, 403, { error: "Leaving Custom approval requires confirmation in the packaged desktop app" });
         if (!supportsApprovalMode(patch.modelSelection ?? current.modelSelection, mode)) {
           return json(res, 400, { error: "This provider does not support the selected approval level" });
