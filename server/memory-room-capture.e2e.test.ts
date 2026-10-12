@@ -14,11 +14,11 @@ import { CAPTURE_MARKER } from "./memory-capture.ts";
 it("captures a member bot's room turn into its memory, sourced to the room, once Learn from group chats is on", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "omb-room-capture-"));
   const routes = join(scratch, "routes.json");
-  const textDump = join(scratch, "text-dump.json");
+  const textLog = join(scratch, "text-prompts.jsonl");
   writeFileSync(routes, JSON.stringify({
     [CAPTURE_MARKER]: JSON.stringify([{ text: "The garden launch moved to Friday", kind: "decision", confidence: 0.9 }]),
   }));
-  const fixture = await launchVerificationServer({ ...process.env, FAKE_CLAUDE_TEXT_ROUTES: routes, FAKE_CLAUDE_TEXT_DUMP: textDump });
+  const fixture = await launchVerificationServer({ ...process.env, FAKE_CLAUDE_TEXT_ROUTES: routes, FAKE_CLAUDE_TEXT_LOG: textLog });
   const env = { OPENMAUSBOT_URL: fixture.info.url };
   const api = async <T = any>(path: string, method = "GET", body?: unknown): Promise<T> => {
     const response = await fetch(fixture.info.url + path, {
@@ -30,10 +30,14 @@ it("captures a member bot's room turn into its memory, sourced to the room, once
     expect(response.ok, `${method} ${path}: ${JSON.stringify(result)}`).toBe(true);
     return result;
   };
+  // The CAPTURE step's prompt: memory upkeep (ORGANIZE, TIDY) can run after
+  // it, so the test reads every one-shot prompt, not just the last.
   const capturePrompt = () => {
     try {
-      // SAFETY: the fake CLI writes exactly this shape; a missing or partial file reads as no capture yet
-      return (JSON.parse(readFileSync(textDump, "utf8")) as { prompt?: string }).prompt ?? "";
+      return readFileSync(textLog, "utf8").split("\n").filter(Boolean)
+        // SAFETY: the fake CLI appends exactly this shape, one object per line
+        .map((line) => (JSON.parse(line) as { prompt?: string }).prompt ?? "")
+        .find((prompt) => prompt.includes(CAPTURE_MARKER)) ?? "";
     } catch {
       return "";
     }
