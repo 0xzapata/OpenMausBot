@@ -253,7 +253,7 @@ export function CallTargetButton({
   // already running, stay.
   if (liveMode && !onCall && liveLineHeldElsewhere(media, state.liveCall)) return null;
   return (
-    <div ref={rootRef} className="relative flex items-center">
+    <div ref={rootRef} className="relative flex items-center gap-0.5">
       <button
         ref={buttonRef}
         disabled={liveElsewhere || (onLiveCall && media.phase === "ending")}
@@ -280,7 +280,7 @@ export function CallTargetButton({
         title={label}
         data-call-button={placement}
         className={cn(
-          "relative flex shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-60",
+          "relative flex shrink-0 items-center justify-center transition-colors disabled:opacity-60 rounded-l-3xl rounded-r-lg",
           composer ? "size-8" : "size-9",
           active
             ? "bg-danger text-white hover:brightness-110"
@@ -316,7 +316,10 @@ export function CallTargetButton({
           aria-controls={menuOpen ? menuId : undefined}
           aria-label={t("call.mode.menu")}
           title={t("call.mode.menu")}
-          className={cn("-ml-1 flex w-4 items-center justify-center rounded-full text-ink-secondary transition-colors hover:text-ink disabled:opacity-40", composer ? "h-8" : "h-9")}
+          className={cn(
+              "bg-control w-8 hover:bg-raised flex items-center justify-center text-ink-secondary transition-colors hover:text-ink disabled:opacity-40 rounded-l-lg rounded-r-3xl",
+              composer ? "h-8" : "h-9"
+            )}
         >
           <ChevronDown size={13} className={cn("transition-transform", menuOpen && "rotate-180")} />
         </button>
