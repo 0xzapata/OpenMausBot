@@ -5294,6 +5294,18 @@ const channelTaskBlocked = (group: GroupRecord) =>
 // Recovery can synchronously emit room changes. Load coordination state
 // before registering store listeners or recovering interrupted routines.
 const groupQueues = new Map<string, Promise<void>>();
+/** Whether a room member's own turn (a root in a room thread) can still
+ * run: the member and the room conversation exist and it is still a member.
+ * The section and peer rules are a hand-off's (roomHandoffProblem): the
+ * person put these members in one room themselves. */
+function roomRootProblem(node: Pick<HandoffView, "groupId" | "threadId" | "botId">): string | undefined {
+  const group = node.groupId ? store.group(node.groupId) : undefined;
+  const bot = store.bot(node.botId);
+  if (!bot || bot.hidden) return "The addressed agent no longer exists";
+  if (!group || !(group.dm ? group.threadId === node.threadId : store.groupTaskByThread(group.id, node.threadId))) return "Destination room task no longer exists";
+  if (!group.memberIds.includes(bot.id)) return "The addressed agent is no longer a member of this room";
+  return undefined;
+}
 function roomHandoffProblem(node: Pick<HandoffView, "groupId" | "threadId" | "botId"> & Partial<Pick<HandoffView, "kind">>, parent?: Pick<HandoffView, "groupId" | "threadId" | "botId">): string | undefined {
   const group = node.groupId ? store.group(node.groupId) : undefined;
   const bot = store.bot(node.botId);
@@ -5415,7 +5427,7 @@ function runRoomNode(node: HandoffView, group: GroupRecord, bot: BotRecord, sign
     if (signal.aborted) abort();
     const run = (groupQueues.get(node.threadId) ?? Promise.resolve()).catch(() => {}).then(async () => {
       if (operation.cancelled) return;
-      const problem = roomHandoffProblem(node, parent);
+      const problem = node.parentId ? roomHandoffProblem(node, parent) : roomRootProblem(node);
       if (problem) throw new Error(problem);
       const available = await waitForChatRoomMember(operation, node.threadId, bot);
       if (available !== "run") { result.outcome = "cancelled"; return; }
@@ -5509,7 +5521,9 @@ const coordinator: Coordinator = createCoordinator({
     // A one-way notice is checked when it is sent and when it is dispatched;
     // once handed over nothing of it returns, so no route back can close
     // under it (the recipient owns the thread).
-    validate: (node, parent) => node.mode === "notify" && node.status !== "queued" ? undefined : roomHandoffProblem(node, parent) ??
+    validate: (node, parent) => node.mode === "notify" && node.status !== "queued" ? undefined
+      : !node.parentId && node.groupId ? roomRootProblem(node)
+      : roomHandoffProblem(node, parent) ??
       (parent && store.bot(parent.botId)?.approvePeerComms && !fullAccessForSource(parent.botId, parent.threadId) && !node.approvalGranted ? "Sender now requires peer approval; submit a new approved request" : undefined),
     // Delegations' admission (canAdmitDirectTurn): a free slot admits work
     // beside a sibling that is running (#1589) or waiting on the person, so a
@@ -17532,6 +17546,22 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 400, { error: "invalid test capability" });
       }
       const generation = beginInternalCapabilityGeneration(parsed.data.threadId);
+      // The capability stands in for a turn of that bot in that thread, so
+      // the hand-offs it makes need what any turn's have: the turn's root,
+      // begun as a person's turn there would begin it (never ended: the
+      // stand-in has no turn end).
+      {
+        const minted = store.bot(parsed.data.botId)!;
+        const threadId = parsed.data.threadId;
+        const owner = connectorThread(minted.id, threadId);
+        const latestUser = [...store.activePath(threadId)].reverse().find((message) => message.role === "user" && message.kind === "text" && message.text);
+        const opener = handoffOpener({ botId: minted.id, threadId }, threadId);
+        coordinator.beginTurn({
+          id: generation, address: { botId: minted.id, threadId, ...(owner?.group ? { groupId: owner.group.id } : {}) }, brief: latestUser?.text ?? "",
+          level: owner?.group ? roomTurnLevel(minted, threadId, undefined) : approvalModeForTurn(store.projectBotForTask(minted.id, threadId) ?? minted, false, threadId),
+          ...(opener ? { opener } : {}), origin: requestWorkOrigin({ line: latestUser }),
+        });
+      }
       const { deliversSavedFiles, ...grants } = parsed.data;
       const token = mintInternalCapability({
         ...grants,
