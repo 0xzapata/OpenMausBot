@@ -1,9 +1,137 @@
+import { isContextMessage } from "./delta-context.ts";
+import { redactSecretsInText } from "./redact.ts";
+import type { Message } from "./store.ts";
+
+import { nameIsCommand } from "../shared/tool-name.ts";
+
 /** A bounded replay of the active branch. Native resumes still receive
  * deltas; this selection is for sessions that need history rebuilt. */
 export interface ReplayEntry {
   id: string;
   role: "user" | "assistant";
   text: string;
+}
+
+// ── tool history ──────────────────────────────────────────────────────
+// A replay carries what was said. A session rebuilt from it (an engine
+// switched in mid-thread, a rewind, a session the provider lost, a
+// compaction) therefore cannot tell which commands already ran or which
+// files were already read. With `context.replayToolHistory` on, the inline
+// replay also names each earlier tool call on one line, between the two
+// messages it ran between. Only the inline replay: a driver that replays
+// natively (SendTurnInput.transcript) and a session that resumes are sent
+// exactly what they are sent without it.
+
+/** One earlier tool call, as a rebuilt session is told about it. */
+export interface ReplayToolCall {
+  /** The context message it ran after (a ReplayEntry id). */
+  afterId: string;
+  /** The finished line; see toolReplayLine. */
+  text: string;
+}
+
+/** Tool lines one replay may carry. They are counted apart from messages,
+ * so a turn of forty tool calls cannot push a reply out of the window. */
+export const REPLAY_TOOL_LINE_CAP = 20;
+/** Characters one tool line may run to, outcome included. */
+export const TOOL_LINE_MAX_CHARS = 120;
+
+/** `context.replayToolHistory`, off unless switched on. OMB_REPLAY_TOOL_HISTORY
+ * wins over the file when it is "1" (on) or "0" (off). */
+export function replayToolHistoryEnabled(
+  settings: { replayToolHistory?: boolean } | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const override = env.OMB_REPLAY_TOOL_HISTORY?.trim();
+  if (override === "1") return true;
+  if (override === "0") return false;
+  return settings?.replayToolHistory === true;
+}
+
+/** One tool call on one line: what its chip shows in the chat, and how it
+ * ended. The chip's own rule decides what is shown (src/components/
+ * ToolActivity.tsx): the title, and the command beside it unless the title
+ * already is the command (Codex, ACP). Never the call's result or its input
+ * preview. Stored titles are redacted already; this redacts again, because
+ * the line leaves for another provider, and BEFORE it clips: a key cut in
+ * half is no longer a shape redaction knows. A call with no recorded result
+ * (its turn was stopped mid-call) says so rather than claim it worked. */
+export function toolReplayLine(tool: NonNullable<Message["tool"]>): string {
+  const oneLine = (text: string) => redactSecretsInText(text.replace(/\s+/g, " ").trim());
+  const name = oneLine(tool.name) || "tool";
+  const summary = tool.summary ? oneLine(tool.summary) : "";
+  const shown = summary && summary !== name && !nameIsCommand(name) ? `${name}: ${summary}` : name;
+  const tail = ` — ${tool.ok === true ? "ok" : tool.ok === false ? "failed" : "no result recorded"}]`;
+  const room = TOOL_LINE_MAX_CHARS - "[ran: ".length - tail.length;
+  // by character, not UTF-16 unit: a cut must not leave half of one behind
+  const characters = [...shown];
+  return `[ran: ${characters.length > room ? `${characters.slice(0, room - 1).join("")}…` : shown}${tail}`;
+}
+
+/** Every tool call on the active branch (`messages`, oldest first), each
+ * placed after the context message it followed. Empty while the setting is
+ * off. A tool call is an activity row with a provider item behind it, the
+ * rows a work digest counts (server/digest.ts); the harness's own chips (a
+ * retry notice, "Stopped here") are not. A row that is itself context (a
+ * teammate's returned report is an activity row with a chip) stays the
+ * message it is and is never also a tool line. */
+export function replayToolCalls(
+  messages: readonly Message[],
+  settings: { replayToolHistory?: boolean } | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): ReplayToolCall[] {
+  if (!replayToolHistoryEnabled(settings, env)) return [];
+  const calls: ReplayToolCall[] = [];
+  let afterId: string | undefined;
+  for (const m of messages) {
+    if (isContextMessage(m)) afterId = m.id;
+    // before anything was said there is nothing to put a call between
+    else if (afterId !== undefined && m.kind === "activity" && m.tool?.itemId) calls.push({ afterId, text: toolReplayLine(m.tool) });
+  }
+  return calls;
+}
+
+/** `kept` with the tool lines that fit put back in place. Three bounds, in
+ * this order, and none of them can cost a message, because `kept` was
+ * chosen before any of this ran and is returned whole:
+ * - only calls that ran strictly inside the replayed window, after its
+ *   first message and before its last. A call from before the window has
+ *   nothing replayed before it; one after the last message (the calls of a
+ *   request being run again in place) would read as having run before the
+ *   request it answered;
+ * - at most REPLAY_TOOL_LINE_CAP of those, the most recent;
+ * - only what `spare` (the budget content left unused) still holds, most
+ *   recent first, each line costed like a message. */
+function withToolLines(
+  history: readonly ReplayEntry[],
+  kept: ReplayEntry[],
+  tools: readonly ReplayToolCall[] | undefined,
+  spare: number,
+): ReplayEntry[] {
+  if (!tools?.length || kept.length < 2) return kept;
+  const position = new Map(history.map((entry, index) => [entry.id, index]));
+  const first = position.get(kept[0]!.id)!;
+  const last = position.get(kept.at(-1)!.id)!;
+  const inside = tools
+    .map((tool) => ({ text: tool.text, after: position.get(tool.afterId) ?? -1 }))
+    .filter((tool) => tool.after >= first && tool.after < last)
+    .slice(-REPLAY_TOOL_LINE_CAP);
+  let from = inside.length;
+  for (let available = spare; from > 0; from--) {
+    const size = Buffer.byteLength(inside[from - 1]!.text) + 16;
+    if (size > available) break;
+    available -= size;
+  }
+  const placed = inside.slice(from);
+  if (!placed.length) return kept;
+  const out: ReplayEntry[] = [];
+  let next = 0;
+  for (const [index, entry] of kept.entries()) {
+    out.push(entry);
+    const until = index + 1 < kept.length ? position.get(kept[index + 1]!.id)! : Infinity;
+    for (; next < placed.length && placed[next]!.after < until; next++) out.push({ id: "", role: "assistant", text: placed[next]!.text });
+  }
+  return out;
 }
 
 export interface CompactionRecord {
@@ -40,8 +168,18 @@ export function boundedContextText(text: string, limit: number): string {
 
 export function selectReplay(
   history: readonly ReplayEntry[],
-  options: { budgetBytes?: number; maxMessages?: number; excludedIds?: ReadonlySet<string>; compaction?: CompactionRecord & { id: string } } = {},
-): { transcript: ReplayEntry[]; representedIds: string[]; dropped: number; compacted: number; shortened: string[] } {
+  options: {
+    budgetBytes?: number; maxMessages?: number; excludedIds?: ReadonlySet<string>; compaction?: CompactionRecord & { id: string };
+    /** Earlier tool calls, oldest first (replayToolCalls). They reach `inline` only. */
+    tools?: readonly ReplayToolCall[];
+  } = {},
+): {
+  transcript: ReplayEntry[];
+  /** `transcript` as an inline replay sends it: with the tool lines that
+   * fit, or `transcript` itself when there are none. */
+  inline: ReplayEntry[];
+  representedIds: string[]; dropped: number; compacted: number; shortened: string[];
+} {
   const budget = options.budgetBytes ?? DEFAULT_REBUILD_BYTES;
   const maxMessages = options.maxMessages ?? 40;
   if (!Number.isSafeInteger(budget) || budget < 1_024 || !Number.isSafeInteger(maxMessages) || maxMessages < 1) {
@@ -83,7 +221,11 @@ export function selectReplay(
   }
   const dropped = entries.length - kept.length;
   if (dropped) transcript.push({ id: "", role: "assistant", text: `[${dropped} earlier messages omitted from this context; full history remains in the app.]` });
+  const lead = transcript.length;
   transcript.push(...kept);
+  // Content is settled above; tool lines get only the bytes it left unused.
+  const lines = withToolLines(history, kept, options.tools, available);
+  const inline = lines === kept ? transcript : [...transcript.slice(0, lead), ...lines];
   const represented = new Set(representedIds);
-  return { transcript, representedIds: history.filter(entry => represented.has(entry.id)).map(entry => entry.id), dropped, compacted: applies ? cut : 0, shortened };
+  return { transcript, inline, representedIds: history.filter(entry => represented.has(entry.id)).map(entry => entry.id), dropped, compacted: applies ? cut : 0, shortened };
 }
