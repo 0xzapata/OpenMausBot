@@ -651,6 +651,7 @@ import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
+import { createInternalSignInRoutes, createSignInCardRoutes } from "./routes/sign-in.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
@@ -16530,6 +16531,7 @@ const cloudMoveRoutes = createCloudMoveRoutes({
 // Route modules (server/routes/README.md). `workspaceAccess` is assigned at
 // boot, after this line, so the dependency reads it per request.
 ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
+ROUTES.push(createSignInCardRoutes({ settle: settleSignIn }));
 // Install statuses come from the organization library's own state, never
 // its file, so New bot cannot disagree with it. No organization: none.
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
@@ -19190,11 +19192,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         return json(res, 201, { messageId: message.id, label: target.label });
       }
-      if (method === "POST" && path === "/api/internal/request-sign-in") {
-        const body = await readInternalBody();
-        const result = requestSignIn(internalSender, internalCapability.threadId, body.site, body.reason);
-        return "error" in result ? json(res, result.status, { error: result.error }) : json(res, 201, result);
-      }
+      if (await dispatchRoutes([createInternalSignInRoutes({
+        readBody: readInternalBody,
+        request: (site, reason) => requestSignIn(internalSender, internalCapability.threadId, site, reason),
+      })], { req, res, url, path, method, auth, json, readBody })) return;
       if (method === "POST" && path === "/api/internal/voice-note") {
         const body = await readInternalBody();
         const text = typeof body.text === "string" ? body.text.trim() : "";
@@ -25646,15 +25647,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const state = currentSecretState(m[1], threadId, message.id);
       if (!state) return json(res, 409, { error: "this credential request is no longer available" });
       return json(res, 200, { dismissed: true, resumed: state.resumed });
-    }
-
-    // A sign-in card's two answers. Nothing secret crosses here: the person
-    // typed the password into the page itself, never into OpenMausBot.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/sign-in-cards\/([\w-]+)\/(done|cancel)$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      const result = settleSignIn(m[1], String(body.threadId ?? ""), m[2], m[3] === "done" ? "done" : "cancelled");
-      return json(res, result.status, result.body);
     }
 
     // Inline connection cards are bound to both the bot and the exact task
