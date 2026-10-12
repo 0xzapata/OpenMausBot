@@ -660,6 +660,18 @@ function projectMessage(message: Record<string, any>) {
         resumed: message.secret.resumed,
       }
     : undefined;
+  const signIn = isRecord(message.signIn)
+    ? {
+        site: message.signIn.site,
+        url: message.signIn.url,
+        place: message.signIn.place,
+        reason: message.signIn.reason,
+        done: message.signIn.done,
+        cancelled: message.signIn.cancelled,
+        superseded: message.signIn.superseded,
+        resumed: message.signIn.resumed,
+      }
+    : undefined;
   return {
     id: message.id,
     at: message.at,
@@ -675,6 +687,7 @@ function projectMessage(message: Record<string, any>) {
     ...(card ? { card } : {}),
     ...(connector ? { connector } : {}),
     ...(secret ? { secret } : {}),
+    ...(signIn ? { signIn } : {}),
     ...(message.kind === "screen" ? { hasImage: Boolean(message.hasImage || message.png) } : {}),
   };
 }
@@ -694,7 +707,8 @@ function messageNeedsInput(message: Record<string, any>): boolean {
     !message.connector.resumed &&
     message.connector.status !== "connected";
   const secret = isRecord(message.secret) && !message.secret.provided && !message.secret.dismissed && !message.secret.superseded;
-  return Boolean(card || connector || secret);
+  const signIn = isRecord(message.signIn) && !message.signIn.done && !message.signIn.cancelled && !message.signIn.superseded;
+  return Boolean(card || connector || secret || signIn);
 }
 
 function dispatchFailedAfterLatestUser(messages: Array<Record<string, any>>): boolean {
