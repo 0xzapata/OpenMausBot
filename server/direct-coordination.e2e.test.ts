@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 import { request } from "../scripts/mcp-server.ts";
@@ -49,11 +50,18 @@ async function fixtureSession(test: (f: any) => Promise<void>, fakeEnv: NodeJS.P
     // The coordinated turns as the runtime records them (DATA_DIR/runtime.db),
     // projected onto the node shape the server reads (coordinator.ts HandoffView).
     const nodes = () => readHandoffs(session.info.dataDir);
+    /** The runtime's audit trail of one node (assignment_events), oldest first. */
+    const eventsOf = (id: string): string[] => {
+      const db = new DatabaseSync(join(session.info.dataDir, "runtime.db"), { readOnly: true });
+      try {
+        return (db.prepare("SELECT kind FROM assignment_events WHERE assignment_id = ? ORDER BY id").all(id) as Array<{ kind: string }>).map(row => row.kind);
+      } finally { db.close(); }
+    };
     const evidence = () => existsSync(`${planPath}.evidence.jsonl`) ? readFileSync(`${planPath}.evidence.jsonl`, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
     const messages = async (threadId: string) => (await api(`/api/threads/${threadId}/messages`)).messages;
     const start = async () => { save(); return cli("send", "--bot", chief.id, "--task", chief.activeTaskId, "--text", "Please have Engineering build and independently verify a CSV export. Own the result."); };
     const wait = () => cli("wait", "--bot", chief.id, "--task", chief.activeTaskId, "--timeout", "30");
-    await test({ session, cli, api, chief, lead, specialist, plan, save, start, wait, nodes, evidence, messages });
+    await test({ session, cli, api, chief, lead, specialist, plan, save, start, wait, nodes, eventsOf, evidence, messages });
   } finally { await session.close(); }
 }
 
@@ -1033,10 +1041,13 @@ async function onLoopbackEngine(f: any, answer: (res: ServerResponse) => void): 
 }
 
 // A teammate on an OpenAI-compatible engine stops at the 64-step cap. The
-// Chief that assigned the work is told so — the cap, what ran, where the
-// handoff is — and decides what to send next. No unattended `Continue:` task
-// starts beside it on the same work, whose result would never reach the Chief.
-it("returns a teammate's step cap to the Chief instead of continuing it unattended", () => fixture(async f => {
+// same assignment continues in place — one more execution, opening with the
+// cap note and the handoff — and only while it makes progress: an engine
+// whose every call fails is stopped after two executions without a
+// successful tool call (the runtime's loop guard), and the Chief hears that
+// as the assignment's failure, once. No unattended `Continue:` task starts
+// beside it on the same work, and nothing asks the Chief to re-send.
+it("continues a teammate's step cap in place and stops it once it makes no progress", () => fixture(async f => {
   let calls = 0;
   const close = await onLoopbackEngine(f, res => {
     // Never a final answer: one more tool call, every round.
@@ -1047,18 +1058,29 @@ it("returns a teammate's step cap to the Chief instead of continuing it unattend
   try {
     await f.start();
     expect((await f.wait()).status).toBe("settled");
-    const child = f.nodes().find((node: any) => node.botId === f.lead.id);
-    expect(child.status).toBe("failed");
-    expect(child.result).toMatch(/^Stopped after 64 steps without a final answer\. The steps so far already ran, so ask only for what's left\. Before it stopped it made 64 tool calls: missing_tool ×64 \(64 failed\)\. Every step it took is listed in .+handoffs.+; to finish, assign what is left and point to that file\.$/);
+    const leads = f.nodes().filter((node: any) => node.botId === f.lead.id);
+    expect(leads).toHaveLength(1);
+    const child = leads[0];
+    expect(child).toMatchObject({ status: "failed", outcome: "stalled", executions: 2 });
+    expect(child.result).toMatch(/^Stopped after 64 steps without a final answer\./);
+    expect(child.outcomeDetail).toMatch(/^Stopped after 2 continuations without progress: Stopped after 64 steps without a final answer\./);
+    expect(child.result).not.toContain("assign what is left");
+    expect(f.eventsOf(child.id).filter((kind: string) => kind === "continued")).toHaveLength(1);
+    expect(f.eventsOf(child.id)).toContain("stalled");
+    // The continuation opened with the cap note, named the handoff and
+    // carried the assignment again.
     const resumed = f.evidence().find((turn: any) => turn.botId === f.chief.id && turn.resumed);
-    expect(resumed.prompt.message.content).toContain("Stopped after 64 steps without a final answer");
+    expect(resumed.prompt.message.content).toContain("Stopped after 2 continuations without progress");
+    expect(resumed.prompt.message.content).not.toContain("assign what is left");
     const chip = (await f.messages(f.chief.activeTaskId)).find((message: any) => message.roomRequest?.phase === "result");
     expect(chip.tool.name).toContain("Engineering lead — failed: Stopped after 64 steps without a final answer");
+    expect((await f.messages(f.chief.activeTaskId)).filter((message: any) => message.roomRequest?.phase === "result")).toHaveLength(1);
     const lead = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id);
     expect(lead.tasks.map((task: any) => task.title).filter((title: string) => title.startsWith("Continue:"))).toEqual([]);
-    expect(calls).toBe(64);
+    // Two executions of 64 rounds: the assignment, then one continuation.
+    expect(calls).toBe(128);
   } finally { await close(); }
-}), 60_000);
+}), 90_000);
 
 // A usage limit is the provider's to state: the Chief hears it as said.
 it("tells the Chief a teammate's provider refused the turn, in the provider's words", () => fixture(async f => {
