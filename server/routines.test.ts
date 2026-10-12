@@ -2959,10 +2959,64 @@ describe("run on startup", () => {
     expect(booted.listRoutines()[0].nextRunAt).toBeGreaterThan(routine.nextRunAt! + 13 * 60 * 60_000);
   });
 
+  it("runs once per desktop launch, not again when that launch restarts its server", async () => {
+    const h = harness(start);
+    h.manager.create(daily({ runOnStartup: true }));
+    const launched = new RoutineManager({ ...h.options, launchId: "launch-a" });
+    launched.start();
+    await expect.poll(() => h.started.length).toBe(1);
+    launched.stop();
+    // The desktop restarts a crashed server, or switches back to this
+    // workspace, within the same launch.
+    const restarted = new RoutineManager({ ...h.options, launchId: "launch-a" });
+    restarted.start();
+    await restarted.tick();
+    restarted.stop();
+    expect(restarted.listRuns()).toHaveLength(1);
+    // The next time the app opens is a new launch.
+    const relaunched = new RoutineManager({ ...h.options, launchId: "launch-b" });
+    relaunched.start();
+    await expect.poll(() => h.started.length).toBe(2);
+    relaunched.stop();
+    expect(relaunched.listRuns().map((run) => run.triggerSource)).toEqual(["startup", "startup"]);
+  });
+
+  it("counts a launch whose startup was covered by a catch-up run", async () => {
+    const h = harness(start);
+    const routine = h.manager.create(daily({ runOnStartup: true }));
+    h.setNow(routine.nextRunAt! + 60_000);
+    const launched = new RoutineManager({ ...h.options, launchId: "launch-a" });
+    launched.start();
+    await expect.poll(() => h.started.length).toBe(1);
+    launched.stop();
+    const restarted = new RoutineManager({ ...h.options, launchId: "launch-a" });
+    restarted.start();
+    await restarted.tick();
+    restarted.stop();
+    expect(restarted.listRuns().map((run) => run.triggerSource)).toEqual(["schedule"]);
+  });
+
+  it("never marks a one-time routine, and never starts one that a file marked", async () => {
+    const h = harness(start);
+    const once = h.manager.create(daily({ runOnStartup: true, schedule: { type: "once", at: start + 24 * 60 * 60_000 } }));
+    expect(once.runOnStartup).toBeUndefined();
+    const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+    disk.routines[0].runOnStartup = true;
+    writeFileSync(h.options.file!, JSON.stringify(disk));
+    const booted = new RoutineManager(h.options);
+    booted.start();
+    await booted.tick();
+    booted.stop();
+    expect(booted.listRuns()).toHaveLength(0);
+    const repeating = h.manager.create(daily({ runOnStartup: true }));
+    expect(h.manager.update(repeating.id, { schedule: { type: "once", at: start + 24 * 60 * 60_000 } })?.runOnStartup).toBeUndefined();
+  });
+
   it("tries again on the next start when the startup runs could not be saved", async () => {
     const h = harness(start);
     h.manager.create(daily({ runOnStartup: true }));
-    const booted = new RoutineManager(h.options);
+    // With a launch id, the failed start must not count as this launch's.
+    const booted = new RoutineManager({ ...h.options, launchId: "launch-a" });
     // A directory where the store goes fails the atomic rename on every OS.
     const file = h.options.file!;
     rmSync(file);

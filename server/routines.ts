@@ -263,6 +263,9 @@ interface RoutineFile {
   routineRequestReceipts?: RoutineRequestReceipt[];
   /** Compact delivery identities outlive the independently trimmed run log. */
   webhookRunReceipts?: WebhookRunReceipt[];
+  /** The desktop launch whose startup runs were already queued
+   * (RoutineManagerOptions.launchId). */
+  startupLaunchId?: string;
 }
 
 const webhookRunReceiptSchema = z.object({
@@ -339,6 +342,11 @@ export interface RoutineManagerOptions {
   /** A successful provider turn is intermediate while its peer work or
    * queued continuation still belongs to this detached execution. */
   hasPendingDelegations?: (threadId: string) => boolean;
+  /** The desktop app launch this server belongs to. The desktop restarts its
+   * server within one launch (crash recovery, switching back to a workspace),
+   * and that is not the app starting, so startup runs happen once per launch.
+   * Without one, as on a standalone server, every process start counts. */
+  launchId?: string;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -780,6 +788,7 @@ function sanitizeInput(input: RoutineInput, after: number): Omit<Routine, "id" |
   if (continuity && target === "room-goal") {
     throw new Error("Room goals do not carry continuity yet");
   }
+  const schedule = cleanSchedule(input.schedule, after);
   return {
     name,
     prompt,
@@ -788,13 +797,14 @@ function sanitizeInput(input: RoutineInput, after: number): Omit<Routine, "id" |
     groupId: target === "room-goal" ? groupId : undefined,
     runOn,
     enabled: input.enabled !== false,
-    schedule: cleanSchedule(input.schedule, after),
+    schedule,
     durationMinutes: Math.min(240, Math.max(5, Math.round(Number(input.durationMinutes) || 30))),
     ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     attachments,
     ...(continuity ? { continuity: true } : {}),
     ...(input.overlap === "queue" ? { overlap: "queue" as const } : {}),
-    ...(input.runOnStartup === true ? { runOnStartup: true } : {}),
+    // A one-time routine has no schedule to keep running beside it.
+    ...(input.runOnStartup === true && schedule.type !== "once" ? { runOnStartup: true } : {}),
   };
 }
 
@@ -813,6 +823,7 @@ export class RoutineManager {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** Startup runs belong to the process start, not to a resume after pause. */
   private startupRunsQueued = false;
+  private startupLaunchId: string | undefined;
   private ticking = false;
   /** The file existed but could not be read (corrupt JSON or a schema
    * failure). Saves are refused while set so a fresh empty state can never
@@ -905,6 +916,7 @@ export class RoutineManager {
           })
         : [];
       this.frozenPending = disk.frozenResultsCleared !== true;
+      if (typeof disk.startupLaunchId === "string") this.startupLaunchId = disk.startupLaunchId;
       // Upgrade old run logs before history pruning can discard their IDs.
       const known = new Set(this.webhookRunReceipts.map((r) => JSON.stringify([r.webhookId, r.deliveryId])));
       for (const run of this.runs) {
@@ -1518,29 +1530,40 @@ export class RoutineManager {
     this.timer = null;
   }
 
-  /** One run for each enabled routine marked to run on startup. A routine the
-   * scheduler is about to catch up on, or one with a run already queued or
-   * under way, is left to that run so a start never doubles it. An
-   * occurrence too late to catch up is replaced by the startup run instead of
-   * being recorded as missed. False when the runs could not be saved. */
+  /** One run for each enabled routine marked to run on startup, once per
+   * desktop launch. A routine the scheduler is about to catch up on, or one
+   * with a run already queued or under way, is left to that run so a start
+   * never doubles it. An occurrence too late to catch up is replaced by the
+   * startup run instead of being recorded as missed. False when the runs
+   * could not be saved. */
   private queueStartupRuns(): boolean {
+    const launchId = this.options.launchId;
+    if (launchId !== undefined && launchId === this.startupLaunchId) return true;
     const now = this.now();
-    const marked = this.routines.filter((routine) =>
-      routine.enabled && routine.runOnStartup &&
+    const flagged = this.routines.filter((routine) =>
+      routine.enabled && routine.runOnStartup && routine.schedule.type !== "once");
+    if (flagged.length === 0) return true;
+    const marked = flagged.filter((routine) =>
       !(routine.nextRunAt != null && routine.nextRunAt <= now && now - routine.nextRunAt <= CATCH_UP_MS) &&
       !this.runs.some((run) => run.routineId === routine.id && ["queued", "running", "waiting"].includes(run.status)));
-    if (marked.length === 0) return true;
+    // Already covered: with a launch id, still record that this launch started.
+    if (marked.length === 0 && launchId === undefined) return true;
+    const previousLaunchId = this.startupLaunchId;
     const runs: RoutineRun[] = [];
     const allocations: ResultsThreadAllocation[] = [];
     try {
       this.commitMutation(() => {
+        if (launchId !== undefined) this.startupLaunchId = launchId;
         for (const routine of marked) {
           const run = this.newRun(routine, now, false, allocations);
           run.triggerSource = "startup";
           runs.push(run);
           if (routine.nextRunAt != null && routine.nextRunAt <= now) this.advancePastOccurrence(routine, now, routine.nextRunAt);
         }
-      }, () => this.discardResultsThreads(allocations));
+      }, () => {
+        this.startupLaunchId = previousLaunchId;
+        this.discardResultsThreads(allocations);
+      });
     } catch (error) {
       console.error("routines: could not queue startup runs", error);
       return false;
@@ -2098,6 +2121,7 @@ export class RoutineManager {
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,
       webhookRunReceipts: this.webhookRunReceipts,
+      ...(this.startupLaunchId === undefined ? {} : { startupLaunchId: this.startupLaunchId }),
     } satisfies RoutineFile, null, 2), { mode: 0o600 });
   }
 }

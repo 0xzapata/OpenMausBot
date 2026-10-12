@@ -12164,6 +12164,9 @@ _loadPending();
 
 routines = new RoutineManager({
   emit: broadcast,
+  // Set once per desktop launch (electron/main.mjs), so a server the desktop
+  // restarts within that launch does not run startup routines again.
+  launchId: /^[\w-]{1,100}$/.test(process.env.OMB_DESKTOP_LAUNCH_ID ?? "") ? process.env.OMB_DESKTOP_LAUNCH_ID : undefined,
   hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
     [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
     pendingDelegationWakes.has(threadId),
@@ -12949,6 +12952,7 @@ const agentRoutine = (
     instructionsTruncated: safeInstructions.length > 2_000,
     continuity: routine.continuity === true,
     overlap: routine.overlap ?? "skip",
+    runOnStartup: routine.runOnStartup === true,
     skippedRuns: routine.skippedRuns ?? 0,
     lastSkippedAt: routineTimestamp(routine.lastSkippedAt),
     failureStreak: routine.failureStreak ?? 0,
