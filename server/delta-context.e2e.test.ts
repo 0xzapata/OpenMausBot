@@ -467,7 +467,12 @@ it("keeps the person's request on work a thread the bot opened on itself hands o
 // still the conversation's own. Once the person has moved on, the line the
 // card hangs off proves nothing: a routine's or a webhook's run stores its
 // prompt as a plain user line too.
-it("keeps the person's request on work handed on after a card answer, and only while that request stands", () => fixture(async (f) => {
+// A team-setup card parks the root whose turn raised it; the decision runs
+// that root again (decision 2), and the work it hands on carries the root's
+// own request: the line the person typed for it, proven by its record. A
+// later line is its own root (decision 3): it neither lends the parked root
+// its words nor takes the parked root's request away.
+it("keeps the person's request on work handed on after a card answer, on the root that asked", () => fixture(async (f) => {
   const seen = new Set<string>();
   // The card comes at the end of a whole chief turn (the fake CLI's launch,
   // the agents proxy, three tool calls): the same room every other poll on
@@ -516,14 +521,27 @@ it("keeps the person's request on work handed on after a card answer, and only w
   await f.send("PERSON_CARD_TWO please tidy the team again");
   const late = await card();
   await f.idle();
+  // The person keeps chatting while the card waits: a new root, answered
+  // on its own, with the parked root and its card still answerable.
   f.plan[f.chief.id] = { reply: "Hi", byPrompt: propose("late-card", "CARD_TWO_BRIEF check the team").byPrompt };
   await f.send("PERSON_LATER just say hi");
   await f.idle();
   await deny(late);
   const after = await briefed("CARD_TWO_BRIEF");
-  expect(after).toMatch(assignedBy(f.chief.name, "outside"));
-  expect(after).toContain(OUTSIDE_LINEAGE);
-  expect(after).not.toMatch(/PERSON_CARD_TWO|PERSON_LATER|the user asked|for the user\]/);
+  expect(after).toMatch(assignedBy(f.chief.name));
+  expect(after).toContain(personLineage("PERSON_CARD_TWO please tidy the team again"));
+  expect(after).not.toMatch(/PERSON_LATER|PERSON_CARD_ONE/);
+  expect(after).not.toContain(OUTSIDE_LINEAGE);
+  await f.wait();
+  // One root per line; the card's continuation ran on the root that raised
+  // it (its turn, the answered turn, the resume with the lead's result).
+  const roots = f.nodes().filter((node: any) => !node.parentId && node.threadId === f.thread);
+  expect(roots.map((node: any) => String(node.text).slice(0, 16))).toEqual(["PERSON_CARD_ONE ", "PERSON_CARD_TWO ", "PERSON_LATER jus"]);
+  const handed = f.nodes().filter((node: any) => node.parentId && String(node.text).includes("CARD_TWO_BRIEF"));
+  expect(handed).toHaveLength(1);
+  expect(handed[0].parentId).toBe(roots[1].id);
+  expect(roots[1]).toMatchObject({ status: "completed", executions: 3 });
+  expect(roots[2]).toMatchObject({ status: "completed", executions: 1 });
 }), hostTimeout(120_000));
 
 it("resets Claude's native context on edit, then resumes only the replacement branch", () => fixture(async (f) => {
