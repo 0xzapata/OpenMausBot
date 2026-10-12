@@ -565,6 +565,11 @@ export interface TextGenerationUsage {
 export interface TextGenerationOptions {
   signal?: AbortSignal;
   onUsage?: (usage: TextGenerationUsage) => void;
+  /** One of this instance's models to write with, instead of the driver's
+   * own choice for quick calls. Only the helper setting passes it
+   * (server/side-jobs.ts), for generateText; a bot's own background calls
+   * never do. */
+  model?: string;
 }
 
 export interface ProviderInstance {

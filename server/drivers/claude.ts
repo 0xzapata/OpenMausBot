@@ -2742,13 +2742,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * summaries can contain paths, commands, or secrets, so the generic
      * `claude -p "prompt"` shape is not safe for review. No tools or MCP
      * servers are mounted in this isolated process. */
-    const generateReview = (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"]): Promise<string> =>
+    const generateReview = (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"], named?: string): Promise<string> =>
       new Promise((resolve, reject) => {
         if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) {
           reject(new Error(NO_ANTHROPIC_KEY));
           return;
         }
-        const model = config.managedModels?.[0] ?? "claude-haiku-4-5";
+        // `named` is the helper setting's model (generateText only); permission
+        // review and a bot's own background calls keep the quick model.
+        const model = named ?? config.managedModels?.[0] ?? "claude-haiku-4-5";
         const child = spawnCli(
           config.cli,
           ["-p", "--model", model, "--output-format", onUsage ? "json" : "text"],
@@ -2922,7 +2924,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return () => listeners.delete(listener);
         },
       },
-      generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage),
+      generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage, options?.model),
       reviewPermission: generateReview,
       dispose: async () => {
         try {
