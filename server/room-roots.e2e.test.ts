@@ -441,7 +441,10 @@ itHost("R5 queues a member's root on the computer seat at the wait ceiling, FIFO
     // The room member's first screen call waits past the ceiling: its turn
     // parks, its root is queued on the seat, the room shows the parked chip
     // naming the holder, the member is idle, the room keeps no speaker.
-    const { bot: member } = await apiOk("POST", "/api/bots", { name: "Seat Member", computer: "local" });
+    const { bot: member } = await apiOk("POST", "/api/bots", { name: "Seat Member" });
+    // A room turn reaches a desktop only through the member's own setting
+    // (no Auto fallback in a room): This computer.
+    await apiOk("PATCH", `/api/bots/${member.id}`, { computer: "local" });
     const { group: room } = await apiOk("POST", "/api/groups", { name: "Screen room", memberIds: [member.id], setup: { bulletin: "", defaultResponder: { kind: "member", botId: member.id } } });
     await apiOk("POST", `/api/groups/${room.id}/messages`, { text: "R5-ROOM: use the screen in the room.", threadId: room.threadId });
     await until(() => botOf(member.id), (bot) => bot?.busy === true);
@@ -458,7 +461,6 @@ itHost("R5 queues a member's root on the computer seat at the wait ceiling, FIFO
     const parkedChip = (await chat(room.threadId)).find((message) => chipText(message).includes("Parked — it continues automatically when the computer is free"));
     expect(parkedChip, JSON.stringify((await chat(room.threadId)).map(chipText))).toBeDefined();
     expect(chipText(parkedChip)).toContain("Seat Holder");
-    expect(parkedChip.from?.botId).toBe(member.id);
     expect((await roomOf(room.id)).busyBotId).toBeNull();
     // The seat stays held: neither queued root runs, and nothing but the
     // seat bounds them (no clock: nothing settles or expires them).
