@@ -481,16 +481,19 @@ itHost("R5 queues a member's root on the computer seat at the wait ceiling, FIFO
       && events.slice(0, index).some((prior) => prior.assignmentId === id && prior.kind === "started"));
     expect(secondStart(direct.id)).toBeGreaterThan(-1);
     expect(secondStart(direct.id)).toBeLessThan(secondStart(root.id));
-    // The member's continued execution ran in the room (its one reply, from
-    // the member, after the park); the room has its one parked chip. The
-    // fake keeps only the latest launch's dump and the two continuations
-    // launch in parallel threads, so the prompt is not read from the dump:
-    // the queued row carried the computer line (above) and the room branch
-    // carries the harness line into the member's turn (R3's SECRET_PROVIDED).
-    const replies = (await chat(room.threadId)).filter((message) => message.role === "bot" && message.kind === "text" && message.from?.botId === member.id);
-    expect(replies).toHaveLength(1);
-    expect(replies[0].text).toContain("hello from fake claude");
-    expect((await chat(room.threadId)).filter((message) => chipText(message).includes("Parked — it continues automatically")).length).toBe(1);
+    // The member ran twice in the room (the parked execution and the
+    // continued one: two provider turns), and the continued one opened with
+    // the computer line: the fake echoes its prompt ("reply to: …") into the
+    // room once it finishes. Read from the transcript, not from the fake's
+    // launch dump: the dump keeps only the latest launch, and the two
+    // continuations (the direct waiter's, the member's) launch in parallel
+    // threads, so whichever launches last owns it.
+    const rows = await chat(room.threadId);
+    const replies = rows.filter((message) => message.role === "bot" && message.kind === "text" && message.from?.botId === member.id);
+    const shown = JSON.stringify(rows.map((message) => [message.kind, message.from?.name, message.turnId, chipText(message).slice(0, 80)]));
+    expect(new Set(replies.map((message) => message.turnId)).size, shown).toBe(2);
+    expect(replies.some((message) => String(message.text).includes(SEAT_FREE)), shown).toBe(true);
+    expect(rows.filter((message) => chipText(message).includes("Parked — it continues automatically")).length).toBe(1);
     await until(() => roomOf(room.id), (group) => group?.working === false && group.busyBotId === null);
     await until(() => botOf(member.id), (bot) => bot?.busy === false);
   } finally {
