@@ -80,7 +80,8 @@ it("preserves peer approval outcomes through real HTTP responses and sends no wo
       catch { return false; }
       return Boolean(token);
     }, { timeout: 15_000 }).toBe(true);
-    /** The runtime's assignment rows: nothing below may leave one. */
+    /** The runtime's assignment rows: nothing below may leave a child (the
+     * turn's own root row is written by its first hand-off attempt). */
     const handoffs = () => readHandoffs(dataDir);
     for (const outcome of ["deny", "expired"] as const) {
       const pending = api("POST", "/api/internal/ask-bot", { toBotId: target.id, message: "Do not dispatch without approval" }, token, 403);
@@ -98,7 +99,7 @@ it("preserves peer approval outcomes through real HTTP responses and sends no wo
       expect(result.receipts).toBeUndefined();
       const settled = (await messages(from.threadId)).find(m => m.id === approval.id);
       expect(settled.card).toMatchObject({ answered: "deny", dismissed: outcome !== "deny" });
-      expect(handoffs()).toEqual([]);
+      expect(handoffs().filter((node) => node.parentId)).toEqual([]);
       evidence.push({ operation: "ask-bot", outcome, result, card: settled.card });
       rmSync(expiry, { force: true });
     }
@@ -115,7 +116,7 @@ it("preserves peer approval outcomes through real HTTP responses and sends no wo
     expect(unavailableResult.receipts[0]).not.toHaveProperty("requestId");
     expect(JSON.stringify(unavailableResult)).not.toContain("Private renamed teammate");
     expect((await messages(target.threadId)).some(m => m.role === "user")).toBe(false);
-    expect(handoffs()).toEqual([]);
+    expect(handoffs().filter((node) => node.parentId)).toEqual([]);
     evidence.push({ operation: "ask-bot-after-visibility-revocation", result: unavailableResult, targetDispatched: false });
     await api("PATCH", `/api/bots/${target.id}`, { hidden: false, name: target.name });
 
@@ -133,7 +134,7 @@ it("preserves peer approval outcomes through real HTTP responses and sends no wo
     expect((await messages(from.threadId)).find(m => m.id === approval.id).card.dismissed).toBe(true);
     expect((await messages(target.threadId)).some(m => m.role === "user")).toBe(false);
     expect((await api("GET", "/api/bots?messages=0")).bots.find((bot: any) => bot.id === target.id).busy).toBe(false);
-    expect(handoffs()).toEqual([]);
+    expect(handoffs().filter((node) => node.parentId)).toEqual([]);
     evidence.push({ operation: "delegate-bot", result: expired, targetDispatched: false });
     writeFileSync(gate, "finish");
     expect((await cli("wait", "--bot", from.id, "--task", from.threadId, "--timeout", "25")).status).toBe("settled");
@@ -174,7 +175,7 @@ it("preserves peer approval outcomes through real HTTP responses and sends no wo
     expect(batch.error).toContain("no work sent");
     expect((await messages(target.threadId)).some(m => m.role === "user")).toBe(false);
     expect((await messages(other.activeTaskId)).some(m => m.role === "user")).toBe(false);
-    expect(handoffs()).toEqual([]);
+    expect(handoffs().filter((node) => node.parentId)).toEqual([]);
     evidence.push({ operation: "assignment-status", outstanding }, { operation: "coordinate-bots", result: batch });
     writeFileSync(gate, "finish");
     expect((await cli("wait", "--bot", from.id, "--task", from.threadId, "--timeout", "25")).status).toBe("settled");

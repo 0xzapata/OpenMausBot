@@ -476,7 +476,12 @@ describe("list_rooms discovery", () => {
       depth: 0,
     });
     expect(asked.status, JSON.stringify(asked.body)).toBe(200);
-    await api("POST", `/api/bots/${b.id}/interrupt`);
+    // The consultation runs on its own (B's turn, in a work thread of A's
+    // conversation): let it settle before the next case clears the shared
+    // engine dump.
+    const requestId = str(field((Array.isArray(asked.body.receipts) ? asked.body.receipts : [])[0] as Record<string, unknown>, "requestId"));
+    await expect.poll(() => readHandoffs(join(home, ".openmausbot")).find((node) => node.id === requestId)?.status, { timeout: 15_000 }).toBe("completed");
+    expect(readHandoffs(join(home, ".openmausbot")).find((node) => node.id === requestId)?.threadId).not.toBe(b.threadId);
 
     const listed = await internal("GET", `/api/internal/rooms?fromBotId=${a.id}&fromThreadId=${a.threadId}`);
     const rooms = Array.isArray(listed.body.rooms) ? listed.body.rooms : [];
