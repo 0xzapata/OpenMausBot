@@ -13,13 +13,21 @@
 //            action. Once per turn.
 //
 // A turn that is waiting on a person or on a computer is left alone: it is
-// spending nothing, and the person is already looking at it. The counting
-// is repeat-detector.ts and stays pure; everything this touches is handed
-// in, so server/index.ts only wires it.
+// spending nothing, and the person is already looking at it.
+//
+// What counts as "the same call" is stricter once a count can stop a turn.
+// With the guard off the chip counts what it always did. With it on, a tool
+// start is counted only when it runs a shell command and the harness can
+// see all of it (exactCall below), on every engine alike.
+//
+// The counting is repeat-detector.ts and stays pure; everything this
+// touches is handed in, so server/index.ts only wires it.
 import { failedTurnTool } from "../shared/failed-turn.ts";
+import { nameIsCommand } from "../shared/tool-name.ts";
 import type { RuntimeEvent, SteerOutcome } from "./contracts.ts";
 import { quoteInNote } from "./peer-provenance.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
+import { COMMAND_SUMMARY_MAX, previewIsPartial } from "./tool-summary.ts";
 
 export interface LoopGuardSettings {
   enabled: boolean;
@@ -55,8 +63,8 @@ export interface LoopGuardDeps {
    * subscriber sat, after the fold that writes the call's own row, so the
    * chip still follows the call it is about. */
   subscribe(listener: (event: RuntimeEvent) => void): void;
-  /** The setting as it stands now. Read on every counted call, so a change
-   * reaches a turn that is already running. */
+  /** The setting as it stands now. Read on every tool start and permission
+   * ask, so a change reaches a turn that is already running. */
   settings(): LoopGuardSettings;
   /** One activity row in the thread's transcript. */
   append(threadId: string, tool: ActivityTool): void;
@@ -98,23 +106,67 @@ interface CountedCall {
   args: string;
 }
 
-/** The call an event starts, when it is one worth counting. Keyed on tool
- * plus arguments, so a bare tool name is never counted: five "Bash" may be
- * five different commands. Arguments come from a tool start whose title
- * carries them (ACP: "echo hi", "Read src/x.ts"; Codex titles a command with
- * the command) and from every permission ask's summary (the command being
- * approved). */
-function countedCall(event: RuntimeEvent): CountedCall | null {
-  let key: string | null = null;
-  if (event.type === "item.started" && event.itemType === "tool") {
-    // a title with more than a bare identifier is a call with arguments;
-    // a bare "Bash" is not countable
-    const title = event.title ?? "";
-    if (/\s|\//.test(title.trim())) key = callKey("tool", title);
-  } else if (event.type === "request.opened" && event.requestType === "permission") key = callKey(event.tool, event.summary);
+/** Where the drivers that cut a title cut it (drivers/acp/core.ts,
+ * drivers/pi.ts): a title this long may be a prefix. */
+const TITLE_MAX = 80;
+
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/** A detector key as the chip has always shown it: the tool, then the rest. */
+function shown(key: string | null): CountedCall | null {
   if (!key) return null;
   const [tool, ...rest] = key.split(":");
   return { key, tool: tool!, args: rest.join(":") };
+}
+
+type ToolStart = Extract<RuntimeEvent, { type: "item.started" }>;
+
+/** A tool start the guard may act on. The chip can afford to be loose; a
+ * stop cannot, so with the guard on a start is counted only when
+ *
+ * - it runs a shell command. Every driver reports that command (`summary`);
+ *   Codex and ACP also title the call with it. A call that runs none (a
+ *   read, a click, a scroll, a wait) repeats for good reasons and is never
+ *   counted, the same as before on the engines that name such a call by its
+ *   tool; and
+ * - the harness can see all of it. Two starts are the same call when the
+ *   title, the command and the arguments the driver reported are the same.
+ *   One whose arguments were shortened, masked or left out, or that has
+ *   only a title or a command cut at its limit, cannot be told from another
+ *   that starts the same way: ACP cuts a title at 80 characters, and a long
+ *   `cd` puts every command's difference after that.
+ *
+ * This is also what lets a Claude Code, pi or Muse turn be counted at all:
+ * they title a shell call "Bash", which says nothing. */
+function exactCall(event: ToolStart): CountedCall | null {
+  const title = oneLine(event.title ?? "");
+  const titled = nameIsCommand(title);
+  const { summary, input } = event;
+  const command = summary !== undefined ? oneLine(summary) : titled ? title : "";
+  if (!command) return null;
+  const cut = input !== undefined ? previewIsPartial(input)
+    : summary !== undefined ? summary.length >= COMMAND_SUMMARY_MAX || previewIsPartial(summary)
+      : title.length >= TITLE_MAX;
+  if (cut) return null;
+  const key = callKey("tool", [title, summary !== undefined ? command : "", input ?? ""].filter(Boolean).join(" "));
+  return key ? { key, tool: titled || !title ? "tool" : title, args: command } : null;
+}
+
+/** The call an event starts, when it is one worth counting. Keyed on tool
+ * plus arguments, so a bare tool name is never counted: five "Bash" may be
+ * five different commands. With the guard off this is what the chip always
+ * counted: a tool start whose title carries its arguments (ACP: "echo hi",
+ * "Read src/x.ts"; Codex titles a command with the command), and every
+ * permission ask's summary (the command being approved). With it on, tool
+ * starts are held to exactCall. */
+function countedCall(event: RuntimeEvent, exact: boolean): CountedCall | null {
+  if (event.type === "request.opened" && event.requestType === "permission") return shown(callKey(event.tool, event.summary));
+  if (event.type !== "item.started" || event.itemType !== "tool") return null;
+  if (exact) return exactCall(event);
+  // a title with more than a bare identifier is a call with arguments;
+  // a bare "Bash" is not countable
+  const title = event.title ?? "";
+  return /\s|\//.test(title.trim()) ? shown(callKey("tool", title)) : null;
 }
 
 /** The note steered into a looping turn. The harness's own words, opened
@@ -178,7 +230,10 @@ export function startLoopGuard(deps: LoopGuardDeps): LoopGuard {
 
   deps.subscribe((event) => {
     if (event.type === "turn.completed" || event.type === "session.exited") return settle(event.threadId);
-    const call = countedCall(event);
+    // every other event (a turn streams thousands) is none of the guard's business
+    if (event.type !== "item.started" && event.type !== "request.opened") return;
+    const settings = deps.settings();
+    const call = countedCall(event, settings.enabled);
     if (!call) return;
     const { threadId } = event;
     const { count, threshold } = repeats.record(threadId, call.key);
@@ -187,7 +242,6 @@ export function startLoopGuard(deps: LoopGuardDeps): LoopGuard {
       deps.append(threadId, { name: `Same call repeated ${threshold}× — ${tool}: ${args.slice(0, 80)}${args.length > 80 ? "…" : ""} — it may be stuck`, ok: false });
     }
 
-    const settings = deps.settings();
     if (!settings.enabled || count < Math.min(settings.steerAt, settings.stopAt)) return;
     // An ask is the turn stopping for a person (or for the approval the app
     // gives on their behalf): counted and said, never acted on.
