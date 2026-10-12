@@ -5,7 +5,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { activeLocale, t } from "@/lib/i18n";
 import { useShowThreads } from "@/lib/thread-preferences";
-import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pin, Plus, Search, X } from "lucide-react";
+import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pause, Pin, Plus, Search, Square, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -68,7 +68,8 @@ import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { ManageMembersPanel } from "./ManageMembersPanel";
-import { groupActivityRuns, isStatusActivity } from "@/lib/activity-runs";
+import { groupActivityRuns, isStatusActivity, roomTurnFolds } from "@/lib/activity-runs";
+import { TurnNarrationRun } from "./TurnNarrationRun";
 import { ActivityRun } from "./ActivityRun";
 import { useDesktopCapabilities, useCaptionChrome } from "./DesktopCapabilities";
 import { cn } from "@/lib/cn";
@@ -91,7 +92,7 @@ import { pendingApprovals } from "./PendingApproval";
 import { DataResultChip } from "./DataResultChip";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { dayLabel, localDay } from "@/lib/transcript-derivations";
-import { roomSpeakerIds, roomThreadWorking } from "@/lib/room-threads";
+import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 
 /** One finished tool step in a room. Same pill the 1:1 chat uses, minus the
  * status glyph — a room reads as a conversation, not a build log. A chip
@@ -354,6 +355,7 @@ function RoomTextMessage({
 export const Transcript = memo(function Transcript({
   group,
   members,
+  locale,
   messages,
   transcript,
   emergingId,
@@ -379,10 +381,15 @@ export const Transcript = memo(function Transcript({
   const showThreads = useShowThreads();
   const showToolCalls = showToolCallsEnabled(state.config);
   const memberOf = (id?: string) => members.find((b) => b.id === id);
+  // A settled member turn reads as its final message: its working notes
+  // fold into one reversible row above it, as in a 1:1 chat. The locale
+  // refreshes the row's label when the language changes.
+  const folds = useMemo(() => roomTurnFolds(messages), [messages, locale]);
   // Several bots working at once turn a room into a wall of chips; fold the
   // finished ones the same way a 1:1 chat does.
   const items = useMemo(() => groupActivityRuns(messages.filter(message =>
-    message.kind !== "activity" || roomActivityVisible(message, showToolCalls))), [messages, showToolCalls]);
+    !folds.hiddenIds.has(message.id) &&
+    (message.kind !== "activity" || roomActivityVisible(message, showToolCalls)))), [messages, showToolCalls, folds]);
   const newestMessageId = messages.at(-1)?.id;
   const newestUserMessageId = [...messages].reverse().find((message) => message.role === "user")?.id;
   // the open thread's own turn: another thread working beside it leaves
@@ -541,6 +548,7 @@ export const Transcript = memo(function Transcript({
             )
           ) : null;
         if (!row) return divider && <div key={m.id} className="contents">{divider}</div>;
+        const fold = folds.byTerminalId.get(m.id);
         return (
           <div key={m.id} className="contents" data-mid={m.id}>
             {newDay && (
@@ -549,11 +557,32 @@ export const Transcript = memo(function Transcript({
               </div>
             )}
             {divider}
+            {/* the speaker heads the whole turn: its folded notes, then its reply */}
             {m.from && (
               (m.kind === "text" && botTextShowsSpeaker(items, i))
               || (!user && m.kind !== "text" && newCluster && !(m.kind === "activity" && m.comm) && !laterTextOwns(items, i, m.from.botId, m.at))
             ) && (
               <ClusterLabel bot={memberOf(m.from.botId)} name={m.from.name} color={m.from.color} />
+            )}
+            {fold && (
+              <TurnNarrationRun
+                label={fold.label}
+                forceOpen={fold.messages.some((note) => note.id === focusedId)}
+              >
+                {fold.messages.map((note) => (
+                  <div key={note.id} className="contents" data-mid={note.id}>
+                    <RoomTextMessage
+                      group={group}
+                      message={note}
+                      members={members}
+                      transcript={transcript}
+                      emerging={false}
+                      eager={false}
+                      onReply={onReply}
+                    />
+                  </div>
+                ))}
+              </TurnNarrationRun>
             )}
             {row}
           </div>
@@ -562,6 +591,32 @@ export const Transcript = memo(function Transcript({
     </>
   );
 });
+
+/** The room's held members ("stop @Bot", or a member's own Stop): one line
+ * that says who is paused and how to bring each back. */
+export function RoomHoldsBanner({ group, members }: { group: Group; members: Bot[] }) {
+  const { dispatch } = useStore();
+  const held = members.filter((member) => group.holds?.[member.id]);
+  if (!held.length) return null;
+  return (
+    <div className="w-full px-5">
+      <div data-testid="room-holds" className="mb-1 flex flex-wrap items-center gap-1.5 px-2 text-[12px] text-ink-secondary">
+        <Pause size={12} aria-hidden="true" />
+        <span>{t("room.holds.banner", { names: held.map((member) => member.name).join(", ") })}</span>
+        {held.map((member) => (
+          <button
+            key={member.id}
+            type="button"
+            onClick={() => dispatch({ type: "setGroupHold", groupId: group.id, botId: member.id, held: false })}
+            className="cursor-pointer text-accent hover:underline"
+          >
+            {t("room.holds.resume", { name: member.name })}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** Under a reply in an Auto room: the decision model chose this speaker. */
 export function RoutedByLine({ routedBy }: { routedBy: NonNullable<Message["routedBy"]> }) {
@@ -1175,6 +1230,9 @@ export function GroupView({ group }: { group: Group }) {
   // open thread; members busy in another thread are marked apart below.
   const threadWorking = roomThreadWorking(group, group.threadId);
   const speakersElsewhere = new Set(roomSpeakerIds(group).filter((id) => id !== group.busyBotId));
+  // The member working in the open thread: the one its Stop holds.
+  const threadSpeakerId = roomThreadSpeakerId(group, group.threadId);
+  const threadSpeaker = threadSpeakerId ? members.find((b) => b.id === threadSpeakerId) : undefined;
   const setupPending = !remoteClient && roomNeedsSetup(group);
 
   // Mascot stays while a member works; the finished reply pops in above it.
@@ -1281,20 +1339,39 @@ export function GroupView({ group }: { group: Group }) {
     const busy = group.busyBotId === b.id;
     const contextWarning = contextWarnings.find((warning) => warning.bot.id === b.id);
     const busyElsewhere = !busy && speakersElsewhere.has(b.id);
+    const held = !group.dm && Boolean(group.holds?.[b.id]);
     const task = b.tasks?.find((candidate) => candidate.threadId === group.threadId);
     const effective = busy ? effectivePlace(b, task) : "off";
     const showPlace = busy && effective !== "off" && effective !== "auto";
     return (
       <span
         key={b.id}
-        title={busyElsewhere ? t("room.memberWorkingElsewhere", { name: b.name }) : `${b.name}${busy ? " — working…" : ""}${contextWarning ? ` — ${t("contextWarning.short", { percent: contextWarning.percent })}` : ""}`}
+        data-held={held || undefined}
+        title={
+          held
+            ? t("room.holds.avatarHeld", { name: b.name })
+            : busyElsewhere
+              ? t("room.memberWorkingElsewhere", { name: b.name })
+              : `${b.name}${busy ? " — working…" : ""}${contextWarning ? ` — ${t("contextWarning.short", { percent: contextWarning.percent })}` : ""}`
+        }
         className={cn(
           "relative inline-flex rounded-full",
           busy && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
           busyElsewhere && "ring-1 ring-hairline ring-offset-1 ring-offset-app",
         )}
       >
-        <BotAvatar bot={b} state={normalizeState(b.mascotExpression) ?? "happy"} size={24} animated={false} />
+        <span className={cn("inline-flex", held && "opacity-50 grayscale")}>
+          <BotAvatar bot={b} state={normalizeState(b.mascotExpression) ?? "happy"} size={24} animated={false} />
+        </span>
+        {held && !busy && (
+          <span
+            className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full border border-app bg-raised text-ink-secondary"
+            role="img"
+            aria-label={t("room.holds.avatarHeld", { name: b.name })}
+          >
+            <Pause size={8} strokeWidth={3} aria-hidden="true" />
+          </span>
+        )}
         {contextWarning && <RoomContextBadge percent={contextWarning.percent} />}
         {busy && (
           showPlace ? (
@@ -1425,6 +1502,9 @@ export function GroupView({ group }: { group: Group }) {
           </p>
         </div>
       )}
+
+      {/* Members the person stopped: who is held, and how to bring them back. */}
+      {!setupPending && !group.dm && <RoomHoldsBanner group={group} members={members} />}
 
       {/* Bulletin: one pinned line; click to edit */}
       {!setupPending && <div className="w-full px-5">
@@ -1594,6 +1674,21 @@ export function GroupView({ group }: { group: Group }) {
               answering={popping !== null}
               since={speaker ? group.turnStartedAt ?? null : null}
             />
+          )}
+          {/* Stop only the member that is working; the room carries on. */}
+          {threadSpeaker && !group.dm && members.length > 1 && !group.holds?.[threadSpeaker.id] && (
+            <div className="flex justify-start pl-12">
+              <button
+                type="button"
+                data-testid="room-stop-member"
+                onClick={() => dispatch({ type: "setGroupHold", groupId: group.id, botId: threadSpeaker.id, held: true })}
+                title={t("room.holds.stopTitle", { name: threadSpeaker.name })}
+                className="ui-pill"
+              >
+                <Square size={11} aria-hidden="true" />
+                <span>{t("room.holds.stop", { name: threadSpeaker.name })}</span>
+              </button>
+            </div>
           )}
         </div>
         )}

@@ -2542,5 +2542,10 @@
   "pro.name": "MausBot Cloud",
   "computer.files.homeFolder": "主目录",
   "computer.files.changeDefaultFolder": "更改默认目录",
-  "computer.files.pinnedFolderHint": "此对话会继续使用当前文件夹。可更改新对话使用的默认文件夹。"
+  "computer.files.pinnedFolderHint": "此对话会继续使用当前文件夹。可更改新对话使用的默认文件夹。",
+  "room.holds.banner": "你已停止：{names}。@提及某个机器人或发送 resume 即可让它回来。",
+  "room.holds.resume": "恢复 {name}",
+  "room.holds.stop": "停止 {name}",
+  "room.holds.stopTitle": "只停止 {name}，房间里的其他成员继续工作",
+  "room.holds.avatarHeld": "{name} — 已暂停（由你停止）"
 }

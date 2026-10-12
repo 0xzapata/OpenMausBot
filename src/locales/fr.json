@@ -1595,5 +1595,10 @@
   "computer.files.homeFolder": "Dossier personnel",
   "computer.files.changeDefaultFolder": "Modifier le dossier par défaut",
   "computer.files.pinnedFolderHint": "Cette conversation conserve son dossier actuel. Modifiez le dossier par défaut pour les nouvelles conversations.",
-  "task.workingElsewhere": "En cours dans d’autres fils : {count}"
+  "task.workingElsewhere": "En cours dans d’autres fils : {count}",
+  "room.holds.banner": "Arrêtés par vous : {names}. Mentionnez un bot avec @ ou écrivez resume pour le faire revenir.",
+  "room.holds.resume": "Reprendre {name}",
+  "room.holds.stop": "Arrêter {name}",
+  "room.holds.stopTitle": "Arrêter seulement {name} ; le reste du salon continue",
+  "room.holds.avatarHeld": "{name} — en pause (arrêté par vous)"
 }
