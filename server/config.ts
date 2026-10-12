@@ -297,6 +297,13 @@ const featureConfigSchema = z.object({
    * /learn) for your review. On unless explicitly switched off in Settings;
    * every draft still waits for review. */
   skillAuthoring: z.boolean().optional(),
+  /** Learn skills automatically: after enough tool steps in a conversation
+   * the bot's own engine reviews it in the background and may create or
+   * update its learned skills, each shown with Undo (server/skill-review.ts).
+   * Off unless explicitly enabled, and only while skillAuthoring is on. */
+  skillReview: z.boolean().optional(),
+  /** Tool steps in one conversation between automatic reviews. */
+  skillReviewSteps: z.number().int().min(3).max(100).optional(),
   /** Show each tool run in the transcript. Off unless explicitly enabled. */
   showToolCalls: z.boolean().optional(),
   /** Run a routine inside the conversation it reports to, instead of a hidden
@@ -638,7 +645,7 @@ export interface AppConfig {
    * seats shared by all conversations, with per-thread affinity (#1654). */
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean };
+  features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean };
   /** First-run progress; see onboardingConfigSchema. */
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   /** Named browser sessions any bot can be pointed at. */
@@ -824,6 +831,25 @@ export function localVmIdleTimeoutMinutes(cfg: AppConfig): number {
  * `skillRecorder: false` carried over at startup) switches it off. */
 export function skillAuthoringEnabled(cfg: AppConfig): boolean {
   return cfg.features?.skillAuthoring !== false;
+}
+
+export const DEFAULT_SKILL_REVIEW_STEPS = 10;
+export const MIN_SKILL_REVIEW_STEPS = 3;
+export const MAX_SKILL_REVIEW_STEPS = 100;
+
+/** Learn skills automatically (server/skill-review.ts). Off unless switched
+ * on: each review sends the conversation to the bot's engine again, and it
+ * changes the bot's skills without being asked. Never on while skill
+ * authoring itself is off. */
+export function skillReviewEnabled(cfg: AppConfig): boolean {
+  return skillAuthoringEnabled(cfg) && cfg.features?.skillReview === true;
+}
+
+/** Tool steps between automatic reviews, clamped to the allowed range. */
+export function skillReviewSteps(cfg: AppConfig): number {
+  const raw = cfg.features?.skillReviewSteps;
+  const value = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : DEFAULT_SKILL_REVIEW_STEPS;
+  return Math.min(MAX_SKILL_REVIEW_STEPS, Math.max(MIN_SKILL_REVIEW_STEPS, value));
 }
 
 /** Automatic recall is read-only, so it is on unless switched off. */
