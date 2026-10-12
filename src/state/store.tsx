@@ -41,6 +41,7 @@ import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib
 import { botShowsUnread } from "@/lib/bot-unread";
 import { firstUnreadMessageId, threadOpensUnread, threadReadCursor } from "@/lib/unread-divider";
 import type { ComputerStart } from "@/lib/computer-start";
+import { parseComputerHelp } from "@/lib/computer-control";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
@@ -169,10 +170,15 @@ export interface SecretRequestCardData {
   error?: string;
 }
 
+/** Who is driving a bot's computer: held = the person has the wheel (the
+ * bot's hands are refused server-side); helpReason = the bot's open plea for
+ * the person to take over, and help = the sign-in card it stands for. */
+export type ComputerControlState = { held: boolean; helpReason: string | null; help?: import("../../shared/wire").ComputerHelpRef | null };
+
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "signin" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
   text?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
@@ -183,6 +189,7 @@ export interface Message {
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
+  signIn?: import("../../shared/wire").SignInRequestCardData;
   /** Lifecycle mirror for a routine whose real work lives in a fresh task. */
   routineRun?: RoutineRunCardData;
   /** Durable lifecycle receipt for a goal-driven channel run. */
@@ -790,11 +797,17 @@ export interface BrowserEngineSummary {
   version?: string;
   installing?: boolean;
   installError?: string;
+  /** Whether a browser profile can use "My Chrome", the person's own running
+   * Chrome: only where the bots run on their computer (the desktop app). */
+  myChrome?: boolean;
 }
 
 export interface BrowserProfile {
   id: string;
   name: string;
+  /** "chrome": the profile's bots use the person's own Chrome (My Chrome).
+   * Absent is the built-in browser. */
+  browser?: "chrome";
   /** Read-only durable Electron routing inherited from legacy profiles.
    * Config PATCH payloads must omit it. */
   partitionId?: string;
@@ -1062,10 +1075,7 @@ export interface AppState {
   /** Bot removals waiting for the server to verify that no persistent
    * computer would be orphaned. The bot stays visible until that succeeds. */
   deletingBots: Record<string, true>;
-  /** who is driving each bot's computer: held = the person has the wheel
-   * (the bot's hands are refused server-side); helpReason = the bot's open
-   * plea for the person to take over */
-  computerControl: Record<string, { held: boolean; helpReason: string | null }>;
+  computerControl: Record<string, ComputerControlState>;
   /** Each bot's data sheet (cards and loaded tables, never rows), loaded
    * when its Data tab first opens and replaced whole by every `data` frame.
    * The grid pages rows itself, so a sheet stays small. */
@@ -1074,6 +1084,9 @@ export interface AppState {
    * list, not a copy on the sheet, so a load and a CREATE agree. */
   dataTables: Record<string, DataTable[]>;
   dataResultFocus: { botId: string; id: string; requestId: number; consumed: boolean } | null;
+  /** A sign-in card's Open: the Computer panel goes to the place the bot
+   * works, the Browser tab already in the person's control. */
+  signInFocus: { botId: string; messageId: string; url: string; site: string; place: import("../../shared/wire").Surface; requestId: number; consumed: boolean } | null;
   /** Only the currently mounted Data view, not the last Open in Data request. */
   dataView: import("@/lib/composer-attachments").DataViewContext | null;
   /** a search hit to scroll to once its thread is on screen; nonce lets the
@@ -1198,7 +1211,7 @@ export type Action =
       bots: Bot[];
       groups: Group[];
       sections?: string[];
-      computerControl: Record<string, { held: boolean; helpReason: string | null }>;
+      computerControl: Record<string, ComputerControlState>;
       botQueuedMessages?: AppState["pendingQueued"];
       /** the conversation open on this device last launch, for the first hydrate */
       resumeId?: string;
@@ -1338,7 +1351,7 @@ export type Action =
    * plain send falls back to the removed row's parent. */
   | { type: "optimisticMessageRemoved"; threadId: string; sendId: string; restoreLeafId?: string | null }
   | { type: "computerStart"; botId: string; start: ComputerStart | null }
-  | { type: "computerControl"; botId: string; held: boolean; helpReason: string | null }
+  | ({ type: "computerControl"; botId: string } & ComputerControlState)
   /** A whole sheet from the server: a `data` frame or the first GET. */
   | { type: "dataSheet"; sheet: DataSheet; tables?: DataTable[] }
   | { type: "dataView"; view: AppState["dataView"] }
@@ -1357,6 +1370,8 @@ export type Action =
   | { type: "toggleComputer"; open?: boolean }
   | { type: "openDataResult"; botId: string; cardId: string }
   | { type: "dataResultFocusConsumed"; requestId: number }
+  | { type: "openSignIn"; botId: string; messageId: string; url: string; site: string; place: import("../../shared/wire").Surface }
+  | { type: "signInFocusConsumed"; requestId: number }
   | { type: "toggleInspector"; open?: boolean }
   | { type: "toggleActivity"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
@@ -2140,7 +2155,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         computerControl: {
           ...state.computerControl,
-          [action.botId]: { held: action.held, helpReason: action.helpReason },
+          [action.botId]: { held: action.held, helpReason: action.helpReason, help: action.help ?? null },
         },
       };
     case "modelVariantRuntime": {
@@ -2278,6 +2293,17 @@ export function reducer(state: AppState, action: Action): AppState {
     case "dataResultFocusConsumed":
       return state.dataResultFocus?.requestId === action.requestId
         ? { ...state, dataResultFocus: { ...state.dataResultFocus, consumed: true } } : state;
+    case "openSignIn": {
+      if (!state.bots.some((bot) => bot.id === action.botId)) return state;
+      // As Open in Data: the bot's own view (a room's card leaves the room),
+      // then its Computer panel at the place the sign-in must happen.
+      const selected = reducer(reducer(state, { type: "select", id: action.botId }), { type: "toggleComputer", open: true });
+      const { type: _, ...request } = action;
+      return { ...selected, signInFocus: { ...request, requestId: (state.signInFocus?.requestId ?? 0) + 1, consumed: false } };
+    }
+    case "signInFocusConsumed":
+      return state.signInFocus?.requestId === action.requestId
+        ? { ...state, signInFocus: { ...state.signInFocus, consumed: true } } : state;
     case "toggleComputer": {
       const open = action.open ?? !state.computerOpen;
       return {
@@ -2747,6 +2773,7 @@ export const initialState: AppState = {
   dataSheets: {},
   dataTables: {},
   dataResultFocus: null,
+  signInFocus: null,
   dataView: null,
   focusMessage: null,
   unreadDivider: null,
@@ -4314,6 +4341,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             botId: frame.botId,
             held: frame.held === true,
             helpReason: typeof frame.helpReason === "string" ? frame.helpReason : null,
+            help: parseComputerHelp(frame.help),
           });
           break;
         case "data":

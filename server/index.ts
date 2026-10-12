@@ -53,10 +53,12 @@ import {
   isCredentialTargetId,
   type CredentialTargetId,
 } from "../shared/credential-request.ts";
+import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signInOutcome, signInResumePrompt } from "../shared/sign-in-request.ts";
 
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode } from "./auto-approve.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
+import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
 import { updateClaudeCli } from "./claude-update.ts";
 import { configuredAccountDirectory, assertSeparateClaudeAccount, claudeAccountInfo, createClaudeAccountSchema, instanceSettingsSchema, newClaudeAccount } from "./claude-accounts.ts";
@@ -232,7 +234,7 @@ import { fleetAvailable, fleetRequest, fleetSocketPath } from "./fleet-client.ts
 import { entitled } from "./enterprise.ts";
 import { HOSTED_CONTRACT_HEADER, HOSTED_CONTRACT_METADATA, HOSTED_CONTRACT_VERSION } from "./hosted-contract.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
-import { blockedTarget, buildNotification, buildSpendNotification, type Notification } from "./notify.ts";
+import { buildNotification, buildSpendNotification, type Notification } from "./notify.ts";
 import {
   isModelVariant,
   TurnNotStartedError,
@@ -473,7 +475,8 @@ import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
-import { BrowserRuntime, browserRuntimeEnv } from "./browser-runtime.ts";
+import { BrowserRuntime, attachesToChrome, browserRuntimeEnv } from "./browser-runtime.ts";
+import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { BrowserLive } from "./browser-live.ts";
 import {
   agentBrowserFrame,
@@ -647,6 +650,7 @@ import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
+import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
@@ -2714,6 +2718,11 @@ const sharedComputerControl = new SharedComputerControl(turnResources, () => sto
 const turnResourceOwners = new Map<string, TurnOwner>();
 const turnComputerResources = new Map<string, { owner: TurnOwner; resource: string }>();
 const teamComputerTurns = new Map<string, { owner: TurnOwner; computerId: string; botId: string }>();
+/** Where each turn works, by thread: the computer it mounted or the built-in
+ * browser — one place per turn (server/surface.ts). A sign-in request opens
+ * there, because a login made anywhere else would not reach the bot: the
+ * built-in browser keeps its own sign-ins, apart from every computer's. */
+const turnPlaces = new Map<string, { botId: string; place: Surface }>();
 const settlingResourceOwners = new Map<string, string>();
 
 function claimTurnResource(owner: TurnOwner, resource: string): boolean {
@@ -3114,7 +3123,7 @@ const usedBrowserSessions = new Map<string, { command: string; env: Record<strin
 async function closeServerBrowsers(): Promise<void> {
   await Promise.all([...usedBrowserSessions].map(async ([session, spec]) => {
     // A Chrome attached over CDP is the person's own; it is not ours to close.
-    if (spec.env.AGENT_BROWSER_CDP) return;
+    if (attachesToChrome(spec.env)) return;
     // Closing saves the session's logins, which come back on its next use.
     const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }), 4_000);
     if (!closed) console.warn(`browser ${session}: could not close its browser at shutdown`);
@@ -3148,6 +3157,32 @@ async function forgetTemporaryBrowser(botId: string): Promise<void> {
   if (closed) await browserRuntime.close(session);
   else console.warn(`temporary browser ${session}: could not close its session; run agent-browser --session ${session} close on this server`);
 }
+/** "My Chrome" (a profile attached to the person's own running Chrome) is
+ * offered where the bots run on that person's computer: the desktop app. A
+ * server or Cloud has no such Chrome, unless its operator names one in
+ * config.json (browserEngine.attachCdpUrl). */
+function myChromeAvailable(): boolean {
+  return DESKTOP_MANAGED || browserEngineAttachCdpUrl(cfg) !== null;
+}
+/** Whether a profile's bots use My Chrome here; elsewhere the profile keeps
+ * the built-in browser. */
+function usesMyChrome(profileId: string | undefined): boolean {
+  return Boolean(profileId) && myChromeAvailable()
+    && cfg.browserProfiles?.some((profile) => profile.id === profileId && profile.browser === "chrome") === true;
+}
+/** The launch settings of one browser session: the bot's turn, the live
+ * view, and the signed-in sites list all address it through this. */
+function browserSessionSpec(binaryPath: string, session: string, profile: string | undefined) {
+  const attachCdpUrl = browserEngineAttachCdpUrl(cfg);
+  return agentBrowserIntegration({
+    binaryPath,
+    session,
+    encryptionKey: browserEngineEncryptionKey(),
+    persistent: profile !== "guest",
+    env: { ...process.env, PATH: augmentedPath() },
+    ...(usesMyChrome(profile) ? { attach: attachCdpUrl ? { cdpUrl: attachCdpUrl } : {} } : {}),
+  });
+}
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
   const status = browserEngineStatus();
   if (status.kind !== "ready") {
@@ -3161,16 +3196,9 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
   const profileTarget = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
   const partitionId = profile === "guest" ? "guest" : (profileTarget?.partitionId ?? "");
   const session = currentBrowserSession(botId, profile);
-  const spec = agentBrowserIntegration({
-      binaryPath: status.binaryPath,
-      session,
-      encryptionKey: browserEngineEncryptionKey(),
-      persistent: profile !== "guest",
-      env: { ...process.env, PATH: augmentedPath() },
-      attachCdpUrl: browserEngineAttachCdpUrl(cfg) ?? undefined,
-    });
+  const spec = browserSessionSpec(status.binaryPath, session, profileTarget?.profileId ?? profile);
   usedBrowserSessions.set(session, spec);
-  await prepareBrowserSessionState(status.binaryPath, session, { env: spec.env, persistent: profile !== "guest", isCurrent: () => {
+  await prepareBrowserSessionState(status.binaryPath, session, { env: spec.env, persistent: profile !== "guest" && !attachesToChrome(spec.env), isCurrent: () => {
     const current = store.bot(botId);
     return !!current && current.browser !== false && builtInBrowserEnabled(cfg)
       && currentBrowserSession(current.id, current.browserProfile) === session
@@ -3227,9 +3255,9 @@ function dataIntegration(botId: string, turn: { threadId: string; generation: st
 
 let browserEngineInstall: Promise<void> | null = null;
 let browserEngineInstallError: string | null = null;
-export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; installing?: boolean; installError?: string } {
+export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; installing?: boolean; installError?: string; myChrome: boolean } {
   const status = browserEngineStatus();
-  const progress = { ...(browserEngineInstall ? { installing: true } : {}), ...(browserEngineInstallError ? { installError: browserEngineInstallError } : {}) };
+  const progress = { myChrome: myChromeAvailable(), ...(browserEngineInstall ? { installing: true } : {}), ...(browserEngineInstallError ? { installError: browserEngineInstallError } : {}) };
   return status.kind === "ready"
     ? { kind: "engine", version: status.version, ...progress }
     : { kind: "unavailable", reason: status.reason, installable: status.installable, ...progress };
@@ -3302,7 +3330,7 @@ const computerControl = new ComputerControl((key, snapshot) => {
   if (snapshot.held && /^[A-Za-z0-9_-]{1,120}$/.test(botId)) {
     postDesktopPrivateMessage({ type: "openmausbot:browser-control", botId, held: true });
   }
-  broadcast({ kind: "computer-control", botId, held: snapshot.held, helpReason: snapshot.helpReason });
+  broadcast({ kind: "computer-control", botId, held: snapshot.held, helpReason: snapshot.helpReason, ...(snapshot.help ? { help: snapshot.help } : {}) });
   }
 });
 const controlLeaseIdSchema = z.string().min(16).max(120).regex(/^[A-Za-z0-9_-]+$/);
@@ -8223,7 +8251,8 @@ bus.subscribe((event: RuntimeEvent) => {
       const permission = event.requestType === "permission" && !event.questions?.length;
       // A permission request here is one the provider left for a person: its
       // own mode already ran (Ask, Edits, Auto's reviewer, Custom's config).
-      // Only the person's explicit Full access or exact saved command answers.
+      // Only the person's explicit Full access, exact saved command, or exact
+      // remembered MCP read tool answers.
       // Approve for me allows a web search. The app does not guess whether
       // the action is safe. A QUESTION always reaches the human — even Full
       // access never invents an answer.
@@ -8244,10 +8273,24 @@ bus.subscribe((event: RuntimeEvent) => {
       const command = permission && asker && event.requestId && !event.requiresExplicitApproval && event.command && !guestDriven
         ? commandAllowlistCandidate({ ...event.command, providerInstanceId: event.providerInstanceId ?? asker.modelSelection.instanceId })
         : null;
+      // A person may remember one exact read-shaped tool from one configured
+      // MCP server. Bind it to the provider and current server config: a
+      // provider switch or server edit invalidates the grant rather than
+      // silently transferring it. Built-in tools and unconfigured/spoofed
+      // server names never get a durable key.
+      const providerInstanceId = asker ? event.providerInstanceId ?? asker.modelSelection.instanceId : "";
+      const providerTool = permission && asker && event.requestId && !event.requiresExplicitApproval && !guestDriven
+        ? providerMcpTool(event.tool)
+        : null;
+      const configuredMcp = providerTool && asker ? engineMcpServers(asker)[providerTool.server] : undefined;
+      const toolAllowKey = configuredMcp === undefined
+        ? null
+        : providerToolAllowKey(providerInstanceId, event.tool, configuredMcp);
       const verdict = permission && asker && event.requestId
         ? autoVerdict(effectiveApprovalMode, event.tool, {
           requiresExplicitApproval: event.requiresExplicitApproval,
           commandAllowed: Boolean(command && commandAllowlist.matches(asker.id, command)),
+          toolAllowed: Boolean(toolAllowKey && asker.alwaysAllow?.includes(toolAllowKey)),
         })
         : null;
       // Auto's reviewer is the engine's own. Claude accepts `--permission-mode
@@ -8297,7 +8340,11 @@ bus.subscribe((event: RuntimeEvent) => {
             if (outcome !== "unavailable") pushMessage({
               role: "bot", kind: "activity",
               tool: outcome === "rejected"
-                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist" ? "the saved command permission" : "Full access"}.`, ok: false }
+                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist"
+                  ? "the saved command permission"
+                  : verdict.source === "tool-allowlist"
+                    ? "the saved tool permission"
+                    : "Full access"}.`, ok: false }
                 : failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting."),
             });
             return;
@@ -8317,6 +8364,7 @@ bus.subscribe((event: RuntimeEvent) => {
             summary,
             decision: "auto-approved",
             source: verdict.source,
+            rule: verdict.source === "tool-allowlist" ? toolAllowKey ?? undefined : undefined,
           });
         })().catch(() => {
           // A receipt failure must neither crash the server nor manufacture
@@ -8349,6 +8397,10 @@ bus.subscribe((event: RuntimeEvent) => {
             ? { version: 1, questions, ...(event.origin === "output" ? { origin: "output" as const } : {}) }
             : undefined,
           commandAllowlist: command ?? undefined,
+          // Unlike the provider's session-only allow, this exact MCP read
+          // grant survives restarts and remains visible/revocable under the
+          // bot's Access settings.
+          allowKey: toolAllowKey ?? undefined,
           // Provider-owned session grants remain separate from exact commands.
           // Never on a guest's turn: an "always" for it would outlive it.
           allowSession: permission && event.allowSession && !event.requiresExplicitApproval && !guestDriven ? true : undefined,
@@ -11073,6 +11125,7 @@ async function startTurn(
       }
       const computerSelection = computerSelectionTurns.get(threadId);
       if (computerSelection) computerSelection.mounted = mountedComputer ?? (integrations.browser ? "browser" : undefined);
+      recordTurnPlace(bot.id, threadId, mountedComputer ?? (integrations.browser ? "browser" : null));
       // A cancelled adapter can be between accepting sendTurn and revealing
       // its provider turn id. Never overlap a replacement with that ambiguous
       // pre-id window: wait for the old handshake to settle or for its bounded
@@ -13527,6 +13580,7 @@ async function runGroupMemberTurn(
   // (#754) the room is told, once per source thread, rather than the
   // crossing being blocked.
   const recentLines = recentWork(recentWorkSources(bot), bot, { userName, currentThreadId: threadId, ...recentWorkFilter() });
+  recordTurnPlace(bot.id, threadId, (roomTeamComputer ? "cloud" : roomVmTarget ? "vm" : surfaceOfComputerKind(roomComputerKind)) ?? (integrations.browser ? "browser" : null));
   const roomComputerPromptKind = resolveComputerPromptKind({
     kind: roomTeamComputer || roomComputerKind === "box" ? "box" : roomVmTarget ? "vm" : roomComputerKind,
     vmPrivate: localVmMode(cfg) === "per-bot",
@@ -15397,12 +15451,14 @@ function drainComputerResumes(): void {
   }
 }
 
+/** A card's continuation. The credential card and the sign-in card resume
+ * the same way — this one queue, admission check and failure note on the
+ * card — and differ only in what the bot is told. */
 type SecretResumeEntry = {
   botId: string;
   threadId: string;
   messageId: string;
-  label: string;
-  outcome: "provided" | "dismissed";
+  prompt: string;
 };
 const pendingSecretResumes = new Map<string, SecretResumeEntry>();
 const phoneSecretSubmissions = new PhoneSecretSubmissionRegistry();
@@ -15459,19 +15515,21 @@ function currentSecretState(botId: string, threadId: string, messageId: string) 
 
 function markSecretResumeFailed(threadId: string, messageId: string, error: string) {
   const message = store.messagesFor(threadId).find((candidate) => candidate.id === messageId);
-  if (!message?.secret) return;
-  store.patchMessage(threadId, message.id, {
-    secret: { ...message.secret, resumed: false, error: error.slice(0, 180) },
-  });
+  const failed = { resumed: false, error: error.slice(0, 180) };
+  if (message?.secret) store.patchMessage(threadId, message.id, { secret: { ...message.secret, ...failed } });
+  else if (message?.signIn) store.patchMessage(threadId, message.id, { signIn: { ...message.signIn, ...failed } });
+}
+
+function credentialResumePrompt(label: string, outcome: "provided" | "dismissed"): string {
+  return outcome === "provided"
+    ? `OpenMausBot credential update: the user securely provided ${label}. Continue the task that paused for it. You do not receive the secret and must not ask them to paste it into chat.`
+    : `OpenMausBot credential update: the user declined to provide ${label}. Continue without it if possible, or briefly explain the limitation. Do not ask them to paste it into chat.`;
 }
 
 function dispatchSecretResume(entry: SecretResumeEntry) {
   const owner = connectorThread(entry.botId, entry.threadId);
   if (!owner) return;
-  const prompt =
-    entry.outcome === "provided"
-      ? `OpenMausBot credential update: the user securely provided ${entry.label}. Continue the task that paused for it. You do not receive the secret and must not ask them to paste it into chat.`
-      : `OpenMausBot credential update: the user declined to provide ${entry.label}. Continue without it if possible, or briefly explain the limitation. Do not ask them to paste it into chat.`;
+  const prompt = entry.prompt;
   if (!canAdmitDirectTurn(entry.botId, entry.threadId)) {
     pendingSecretResumes.set(`${entry.threadId}:${entry.messageId}`, entry);
     return;
@@ -15528,7 +15586,7 @@ function dispatchSecretResume(entry: SecretResumeEntry) {
   });
 }
 
-function resumeSecretCard(botId: string, threadId: string, messageId: string, outcome: SecretResumeEntry["outcome"]) {
+function resumeSecretCard(botId: string, threadId: string, messageId: string, outcome: "provided" | "dismissed") {
   const message = secretMessage(botId, threadId, messageId);
   if (!message?.secret) return false;
   if (message.secret.resumed) return true;
@@ -15541,7 +15599,7 @@ function resumeSecretCard(botId: string, threadId: string, messageId: string, ou
       error: undefined,
     },
   });
-  dispatchSecretResume({ botId, threadId, messageId, label: message.secret.label, outcome });
+  dispatchSecretResume({ botId, threadId, messageId, prompt: credentialResumePrompt(message.secret.label, outcome) });
   return true;
 }
 
@@ -15654,6 +15712,109 @@ function drainSecretResumes() {
     pendingSecretResumes.delete(key);
     dispatchSecretResume(entry);
   }
+}
+
+// ── sign-in requests (request_sign_in) ─────────────────────────────────
+// OpenMausBot has no way to receive a website password, by design: the bot
+// asks, the person signs in themselves in the place the bot works, and the
+// session that place keeps is what the bot then uses. One card in the chat,
+// one notification, the computer plea behind the panel's banner, and the
+// credential card's continuation to resume the bot.
+
+function recordTurnPlace(botId: string, threadId: string, place: Surface | null): void {
+  if (place) turnPlaces.set(threadId, { botId, place });
+  else turnPlaces.delete(threadId);
+}
+
+/** Where this conversation's sign-in must happen: what the running turn
+ * mounted, else the place the conversation is pinned to or the bot works
+ * on. Null when nothing names one (Auto between turns, or Off). */
+function signInPlace(bot: BotRecord, threadId: string): Surface | null {
+  const turn = turnPlaces.get(threadId);
+  if (turn?.botId === bot.id) return turn.place;
+  return store.taskByThread(bot.id, threadId)?.surface ?? parseSurface(bot.computer) ?? null;
+}
+
+/** The computer record whose plea stands for a request: the team computer
+ * the turn drives, the bot's own computer, or — for the built-in browser,
+ * which no computer hold covers — the bot itself. */
+function signInControlKey(bot: BotRecord, threadId: string, place: Surface): string {
+  if (place === "browser") return bot.id;
+  const team = teamComputerTurns.get(threadId);
+  return team?.botId === bot.id ? teamComputerOwner(team.computerId) : botComputerControlKey(bot);
+}
+
+/** A bot's request_sign_in: the card, the plea and the one notification.
+ * A newer request for the same site in this conversation supersedes the
+ * older card. The card is appended first, like the credential card's: a
+ * failed append leaves the older one actionable. */
+function requestSignIn(from: BotRecord, threadId: string, rawSite: unknown, rawReason: unknown):
+  { messageId: string; site: string; place: Surface } | { status: number; error: string } {
+  const owner = connectorThread(from.id, threadId);
+  if (!owner) return { status: 403, error: "source conversation does not belong to sender" };
+  const target = normalizeSignInSite(rawSite);
+  if (!target) return { status: 400, error: "site must be a web address or a domain, such as example.com" };
+  const place = signInPlace(from, threadId);
+  if (!place) return { status: 409, error: "this conversation has no browser or computer for the person to sign in on" };
+  const reason = typeof rawReason === "string" ? rawReason.trim().slice(0, 240) : "";
+  const message = store.appendMessage(threadId, {
+    role: "bot",
+    kind: "signin",
+    text: signInFallbackText(from.name, target.site),
+    ...(owner.group ? { from: { botId: from.id, name: from.name, color: from.color } } : {}),
+    signIn: { url: target.url, site: target.site, place, ...(reason ? { reason } : {}) },
+  });
+  for (const prior of store.activePath(threadId)) {
+    if (prior.id === message.id || !prior.signIn || !isPendingSignInRequest(prior, target.site, from.id, Boolean(owner.group))) continue;
+    store.patchMessage(threadId, prior.id, { signIn: { ...prior.signIn, superseded: true } });
+    computerControl.settleHelp(prior.id);
+  }
+  computerControl.requestHelp(signInControlKey(from, threadId, place), `sign in to ${target.site}`,
+    { botId: from.id, threadId, messageId: message.id, site: target.site, place });
+  notify(buildNotification("sign-in", { ...from, threadId }, threadId, reason || `Open OpenMausBot to sign in to ${target.site}.`, {
+    avatarUrl: from.avatarUrl,
+    ...(owner.group ? { group: { id: owner.group.id, name: owner.group.name } } : {}),
+    site: target.site,
+  }));
+  return { messageId: message.id, site: target.site, place };
+}
+
+/** A sign-in card while it is visible on the conversation's chosen branch;
+ * in a room, only the asking bot's own. */
+function signInMessage(botId: string, threadId: string, messageId: string): Message | null {
+  const owner = connectorThread(botId, threadId);
+  if (!owner) return null;
+  const message = store.activePath(threadId).find((candidate) => candidate.id === messageId);
+  if (owner.group && message?.from?.botId !== botId) return null;
+  return message?.kind === "signin" && message.signIn ? message : null;
+}
+
+/** Done or Cancel. The person hands back what they held for the sign-in,
+ * its plea goes, and the bot resumes through the credential card's own
+ * continuation. Pressing the same answer again only retries a resume that
+ * failed; the other answer, or a superseded card, is refused. */
+function settleSignIn(botId: string, threadId: string, messageId: string, outcome: "done" | "cancelled"):
+  { status: number; body: Record<string, unknown> } {
+  const bot = store.bot(botId);
+  const message = signInMessage(botId, threadId, messageId);
+  if (!bot || !message?.signIn) return { status: 404, body: { error: "no such sign-in request" } };
+  const card = message.signIn;
+  if (card.superseded) return { status: 409, body: { error: "this sign-in request was superseded by a newer one" } };
+  const settled = signInOutcome(card);
+  if (settled && settled !== outcome) {
+    return { status: 409, body: { error: `this sign-in request was already ${settled === "done" ? "marked done" : "cancelled"}` } };
+  }
+  if (settled && card.resumed) return { status: 200, body: { [outcome]: true, resumed: true } };
+  if (!settled) {
+    const pleaded = computerControl.settleHelp(message.id);
+    if (card.place === "browser") browserLive.handBack(currentBrowserSession(bot.id, bot.browserProfile));
+    else for (const key of pleaded.length ? pleaded : [botComputerControlKey(bot)]) computerControl.release(key);
+  }
+  store.patchMessage(threadId, message.id, {
+    signIn: { ...card, ...(outcome === "done" ? { done: true } : { cancelled: true }), resumed: true, error: undefined },
+  });
+  dispatchSecretResume({ botId, threadId, messageId: message.id, prompt: signInResumePrompt(card.site, outcome) });
+  return { status: 200, body: { [outcome]: true, resumed: true } };
 }
 
 bus.subscribe((event: RuntimeEvent) => {
@@ -16404,6 +16565,30 @@ ROUTES.push(createBotMemoryRoutes({
   },
 }));
 ROUTES.push(createDeciderRoutes({ decider }));
+ROUTES.push(createBrowserSiteRoutes({
+  target: (which) => {
+    const engine = browserEngineStatus();
+    if (engine.kind !== "ready") return { status: 409, error: engine.reason };
+    let session: string;
+    let profile: string | undefined;
+    if ("profile" in which) {
+      const target = browserProfilePartitionTarget(cfg, which.profile);
+      if (!target) return { status: 404, error: "This browser profile was removed." };
+      session = browserSessionId("", target.partitionId);
+      profile = target.profileId;
+    } else {
+      const bot = store.bot(which.bot);
+      if (!bot) return { status: 404, error: "no such bot" };
+      if (bot.browserProfile === "guest") return { status: 409, error: "A temporary browser saves no sign-ins." };
+      session = currentBrowserSession(bot.id, bot.browserProfile);
+      profile = bot.browserProfile;
+    }
+    if (usesMyChrome(profile)) return { status: 409, error: "This profile uses your own Chrome. Sign in and out of sites there." };
+    return { binaryPath: engine.binaryPath, session, env: browserSessionSpec(engine.binaryPath, session, profile).env, encryptionKey: browserEngineEncryptionKey() };
+  },
+  list: (target) => listSignedInSites(target),
+  signOut: (target, site) => signOutOfSites(target, site),
+}));
 // The usage ledger (JSON and CSV). Admin scope stays in server/request-auth.ts.
 ROUTES.push(createUsageRoutes({
   dataDir: DATA_DIR,
@@ -19005,6 +19190,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         return json(res, 201, { messageId: message.id, label: target.label });
       }
+      if (method === "POST" && path === "/api/internal/request-sign-in") {
+        const body = await readInternalBody();
+        const result = requestSignIn(internalSender, internalCapability.threadId, body.site, body.reason);
+        return "error" in result ? json(res, result.status, { error: result.error }) : json(res, 201, result);
+      }
       if (method === "POST" && path === "/api/internal/voice-note") {
         const body = await readInternalBody();
         const text = typeof body.text === "string" ? body.text.trim() : "";
@@ -19308,7 +19498,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // A missing OAuth permission gets a note on what fixes it (MOCA-273).
         return res.end(Buffer.from(withScopeHint(upstream.bytes, upstream.contentType, connectorCalls.map((call) => call.slug))));
       }
-      // ── computer control: proxies read the hold, bots plead for help ──
+      // ── computer control: proxies read the hold ──
       if (path === "/api/internal/computer-control") {
         const botId = url.searchParams.get("botId") ?? "";
         const bot = store.bot(botId);
@@ -19319,31 +19509,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const abort = new AbortController();
           res.once("close", () => { if (!res.writableEnded) abort.abort(); });
           return json(res, 200, await computerCallGate(internalCapability, abort.signal));
-        }
-        if (method === "POST") {
-          const body = await readInternalBody();
-          const controlKey = internalCapability.teamComputerId ? teamComputerOwner(internalCapability.teamComputerId) : botId;
-          const { snapshot, requestId } = computerControl.requestHelpLease(controlKey, body.reason);
-          // worth a buzz: the bot is blocked on the person's hands, which
-          // is exactly the "blocked on you" rule notify.ts encodes.
-          // A bot stuck mid-room is not in its 1:1 thread — the turn and the
-          // screen it needs hands on are in the room — so send the person
-          // where the work is, and say which room it was.
-          const roomTurn = activeGroupTurnForBot(bot.id);
-          const target = blockedTarget({ ...bot, threadId: internalCapability.threadId }, roomTurn && { ...roomTurn.group, threadId: roomTurn.threadId });
-          const helpPlace = store.taskByThread(bot.id, internalCapability.threadId)?.surface ?? bot.computer;
-          const helpWhere = helpPlace && helpPlace !== "off" ? ` on ${surfaceLabel(helpPlace)}` : "";
-          notify(
-            buildNotification("takeover", bot, target.threadId, `${snapshot.helpReason ?? "asked you to take over"}${helpWhere}`, {
-              group: target.group,
-            }),
-          );
-          return json(res, 200, { held: snapshot.held, helpOpen: snapshot.helpReason !== null, requestId });
-        }
-        if (method === "DELETE") {
-          const body = await readInternalBody();
-          const snapshot = computerControl.expireHelp(internalCapability.teamComputerId ? teamComputerOwner(internalCapability.teamComputerId) : botId, body.requestId);
-          return json(res, 200, { held: snapshot.held, helpOpen: snapshot.helpReason !== null });
         }
         return json(res, 405, { error: "method not allowed" });
       }
@@ -19644,9 +19809,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         : json(res, 404, { error: "no such webhook" });
     }
 
-    // ── events stream ──
-    // Owner-only (default-deny in request-auth). Never mix login frames into
-    // the general events feed, which is also visible to client-only devices.
+    // ── the bot's live browser ──
+    // Anyone the bot is shown to may watch and drive it (request-auth's
+    // client list, then bot visibility): the person whose bot asks them to
+    // sign in must reach the page. Never mix login frames into the general
+    // events feed, which every device reads.
     const liveBrowserMatch = /^\/api\/bots\/([\w-]+)\/browser\/(live|action)$/.exec(path);
     if (liveBrowserMatch) {
       res.setHeader("cache-control", "no-store");
@@ -19819,7 +19986,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         computerControl: Object.fromEntries(
           shownBots.map((bot) => {
             const snapshot = botComputerControlSnapshot(bot.id);
-            return [bot.id, { held: snapshot.held, helpReason: snapshot.helpReason }];
+            return [bot.id, { held: snapshot.held, helpReason: snapshot.helpReason, ...(snapshot.help ? { help: snapshot.help } : {}) }];
           }),
         ),
       });
@@ -21601,6 +21768,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // the card it came from may remember it.
       const refusal = cardAnswerRefusal(auth, bot.threadId, pending.card!.requestId!, "allow");
       if (refusal) return json(res, 403, { error: refusal });
+      // This is a standing permission for the bot, not merely for the thread
+      // that happened to raise the card. Save it on the bot defaults so a
+      // fresh direct or delegated task inherits it, while also updating the
+      // current task's independent permission snapshot immediately.
+      const savedBot = store.bot(bot.id)!;
+      store.patchBot(bot.id, {
+        alwaysAllow: [...new Set([...(savedBot.alwaysAllow ?? []), allowKey])].slice(0, 200),
+      });
       store.patchTask(bot.id, bot.threadId, {
         alwaysAllow: [...new Set([...(bot.alwaysAllow ?? []), allowKey])].slice(0, 200),
       });
@@ -24753,7 +24928,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       if (patch.browserProfiles !== undefined && body.expectedBrowserProfiles !== undefined) {
-        const current = (cfg.browserProfiles ?? []).map(({ id, name }) => ({ id, name }));
+        const current = (cfg.browserProfiles ?? []).map(({ id, name, browser }) => ({ id, name, ...(browser ? { browser } : {}) }));
         if (JSON.stringify(body.expectedBrowserProfiles) !== JSON.stringify(current)) {
           return json(res, 409, { error: "Browser profiles changed in another window. Review the refreshed list and try again." });
         }
@@ -24764,11 +24939,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         : (cfg.browserProfiles ?? [])
             .map((profile) => profile.id)
             .filter((id) => !patch.browserProfiles!.some((profile) => profile.id === id));
+      // Profiles whose browser changes between built-in and My Chrome: their
+      // open browser closes after the save, so the next turn uses the new one.
+      const browserChoiceChanged = (patch.browserProfiles ?? []).filter((profile) => {
+        const current = cfg.browserProfiles?.find((candidate) => candidate.id === profile.id);
+        return current !== undefined && (current.browser ?? null) !== (profile.browser ?? null);
+      }).map((profile) => profile.id);
       const profileControlConflict = () => removedBrowserProfileIds.some((id) => {
         const target = browserProfilePartitionTarget(cfg, id);
         return target && browserRuntime.heldBy(browserSessionId("", target.partitionId));
       });
       if (profileControlConflict()) return json(res, 409, { error: "Release browser control before deleting its profile." });
+      if (browserChoiceChanged.some((id) => {
+        const target = browserProfilePartitionTarget(cfg, id);
+        return target && browserRuntime.heldBy(browserSessionId("", target.partitionId));
+      })) return json(res, 409, { error: "Release browser control before changing its browser." });
       if (patch.browserProfiles !== undefined) {
         const currentProfiles = new Map((cfg.browserProfiles ?? []).map((profile) => [profile.id, profile]));
         const nextProfiles = patch.browserProfiles.map((profile) => {
@@ -25063,6 +25248,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             error: `stop ${activeReference.name}'s turn before removing its browser profile`,
           });
         }
+        // Built-in and My Chrome are different browsers: a turn keeps the
+        // one it started with, so the switch waits for it.
+        const switching = store.bots.find((bot) => bot.busy && bot.browserProfile && browserChoiceChanged.includes(bot.browserProfile));
+        if (switching) return json(res, 409, { error: `stop ${switching.name}'s turn before changing its browser` });
       }
       // Provider validation above awaits remote services. The transition flag
       // blocks new work, while this second observation catches any operation
@@ -25099,6 +25288,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const next = patch[kind]?.key;
         return next === undefined ? [] : [cfg[kind]?.key, next];
       });
+      const engineForSwitch = browserEngineStatus();
+      const browsersToClose = engineForSwitch.kind === "ready" ? browserChoiceChanged.flatMap((id) => {
+        const target = browserProfilePartitionTarget(cfg, id);
+        if (!target) return [];
+        const session = browserSessionId("", target.partitionId);
+        return [{ session, spec: usedBrowserSessions.get(session) ?? browserSessionSpec(engineForSwitch.binaryPath, session, id) }];
+      }) : [];
       let configWriteCommitted = false;
       // What each engine is launched with before this write (reloadProviders).
       const enginesBefore = engineLaunches(providerConfigs());
@@ -25169,6 +25365,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (disablingBuiltInBrowser) browserLive.closeAll();
       for (const request of browserCleanupRequests) {
         if (request.kind === "profile") browserLive.closeForSession(browserSessionId("", request.partitionId));
+      }
+      for (const { session, spec } of browsersToClose) {
+        browserLive.closeForSession(session);
+        usedBrowserSessions.delete(session);
+        // Closing a built-in browser saves its sign-ins for when it comes
+        // back; closing an attached one only lets go of the person's Chrome.
+        void closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })).then((closed) => {
+          if (!closed) console.warn(`browser ${session}: could not close it after its browser changed; the next turn may still use the old one`);
+        });
       }
       if (patch.browserProfiles !== undefined) {
         const retained = new Set(patch.browserProfiles.map((profile) => profile.id));
@@ -25443,6 +25648,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return json(res, 200, { dismissed: true, resumed: state.resumed });
     }
 
+    // A sign-in card's two answers. Nothing secret crosses here: the person
+    // typed the password into the page itself, never into OpenMausBot.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/sign-in-cards\/([\w-]+)\/(done|cancel)$/);
+    if (m && method === "POST") {
+      const body = await readBody(req);
+      const result = settleSignIn(m[1], String(body.threadId ?? ""), m[2], m[3] === "done" ? "done" : "cancelled");
+      return json(res, result.status, result.body);
+    }
+
     // Inline connection cards are bound to both the bot and the exact task
     // or room thread that created them. The browser auth URL is returned
     // only to this local UI and is never stored in the transcript.
@@ -25517,8 +25731,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         : json(res, 200, { surface, backend: "box", ...(await boat.boatStatus(cfg, bot.id)) });
     }
     // Who is driving this bot's computer. GET is the panel's initial read;
-    // POST take/release/dismiss-help are the person's three moves. The bot
-    // has no verb here at all — its only voice is the internal help plea.
+    // POST take/release are the person's moves. The bot has no verb here at
+    // all — its only voice is a sign-in request, which its card settles.
     m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/control$/);
     if (m) {
       const bot = store.bot(m[1]);
@@ -25566,8 +25780,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         if (action === "take") return json(res, 200, computerControl.take(controlKey));
         if (action === "release") return json(res, 200, computerControl.release(controlKey));
-        if (action === "dismiss-help") return json(res, 200, computerControl.dismissHelp(controlKey));
-        return json(res, 400, { error: "action must be take, release, check, or dismiss-help" });
+        return json(res, 400, { error: "action must be take, release, or check" });
       }
       return json(res, 405, { error: "method not allowed" });
     }
