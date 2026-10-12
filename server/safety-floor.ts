@@ -1,0 +1,618 @@
+// The safety floor: a short never-list of shell commands the server will not
+// approve by itself, at any approval level.
+//
+// Full access means "answer every permission request for me" and a saved
+// command means "answer this one". Neither was meant to cover wiping the
+// machine. The list is what no task needs: a recursive delete of the
+// filesystem root, of the home directory or of a top-level system directory;
+// formatting or overwriting a disk; a fork bomb.
+//
+// This file only reads a command line and names the rule it meets. It does no
+// I/O and decides nothing about approvals: server/safety-floor-gate.ts applies
+// it where the server would otherwise allow a command with nobody looking.
+//
+// The two possible mistakes are not equal. Blocking a command that was fine
+// stops real work and teaches people to switch the floor off, so every rule
+// leans towards letting a command through: a path the text does not spell out
+// (`rm -rf "$DIR"`), a relative path, and any spelling the reader below does
+// not understand are all allowed. The same words as DATA are never a command:
+// a commit message, an echo, a heredoc body, a comment.
+//
+// So the command is read the way a shell reads it, far enough to tell a
+// command from its arguments: quotes, escapes, `;` `&&` `||` `|` and newlines,
+// subshells, `$( … )`, heredocs, redirections, and the wrappers that run
+// another command line (`sudo`, `env`, `sh -c`, `cmd /c`, `powershell -Command`).
+
+export type FloorRule = "delete-root" | "delete-home" | "delete-system-directory" | "format-disk" | "overwrite-disk" | "fork-bomb";
+
+export interface FloorVerdict {
+  /** Which rule matched: a stable name, for the decision log. */
+  rule: FloorRule;
+  /** What was blocked, in words a person reads. Never the command itself, so
+   * a credential typed into the command line cannot travel with it. */
+  label: string;
+}
+
+const DELETE_ROOT: FloorVerdict = { rule: "delete-root", label: "recursive delete of the filesystem root" };
+const DELETE_DRIVE: FloorVerdict = { rule: "delete-root", label: "recursive delete of a drive root" };
+const DELETE_HOME: FloorVerdict = { rule: "delete-home", label: "recursive delete of the home directory" };
+const FORMAT_DISK: FloorVerdict = { rule: "format-disk", label: "formatting a disk" };
+const OVERWRITE_DISK: FloorVerdict = { rule: "overwrite-disk", label: "overwriting a disk device" };
+const FORK_BOMB: FloorVerdict = { rule: "fork-bomb", label: "a fork bomb" };
+const deleteSystem = (name: string): FloorVerdict => ({ rule: "delete-system-directory", label: `recursive delete of ${name}` });
+
+/** Top-level directories a machine does not survive losing. `/private/etc`
+ * and `/private/var` are where macOS keeps `/etc` and `/var`. */
+const SYSTEM_DIRECTORIES = [
+  "/etc", "/usr", "/bin", "/sbin", "/var", "/boot", "/home", "/lib", "/lib32", "/lib64", "/libx32", "/lib*",
+  "/System", "/Library", "/Applications", "/Users", "/private", "/private/etc", "/private/var",
+];
+/** The same on a Windows drive, by lowercase name. */
+const WINDOWS_DIRECTORIES = new Map([
+  ["windows", "Windows"], ["users", "Users"], ["program files", "Program Files"],
+  ["program files (x86)", "Program Files (x86)"], ["programdata", "ProgramData"],
+]);
+const deleteWindowsSystem = (name: string): FloorVerdict => deleteSystem(`a Windows system folder (${name})`);
+
+// A lexed word keeps what the shell would substitute as one of two private-use
+// characters, so a rule can tell `~` (the home directory) from `'~'` (a
+// directory that is only named that), and never guesses at a variable.
+/** The home directory: an unquoted `~`, `$HOME`, `%USERPROFILE%`. */
+const HOME = "\uE000";
+/** Anything else substituted at run time. A word holding one is unknown. */
+const DYNAMIC = "\uE001";
+
+/** What `%NAME%` and `$env:NAME` stand for on Windows, by lowercase name. */
+const WINDOWS_VARIABLES: Record<string, string> = {
+  userprofile: HOME, home: HOME,
+  systemdrive: "C:", homedrive: "C:",
+  systemroot: "C:\\Windows", windir: "C:\\Windows",
+  programfiles: "C:\\Program Files", "programfiles(x86)": "C:\\Program Files (x86)",
+  programdata: "C:\\ProgramData", allusersprofile: "C:\\ProgramData",
+};
+
+/** A whole disk or one of its partitions, by device path. Loop, RAM and
+ * network block devices are left out: they are how a disk image is built. */
+const DISK_DEVICE = /^\/dev\/(?:r?disk\d+(?:s\d+)*|disk\/.+|sd[a-z]{1,3}\d*|hd[a-z]\d*|x?vd[a-z]{1,2}\d*|nvme\d+(?:n\d+)?(?:p\d+)?|mmcblk\d+(?:p\d+)?)$/;
+const diskDevice = (word: string): boolean => DISK_DEVICE.test(word.replace(/\/{2,}/g, "/"));
+
+// A function that pipes itself into itself in the background, then runs. The
+// name is bounded and must start a word, so a long unbroken token costs
+// nothing to rule out.
+const BOMB_BODY = String.raw`\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;?\s*\1(?![\w:.-])`;
+const BOMB_NAME = String.raw`([A-Za-z_:.][\w:.-]{0,63})`;
+const FORK_BOMBS = [
+  new RegExp(String.raw`(?:^|[\s;&|(){}])${BOMB_NAME}\s*\(\s*\)${BOMB_BODY}`),
+  new RegExp(String.raw`(?:^|[\s;&|(){}])function\s+${BOMB_NAME}\s*(?:\(\s*\))?${BOMB_BODY}`),
+];
+
+/** One simple command: what a shell would run as a unit. */
+interface Command {
+  /** Its words with quotes removed; substitutions appear as HOME or DYNAMIC. */
+  words: string[];
+  /** Where each word starts in the source. */
+  starts: number[];
+  /** The files its output is redirected into. */
+  writes: string[];
+  from: number;
+  to: number;
+}
+
+/** How deep `$( … )` may nest before the rest is left unread. */
+const MAX_NESTING = 40;
+
+/** Reads a command line into its simple commands, every one a shell would
+ * run: chained, grouped, or inside `$( … )`. `windows` reads it as cmd and
+ * PowerShell do, where a backslash is part of a path and not an escape.
+ * `bare` is the text outside every quote, heredoc and comment. */
+function lex(source: string, windows: boolean): { commands: Command[]; bare: string } {
+  const commands: Command[] = [];
+  const heredocs: Array<{ end: string; tabs: boolean }> = [];
+  let bare = "";
+  let at = 0;
+  let nesting = 0;
+
+  /** What a variable stands for in a word. */
+  const variable = (name: string): string => {
+    if (!windows) return name === "HOME" ? HOME : DYNAMIC;
+    const key = name.toLowerCase();
+    if (key === "home") return HOME;
+    return key.startsWith("env:") ? WINDOWS_VARIABLES[key.slice(4)] ?? DYNAMIC : DYNAMIC;
+  };
+
+  /** Skips to the `shut` that closes an already opened pair; quoted text and
+   * nested pairs belong to it. Returns what was inside. Double quotes quote
+   * in here even when the pair itself sits between double quotes
+   * (`"${X:-"}"}"`); an apostrophe there is only an apostrophe. */
+  const balanced = (open: string, shut: string, inDoubleQuotes: boolean): string => {
+    const from = at;
+    for (let depth = 1; at < source.length; at++) {
+      const c = source[at];
+      if (c === "\\" && !windows) at++;
+      else if (c === "'" && !inDoubleQuotes) at = endOf("'", at + 1);
+      else if (c === '"') {
+        for (at++; at < source.length && source[at] !== '"'; at++) if (source[at] === "\\" && !windows) at++;
+      } else if (c === open) depth++;
+      else if (c === shut && --depth === 0) return source.slice(from, at++);
+    }
+    return source.slice(from);
+  };
+  /** The index of the next `mark`, or the end of the source. */
+  const endOf = (mark: string, from: number): number => {
+    const found = source.indexOf(mark, from);
+    return found === -1 ? source.length : found;
+  };
+
+  /** A `$name`, `${name}` or `$'…'` at the cursor: consumes it and returns
+   * what it adds to a word. */
+  const variableAt = (inDoubleQuotes: boolean): string => {
+    const next = source[at + 1];
+    if (next === "{") {
+      at += 2;
+      return variable(balanced("{", "}", inDoubleQuotes));
+    }
+    if (next === "'" && !windows && !inDoubleQuotes) {
+      // $'…' decodes escapes such as \x2f, so its text is not read here.
+      for (at += 2; at < source.length && source[at] !== "'"; at++) if (source[at] === "\\") at++;
+      at++;
+      return DYNAMIC;
+    }
+    const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(at + 1, at + 130))?.[0];
+    if (name) {
+      at += 1 + name.length;
+      const scoped = windows && name.toLowerCase() === "env" ? /^:[A-Za-z0-9_]+/.exec(source.slice(at, at + 130))?.[0] : undefined;
+      if (scoped) at += scoped.length;
+      return variable(name + (scoped ?? ""));
+    }
+    if (next !== undefined && /[0-9@*#?$!_-]/.test(next)) {
+      at += 2;
+      return DYNAMIC;
+    }
+    at++;
+    return "$";
+  };
+
+  /** Reads commands until `close` ends this script, or the source ends. */
+  function script(close: string | null): void {
+    let command: Command = { words: [], starts: [], writes: [], from: at, to: at };
+    // Written through the helpers below, so its type is stated rather than
+    // narrowed from this first value.
+    let word = null as string | null;
+    let wordAt = 0;
+    let token = 0;
+    /** What the next word is, when it is not an argument. */
+    let next: "argument" | "write" | "read" | "heredoc" | "heredoc-tabs" = "argument";
+    let depth = 0;
+
+    const add = (text: string) => {
+      if (word === null) {
+        word = "";
+        wordAt = token;
+      }
+      word += text;
+    };
+    const endWord = () => {
+      if (word === null) return;
+      if (next === "argument") {
+        command.words.push(word);
+        command.starts.push(wordAt);
+      } else if (next === "write") command.writes.push(word);
+      else if (next !== "read") heredocs.push({ end: word, tabs: next === "heredoc-tabs" });
+      word = null;
+      next = "argument";
+    };
+    /** Ends the command at the cursor and starts the next one `skip` later. */
+    const cut = (skip: number) => {
+      endWord();
+      next = "argument";
+      command.to = at;
+      if (command.words.length || command.writes.length) commands.push(command);
+      at += skip;
+      command = { words: [], starts: [], writes: [], from: at, to: at };
+    };
+    const nested = (shut: string) => {
+      if (++nesting > MAX_NESTING) at = source.length;
+      else script(shut);
+      nesting--;
+    };
+    /** The text between double quotes; the cursor is just past the opening one. */
+    const quoted = () => {
+      while (at < source.length) {
+        const c = source[at];
+        const after = source[at + 1];
+        if (c === '"') {
+          at++;
+          return;
+        }
+        if (!windows && c === "\\" && after !== undefined && "$`\"\\\n".includes(after)) {
+          if (after !== "\n") add(after);
+          at += 2;
+        } else if (windows && c === "`" && after !== undefined) {
+          add(after);
+          at += 2;
+        } else if (c === "$") add(dollar(true));
+        else if (c === "`" && !windows) {
+          at++;
+          nested("`");
+          add(DYNAMIC);
+        } else {
+          add(c);
+          at++;
+        }
+      }
+    };
+    /** `$( … )` runs what is inside it; every other `$` is a variable. */
+    const dollar = (inDoubleQuotes: boolean): string => {
+      if (source[at + 1] !== "(") return variableAt(inDoubleQuotes);
+      at += 2;
+      nested(")");
+      return DYNAMIC;
+    };
+
+    while (at < source.length) {
+      const c = source[at];
+      const after = source[at + 1];
+      token = at;
+      if (c === close && depth === 0) {
+        cut(1);
+        return;
+      }
+      if (windows ? c === "^" || c === "`" : c === "\\") {
+        // An escaped newline continues the line; anything else is itself.
+        if (after !== "\n" && after !== undefined) add(after);
+        at += 2;
+      } else if (c === "'") {
+        const end = endOf("'", at + 1);
+        add(source.slice(at + 1, end));
+        at = end + 1;
+      } else if (c === '"') {
+        add("");
+        at++;
+        quoted();
+      } else if (c === "$") add(dollar(false));
+      else if (c === "`") {
+        at++;
+        nested("`");
+        add(DYNAMIC);
+      } else if (c === " " || c === "\t" || c === "\r") {
+        endWord();
+        bare += c;
+        at++;
+      } else if (c === "\n") {
+        cut(1);
+        bare += c;
+        // A heredoc's body is input, not commands: skip to its closing line.
+        for (const heredoc of heredocs.splice(0)) {
+          while (at < source.length) {
+            const end = endOf("\n", at);
+            const line = source.slice(at, end).replace(/\r$/, "");
+            at = Math.min(end + 1, source.length);
+            if ((heredoc.tabs ? line.replace(/^\t+/, "") : line) === heredoc.end) break;
+          }
+        }
+        command.from = command.to = at;
+      } else if (c === "#" && word === null) at = endOf("\n", at);
+      else if (c === ";" || c === "|" || (c === "&" && after !== ">")) {
+        bare += c;
+        cut(1);
+      } else if (c === "(" && word !== null && word.endsWith("=")) {
+        // name=( … ) is an array of words, which is data.
+        at++;
+        balanced("(", ")", false);
+        add(DYNAMIC);
+      } else if (c === "(" || c === ")") {
+        // A subshell, or the parentheses of a function: what is inside runs.
+        bare += c;
+        depth = Math.max(0, depth + (c === "(" ? 1 : -1));
+        cut(1);
+      } else if ((c === "<" || c === ">") && after === "(") {
+        at += 2;
+        nested(")");
+        add(DYNAMIC);
+      } else if (c === "<" || c === ">" || c === "&") {
+        // A redirection. Digits right before it name a descriptor (2>).
+        if (word !== null && /^\d+$/.test(word)) word = null;
+        else endWord();
+        bare += c;
+        at += c === "&" ? 2 : 1;
+        const duplicate = () => {
+          const descriptor = /^&[\d-]+/.exec(source.slice(at, at + 12))?.[0];
+          if (descriptor) at += descriptor.length;
+          else if (source[at] === "&") at++;
+          return Boolean(descriptor);
+        };
+        if (c !== "<") {
+          if (source[at] === ">" || source[at] === "|") at++;
+          next = duplicate() ? "argument" : "write";
+        } else if (source[at] === "<") {
+          at++;
+          const hereString = source[at] === "<" || windows;
+          const tabs = !hereString && source[at] === "-";
+          if (source[at] === "<" || tabs) at++;
+          next = hereString ? "read" : tabs ? "heredoc-tabs" : "heredoc";
+        } else if (source[at] === ">") {
+          at++;
+          next = "write";
+        } else next = duplicate() ? "argument" : "read";
+      } else if (c === "~" && word === null) {
+        // `~` and `~/…` are the home directory; `~name` is somebody else's.
+        add(after === undefined || /[\s/;&|()<>`]/.test(after) || (windows && after === "\\") ? HOME : DYNAMIC);
+        bare += c;
+        at++;
+      } else {
+        add(c);
+        bare += c;
+        at++;
+      }
+    }
+    cut(0);
+  }
+
+  script(null);
+  return { commands, bare };
+}
+
+/** Commands that run the command line after them. `values`: the one-letter
+ * options that take a value of their own, `named` the long ones. */
+const PREFIXES: Record<string, { values?: string; named?: string[]; operands?: number; lookup?: RegExp }> = {
+  sudo: { values: "CDghpRrtTUu", named: ["user", "group", "host", "prompt", "chdir", "chroot", "role", "type", "other-user", "close-from", "command-timeout"] },
+  doas: { values: "Cu" },
+  env: { values: "uCS", named: ["unset", "chdir", "split-string"] },
+  nice: { values: "n", named: ["adjustment"] },
+  timeout: { values: "ks", named: ["kill-after", "signal"], operands: 1 },
+  exec: { values: "a" },
+  // `command -v rm` looks a command up; it does not run it.
+  command: { lookup: /^-[pvV]*[vV]/ },
+  nohup: {}, time: {}, builtin: {}, busybox: {},
+};
+/** Shell words that sit in front of a command without being one. */
+const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{"]);
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "fish"]);
+/** How many command lines deep a wrapper is followed (`sh -c "bash -c …"`). */
+const MAX_DEPTH = 4;
+
+/** The program a word names: no directory, no `.exe`, lowercase. */
+function programName(word: string): string {
+  return word.slice(Math.max(word.lastIndexOf("/"), word.lastIndexOf("\\")) + 1).toLowerCase().replace(/\.(?:exe|com|cmd|bat)$/, "");
+}
+
+/** The index of the word that is the command itself, past variable
+ * assignments, shell keywords and prefix commands; -1 when there is none. */
+function commandIndex(words: string[]): number {
+  let index = 0;
+  while (index < words.length) {
+    const word = words[index];
+    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
+      index++;
+      continue;
+    }
+    const prefix = PREFIXES[programName(word)];
+    if (!prefix) return index;
+    index++;
+    while (index < words.length && /^-./.test(words[index])) {
+      const option = words[index++];
+      if (option === "--") break;
+      if (prefix.lookup?.test(option)) return -1;
+      const named = option.startsWith("--") ? option.slice(2) : null;
+      if (named !== null ? prefix.named?.includes(named) : prefix.values?.includes(option.at(-1)!)) index++;
+    }
+    index += prefix.operands ?? 0;
+  }
+  return -1;
+}
+
+/** The command line a shell is handed with `-c`, or null. */
+function inlineScript(args: string[]): string | null {
+  let inline = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (/^--[a-z-]+$/.test(arg)) {
+      if (arg === "--rcfile" || arg === "--init-file") index++;
+    } else if (/^[-+][A-Za-z]+$/.test(arg)) {
+      if (arg[0] === "-" && arg.includes("c")) inline = true;
+      // -o pipefail and -O extglob take a value
+      if (/[oO]$/.test(arg)) index++;
+    } else return inline ? arg : null;
+  }
+  return null;
+}
+
+/** What `rm` is asked to delete, or null when it is not recursive. Options
+ * may come in any order and on either side of the paths. */
+function rmTargets(args: string[]): string[] | null {
+  const targets: string[] = [];
+  let recursive = false;
+  let operandsOnly = false;
+  for (const arg of args) {
+    if (operandsOnly || !/^-./.test(arg)) targets.push(arg);
+    else if (arg === "--") operandsOnly = true;
+    // -r, -R, or either inside a cluster of rm's own letters; --recursive and
+    // the prefixes of it that GNU rm accepts.
+    else if (/^-[dfiIPvWx]*[rR][dfiIPRrvWx]*$/.test(arg) || (arg.length > 2 && "--recursive".startsWith(arg))) recursive = true;
+  }
+  return recursive ? targets : null;
+}
+
+/** `.` and `..` resolved by spelling, and a final `*` dropped: everything in
+ * a directory is the directory. `above` counts steps past the start. */
+function resolved(segments: string[]): { parts: string[]; above: number } {
+  const parts: string[] = [];
+  let above = 0;
+  for (const segment of segments) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") parts.push(segment);
+    else if (parts.length) parts.pop();
+    else above++;
+  }
+  if (parts.at(-1) === "*" || parts.at(-1) === "*.*") parts.pop();
+  return { parts, above };
+}
+
+interface Host {
+  /** macOS and Windows find `/ETC` where Linux does not. */
+  foldCase: boolean;
+  windows: boolean;
+  /** The home directory's own absolute path, when the caller knows it. */
+  home?: string;
+}
+
+/** Why deleting this path recursively is on the never-list, or null. The
+ * path is one a POSIX shell would hand to `rm`. */
+function posixTarget(word: string, host: Host): FloorVerdict | null {
+  if (word.includes(DYNAMIC)) return null;
+  const fromHome = word.startsWith(HOME);
+  const path = fromHome ? word.slice(1) : word;
+  if (path.includes(HOME) || !(path.startsWith("/") || (fromHome && path === ""))) return null;
+  const { parts } = resolved(path.split("/"));
+  // `~`, and `~/..` or anything above it, which holds the home directory.
+  // `~/../name` is a place this text cannot place, so it is left alone.
+  if (fromHome) return parts.length ? null : DELETE_HOME;
+  if (!parts.length) return DELETE_ROOT;
+  const spelled = `/${parts.join("/")}`;
+  const same = (left: string, right: string) => host.foldCase ? left.toLowerCase() === right.toLowerCase() : left === right;
+  const system = SYSTEM_DIRECTORIES.find((directory) => same(directory, spelled));
+  if (system) return deleteSystem(system);
+  // A Windows home (C:\Users\me) is /c/Users/me to the Git Bash it ships.
+  const home = host.home?.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`).replace(/\/+$/, "");
+  if (home?.startsWith("/") && same(home, spelled)) return DELETE_HOME;
+  // A Windows drive as WSL (/mnt/c) spells it anywhere, and as Git Bash (/c)
+  // does on Windows, where a one-letter directory at the root is a drive.
+  const drive = /^\/(mnt\/)?[A-Za-z](?:\/(.+))?$/.exec(spelled);
+  if (!drive || !(drive[1] || host.windows)) return null;
+  if (drive[2] === undefined) return DELETE_DRIVE;
+  const folder = WINDOWS_DIRECTORIES.get(drive[2].toLowerCase());
+  return folder ? deleteWindowsSystem(folder) : null;
+}
+
+/** The same for a path as cmd and PowerShell read it. `percent`: the command
+ * is one of cmd's, which substitutes `%NAME%` wherever it appears. */
+function windowsTarget(word: string, percent: boolean, host: Host): FloorVerdict | null {
+  const expanded = percent ? word.replace(/%([^%\s]+)%/g, (_match, name: string) => WINDOWS_VARIABLES[name.toLowerCase()] ?? DYNAMIC) : word;
+  if (expanded.includes(DYNAMIC)) return null;
+  const fromHome = expanded.startsWith(HOME);
+  const path = (fromHome ? expanded.slice(1) : expanded).replace(/\//g, "\\");
+  const drive = fromHome ? "" : /^[A-Za-z]:/.exec(path)?.[0] ?? "";
+  const rest = path.slice(drive.length);
+  // `C:` and `C:\` are the drive; `C:name` and `name` depend on where it runs.
+  if (path.includes(HOME) || !(rest === "" ? fromHome || drive : rest.startsWith("\\"))) return null;
+  // \\server\share is somebody else's machine. After a drive letter a
+  // doubled backslash is only a separator written twice.
+  if (!drive && !fromHome && rest.startsWith("\\\\")) return null;
+  const { parts } = resolved(rest.split("\\"));
+  if (fromHome) return parts.length ? null : DELETE_HOME;
+  if (!parts.length) return DELETE_DRIVE;
+  const folder = parts.length === 1 ? WINDOWS_DIRECTORIES.get(parts[0].toLowerCase()) : undefined;
+  if (folder) return deleteWindowsSystem(folder);
+  const home = host.home?.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  return home && drive && home === `${drive}\\${parts.join("\\")}`.toLowerCase() ? DELETE_HOME : null;
+}
+
+/** The rule one simple command meets, or null. */
+function judge(command: Command, source: string, host: Host, windows: boolean, depth: number): FloorVerdict | null {
+  if (command.writes.some(diskDevice)) return OVERWRITE_DISK;
+  const index = commandIndex(command.words);
+  if (index < 0) return null;
+  const program = programName(command.words[index]);
+  const args = command.words.slice(index + 1);
+  const run = (line: string | null | undefined, asWindows = windows) =>
+    line && depth < MAX_DEPTH ? scan(line, host, asWindows, depth + 1) : null;
+  /** The same command as cmd and PowerShell read it: its arguments, and the
+   * text from one of them to the end of the command. */
+  const windowsReading = (): { args: string[]; tail: (from: number) => string } => {
+    let text = source;
+    let read: Command | undefined = command;
+    if (!windows) {
+      text = source.slice(command.from, command.to);
+      read = lex(text, true).commands.find((candidate) => candidate.words.some((word) => programName(word) === program));
+    }
+    if (!read) return { args: [], tail: () => "" };
+    const first = read.words.findIndex((word) => programName(word) === program) + 1;
+    const end = read.to;
+    const starts = read.starts;
+    return { args: read.words.slice(first), tail: (from) => text.slice(starts[first + from] ?? end, end) };
+  };
+
+  if (SHELLS.has(program)) return run(inlineScript(args));
+  if (program === "eval") return run(args.join(" "));
+  if (program === "cmd" || program === "powershell" || program === "pwsh") {
+    const { args: given, tail } = windowsReading();
+    const flag = given.findIndex((arg) => program === "cmd" ? /^\/[ck]$/i.test(arg) : arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
+    if (flag < 0) return null;
+    // One quoted argument is the whole command line. Otherwise the line is
+    // everything after the flag, with its own quotes still in place.
+    const rest = given.slice(flag + 1);
+    return run(rest.length === 1 ? rest[0] : tail(flag + 1), true);
+  }
+  if (program === "rm") {
+    for (const target of rmTargets(args) ?? []) {
+      const verdict = posixTarget(target, host);
+      if (verdict) return verdict;
+    }
+  }
+  // cmd's and PowerShell's own deletes. `rm` is one of them only on Windows,
+  // where it is PowerShell's name for Remove-Item: elsewhere `rm -rf C:`
+  // removes a stray directory that is merely called `C:`.
+  const cmdStyle = program === "rd" || program === "rmdir" || program === "del" || program === "erase";
+  if (cmdStyle || program === "ri" || program === "remove-item" || (program === "rm" && (windows || host.windows))) {
+    const given = windowsReading().args;
+    // cmd writes its switches /s /q (or /s/q); PowerShell writes -Recurse,
+    // or any unambiguous start of it.
+    const isSwitch = (arg: string) => /^-./.test(arg) || (cmdStyle && /^\/[A-Za-z?]/.test(arg));
+    const recursive = given.some((arg) => isSwitch(arg) && (arg[0] === "/"
+      ? arg.toLowerCase().split("/").includes("s")
+      : "-recurse".startsWith(arg.toLowerCase()))) || (program === "rm" && rmTargets(given) !== null);
+    if (!recursive) return null;
+    for (const target of given) {
+      const verdict = isSwitch(target) ? null : windowsTarget(target, cmdStyle, host);
+      if (verdict) return verdict;
+    }
+    return null;
+  }
+  if (program === "format") return windowsReading().args.some((arg) => /^[A-Za-z]:\\?$/.test(arg)) ? FORMAT_DISK : null;
+  if (program === "dd") return args.some((arg) => arg.startsWith("of=") && diskDevice(arg.slice(3))) ? OVERWRITE_DISK : null;
+  // Making a filesystem inside an image file is ordinary work; on a disk it
+  // erases the disk.
+  if (program === "mkfs" || program.startsWith("mkfs.")) return args.some(diskDevice) ? FORMAT_DISK : null;
+  if (program === "diskutil") {
+    const operands = args.filter((arg) => !arg.startsWith("-"));
+    const verb = (operands[0]?.toLowerCase() === "apfs" ? operands[1] : operands[0])?.toLowerCase() ?? "";
+    // The disk comes last. One made a moment ago (`$(hdiutil attach …)`, how
+    // a RAM disk is created) is not one anybody keeps files on.
+    return ["erasedisk", "erasevolume", "reformat"].includes(verb) && !args.at(-1)!.includes(DYNAMIC) ? FORMAT_DISK : null;
+  }
+  return null;
+}
+
+function scan(source: string, host: Host, windows: boolean, depth: number): FloorVerdict | null {
+  const { commands, bare } = lex(source, windows);
+  if (FORK_BOMBS.some((bomb) => bomb.test(bare))) return FORK_BOMB;
+  for (const command of commands) {
+    const verdict = judge(command, source, host, windows, depth);
+    if (verdict) return verdict;
+  }
+  return null;
+}
+
+/** The never-list rule a shell command line meets, or null when the floor
+ * has nothing to say about it.
+ *
+ * Every spelling is read from the text alone, cmd's and PowerShell's
+ * included, so the answer is the same wherever the server runs. `platform`
+ * (default: this machine's) settles only what the text cannot: macOS and
+ * Windows find a directory whatever its letter case, and only on Windows is
+ * `rm` also PowerShell's Remove-Item and `/c` a drive. `home` is the home
+ * directory's absolute path, for a delete that spells it out instead of
+ * writing `~`; without it only `~` and `$HOME` are known to be home.
+ *
+ * Never throws: a command this cannot read is not blocked. */
+export function floorVerdict(command: string, platform: NodeJS.Platform = process.platform, home?: string): FloorVerdict | null {
+  if (typeof command !== "string" || !command.trim()) return null;
+  try {
+    const host: Host = { foldCase: platform === "darwin" || platform === "win32", windows: platform === "win32", home: home || undefined };
+    // The two marker characters mean something only when the lexer wrote them.
+    return scan(command.replace(/[\uE000\uE001]/g, "\uFFFD"), host, false, 0);
+  } catch {
+    return null;
+  }
+}
