@@ -646,6 +646,91 @@ describe("ACP turns (fake CLI)", () => {
     expect(usageFigures(lastTurn())).toStrictEqual([{ input: 10, output: 5 }]);
   });
 
+  /** Hermes's notice that it rotated its session, as hermes-agent sends it. */
+  const provenance = (fields: object) => ({
+    sessionUpdate: "session_info_update",
+    _meta: { hermes: { sessionProvenance: { acpSessionId: "fake-acp-session", sessionKind: "continuation", ...fields } } },
+  });
+
+  it("re-anchors the full prompt on the turn after Hermes reports a compression", async () => {
+    const { report, send } = await reportingThread("hermes-compression");
+    expect(await send("turn 1")).toBe(FULL + "\n\nturn 1");
+    // Hermes compressed its history mid-turn and said so, so the next turn is full
+    report(provenance({ reason: "compression", compressionDepth: 1 }));
+    expect(await send("turn 2")).toBe("turn 2");
+    report();
+    expect(await send("turn 3")).toBe(FULL + "\n\nturn 3");
+    expect(await send("turn 4")).toBe("turn 4");
+  });
+
+  it("re-anchors once for each rise in Hermes's compression depth", async () => {
+    const { report, send } = await reportingThread("hermes-depth");
+    expect(await send("turn 1")).toBe(FULL + "\n\nturn 1");
+    // no stated reason: a depth above the last one seen is the marker
+    report(provenance({ compressionDepth: 1 }));
+    expect(await send("turn 2")).toBe("turn 2");
+    // the same depth again is the same compaction, not another
+    report(provenance({ compressionDepth: 1 }));
+    expect(await send("turn 3")).toBe(FULL + "\n\nturn 3");
+    report(provenance({ compressionDepth: 2 }));
+    expect(await send("turn 4")).toBe("turn 4");
+    report();
+    expect(await send("turn 5")).toBe(FULL + "\n\nturn 5");
+    expect(await send("turn 6")).toBe("turn 6");
+  });
+
+  it("reads Hermes's marker beside the update as well as inside it", async () => {
+    const { reportParams, send } = await reportingThread("hermes-params-meta");
+    expect(await send("turn 1")).toBe(FULL + "\n\nturn 1");
+    reportParams({
+      update: { sessionUpdate: "session_info_update", title: "Continued" },
+      _meta: { hermes: { sessionProvenance: { reason: "compression" } } },
+    });
+    expect(await send("turn 2")).toBe("turn 2");
+    reportParams();
+    expect(await send("turn 3")).toBe(FULL + "\n\nturn 3");
+  });
+
+  it("invalidates a rejected prompt's receipt after Hermes reports a compression", async () => {
+    const failureFile = join(scratch, "hermes-compression-failure.json");
+    process.env.FAKE_ACP_RPC_FAILURE_FILE = failureFile;
+    process.env.FAKE_ACP_RPC_FAILURE_AFTER_USAGE = "1";
+    const { report, send } = await reportingThread("hermes-rejected");
+    expect(await send("turn 1")).toBe(FULL + "\n\nturn 1");
+    report(provenance({ reason: "compression", compressionDepth: 1 }));
+    writeFileSync(failureFile, JSON.stringify({ code: -32603, message: "Internal error after compression" }));
+    expect(await send("turn 2", false)).toBe("turn 2");
+    unlinkSync(failureFile);
+    report();
+    expect(await send("turn 3")).toBe(FULL + "\n\nturn 3");
+    expect(await send("turn 4")).toBe("turn 4");
+  });
+
+  it("ignores session info whose meta is unknown or malformed", async () => {
+    const { report, send, lastTurn } = await reportingThread("hermes-malformed");
+    expect(await send("turn 1")).toBe(FULL + "\n\nturn 1");
+    report(
+      { sessionUpdate: "session_info_update", title: "Renamed" },
+      { sessionUpdate: "session_info_update", _meta: "compression" },
+      { sessionUpdate: "session_info_update", _meta: { hermes: null } },
+      { sessionUpdate: "session_info_update", _meta: { hermes: { sessionProvenance: "compression" } } },
+      { sessionUpdate: "session_info_update", _meta: { hermes: { sessionProvenance: ["compression"] } } },
+      { sessionUpdate: "session_info_update", _meta: { other: { sessionProvenance: { reason: "compression" } } } },
+      provenance({ reason: "rename" }),
+      provenance({ reason: ["compression"] }),
+      provenance({ sessionKind: "root", compressionDepth: 0 }),
+      provenance({ compressionDepth: "3" }),
+      provenance({ compressionDepth: 2.5 }),
+      provenance({ compressionDepth: -1 }),
+      provenance({ compressionDepth: null }),
+    );
+    expect(await send("turn 2")).toBe("turn 2");
+    // silently: nothing about it reaches the transcript
+    expect(lastTurn().filter((event) => event.type === "runtime.error" || event.type === "runtime.notice")).toEqual([]);
+    report();
+    expect(await send("turn 3")).toBe("turn 3");
+  });
+
   it("fails clearly when an image-capable adapter meets an older ACP runtime", async () => {
     const imagePath = join(scratch, "tiny.png");
     writeFileSync(imagePath, "not-read-before-capability-check");

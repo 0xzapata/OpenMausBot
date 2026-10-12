@@ -156,8 +156,8 @@ interface AcpTurn {
   controlsHost: boolean;
   state: {
     settled: boolean; promptSent: boolean; text: string; producedItem: boolean; startupActivity: boolean; stopped: boolean;
-    /** Compaction detection: peak and last reported context size, and
-     * whether a report collapsed below the peak. */
+    /** Compaction detection (session-reports.ts): peak and last reported
+     * context size, and whether the agent compacted or said it did. */
     usagePeak: number | null;
     usageLast: number | null;
     usageCompacted: boolean;
@@ -1425,9 +1425,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               }
               break;
             }
-            case "usage_update": {
+            case "usage_update":
+            case "session_info_update": {
               // What the agent says about its own session (session-reports.ts).
-              const report = readSessionReport(u, current.state);
+              const report = readSessionReport(u, p._meta, current.state, session);
               if (report.context) emit({ ...base(threadId, current.turnId), type: "thread.token-usage.updated", input: 0, output: 0, ...report.context });
               break;
             }
