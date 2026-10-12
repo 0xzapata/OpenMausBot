@@ -1462,9 +1462,11 @@ export function botOpensTo(bot: Pick<NotificationThreadOwner, "threadId" | "main
 
 /** Open a bot itself: its row, its pinned circle, the palette, the + menu,
  * ⌘1–9, the team map, a link to the bot, the bot a dead thread link falls
- * back to, the bot the app reopens at launch, Edit profile, a restored bot,
- * the next one after archiving, its computer from the workspace view, or
- * its voice settings from a room. It opens where botOpensTo says. */
+ * back to, the bot the app reopens at launch, Edit profile on another bot,
+ * a restored bot, the next one after archiving, its voice settings from a
+ * room, or the chat a Cloud's setup job went to. It opens where botOpensTo
+ * says. The bot on screen is selected again where it is (its computer from
+ * the workspace view, its own Edit profile): the person sees that thread. */
 export function openBot(
   dispatch: (action: Action) => void,
   bot: Pick<NotificationThreadOwner, "id" | "threadId" | "mainThreadId" | "tasks">,

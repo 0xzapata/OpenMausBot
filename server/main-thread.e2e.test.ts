@@ -174,3 +174,40 @@ it("moves no main thread for a teammate's work or results or a team incident; re
     await fixture.close();
   }
 }, 120_000);
+
+// Two kinds of news used to land with no unread mark, out of reach with
+// threads hidden: a person's own job's answer after its teammates report
+// (read during the review, the answer arrived silently), and a
+// delivery:"post" webhook's post in its "Updates" thread.
+it("marks a job's review answer and a webhook post unread where they land", async () => {
+  const { fixture, dataDir, api, cli, tasks, replied } = await launch();
+  try {
+    const asker = (await cli("new-bot", "--name", "Asker", "--section", "Ops")).bot;
+    const teammate = (await cli("new-bot", "--name", "Teammate", "--section", "Ops")).bot;
+    const gate = join(dataDir, "review.gate");
+    writeFileSync(join(dataDir, "room-plan.json"), JSON.stringify({
+      [asker.id]: { script: [
+        { key: "ask", match: ["Ask Teammate to check the books."], steps: [{ arguments: { bot_ids: [teammate.id], message: "BOOKS: check the books." } }], reply: "Asked Teammate." },
+        { key: "review", match: ["Your downstream room requests have settled."], gateFile: gate, reply: "Reviewed: the books balance." },
+      ] },
+      [teammate.id]: { script: [{ key: "books", match: ["BOOKS: check the books."], reply: "The books balance." }] },
+    }));
+    const unread = async (botId: string, threadId: string) => (await tasks(botId)).find((task) => task.threadId === threadId)?.unread;
+    await cli("send", "--bot", asker.id, "--task", asker.activeTaskId, "--text", "Ask Teammate to check the books.");
+    // The review is running when the person reads the thread.
+    await expect.poll(async () => ((await api("GET", `/api/threads/${asker.activeTaskId}/messages?limit=50`)).messages as any[])
+      .some((message) => message.tool?.name?.startsWith("Resumed with Teammate results")), { timeout: 20_000 }).toBe(true);
+    await api("POST", `/api/bots/${asker.id}/read`, { threadId: asker.activeTaskId });
+    expect(await unread(asker.id, asker.activeTaskId)).toBe(false);
+    writeFileSync(gate, "open");
+    await replied(asker.id, asker.activeTaskId, "Reviewed: the books balance.");
+    expect(await unread(asker.id, asker.activeTaskId)).toBe(true);
+
+    const hook = await api("POST", "/api/webhooks", { name: "Deploys", prompt: "", botId: asker.id, delivery: "post" }, 201);
+    const delivered = await fetch(hook.credential.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Deploy finished." }) });
+    expect(delivered.ok).toBe(true);
+    await expect.poll(async () => (await tasks(asker.id)).find((task) => task.title === "Updates")?.unread, { timeout: 20_000 }).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+}, 120_000);
