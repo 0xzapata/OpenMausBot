@@ -191,6 +191,10 @@ const ROUTINE_FIELDS_SCHEMA = {
     enum: ["skip", "queue"],
     description: "While this routine is still working, skip scheduled occurrences (default) or queue at most one run. Queue skips further occurrences until the pending run starts; it never builds an unlimited backlog. Manual and webhook requests are separate.",
   },
+  run_on_startup: {
+    type: "boolean",
+    description: "Repeating routines only: also run once each time OpenMausBot starts, as well as on the schedule. For a computer that is often off when the routine is due. Defaults to false; set false in an update to stop it.",
+  },
 } as const;
 
 // propose_profile's one sentence about for_bot_id, which a bot that is not a
