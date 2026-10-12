@@ -27,7 +27,8 @@ exception: `OMB_OPENAI_LIVE_URL` crosses when it is a loopback
 `http://127.0.0.1:PORT` (the fake GPT-Live that
 `node --experimental-strip-types server/testing/fake-openai-live.ts` prints),
 and `OMB_OPENAI_LIVE_KEY` crosses only with it, so that key can only ever
-reach the fake.
+reach the fake. `OMB_PRO_PLAN` crosses only as `1`: Live calls need a Pro plan,
+and that is how a server the desktop app did not start says so.
 
 Pass the printed URL explicitly from a second terminal:
 
@@ -56,11 +57,13 @@ Use only mapped, tested commands:
 - [Peer approval denial, expiry, and cancellation](peer-approvals.md)
 - [Waiting for an occupied desktop](computer-wait.md)
 - [Chat UI, driven headlessly](chat-ui.md)
+- [Phone web app installation and safe areas](phone-web-app.md)
 - [Welcome flow and guided tour](onboarding.md)
 - [Channels](channels.md)
 - [In-chat team coordination](room-coordination.md)
 - [Chief access to additional teams](team-access.md)
 - [Engines and Doctor](engines.md)
+- [Cline engine and native loopback qualification](cline.md)
 - [Claude coordination and turn-scoped tools](claude-tool-lifecycle.md)
 - [Codex bot instructions](codex-instructions.md)
 - [Codex browser routing and native search](codex-browser-routing.md)
@@ -92,6 +95,11 @@ Other renderer-only behavior—Settings, sidebar drag-and-drop, the VM modal, th
 built-in browser panel, and updater UI—is still not proven by the harness. Use
 the relevant Electron/package smoke test and state that limitation. Add a map
 entry only after the shared control surface can really drive it.
+
+The [switchable local environments recipe](local-environments.md) verifies
+creating, switching between and recovering named local environments by hand on
+a packaged desktop install; the control surface cannot drive it, so it is not
+in the map above.
 
 The [MCP sign-in fixture](mcp-sign-in.md) checks remote sign-in, callback URL
 paste-back, MCP tools and logout cancellation through the real settings panel
@@ -198,6 +206,12 @@ branch and approval preconditions, retry receipts, and refusal to queue or
 steer messages from external interfaces. It also verifies bounded request
 lineage snapshots, Chief continuations and exact-execution Stop without
 interrupting a newer request.
+
+The [Live calls fixture](live-calls.md) checks the call id on spoken requests,
+the one "call" row a finished call leaves, its generated title and the desktop's
+record row, against the fake GPT-Live in a disposable workspace. `control-omb`
+cannot start a call, so the recipe also calls the harness's own routes. It
+proves no real audio, OpenAI key or phone.
 
 The [right-to-left fixture](bidi.md) checks per-block direction in bot replies
 and per-line direction in sent turns, with code pinned left-to-right.

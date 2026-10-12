@@ -53,7 +53,9 @@ export function UpdateIndicator({ className }: { className?: string }) {
   const label = updateIndicatorLabel(state);
   const ready = state.status === "downloaded";
   return (
-    <>
+    <div
+      className={cn("flex size-[46px] shrink-0 items-center justify-center", className)}
+    >
       <button
         ref={buttonRef}
         type="button"
@@ -64,13 +66,12 @@ export function UpdateIndicator({ className }: { className?: string }) {
         onClick={() => setOpen(true)}
         className={cn(
           "relative flex size-7 shrink-0 items-center justify-center rounded-full bg-white text-neutral-900 shadow-sm ring-1 ring-black/10 transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-          className,
         )}
       >
         <ArrowDown size={16} strokeWidth={2.25} aria-hidden className={cn(!ready && "animate-pulse")} />
       </button>
       {open && <UpdateCard state={state} onClose={() => setOpen(false)} returnFocusRef={buttonRef} />}
-    </>
+    </div>
   );
 }
 

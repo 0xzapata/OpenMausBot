@@ -9,6 +9,7 @@ import { t } from "@/lib/i18n";
 import { copyText } from "@/lib/copy-text";
 import { DEVICE_SIGN_IN_COPY, DeviceSignIn, deviceSignInProvider } from "./DeviceSignIn";
 import { ClaudeSignIn } from "./ClaudeSignIn";
+import { RefreshEngines } from "./EngineLibrary";
 
 type Platform = "darwin" | "win32" | "linux";
 
@@ -24,7 +25,7 @@ function hostPlatform(): Platform {
 /** The install command for this machine, or null when the engine has none
  * here (a GUI download, or a POSIX-only installer viewed on Windows). */
 export function installCommandFor(install: EngineInstall | undefined): string | null {
-  return install?.command?.[hostPlatform()] ?? null;
+  return install?.command?.[install.platform ?? hostPlatform()] ?? null;
 }
 
 /** Installed but missing the cloud account session. */
@@ -66,13 +67,15 @@ export function CommandRow({
   command,
   actionLabel,
   compact = false,
+  allowTerminal = true,
 }: {
   command: string;
   actionLabel: string;
   compact?: boolean;
+  allowTerminal?: boolean;
 }) {
   const [status, setStatus] = useState<"copied" | "failed" | "opened" | null>(null);
-  const canOpen = typeof window !== "undefined" && Boolean(window.ogb?.openInstallTerminal);
+  const canOpen = typeof window !== "undefined" && allowTerminal && serverTerminal(false);
 
   const settle = (next: "copied" | "failed" | "opened") => {
     setStatus(next);
@@ -179,7 +182,7 @@ export function CommandRow({
  * server, as the server's own user, into the app's own folder. The terminal
  * command stays behind a disclosure for people who prefer it. */
 function ServerEngineInstall({ instance, mode, command }: { instance: InstanceInfo; mode: "install" | "update"; command: string | null }) {
-  const { refreshInstances, refreshModels } = useStore();
+  const { state, dispatch, refreshModels } = useStore();
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -190,10 +193,13 @@ function ServerEngineInstall({ instance, mode, command }: { instance: InstanceIn
     setDone(false);
     setError(null);
     try {
-      await api(`/api/instances/${encodeURIComponent(instance.instanceId)}/install`, { method: "POST" });
+      const { instances } = await api(`/api/instances/${encodeURIComponent(instance.instanceId)}/install`, { method: "POST" });
+      const installed = (instances as InstanceInfo[] | undefined)?.find((candidate) => candidate.instanceId === instance.instanceId);
+      if (instances) dispatch({ type: "instances", instances });
+      if (installed?.snapshot.state !== "available") {
+        throw new Error(t("engineSetup.installNotVerified", { reason: installed?.snapshot.reason ?? t("engineSetup.noReason") }));
+      }
       setDone(true);
-      // The install has happened even if the status refresh fails.
-      await refreshInstances().catch(() => {});
       await refreshModels(instance.instanceId).catch(() => {});
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -215,12 +221,12 @@ function ServerEngineInstall({ instance, mode, command }: { instance: InstanceIn
           ? t("engineSetup.serverInstalling")
           : t(mode === "update" ? "engineSetup.serverUpdate" : "engineSetup.serverInstall", { name: instance.displayName })}
       </button>
-      {done && !busy && <p role="status" className="text-center text-[11px] text-success">{t("engineSetup.serverInstalled")}</p>}
+      {done && !busy && <p role="status" className="text-center text-[11px] text-success">{t("engineSetup.installVerified")}</p>}
       {error && <p role="alert" className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-danger">{error}</p>}
       {command && (
         <details className="rounded-lg border border-hairline/50 bg-app px-2.5 py-2 text-[11.5px] text-ink-secondary">
           <summary className="cursor-pointer select-none">{t("engineSetup.preferTerminal")}</summary>
-          <CommandRow command={command} actionLabel={t(mode === "update" ? "engineSetup.openUpdate" : "engineSetup.openInstall")} compact />
+          <CommandRow command={command} actionLabel={t(mode === "update" ? "engineSetup.openUpdate" : "engineSetup.openInstall")} compact allowTerminal={state.config?.cloudHome !== true} />
         </details>
       )}
     </div>
@@ -530,7 +536,7 @@ export function EngineSetup({
   const command = signInOnly ? signInCommand : installCommand;
   const title = signInOnly
     ? t("engineSetup.signInTitle", { name: instance.displayName })
-    : t("engineSetup.installTitle", { name: instance.displayName });
+    : t("engineSetup.setupTitle", { name: instance.displayName });
   const description = descriptionOverride ?? (signInOnly
     ? browserSignIn
       ? t("engineSetup.chatgpt.description")
@@ -540,7 +546,7 @@ export function EngineSetup({
       ? t("engineSetup.claude.description")
       : install?.managed
       ? t("engineSetup.managedSignIn")
-      : t("engineSetup.terminalSignIn")
+      : t("engineSetup.terminalSignInCheck")
     : intent === "inject"
       ? t("engineSetup.injectDesc")
       : install?.server
@@ -612,6 +618,7 @@ export function EngineSetup({
         <CommandRow
           command={command}
           actionLabel={signInOnly ? t("engineSetup.openSignIn") : t("engineSetup.openInstall")}
+          allowTerminal={!cloudHome}
         />
       ) : (
         <p className="mt-3 rounded-lg bg-inset px-2.5 py-2 text-[12px] leading-relaxed text-ink-secondary">
@@ -629,6 +636,14 @@ export function EngineSetup({
               : [<code key="npm" className="font-mono">npm</code>, part],
           )}
         </p>
+      )}
+
+      {(install.command || signInCommand) && !deviceSignIn && !browserSignIn && !pasteSignIn && !install.managed && (
+        <div className="mt-3 border-t border-hairline/40 pt-2">
+          <p className="mb-1 text-[11.5px] leading-relaxed text-ink-secondary">{t("engineSetup.sameMachine")}</p>
+          {needsCli(instance) && <p className="mb-1 text-[11.5px] leading-relaxed text-ink-secondary">{t("engineSetup.pathHint")}</p>}
+          <RefreshEngines key={instance.instanceId} />
+        </div>
       )}
 
       {install.docsUrl && (

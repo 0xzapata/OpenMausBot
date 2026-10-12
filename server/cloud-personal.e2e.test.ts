@@ -419,12 +419,15 @@ it("a friend unpaired before the upgrade: their conversation keeps its level, bu
 it("routines fail closed: one from before with no proof runs confined; one the owner writes here, or one made from their bot template, reports into a conversation that stays theirs", async () => {
   const owner = await adminPairing();
   await settleAll(owner);
+  // Where a routine's latest run reports: its own thread, or the bot's main thread.
+  const reportedTo = async (id: string) => ((await api("GET", "/api/routines", { token: owner })).body.runs as any[])
+    .find((candidate) => candidate.routineId === id).resultsThreadId as string;
   const routineRun = async (id: string) => {
     const run = await turn(async () => expect((await api("POST", `/api/routines/${id}/run`, { token: owner })).status).toBe(201));
-    const routine = (await api("GET", "/api/routines", { token: owner })).body.routines.find((candidate: any) => candidate.id === id);
+    const results = await reportedTo(id);
     for (const active of (await api("GET", "/api/routines", { token: owner })).body.runs ?? []) await api("POST", `/api/routine-runs/${active.id}/cancel`, { token: owner });
     await idle(before.bot, owner);
-    return { run, results: routine.resultsThreadId as string };
+    return { run, results };
   };
   const followUp = async (bot: { id: string }, threadId: string) => {
     const again = await turn(async () => { const sent = await api("POST", `/api/bots/${bot.id}/messages`, { token: owner, body: { text: "Now with the shell.", threadId } }); expect(sent.status, JSON.stringify(sent.body)).toBe(202); });
@@ -456,7 +459,7 @@ it("routines fail closed: one from before with no proof runs confined; one the o
   expect(made).toMatchObject({ mode: "auto", restricted: false });
   for (const active of (await api("GET", "/api/routines", { token: owner })).body.runs ?? []) await api("POST", `/api/routine-runs/${active.id}/cancel`, { token: owner });
   await idle(templated, owner);
-  const results = (await api("GET", "/api/routines", { token: owner })).body.routines.find((candidate: any) => candidate.id === routineId).resultsThreadId;
+  const results = await reportedTo(routineId);
   expect(await followUp(templated, results)).toMatchObject({ restricted: false });
   // Turning it on (or retiming it) keeps it the owner's.
   expect((await api("PATCH", `/api/routines/${routineId}`, { token: owner, body: { enabled: true } })).status).toBe(200);

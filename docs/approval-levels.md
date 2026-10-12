@@ -66,8 +66,16 @@ once** answers this request only. **Always allow this session** hands the
 provider its own remembered approval: Claude receives its suggested permission
 rules, and ACP agents such as Grok receive their `allow_always` option, or the
 driver repeats your answer for that exact operation until the native session
-ends. OpenMausBot keeps no standing grant for a provider's tool. It is not
-offered for computer control or for a sandbox change.
+ends. API models (OpenAI-compatible, MiniMax, Mistral, Grok API) have no
+native session, so their driver keeps the allow for that bot, that exact tool
+and that exact server (as launched: a changed command, URL or credential is
+another server, and a bridge into a VM or a Boat is new each turn) for the
+rest of the conversation, in memory until the server restarts. Another bot in
+the same room asks again. OpenMausBot keeps no standing grant for a provider's tool. It is not
+offered for computer control, for a sandbox change or on a guest's turn. The
+harness's own agents tools (coordinating teammates, threads, memory) never
+ask on Claude, Codex or API models: OpenMausBot authorizes each of those
+routes itself.
 
 Auto-accept edits and Ask card whatever the provider asks about. Approve for
 me cards whatever the provider's reviewer leaves for you, with the note "The
@@ -85,6 +93,15 @@ runs in from the CLI's `init` frame; when Approve for me was requested and the
 session runs Manual, the chat shows one notice per session naming the model.
 Choose a model the reviewer supports, Auto-accept edits, or Full access to
 stop the prompts.
+
+### Changing a bot's engine
+
+A bot at **Full access** keeps it when you switch it to another engine that
+can run Full access: no reset to Ask and no confirmation. The bot's threads
+that follow its model keep their level too. **Custom** rules belong to Codex,
+so a Custom bot goes back to Ask before it changes engine. Switching to an
+engine that cannot run the bot's level (for example Auto-accept edits on
+Codex) still asks to choose Ask first.
 
 ### Antigravity: Ask, Edits, or Auto (full access)
 
