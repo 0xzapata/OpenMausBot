@@ -667,4 +667,14 @@ describe("Thread link", () => {
     expect(buttonWithLabel(renderRow(unlinked, "scout", false, { onLink }), "Remove link")).toBeUndefined();
     vi.unstubAllGlobals();
   });
+
+  it("places the chip before the timestamp, outside the row button", () => {
+    const now = Date.UTC(2026, 8, 25, 12, 0, 0);
+    const markup = renderToStaticMarkup(createElement(SidebarThreadRow, {
+      task: { threadId: "t", title: "Fix", updatedAt: now - 3_600_000, link: "https://github.com/o/r/pull/42" },
+      ownerId: "b", current: false, now, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), locale: "en",
+    }));
+    expect(markup.indexOf("</button>")).toBeLessThan(markup.indexOf(">#42</a>"));
+    expect(markup.indexOf(">#42</a>")).toBeLessThan(markup.indexOf("<time"));
+  });
 });
