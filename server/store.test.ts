@@ -524,15 +524,16 @@ describe("Store", () => {
     store.switchTaskModel(bot.id, first.threadId, next, true, true);
     expect(bot).toMatchObject({ modelSelection: next, approvalMode: "ask", alwaysAllow: [] });
     // The thread it was changed from now follows the bot; a sibling that
-    // follows moves to the new engine and, its Full access belonging to the
-    // old one, back to Ask; a thread's own model and level stay.
+    // follows moves to the new engine and keeps its Full access — Full
+    // belongs to the person, not the engine; a thread's own model and level
+    // stay.
     expect(first.modelSelection).toBeUndefined();
-    expect(sibling).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
+    expect(sibling).toMatchObject({ approvalMode: "full", alwaysAllow: ["old-tool"] });
     expect(store.projectBotForTask(bot.id, sibling.threadId)?.modelSelection).toEqual(next);
     expect(picked).toMatchObject({ modelSelection: opus, approvalMode: "full", alwaysAllow: ["old-tool"] });
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)).toMatchObject({ modelSelection: next, approvalMode: "ask" });
-    expect(reloaded.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "ask" });
+    expect(reloaded.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "full" });
     expect(reloaded.taskByThread(bot.id, picked.threadId)).toMatchObject({ modelSelection: opus, approvalMode: "full" });
   });
 
