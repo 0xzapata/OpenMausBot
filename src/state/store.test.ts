@@ -485,15 +485,29 @@ describe("trusted approval-mode persistence", () => {
     ]);
   });
 
-  it("never widens a rapid switch back to Ask to every thread", async () => {
+  it("sends the all-threads scope with every level but Custom, the same way", async () => {
     const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement("ask") }));
-    await persistBotUpdate(
-      "bot-1",
-      { approvalMode: "ask", applyToAllThreads: true },
-      new AbortController().signal,
-      request,
-    );
-    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ approvalMode: "ask" });
+    for (const approvalMode of ["ask", "edits", "auto", "full"] as const) {
+      await persistBotUpdate("bot-1", { approvalMode, applyToAllThreads: true }, new AbortController().signal, request, undefined);
+    }
+    expect(request.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual(
+      ["ask", "edits", "auto", "full"].map((approvalMode) => ({ approvalMode, applyToAllThreads: true })));
+  });
+
+  it("leaves a thread's Custom through the private bridge when the level goes to every thread", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement("auto") }));
+    const setMode = vi.fn(async () => announcement("auto"));
+    const current = { ...announcement("ask"), tasks: [
+      { threadId: "main", title: "Main", createdAt: 1 },
+      { threadId: "codex-rules", title: "Rules", createdAt: 2, approvalMode: "custom" as const },
+    ] };
+    await persistBotUpdate("bot-1", { approvalMode: "auto", applyToAllThreads: true }, new AbortController().signal, request, { setMode }, current);
+    expect(setMode).toHaveBeenCalledWith("bot-1", "auto", { acknowledgeLocalAuto: false, allThreads: true });
+    expect(request).not.toHaveBeenCalled();
+    // The bot's own panel, default only, never needs that channel for it.
+    await persistBotUpdate("bot-1", { approvalMode: "auto" }, new AbortController().signal, request, { setMode }, current);
+    expect(setMode).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ approvalMode: "auto" });
   });
 
   it("fails closed when Custom has no packaged desktop bridge", async () => {

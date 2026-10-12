@@ -23,7 +23,7 @@ import { newId, type ModelSelection } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
-import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk } from "../shared/approval-mode.ts";
+import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk, type ApprovalMode } from "../shared/approval-mode.ts";
 import { lastChangeRequestUrl } from "../shared/thread-link.ts";
 import { REMOVED_COMPUTER_DRIVER, type ComputerEngineMove } from "./computer-engine-removal.ts";
 import type { ProfileRequestChanges } from "../shared/profile-request.ts";
@@ -2869,11 +2869,16 @@ export class Store {
     return moved;
   }
 
-  /** One durable write: never leave only part of a bot's threads updated. */
-  setAllThreadApprovalMode(botId: string, mode: "full" | "ask"): BotRecord | null {
+  /** One approval level for the bot and every one of its threads, in one
+   * durable write: never leave only part of a bot's threads updated. Full
+   * also drops standing approvals ("Always allow"), which decide nothing
+   * there; at every other level they still decide, so the bot's and each
+   * thread's stay as the person granted them. Custom never comes here: it
+   * belongs to one bot's engine and the desktop's own two-phase grant. */
+  setAllThreadApprovalMode(botId: string, mode: Exclude<ApprovalMode, "custom">): BotRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
-    const patch = { approvalMode: mode, autoApprove: false, alwaysAllow: [] };
+    const patch = { approvalMode: mode, autoApprove: mode === "auto", ...(mode === "full" ? { alwaysAllow: [] } : {}) };
     const tasks = (bot.tasks ?? []).map(task => ({ ...task, ...patch }));
     const next = { ...bot, ...patch, approvalGrant: undefined, tasks };
     this.saveBots(this.bots.map(candidate => candidate === bot ? next : candidate));

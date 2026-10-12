@@ -577,6 +577,15 @@ export interface BotProject {
 
 export type ProjectUpdatePatch = { name?: string; emoji?: string | null };
 
+/** The level each of a bot's threads runs at: its own, else the bot's (as
+ * currentTaskBot resolves it). */
+export function threadApprovalModes(bot: Pick<Bot, "approvalMode" | "autoApprove" | "tasks">): ApprovalMode[] {
+  return (bot.tasks ?? []).map((task) => approvalModeFor({
+    approvalMode: task.approvalMode ?? (task.autoApprove === undefined ? bot.approvalMode : undefined),
+    autoApprove: task.autoApprove ?? bot.autoApprove,
+  }));
+}
+
 /** A conversation uses its own execution settings; the sidebar keeps the
  * original bot's aggregate presence and profile defaults. */
 export function currentTaskBot(bot: Bot, threadId = bot.threadId): Bot {
@@ -951,6 +960,9 @@ export interface InstanceInfo {
     /** This engine can answer a bounded review prompt without changing the
      * bot's active conversation. */
     approvalReview?: boolean;
+    /** This engine can make the quick background model call memory upkeep
+     * and the skill review use. */
+    backgroundText?: boolean;
   };
   /** `custom` agents sit below the rail divider — no subscription catalog. */
   access?: "subscription" | "custom" | "api";
@@ -2426,6 +2438,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const {
         acknowledgeLocalAuto: _localAck,
         applyToAllThreads: _allThreads,
+        keepThreadModels: _keepThreadModels,
         computer,
         connectorTools,
         connectorScopes,
@@ -2957,9 +2970,11 @@ export async function persistBotUpdate(
     applyToAllThreads,
     ...ordinaryPatch
   } = patch;
-  const leavesCustom = approvalMode !== undefined &&
-    approvalModeFor(currentBot ?? {}) === "custom" &&
-    approvalMode !== "custom";
+  // Leaving Custom takes the private channel, for the bot or, when the level
+  // goes to every thread, for any thread still on Custom.
+  const leavesCustom = approvalMode !== undefined && approvalMode !== "custom" &&
+    (approvalModeFor(currentBot ?? {}) === "custom" ||
+      (applyToAllThreads === true && threadApprovalModes(currentBot ?? {}).includes("custom")));
   const viaBridge = approvalMode === "custom" || leavesCustom ||
     (approvalMode === "full" && trustedApprovals !== undefined);
 
@@ -2970,7 +2985,7 @@ export async function persistBotUpdate(
         approvalMode === undefined ? ordinaryPatch : {
           ...ordinaryPatch,
           approvalMode,
-          ...(approvalMode === "full" && applyToAllThreads ? { applyToAllThreads: true } : {}),
+          ...(applyToAllThreads ? { applyToAllThreads: true } : {}),
         },
       ),
       signal,

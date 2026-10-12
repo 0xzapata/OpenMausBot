@@ -393,6 +393,7 @@ import {
   supportsWorkspaceFiles,
   updateMemory,
   appendMemoryLog,
+  memoryLogPath,
   memorySystemPrompt,
   memorySourceLabel,
   searchMemoryFiles,
@@ -407,6 +408,7 @@ import {
   endMemoryTurn,
   flushAllMemoryJournals,
   journalMemoryWrite,
+  journalTurnWrite,
   type MemoryJournalEntry,
 } from "./memory-journal.ts";
 import {
@@ -4857,7 +4859,7 @@ function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
   if (message.allThreads !== undefined && (typeof message.allThreads !== "boolean" ||
     (message.allThreads && (threadId !== undefined || message.threadOnly === true ||
       message.modelSelection !== undefined || message.updateBotDefault !== undefined ||
-      (mode !== "full" && mode !== "ask"))))) {
+      mode === "custom")))) {
     respond({ ok: false, error: "Invalid all-threads approval scope" });
     return true;
   }
@@ -4872,7 +4874,24 @@ function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
   if (message.allThreads === true && (existing.approvalGrant || store.tasks(botId).some(task =>
       threadBusy(botId, task.threadId) || !supportsApprovalMode(
         task.modelSelection ?? existing.modelSelection, mode)))) {
-    respond({ ok: false, error: "Finish this bot's active turns and approval changes first. Every thread's provider must support Full access." });
+    respond({ ok: false, error: "Finish this bot's active turns and approval changes first. Every thread's provider must support this approval level." });
+    return true;
+  }
+  // Edits and Auto are not elevated, so there is no two-phase grant: the bot
+  // and every thread take the level in one write, as over HTTP. This is how
+  // a team-wide level leaves Custom, which only this channel may do.
+  if (message.allThreads === true && (mode === "edits" || mode === "auto")) {
+    if (!supportsApprovalMode(existing.modelSelection, mode)) {
+      respond({ ok: false, error: "This provider does not support the selected approval level" });
+      return true;
+    }
+    if (mode === "auto" && existing.computer === "local" && message.acknowledgeLocalAuto !== true &&
+      [existing, ...store.tasks(botId).map(task => store.projectBotForTask(botId, task.threadId) ?? {})].some(owner => approvalModeFor(owner) !== "auto")) {
+      respond({ ok: false, error: "Auto mode on this computer requires confirming the warning" });
+      return true;
+    }
+    store.setAllThreadApprovalMode(botId, mode);
+    respond({ ok: true, bot: wireTrustedApprovalBot(store.bot(botId)!) });
     return true;
   }
   if (message.threadOnly !== undefined && typeof message.threadOnly !== "boolean") {
@@ -5576,6 +5595,29 @@ function runRootTurn(node: HandoffView, bot: BotRecord, signal: AbortSignal, com
   });
 }
 
+/** What the follow-up journal held for each direct thread when this process
+ * started, read once, before the boot recovery below settles its rows (the
+ * runtime may open before or after that recovery). A `dispatched` follow-up
+ * (row still `dispatching`, or `interrupted` by an earlier boot) is that
+ * thread's cut turn, outcome unknown: the recovery gives back the person's
+ * words with a review notice and never hands them to a model again. A
+ * `pending` one is the person's next words, which the drain starts first. */
+let bootFollowups: Map<string, "dispatched" | "pending"> | undefined;
+function followupAtBoot(threadId: string): "dispatched" | "pending" | undefined {
+  if (!bootFollowups) {
+    bootFollowups = new Map();
+    for (const row of chatFollowups("bot")) {
+      if (row.status === "dispatching" || row.status === "interrupted") bootFollowups.set(row.threadId, "dispatched");
+      else if (row.status === "pending" && !bootFollowups.has(row.threadId)) bootFollowups.set(row.threadId, "pending");
+    }
+  }
+  return bootFollowups.get(threadId);
+}
+/** Cut roots the restart policy ended because of a follow-up (outward port
+ * below), with the line their conversation gets instead of the outward one:
+ * none after a dispatched follow-up, whose review notice already says it. */
+const followupEndedRoots = new Map<string, string | undefined>();
+
 // The coordinator runs every hand-off between bots on the job runtime
 // (server/runtime/, docs/runtime-contract.md). Every call site below talks
 // to the seam; the host hooks are what the server does for it: addresses,
@@ -5637,7 +5679,10 @@ const coordinator: Coordinator = createCoordinator({
       // they pressed it, and the transcript already shows the stop.
       if (!parent) {
         parkedSeats.delete(child.id);
-        if (child.outcome === "stopped") return;
+        const followupEnded = followupEndedRoots.has(child.id);
+        const followupLine = followupEndedRoots.get(child.id);
+        followupEndedRoots.delete(child.id);
+        if (child.outcome === "stopped" || (followupEnded && !followupLine)) return;
         // A goal run accounts for its own steps (its card and its lines): a
         // step's root the runtime ended says nothing more in the room.
         if (child.goalRunId) return;
@@ -5648,7 +5693,7 @@ const coordinator: Coordinator = createCoordinator({
         // Its shape is the failed-turn row's, so Retry (the last row's)
         // re-sends the person's request, as after any failed turn. In a
         // room the line is the member's.
-        const cause = child.outcome === "interrupted" && child.outcomeDetail ? child.outcomeDetail : child.result;
+        const cause = followupLine ?? (child.outcome === "interrupted" && child.outcomeDetail ? child.outcomeDetail : child.result);
         const member = room ? store.bot(child.botId) : undefined;
         store.appendMessage(child.threadId, { role: "bot", kind: "activity",
           ...(member ? { from: { botId: member.id, name: member.name, color: member.color } } : {}), tool: failedTurnTool(cause) });
@@ -5876,7 +5921,18 @@ const coordinator: Coordinator = createCoordinator({
     // The restart policy's port (docs/runtime-contract.md §5): what the cut
     // turn of this node already did outward, from the rows its execution
     // left in the thread. Labels mean no rerun: the turn ends with them.
-    outward: node => outwardActions(turnRows(node)),
+    // A person's cut root never reruns after a follow-up in its thread: a
+    // dispatched one was that very turn (a rerun would hand the person's
+    // words to a model again); a pending one starts first and carries the
+    // conversation on, so a rerun after it would redo the older request.
+    outward: node => {
+      const followup = node.parentId || node.groupId ? undefined : followupAtBoot(node.threadId);
+      if (followup) {
+        followupEndedRoots.set(node.id, followup === "pending" ? "turn interrupted — OpenMausBot restarted" : undefined);
+        return [followup === "pending" ? "queued follow-up waiting" : "queued follow-up dispatched"];
+      }
+      return outwardActions(turnRows(node));
+    },
   },
 });
 // "Teammates working": work this conversation handed out and still awaits
@@ -7339,7 +7395,7 @@ const memoryUpkeep = createMemoryUpkeep({
     const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
     // an engine the organisation disallows never receives memory text
     if (!bot || !instance || policyModelRefusal(instance)) return null;
-    // generateMemoryText: the ACP engines' upkeep-only one-shot, on their own provider
+    // generateMemoryText: the ACP engines' and Codex's background-only one-shot, on their own provider
     const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
     return generate ? {
       generateText: async (prompt, options) => {
@@ -7736,13 +7792,18 @@ bus.subscribe((event: RuntimeEvent) => {
     // On a Cloud home the log feeds recall in the owner's turns: only the
     // owner's own conversations leave a line.
     if (CLOUD_HOME && (room || !cloudOwnerOnlyThread(event.threadId))) return;
-    const writeLine = () => appendMemoryLog(bot.id, line, {
+    // The line lands after this turn's journal diff (endMemoryTurn), so it
+    // is journaled here as the turn's own, not left for the next turn's
+    // start to credit to the person.
+    const now = new Date();
+    const writeLine = () => journalTurnWrite(bot.id, memoryLogPath(now), event.threadId, () => appendMemoryLog(bot.id, line, {
+      now,
       source: memorySourceLabel({
         room,
         task: store.taskByThread(bot.id, event.threadId),
         threadId: event.threadId,
       }),
-    });
+    }));
     if (lendingMemory) lendingMemory.trustedWrite(bot.id, writeLine); else writeLine();
   } catch {
     // a missing note never fails a turn
@@ -22728,6 +22789,18 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // anyway, so an unverifiable level never reaches a CLI.
       const rawSelection = (body as Record<string, unknown>).modelSelection;
       if (rawSelection !== undefined) requirePinnedClientThread(m[1], undefined);
+      if (body.keepThreadModels !== undefined) {
+        if (typeof body.keepThreadModels !== "boolean") return json(res, 400, { error: "keepThreadModels must be true or false" });
+        if (body.keepThreadModels && rawSelection === undefined) return json(res, 400, { error: "keepThreadModels goes with modelSelection" });
+      }
+      // The thread a new bot model moves besides those that follow the bot.
+      // From the bot's own panel that is the selected thread, whatever model
+      // it had: it follows the bot from now on, as if picked there (#2401).
+      // A bulk change (keepThreadModels: the team dialog) is about the bots,
+      // not the thread each one last had open, so a thread with a model of
+      // its own keeps it there, selected or not, and only followers move.
+      const movedTask = selectedTask && !(body.keepThreadModels === true &&
+        store.taskByThread(selectedTask.id, selectedTask.threadId)?.modelSelection !== undefined) ? selectedTask : null;
       if (
         existingBot?.approvalGrant &&
         (rawSelection !== undefined || body.approvalMode !== undefined || body.autoApprove !== undefined)
@@ -22741,7 +22814,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (rawSelection !== undefined) {
         const checked = checkedModelSelection(
           rawSelection,
-          selectedTask ? { selection: selectedTask.modelSelection, busy: threadBusy(selectedTask.id, selectedTask.threadId) } : undefined,
+          movedTask ? { selection: movedTask.modelSelection, busy: threadBusy(movedTask.id, movedTask.threadId) } : undefined,
           body.requireAvailableModel === true,
         );
         if (!checked.ok) return json(res, checked.status, { error: checked.error });
@@ -23000,10 +23073,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         patch.autoApprove = requestedApprovalMode === "auto";
       }
       const targetSelection = normalizedSelection ?? existingBot?.modelSelection;
-      if (normalizedSelection && selectedTask) {
-        const mode = approvalModeFor(selectedTask);
+      if (normalizedSelection && movedTask) {
+        const mode = approvalModeFor(movedTask);
         if ((mode === "full" || mode === "custom") &&
-          (!supportsApprovalMode(normalizedSelection, mode) || engineSwitchNeedsAsk(mode, selectedTask.modelSelection, normalizedSelection))) {
+          (!supportsApprovalMode(normalizedSelection, mode) || engineSwitchNeedsAsk(mode, movedTask.modelSelection, normalizedSelection))) {
           return json(res, 400, { error: "Choose Ask for the selected thread before changing providers with elevated permissions" });
         }
       }
@@ -23033,13 +23106,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         (currentApprovalMode !== "full" || body.applyToAllThreads === true)) {
         return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
       }
-      // Full for the bot and every one of its conversations, the way bot
-      // settings turns it on; without it only the default (and the threads
-      // that follow it) changes, as for every other level.
+      // One level for the bot and every one of its conversations, the same
+      // way for every level but Custom: bot settings sends it with Full, a
+      // team-wide change with each level it sets. Without it only the default
+      // (and the threads that follow it) changes. A thread on Custom leaves
+      // it only through the desktop's private channel, as the bot does.
       if (body.applyToAllThreads !== undefined) {
         if (typeof body.applyToAllThreads !== "boolean") return json(res, 400, { error: "applyToAllThreads must be true or false" });
-        if (body.applyToAllThreads && body.approvalMode !== "full") {
-          return json(res, 400, { error: "applyToAllThreads goes with approvalMode full" });
+        if (body.applyToAllThreads && (body.approvalMode === undefined || requestedApprovalMode === "custom")) {
+          return json(res, 400, { error: "applyToAllThreads goes with an approvalMode other than custom" });
         }
       }
       if (body.applyToAllThreads === true && existingBot) {
@@ -23047,8 +23122,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (threads.some((task) => threadBusy(existingBot.id, task.threadId))) {
           return json(res, 409, { error: "stop this bot's turns before changing its approval level" });
         }
-        if (threads.some((task) => !supportsApprovalMode(task.modelSelection ?? targetSelection, "full"))) {
-          return json(res, 400, { error: "Every thread's provider must support Full access" });
+        if (threads.some((task) => approvalModeFor(store.projectBotForTask(existingBot.id, task.threadId) ?? {}) === "custom")) {
+          return json(res, 403, { error: "A thread on Custom approval can only leave it from the packaged desktop app" });
+        }
+        if (threads.some((task) => !supportsApprovalMode(task.modelSelection ?? targetSelection, requestedApprovalMode))) {
+          return json(res, 400, { error: "Every thread's provider must support this approval level" });
         }
       }
       // "Auto on this Mac" hands a bot the user's real session, so the grant
@@ -23059,8 +23137,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // alone is not a boundary; this check is.
       const wantsComputer = computerSpecified ? requestedComputer : existingBot?.computer;
       const wantsAuto = requestedApprovalMode === "auto";
+      // Every thread counts when the level goes to all of them: one still
+      // on another level gets Auto on this computer for the first time.
       const alreadyGranted =
-        existingBot?.computer === "local" && approvalModeFor(existingBot) === "auto";
+        existingBot?.computer === "local" && approvalModeFor(existingBot) === "auto" &&
+        (body.applyToAllThreads !== true || store.tasks(existingBot.id).every((task) =>
+          approvalModeFor(store.projectBotForTask(existingBot.id, task.threadId) ?? {}) === "auto"));
       if (wantsComputer === "local" && wantsAuto === true && !alreadyGranted && body.acknowledgeLocalAuto !== true) {
         return json(res, 400, {
           error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)",
@@ -23258,8 +23340,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 409, { error: "Stop this bot's turns before changing its MCP servers." });
         }
       }
-      if (normalizedSelection && selectedTask) {
-        const current = store.projectBotForTask(selectedTask.id, selectedTask.threadId);
+      if (normalizedSelection && movedTask) {
+        const current = store.projectBotForTask(movedTask.id, movedTask.threadId);
         if (!current) return json(res, 404, { error: "no such task" });
         const checked = checkedModelSelection(normalizedSelection, { selection: current.modelSelection, busy: threadBusy(current.id, current.threadId) });
         if (!checked.ok) return json(res, checked.status, { error: checked.error });
@@ -23288,7 +23370,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (!bot) return json(res, 404, { error: "no such bot" });
       // The same one durable write the desktop's all-threads grant commits.
-      if (body.applyToAllThreads === true) store.setAllThreadApprovalMode(bot.id, "full");
+      if (body.applyToAllThreads === true && requestedApprovalMode !== "custom") store.setAllThreadApprovalMode(bot.id, requestedApprovalMode);
       if (body.memoryUpkeep === false || body.memoryEnabled === false) memoryUpkeep.dropBot(bot.id);
       if (body.cacheKeepWarm !== undefined) cacheKeepWarm.refresh();
       // A defined Works on is the newest explicit choice: this bot's
@@ -23296,10 +23378,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // the next turn on each thread follows the new setting. Person-set pins
       // and pins that already match stay; returning to Auto sweeps nothing.
       if (computerSpecified && requestedComputer !== undefined) store.clearAutoSurfacePins(m[1], requestedComputer);
-      // A new bot model moves every thread that follows the bot; the selected
-      // thread follows it from now on too.
-      if (normalizedSelection && selectedTask) store.patchTask(bot.id, selectedTask.threadId, { modelSelection: undefined,
-        ...hostedModels?.resetTask(selectedTask.modelSelection, normalizedSelection) });
+      // A new bot model moves every thread that follows the bot, and the
+      // moved thread (movedTask above) follows it from now on too.
+      if (normalizedSelection && movedTask) store.patchTask(bot.id, movedTask.threadId, { modelSelection: undefined,
+        ...hostedModels?.resetTask(movedTask.modelSelection, normalizedSelection) });
       if (existingBot && (bot.browserProfile !== beforeBrowserProfile || bot.browser !== beforeBrowserEnabled)) {
         browserLive.closeForBot(bot.id);
         if (beforeBrowserProfile === "guest" && (bot.browserProfile !== "guest" || bot.browser === false)) {
@@ -26939,6 +27021,9 @@ setInterval(sweepThreadEventLogsNow, THREAD_LOG_RETENTION_SWEEP_MS).unref();
 // A dispatch claim is deliberately committed before transcript/provider work.
 // If we died after that point, its outcome is unknown: recover the user's words
 // and a review notice, never hand them to a model for a second execution.
+// Before any row below settles: the restart policy reads the journal as
+// this process found it, whenever the runtime opens.
+followupAtBoot("");
 for (const row of chatFollowups()) {
   // The aside lane is gone: a peer's words reach a teammate through the
   // runtime now. A row it left behind is dropped, never run.
