@@ -187,8 +187,20 @@ export interface WireTask {
   surfaceAuto?: true;
   /** what this task has spent, banked once per turn */
   usage?: TaskUsage;
+  /** Prompt-cache keep-warm status for this thread (server/cache-keepwarm.ts),
+   * derived at projection and never stored; absent when no window is open. */
+  cacheKeepWarm?: CacheKeepWarmStatus;
   /** the folder this task's turns run in, pinned on its first turn. */
   cwd?: string | null;
+}
+
+/** One thread's keep-warm window as a client shows it. Times are epoch ms. */
+export interface CacheKeepWarmStatus {
+  state: "warm" | "stopped";
+  until?: number;
+  nextPingAt?: number;
+  last?: { at: number; read: number; write: number; costUsd: number | null };
+  stopped?: string;
 }
 
 /** A lightweight organizational label within one bot. */
@@ -351,6 +363,9 @@ export interface WireBot {
    * tidies nightly. On unless explicitly false; every change is journaled
    * and can be undone. */
   memoryUpkeep?: boolean;
+  /** Prompt-cache keep-warm for this bot's Claude threads: true or false
+   * overrides the workspace setting (Settings → Engines); absent follows it. */
+  cacheKeepWarm?: boolean;
   /** Which of the app-wide MCP servers this bot mounts, by name. */
   mcpServers?: string[];
   /** Owner-selected original tool identities. An empty allowlist permits none. */
