@@ -247,6 +247,49 @@ describe("ApprovalCard profile proposals", () => {
 });
 
 describe("ApprovalCard learned skills", () => {
+  it("names the teammates on a shared learned-skill receipt and who kept their own", () => {
+    const message: Message = {
+      id: "skill-receipt",
+      role: "bot",
+      kind: "options",
+      at: 1,
+      card: {
+        title: 'Skill "rough-cut" enabled',
+        subtitle: "Cuts a rough edit.",
+        options: [],
+        answered: "allow",
+        autoApplied: true,
+        requestId: "skill-receipt",
+        tool: "stage_skill",
+        skillRequest: {
+          version: 1,
+          requestId: "skill-receipt",
+          botId: "bot-1",
+          threadId: "thread-1",
+          stagedId: "staged-1",
+          action: "create",
+          name: "rough-cut",
+          gist: "Cuts a rough edit.",
+          warnings: [],
+          createdAt: 1,
+          shared: {
+            library: "installed",
+            sha256: "ab".repeat(32),
+            sharedAt: 1,
+            assigned: [{ botId: "bot-1", name: "Cutter" }, { botId: "bot-2", name: "Colorist" }],
+            skipped: [{ botId: "bot-3", name: "Sound", reason: "has its own skill" }],
+          },
+        },
+      },
+    };
+    const markup = renderToStaticMarkup(createElement(ApprovalCard, { message, threadId: "thread-1" }));
+    expect(markup).toContain("shared with Colorist");
+    expect(markup).not.toContain("shared with Cutter");
+    expect(markup).toContain("not shared with Sound");
+    // no store, no "ask" mode: no Share button
+    expect(markup).not.toContain("Share with team");
+  });
+
   it("maps create and update choices to approval while keeping refusals denied", () => {
     expect(skillRequestBehavior("Enable")).toBe("allow");
     expect(skillRequestBehavior("Update")).toBe("allow");

@@ -212,6 +212,7 @@ import {
   browserEngineAttachCdpUrl,
   DATA_DIR,
   skillsLibraryEnabled,
+  shareLearnedSkillsMode,
   EVENTS_DIR,
   NATIVE_DIR,
   customMcpServers,
@@ -437,11 +438,20 @@ import {
   undoSkillWrite,
 } from "./skills.ts";
 import { fetchSkillFromSource } from "./skill-fetch.ts";
+import {
+  conversationAssignedSkills,
+  shareLearnedSkill,
+  sharedSkillEditable,
+  takeShareNote,
+  undoSharedLearnedSkill,
+  updateSharedLearnedSkill,
+  type ShareBot,
+} from "./skill-share.ts";
 import { pickBotName } from "./names.ts";
 import { botSkillTemplateSchema, newBotDefaultsSchema, resolveBotCreationDefaults } from "./new-bot-defaults.ts";
 import { expandLearnTurnText, learnSource } from "./skill-learn.ts";
 import { expandSetupTurnText, setupModeActive, setupSystemPrompt } from "./setup-mode.ts";
-import type { SkillRequestCardData } from "../shared/skill-request.ts";
+import type { SkillRequestCardData, SkillShareRecord } from "../shared/skill-request.ts";
 import { checkSoulDrift, readSoulDrift, soulFile, writeSoulMirror } from "./bot-folder.ts";
 import {
   buildSystemPrompt,
@@ -1977,6 +1987,31 @@ const readBotSkillFile = (bot: BotRecord, name: string): string | null => {
   // The library fallback is by assignment only, never by name alone.
   if (!bot.assignedSkills?.includes(name)) return null;
   return readLibrarySkillFile(name);
+};
+/** When a conversation started: its first message's time; none = new. */
+const conversationStartedAt = (threadId: string): number | undefined => store.messagesFor(threadId)[0]?.at;
+/** The library assignments one conversation's skills index lists. A skill
+ * shared into this bot after the conversation started stays out of it, so
+ * a teammate's share never changes this conversation's system prompt and
+ * its cached prefix survives (server/skill-share.ts); the conversation
+ * hears about it once from shareNoteFor instead. Flag off: undefined, the
+ * per-bot listing exactly as before. */
+const conversationSkills = (bot: BotRecord, threadId: string): string[] | undefined => {
+  if (!skillsLibraryEnabled(cfg)) return undefined;
+  // read live: an assignment PUT during awaited turn setup still counts
+  const assigned = store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills;
+  return conversationAssignedSkills(bot.id, assigned, conversationStartedAt(threadId));
+};
+/** The one-time "new team skill" note for this turn's user text. */
+const shareNoteFor = (bot: BotRecord, threadId: string): string => {
+  if (!skillsLibraryEnabled(cfg)) return "";
+  try {
+    const assigned = store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills;
+    return takeShareNote(bot.id, threadId, assigned, conversationStartedAt(threadId), listSkills(bot.id).map((skill) => skill.name));
+  } catch (error) {
+    console.warn(`[skills-library] could not prepare the shared-skill note: ${error instanceof Error ? error.message : String(error)}`);
+    return "";
+  }
 };
 
 // Electron's utility-process parent port is private to the desktop main
@@ -7250,15 +7285,31 @@ const skillReview = createSkillReview({
     if (!owned || selfApplyBlocked(threadId)) return null;
     return { messages: store.activePath(threadId), room: Boolean(owned.group) };
   },
-  skills: (botId) => listSkills(botId).map((skill) => ({
-    name: skill.name,
-    description: skill.description,
-    editable: skill.editable,
-    enabled: skill.enabled,
-    sha256: skill.sha256,
-    ...(skill.editable ? { body: readSkillFile(botId, skill.name) } : {}),
-  })),
-  currentSha: (botId, name) => listSkills(botId).find((skill) => skill.name === name)?.sha256 ?? null,
+  skills: (botId) => {
+    const own = listSkills(botId).map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+      editable: skill.editable,
+      enabled: skill.enabled,
+      sha256: skill.sha256,
+      ...(skill.editable ? { body: readSkillFile(botId, skill.name) } : {}),
+    }));
+    // Shared team skills (features.shareLearnedSkills) are the bot's to
+    // improve too; the update rewrites the library copy.
+    const bot = store.bot(botId);
+    if (shareLearnedSkillsMode(cfg) === "off" || !bot?.assignedSkills?.length) return own;
+    const ownNames = new Set(own.map((skill) => skill.name));
+    const shared = resolveBotSkills(botId, bot.assignedSkills)
+      .filter((skill) => !ownNames.has(skill.name))
+      .map((skill) => {
+        const editable = sharedSkillUpdate(botId, skill.name);
+        return { name: skill.name, description: skill.description, editable, enabled: skill.enabled, sha256: skill.sha256,
+          ...(editable ? { body: readLibrarySkillFile(skill.name) } : {}) };
+      });
+    return [...own, ...shared];
+  },
+  currentSha: (botId, name) => listSkills(botId).find((skill) => skill.name === name)?.sha256
+    ?? (sharedSkillUpdate(botId, name) ? readSkillLibraryIndex()[name]?.sha256 ?? null : null),
   apply: (botId, threadId, change) => {
     const bot = store.bot(botId);
     if (!bot) return { ok: false, error: "unknown bot" };
@@ -7266,6 +7317,12 @@ const skillReview = createSkillReview({
     // need a person's review is not raised from the background.
     const direct = appliesDirectly(botId, threadId, botId);
     if (!direct) return { ok: false, error: "this conversation cannot apply skill changes without review" };
+    if (change.action === "update" && sharedSkillUpdate(botId, change.name)) {
+      const updated = applySharedSkillUpdate(bot, threadId, {
+        name: change.name, skillMd: change.skillMd, gist: change.gist || undefined, expectSha256: change.baseSha256,
+      }, direct);
+      return "error" in updated ? { ok: false, error: updated.error } : { ok: true };
+    }
     const staged = stageSkillWrite(botId, {
       action: change.action,
       targetName: change.action === "update" ? change.name : undefined,
@@ -11641,7 +11698,7 @@ async function startTurn(
         { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace, enabled: bot.memoryEnabled !== false }) },
         // liveBot was captured before awaited setup work; an assignment PUT
         // in that window must still reach this turn's prompt.
-        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined) : "" },
+        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, conversationSkills(bot, threadId)) : "" },
         { id: "skill-instructions", label: "Skill instructions", text: skillInstructions },
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
         { id: "webhook", label: "Webhook provenance", text: opts?.automationSource === "webhook" ? WEBHOOK_PROMPT : "" },
@@ -11680,12 +11737,15 @@ async function startTurn(
       // carries the time it was sent (server/turn-clock.ts). An image-only
       // turn or a slash command skips it even when replayed context leads.
       const clock = takesTurnClock(userTurnText) ? turnClockLine(Date.now(), hostTimeZone()) : "";
+      // A team skill shared into this bot after the conversation started is
+      // announced here, once, instead of in the system prompt.
+      const shareNote = privateWorkspace ? shareNoteFor(bot, threadId) : "";
       const dispatch = await guardTurnDispatch(instance.adapter.sendTurn({
         threadId,
         botId: bot.id,
         startupRecovery: cfg.automaticRecovery?.enabled === true &&
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
-        text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText)),
+        text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote)),
         ...(recalled ? { recalled } : {}),
         images: turnImages,
         approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
@@ -11699,7 +11759,7 @@ async function startTurn(
         // resume the wrong conversation and defeat the context bubble
         resumeCursor: dispatchContext.resumeCursor,
         sessionReset: dispatchContext.sessionReset,
-        ...(dispatchContext.recoveryText !== undefined ? { recoveryText: withTurnClock(clock, dispatchContext.recoveryText) } : {}),
+        ...(dispatchContext.recoveryText !== undefined ? { recoveryText: withTurnClock(clock, dispatchContext.recoveryText + shareNote) } : {}),
         transcript,
         system: prompt.text,
         systemStable: prompt.stable,
@@ -13126,6 +13186,23 @@ function undoSkillCard(botId: string, threadId: string, messageId: string): Undo
   if (request.botId !== botId || request.threadId !== threadId) {
     return { claimed: true, state: "invalid", error: "this skill request belongs to a different bot", status: 403 };
   }
+  // A shared skill: revert the library write and every assignment the
+  // share made (server/skill-share.ts). Its private copy is archived.
+  if (request.shared) {
+    const undoneShare = undoSharedLearnedSkill({
+      authorId: botId,
+      name: request.name,
+      action: request.action,
+      share: request.shared,
+      ...(request.previous ? { previous: { skillMd: request.previous.preview, source: request.previous.source } } : {}),
+      bots: shareBotsNow(),
+      patchAssigned: patchAssignedSkills,
+    });
+    if ("stale" in undoneShare) return { claimed: true, state: "invalid", error: UNDO_STALE, status: 409, stale: true };
+    if ("error" in undoneShare) return { claimed: true, state: "invalid", error: undoneShare.error, status: 409 };
+    store.patchMessage(threadId, message.id, { card: { ...card, undone: true } });
+    return { claimed: true, state: "undone" };
+  }
   const undone = undoSkillWrite(botId, {
     stagedId: request.stagedId,
     name: request.name,
@@ -14089,7 +14166,7 @@ async function runGroupMemberTurn(
     { id: "memory", label: "Memory", text: roomMemory ? `\n${roomMemory.trim()}` : "" },
     // readyBot was captured before awaited setup work; an assignment PUT in
     // that window must still reach this turn's prompt.
-    { id: "skills", label: "Skills index", text: workspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined) : "" },
+    { id: "skills", label: "Skills index", text: workspace ? skillsSystemPrompt(bot.id, conversationSkills(bot, threadId)) : "" },
     { id: "skill-instructions", label: "Skill instructions", text: renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) },
     { id: "playbooks", label: "Playbooks", text: installedPlaybookInstructions(text, bot.playbooks) },
   ]);
@@ -14215,10 +14292,12 @@ async function runGroupMemberTurn(
     // was sent with, a Chief's delegated level included (request.opened).
     const turnApprovalMode = roomTurnApprovalMode(readyBot, threadId, orchestration);
     if (!done) releaseTurnLevel = roomTurnLevels.dispatched(threadId, readyBot.id, turnApprovalMode);
+    // A team skill shared after this room conversation started: once, here.
+    const roomShareNote = workspace ? shareNoteFor(bot, threadId) : "";
     guardTurnDispatch(instance.adapter.sendTurn({
         threadId,
         botId: readyBot.id,
-        text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text)),
+        text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text + roomShareNote)),
         ...(roomRecalled ? { recalled: roomRecalled } : {}),
         images: turnImages,
         approvalMode: turnApprovalMode,
@@ -15461,19 +15540,142 @@ function applyOwnStagedSkill(
   threadId: string,
   staged: Exclude<ReturnType<typeof stageSkillWrite>, { error: string }>,
   direct: DirectApply,
-): ReturnType<typeof applySkillWriteWithReceipt> {
+): ReturnType<typeof applySkillWriteWithReceipt> & { shared?: string; shareError?: string } {
   // What an update replaces, so Undo can put it back.
   const previousSkillMd = staged.action === "update" ? readSkillFile(from.id, staged.name) : null;
   const previousSource = listSkills(from.id).find((skill) => skill.name === staged.name)?.source;
   const previous = previousSkillMd !== null && previousSource ? { preview: previousSkillMd, source: previousSource } : undefined;
+  let receiptId: string | undefined;
   const applied = applySkillWriteWithReceipt(from.id, staged, () => {
     const receipt = appendSkillRequestCard({ botId: from.id, threadId, staged, applied: true, previous });
+    receiptId = receipt.requestId;
     appendDecision(DATA_DIR, { threadId, requestId: receipt.requestId, botId: from.id, botName: from.name,
       tool: "stage_skill", summary: receipt.summary, decision: "auto-approved", source: direct });
   });
-  if ("error" in applied) rejectStagedSkillWrite(from.id, staged.id);
+  if ("error" in applied) {
+    rejectStagedSkillWrite(from.id, staged.id);
+    return applied;
+  }
+  // features.shareLearnedSkills "auto": the skill goes to the team now. A
+  // settlement still pending keeps its stage record bound to the private
+  // copy, so that one waits for the receipt's Share button instead.
+  if (shareLearnedSkillsMode(cfg) === "auto" && !applied.settlementPending) {
+    const receipt = receiptId ? store.messagesFor(threadId).find((message) => message.card?.requestId === receiptId) : undefined;
+    const shared = shareSkillFromBot(from.id, staged.name, receipt ? { threadId, messageId: receipt.id } : undefined);
+    return "error" in shared ? { ...applied, shareError: shared.error } : { ...applied, shared: shareSummaryLine(shared) };
+  }
   return applied;
 }
+
+// --- Sharing learned skills with the team (features.shareLearnedSkills) ---
+
+const shareBotsNow = (): ShareBot[] =>
+  store.bots.map((bot) => ({ id: bot.id, name: bot.name, section: bot.section, assignedSkills: bot.assignedSkills }));
+const patchAssignedSkills = (botId: string, assignedSkills: string[]) => {
+  store.patchBot(botId, { assignedSkills });
+};
+
+/** The share as one sentence, for the bot that learned the skill. */
+function shareSummaryLine(share: SkillShareRecord): string {
+  const mates = share.assigned.map((bot) => bot.name);
+  const skipped = share.skipped.map((bot) => `${bot.name} (${bot.reason})`);
+  return [
+    mates.length ? `Shared with ${mates.join(", ")}.` : "No teammate needed it assigned.",
+    skipped.length ? `Not shared with ${skipped.join(", ")}.` : "",
+  ].filter(Boolean).join(" ");
+}
+
+/** Share one of a bot's learned skills with its team and, given its
+ * receipt, record the outcome there so Undo reverts it too. */
+function shareSkillFromBot(
+  botId: string,
+  name: string,
+  receipt?: { threadId: string; messageId: string },
+): SkillShareRecord | { error: string } {
+  const bots = shareBotsNow();
+  const author = bots.find((bot) => bot.id === botId);
+  if (!author) return { error: "unknown bot" };
+  const shared = shareLearnedSkill({ author, bots, name, patchAssigned: patchAssignedSkills });
+  if (receipt) {
+    const message = store.messagesFor(receipt.threadId).find((candidate) => candidate.id === receipt.messageId);
+    const card = message?.card;
+    const request = card?.skillRequest;
+    if (card && request) {
+      const { shareError: _shareError, ...rest } = request;
+      store.patchMessage(receipt.threadId, receipt.messageId, {
+        card: { ...card, skillRequest: "error" in shared ? { ...request, shareError: shared.error } : { ...rest, shared } },
+      });
+    }
+  }
+  return shared;
+}
+
+/** "Share with team" on a learned-skill receipt (features.shareLearnedSkills
+ * "ask"): the receipt's own skill, once, while it is not undone. */
+function shareSkillFromReceipt(threadId: string, requestId: string):
+  | { ok: true; shared: SkillShareRecord }
+  | { ok: false; status: number; error: string } {
+  if (shareLearnedSkillsMode(cfg) === "off") return { ok: false, status: 404, error: "sharing learned skills is not enabled" };
+  const message = store.messagesFor(threadId).find((candidate) => candidate.card?.requestId === requestId);
+  const card = message?.card;
+  const request = card?.skillRequest;
+  if (!message || !card || !request) return { ok: false, status: 404, error: "this skill is no longer in the conversation" };
+  if (!card.autoApplied || card.answered !== "allow" || card.undone) {
+    return { ok: false, status: 409, error: "only a skill change that applied and was not undone can be shared" };
+  }
+  if (request.shared) return { ok: true, shared: request.shared };
+  const botId = message.from?.botId ?? store.botByThread(threadId)?.id;
+  if (!botId || botId !== request.botId) return { ok: false, status: 403, error: "this skill belongs to a different bot" };
+  const shared = shareSkillFromBot(botId, request.name, { threadId, messageId: message.id });
+  return "error" in shared ? { ok: false, status: 422, error: shared.error } : { ok: true, shared };
+}
+
+/** Update a shared learned skill through its library copy, with the same
+ * one-line receipt and Undo a private update gets. */
+function applySharedSkillUpdate(
+  from: BotRecord,
+  threadId: string,
+  change: { name: string; skillMd: string; gist?: string; expectSha256?: string },
+  direct: DirectApply,
+): { name: string; summary: string; shared: string } | { error: string } {
+  const bots = shareBotsNow();
+  const self = bots.find((bot) => bot.id === from.id);
+  if (!self) return { error: "unknown bot" };
+  const updated = updateSharedLearnedSkill({
+    bot: self,
+    bots: shareLearnedSkillsMode(cfg) === "auto" ? bots : [self],
+    name: change.name,
+    skillMd: change.skillMd,
+    expectSha256: change.expectSha256,
+    patchAssigned: patchAssignedSkills,
+  });
+  if ("error" in updated) return updated;
+  const gist = redactSecretsInText(change.gist ?? "").replace(/\s+/g, " ").trim().slice(0, 240) || updated.description.slice(0, 240);
+  const receipt = appendSkillRequestCard({
+    botId: from.id,
+    threadId,
+    applied: true,
+    previous: { preview: updated.previous.skillMd, source: updated.previous.source },
+    shared: updated.share,
+    staged: {
+      id: randomUUID(),
+      action: "update",
+      name: change.name,
+      gist,
+      source: updated.previous.source,
+      files: [{ path: "SKILL.md", content: updated.content }],
+      sha256: updated.sha256,
+      warnings: updated.warnings,
+    },
+  });
+  appendDecision(DATA_DIR, { threadId, requestId: receipt.requestId, botId: from.id, botName: from.name,
+    tool: "stage_skill", summary: receipt.summary, decision: "auto-approved", source: direct });
+  return { name: change.name, summary: `Shared skill ${change.name} updated.`, shared: shareSummaryLine(updated.share) };
+}
+
+/** Whether an update to `name` goes to the shared library copy. */
+const sharedSkillUpdate = (botId: string, name: string): boolean =>
+  shareLearnedSkillsMode(cfg) !== "off" && sharedSkillEditable(botId, store.bot(botId)?.assignedSkills, name);
 
 function appendSkillRequestCard(args: {
   botId: string;
@@ -15481,6 +15683,8 @@ function appendSkillRequestCard(args: {
   /** Applied without a person: a one-line receipt with Undo. */
   applied?: boolean;
   previous?: SkillRequestCardData["previous"];
+  /** A shared skill's update: what the share did, for Undo. */
+  shared?: SkillShareRecord;
   staged: {
     id: string;
     action: "create" | "update";
@@ -15509,6 +15713,7 @@ function appendSkillRequestCard(args: {
     warnings: args.staged.warnings,
     createdAt: Date.now(),
     ...(args.applied && args.previous ? { previous: args.previous } : {}),
+    ...(args.applied && args.shared ? { shared: args.shared } : {}),
   };
   const from = store.bot(args.botId);
   // The bot changed its skills here: automatic review starts counting again.
@@ -16283,6 +16488,7 @@ function configStatus() {
       skillReview: cfg.features?.skillReview === true,
       skillReviewSteps: skillReviewSteps(cfg),
       skillsLibrary: skillsLibraryEnabled(cfg),
+      shareLearnedSkills: shareLearnedSkillsMode(cfg),
       showToolCalls: showToolCallsEnabled(cfg),
       routinesInConversation: routinesInConversationEnabled(cfg),
       browser: builtInBrowserEnabled(cfg),
@@ -18410,7 +18616,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 403, { error: "source conversation does not belong to sender" });
         }
         return json(res, 200, {
-          skills: listBotSkills(from),
+          skills: shareLearnedSkillsMode(cfg) === "off"
+            ? listBotSkills(from)
+            : listBotSkills(from).map((skill) => !skill.editable && sharedSkillUpdate(from.id, skill.name) ? { ...skill, editable: true } : skill),
           staged: listStagedSkillWrites(from.id).map(stagedSkillListing),
         });
       }
@@ -18441,6 +18649,18 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const targetName = typeof body.skill_name === "string" ? body.skill_name.trim() : "";
         if (action === "update" && !targetName) {
           return json(res, 400, { error: "skill_name is required when action is update" });
+        }
+        // A shared team skill lives in the skills library, not in this bot's
+        // private store: its update rewrites the library copy.
+        if (action === "update" && sharedSkillUpdate(from.id, targetName)) {
+          if (!direct) return json(res, 422, { state: "failed", error: "this conversation cannot update a shared team skill" });
+          const updated = applySharedSkillUpdate(from, fromThreadId, {
+            name: targetName,
+            skillMd,
+            gist: typeof body.gist === "string" ? body.gist : undefined,
+          }, direct);
+          if ("error" in updated) return json(res, 422, { state: "failed", error: updated.error });
+          return json(res, 201, { state: "applied", name: updated.name, action: "update", summary: updated.summary, shared: updated.shared });
         }
         const staged = stageSkillWrite(from.id, {
           action,
@@ -22722,6 +22942,29 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // ── skills library (features.skillsLibrary): local browse surface ────
     // Everything here is local: the library on disk, assignments on bot
     // records, imports from pasted SKILL.md text. No registry, no network.
+    // ── sharing learned skills with the team (features.shareLearnedSkills)
+    // From the receipt's "Share with team" button, or by name for a
+    // coordinator such as an editing lead acting on the owner's behalf.
+    m = path.match(/^\/api\/threads\/([\w-]+)\/share-skill$/);
+    if (m && method === "POST") {
+      if (shareLearnedSkillsMode(cfg) === "off") return json(res, 404, { error: "sharing learned skills is not enabled" });
+      const body = await readBody(req);
+      const requestId = typeof body?.requestId === "string" ? body.requestId : "";
+      if (!requestId) return json(res, 400, { error: "requestId is required" });
+      const refusal = cardAnswerRefusal(auth, m[1]!, requestId, "allow");
+      if (refusal) return json(res, 403, { error: refusal });
+      const result = shareSkillFromReceipt(m[1]!, requestId);
+      if (!result.ok) return json(res, result.status, { error: result.error });
+      return json(res, 200, { ok: true, shared: result.shared });
+    }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/skills\/([a-z0-9-]+)\/share$/);
+    if (m && method === "POST") {
+      if (shareLearnedSkillsMode(cfg) === "off") return json(res, 404, { error: "sharing learned skills is not enabled" });
+      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
+      const shared = shareSkillFromBot(m[1]!, m[2]!);
+      if ("error" in shared) return json(res, 422, { error: shared.error });
+      return json(res, 200, { ok: true, shared });
+    }
     m = path.match(/^\/api\/skills-library$/);
     if (m && method === "GET") {
       if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });

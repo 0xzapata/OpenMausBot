@@ -8,6 +8,23 @@
  */
 export type SkillRequestAction = "create" | "update";
 
+/** What sharing a learned skill with the author's team did
+ * (features.shareLearnedSkills), kept on the receipt so Undo can revert the
+ * library write and the assignments together. */
+export interface SkillShareRecord {
+  /** installed: this share put the skill in the library; deduplicated: the
+   * identical bytes were already there; assigned: it was already a library
+   * skill; updated: a shared skill's library copy was rewritten. */
+  library: "installed" | "deduplicated" | "assigned" | "updated";
+  /** The library SKILL.md sha256 this share left. */
+  sha256: string;
+  sharedAt: number;
+  /** Bots this share assigned the skill to. */
+  assigned: Array<{ botId: string; name: string }>;
+  /** Teammates left out, and why (a same-named private skill). */
+  skipped: Array<{ botId: string; name: string; reason: string }>;
+}
+
 export interface SkillRequestCardData {
   version: 1;
   requestId: string;
@@ -29,6 +46,10 @@ export interface SkillRequestCardData {
   /** An update that applied without a person: the SKILL.md it replaced, so
    * Undo can put it back while the skill is unchanged since. */
   previous?: { preview: string; source: string };
+  /** Set once the skill was shared with the team. */
+  shared?: SkillShareRecord;
+  /** Why sharing this skill did not happen, when it was tried. */
+  shareError?: string;
 }
 
 /** The hash a current client may echo after it displayed the complete

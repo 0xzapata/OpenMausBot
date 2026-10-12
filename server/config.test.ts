@@ -30,6 +30,7 @@ import { cacheUntilConfigChanges,
   saveConfig,
   skillAuthoringEnabled,
   sharedComputersEnabled,
+  shareLearnedSkillsMode,
   builtInBrowserEnabled,
   browserProfilePartitionId,
   browserProfilePartitionTarget,
@@ -593,6 +594,15 @@ describe("configuration boundaries", () => {
     expect(() => parseConfigPatch({ features: { skillAuthoring: "yes" } })).toThrow(
       "features.skillAuthoring",
     );
+  });
+
+  it("shares learned skills only with the skills library on, asking by default", () => {
+    expect(shareLearnedSkillsMode({})).toBe("off");
+    expect(shareLearnedSkillsMode({ features: { shareLearnedSkills: "auto" } })).toBe("off");
+    expect(shareLearnedSkillsMode({ features: { skillsLibrary: true } })).toBe("ask");
+    expect(shareLearnedSkillsMode({ features: { skillsLibrary: true, shareLearnedSkills: "auto" } })).toBe("auto");
+    expect(parseConfigPatch({ features: { shareLearnedSkills: "off" } })).toEqual({ features: { shareLearnedSkills: "off" } });
+    expect(() => parseConfigPatch({ features: { shareLearnedSkills: "always" } })).toThrow("features.shareLearnedSkills");
   });
 
   it("keeps computer sharing off unless config.json explicitly turns it on", () => {

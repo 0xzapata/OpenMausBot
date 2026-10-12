@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
 import { z } from "zod";
 
 import { writeFileAtomic } from "./atomic.ts";
@@ -396,4 +396,80 @@ export function setLibrarySkillReviewState(
   writeSkillLibraryIndex(root, index);
   skillLibraryEvents.emit("invalidate", { kind: "review-state", name });
   return librarySkillListing(root, entry);
+}
+
+/** Replace a library skill's SKILL.md in place (features.shareLearnedSkills:
+ * a shared learned skill updated by a bot it is assigned to, or an Undo
+ * putting the previous version back). Applied only while the stored bytes
+ * still match `expectSha256` — the reviewed version the writer read —
+ * otherwise `stale` and nothing changes. The review state is kept. */
+export function updateLibrarySkill(input: {
+  name: string;
+  instructions: string;
+  expectSha256: string;
+  source?: string;
+  root?: string;
+}): LibrarySkillListing | { stale: true } | { error: string } {
+  const root = input.root ?? skillsLibraryRoot();
+  if (!isSkillName(input.name)) return { error: "invalid skill name" };
+  if (Buffer.byteLength(input.instructions, "utf8") > SKILL_FILE_MAX_BYTES) {
+    return { error: `SKILL.md is larger than ${SKILL_FILE_MAX_BYTES / 1024}KB` };
+  }
+  const parsed = parseSkillMd(input.instructions);
+  if ("error" in parsed) return parsed;
+  if (parsed.name !== input.name) return { error: `the skill is named "${parsed.name}", not "${input.name}"` };
+  const indexRead = readSkillLibraryIndexState(root);
+  if ("error" in indexRead) return indexRead;
+  const index = indexRead.index;
+  const entry = index[input.name];
+  if (!entry || entry.sha256 !== input.expectSha256 || !libraryContentMatches(root, entry)) return { stale: true };
+  const sha256 = sha256Hex(input.instructions);
+  const next: SkillLibraryEntry = {
+    ...entry,
+    description: parsed.description,
+    sha256,
+    importedAt: new Date().toISOString(),
+    ...(input.source ? { source: input.source } : {}),
+    ...(parsed.tags?.length ? { tags: parsed.tags } : {}),
+  };
+  if (!parsed.tags?.length) delete next.tags;
+  // Bytes, then index. A crash between the two leaves stored bytes the
+  // index does not vouch for: the entry reads "changed after review" and
+  // stays blocked until a person looks, never silently enabled.
+  writeFileAtomic(join(librarySkillDirectory(root, input.name), "SKILL.md"), input.instructions, { mode: 0o600 });
+  index[input.name] = next;
+  writeSkillLibraryIndex(root, index);
+  skillLibraryEvents.emit("invalidate", { kind: "update", name: input.name });
+  return librarySkillListing(root, next);
+}
+
+/** Take a skill out of the library (Undo of a shared learned skill that
+ * this share created). The index entry goes first — it is the commit point
+ * — and the bytes move to the write-once archive, never deleted. */
+export function retireLibrarySkill(
+  name: string,
+  expectSha256: string,
+  root: string = skillsLibraryRoot(),
+): { retired: true } | { stale: true } | { error: string } {
+  if (!isSkillName(name)) return { error: "invalid skill name" };
+  const indexRead = readSkillLibraryIndexState(root);
+  if ("error" in indexRead) return indexRead;
+  const index = indexRead.index;
+  const entry = index[name];
+  if (!entry || entry.sha256 !== expectSha256 || !libraryContentMatches(root, entry)) return { stale: true };
+  delete index[name];
+  writeSkillLibraryIndex(root, index);
+  try {
+    const base = join(root, "archive", "retired", `${name}.${expectSha256}`);
+    mkdirSync(join(root, "archive", "retired"), { recursive: true, mode: 0o700 });
+    let destination = base;
+    let suffix = 1;
+    while (existsSync(destination)) destination = `${base}.${suffix++}`;
+    renameSync(librarySkillDirectory(root, name), destination);
+  } catch {
+    // The entry is already gone, so the leftover bytes are unreferenced;
+    // a later install of the same name rewrites them.
+  }
+  skillLibraryEvents.emit("invalidate", { kind: "remove", name });
+  return { retired: true };
 }

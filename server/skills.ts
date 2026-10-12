@@ -892,6 +892,29 @@ function preparedLearnedSkill(
   return preparedSkillFiles(files);
 }
 
+/** A learned SKILL.md checked exactly as stageSkillWrite checks a staged
+ * one (secret scrub, size cap, frontmatter, scan warnings). Used by the
+ * shared-library update path (server/skill-share.ts), which writes the
+ * library copy instead of a per-bot revision. */
+export function prepareLearnedSkillMd(content: string):
+  | { content: string; name: string; description: string; sha256: string; warnings: string[] }
+  | { error: string } {
+  const redacted = redactSecretsInText(content);
+  if (Buffer.byteLength(redacted, "utf8") > STAGED_SKILL_FILE_MAX_BYTES) {
+    return { error: `learned SKILL.md files must be at most ${STAGED_SKILL_FILE_MAX_BYTES / 1024}KB` };
+  }
+  const prepared = preparedLearnedSkill([{ path: "SKILL.md", content: redacted }]);
+  if ("error" in prepared) return prepared;
+  const text = prepared.files[0]!.content;
+  return {
+    content: text,
+    name: prepared.parsed.name,
+    description: prepared.parsed.description,
+    sha256: createHash("sha256").update(text).digest("hex"),
+    warnings: prepared.warnings,
+  };
+}
+
 function learnedSkillDirectoryMatches(directory: string, sha256: string): boolean {
   if (directoryEntryState(directory) !== "directory") return false;
   try {

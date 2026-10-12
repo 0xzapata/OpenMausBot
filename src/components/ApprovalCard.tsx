@@ -6,7 +6,8 @@
 // own behavior instead of being matched by their label text.
 import { useState } from "react";
 import { Check, ShieldCheck, Undo2, X } from "lucide-react";
-import { api, ApiError, type Bot, type Message, type OptionCardData } from "@/state/store";
+import { api, ApiError, useOptionalConfig, type Bot, type Message, type OptionCardData } from "@/state/store";
+import { shareLearnedSkillsMode } from "@/lib/feature-flags";
 import { cn } from "@/lib/cn";
 import { t, tFromServer } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
@@ -199,7 +200,27 @@ function AppliedChangeLine({
   const [open, setOpen] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [error, setError] = useState<string>();
+  const [sharing, setSharing] = useState(false);
+  const config = useOptionalConfig();
   const undone = card.undone === true;
+  const skill = card.skillRequest;
+  const shared = skill?.shared;
+  // features.shareLearnedSkills "ask": the person shares a learned skill
+  // with the author's team from its receipt, once.
+  const canShare = Boolean(skill && !shared && !undone && threadId && card.requestId)
+    && shareLearnedSkillsMode(config) === "ask";
+  const share = () => {
+    if (!threadId || !card.requestId || sharing) return;
+    setSharing(true);
+    setError(undefined);
+    api(`/api/threads/${threadId}/share-skill`, { method: "POST", body: JSON.stringify({ requestId: card.requestId }) })
+      .catch((failure: unknown) => {
+        setError(t("approval.applied.shareFailed", { error: failure instanceof Error ? failure.message : String(failure) }));
+      })
+      .finally(() => setSharing(false));
+  };
+  const sharedNames = shared?.assigned.filter((bot) => bot.botId !== skill?.botId).map((bot) => bot.name) ?? [];
+  const skippedNames = shared?.skipped.map((bot) => bot.name) ?? [];
   const undo = () => {
     if (!threadId || !card.requestId || undoing) return;
     setUndoing(true);
@@ -218,6 +239,9 @@ function AppliedChangeLine({
         {undone ? <Undo2 size={14} className="shrink-0" /> : <Check size={14} className="shrink-0 text-success" />}
         <span className="min-w-0 break-words">
           {summary.line}
+          {shared && !undone && (
+            <span> · {sharedNames.length ? t("approval.applied.sharedSkill", { names: sharedNames.join(", ") }) : t("approval.applied.sharedSkillNobody")}</span>
+          )}
           {undone && <span> · {t("approval.applied.undone")}</span>}
         </span>
         {!undone && summary.canUndo && threadId && (
@@ -230,6 +254,16 @@ function AppliedChangeLine({
             {undoing ? t("approval.applied.undoing") : t("approval.applied.undo")}
           </button>
         )}
+        {canShare && (
+          <button
+            type="button"
+            onClick={share}
+            disabled={sharing}
+            className="rounded-md px-1.5 py-0.5 font-medium text-accent hover:bg-inset disabled:opacity-60"
+          >
+            {sharing ? t("approval.applied.sharingSkill") : t("approval.applied.shareSkill")}
+          </button>
+        )}
         <button
           type="button"
           aria-expanded={open}
@@ -239,6 +273,12 @@ function AppliedChangeLine({
           {open ? t("approval.applied.hideDetails") : t("approval.applied.details")}
         </button>
       </div>
+      {shared && !undone && skippedNames.length > 0 && (
+        <div className="mt-1 text-[12.5px] text-ink-tertiary">{t("approval.applied.shareSkipped", { names: skippedNames.join(", ") })}</div>
+      )}
+      {!error && !shared && !undone && skill?.shareError && (
+        <div className="mt-1 text-[12.5px] text-warning">{t("approval.applied.shareFailed", { error: skill.shareError })}</div>
+      )}
       {error && <div role="alert" className="mt-1 text-[12.5px] text-warning">{error}</div>}
       {open && (
         <pre
