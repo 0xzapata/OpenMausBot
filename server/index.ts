@@ -374,7 +374,7 @@ import { turnStartLogLine } from "./turn-log.ts";
 import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./turn-outcome.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
-import { extractTurnImages } from "./turn-images.ts";
+import { extractSteerImages, extractTurnImages } from "./turn-images.ts";
 import { callTitleExcerpt, threadTitlePrompt, type ThreadTitleSource } from "./thread-title.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import { TurnResources, type TurnOwner } from "./turn-resources.ts";
@@ -8746,6 +8746,13 @@ function runningTurnInstance(bot: BotRecord | null | undefined, threadId: string
   return runningTurnEngines.get(threadId) ?? (bot ? registry.get(bot.modelSelection.instanceId) : null);
 }
 
+/** The engine takes pictures with a mid-turn steer (contracts:
+ * capabilities.steerImages), as native input like a new turn's. */
+function engineSteersImages(instance: ReturnType<typeof registry.get> | undefined): boolean {
+  const capabilities = instance?.adapter.capabilities;
+  return Boolean(capabilities?.queueing && capabilities.steerImages && capabilities.nativeImageInput && instance?.adapter.steer);
+}
+
 function providerTransitionForTurn(
   bot: NonNullable<ReturnType<typeof store.bot>>,
   runOn?: RoutineRunOn,
@@ -10387,21 +10394,27 @@ async function acceptDirectSend(
       if (currentAtStart.busy) {
         const instance = runningTurnInstance(currentAtStart, threadId);
         let steered: SteerOutcome = "refused";
-        // A live text steer has no image side channel. Keep an attachment
-        // message intact for the next ordinary turn, where central image
-        // admission can hand it to the provider natively.
-        const carriesImages = extractTurnImages(text).images.length > 0;
+        // Attachments steer only into an engine that takes images mid-turn
+        // (steerImages), as the same native blocks a new turn would carry.
+        // Elsewhere an attachment message stays intact for the next ordinary
+        // turn, where central image admission hands it over natively.
+        // Over-limit attachments still refuse the send here (413), as before.
+        const steerInput = extractTurnImages(text);
+        const carriesImages = steerInput.images.length > 0;
         const steerTarget = handoffs.current(threadId);
         const busyAdmission = admit("direct-busy", {
           carriesImages,
+          engineCanSteerImages: engineSteersImages(instance),
           pendingComputerSelection: Boolean(computerSelectionTurns.get(threadId)?.selected),
           engineCanSteer: Boolean(instance?.adapter.capabilities.queueing && instance.adapter.steer),
         });
         // steer was offered only when a live instance could take it;
         // the second check carries that fact to the type system.
         if (busyAdmission.action === "steer" && instance?.adapter.steer) {
-          steered = await instance.adapter
-            .steer(threadId, promptWithReply(promptWithDataContext(text, dataContext), replyTo, cfg.profile?.name?.trim() || "User"))
+          const prompt = promptWithReply(promptWithDataContext(steerInput.text, dataContext), replyTo, cfg.profile?.name?.trim() || "User");
+          steered = await (steerInput.images.length > 0
+            ? instance.adapter.steer(threadId, prompt, steerInput.images)
+            : instance.adapter.steer(threadId, prompt))
             .catch((): SteerOutcome => "indeterminate");
         }
         // steer() is awaited adapter work. The turn can settle, the task can
@@ -17550,7 +17563,7 @@ ROUTES.push(createChannelRoutes({
   messagePage,
   resolveReplyTarget,
   runningTurnInstance,
-  startGroupTurn,
+  startGroupTurn, engineSteersImages,
   applyRoomHoldsFromMessage,
   cancelGroupTurnOperations,
   drainQueuedChannelSends,
@@ -23186,20 +23199,31 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // turn — never both for the same words.
       const held = holdSteeredQueue(bot.id, bot.threadId, m[2]);
       if (!held) return json(res, 404, { error: "no such queued message" });
-      // A live steer has no image side channel. Attachment words wait for a
-      // real turn where central admission can hand the images to the engine.
-      if (held.items.some((item) => extractTurnImages(item.text).images.length > 0)) {
-        restoreHeldSteeredQueue(held);
-        return json(res, 200, { ok: true, queued: true, threadId: bot.threadId });
-      }
       const currentAtStart = store.projectBotForTask(bot.id, bot.threadId);
       const instance = currentAtStart?.busy ? runningTurnInstance(currentAtStart, bot.threadId) : undefined;
-      const prompt = held.items.map((item) => item.prompt).join("\n\n");
+      const engineCanSteer = Boolean(currentAtStart?.busy && instance?.adapter.capabilities.queueing && instance.adapter.steer);
+      // Attachments steer only into an engine that takes images mid-turn
+      // (steerImages), resolved from each prompt exactly as the drained
+      // follow-up would. Elsewhere attachment words wait for a real turn
+      // where central admission can hand the images to the engine.
+      const steerInput = extractSteerImages(held.items.map((item) => item.prompt));
+      const steerAdmission = admit("direct-busy", {
+        carriesImages: !steerInput || steerInput.images.length > 0,
+        engineCanSteerImages: Boolean(steerInput) && engineSteersImages(instance),
+        engineCanSteer,
+      });
+      if (steerAdmission.action === "queue" && steerAdmission.blockedBy) {
+        restoreHeldSteeredQueue(held);
+        return json(res, 200, { ok: true, queued: true, threadId: bot.threadId, blockedBy: steerAdmission.blockedBy });
+      }
+      const prompt = (steerInput?.texts ?? held.items.map((item) => item.prompt)).join("\n\n");
+      const images = steerInput?.images ?? [];
       const steerTarget = handoffs.current(bot.threadId);
       let steered: SteerOutcome = "refused";
-      if (currentAtStart?.busy && instance?.adapter.capabilities.queueing && instance.adapter.steer) {
-        steered = await instance.adapter
-          .steer(bot.threadId, prompt)
+      if (steerAdmission.action === "steer" && instance?.adapter.steer) {
+        steered = await (images.length > 0
+          ? instance.adapter.steer(bot.threadId, prompt, images)
+          : instance.adapter.steer(bot.threadId, prompt))
           .catch((): SteerOutcome => "indeterminate");
       }
       // The steer was awaited adapter work: re-read every ownership
