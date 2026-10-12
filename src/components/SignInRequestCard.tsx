@@ -66,17 +66,21 @@ export function SignInRequestCard({
     }
   };
 
-  if (card.superseded) {
+  // Stop ended the turn this card paused: nothing resumes, whatever is
+  // answered afterwards (the answer is kept).
+  const stopped = card.stopped === true;
+
+  if (card.superseded || (stopped && !outcome)) {
     return (
       <AskSettledLine icon={<X size={13} />} ariaLabel={t("signIn.title")}>
         <span className="text-ink-secondary">{card.site}</span>
-        <span> · {t("signIn.superseded")}</span>
+        <span> · {t(card.superseded ? "signIn.superseded" : "chat.turnStopped")}</span>
       </AskSettledLine>
     );
   }
 
   if (outcome) {
-    const retry = !card.resumed && error ? (
+    const retry = !card.resumed && !stopped && error ? (
       <button type="button" onClick={() => void answer(outcome === "done" ? "done" : "cancel")} disabled={pending !== null}
         className={cn(ASK_QUIET_BUTTON, "text-accent-text")}>
         {pending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
@@ -86,14 +90,14 @@ export function SignInRequestCard({
     return (
       <AskSettledLine
         ariaLabel={t("signIn.title")}
-        icon={outcome === "cancelled" ? <X size={13} className="text-ink-tertiary" /> : card.resumed ? undefined : error ? <LogIn size={13} /> : <Loader2 size={13} className="animate-spin" />}
+        icon={outcome === "cancelled" ? <X size={13} className="text-ink-tertiary" /> : card.resumed || stopped ? undefined : error ? <LogIn size={13} /> : <Loader2 size={13} className="animate-spin" />}
         action={retry}
         detail={error && <p role="alert" className="ms-[19px] mt-1 text-[12px] text-danger">{error}</p>}
       >
         <span className="text-ink-secondary">{card.savedLogin
           ? t("signIn.settled.saved", { site: card.savedLogin })
           : t(outcome === "done" ? "signIn.settled.done" : "signIn.settled.cancelled", { site: card.site })}</span>
-        <span> · {card.resumed ? t("signIn.settled.resumed", { name: botName }) : error ? t("signIn.settled.failed") : t("signIn.settled.waiting")}</span>
+        <span> · {card.resumed ? t("signIn.settled.resumed", { name: botName }) : stopped ? t("chat.turnStopped") : error ? t("signIn.settled.failed") : t("signIn.settled.waiting")}</span>
       </AskSettledLine>
     );
   }

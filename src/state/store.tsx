@@ -152,6 +152,8 @@ export interface ConnectorCardData {
   error?: string;
   dismissed?: boolean;
   resumed?: boolean;
+  /** Stop ended the turn this card paused: no action, nothing resumes (shared/wire.ts). */
+  stopped?: boolean;
 }
 
 export interface SecretRequestCardData {
@@ -168,6 +170,8 @@ export interface SecretRequestCardData {
   superseded?: boolean;
   resumed?: boolean;
   error?: string;
+  /** Stop ended the turn this card paused: no entry, nothing resumes (shared/wire.ts). */
+  stopped?: boolean;
 }
 
 /** Who is driving a bot's computer: held = the person has the wheel (the

@@ -11,14 +11,14 @@
 // as "not now" by the Runtime, so nothing here wraps it again.
 import { join } from "node:path";
 
-import type { Coordinator, CoordinatorHost, CoordinatorOptions, HandoffOptions, HandoffView, LiveHandoffEdge, RoomAddress } from "./coordinator.ts";
+import type { BeginTurnRequest, Coordinator, CoordinatorHost, CoordinatorOptions, HandoffOptions, HandoffView, HostTurnResult, LiveHandoffEdge, RoomAddress } from "./coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
-import { composeEnvelope, composeReport, composeResume, envelopeNote } from "./runtime/envelope.ts";
+import { composeEnvelope, composeReport, composeResume, composeRootTurn, continuationLine, envelopeNote } from "./runtime/envelope.ts";
 import { Runtime } from "./runtime/runtime.ts";
 import { importLegacyDelegations, importLegacyHandoffs, type LegacyThreadResolver } from "./runtime/import-legacy.ts";
 import { openRuntimeStore, type RuntimeStore } from "./runtime/store.ts";
 import { childrenSince, clip, isTerminal, path } from "./runtime/tree.ts";
-import type { Assignment, Origin, Owner, Reply, Requester, RunInput, RunResult, StatusView, TurnRunner } from "./runtime/types.ts";
+import type { Assignment, EndResult, Origin, Owner, Reply, Requester, RunInput, RunResult, StatusView, TurnRunner } from "./runtime/types.ts";
 
 /** Refusals the model and index.ts read; the words are the legacy tree's. */
 const NOT_RUNNING = "The originating room task is no longer running";
@@ -38,6 +38,11 @@ const NEEDS_INPUT = /^needs input:/i;
 /** The legacy watchdog owns per-turn stalls in this release: the runtime's
  * window is set out of the way, not off. */
 const TURN_STALL_MS = 24 * 60 * 60_000;
+
+/** Terminal trees older than this are pruned from runtime.db, once a day
+ * (first at the first tick after the store opens). */
+const PRUNE_AFTER_MS = 30 * 24 * 60 * 60_000;
+const PRUNE_EVERY_MS = 24 * 60 * 60_000;
 
 const address = (a: Assignment): RoomAddress => {
   const { groupId, threadId } = a.assignee.destination;
@@ -103,6 +108,8 @@ export function view(a: Assignment, parent?: Assignment): HandoffView {
   if (a.outcome !== undefined) node.outcome = a.outcome;
   if (a.outcomeDetail !== undefined) node.outcomeDetail = a.outcomeDetail;
   if (a.question !== undefined) node.question = a.question;
+  if (a.cards !== undefined) node.cards = a.cards;
+  if (a.continuation !== undefined) node.continuation = { ...a.continuation };
   if (a.parentId !== undefined) node.parentId = a.parentId;
   if (groupId !== undefined) node.groupId = groupId;
   if (a.batchKey !== undefined) node.requestBatchKey = a.batchKey;
@@ -124,6 +131,8 @@ export class RuntimeCoordinator implements Coordinator {
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private opened = false;
+  /** When terminal trees were last pruned (undefined: not yet this process). */
+  private prunedAt: number | undefined;
 
   constructor(options: CoordinatorOptions) {
     this.host = options.host;
@@ -289,6 +298,62 @@ export class RuntimeCoordinator implements Coordinator {
     return live.filter(a => a.parentId !== undefined && mine.has(a.parentId) && a.reply !== "none").map(a => this.project(a));
   }
 
+  beginTurn(req: BeginTurnRequest): HandoffView {
+    this.ready();
+    const existing = this.store.get(req.id);
+    if (existing) return this.project(existing);
+    const { address, opener } = req;
+    const row = this.runtime.begin({
+      id: req.id,
+      origin: opener?.origin ?? runtimeOrigin(req.origin, address),
+      requester: opener
+        ? { ...opener.requester, botId: opener.requester.botId ?? address.botId, threadId: opener.requester.threadId ?? address.threadId, chief: this.host.chiefOf(address) }
+        : { kind: "person", threadId: address.threadId, botId: address.botId, chief: this.host.chiefOf(address) },
+      assignee: { botId: address.botId, destination: { kind: address.groupId ? "room_thread" : "standing_thread", threadId: address.threadId,
+        ...(address.groupId ? { groupId: address.groupId } : {}) } },
+      brief: req.brief.slice(0, BRIEF_MAX),
+      level: req.level,
+      ...(opener?.requester.kind === "external_runtime" ? { reply: "poll" as const } : {}),
+    });
+    return this.project(row);
+  }
+
+  /** The host's own turn of a root ended. A cards result names the cards
+   * the turn left open; with none to act on there is nothing to wait for,
+   * so it reads as the turn's plain end. Never throws: an unknown or
+   * settled id is logged by the runtime and left alone. */
+  endTurn(id: string, result: HostTurnResult): void {
+    this.ready();
+    const cards = result.cards && result.cards.ids.length > 0 ? result.cards : undefined;
+    const end: EndResult = { ok: result.ok, text: result.text, ...(result.evidence ? { evidence: result.evidence } : {}),
+      ...(cards ? { needsInput: { question: cards.question, cards: cards.ids } } : {}),
+      ...(result.cap ? { continue: { note: result.cap.note, ...(result.cap.handoffPath ? { handoffPath: result.cap.handoffPath } : {}) } } : {}) };
+    this.runtime.end(id, end);
+  }
+
+  /** The person acted on a parked node's cards: a root or a child, by id. */
+  answerNode(id: string, text: string): boolean {
+    this.ready();
+    const a = this.store.get(id);
+    if (!a || a.status !== "needs_input") return false;
+    return this.runtime.answer(id, text);
+  }
+
+  answerRoot(id: string, text: string): boolean {
+    return this.answerNode(id, text);
+  }
+
+  parkedDirect(threadId: string): HandoffView | undefined {
+    this.ready();
+    const a = this.live().find(n => n.parentId === undefined && n.status === "needs_input" && this.direct(n, threadId));
+    return a && this.project(a);
+  }
+
+  prune(before: number): number {
+    this.ready();
+    return this.runtime.prune(before);
+  }
+
   /** A room brief is displayed once; each recipient keeps its own execution and result. */
   sharedRequest(node: HandoffView): { id: string; botIds: string[] } {
     this.ready();
@@ -394,7 +459,22 @@ export class RuntimeCoordinator implements Coordinator {
 
   tick(): void {
     this.ready();
+    this.pruneDaily();
     this.runtime.tick();
+  }
+
+  /** Terminal trees that finished more than 30 days ago go once a day; a
+   * prune that fails is logged and never stops the tick. */
+  private pruneDaily(): void {
+    const now = this.now();
+    if (this.prunedAt !== undefined && now - this.prunedAt < PRUNE_EVERY_MS) return;
+    this.prunedAt = now;
+    try {
+      const removed = this.runtime.prune(now - PRUNE_AFTER_MS);
+      if (removed > 0) this.log(`pruned ${removed} assignment rows of trees that finished more than 30 days ago`);
+    } catch (error) {
+      this.log(`prune failed: ${String(error)}`);
+    }
   }
 
   close(): void {
@@ -406,9 +486,14 @@ export class RuntimeCoordinator implements Coordinator {
     for (const n of this.live()) if (n.status === "running" && n.assignee.destination.threadId === threadId) this.runtime.progress(n.id);
   }
 
+  /** A typed line answers a coordinated child parked on its NEEDS INPUT
+   * question; a node parked on the person's cards (a root, or a child whose
+   * turn left cards) is answered only through those cards (answerNode), and
+   * the typed line starts an ordinary turn instead. */
   answer(threadId: string, text: string): boolean {
     this.ready();
-    const parked = this.parkedIn(threadId);
+    const parked = this.live().find(n => n.parentId !== undefined && n.status === "needs_input" && !(n.cards && n.cards.length > 0) &&
+      n.assignee.destination.threadId === threadId);
     return parked ? this.runtime.answer(parked.id, text) : false;
   }
 
@@ -437,6 +522,9 @@ export class RuntimeCoordinator implements Coordinator {
         host.changed(groups, threads);
       },
       names: (a, parent) => host.names(view(a, parent), parent && this.project(parent)),
+      // A host without the port knows nothing of what a cut turn did: the
+      // runtime then reruns it once, as before.
+      outward: a => host.outward ? host.outward(this.project(a)) : [],
     };
   }
 
@@ -451,20 +539,34 @@ export class RuntimeCoordinator implements Coordinator {
     // those open with the envelope again (and the restart note first).
     const resumed = input.turn === "resume";
     const settled = input.settled ?? [];
+    const root = a.parentId === undefined;
+    // A root is the person's own conversation: its later executions carry
+    // what the harness knows (a restart, the person's act, a continuation),
+    // never an assignment envelope. A resume carries its reports either way.
+    // A child that continues after a cap opens with why and where its steps
+    // so far are, then its assignment again, as a restart note would.
     const body = resumed
       ? composeResume(a, this.host.names(node, parent && this.project(parent)),
         settled.map(child => composeReport(this.readable(child, a, node), this.host.names(view(child, a), node))))
-      : input.envelope;
-    // A room whose transcript already carries the brief gets the note alone;
-    // a resume carries its reports either way.
-    const note = resumed ? body : envelopeNote(body);
+      : root
+        ? composeRootTurn(a, { turn: input.turn === "resume" ? "first" : input.turn, restartNote: "", ...(input.answer !== undefined ? { answer: input.answer } : {}),
+          ...(input.continuation ? { continuation: input.continuation } : {}) })
+        : input.continuation ? `${continuationLine(input.continuation)}\n${input.envelope}` : input.envelope;
+    // A room whose transcript already carries the brief gets the note alone.
+    const note = resumed || root ? body : envelopeNote(body);
+    const evidence = (result: HostTurnResult) => result.evidence ? { evidence: result.evidence } : {};
     const result = await this.host.run(node, resumed, signal,
-      { text: `${input.restartNote}${body}`, note: `${input.restartNote}${note}`, restartNote: input.restartNote });
+      { text: `${input.restartNote}${body}`, note: `${input.restartNote}${note}`, restartNote: input.restartNote, turn: input.turn });
     if (signal.aborted) return { kind: "failed", outcome: "stopped", text: result.text };
-    if (!result.ok) return { kind: "failed", outcome: "provider_error", text: result.text };
-    const question = needsInputQuestion(result.text);
-    if (question !== undefined) return { kind: "needs_input", question };
-    return { kind: "completed", text: result.text };
+    if (result.cap) return { kind: "continue", text: result.text, note: result.cap.note, ...(result.cap.handoffPath ? { handoffPath: result.cap.handoffPath } : {}), ...evidence(result) };
+    if (result.cards) return { kind: "needs_input", question: result.cards.question, cards: result.cards.ids, ...evidence(result) };
+    if (!result.ok) return { kind: "failed", outcome: "provider_error", text: result.text, ...evidence(result) };
+    // A root is the person's own conversation: a NEEDS INPUT line there is a
+    // question in the chat, answered by a typed line that starts a new root;
+    // only cards park a root. A child's line parks it for the requester.
+    const question = root ? undefined : needsInputQuestion(result.text);
+    if (question !== undefined) return { kind: "needs_input", question, ...evidence(result) };
+    return { kind: "completed", text: result.text, ...evidence(result) };
   }
 
   // ── small helpers ────────────────────────────────────────────────────
