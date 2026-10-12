@@ -52,18 +52,15 @@ export type BotUpdatePatch = Partial<
    * reach the wire inside the coalesced body and must never fold into bot
    * state — the queue strips it from every overlay it hands back. */
   acknowledgeLocalAuto?: boolean;
-  /** Renderer-local marker that the elevated-risk Full access dialog was
-   * confirmed. StoreProvider consumes it before the private Electron request;
-   * it is never sent over HTTP or folded into bot state. */
-  confirmFullAccess?: boolean;
-  /** Private desktop grant scope, never an HTTP patch or bot field. */
+  /** With approvalMode "full": every existing thread takes Full too. It rides
+   * the PATCH body (or the desktop grant's scope), never a bot field. */
   applyToAllThreads?: boolean;
 };
 
 /** A wire patch after clear-only values have been normalized for Bot state. */
 export type BotStatePatch = Omit<
   BotUpdatePatch,
-  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "confirmFullAccess" | "applyToAllThreads"
+  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "applyToAllThreads"
 > & {
   computer?: Bot["computer"];
   connectorTools?: Bot["connectorTools"];
@@ -116,12 +113,11 @@ const hasOwn = (value: object, key: PropertyKey): boolean =>
 const isAbortError = (error: unknown): boolean =>
   Boolean(error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError");
 
-/** What may fold back into renderer bot state: everything except the consent
- * flag, which is wire-only. One strip point covers both overlay paths. */
+/** What may fold back into renderer bot state: everything except the
+ * wire-only flags. One strip point covers both overlay paths. */
 const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
   const {
     acknowledgeLocalAuto: _localAck,
-    confirmFullAccess: _fullConfirmation,
     applyToAllThreads: _allThreads,
     computer,
     connectorTools,

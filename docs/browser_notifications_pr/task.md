@@ -1,7 +1,7 @@
 # タスク: OpenMausBotのブラウザ通知設定およびPR作成
 
 ## 概要
-サーバー（https://otetcham.tail2d2884.ts.net 等）に接続するブラウザ（WindowsおよびAndroid）上で、新しいメッセージが到着した際に通知を送信する設定を追加し、milind-soni/OpenMausBot に対するPull Requestを作成・送信する。
+サーバーに接続するブラウザ（WindowsおよびAndroid）上で、新しいメッセージが到着した際に通知を送信する設定を追加し、milind-soni/OpenMausBot に対するPull Requestを作成・送信する。
 
 ## タスクリスト
 - [x] 要求仕様およびコードベースの調査 <!-- id: 0 -->

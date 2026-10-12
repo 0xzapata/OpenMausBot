@@ -24,6 +24,7 @@ import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
 import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk } from "../shared/approval-mode.ts";
+import { lastChangeRequestUrl } from "../shared/thread-link.ts";
 import { REMOVED_COMPUTER_DRIVER, type ComputerEngineMove } from "./computer-engine-removal.ts";
 import type { ProfileRequestChanges } from "../shared/profile-request.ts";
 import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts";
@@ -99,12 +100,17 @@ export interface TaskRecord extends Omit<WireTask, TaskWireDerivedKeys> {
    * so only positively identified auto pins yield to Works on changes.
    * Clients see only whether a pin is an auto pin (WireTask.surfaceAuto). */
   surfaceSource?: "user" | "auto";
+  /** Epoch ms a person last wrote here: never a teammate, a routine, a
+   * webhook, the bot itself or a line relayed from Slack. The newest open
+   * one is the bot's main thread (server/main-thread.ts), which clients get
+   * worked out (WireBot.mainThreadId). Absent until someone writes. */
+  askedAt?: number;
 }
 
 /** TaskRecord fields no client may see. Everything else must be on WireTask:
  * the exactness assertion below fails to compile when either side drifts,
  * so a new server field forces a decision — wire-visible or private here. */
-export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource";
+export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource" | "askedAt";
 /** WireTask fields computed by toWireTask and never stored on a TaskRecord. */
 export type TaskWireDerivedKeys = "surfaceAuto" | "followsBotModel";
 export type TaskWireProjection = Pick<TaskRecord, Exclude<keyof TaskRecord, TaskWirePrivateKeys>> & Pick<WireTask, TaskWireDerivedKeys>;
@@ -122,7 +128,7 @@ export const taskWireProjectionIsExact: TaskWireProjectionIsExact = true;
 export function toWireTask(task: TaskRecord, botModel: ModelSelection): WireTask {
   const { resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, handedMessages: _handedMessages,
     appliedCompactionId: _appliedCompactionId, contextFloor: _contextFloor, lastContextModel: _lastContextModel,
-    surfaceSource, ...stored } = task;
+    surfaceSource, askedAt: _askedAt, ...stored } = task;
   const wire: WireTask = { ...stored, modelSelection: structuredClone(task.modelSelection ?? botModel), followsBotModel: task.modelSelection === undefined };
   // Who pinned stays private. A client learns only whether the pin is the
   // machine's own record, so it never presents one as the person's choice.
@@ -136,7 +142,7 @@ const ASK_NOW = { approvalMode: "ask" as const, autoApprove: false, alwaysAllow:
 const TASK_PATCH_FIELDS = [
   "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow",
   "unread", "lastReadMessageId", "rewound", "archivedAt", "pinned", "pinnedMessageId", "resumeCursors", "lastInstanceId", "cwd",
-  "routineRunId", "surface", "surfaceSource", "snoozedUntil", "appliedCompactionId", "contextFloor", "lastContextModel",
+  "routineRunId", "surface", "surfaceSource", "snoozedUntil", "link", "linkAuto", "appliedCompactionId", "contextFloor", "lastContextModel",
 ] as const satisfies readonly (keyof TaskRecord)[];
 export type TaskPatch = Partial<Pick<TaskRecord, typeof TASK_PATCH_FIELDS[number]>>;
 
@@ -184,6 +190,8 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       detail: out.goalRun.detail ? redactSecretsInText(out.goalRun.detail) : undefined,
     };
   }
+  // A Live call's title is the bot engine's own words about the call.
+  if (out.call?.title) out.call = { ...out.call, title: redactSecretsInText(out.call.title) };
   if (out.card) {
     const card = { ...out.card } as OptionCardData & { summary?: string };
     card.title = redactSecretsInText(card.title);
@@ -485,6 +493,9 @@ const GROUPS_FILE = join(DATA_DIR, "groups.json");
 /** Written once the copies older builds made of a bot's model on its threads
  * are cleared (Store load), so that cleanup runs once per data directory. */
 const THREAD_MODEL_COPIES_CLEARED = join(DATA_DIR, "thread-model-copies-cleared");
+/** Written once threads from before builds kept askedAt have it from their
+ * transcripts (Store load); since then each person's line stamps it. */
+const ASKED_AT_FILLED = join(DATA_DIR, "asked-at-filled");
 
 /** The registries carry souls, project paths and per-bot settings, so they are
  * owner-only like the other data-dir stores. A file written by an older
@@ -864,6 +875,7 @@ export class Store {
     // different model can't be told apart from a pick and stays. Only over a
     // bot list this load could read, so an unreadable file is not skipped.
     const clearModelCopies = !existsSync(THREAD_MODEL_COPIES_CLEARED) && (botsLoaded || !existsSync(BOTS_FILE));
+    const fillAskedAts = !existsSync(ASKED_AT_FILLED) && (botsLoaded || !existsSync(BOTS_FILE));
     // bots saved before tasks existed have one endless thread; adopt it as
     // their first task so nothing is lost and nothing special-cases it
     for (const b of this.bots) {
@@ -955,6 +967,7 @@ export class Store {
     // After legacy transcripts are in SQLite, so the first boot sees their
     // newest message instead of stamping createdAt and jumping next launch.
     this.repairThreadUpdatedAts();
+    if (fillAskedAts) this.fillTaskAskedAts();
     // After the roster is loaded, so identity resolution sees which opener
     // ids are still live.
     this.repairDuplicatePairConversations();
@@ -1002,6 +1015,23 @@ export class Store {
     for (const task of groupTasks) if (repair(task)) groupsDirty = true;
     if (botsDirty) this.saveBots();
     if (groupsDirty) this.saveGroups();
+  }
+
+  /** Where a person last wrote in a thread from before builds kept it
+   * (TaskRecord.askedAt) is only in its transcript: once, a thread without
+   * the stamp takes its newest line a person sent from an app. Without it a
+   * bot's main thread (server/main-thread.ts) is whichever thread is
+   * selected until someone writes again: often the oldest one, where
+   * v0.1.98 to v0.1.107 reported, left selected by its activity row. */
+  private fillTaskAskedAts(): void {
+    const tasks = this.bots.flatMap((bot) => bot.tasks ?? []).filter((task) => task.askedAt === undefined && !task.routineRunId);
+    const asked = mdb.latestPersonLineAts(tasks.map((task) => task.threadId));
+    for (const task of tasks) {
+      const at = asked.get(task.threadId);
+      if (at !== undefined) task.askedAt = at;
+    }
+    if (asked.size) this.saveBots();
+    writeFileAtomic(ASKED_AT_FILLED, "Threads from before askedAt have it from the lines people wrote there.\n", { mode: 0o600 });
   }
 
   /** Resolve the identity of a historical pair row, including a sender
@@ -2717,6 +2747,13 @@ export class Store {
     return task;
   }
 
+  suggestTaskLink(botId: string, threadId: string, text: string): TaskRecord | null {
+    const url = lastChangeRequestUrl(text);
+    const task = this.taskByThread(botId, threadId);
+    if (!url || !task || task.linkAuto === false || (task.link && !task.linkAuto) || task.link === url) return null;
+    return this.patchTask(botId, threadId, { link: url, linkAuto: true });
+  }
+
   /** A Works on change is the newest explicit choice, so this bot's
    * machine-recorded pins that now point somewhere else give way. A pin a
    * person set, a legacy pin with unknown provenance, and a pin that already
@@ -2876,6 +2913,18 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
     task.openedBy = structuredClone(openedBy);
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+    return task;
+  }
+
+  /** A person wrote in this thread at `at` (startTurn and a steer decide
+   * who is one). Never moves back, and never reachable from the HTTP task
+   * PATCH: askedAt is not a TASK_PATCH_FIELD. */
+  setTaskAskedAt(botId: string, threadId: string, at: number): TaskRecord | null {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || !Number.isFinite(at) || (task.askedAt ?? -1) >= at) return task ?? null;
+    task.askedAt = at;
     this.saveBots();
     this.emit({ type: "bot", botId });
     return task;

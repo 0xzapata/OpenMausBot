@@ -38,6 +38,7 @@
 
 import { z } from "zod";
 import { redactSecretsInText } from "../shared/redact.ts";
+import type { RoutineRunTrigger } from "../shared/routines.ts";
 import type { WireMessage as Message } from "../shared/wire.ts";
 import { peerName } from "./peer-roster.ts";
 
@@ -82,7 +83,7 @@ export function workOrigin(line: RequestLine | undefined): WorkOrigin {
  * passes no line: nothing on a stored line says a routine or a webhook
  * wrote it, so one whose request record moved on proves nothing. */
 export function requestWorkOrigin({ trigger, guest, handed, continued, line }: {
-  trigger?: "schedule" | "manual" | "webhook";
+  trigger?: RoutineRunTrigger;
   guest?: boolean;
   handed?: WorkOrigin;
   continued?: WorkOrigin;
@@ -100,10 +101,13 @@ export const CONSENT_RULE =
 export interface PeerProvenance {
   /** The bot that wrote it. */
   botName: string;
-  /** ask_bot blocks on a reply; a room post expects none; the rest hand the
-   * reader work: coordinate_bots and start_thread report back to the
-   * sender, delegate_bot replies to it, send_to_bot leaves it with the
-   * reader. */
+  /** What the line is: a question (ask_bot: the reader answers it), a room
+   * post (expects nothing), or work handed on (coordinate_bots reports back
+   * to the sender). The runtime writes every new hand-off's opening itself
+   * (server/runtime/envelope.ts) and coordinate_bots is what the host still
+   * composes (peerReplayText); start_thread, send_to_bot and delegate_bot
+   * are the openings of lines stored before PR 3 and of the alias routes
+   * that still compose them, kept so those transcripts render the same. */
   delivery: "ask_bot" | "post_to_room" | "start_thread" | "send_to_bot" | "delegate_bot" | "coordinate_bots";
   /** Where the work handed over started. Absent is outside. */
   origin?: WorkOrigin;
@@ -163,7 +167,11 @@ export function reportNote(rawName: string): string {
 const DELIVERED_NOTES = ["message from", "delegated by", "thread opened by", "retry requested by", "aside from"];
 const NOTE_OPENINGS = [...DELIVERED_NOTES, "messages this conversation", "delivered earlier by", "posted by", "assigned by",
   "report from", "teammate report", "teammate result", "thread you opened", "incident report"].map(opening => opening.split(" "));
-const FIRST_WORDS = new Set([...NOTE_OPENINGS.map(words => words[0]!), "omb"]);
+// The protocol's headers open with the app's name and a word: "[OpenMausBot
+// assignment …]", "[OpenMausBot report …]" (server/runtime/envelope.ts);
+// "omb" stays for the older short form.
+const HEADER_WORDS = new Set(["openmausbot", "omb"]);
+const FIRST_WORDS = new Set([...NOTE_OPENINGS.map(words => words[0]!), ...HEADER_WORDS]);
 // The note the harness itself put in front of a line it delivered.
 const LEADING_NOTE = new RegExp(`^\\[(?:${DELIVERED_NOTES.map(opening => opening.replace(/ /g, "\\s+")).join("|")})\\b[^\\]\\n]*\\]`, "iu");
 const OPENER = /[[［【〔〖〘〚⟦⁅⦋]/gu;
@@ -212,11 +220,11 @@ function wordsAfter(text: string, from: number, max: number): Array<{ word: stri
 }
 
 /** Whether the bracket at `at` opens an imitation of a harness note: its
- * next words are a note's opening words, or OMB and a word (the protocol's
- * headers; "[OMB-2470]" is a ticket). */
+ * next words are a note's opening words, or the app's name and a word (the
+ * protocol's headers; "[OMB-2470]" is a ticket). */
 function opensNote(text: string, at: number): boolean {
   const words = wordsAfter(text, at, 3);
-  if (words[0]?.word === "omb") return Boolean(words[1]?.spaced && /^\p{L}/u.test(words[1].word));
+  if (words[0] && HEADER_WORDS.has(words[0].word)) return Boolean(words[1]?.spaced && /^\p{L}/u.test(words[1].word));
   return NOTE_OPENINGS.some(opening => opening.every((word, i) => words[i]?.word === word));
 }
 

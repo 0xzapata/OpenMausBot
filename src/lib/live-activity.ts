@@ -93,11 +93,21 @@ export function liveActivityPhrases(message?: Message): LiveActivityPhrases {
   ) {
     return phaseOf("chat.activity.thinking");
   }
+  return toolActivityPhrases(message.tool);
+}
 
-  const spoken = message.tool.spoken?.trim();
+/** A step's name as people read it, running or finished: the server's
+ * narration when it has one, else a plain label for the kind of tool. Never
+ * the tool's arguments ("Bash: pnpm test" reads "Running a command"). */
+export function activityStepLabel(tool: { name: string; spoken?: string }): string {
+  return toolActivityPhrases(tool).phrases[0];
+}
+
+function toolActivityPhrases(tool: { name: string; spoken?: string }): LiveActivityPhrases {
+  const spoken = tool.spoken?.trim();
   if (spoken) return { phase: `spoken:${spoken}`, phrases: [sentenceCase(spoken)] };
 
-  const toolName = message.tool.name.replace(/^mcp__[^_]+__/, "").split(":", 1)[0] ?? "";
+  const toolName = tool.name.replace(/^mcp__[^_]+__/, "").split(":", 1)[0] ?? "";
   for (const [pattern, key] of FALLBACK_LABELS) {
     if (pattern.test(toolName)) return phaseOf(key);
   }

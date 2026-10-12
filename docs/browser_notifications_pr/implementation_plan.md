@@ -2,6 +2,8 @@
 
 OpenMausBotにサーバー接続時（Web UI利用時）のブラウザ通知機能を追加し、WindowsおよびAndroid端末で新しいメッセージを受信した際に通知を送信できるようにする。
 
+これは初期計画。統合後は完了通知を既存のサーバー経路に任せ、Workerは許可済みのモバイル通知に必要な時だけ登録する。現在の動作と検証範囲は [`../verification/phone-web-app.md`](../verification/phone-web-app.md) を参照。
+
 ## 課題と解決策
 1. **モバイル（Android）でのNotification制約**:
    - モバイルブラウザ（Chrome for Android等）では `new Notification(...)` が無効化されており `TypeError: Illegal constructor` となる。

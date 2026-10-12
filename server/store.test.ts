@@ -312,6 +312,22 @@ describe("Store", () => {
     for (const field of Object.keys(patch)) expect(wire).not.toHaveProperty(field);
   });
 
+  it("keeps a Live call row's record across a restart and scrubs a secret from its title", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({}, { seedMessages: false });
+    const key = "sk-ant-" + "c".repeat(90);
+    const row = store.appendMessage(bot.threadId, {
+      role: "bot",
+      kind: "call",
+      text: "Call with Ada · 1:42",
+      call: { callId: "call-1", botId: bot.id, client: "ios", startedAt: 1_000, endedAt: 103_000, seconds: 102, endReason: "hung-up", title: `Deploy with ${key}` },
+    });
+    expect(row.call?.title).not.toContain(key);
+    const reloaded = new Store(selection).messagesFor(bot.threadId).find((message) => message.id === row.id);
+    expect(reloaded?.call).toMatchObject({ callId: "call-1", botId: bot.id, client: "ios", seconds: 102, endReason: "hung-up" });
+    expect(JSON.stringify(reloaded)).not.toContain(key);
+  });
+
   it("round-trips audio attachments with their metadata through persistence", () => {
     const store = new Store(selection);
     const bot = store.createBot({}, { seedMessages: false });
@@ -2216,6 +2232,38 @@ describe("Store task usage", () => {
     const store = new Store(selection);
     const bot = store.createBot();
     expect(store.addTaskUsage(bot.id, "nope", { input: 1, output: 1, costUsd: null })).toBeNull();
+  });
+});
+
+describe("Store askedAt from before builds kept it", () => {
+  beforeEach(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+  });
+
+  // Builds before askedAt kept where a person wrote only in transcripts.
+  it("fills a thread's askedAt from the newest line a person sent there, once per data directory", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ name: "Upgraded" });
+    const first = bot.threadId;
+    const later = store.createTask(bot.id, "Later")!.threadId;
+    const run = store.createTask(bot.id, "Run")!.threadId;
+    store.patchTask(bot.id, run, { routineRunId: "run-1" });
+    const asked = store.appendMessage(first, { role: "user", kind: "text", text: "Good morning.", sendId: "send-1" });
+    store.appendMessage(first, { role: "bot", kind: "text", text: "Morning!" });
+    // A routine's prompt, and a hidden run's lines, are no one's words here.
+    store.appendMessage(later, { role: "user", kind: "text", text: "Report this run's state." });
+    store.appendMessage(run, { role: "user", kind: "text", text: "Go.", sendId: "send-2" });
+    expect(existsSync(join(DATA_DIR, "asked-at-filled"))).toBe(true);
+    rmSync(join(DATA_DIR, "asked-at-filled"));
+    const upgraded = new Store(selection);
+    expect(upgraded.taskByThread(bot.id, first)?.askedAt).toBe(asked.at);
+    expect(upgraded.taskByThread(bot.id, later)).not.toHaveProperty("askedAt");
+    expect(upgraded.taskByThread(bot.id, run)).not.toHaveProperty("askedAt");
+    expect(toWireTask(upgraded.taskByThread(bot.id, first)!, selection())).not.toHaveProperty("askedAt");
+    // Once: since then every person's line stamps its thread as it is
+    // written (index.ts startTurn), so no later start reads a transcript.
+    upgraded.appendMessage(later, { role: "user", kind: "text", text: "Hello.", sendId: "send-3" });
+    expect(new Store(selection).taskByThread(bot.id, later)).not.toHaveProperty("askedAt");
   });
 });
 

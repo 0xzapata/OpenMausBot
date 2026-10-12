@@ -324,7 +324,7 @@ export interface AcpSupport {
   /** Part of the spawn contract beside the environment: state outside it
    * that a running process never reads again (OpenCode's auth.json), so a
    * conversation whose process predates a change gets a fresh one. */
-  spawnFingerprint?(env: Record<string, string | undefined>): string;
+  spawnFingerprint?(env: Record<string, string | undefined>, config: AcpConfig): string;
   /** The approval mode is applied to the session on every turn (in
    * configureSession) and nothing about the process depends on it, so an
    * approval change must not respawn the process. The pooled session may
@@ -379,15 +379,16 @@ export interface AcpSupport {
    *  snapshot share `transformEnv` and must not see a per-turn overlay. */
   applyTurnEnv?(
     env: Record<string, string | undefined>,
-    ctx: { model?: string; requestedModel?: string; fullAuto: boolean; botId?: string; cwd: string; toolScope?: SendTurnInput["toolScope"] },
+    ctx: { model?: string; requestedModel?: string; fullAuto: boolean; botId?: string; cwd: string; toolScope?: SendTurnInput["toolScope"]; threadId: string; mcpServers: Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }> },
   ): void;
   /** Pick the ACP authenticate methodId from initialize's advertised
    * authMethods; return null to skip the authenticate step. `env` is the
    * environment the agent process was spawned with. */
   pickAuthMethod(authMethods: Array<{ id?: string }>, env: Record<string, string | undefined>): string | null;
-  /** "fail": abort the turn if auth is missing/errors (subscription CLIs).
-   *  "continue": proceed anyway (CLIs that work off an ambient login). */
-  authFailure: "fail" | "continue";
+  /** "fail": abort if auth is missing/errors (subscription CLIs).
+   * "fail-request": cached API credentials need no method, but a requested
+   * OAuth login must succeed. "continue": proceed on an ambient login. */
+  authFailure: "fail" | "fail-request" | "continue";
   /** snapshot(): can this harness actually run a turn? (env already carries the
    *  merged config). May be async for harnesses that have to ask the CLI. */
   isAuthenticated(
@@ -419,6 +420,7 @@ export interface AcpSupport {
   configureSession?(ctx: {
     request: (method: string, params: unknown, timeoutMs?: number) => Promise<any>;
     sessionId: string;
+    env: Record<string, string | undefined>;
     config: AcpConfig;
     turn: SendTurnInput;
     /** `session/new` (or `session/load`) advertised model list, verbatim. Some
@@ -1631,8 +1633,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           return { turnId };
         }
         const resolvedModel = support.resolveTurnModel?.(turn.model, env);
+        const mcpServers = acpMcpServers(turn);
         support.applyTurnEnv?.(env, {
           model: resolvedModel, requestedModel: turn.model, fullAuto: turnConfig.fullAuto === true, botId: turn.botId, cwd, toolScope: turn.toolScope,
+          threadId, mcpServers,
         });
         // Rebound once, before the prompt, when a fallbackModel support swaps
         // a model this session does not offer for one it does.
@@ -1640,7 +1644,6 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           resolvedModel !== undefined && resolvedModel !== turn.model
             ? { ...turn, model: resolvedModel }
             : turn;
-        const mcpServers = acpMcpServers(turn);
         let launch: { command: string; args?: string[]; env?: Record<string, string | undefined> };
         try {
           launch = support.resolveCommand
@@ -1686,7 +1689,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const contractKey = JSON.stringify([
           launch.command, launch.args ?? [], spawnArgs, cwd,
           support.sessionScopedApproval ? null : turnConfig.fullAuto === true, envFingerprint,
-          support.spawnFingerprint?.(spawnEnv) ?? null,
+          support.spawnFingerprint?.(spawnEnv, turnConfig) ?? null,
           turn.toolScope ?? null,
           inheritedScopeFingerprint,
         ]);
@@ -1887,7 +1890,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                     await request("authenticate", { methodId }, INIT_TIMEOUT);
                     session.authenticated = true;
                   } catch {
-                    if (support.authFailure === "fail") throw new Error(support.loginNote);
+                    if (support.authFailure !== "continue") throw new Error(support.loginNote);
                     // else: proceed on an ambient login
                   }
                 } else if (support.authFailure === "fail") {
@@ -2079,6 +2082,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                     return result;
                   },
                   sessionId,
+                  env: spawnEnv,
                   config: turnConfig,
                   turn: cliTurn,
                   sessionModels: Array.isArray(session.sessionConfigResult?.models?.availableModels)
@@ -2327,13 +2331,27 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       const snapshot = async (): Promise<ProviderSnapshot> => {
         const env = childEnv();
         if (support.snapshot) return support.snapshot(env, config, instanceId);
-        const version = await new Promise<string | null>((resolve) => {
-          execCli(config.cli, ["--version"], { timeout: 8000, env }, (err, stdout, stderr) =>
-            resolve(err ? null : versionFromProbe(stdout, stderr)),
-          );
+        const probe = await new Promise<{ version?: string; reason?: string }>((resolve) => {
+          execCli(config.cli, ["--version"], { timeout: 8000, env }, (err, stdout, stderr) => {
+            if (err) {
+              const failure = err as NodeJS.ErrnoException & { killed?: boolean };
+              const reason = failure.code === "ENOENT"
+                ? `\`${config.cli}\` isn't installed, or isn't on this app's PATH. Install it for the user running OpenMausBot or use Set CLI, then check again.`
+                : failure.code === "EACCES" || failure.code === "EPERM"
+                  ? `\`${config.cli}\` isn't executable. Check its file permissions, then check again.`
+                  : failure.killed && failure.code == null
+                    ? `\`${config.cli}\` version check timed out after 8 seconds. Check it in a terminal on the server, then try again.`
+                    : `\`${config.cli}\` version check failed. Run it with --version on the server to diagnose the installation, then check again.`;
+              // Do not echo arbitrary CLI output or its environment into Settings.
+              resolve({ reason });
+              return;
+            }
+            const version = versionFromProbe(stdout, stderr);
+            resolve(version ? { version } : { reason: `\`${config.cli}\` returned no version. Check the configured executable with --version, then try again.` });
+          });
         });
-        if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
-        return { state: "available", version, authenticated: await support.isAuthenticated(env, config, instanceId) };
+        if (!probe.version) return { state: "unavailable", reason: probe.reason };
+        return { state: "available", version: probe.version, authenticated: await support.isAuthenticated(env, config, instanceId) };
       };
 
       /** Memory upkeep's one-shot call on this engine's own provider: a
@@ -2351,7 +2369,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const cwd = mkdtempSync(join(tmpdir(), "omb-acp-memory-"));
         try {
           const turn = { threadId: `memory-text-${newId()}`, text: prompt, approvalMode: "ask", cwd } as SendTurnInput;
-          support.applyTurnEnv?.(env, { fullAuto: false, cwd });
+          support.applyTurnEnv?.(env, { fullAuto: false, cwd, threadId: turn.threadId, mcpServers: [] });
           const launch = support.resolveCommand ? await support.resolveCommand(env, turnConfig, instanceId) : { command: turnConfig.cli };
           const spawnEnv = launch.env ?? env;
           return await runAcpOneShot({
@@ -2365,12 +2383,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             prompt,
             defaultModel: models.default,
             pickAuthMethod: (methods) => support.pickAuthMethod(methods, spawnEnv),
-            authRequired: support.authFailure === "fail",
+            authRequired: support.authFailure === "fail-request" ? "if-requested" : support.authFailure === "fail",
             loginNote: support.loginNote,
             ...(support.configureSession ? {
               configure: ({ request, sessionId, session }) => support.configureSession!({
                 request,
                 sessionId,
+                env: spawnEnv,
                 config: turnConfig,
                 turn,
                 sessionModels: Array.isArray(session?.models?.availableModels) ? session.models.availableModels : [],

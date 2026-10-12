@@ -94,7 +94,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
     directRequestOwners: new Map(),
     autoVmClaims,
     turnResources: { release() {} }, settlingResourceOwners: new Map(), turnComputerResources: new Map(), teamComputerTurns: new Map(),
-    roomHandoffs: { stopAwaitingDirect() {} },
+    coordinator: { stopAwaitingDirect: () => [] },
     noteTeammatesLeftRunning() {},
     cancelDirectTurnDispatch: (_botId: string, threadId: string) => cancelled.push(threadId),
     cancelGroupTurnOperations: (_groupId: string, threadId: string, outcome?: { status: string; detail: string; byHarness?: boolean }) => {
@@ -469,7 +469,6 @@ it("a changed key replaces only its engine and tells only that engine's requeste
   });
   expect(f.log).toEqual(expect.arrayContaining(["auth:compat", "detach:compat", "cancel:eli-work", "load:compat", "attach:compat",
     "message:eli-work:turn interrupted — provider settings changed",
-    "delegation:Delegated turn did not finish — turn interrupted — provider settings changed (eli-work)",
     // a room's assignments fail with the cause, never as the person's Stop
     "room-stop:room-compat:stopped:turn interrupted — provider settings changed:true"]));
   expect(f.settled).toEqual([{ generation: "gen-eli-work", text: "turn interrupted — provider settings changed (eli-work)" }]);
@@ -487,7 +486,7 @@ it("ends a room stopped by the harness with its cause, and one the person stoppe
     const calls: string[] = [];
     const context = vm.createContext({
       pendingComputerResumes: new Map(), cancelTeamSetupResumesForThread() {},
-      roomHandoffs: { cancelRoom: (...args: string[]) => calls.push(`assignments:${args.join("|")}`) },
+      coordinator: { cancelRoom: (...args: string[]) => calls.push(`assignments:${args.join("|")}`) },
       groupTurnOperations: new Map([["g", new Set([{ threadId: "room", cancellation: new AbortController() }])]]),
       finishGroupGoalRun: (_groupId: string, _operation: unknown, status: string, detail: string) => calls.push(`goal:${status}|${detail}`),
       markCancelledProviderHandshake() {},

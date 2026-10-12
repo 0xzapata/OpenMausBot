@@ -1737,8 +1737,6 @@
   "approvalMode.learnMore": "詳しく見る",
   "approvalMode.customLocalOnly": "カスタム承認は、インストール済みのデスクトップアプリでのみ変更できます",
   "approvalMode.customLocalOnlyDot": "カスタム承認は、インストール済みのデスクトップアプリでのみ変更できます。",
-  "approvalMode.antigravityLocalOnly": "自動（フルアクセス）は、インストール済みのデスクトップアプリで使えます。",
-  "approvalMode.trustedLocalOnly": "フルアクセスとカスタムは、インストール済みのデスクトップアプリで使えます。",
   "onboarding.welcome": "{app} へようこそ",
   "onboarding.intro": "自分のコンピューターで実際に仕事をするボットです。あなたのことを教えてください。大きな更新があればお知らせします。",
   "onboarding.name": "あなたの名前",
@@ -4019,7 +4017,7 @@
   "error.plain.server": "接続先で問題が発生しました。もう一度お試しください。",
   "error.plain.generic": "問題が発生しました。もう一度お試しください。",
   "settings.browserNotifications.title": "ブラウザ通知",
-  "settings.browserNotifications.subtitle": "新しいメッセージの到着時やエージェントの完了時に、バックグラウンドでもWindowsやAndroidに通知を送信します。",
+  "settings.browserNotifications.subtitle": "アプリを開いている間、新しいメッセージや作業の完了を通知します。承認依頼と警告の通知は引き続き表示されます。",
   "settings.browserNotifications.deniedSubtitle": "ブラウザの設定で通知がブロックされています。通知を受け取るにはブラウザのサイト権限で通知を許可してください。",
   "settings.browserNotifications.enableButton": "通知を許可する",
   "settings.browserNotifications.aria": "ブラウザ通知"

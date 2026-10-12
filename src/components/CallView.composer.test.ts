@@ -1,5 +1,5 @@
-// A bot's call button lives in the composer, beside dictation: a filled circle
-// the size of Send with a waveform in it. It keeps the header button's
+// A bot's call button lives in the composer, beside dictation: a filled
+// Send-sized button with a waveform in it. It keeps the header button's
 // behaviour exactly — start, hang up, and the help when a call can't start.
 import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -104,10 +104,10 @@ afterEach(() => {
 });
 
 describe("composer call button", () => {
-  it("is a Send-sized filled circle with a waveform, labelled for the bot", () => {
+  it("is a Send-sized filled button with a waveform, labelled for the bot", () => {
     const { html, button } = render();
     expect(button.props["aria-label"]).toBe("Call Pepper");
-    expect(String(button.props.className).split(" ")).toEqual(expect.arrayContaining(["size-8", "rounded-full", "bg-control"]));
+    expect(String(button.props.className).split(" ")).toEqual(expect.arrayContaining(["size-8", "rounded-l-3xl", "rounded-r-lg", "active:rounded-3xl", "transition-[color,background,border-radius]", "bg-control"]));
     expect(html).toContain("lucide-audio-lines");
     expect(html).not.toContain("lucide-phone");
   });

@@ -9,15 +9,15 @@ OpenMausBotのWeb UIにおいて、新しいメッセージが到着した際に
 - 通知タップ時にブラウザウィンドウにフォーカスを戻し、対象の会話スレッドを開くハンドラーを実装。
 
 ### 2. Service Workerおよび通知クライアント連携 (`src/lib/notify.ts`)
-- `initNotificationServiceWorker()` を新設し、Service Worker (`/sw.js`) の登録と通知クリックメッセージのリスニングを実装。
-- `showNotification()` において、Service Workerが利用可能な環境では `registration.showNotification()` を優先し、従来の `new Notification()` を安全なフォールバックとして処理。
+- `initNotificationServiceWorker()` は通知クリックを監視し、アンマウント時に解除する。通知の許可前にWorkerを登録しない。
+- `new Notification()` を使えないモバイル環境でのみ、通知専用スコープ `/notifications/` にWorkerを登録する。ページ制御やオフラインキャッシュは追加しない。
 
 ### 3. メッセージ通知設定管理 (`src/lib/notification-preferences.ts`)
 - `MESSAGE_NOTIFICATIONS_KEY = "omb-message-notifications"` を追加。
 - `messageNotificationsEnabled()` / `setMessageNotifications()` / `useMessageNotifications()` を追加し、ユーザーがメッセージ到着時通知をON/OFF可能に。
 
 ### 4. メッセージ到着時の通知トリガー (`src/state/store.tsx`)
-- ボットから新しいテキストメッセージを受信した際（`case "message":`）、ユーザー設定およびボットの通知許可設定（`notifications !== false`）に基づき `showNotification()` を実行。
+- プロバイダーの応答は既存のサーバー完了通知を使い、途中のテキストや完了パッチで重複通知しない。プロバイダー以外の新しいテキストはユーザー設定とボットの通知設定に従い、一度だけ通知する。
 - ユーザーが現在アクティブに閲覧しているスレッドは重複して通知しない既存の安全ガードを継承。
 - アプリ起動時に `initNotificationServiceWorker()` を呼び出し。
 
@@ -31,6 +31,10 @@ OpenMausBotのWeb UIにおいて、新しいメッセージが到着した際に
 - `source-hashes.json` を更新し、`pnpm i18n:check` の完全適合を確認。
 
 ## 検証結果
+
+以下は元の実装時の記録。現在の統合動作と制限は
+[`../verification/phone-web-app.md`](../verification/phone-web-app.md) を参照。
+実機でのOS通知配信は検証していない。アプリを閉じた後のPush通知は提供しない。
 - `pnpm i18n:check`: PASS (10言語カタログ適合)
 - `pnpm lint`: PASS (0 errors, 0 warnings)
 - `pnpm typecheck`: PASS

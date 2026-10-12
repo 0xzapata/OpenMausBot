@@ -340,6 +340,7 @@ process.exit(0);
     await registry.load({ a: { driver: "fake" } });
     const [described] = await registry.describe();
     expect(described.install?.server).toEqual({ package: "fake-engine" });
+    expect(described.install?.platform).toBe(process.platform);
     expect(await registry.installRuntime("a")).toBe(true);
     const calls = readFileSync(process.env.FAKE_NPM_LOG!, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(calls).toHaveLength(1);
