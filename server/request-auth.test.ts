@@ -128,6 +128,7 @@ describe("scopes", () => {
       ["GET", "/api/something-new"], // anything unlisted is admin until listed
       ["POST", "/api/bots/x/sign-in-cards/m/provide"], ["POST", "/api/browser-engine/install"],
       ["GET", "/api/logins"], ["POST", "/api/logins"], ["PATCH", "/api/logins/l1"], ["DELETE", "/api/logins/l1"],
+      ["POST", "/api/logins/1password"], ["POST", "/api/logins/1password/refresh"], ["DELETE", "/api/logins/1password"],
     ] as const) expect(requiredScope(method, path), `${method} ${path}`).toBe("admin");
   });
 

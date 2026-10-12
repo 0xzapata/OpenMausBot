@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
-import { KeyRound, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { KeyRound, Loader2, LockKeyhole, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 
-import type { LoginBots, LoginSummary } from "../../shared/logins";
+import type { LoginBots, LoginSummary, OnePasswordStatus } from "../../shared/logins";
 import { t } from "@/lib/i18n";
-import { addLogin, changeLogin, deleteLogin, listLogins } from "@/lib/logins";
+import { addLogin, changeLogin, connectOnePassword, deleteLogin, disconnectOnePassword, listLogins, refreshOnePassword } from "@/lib/logins";
 import { relativeTime } from "@/lib/memory";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { useStore } from "@/state/store";
@@ -28,6 +28,7 @@ export function LoginsSettings() {
   const ownerOrAdmin = useOwnerOrAdmin();
   const bots = state.bots.map((bot) => ({ id: bot.id, name: bot.name }));
   const [logins, setLogins] = useState<LoginSummary[] | null>(null);
+  const [onePassword, setOnePassword] = useState<OnePasswordStatus>({ connected: false });
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [site, setSite] = useState("");
@@ -39,7 +40,12 @@ export function LoginsSettings() {
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
-    try { setLogins(await listLogins()); setError(null); }
+    try {
+      const answer = await listLogins();
+      setLogins(answer.logins);
+      setOnePassword(answer.onePassword ?? { connected: false });
+      setError(null);
+    }
     catch (cause) { setError(cause instanceof Error && cause.message ? cause.message : t("settings.logins.loadError")); }
   };
   useEffect(() => { if (ownerOrAdmin) void load(); }, [ownerOrAdmin]);
@@ -150,7 +156,71 @@ export function LoginsSettings() {
         )}
         <p className="text-[11.5px] leading-relaxed text-ink-tertiary">{t("settings.logins.limits")}</p>
         {error && <p role="alert" className="text-[12px] text-danger">{error}</p>}
+        <OnePasswordConnection status={onePassword} disabled={logins === null}
+          onChange={async (next) => { setOnePassword(next); await load(); }} />
       </div>
     </Card>
+  );
+}
+
+/** Connect 1Password with a service account token, limited in 1Password to
+ * the vault bots may use. Its logins join the list above, read-only. */
+function OnePasswordConnection({ status, disabled, onChange }: {
+  status: OnePasswordStatus;
+  disabled: boolean;
+  onChange: (status: OnePasswordStatus) => Promise<void>;
+}) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState<"connect" | "refresh" | "disconnect" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (kind: NonNullable<typeof busy>, work: () => Promise<OnePasswordStatus>) => {
+    if (busy) return;
+    setBusy(kind);
+    setError(null);
+    try { await onChange(await work()); if (kind === "connect") setToken(""); }
+    catch (cause) { setError(cause instanceof Error && cause.message ? cause.message : t("settings.logins.onePassword.error")); }
+    finally { setBusy(null); }
+  };
+  const connect = (event: FormEvent) => {
+    event.preventDefault();
+    if (token.trim()) void run("connect", () => connectOnePassword(token.trim()));
+  };
+  return (
+    <section className="mt-1 flex flex-col gap-2 border-t border-hairline/30 pt-3" aria-label={t("settings.logins.onePassword.title")} data-onepassword>
+      <div className="text-[13px] font-medium text-ink">{t("settings.logins.onePassword.title")}</div>
+      {status.connected ? (
+        <>
+          <p className="text-[12.5px] leading-snug text-ink-secondary">
+            {t("settings.logins.onePassword.connected", { vaults: (status.vaults ?? []).join(", ") || "—", count: String(status.items ?? 0) })}
+          </p>
+          {status.error && <p role="alert" className="text-[12px] text-danger">{status.error}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="ui-button ui-button-md" disabled={disabled || busy !== null} onClick={() => void run("refresh", refreshOnePassword)}>
+              {busy === "refresh" ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}{t("settings.logins.onePassword.refresh")}
+            </button>
+            <button type="button" className="ui-button ui-button-md" disabled={disabled || busy !== null} onClick={() => void run("disconnect", disconnectOnePassword)}>
+              {t("settings.logins.onePassword.disconnect")}
+            </button>
+          </div>
+        </>
+      ) : (
+        <form className="flex flex-col gap-2" onSubmit={connect}>
+          <p className="text-[12px] leading-relaxed text-ink-secondary">{t("settings.logins.onePassword.guide")}</p>
+          <div className="flex flex-wrap gap-2">
+            <input name="onePasswordToken" type="password" autoComplete="off" spellCheck={false} maxLength={8192} value={token}
+              onChange={(event) => setToken(event.target.value)} disabled={disabled || busy !== null}
+              aria-label={t("settings.logins.onePassword.token")} placeholder={t("settings.logins.onePassword.token")}
+              className="min-w-0 flex-1 rounded-lg border border-hairline/60 bg-inset px-3 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent disabled:opacity-60" />
+            <button type="submit" className="ui-button ui-button-md ui-button-primary" disabled={disabled || busy !== null || !token.trim()}>
+              {busy === "connect" && <Loader2 size={13} className="animate-spin" />}{t("settings.logins.onePassword.connect")}
+            </button>
+          </div>
+        </form>
+      )}
+      <p className="flex items-start gap-1 text-[11.5px] leading-snug text-ink-tertiary">
+        <LockKeyhole size={11} aria-hidden="true" className="mt-[3px] shrink-0" /> {t("settings.logins.onePassword.note")}
+      </p>
+      {error && <p role="alert" className="text-[12px] text-danger">{error}</p>}
+    </section>
   );
 }

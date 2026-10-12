@@ -80,6 +80,11 @@ UI and harness, then removes its temporary data; the server log remains.
    or plain http on a non-local address) and call `fill_login` again: it
    refuses and types nothing. Ask Pepper to take a snapshot and to `eval` the
    password box's value: both answers show `••••••`.
+10. 1Password (only with a test account and a test vault, never a real one):
+   connect a service account limited to one vault holding a test Login item
+   for the test page's host. Its row appears read-only, marked From 1Password;
+   `fill_login` fills it like a saved login. Unit tests use a fake SDK and
+   reach no network.
 
 Focused automated coverage:
 
@@ -92,7 +97,7 @@ pnpm exec vitest run server/browser-engine.test.ts server/browser-runtime.test.t
   src/components/BrowserPanel.test.ts src/components/SignInRequestCard.test.ts \
   server/sign-in-request.e2e.test.ts server/login-fill.test.ts server/login-store.test.ts \
   server/totp.test.ts server/routes/logins.test.ts src/components/LoginsSettings.test.ts \
-  server/saved-login.e2e.test.ts
+  server/saved-login.e2e.test.ts server/onepassword.test.ts scripts/prepare-duckdb.test.mjs
 ```
 
 Those tests cover native transport lifecycle, owner/session scoping, gate races,
