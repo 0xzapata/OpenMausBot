@@ -4,6 +4,7 @@
 // table is written out in full so a change in shared/approval-mode.ts or
 // in a driver's resume path is a visible diff here, not a silent shift.
 import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -87,11 +88,20 @@ describe("engineCapabilities", () => {
 // driver sources, so a chat driver added later without the transcript flag
 // fails here instead of silently doubling its input tokens.
 describe("replaysTranscriptNatively", () => {
-  const dir = new URL("../drivers/", import.meta.url);
-  const chatKinds = BUILT_IN_DRIVERS.map((driver) => driver.driverKind).filter((kind) => {
-    const file = readdirSync(fileURLToPath(dir)).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
-      .find((name) => new RegExp(`(driverKind: |DRIVER_KIND = )"${kind}"`).test(readFileSync(new URL(name, dir), "utf8")));
-    return file !== undefined && readFileSync(new URL(file, dir), "utf8").includes("createOpenAIChatRuntime(");
+  // Every non-test driver source under server/drivers, subfolders included,
+  // whose text calls createOpenAIChatRuntime. Its kind is read from the same
+  // file (the literal or the DRIVER_KIND constant), so a file declaring no
+  // kind we can read fails loudly rather than escaping the check.
+  const root = fileURLToPath(new URL("../drivers/", import.meta.url));
+  const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? sources(join(dir, entry.name))
+      : entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts") ? [join(dir, entry.name)] : []);
+  const chatKinds = sources(root).flatMap((file) => {
+    const text = readFileSync(file, "utf8");
+    if (!text.includes("createOpenAIChatRuntime(")) return [];
+    const kind = /driverKind: "([^"]+)"/.exec(text)?.[1] ?? /DRIVER_KIND = "([^"]+)"/.exec(text)?.[1];
+    expect(kind, `${file} calls createOpenAIChatRuntime but declares no readable driverKind`).toBeDefined();
+    return [kind!];
   });
 
   it("finds the chat-completions family", () => {
