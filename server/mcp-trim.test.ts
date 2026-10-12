@@ -104,10 +104,24 @@ describe("trimResultText", () => {
   it("honours a caller's budget and a floor below it", () => {
     const text = JSON.stringify({ products: Array.from({ length: 200 }, (_, i) => product(i)) });
     expect(trimResultText({ text, budget: 20_000 }).text.length).toBeLessThan(20_000);
-    // an absurd budget still leaves room for a record and the marker
+    // an absurd budget is raised to the floor, and the whole result stays in it
     const tiny = trimResultText({ text, budget: 1 });
     expect(tiny.trimmed).toBe(true);
-    expect(tiny.text.length).toBeLessThan(1_500);
+    expect(tiny.text.length).toBeLessThanOrEqual(512);
+  });
+
+  it("keeps the whole result, banners included, within a small budget", () => {
+    const text = JSON.stringify({ products: Array.from({ length: 200 }, (_, i) => product(i)) });
+    for (const budget of [512, 700, 1_000, 1_500]) {
+      for (const input of [{ text }, { text: "z".repeat(50_000) }, { text, spillPath: "/tmp/omb-results/a-long-thread-name/search_products-1.json", spillHint: true }]) {
+        const out = trimResultText({ ...input, budget });
+        expect(out.text.length).toBeLessThanOrEqual(budget);
+        expect(out.text.startsWith(BANNER)).toBe(true);
+        expect(out.text.endsWith("NOT shown. Narrow the call or page.") || out.text.includes("never assume you saw everything")).toBe(true);
+      }
+    }
+    // full banners while they leave the body at least half the budget
+    expect(trimResultText({ text: "z".repeat(50_000), budget: 4_000 }).text).toContain("never assume you saw everything");
   });
 
   it("says it is incomplete at the very start and again at the end", () => {

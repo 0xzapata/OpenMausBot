@@ -35,6 +35,14 @@ export function serverResultBudget(
   return resultBudget(env);
 }
 
+/** Whether `name` has a positive result limit of its own. Only then is an
+ * unselected URL server gated: without one it keeps its native transport,
+ * as it always has (gateServer's `gateRemote`). */
+export function hasOwnResultBudget(name: string, perServer: Readonly<Record<string, number>> | undefined): boolean {
+  const own = perServer && Object.hasOwn(perServer, name) ? perServer[name] : undefined;
+  return typeof own === "number" && Number.isFinite(own) && own >= 1;
+}
+
 /** Where a thread's oversized results are kept so the bot can read them back.
  * Under the app's data directory, not the user's project folder: these are
  * the harness's spill, and it sweeps them after a day. */
@@ -168,13 +176,16 @@ export function gateServer(input: {
   directory?: boolean;
   /** where a remote proxy's network settings come from (default: this process) */
   sourceEnv?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  /** Gate a URL server even without a selection: the person set a result
+   * limit for this server (hasOwnResultBudget), so it must hold. */
+  gateRemote?: boolean;
 }): { command: string; args: string[]; env: Record<string, string> } | null {
   const { name, server, budget } = input;
   const parsed = parseToolScope(input.toolScope);
   if (!parsed.ok) throw new Error(parsed.error);
   const scoped = parsed.scope !== undefined;
   if (budget <= 0 && !scoped) return null;
-  if (!scoped && remoteMcpSpec(server)) return null;
+  if (!scoped && input.gateRemote !== true && remoteMcpSpec(server)) return null;
   // The directory is the remote proxy's; it sits inside the gate, which
   // knows to look through call_tool at the tool underneath.
   const directory = input.directory === true && remoteMcpSpec(server) !== undefined;

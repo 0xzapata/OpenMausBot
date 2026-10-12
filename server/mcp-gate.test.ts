@@ -193,6 +193,19 @@ describe("mcp-gate", () => {
     expect(answer.result.structuredContent).toEqual(kept);
   });
 
+  it("matches structuredContent to the text whatever its key order", async () => {
+    const products = Array.from({ length: 300 }, (_, i) => ({ id: `p${i}`, blurb: "x".repeat(300) }));
+    start({
+      content: [{ type: "text", text: JSON.stringify({ products, meta: "x" }) }],
+      structuredContent: { meta: "x", products },
+    });
+
+    const answer = await call("search_products");
+    const text: string = answer.result.content[0].text;
+    const kept = JSON.parse(text.slice(text.indexOf("\n\n") + 2, text.lastIndexOf("\n\n⚠️ TRUNCATED")));
+    expect(answer.result.structuredContent).toEqual(kept);
+  });
+
   it("honours a budget the harness sets", async () => {
     const products = Array.from({ length: 300 }, (_, i) => ({ id: `p${i}`, blurb: "x".repeat(300) }));
     start({ content: [{ type: "text", text: JSON.stringify({ products }) }], structuredContent: undefined }, { OMB_GATE_BUDGET: "2000" });

@@ -13,7 +13,11 @@ describe("MCP server form", () => {
     expect(parseMcpResultBudget("40000")).toEqual({ ok: true, value: 40_000 });
     expect(parseMcpResultBudget("40,000")).toEqual({ ok: true, value: 40_000 });
     expect(parseMcpResultBudget("40 000")).toEqual({ ok: true, value: 40_000 });
-    for (const bad of ["-1", "12.5k", "lots", "3000000"]) {
+    expect(parseMcpResultBudget("40.000")).toEqual({ ok: true, value: 40_000 });
+    expect(parseMcpResultBudget("1.234.567")).toEqual({ ok: true, value: 1_234_567 });
+    expect(parseMcpResultBudget("40_000")).toEqual({ ok: true, value: 40_000 });
+    // a decimal is refused, never read as a number ten times larger
+    for (const bad of ["-1", "12.5k", "lots", "3000000", "12.5", "1,5", "1.5", "40,00", "1,234.567", "40,0000", ",000"]) {
       expect(parseMcpResultBudget(bad)).toEqual({ ok: false, error: { key: "mcp.err.resultBudget" } });
     }
     expect(t("mcp.resultBudgetHint")).toContain("8,000");

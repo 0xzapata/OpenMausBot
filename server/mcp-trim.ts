@@ -110,12 +110,15 @@ export function truncationBanner(input: {
   spillPath?: string;
   spillHint?: boolean;
   structural: boolean;
+  /** the short form, for a budget too small to carry the full one twice */
+  short?: boolean;
 }): string {
+  const size = `${fmt(input.keptChars)} of ${fmt(input.originalChars)} chars`;
+  if (input.short) return `⚠️ TRUNCATED by OpenMausBot: kept ${size}; the rest was NOT shown. Narrow the call or page.`;
   const counts = input.dropped
     .filter((d) => d.kept < d.total)
     .map((d) => `${d.key || "items"} ${fmt(d.kept)} of ${fmt(d.total)}`)
     .join(", ");
-  const size = `${fmt(input.keptChars)} of ${fmt(input.originalChars)} chars`;
   const what = input.structural && counts
     ? `kept ${counts} (${size}).`
     : input.structural
@@ -187,11 +190,15 @@ export function trimResultText(input: TrimInput): TrimOutcome {
   const fields = parsed === undefined ? [] : arrayFields(parsed);
   // Room for the banner at both ends, sized for the longest it can be here
   // (every count at its widest), so the whole result lands under the budget.
-  const widest = Math.max(
-    truncationBanner({ originalChars: text.length, keptChars: text.length, dropped: fields.map((f) => ({ key: f.key, kept: Math.max(0, f.items.length - 1), total: f.items.length })), spillPath: input.spillPath, spillHint: input.spillHint, structural: true }).length,
-    truncationBanner({ originalChars: text.length, keptChars: text.length, dropped: [], spillPath: input.spillPath, spillHint: input.spillHint, structural: false }).length,
+  // A small budget that the full banners would eat more than half of gets
+  // the short form instead; either way the body has only what is left.
+  const widestOf = (short: boolean) => Math.max(
+    truncationBanner({ originalChars: text.length, keptChars: text.length, dropped: fields.map((f) => ({ key: f.key, kept: Math.max(0, f.items.length - 1), total: f.items.length })), spillPath: input.spillPath, spillHint: input.spillHint, structural: true, short }).length,
+    truncationBanner({ originalChars: text.length, keptChars: text.length, dropped: [], spillPath: input.spillPath, spillHint: input.spillHint, structural: false, short }).length,
   );
-  const room = Math.max(MIN_BUDGET, budget - 2 * (widest + 2));
+  const fullRoom = budget - 2 * (widestOf(false) + 2);
+  const short = fullRoom < budget / 2;
+  const room = Math.max(0, short ? budget - 2 * (widestOf(true) + 2) : fullRoom);
   if (fields.length) {
     // What the payload costs with every bulk array emptied. Anything left is
     // shared out between those arrays, in order, equally.
@@ -220,7 +227,7 @@ export function trimResultText(input: TrimInput): TrimOutcome {
       // still overflows, the text cut below is the honest answer.
       if (json !== null && json.length <= room) {
         return {
-          text: wrap(json, truncationBanner({ originalChars: text.length, keptChars: json.length, dropped, spillPath: input.spillPath, spillHint: input.spillHint, structural: true })),
+          text: wrap(json, truncationBanner({ originalChars: text.length, keptChars: json.length, dropped, spillPath: input.spillPath, spillHint: input.spillHint, structural: true, short })),
           trimmed: true,
           originalChars: text.length,
           value,
@@ -231,7 +238,7 @@ export function trimResultText(input: TrimInput): TrimOutcome {
 
   const cut = cutAt(text, room);
   return {
-    text: wrap(cut, truncationBanner({ originalChars: text.length, keptChars: cut.length, dropped: [], spillPath: input.spillPath, spillHint: input.spillHint, structural: false })),
+    text: wrap(cut, truncationBanner({ originalChars: text.length, keptChars: cut.length, dropped: [], spillPath: input.spillPath, spillHint: input.spillHint, structural: false, short })),
     trimmed: true,
     originalChars: text.length,
   };

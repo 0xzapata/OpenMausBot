@@ -36,7 +36,7 @@ import type {
   SteerOutcome,
   TextGenerationOptions,
 } from "../contracts.ts";
-import { gateServer, serverResultBudget } from "../mcp-gate-config.ts";
+import { gateServer, hasOwnResultBudget, serverResultBudget } from "../mcp-gate-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { newEventId, newId } from "../contracts.ts";
@@ -1736,7 +1736,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       for (const name of turn.toolScope === undefined ? botOwned : Object.keys(mcpServers)) {
         if (!canUseMcpServer(turn.toolScope, name)) { delete mcpServers[name]; continue; }
         const budget = botOwned.has(name) ? serverResultBudget(name, turn.integrations?.customResultBudgets, turnEnvironment) : 0;
-        const gated = gateServer({ name, server: mcpServers[name], threadId, budget, nodeEnv: NODE_ENV_FLAG, toolScope: turn.toolScope });
+        // A URL server keeps its native connection (and Claude Code's tool
+        // search) unless its own result limit was set, which must then hold.
+        const gateRemote = botOwned.has(name) && hasOwnResultBudget(name, turn.integrations?.customResultBudgets);
+        const gated = gateServer({ name, server: mcpServers[name], threadId, budget, nodeEnv: NODE_ENV_FLAG, toolScope: turn.toolScope, gateRemote });
         if (gated) mcpServers[name] = { ...gated, ...((mcpServers[name] as { alwaysLoad?: unknown })?.alwaysLoad === true ? { alwaysLoad: true } : {}) };
       }
       allowed.splice(0, allowed.length, ...allowed.filter((name) => Object.hasOwn(mcpServers, name.slice("mcp__".length))));

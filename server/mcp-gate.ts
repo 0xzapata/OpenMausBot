@@ -155,13 +155,27 @@ function spill(tool: string, text: string): string | undefined {
   }
 }
 
-/** Whether `text` is `value` serialized (key order aside, which JSON keeps). */
+/** Whether `text` is `value` serialized: the same data, object key order
+ * aside (a server may build the two copies differently); array order counts. */
 function sameJson(text: string, value: unknown): boolean {
   try {
-    return JSON.stringify(JSON.parse(text)) === JSON.stringify(value);
+    return sameValue(JSON.parse(text), value, 0);
   } catch {
     return false;
   }
+}
+
+function sameValue(a: unknown, b: unknown, depth: number): boolean {
+  if (a === b) return true;
+  if (depth > 200 || !a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => sameValue(item, b[i], depth + 1));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => Object.hasOwn(right, key) && sameValue(left[key], right[key], depth + 1));
 }
 
 /** Rewrite one `tools/call` result in place. Returns true when anything was

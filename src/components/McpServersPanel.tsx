@@ -132,9 +132,13 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
 
 /** The Result size limit field: blank = the app default, 0 = never trim.
- * Digit grouping (40,000 · 40 000 · 40_000) is accepted as typed. */
+ * Digit grouping (40,000 · 40.000 · 40 000 · 40_000) is accepted as typed,
+ * but only as whole groups of three, so a decimal (12.5, 1,5) is refused
+ * rather than read as a number ten times larger. */
 export function parseMcpResultBudget(value: string): { ok: true; value: number | undefined } | { ok: false; error: McpMessage } {
-  const digits = value.trim().replace(/[\s,._\u00a0\u202f']/g, "");
+  const trimmed = value.trim();
+  const grouped = /^\d{1,3}([\s,._\u00a0\u202f'])\d{3}(?:\1\d{3})*$/.test(trimmed);
+  const digits = grouped ? trimmed.replace(/\D/g, "") : trimmed;
   if (!digits) return { ok: true, value: undefined };
   if (!/^\d+$/.test(digits) || Number(digits) > MAX_MCP_RESULT_BUDGET) return { ok: false, error: { key: "mcp.err.resultBudget" } };
   return { ok: true, value: Number(digits) };
