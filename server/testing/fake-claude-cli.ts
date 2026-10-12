@@ -90,6 +90,12 @@
 //                      through them, over stdio, the way a model's first
 //                      computer call does; the call and its result are
 //                      reported like any tool call before the reply.
+//   FAKE_CLAUDE_CONNECT_APPS comma-separated toolkits (gmail,slack): a turn
+//                      launched with the connected-apps tools (the `composio`
+//                      server in --mcp-config) first starts a connection to
+//                      them with COMPOSIO_MANAGE_CONNECTIONS through that
+//                      server, over stdio, the way a model asks for a Connect
+//                      card; reported like any tool call before the reply.
 //   FAKE_CLAUDE_HOOKS  1: honour the `hooks` block of the --settings file the
 //                      way the real CLI does — after each tool_result run
 //                      every PostToolUse command with the event JSON on
@@ -620,6 +626,52 @@ const useCloudComputer = () => {
     is_error: Boolean(reply.error || reply.result?.isError), content: reply.result?.content ?? reply.error?.message ?? "" }] } });
 };
 
+// Runs in a child of this process: launch the MCP server, send one request,
+// print the reply that answers it, then close. The connected-apps bridge
+// exits as soon as its stdin closes, before an answer that needs a round trip
+// to the harness, so this keeps stdin open until the reply arrives; spawnSync
+// around it keeps the turn loop synchronous.
+const MCP_CALL_PROGRAM = `
+const { spawn } = require("node:child_process");
+const { command, args, env, request } = JSON.parse(process.argv[1]);
+const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "inherit"] });
+let buffer = "";
+child.stdout.on("data", (chunk) => {
+  buffer += chunk;
+  for (const line of buffer.split("\\n").slice(0, -1)) {
+    let reply;
+    try { reply = JSON.parse(line); } catch { continue; }
+    if (reply.id !== request.id) continue;
+    process.stdout.write(JSON.stringify(reply) + "\\n");
+    child.kill();
+    process.exit(0);
+  }
+  buffer = buffer.slice(buffer.lastIndexOf("\\n") + 1);
+});
+child.on("exit", () => process.exit(1));
+child.stdin.write(JSON.stringify(request) + "\\n");
+`;
+
+/** COMPOSIO_MANAGE_CONNECTIONS through the launched connected-apps server, if
+ * this turn has one: the bridge turns it into a Connect card in the chat. */
+const connectApps = (toolkits: string[]) => {
+  launchFiles ??= readLaunchFiles();
+  const server = (launchFiles.mcpConfig as { mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }> } | null)
+    ?.mcpServers?.composio;
+  if (!server?.command) return;
+  const id = `tu-${process.pid}-${++toolUseCount}`;
+  const input = { toolkits };
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "mcp__composio__COMPOSIO_MANAGE_CONNECTIONS", input }] } });
+  const request = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: input } };
+  const ran = spawnSync(process.execPath, ["-e", MCP_CALL_PROGRAM, JSON.stringify({ command: server.command, args: server.args ?? [], env: server.env ?? {}, request })], {
+    encoding: "utf8", timeout: 60_000,
+  });
+  let reply: { result?: { isError?: boolean; content?: unknown }; error?: { message?: string } } = {};
+  try { reply = JSON.parse(ran.stdout.trim().split("\n")[0] ?? ""); } catch { reply = { error: { message: ran.stderr || "no answer" } }; }
+  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id,
+    is_error: Boolean(reply.error || reply.result?.isError), content: reply.result?.content ?? reply.error?.message ?? "" }] } });
+};
+
 const playTurn = (prompt: JsonValue, late = false) => {
   turnRunning = true;
   lateContinuation = late;
@@ -817,6 +869,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
   }
 
   if (process.env.FAKE_CLAUDE_USES_CLOUD_COMPUTER === "1") useCloudComputer();
+  if (process.env.FAKE_CLAUDE_CONNECT_APPS) connectApps(process.env.FAKE_CLAUDE_CONNECT_APPS.split(",").filter(Boolean));
 
   let replyParts = nextScriptedReply();
   const defaultToolId = `tu-${process.pid}-${++toolUseCount}`;
