@@ -614,6 +614,11 @@ export interface OptionCardData {
   skillRequest?: SkillRequestCardData;
   /** A provider's structured question set. */
   questionRequest?: QuestionRequestCardData;
+  /** The options are the whole answer: clients offer no free-text reply. Set
+   * on a tool-less card whose options are a closed set (the engines of a
+   * quota-switch offer) rather than an open question a person could answer
+   * in their own words. */
+  fixedOptions?: boolean;
 }
 
 /** Which app holds the microphone of a Live call: the desktop app (its own

@@ -133,8 +133,10 @@ export function OptionCard({
       )}
 
       {/* a permission ask has no free-text answer — the broker only accepts
-          allow/deny, so typing here used to fail silently */}
-      {!card.answered && !card.tool && (
+          allow/deny, so typing here used to fail silently. A closed-choice
+          card (fixedOptions) is the same without a `tool`: its options are
+          the whole answer, and the composer stays free for anything else. */}
+      {!card.answered && !card.tool && !card.fixedOptions && (
         <input
           dir="auto"
           value={custom}
