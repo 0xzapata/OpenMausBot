@@ -659,6 +659,7 @@ import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
+import { createRoomHoldRoutes } from "./routes/room-holds.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
@@ -17045,6 +17046,13 @@ ROUTES.push(createBotMemoryRoutes({
 }));
 ROUTES.push(createDeciderRoutes({ decider }));
 ROUTES.push(createSignInCardRoutes({ settle: settleSignIn }));
+ROUTES.push(createRoomHoldRoutes({
+  group: (id) => store.group(id),
+  setHold: (groupId, botId, held) => {
+    const updated = setRoomHold(groupId, botId, held);
+    return updated ? publicGroupState(updated) : null;
+  },
+}));
 ROUTES.push(createBrowserSiteRoutes({
   target: (which) => {
     const engine = browserEngineStatus();
@@ -21741,21 +21749,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // is now drainable must not strand behind a missed settle.
       if (after && !groupThreadIsWorking(after.id, targetThreadId)) drainQueuedChannelSends();
       return json(res, 200, { ok: true, queued: true, threadId: targetThreadId });
-    }
-    // Stop or resume one member of a room without stopping the room: the
-    // same hold "stop @Bot" sets. Holding a member that is mid-turn ends
-    // that member's turn only.
-    m = path.match(/^\/api\/groups\/([\w-]+)\/holds$/);
-    if (m && method === "POST") {
-      const parsed = z.object({ botId: z.string().regex(/^[\w-]+$/), held: z.boolean() }).strict().safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: 'body must be {"botId": "<room member id>", "held": true}' });
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such room" });
-      if (group.dm) return json(res, 400, { error: "members of a bot-to-bot channel cannot be held" });
-      if (!group.memberIds.includes(parsed.data.botId)) return json(res, 404, { error: "that bot is not a member of this room" });
-      const updated = setRoomHold(group.id, parsed.data.botId, parsed.data.held);
-      if (!updated) return json(res, 404, { error: "no such room" });
-      return json(res, 200, { ok: true, group: publicGroupState(updated) });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
     if (m && method === "POST") {
