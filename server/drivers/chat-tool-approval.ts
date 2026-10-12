@@ -29,10 +29,15 @@ export function createChatToolApproval(options: {
 }) {
   const pending = new Map<string, Card>();
   let closed = false;
+  /** Whether an earlier "Always allow this session" already covers an ask,
+   * so `ask` would answer it with no card. The caller reads it to know that
+   * no person will see the call (the safety floor, safety-floor-gate.ts). */
+  const covered = (grant?: string): boolean => grant !== undefined && options.granted?.has(grant) === true;
   return {
+    covered,
     ask(tool: string, summary: string, grant?: string): Promise<boolean> {
       if (closed || options.signal.aborted) return Promise.resolve(false);
-      if (grant !== undefined && options.granted?.has(grant)) return Promise.resolve(true);
+      if (covered(grant)) return Promise.resolve(true);
       const ask: Ask = { id: newId(), tool, summary, ...(grant !== undefined && options.granted ? { grant } : {}) };
       return new Promise((resolve) => {
         let timer: ReturnType<typeof setTimeout>;

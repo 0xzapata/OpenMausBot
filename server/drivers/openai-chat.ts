@@ -12,6 +12,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { ASK_USER_TOOL, ASK_USER_TOOL_DEFINITION, askQuestionSummary, parseAskQuestions, questionChoices } from "../../shared/ask-question.ts";
 import { allowsTool, parseToolScope } from "../../shared/tool-scope.ts";
 import { redactSecretsInText } from "../redact.ts";
+import { floorBlockForToolCall } from "../safety-floor-gate.ts";
 import { toolDetailPreview } from "../tool-summary.ts";
 import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
 import { assertImageTransport, chatImageBudget, chatToolImages, chatUserContent, type ChatContentPart } from "./chat-images.ts";
@@ -861,13 +862,23 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 // so it is honoured here: without it every single tool call on
                 // an OpenAI-compatible engine stops for a card, and a Chief's
                 // delegated Full access cannot help either.
-                const allowed = turn.approvalMode === "full" || !shown.ask
-                  || await approval.ask(shown.title, shownPreview ?? "This tool has no arguments.", shown.grant);
+                // The safety floor is one more condition before this gate
+                // answers itself. At Full access, or where "Always allow this
+                // session" would answer, nobody sees the call, so a command on
+                // the never-list is refused. A card a person answers is theirs
+                // to decide and is not touched (safety-floor-gate.ts).
+                const floored = shown.ask && (turn.approvalMode === "full" || approval.covered(shown.grant))
+                  ? floorBlockForToolCall({ threadId: turn.threadId, botId: turn.botId, tool: shown.title, summary: shownPreview, input: shown.input })
+                  : null;
+                const allowed = !floored && (turn.approvalMode === "full" || !shown.ask
+                  || await approval.ask(shown.title, shownPreview ?? "This tool has no arguments.", shown.grant));
                 abort.signal.throwIfAborted();
                 emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
                   title: shown.title, ...(shownPreview ? { input: shownPreview } : {}),
                 });
                 started = true;
+                // One line the person always sees, beside the refused call.
+                if (floored) emit({ ...base(turn.threadId, turnId), type: "runtime.notice", message: floored.line });
                 if (allowed) {
                   result = await tools.execute(call.function.name, args as Record<string, unknown>, abort.signal);
                   if (result.images?.length && !seesImages(turn)) {
@@ -884,7 +895,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                   }
                 } else {
                   denials.push(shown.title);
-                  result = { ok: false, text: "Permission denied or expired; the tool was not executed." };
+                  result = { ok: false, text: floored?.reason ?? "Permission denied or expired; the tool was not executed." };
                 }
               }
             } catch (error) {
