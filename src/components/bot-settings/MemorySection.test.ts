@@ -165,6 +165,18 @@ describe("MemoryUpkeepCard", () => {
     const noticed = render(createElement(MemoryUpkeepCard, { enabled: true, status: { enabled: true, modelSteps: true, lastCapture: { at: Date.now() - 60_000, added: 1, topics: 2, aboutMe: 1 } }, tidying: false, onToggle: noop, onTidy: noop }));
     expect(noticed).toContain("Last noticed 3 facts");
   });
+
+  it("shows Learn from group chats beside upkeep, only while upkeep is on", () => {
+    const rooms = { enabled: false, saving: false, error: "", onToggle: noop };
+    const on = render(createElement(MemoryUpkeepCard, { enabled: true, status: null, tidying: false, onToggle: noop, onTidy: noop, rooms }));
+    expect(on).toContain("Learn from group chats");
+    expect(on).toContain("fewer people can see than the bot never feeds its memory");
+    expect(on).toContain('aria-label="Learn from group chats"');
+    const failed = render(createElement(MemoryUpkeepCard, { enabled: true, status: null, tidying: false, onToggle: noop, onTidy: noop, rooms: { ...rooms, error: "Could not save the group chat setting." } }));
+    expect(failed).toContain('role="alert"');
+    const off = render(createElement(MemoryUpkeepCard, { enabled: false, status: null, tidying: false, onToggle: noop, onTidy: noop, rooms }));
+    expect(off).not.toContain("Learn from group chats");
+  });
 });
 
 describe("LendingReviewNotice", () => {

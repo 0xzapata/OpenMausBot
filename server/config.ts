@@ -321,6 +321,13 @@ const featureConfigSchema = z.object({
    * /learn) for your review. On unless explicitly switched off in Settings;
    * every draft still waits for review. */
   skillAuthoring: z.boolean().optional(),
+  /** Learn skills automatically: after enough tool steps in a conversation
+   * the bot's own engine reviews it in the background and may create or
+   * update its learned skills, each shown with Undo (server/skill-review.ts).
+   * Off unless explicitly enabled, and only while skillAuthoring is on. */
+  skillReview: z.boolean().optional(),
+  /** Tool steps in one conversation between automatic reviews. */
+  skillReviewSteps: z.number().int().min(3).max(100).optional(),
   /** Show each tool run in the transcript. Off unless explicitly enabled. */
   showToolCalls: z.boolean().optional(),
   /** Run a routine inside the conversation it reports to, instead of a hidden
@@ -350,6 +357,9 @@ const featureConfigSchema = z.object({
    * read by assignment instead of per-workspace copies. Off until
    * explicitly enabled — see skillsLibraryEnabled. */
   skillsLibrary: z.boolean().optional(),
+  /** Learn from group chats: memory upkeep also reads a member bot's room
+   * turns. Off until explicitly enabled — see roomMemoryCaptureEnabled. */
+  roomMemoryCapture: z.boolean().optional(),
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
  * it survives cleared site data and is shared by every paired client. Hint
@@ -666,7 +676,7 @@ export interface AppConfig {
    * seats shared by all conversations, with per-thread affinity (#1654). */
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean };
+  features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; roomMemoryCapture?: boolean };
   /** First-run progress; see onboardingConfigSchema. */
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   /** Named browser sessions any bot can be pointed at. */
@@ -858,9 +868,38 @@ export function skillAuthoringEnabled(cfg: AppConfig): boolean {
   return cfg.features?.skillAuthoring !== false;
 }
 
+export const DEFAULT_SKILL_REVIEW_STEPS = 10;
+export const MIN_SKILL_REVIEW_STEPS = 3;
+export const MAX_SKILL_REVIEW_STEPS = 100;
+
+/** Learn skills automatically (server/skill-review.ts). Off unless switched
+ * on: each review sends the conversation to the bot's engine again, and it
+ * changes the bot's skills without being asked. Never on while skill
+ * authoring itself is off. */
+export function skillReviewEnabled(cfg: AppConfig): boolean {
+  return skillAuthoringEnabled(cfg) && cfg.features?.skillReview === true;
+}
+
+/** Tool steps between automatic reviews, clamped to the allowed range. */
+export function skillReviewSteps(cfg: AppConfig): number {
+  const raw = cfg.features?.skillReviewSteps;
+  const value = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : DEFAULT_SKILL_REVIEW_STEPS;
+  return Math.min(MAX_SKILL_REVIEW_STEPS, Math.max(MIN_SKILL_REVIEW_STEPS, value));
+}
+
 /** Automatic recall is read-only, so it is on unless switched off. */
 export function autoRecallEnabled(cfg: AppConfig): boolean {
   return cfg.features?.autoRecall !== false;
+}
+
+/** Learn from group chats: a member bot's room turns feed its memory
+ * upkeep's capture, the way its 1:1 turns do. Off until switched on in a
+ * bot's Memory settings, like every flag that spends model calls in the
+ * background or widens what is written: one capture call per member bot
+ * per quiet room, and a room fewer people can see than the bot never feeds
+ * it either way (roomFeedsBot in server/index.ts). */
+export function roomMemoryCaptureEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.roomMemoryCapture === true;
 }
 
 export const DEFAULT_CAPTURE_QUIET_MS = 2 * 60_000;
