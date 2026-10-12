@@ -5337,9 +5337,11 @@ const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
       });
       // A cut resume running again already sent its notification, and a
       // quiet report's review stays quiet (turnAnswers).
-      if (node.restart !== "rerun" && !turnAnswers(node.threadId, { cardContinuation: true, coordination: node }).quiet) {
+      const quiet = turnAnswers(node.threadId, { cardContinuation: true, coordination: node }).quiet;
+      if (node.restart !== "rerun" && !quiet) {
         notify(buildNotification("delegation-settled", bot, node.threadId, `Results in from ${who}`, { avatarUrl: bot.avatarUrl }));
       }
+      if (!node.parentId && !quiet) reviewAnswerThreads.add(node.threadId);
     } else if (node.restart === "rerun" && !group) {
       store.appendMessage(node.threadId, { role: "bot", kind: "activity", tool: { name: "Resuming after a restart", ok: true } });
     }
@@ -7081,6 +7083,11 @@ function clearInternalTurn(threadId: string) {
 function isInternalTurn(threadId: string): boolean {
   return internalTurnThreads.has(threadId);
 }
+/** Threads whose running turn is a person's own job reviewing its teammates'
+ * results (a root hand-off's resume, 1:1). The review is internal, yet its
+ * answer is that person's news: read mid-review, the thread would otherwise
+ * get the answer with no unread mark, out of reach with threads hidden. */
+const reviewAnswerThreads = new Set<string>();
 // When the person last wrote into each thread with a turn in flight — but
 // only for turns THEY started. post_to_room's ceiling counts the bot posts
 // nobody has answered, and "answered" used to mean a person writing in the
@@ -8483,6 +8490,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // thread nobody types in again (a deleted bot's) is not held forever.
       const internal = isInternalTurn(event.threadId);
       clearInternalTurn(event.threadId);
+      const reviewAnswer = reviewAnswerThreads.delete(event.threadId);
       const generatedKey = turnAttachmentKey(event.threadId, event.turnId);
       const generated = turnAttachmentsByTurn.get(generatedKey) ?? [];
       turnAttachmentsByTurn.delete(generatedKey);
@@ -8679,7 +8687,8 @@ bus.subscribe((event: RuntimeEvent) => {
         // Neither should a peer's hop: the exchange is already recorded in the
         // pair channel and chipped into both threads, which is the whole of
         // what the person needs to be able to find it.
-        if (!routineReportThread && !internal) store.patchTask(bot.id, event.threadId, { unread: true });
+        // A person's own job's review answer is the exception: news like a reply.
+        if (!routineReportThread && (!internal || reviewAnswer)) store.patchTask(bot.id, event.threadId, { unread: true });
         // A failed peer turn stays a chip too. The bot that delegated is woken
         // with the failure and answers the person in its own thread — buzzing
         // here as well would ring twice for one piece of news.
@@ -13121,6 +13130,9 @@ const webhooks = new WebhookManager({
   post: (botId, threadId, text) => {
     if (!store.bot(botId)) return;
     store.appendMessage(threadId, { role: "bot", kind: "text", text, webhookPost: true });
+    // News in its own thread like any reply: unread, so an activity row
+    // reaches it while threads are hidden.
+    store.patchTask(botId, threadId, { unread: true });
   },
   // Create-on-first-use, never activated (so it never steals the bot's
   // live selection the way POST /api/bots/:id/tasks does), reused forever
