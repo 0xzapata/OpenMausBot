@@ -18,6 +18,9 @@ export interface WatchedTurn {
   waitingOnComputer: boolean;
 }
 
+/** Waiting on a person or on a computer is not a stall, however long it takes. */
+const parked = (turn: WatchedTurn): boolean => turn.waitingOnHuman || turn.waitingOnComputer;
+
 export interface TurnWatchdogOptions {
   stallMs: number;
   checkMs: number;
@@ -93,11 +96,19 @@ export class TurnWatchdog {
     return this.turns.has(threadId);
   }
 
+  /** Whether the turn is parked on a person or on a computer: exactly what
+   * the sweep spares. The loop guard asks before it acts, so a turn that is
+   * only waiting is never spoken to or stopped for it either. */
+  waiting(threadId: string): boolean {
+    const turn = this.turns.get(threadId);
+    return turn !== undefined && parked(turn);
+  }
+
   /** Visible for tests; the interval calls this. */
   sweep(): void {
     const at = this.now();
     for (const turn of this.turns.values()) {
-      if (turn.waitingOnHuman || turn.waitingOnComputer) continue;
+      if (parked(turn)) continue;
       if (at - turn.lastEventAt < this.opts.stallMs) continue;
       this.turns.delete(turn.threadId);
       this.opts.onStall(turn);
