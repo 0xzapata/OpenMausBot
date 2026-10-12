@@ -162,6 +162,10 @@ let fakeClaudeDump: string;
 /** Every prompt a fake Claude process receives, one JSON line each: the
  * signal that a turn was granted its computer and its engine started. */
 let fakeClaudePrompts: string;
+/** While this file exists, the hanging fake engine ends its turn normally
+ * (FAKE_CLAUDE_RELEASE): how a test ends a turn as a finished turn, never
+ * as a Stop, which also cancels what the turn's root still owes. */
+let fakeClaudeRelease: string;
 let oneShotTextFile: string;
 let oneShotTextDump: string;
 let fakeDockerFixture: string;
@@ -250,6 +254,19 @@ const api = async (method: string, path: string, body?: unknown): Promise<{ stat
     body: body ? JSON.stringify(body) : undefined,
   });
   return { status: res.status, body: await res.json() };
+};
+
+/** End the bot's hanging fixture turn as a finished turn ends (the fake's
+ * release file), so what the turn leaves open parks its root on the
+ * runtime; a Stop would cancel that park instead (decision 4). */
+const releaseTurn = async (botId: string) => {
+  writeFileSync(fakeClaudeRelease, "release");
+  try {
+    await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots
+      .find((candidate: { id: string }) => candidate.id === botId)?.busy, { timeout: 10_000, interval: 20 }).toBe(false);
+  } finally {
+    rmSync(fakeClaudeRelease, { force: true });
+  }
 };
 
 /** Pair a device the way a phone or a second person does, and act as them. */
@@ -388,6 +405,7 @@ beforeAll(async () => {
   staticDir = join(home, "static");
   fakeClaudeDump = join(home, "fake-claude-dump.json");
   fakeClaudePrompts = join(home, "fake-claude-prompts.jsonl");
+  fakeClaudeRelease = join(home, "fake-claude-release");
   oneShotTextFile = join(home, "fake-claude-one-shot.txt");
   oneShotTextDump = join(home, "fake-claude-one-shot-dump.json");
   const fakeDockerDir = join(home, "fake-docker-bin");
@@ -1222,6 +1240,7 @@ beforeAll(async () => {
       FAKE_CLAUDE_MODE: "hang",
       FAKE_CLAUDE_DUMP: fakeClaudeDump,
       FAKE_CLAUDE_PROMPTS: fakeClaudePrompts,
+      FAKE_CLAUDE_RELEASE: fakeClaudeRelease,
       // the one-shot text helper fails by default (its reply file is
       // missing), so first-message generated titles stay off until a test
       // writes that file — and its dump never overwrites a turn's dump
@@ -6248,7 +6267,11 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("leaves a failed credential-card continuation on the card without buzzing twice", async () => {
+  // A credential card parks the root whose turn raised it; the person's
+  // act on the card runs that root again (decision 2). When that execution
+  // cannot start, the failure is the root's own failed turn, read where the
+  // person is, once: no second turn-failed notification.
+  it("shows a card continuation that cannot start as the root's failed turn, without buzzing twice", async () => {
     let botId: string | undefined;
     let stream: Awaited<ReturnType<typeof openSse>> | undefined;
     try {
@@ -6329,43 +6352,45 @@ describe("harness HTTP API", () => {
       );
       expect(developmentProvision.status).toBe(503);
 
-      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
-      await expect.poll(async () => {
-        const current = (await api("GET", "/api/bots?messages=0")).body.bots
-          .find((candidate: { id: string }) => candidate.id === bot.id);
-        return current?.busy;
-      }).toBe(false);
+      // The turn ends with the card open: its root parks on the card.
+      await releaseTurn(bot.id);
       const originalUserMessage = directState?.messages.find(
         (message: { role?: string; kind?: string; text?: string }) =>
           message.role === "user" && message.kind === "text" && message.text === "stay active",
       );
       expect(originalUserMessage?.id).toEqual(expect.any(String));
+      // A card off the active branch cannot be acted on. The typed line on
+      // the other branch is its own root (decision 3) and leaves the parked
+      // one answerable once its branch is active again.
+      rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/messages/${originalUserMessage.id}/edit`, {
         text: "take another branch",
       })).status).toBe(202);
+      await readJsonFileWhenReady(fakeClaudeDump);
       expect((await api("POST", `/api/bots/${bot.id}/secret-cards/${messageId}/dismiss`, {
         threadId: bot.threadId,
       })).status).toBe(404);
-      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
-      await expect.poll(async () => {
-        const current = (await api("GET", "/api/bots?messages=0")).body.bots
-          .find((candidate: { id: string }) => candidate.id === bot.id);
-        return current?.busy;
-      }).toBe(false);
+      await releaseTurn(bot.id);
       expect((await api("POST", `/api/bots/${bot.id}/active-branch`, {
         messageId,
       })).status).toBe(200);
 
+      // The execution the dismissal answers cannot start: the bot now works
+      // on a cloud computer and no Box account is connected.
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud" })).status).toBe(200);
+      rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/secret-cards/${messageId}/dismiss`, {
         threadId: bot.threadId,
       })).status).toBe(200);
-
-      await expect.poll(async () => {
-        const current = (await api("GET", "/api/bots?messages=20")).body.bots
-          .find((candidate: { id: string }) => candidate.id === bot.id);
-        return current?.messages.find((message: { id: string }) => message.id === messageId)?.secret?.error;
-      }).toMatch(/box|cloud/i);
+      const thread = async () => (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages as Array<{
+        id: string; tool?: { name?: string; ok?: boolean }; secret?: { dismissed?: boolean; resumed?: boolean };
+      }>;
+      await expect.poll(async () => (await thread()).filter((message) => message.tool?.ok === false)
+        .map((message) => message.tool!.name).join("\n"), { timeout: 10_000 }).toMatch(/box|cloud/i);
+      expect((await thread()).find((message) => message.id === messageId)?.secret).toMatchObject({ dismissed: true, resumed: true });
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy).toBe(false);
+      expect(existsSync(fakeClaudeDump)).toBe(false);
       expect(stream.frames.some(
         (frame) => frame.kind === "notify" && frame.notification?.kind === "turn-failed",
       )).toBe(false);
@@ -6384,14 +6409,24 @@ describe("harness HTTP API", () => {
     try {
       const bot = (await api("POST", "/api/bots")).body.bot;
       botId = bot.id;
-      // No turn is running, so the bot's Works on names the place.
+      // No turn is running yet, so the bot's Works on names the place.
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         computer: "browser",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
       stream = await openSse(`${BASE}/api/events`);
       await stream.until((frame) => frame.kind === "hello");
-      let token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      // A sign-in request comes from a turn: when that turn ends with the
+      // card open, its root parks on the card, and Done or Cancel is what
+      // runs the root again (decision 2).
+      const turn = async (text: string) => {
+        rmSync(fakeClaudeDump, { force: true });
+        expect((await api("POST", `/api/bots/${bot.id}/messages`, { text })).status).toBe(202);
+        await readJsonFileWhenReady(fakeClaudeDump);
+        rmSync(fakeClaudeDump, { force: true });
+        return mintTestCapability(BASE, bot.id, bot.threadId);
+      };
+      let token = await turn("get the monthly report");
       const request = (site: unknown, reason?: string) => fetch(`${BASE}/api/internal/request-sign-in`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -6433,10 +6468,11 @@ describe("harness HTTP API", () => {
       const answer = (id: string, choice: "done" | "cancel") => api("POST", `/api/bots/${bot.id}/sign-in-cards/${id}/${choice}`, { threadId: bot.threadId });
       expect((await answer(firstCard.messageId, "done")).status).toBe(409);
 
-      // Done hands back, drops the plea and resumes the bot with the news.
-      rmSync(fakeClaudeDump, { force: true });
+      // The turn ends with the card open: the root waits on the person, and
+      // Done hands back, drops the plea and runs it again with the news.
+      await releaseTurn(bot.id);
       expect(await answer(secondCard.messageId, "done")).toMatchObject({ status: 200, body: { done: true, resumed: true } });
-      const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
+      const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump, 10_000);
       expect(JSON.stringify(resumed.prompt)).toContain("the person finished signing in to example.com. Check you are signed in, then continue");
       expect((await card(secondCard.messageId)).signIn).toMatchObject({ done: true, resumed: true });
       await stream.until((frame) => frame.kind === "computer-control" && frame.botId === bot.id && frame.helpReason === null && !frame.help);
@@ -6449,14 +6485,13 @@ describe("harness HTTP API", () => {
         .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 10_000 }).toBe(false);
 
       // Cancel resumes it too, with the person's no.
-      // The resumed turn's settling revoked that capability; a new turn has its own.
-      token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      token = await turn("check the mail archive");
       const thirdResponse = await request("mail.example.org");
       const third = await thirdResponse.json() as { messageId: string };
       expect(thirdResponse.status, JSON.stringify(third)).toBe(201);
-      rmSync(fakeClaudeDump, { force: true });
+      await releaseTurn(bot.id);
       expect(await answer(third.messageId, "cancel")).toMatchObject({ status: 200, body: { cancelled: true, resumed: true } });
-      const declined = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
+      const declined = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump, 10_000);
       expect(JSON.stringify(declined.prompt)).toContain("the person declined to sign in to mail.example.org");
       expect((await card(third.messageId)).signIn).toMatchObject({ cancelled: true, resumed: true });
       await expect.poll(() => notices().length).toBe(3);
@@ -6468,7 +6503,11 @@ describe("harness HTTP API", () => {
     }
   }, 60_000);
 
-  it("holds a sign-in's resume behind the turn still running, through the credential card's continuation", async () => {
+  // A sign-in finished while its turn still runs is saved at once and
+  // continues nothing yet: the turn has the thread. When the turn ends, its
+  // root parks on the card the person already acted on, and the next tick
+  // answers it (reconcileParkedRoot). After a Stop, nothing runs again.
+  it("answers a sign-in finished while its turn still runs once that turn ends, and never after a Stop", async () => {
     let botId: string | undefined;
     try {
       const bot = (await api("POST", "/api/bots")).body.bot;
@@ -6477,28 +6516,53 @@ describe("harness HTTP API", () => {
         computer: "browser",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
+      const busy = () => api("GET", "/api/bots?messages=0").then(({ body }) => body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy);
+      const card = async (id: string) => (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === id)?.signIn;
       // A turn that keeps running (this suite's engine hangs every turn).
-      rmSync(fakeClaudeDump, { force: true });
-      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "keep working on the dashboard" })).status).toBe(202);
-      await readJsonFileWhenReady(fakeClaudeDump);
-      rmSync(fakeClaudeDump, { force: true });
-      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
-      const requested = await fetch(`${BASE}/api/internal/request-sign-in`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site: "example.com" }),
-      });
-      expect(requested.status).toBe(201);
-      const { messageId } = await requested.json() as { messageId: string };
-      expect(await api("POST", `/api/bots/${bot.id}/sign-in-cards/${messageId}/done`, { threadId: bot.threadId }))
-        .toMatchObject({ status: 200, body: { done: true, resumed: true } });
-      // The running turn keeps the thread: the resume waits in the queue
-      // the credential card's continuation uses, and is not dropped.
+      const turn = async (text: string) => {
+        rmSync(fakeClaudeDump, { force: true });
+        expect((await api("POST", `/api/bots/${bot.id}/messages`, { text })).status).toBe(202);
+        await readJsonFileWhenReady(fakeClaudeDump);
+        rmSync(fakeClaudeDump, { force: true });
+        const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+        const requested = await fetch(`${BASE}/api/internal/request-sign-in`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site: "example.com" }),
+        });
+        expect(requested.status).toBe(201);
+        return ((await requested.json()) as { messageId: string }).messageId;
+      };
+      const done = (id: string) => api("POST", `/api/bots/${bot.id}/sign-in-cards/${id}/done`, { threadId: bot.threadId });
+
+      const messageId = await turn("keep working on the dashboard");
+      expect(await done(messageId)).toMatchObject({ status: 200, body: { done: true, resumed: false } });
+      // The running turn keeps the thread: nothing starts under it.
       await new Promise((resolve) => setTimeout(resolve, 750));
       expect(existsSync(fakeClaudeDump)).toBe(false);
-      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
+      expect(await card(messageId)).toMatchObject({ done: true });
+      expect((await card(messageId)).resumed).toBeUndefined();
+      // The turn ends: the root parks on the done card, and is answered.
+      await releaseTurn(bot.id);
       const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump, 10_000);
       expect(JSON.stringify(resumed.prompt)).toContain("the person finished signing in to example.com");
+      await expect.poll(async () => (await card(messageId)).resumed).toBe(true);
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
+      await expect.poll(busy, { timeout: 10_000 }).toBe(false);
+
+      // Stop means stop: the person stopped the turn that asked, so Done
+      // afterwards is saved and starts nothing.
+      const stoppedId = await turn("keep working on the dashboard again");
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
+      await expect.poll(busy, { timeout: 10_000 }).toBe(false);
+      expect(await done(stoppedId)).toMatchObject({ status: 200, body: { done: true, resumed: false } });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      expect(await busy()).toBe(false);
+      expect(await card(stoppedId)).toMatchObject({ done: true });
+      expect((await card(stoppedId)).resumed).toBeUndefined();
     } finally {
       if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
       if (botId) await api("DELETE", `/api/bots/${botId}`);
@@ -6902,7 +6966,8 @@ describe("harness HTTP API", () => {
       }, "sk-test-fresh-card");
       const freshProvide = await provide(raceBot.id, freshRequest.messageId, freshEnvelope);
       expect(freshProvide.status).toBe(200);
-      expect(await freshProvide.json()).toEqual({ provided: true, resumed: true });
+      // Saved; nothing resumes: no turn raised this card, so no root parks on it.
+      expect(await freshProvide.json()).toEqual({ provided: true, resumed: false });
       // Hand the gate back to the ownership fixtures below: their saves must
       // start held, with a clean slate of started markers.
       for (const name of readdirSync(isolatedGate)) rmSync(join(isolatedGate, name));
@@ -6960,17 +7025,18 @@ describe("harness HTTP API", () => {
 
       writeFileSync(releaseFile, "release");
       const completed = await Promise.all(provideRequests);
-      for (const response of completed) {
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ provided: true, resumed: true });
-      }
+      for (const response of completed) expect(response.status).toBe(200);
+      // The direct card's turn was stopped by the person: the key is saved
+      // and nothing runs again (Stop means stop). The room re-runs its member.
+      expect(await completed[0]!.json()).toEqual({ provided: true, resumed: false });
+      expect(await completed[1]!.json()).toEqual({ provided: true, resumed: true });
 
       // A lost HTTP response may replay the exact randomized envelope, but a
       // new envelope could contain a different value and must never inherit
       // the first save's success result.
       const exactRetry = await provide(direct.id, directRequest.messageId, directEnvelope);
       expect(exactRetry.status).toBe(200);
-      expect(await exactRetry.json()).toEqual({ provided: true, resumed: true });
+      expect(await exactRetry.json()).toEqual({ provided: true, resumed: false });
       const replacementEnvelope = await sealPhoneSecretForTest({
         version: 1,
         keyId: PHONE_SECRET_TEST_IDENTITY.keyId,
