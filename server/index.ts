@@ -2768,16 +2768,16 @@ function turnRows(node: HandoffView): Message[] {
   return rows.filter((message) => message.from ? message.from.botId === node.botId : dm);
 }
 
-/** Direct nodes parked on cards by this process, to look at once on the
- * next tick: a card the person already acted on answers its park right away. */
+/** Nodes parked on cards by this process, to look at once on the next
+ * tick: a card the person already acted on answers its park right away. */
 const parkedNodesToReconcile = new Set<string>();
 
-/** A direct node (a root, or a teammate's turn in its own thread) parked on
- * cards the person already acted on runs again now with the lane's line;
- * the cards get the flags the live paths write (once). A card still open
- * leaves the node parked. True when the node was answered. */
+/** A node (a root, a teammate's turn in its own thread, a room member's
+ * turn) parked on cards the person already acted on runs again now with
+ * the lane's line; the cards get the flags the live paths write (once). A
+ * card still open leaves the node parked. True when the node was answered. */
 function reconcileParkedNode(node: HandoffView): boolean {
-  if (node.groupId || node.status !== "waiting" || !node.cards?.length) return false;
+  if (node.status !== "waiting" || !node.cards?.length) return false;
   const messages = store.messagesFor(node.threadId);
   for (const id of node.cards) {
     const message = messages.find((item) => item.id === id);
@@ -2857,13 +2857,13 @@ function settleDirectCoordination(generation: string | undefined, outcome: Direc
 
 const ENDED: ReadonlySet<HandoffView["status"]> = new Set(["completed", "failed", "cancelled"]);
 
-/** The person acted on a card a direct node (a root, or a teammate's turn
- * in its own thread) parked on: the node runs its next execution with the
- * lane's line. True when the runtime took the answer, or already had it
- * (the node is queued on it); false when nothing is parked on this card (a
- * Stop cancelled it, or it already ran). */
+/** The person acted on a card a node parked on (a root, a teammate's turn
+ * in its own thread, a room member's turn): the node runs its next
+ * execution with the lane's line. True when the runtime took the answer,
+ * or already had it (the node is queued on it); false when nothing is
+ * parked on this card (a Stop cancelled it, or it already ran). */
 function answerCardNode(threadId: string, messageId: string, text: string): boolean {
-  const node = coordinator.all().find((n) => !n.groupId && n.threadId === threadId && n.cards?.includes(messageId) && !ENDED.has(n.status));
+  const node = coordinator.all().find((n) => n.threadId === threadId && n.cards?.includes(messageId) && !ENDED.has(n.status));
   if (!node) return false;
   if (coordinator.answerNode(node.id, text)) return true;
   return node.status === "queued";
@@ -2873,10 +2873,11 @@ function answerCardNode(threadId: string, messageId: string, text: string): bool
  * the card can no longer be answered (dismissed): released, so the request
  * does not read as waiting forever. */
 function releaseCardNode(threadId: string, messageId: string, reason: string): void {
-  const live = coordinator.all().filter((n) => !n.groupId && n.threadId === threadId && !ENDED.has(n.status));
+  const live = coordinator.all().filter((n) => n.threadId === threadId && !ENDED.has(n.status));
   const node = live.find((n) => n.cards?.includes(messageId) && n.status === "waiting");
   if (!node || live.length !== 1 || coordinator.children(node.id).some((child) => !ENDED.has(child.status))) return;
-  coordinator.cancelDirect(threadId, reason);
+  if (node.groupId) coordinator.cancelRoom(node.groupId, threadId, reason);
+  else coordinator.cancelDirect(threadId, reason);
 }
 
 /** Stop means stop (decision 4): the cards a node parked in this thread
@@ -2889,7 +2890,7 @@ function releaseCardNode(threadId: string, messageId: string, reason: string): v
 function stopParkedCards(threadId: string): void {
   const ids = new Set<string>();
   for (const node of coordinator.all()) {
-    if (node.groupId || node.threadId !== threadId || !(node.status === "waiting" || node.status === "queued")) continue;
+    if (node.threadId !== threadId || !(node.status === "waiting" || node.status === "queued")) continue;
     for (const id of node.cards ?? []) ids.add(id);
   }
   if (!ids.size) return;
@@ -2967,9 +2968,6 @@ function releaseTurnResources(owner: TurnOwner | undefined): void {
     stopScreenPoller(teamTurn.botId, owner.threadId);
     teamComputerTurns.delete(owner.threadId);
   }
-  // A freed seat is what a room turn parked on it waits for (#1651); a
-  // direct root waits through the runtime's admission (the busy hook).
-  if (roomCardResumes.size > 0) queueMicrotask(drainRoomCardResumes);
 }
 
 /** Let go of the seats a turn's computer setup took when the turn goes on
@@ -2979,7 +2977,6 @@ function releaseTurnComputer(owner: TurnOwner): void {
   turnResources.release(owner);
   if (turnComputerResources.get(owner.threadId)?.owner.generation === owner.generation) turnComputerResources.delete(owner.threadId);
   if (teamComputerTurns.get(owner.threadId)?.owner.generation === owner.generation) teamComputerTurns.delete(owner.threadId);
-  if (roomCardResumes.size > 0) queueMicrotask(drainRoomCardResumes);
 }
 
 async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = false): Promise<void> {
@@ -3185,7 +3182,7 @@ async function interruptDirectThread(botId: string, threadId: string): Promise<v
   // its result is still recorded here. The cards a parked node waits on
   // offer no action any more (decision 4).
   stopParkedCards(threadId);
-  noteTeammatesLeftRunning(botId, threadId, coordinator.stopAwaitingDirect(threadId));
+  noteTeammatesLeftRunning(threadId, coordinator.stopAwaitingDirect(threadId));
   const owner = botForThread(botId, threadId);
   const generation = directTurnGenerationByThread.get(threadId);
   cancelDirectTurnDispatch(botId, threadId);
@@ -3200,8 +3197,8 @@ async function interruptDirectThread(botId: string, threadId: string): Promise<v
  * give the person the second gesture. One pill each, like the "Sent to"
  * receipt, so it survives Tool calls being hidden and one click away is the
  * teammate's own conversation — where Stop really reaches that turn. */
-function noteTeammatesLeftRunning(botId: string, threadId: string, running: HandoffView[]): void {
-  if (!store.taskByThread(botId, threadId)) return;
+function noteTeammatesLeftRunning(threadId: string, running: HandoffView[]): void {
+  if (!store.botByThread(threadId) && !store.groupByThread(threadId)) return;
   for (const node of running) {
     const name = store.bot(node.botId)?.name ?? "A teammate";
     const task = store.taskByThread(node.botId, node.threadId);
@@ -5523,11 +5520,12 @@ const coordinator: Coordinator = createCoordinator({
     // exceed capacity, or race a group turn. Work that waits for a slot such
     // a card holds says so, once, where it was sent.
     busy: n => {
-      if (n.groupId) return Boolean(store.bot(n.botId)?.busy || (store.group(n.groupId) && groupIsWorking(store.group(n.groupId)!)));
-      // A root queued because its turn could not get its computer seat
-      // (decision 6) waits for that seat, not only for a slot.
-      const seat = n.parentId ? undefined : parkedSeats.get(n.id);
+      // A node queued because its turn could not get its computer seat
+      // (decision 6) waits for that seat, not only for a slot: a bot's
+      // thread or a room member alike.
+      const seat = parkedSeats.get(n.id);
       if (seat && !turnResources.free(seat)) return true;
+      if (n.groupId) return Boolean(store.bot(n.botId)?.busy || (store.group(n.groupId) && groupIsWorking(store.group(n.groupId)!)));
       if (canAdmitDirectTurn(n.botId, n.threadId)) return false;
       noteQueuedBehindPerson(n);
       return true;
@@ -6162,9 +6160,18 @@ function cancelGroupTurnOperations(
     detail: "Stopped by you.",
   },
 ) {
-  for (const [key, entry] of roomCardResumes) if (entry.threadId === threadId) roomCardResumes.delete(key);
   if (outcome.byHarness) coordinator.cancelRoom(groupId, threadId, outcome.detail, "failed");
-  else coordinator.cancelRoom(groupId, threadId);
+  else {
+    // The person's Stop, as in a bot's thread (contract §2, decision 4): the
+    // cards the room's nodes parked on offer no action any more (a card
+    // completed afterwards saves its facts and starts nothing), nothing
+    // resumes into the stopped thread, work that never started is dropped,
+    // and a teammate already mid-turn elsewhere keeps its process and still
+    // reports, said once here. The room's remaining rows are then cancelled.
+    stopParkedCards(threadId);
+    noteTeammatesLeftRunning(threadId, coordinator.stopAwaitingDirect(threadId));
+    coordinator.cancelRoom(groupId, threadId);
+  }
   for (const operation of groupTurnOperations.get(groupId) ?? []) {
     if (operation.threadId !== threadId) continue;
     operation.cancelled = true;
@@ -12327,7 +12334,7 @@ routines = new RoutineManager({
     // finishes and reports, nothing resumes the stopped run) and the cards
     // it parked on offer no action any more (decision 4).
     stopParkedCards(threadId);
-    noteTeammatesLeftRunning(botId, threadId, coordinator.stopAwaitingDirect(threadId));
+    noteTeammatesLeftRunning(threadId, coordinator.stopAwaitingDirect(threadId));
     try {
       await runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId);
     } finally {
@@ -12898,53 +12905,6 @@ const teamSetupRequests = new TeamSetupRequestService({
   },
 });
 
-/** A room member's turn after the person acted on a card in the room (a
- * team-setup decision, a connection, a credential) or after the computer
- * seat it parked on freed: rooms are not roots yet (docs/runtime-contract.md
- * §10 PR 5), so the room re-runs the member with the lane's line through the
- * room queue, pending while the member has no slot or the seat is held. */
-type RoomCardResume = { groupId: string; threadId: string; botId: string; prompt: string; resource?: string; failed: (error: string) => void };
-const roomCardResumes = new Map<string, RoomCardResume>();
-function queueRoomCardResume(key: string, entry: RoomCardResume): void {
-  roomCardResumes.set(key, entry);
-  drainRoomCardResumes();
-}
-function dispatchRoomCardResume(key: string, entry: RoomCardResume): void {
-  const operation = beginGroupTurnOperation(entry.groupId, entry.threadId, [entry.botId]);
-  const previous = groupQueues.get(entry.threadId) ?? Promise.resolve();
-  const next = previous.then(async () => {
-    if (operation.cancelled) return;
-    const current = connectorThread(entry.botId, entry.threadId);
-    if (!current?.group) return;
-    if (current.bot.busy) { roomCardResumes.set(key, entry); return; }
-    await runGroupMemberTurn(entry.groupId, entry.threadId, entry.botId, 0, new Set(), entry.prompt, entry.failed,
-      () => operation.cancelled, () => groupProviderHandshakeStarted(operation), () => groupProviderHandshakeSettled(operation));
-  });
-  groupQueues.set(entry.threadId, next.finally(() => finishGroupTurnOperation(entry.groupId, operation))
-    .catch((error) => entry.failed(error instanceof Error ? error.message : String(error))));
-}
-function drainRoomCardResumes(): void {
-  for (const [key, entry] of roomCardResumes) {
-    if (!connectorThread(entry.botId, entry.threadId)?.group) { roomCardResumes.delete(key); continue; }
-    if (entry.resource && !turnResources.free(entry.resource)) continue;
-    if (!canAdmitDirectTurn(entry.botId, entry.threadId)) continue;
-    roomCardResumes.delete(key);
-    dispatchRoomCardResume(key, entry);
-  }
-}
-/** The person acted on a card: the conversation goes on with the lane's
- * line. A direct thread answers the node parked on the card (the runtime
- * runs its next execution); a room re-runs its member. True when the
- * runtime (or the room) took it. */
-function continueAfterCard(botId: string, threadId: string, messageId: string, prompt: string, failed: (error: string) => void): boolean {
-  const owner = connectorThread(botId, threadId);
-  if (!owner) return false;
-  if (owner.group) {
-    queueRoomCardResume(`${threadId}:${messageId}`, { groupId: owner.group.id, threadId, botId, prompt, failed });
-    return true;
-  }
-  return answerCardNode(threadId, messageId, prompt);
-}
 async function resolveAndSendTeamSetup(res: ServerResponse, args: { botId: string; threadId: string; requestId: string; behavior: string }, ownerReview: boolean): Promise<boolean> {
   const card = store.messagesFor(args.threadId).find((item) => item.card?.requestId === args.requestId && item.card.teamSetupRequest)?.card;
   if (!card) return false;
@@ -12963,16 +12923,13 @@ async function resolveAndSendTeamSetup(res: ServerResponse, args: { botId: strin
     appendDecision(DATA_DIR, { threadId: args.threadId, requestId: args.requestId, botId: args.botId, tool: card.tool,
       summary: card.subtitle, decision: resolved.result.state === "applied" ? "user-approved" : "user-denied", source: "user" });
   }
-  // The decision is recorded; the root parked on the card runs again with
-  // it (a room re-runs its member). The card says `resumed` only once the
-  // runtime took the answer, so a decision after a Stop starts nothing.
+  // The decision is recorded; the node parked on the card (a bot's own
+  // conversation or a room member's) runs again with it. The card says
+  // `resumed` only once the runtime took the answer, so a decision after a
+  // Stop starts nothing.
   const current = store.messagesFor(args.threadId).find((item) => item.id === resolved.messageId);
   if (current?.card?.teamSetupRequest?.result && !current.card.teamSetupRequest.resumed) {
-    const held = (error: string) => {
-      const latest = store.messagesFor(args.threadId).find((item) => item.id === resolved.messageId);
-      if (latest?.card) store.patchMessage(args.threadId, latest.id, { card: { ...latest.card, held: `The decision was recorded, but the Chief could not continue: ${redactSecretsInText(error).slice(0, 300)}` } });
-    };
-    if (continueAfterCard(args.botId, args.threadId, current.id, teamSetupDecisionText(resolved.request), held)) {
+    if (answerCardNode(args.threadId, current.id, teamSetupDecisionText(resolved.request))) {
       store.patchMessage(args.threadId, current.id, { card: { ...current.card, teamSetupRequest: { ...current.card.teamSetupRequest, resumed: true } } });
     }
   }
@@ -15851,20 +15808,15 @@ function connectorCards(threadId: string, resumeKey: string) {
 }
 
 /** Every card of one connection request is connected (none dismissed): the
- * root parked on them runs again with the lane's line (a room re-runs its
- * member). True when the request is complete; the cards say `resumed` only
- * once the runtime took the answer. */
-function maybeResumeConnectors(botId: string, threadId: string, resumeKey: string) {
+ * node parked on them (a bot's own conversation or a room member's) runs
+ * again with the lane's line. True when the request is complete; the cards
+ * say `resumed` only once the runtime took the answer. */
+function maybeResumeConnectors(threadId: string, resumeKey: string) {
   const cards = connectorCards(threadId, resumeKey);
   if (!cards.length || cards.some((message) => message.connector?.dismissed || message.connector?.status !== "connected")) return false;
   if (cards.every((message) => message.connector?.resumed)) return true;
-  const failed = (error: string) => {
-    for (const message of connectorCards(threadId, resumeKey)) {
-      if (message.connector) store.patchMessage(threadId, message.id, { connector: { ...message.connector, resumed: false, error: error.slice(0, 180) } });
-    }
-  };
   const labels = cards.map((message) => message.connector!.label);
-  if (!continueAfterCard(botId, threadId, cards[0]!.id, connectionUpdateText(labels), failed)) return true;
+  if (!answerCardNode(threadId, cards[0]!.id, connectionUpdateText(labels))) return true;
   for (const message of cards) {
     store.patchMessage(threadId, message.id, { connector: { ...message.connector!, resumed: true, error: undefined } });
   }
@@ -15924,19 +15876,16 @@ function currentSecretState(botId: string, threadId: string, messageId: string) 
   };
 }
 
-/** The person provided or declined a credential card: the root parked on
- * it runs again with the lane's line (a room re-runs its member). The card
- * records the fact either way; `resumed` only once the runtime took the
- * answer, so a second resolution, or one after a Stop, starts nothing. */
+/** The person provided or declined a credential card: the node parked on
+ * it (a bot's own conversation or a room member's) runs again with the
+ * lane's line. The card records the fact either way; `resumed` only once
+ * the runtime took the answer, so a second resolution, or one after a
+ * Stop, starts nothing. */
 function resumeSecretCard(botId: string, threadId: string, messageId: string, outcome: "provided" | "dismissed") {
   const message = secretMessage(botId, threadId, messageId);
   if (!message?.secret) return false;
   if (message.secret.resumed) return true;
-  const failed = (error: string) => {
-    const current = store.messagesFor(threadId).find((candidate) => candidate.id === messageId);
-    if (current?.secret) store.patchMessage(threadId, current.id, { secret: { ...current.secret, resumed: false, error: error.slice(0, 180) } });
-  };
-  const resumed = continueAfterCard(botId, threadId, messageId, credentialUpdateText(message.secret.label, outcome), failed);
+  const resumed = answerCardNode(threadId, messageId, credentialUpdateText(message.secret.label, outcome));
   store.patchMessage(threadId, message.id, {
     secret: {
       ...message.secret,
@@ -16147,27 +16096,16 @@ function settleSignIn(botId: string, threadId: string, messageId: string, outcom
     if (card.place === "browser") browserLive.handBack(currentBrowserSession(bot.id, bot.browserProfile));
     else for (const key of pleaded.length ? pleaded : [botComputerControlKey(bot)]) computerControl.release(key);
   }
-  // The root parked on this card runs again with the sign-in's line, as a
-  // credential card's does (continueAfterCard); `resumed` only once the
+  // The node parked on this card runs again with the sign-in's line, as a
+  // credential card's does (answerCardNode); `resumed` only once the
   // runtime took the answer, so a second press, or one after a Stop, starts
   // nothing.
-  const failed = (error: string) => {
-    const current = store.messagesFor(threadId).find((candidate) => candidate.id === message.id);
-    if (current?.signIn) store.patchMessage(threadId, current.id, { signIn: { ...current.signIn, resumed: false, error: error.slice(0, 180) } });
-  };
-  const resumed = continueAfterCard(botId, threadId, message.id, signInResumePrompt(card.site, outcome), failed);
+  const resumed = answerCardNode(threadId, message.id, signInResumePrompt(card.site, outcome));
   store.patchMessage(threadId, message.id, {
     signIn: { ...card, ...(outcome === "done" ? { done: true } : { cancelled: true }), ...(resumed ? { resumed: true, error: undefined } : {}) },
   });
   return { status: 200, body: { [outcome]: true, resumed } };
 }
-
-// A room member's card answered, computer freed: the room re-runs the
-// member (rooms are not roots yet, docs/runtime-contract.md §10 PR 5).
-bus.subscribe((event: RuntimeEvent) => {
-  if (shouldIgnoreProviderEvent(event)) return;
-  if (event.type === "turn.completed") drainRoomCardResumes();
-});
 
 /** Pre-save probe for a CLI path override: run `<cli> --version` with the
  * same environment a real turn gets (augmented PATH). Returns ok + the
@@ -19922,7 +19860,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           });
           messageIds.push(message.id);
         }
-        maybeResumeConnectors(botId, threadId, resumeKey);
+        maybeResumeConnectors(threadId, resumeKey);
         return json(res, 200, { messageIds });
       }
       return json(res, 404, { error: "unknown internal endpoint" });
@@ -21285,7 +21223,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (notYours) return json(res, 403, { error: notYours });
       const stagedSkillCleanups = stagedSkillCleanupsForThread(m[2]);
       lastReply.delete(m[2]);
-      for (const [key, entry] of roomCardResumes) if (entry.threadId === m[2]) roomCardResumes.delete(key);
       const updated = store.deleteGroupTask(group.id, m[2]);
       if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
       clearTurnDigestState(m[2]);
@@ -21333,7 +21270,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const threadIds = new Set([group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]);
       const stagedSkillCleanups = [...threadIds].flatMap(stagedSkillCleanupsForThread);
       for (const threadId of threadIds) {
-        for (const [key, entry] of roomCardResumes) if (entry.threadId === threadId) roomCardResumes.delete(key);
         lastReply.delete(threadId);
         clearTurnDigestState(threadId);
         skillReview.dropThread(threadId);
@@ -26025,11 +25961,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           error: failed ? `Connection ${state?.status ?? "failed"}` : undefined,
         };
         store.patchMessage(threadId, message.id, { connector: next });
-        if (state?.connected) maybeResumeConnectors(m[1], threadId, connector.resumeKey);
+        if (state?.connected) maybeResumeConnectors(threadId, connector.resumeKey);
         return json(res, 200, { connected: Boolean(state?.connected), pending: Boolean(state?.pending), status: state?.status });
       }
       if (m[3] === "resume" && method === "POST") {
-        const resumed = maybeResumeConnectors(m[1], threadId, connector.resumeKey);
+        const resumed = maybeResumeConnectors(threadId, connector.resumeKey);
         return resumed
           ? json(res, 200, { resumed: true })
           : json(res, 409, { error: "finish connecting every requested app first" });
