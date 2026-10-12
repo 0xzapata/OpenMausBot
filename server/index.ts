@@ -9732,8 +9732,23 @@ bus.subscribe((event: RuntimeEvent) => {
   drainQueuedSends();
 });
 
+// One drain at a time. A drain's blocked check reads the runtime, whose
+// first read at boot opens it and reconciles the restart; that fires the
+// coordinator's `changed` hook, which calls this drain again while the
+// outer pass is still on the same queue entry — both passes would append
+// the same held line. A nested call marks a rerun and returns; the outer
+// pass runs once more when it is done.
+let drainingQueuedSends = false, queuedSendsDrainOwed = false;
 function drainQueuedSends() {
   if (!followupsReady) return;
+  if (drainingQueuedSends) { queuedSendsDrainOwed = true; return; }
+  drainingQueuedSends = true;
+  try { drainQueuedSendsNow(); } finally {
+    drainingQueuedSends = false;
+    if (queuedSendsDrainOwed) { queuedSendsDrainOwed = false; drainQueuedSends(); }
+  }
+}
+function drainQueuedSendsNow() {
   drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds, unattended, head) =>
     // A plain attended turn — no automationSource, no comms depth: exactly
     // what typing the same words into an idle bot would run. Self-opened
@@ -15131,8 +15146,18 @@ function startGroupTurn(
   return message;
 }
 
+let drainingQueuedChannelSends = false, queuedChannelSendsDrainOwed = false;
 function drainQueuedChannelSends(): void {
   if (!followupsReady) return;
+  // Same one-at-a-time rule as drainQueuedSends.
+  if (drainingQueuedChannelSends) { queuedChannelSendsDrainOwed = true; return; }
+  drainingQueuedChannelSends = true;
+  try { drainQueuedChannelSendsNow(); } finally {
+    drainingQueuedChannelSends = false;
+    if (queuedChannelSendsDrainOwed) { queuedChannelSendsDrainOwed = false; drainQueuedChannelSends(); }
+  }
+}
+function drainQueuedChannelSendsNow(): void {
   drainChannelMessages(
     (groupId, threadId) => groupThreadIsWorking(groupId, threadId),
     ({ groupId, threadId, items }) => {
