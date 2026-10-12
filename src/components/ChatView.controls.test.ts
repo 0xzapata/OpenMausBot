@@ -207,6 +207,24 @@ describe("thread control placement", () => {
     delete window.ogb;
   });
 
+  it("applies Full access from the composer at once, with or without the desktop bridge", () => {
+    for (const bridge of [false, true]) {
+      if (bridge) window.ogb = { approvals: { setMode: vi.fn() } } as unknown as NonNullable<Window["ogb"]>;
+      fixture.dispatch.mockClear();
+      const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+      expect(fixture.approval?.trustedModesAvailable).toBe(bridge);
+      fixture.approval!.onSelect("full");
+      expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "updateTask", botId: "bot", threadId: "selected", patch: { approvalMode: "full" } });
+      expect(markup).not.toContain('role="alertdialog"');
+      delete window.ogb;
+    }
+    // Custom keeps its rule: nothing is sent without the desktop bridge.
+    fixture.dispatch.mockClear();
+    renderToStaticMarkup(createElement(ChatView, { bot }));
+    fixture.approval!.onSelect("custom");
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
   it("explains provider safety errors without offering an ineffective Retry", () => {
     const markup = renderToStaticMarkup(createElement(ErrorRow, { message: "Blocked by our safety systems", onRetry: () => {} }));
     expect(markup).toContain("Full access controls tool approvals, not provider safety checks");

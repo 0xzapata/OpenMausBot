@@ -6,7 +6,10 @@
 // against. The view goes once those sites read Assignment rows directly.
 import { RuntimeCoordinator } from "./runtime-coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
-import type { EnvelopeNames, Level, Limits } from "./runtime/types.ts";
+import type { LegacyThreadResolver } from "./runtime/import-legacy.ts";
+import type { EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView } from "./runtime/types.ts";
+
+export type { LegacyThreadResolver };
 
 export type HandoffStatus = "source" | "queued" | "running" | "waiting" | "resume" | "completed" | "failed" | "cancelled";
 
@@ -37,6 +40,44 @@ export interface HandoffView {
   restarts: number;
   /** Its next turn, or the one running now, follows a restart (runtime types.ts). */
   restart?: "rerun" | "cut" | "teammates";
+  /** work: do it; consult: answer, act on nothing; notify: one-way. */
+  mode: Mode;
+  /** resume: the requester is woken; poll: it reads its inbox; none: nothing comes back. */
+  reply: Reply;
+  outcome?: Outcome;
+  outcomeDetail?: string;
+  /** While parked: the exact question for the person. */
+  question?: string;
+}
+
+/** Who hands the work on, as the host knows it from the turn's capability:
+ * a person's chat, a routine run, a webhook, an external runtime, a Cloud
+ * guest. Written on a fresh root and copied down its tree. */
+export interface HandoffOpener {
+  requester: Requester;
+  origin: Origin;
+}
+
+export interface HandoffOptions {
+  mode?: Mode;
+  reply?: Reply;
+  /** Where the host put the work: the teammate's standing thread, or a
+   * (new) work thread, which is the default. The host picks the thread;
+   * this is recorded as the row's destination kind. */
+  thread?: "standing" | "new";
+  /** A peer-review card allowed this before it was sent. */
+  approvalGranted?: boolean;
+  /** Run a finished teammate again with new work. */
+  rework?: boolean;
+  /** The requesting conversation's own request, for a fresh root's brief. */
+  sourceText?: string;
+  /** A room brief shown once per call. */
+  requestBatchKey?: string;
+  doneWhen?: string;
+  /** For a fresh root; absent means a person's chat turn (peer-provenance origin). */
+  opener?: HandoffOpener;
+  /** The legacy origin of the requesting turn, used when no opener is given. */
+  origin?: WorkOrigin;
 }
 
 export type RoomAddress = Pick<HandoffView, "groupId" | "threadId" | "botId">;
@@ -74,8 +115,9 @@ export interface CoordinatorHost {
   /** Display names for the envelope of a turn. */
   names(node: HandoffView, parent?: HandoffView): EnvelopeNames;
   /** A teammate ended its turn on a question for the person: show it where
-   * the work was asked for (and again after a restart). */
-  park(node: HandoffView, question: string): void;
+   * the work was asked for. `restored` is the restart's re-park, which shows
+   * it again only if the first showing never happened. */
+  park(node: HandoffView, question: string, restored?: boolean): void;
   /** The permission level the target thread will actually run with, after
    * the host applied any delegated level, and its engine kind. Recorded on
    * the assignment so the envelope states the truth (invariant I6). */
@@ -90,8 +132,14 @@ export interface Coordinator {
   all(): HandoffView[];
   children(id: string): HandoffView[];
   /** Throws an Error whose message is the typed refusal the caller shows the model. */
-  enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, key: string, text: string,
-    approvalGranted?: boolean, rework?: boolean, sourceText?: string, requestBatchKey?: string, origin?: WorkOrigin): { node: HandoffView; duplicate: boolean };
+  enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, text: string,
+    options?: HandoffOptions): { node: HandoffView; duplicate: boolean };
+  /** One assignment with its children and inbox (assignment_status). */
+  status(id: string): StatusView | undefined;
+  /** Undelivered inbox items for a polling requester, marked delivered. */
+  poll(owner: Owner): { items: StatusView["inbox"]; assignments: HandoffView[] };
+  /** Non-terminal work the conversation in this thread is waiting on, rooms included. */
+  outstandingFor(threadId: string): HandoffView[];
   sharedRequest(node: HandoffView): { id: string; botIds: string[] };
   sourceSettled(generation: string, ok: boolean): void;
   cancelRoom(groupId: string, threadId?: string, reason?: string, status?: "failed" | "cancelled"): void;
@@ -113,6 +161,8 @@ export interface Coordinator {
    * true when the assignment took the text as its answer and the host must
    * not start an ordinary turn. */
   answer(threadId: string, text: string): boolean;
+  /** Whether this thread's assignment is parked on a question for the person. */
+  awaitingAnswer(threadId: string): boolean;
 }
 
 export interface CoordinatorOptions {
@@ -121,6 +171,10 @@ export interface CoordinatorOptions {
   now?: () => number;
   runtimeLimits?: Partial<Limits>;
   log?: (line: string) => void;
+  /** Names the threads the one-time delegation-ledger import cannot (a
+   * target's standing thread, a source thread's bot); without it those
+   * rows carry an empty thread id the host's validate refuses. */
+  legacyThreads?: LegacyThreadResolver;
 }
 
 export function createCoordinator(options: CoordinatorOptions): Coordinator {

@@ -739,8 +739,6 @@
   "approvalMode.learnMore": "Mehr erfahren",
   "approvalMode.customLocalOnly": "Die benutzerdefinierte Freigabe lässt sich nur in der installierten Desktop-App ändern",
   "approvalMode.customLocalOnlyDot": "Die benutzerdefinierte Freigabe lässt sich nur in der installierten Desktop-App ändern.",
-  "approvalMode.antigravityLocalOnly": "Automatisch (voller Zugriff) gibt es in der installierten Desktop-App.",
-  "approvalMode.trustedLocalOnly": "Voller Zugriff und Benutzerdefiniert gibt es in der installierten Desktop-App.",
   "onboarding.welcome": "Willkommen bei {app}",
   "onboarding.intro": "Bots, die auf ihrem eigenen Rechner echte Arbeit erledigen. Sag uns, wer du bist, und wir melden uns, wenn etwas Großes erscheint.",
   "onboarding.name": "Dein Name",

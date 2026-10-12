@@ -379,6 +379,7 @@ export function EventEditor({
   const [intervalTimeoutDefaultApplied, setIntervalTimeoutDefaultApplied] = useState(Boolean(existingRoutine));
   const [overlap, setOverlap] = useState<"skip" | "queue">(existingRoutine?.overlap ?? "skip");
   const [continuity, setContinuity] = useState(Boolean(existingRoutine?.continuity));
+  const [runOnStartup, setRunOnStartup] = useState(Boolean(existingRoutine?.runOnStartup));
   const [recurrence, setRecurrence] = useState<RecurrenceChoice>(recurrenceFor(schedule, initialAt));
   const [cronDraft, setCronDraft] = useState(() => cronDraftFor(schedule.type === "cron" ? schedule : undefined, initialAt));
   const [cronChanged, setCronChanged] = useState(false);
@@ -553,6 +554,7 @@ export function EventEditor({
           overlap,
           // Room goals can't carry a report yet, and a one-time run has no next run.
           continuity: routineTarget === "bot" && recurrence !== "none" && continuity,
+          runOnStartup: recurrence !== "none" && runOnStartup,
           attachments: routineTarget === "room-goal" ? [] : attachments as RoutineContextAttachment[],
           ...(routineTarget === "bot" ? { resultsThreadId } : {}),
         };
@@ -610,6 +612,7 @@ export function EventEditor({
     || attachments.length > 0
     || runOn === "cloud"
     || timeoutMinutes != null
+    || runOnStartup
     || overlap === "queue");
 
   useModalDialog(dialogRef, onClose);
@@ -845,6 +848,13 @@ export function EventEditor({
                       </label>
                       <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-secondary">{t(overlap === "queue" ? "routines.overlapQueueHelp" : "routines.overlapSkipHelp")}</p>
                     </div>}
+                    {recurrence !== "none" && <label className="mt-3 flex items-start gap-2 text-[12px] text-ink">
+                      <input type="checkbox" aria-label={t("routines.runOnStartupLabel")} checked={runOnStartup} onChange={(event) => setRunOnStartup(event.target.checked)} className="mt-0.5 accent-accent" />
+                      <span>
+                        <span className="block">{t("routines.runOnStartupLabel")}</span>
+                        <span className="mt-1 block text-[10.5px] leading-relaxed text-ink-secondary">{t("routines.runOnStartupHelp")}</span>
+                      </span>
+                    </label>}
                   </div>
                 </details>
               );

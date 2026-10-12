@@ -469,7 +469,6 @@ it("a changed key replaces only its engine and tells only that engine's requeste
   });
   expect(f.log).toEqual(expect.arrayContaining(["auth:compat", "detach:compat", "cancel:eli-work", "load:compat", "attach:compat",
     "message:eli-work:turn interrupted — provider settings changed",
-    "delegation:Delegated turn did not finish — turn interrupted — provider settings changed (eli-work)",
     // a room's assignments fail with the cause, never as the person's Stop
     "room-stop:room-compat:stopped:turn interrupted — provider settings changed:true"]));
   expect(f.settled).toEqual([{ generation: "gen-eli-work", text: "turn interrupted — provider settings changed (eli-work)" }]);

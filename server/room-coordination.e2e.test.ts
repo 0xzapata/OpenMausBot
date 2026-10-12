@@ -469,7 +469,10 @@ it("consults multiple existing members and returns once, with no discussion prer
   const tools = f.provider()[0].evidence[0].result.tools.map((t: any) => t.name);
   expect(tools).toContain("coordinate_bots");
   expect(tools).toContain("request_credential");
-  for (const old of ["discuss_room", "assign_room_member", "delegate_bot", "ask_bot", "start_thread"]) expect(tools).not.toContain(old);
+  // One surface: the room tools of old are gone; the legacy hand-off names
+  // remain for one release as aliases, listed after coordinate_bots.
+  for (const old of ["discuss_room", "assign_room_member"]) expect(tools).not.toContain(old);
+  expect(tools.indexOf("coordinate_bots")).toBeLessThan(tools.indexOf("delegate_bot"));
 }), 45_000);
 
 it.each([false, true])("retains reports behind compact receipts for later turns, unless access is revoked (%s)", revoked => withRooms(async f => {

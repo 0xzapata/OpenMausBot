@@ -264,6 +264,12 @@ describe("routine editor", () => {
     expect(html).not.toMatch(/aria-pressed="true"/);
   });
 
+  it("shows a saved startup choice when the simple editor opens", () => {
+    const html = editor({ ...routine, runOnStartup: true });
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toMatch(/<input type="checkbox" aria-label="Also run when OpenMausBot starts"[^>]*checked[^>]*>/);
+  });
+
   // Continuity was only reachable by asking a bot; the editor offers it for
   // repeating bot routines, right under the instructions.
   it("offers Remember the last run for a repeating routine, off unless the routine has it", () => {

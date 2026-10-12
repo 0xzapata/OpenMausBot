@@ -24,7 +24,7 @@ import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedCo
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
 import { SharedComputerControl } from "./shared-computer-control.ts";
-import { createCoordinator, type ComposedTurn, type Coordinator, type HandoffView } from "./coordinator.ts";
+import { createCoordinator, type ComposedTurn, type Coordinator, type HandoffOpener, type HandoffOptions, type HandoffView } from "./coordinator.ts";
 import { queuedBehindPersonText, settledWaitingChip, UnansweredApprovals } from "./waiting-on-person.ts";
 import { assertRequestTarget, guardedRequestPath, requestConflict, requestNeedsInput, requestSourceForCard } from "./guarded-requests.ts";
 import { botAvatarUrlFromStoredPath } from "../shared/bot-avatar.ts";
@@ -274,7 +274,6 @@ import type { GroupGoalRunCardData, GroupGoalRunStatus } from "../shared/group-g
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
-import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
 import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
@@ -283,17 +282,10 @@ import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, inci
 /** A session_read answer competes with the transcript for the context
  * window; a computer-use turn's output can run to hundreds of KB. */
 const SESSION_READ_MAX_CHARS = 8_000;
-import {
-  attemptAsideInjection,
-  drainAsideMessages,
-  queueAsideMessage,
-  restoreAsideMessages,
-} from "./aside-queue.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
 import { parseDataContext, type DataContext } from "./data-context.ts";
 import { promptWithDataContext } from "../shared/data-context.ts";
 import { admit, DRAIN_COALESCE_MAX_ITEMS } from "./admission.ts";
-import { _loadPending, buildDelegationFailurePrompt, buildDelegationRevivalPrompt, DELEGATION_TTL_MS, DelegationWakeBudget, discardDelegations, drainDelegations, expireStaleDelegations, findDelegationReceipt, pendingDelegationInfo, pendingDelegationSnapshot, pendingThreads, queueDelegation, recordDelegationReceipt, releaseDelegationsWaitingOn, summarizeDelegatedActivity, type DelegationReceipt, type DelegationRunner, type QueueResult } from "./delegations.ts";
 import {
   cancelSteeredMessage,
   drainSteeredMessages,
@@ -350,7 +342,7 @@ import { threadModelFallback, type ThreadEngine } from "./thread-model.ts";
 import { computerEngineMoveText, removedComputerInstanceIds, writeComputerEngineMoveLines } from "./computer-engine-removal.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
-import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, withPeerProvenance, type WorkOrigin } from "./peer-provenance.ts";
+import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
 import {
   isProjectEmoji,
@@ -455,7 +447,6 @@ import {
   composioSystemPrompt,
   customMcpPrompt,
   CREDENTIAL_PROMPT,
-  mentionPrompt,
   THREADS_PROMPT,
   LEARN_PROMPT,
   PROFILE_PROMPT,
@@ -808,6 +799,10 @@ let workspaceAccess: WorkspaceAccess | null = null;
 const DESKTOP_MANAGED = process.env.OMB_DESKTOP_PARENT === "1";
 const SHARED_WORKSPACE_FULL_ACCESS = sharedWorkspaceFullAccessConfigured();
 const sharedWorkspaceFullAccessEnabled = () => SHARED_WORKSPACE_FULL_ACCESS && Boolean(workspaceAccess) && entitled("admin");
+/** Full access goes over the HTTP API like any other level (owner decision,
+ * Oct 12), except on a hosted company workspace: there only the operator's
+ * dedicated policy grants it, for new tasks (POST /api/bots/:id/tasks). */
+const HOSTED_FULL_ACCESS_REFUSAL = "On a shared company workspace Full access comes only from the operator's dedicated policy";
 // Who a loopback request without a session is (server/request-auth.ts
 // LoopbackTrust): the owner on a desktop or a one-person server; a service on
 // a shared workspace, where every bot's shell is a loopback caller too.
@@ -1272,20 +1267,6 @@ function parentThreadModel(botId: string, parentThreadId: string): { modelSelect
     registry.cliTarget(bot.modelSelection.instanceId)?.driverKind,
     registry.cliTarget(modelSelection.instanceId)?.driverKind);
   return { modelSelection, ...(needsAsk ? { approvalMode: "ask" as const } : {}) };
-}
-
-/** On a Cloud home: the conversation that work a guest-driven turn hands a
- * teammate (delegate_bot, ask_bot) runs in. It is a fresh one of the guest's
- * own on the teammate, never the owner's conversation with it, so the work,
- * and anything that later continues there, stays confined. Undefined when
- * the source is not guest-driven, null when it could not be made. */
-function guestWorkThread(from: BotRecord, target: BotRecord, fromThreadId: string, brief: string): string | undefined | null {
-  if (!CLOUD_HOME || !cloudGuestDriven(fromThreadId)) return undefined;
-  const title = brief.replace(/\s+/g, " ").trim().slice(0, 60) || `From ${from.name}`;
-  const task = store.createTask(target.id, title, false, undefined, { botId: from.id, name: from.name, at: Date.now() });
-  if (!task) return null;
-  threadStarters.set(task.threadId, openerFrom(fromThreadId));
-  return task.threadId;
 }
 
 /** On a personal Cloud home the only turns confined like a guest's
@@ -2249,8 +2230,6 @@ type InternalCapability = {
   boxId?: string | null;
   browserSession?: string;
   roomHandoffId?: string;
-  roomCoordination?: boolean;
-  ownThreadCreation?: boolean;
   /** attach_file calls this turn has made, capped so one turn cannot flood the chat. */
   attachedFiles?: number;
   /** This turn's engine works with host files, so attach_file may also
@@ -2262,7 +2241,7 @@ type InternalCapability = {
   turnStartedAt?: number;
   /** post_to_room calls this turn has made. */
   roomPosts?: number;
-  /** Delegations this turn handed out: their ids may not be checked or
+  /** Assignments this turn handed out: their status may not be read or
    * waited on until a later turn, so the teammate gets to work first. */
   delegatedThisTurn?: Set<string>;
   externalRuntime?: ExternalRuntimeGrant;
@@ -2294,24 +2273,28 @@ const computerSelectionTurns = new Map<string, {
 // `<data dir>/external-runtimes.json` maps bot ids to standing bearer tokens
 // and an explicit threadId. Missing bindings fail closed, even for one task.
 // A matching bearer resolves to an agents capability bound to that thread only —
-// depth 0, no skill authoring, no room coordination, no bot/room/thread
-// creation. Every other bearer still goes through the per-turn map above. The
-// file is read on demand, so adding or rotating a token needs no restart, and
-// it must not be readable by other users (mode 600).
+// depth 0, no skill authoring, no bot/room/thread creation. Every other bearer
+// still goes through the per-turn map above. The file is read on demand, so
+// adding or rotating a token needs no restart, and it must not be readable by
+// other users (mode 600).
 const EXTERNAL_RUNTIME_GENERATION = "external-runtime";
 const EXTERNAL_RUNTIMES_FILE = join(DATA_DIR, "external-runtimes.json");
 /** The standing capability is for peer comms only. Everything that creates or
  * changes state on this server (threads, bots, rooms, skills, memory, …) needs
  * a real turn, which an external runtime never has here, so the routes are an
- * allow-list rather than flags on the capability. */
+ * allow-list rather than flags on the capability: the roster, coordinate_bots
+ * and assignment_status, plus the deprecated aliases they replace. */
 function externalRuntimeMayCall(method: string, path: string): boolean {
-  if (method === "GET") return path === "/api/internal/agents" || /^\/api\/internal\/delegations\/[\w-]+$/.test(path);
-  return method === "POST" && (path === "/api/internal/ask-bot" || path === "/api/internal/delegate-bot");
+  if (method === "GET") {
+    return path === "/api/internal/agents" || path === "/api/internal/assignment-status" || /^\/api\/internal\/delegations\/[\w-]+$/.test(path);
+  }
+  return method === "POST" && ["/api/internal/coordinate-bots", "/api/internal/ask-bot", "/api/internal/delegate-bot"].includes(path);
 }
-/** An external runtime polls check/wait_delegation for what it hands off, so
- * the result must not also wake the bot's own engine on the pinned thread. */
-function externalCompletion(capability: InternalCapability): { completionOwner?: "external" } {
-  return capability.generation === EXTERNAL_RUNTIME_GENERATION ? { completionOwner: "external" } : {};
+/** The runtime's name for a standing external runtime: the lane its results
+ * wait in (docs/runtime-contract.md §9, `reply: poll`). One per grant, so a
+ * rotated token keeps the same inbox. */
+function externalRunId(grant: ExternalRuntimeGrant): string {
+  return `external-runtime:${grant.botId}:${grant.threadId}`;
 }
 function externalRuntimeCapability(header: string | string[] | undefined): InternalCapability | null {
   const grant = authorizeExternalRuntime(EXTERNAL_RUNTIMES_FILE, header, id => store.bot(id));
@@ -2327,8 +2310,6 @@ function externalRuntimeCapability(header: string | string[] | undefined): Inter
     createdBots: 0,
     openedThreads: 0,
     orphanExpiresAt: Number.MAX_SAFE_INTEGER,
-    roomCoordination: false,
-    ownThreadCreation: false,
   };
 }
 
@@ -2503,9 +2484,10 @@ function internalCapabilityIsActive(capability: InternalCapability): boolean {
     activeInternalGenerationByThread.get(capability.threadId) === capability.generation
   );
 }
-// Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
-// a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
-// A→B is allowed but B→C (and A→B→A loops) never start.
+// The comms depth a turn the coordinator dispatches runs at. It no longer
+// gates tools: every turn gets the same teamwork tools and the runtime's own
+// depth limit bounds the tree (docs/runtime-contract.md §2, §9). Other code
+// still reads the depth to tell a hand-off turn from a person's.
 const MAX_COMMS_DEPTH = 1;
 const MAX_WORKSPACE_BOTS = 100;
 const createSidebarSectionSchema = z.object({
@@ -2538,8 +2520,6 @@ function agentsIntegration(
   skillAuthoring: boolean,
   generation: string,
   roomHandoffId?: string,
-  roomCoordination = false,
-  ownThreadCreation = false,
   hostFiles = false,
 ) {
   const token = mintInternalCapability({
@@ -2552,8 +2532,6 @@ function agentsIntegration(
     createdBots: 0,
     openedThreads: 0,
     roomHandoffId,
-    roomCoordination,
-    ownThreadCreation,
     // Only an engine whose own tools read and write host files; a Cloud home
     // or hosted workspace keeps attach_file to the conversation's folders.
     ...(hostFiles && !CLOUD_HOME && !HOSTED_WORKSPACE ? { deliversSavedFiles: true } : {}),
@@ -2568,8 +2546,6 @@ function agentsIntegration(
       OMB_THREAD_ID: threadId,
       OMB_COMMS_TOKEN: token,
       OMB_TURN_DEPTH: String(depth),
-      OMB_ROOM_TURN: roomCoordination ? "1" : "0",
-      OMB_OWN_THREAD_CREATION: ownThreadCreation ? "1" : "0",
       OMB_SKILL_AUTHORING_ENABLED: skillAuthoring ? "1" : "0",
       OMB_MEMORY_ENABLED: store.bot(botId)?.memoryEnabled === false ? "0" : "1",
       // The shared-computer tools are advertised only while the workspace
@@ -3378,73 +3354,6 @@ function controlIntegration(
       openedThreads: 0,
     }, { perTurn: machine !== "this computer" }),
   };
-}
-
-/** Run a turn on `targetBotId` and resolve with its assistant text — the
- * synchronous half of ask_bot. Subscribes to the bus, folds assistant_text
- * for that thread, resolves on turn.completed (or the short inline wait budget). */
-type AskBotOutcome = {
-  status: "reply" | "failed" | "timeout" | "error";
-  /** A failed turn's: its cause and what it did (stoppedTurnText). */
-  text: string;
-};
-
-/** The ask_bot calls waiting on a turn, each by the thread it runs in: that
- * turn's result is its asker's (reportsToRequester). */
-const awaitedAsks = new Set<{ threadId: string }>();
-
-function askBotAndWait(targetBotId: string, message: string, depth: number, fromBotId?: string, fromThreadId?: string, targetThreadId?: string): Promise<AskBotOutcome> {
-  const target = store.bot(targetBotId);
-  if (!target) return Promise.resolve({ status: "error", text: "(no such bot)" });
-  const threadId = targetThreadId ?? target.threadId;
-  return new Promise((resolve) => {
-    let text = "";
-    let done = false;
-    const awaited = { threadId };
-    awaitedAsks.add(awaited);
-    const finish = (out: AskBotOutcome) => {
-      if (done) return;
-      done = true;
-      awaitedAsks.delete(awaited);
-      clearTimeout(timer);
-      unsub();
-      resolve(out);
-    };
-    const unsub = bus.subscribe((e: RuntimeEvent) => {
-      // A cancelled provider may flush text/completion after its replacement
-      // has started on the same thread. Retired turn ids must never satisfy a
-      // newer ask_bot waiter with the old partial reply.
-      if (shouldIgnoreProviderEvent(e)) return;
-      if (e.threadId !== threadId) return;
-      if (e.type === "item.completed" && e.itemType === "assistant_text") {
-        text += (text ? "\n" : "") + e.text;
-      } else if (e.type === "turn.completed") {
-        if (e.ok) finish({ status: "reply", text: text || "(the bot finished without a text reply)" });
-        else finish({ status: "failed", text: stoppedTurnText(threadId, e.turnId, undefined, e.stopReason) });
-      }
-    });
-    // Timing out does NOT stop the peer's turn — the caller decides whether
-    // the still-running work becomes a delegation claim ticket instead.
-    const timer = setTimeout(() => finish({ status: "timeout", text }), ASK_BOT_TIMEOUT_MS);
-    // The asker's identity rides on the stored line as well as in the note
-    // prefixed to it: the wording is for the model reading this turn, the
-    // field is for anything that reads the transcript later.
-    const asker = fromBotId ? store.bot(fromBotId) : undefined;
-    const unattended = isUnattended(fromBotId, fromThreadId);
-    startTurn(targetBotId, message, {
-      threadId,
-      commsDepth: depth + 1,
-      unattended,
-      peerAsk: asker
-        ? unattended
-          ? { botId: asker.id, name: asker.name, unattended: true }
-          : { botId: asker.id, name: asker.name }
-        : undefined,
-      onDispatchError: (reason) => finish({ status: "error", text: `(couldn't start that bot: ${reason})` }),
-    }).catch((err) =>
-      finish({ status: "error", text: `(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})` }),
-    );
-  });
 }
 
 /** Include configuration that the driver snapshot itself does not carry. */
@@ -4367,10 +4276,11 @@ function roomTurnApprovalMode(bot: BotRecord, threadId: string, orchestration?: 
   return (from && source && delegatedLevel(from, source.threadId, bot, own)) || own;
 }
 
-/** Privileged approval-mode transitions are deliberately absent from the
- * loopback HTTP authority model: a bot with shell access can curl that
- * surface itself. Only Electron's private utility-process channel can deliver
- * this message. */
+/** Custom approval transitions are deliberately absent from the loopback
+ * HTTP authority model: a bot with shell access can curl that surface itself.
+ * Only Electron's private utility-process channel can deliver this message.
+ * The packaged desktop sends Full here too, but Full is no longer private:
+ * the HTTP routes apply it as well (owner decision, Oct 12). */
 function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const message = raw as Record<string, unknown>;
@@ -5215,8 +5125,17 @@ const coordinator: Coordinator = createCoordinator({
   dataDir: DATA_DIR,
   now: Date.now,
   log: line => console.error("coordinator:", line),
+  // The one-time import of the delegation ledger names threads the ledger
+  // did not: a target's standing thread, a source thread's bot.
+  legacyThreads: {
+    standingThreadOf: botId => botMainThread(botId) ?? store.bot(botId)?.threadId,
+    botOfThread: threadId => store.botByThread(threadId)?.id,
+  },
   host: {
-    validate: (node, parent) => roomHandoffProblem(node, parent) ??
+    // A one-way notice is checked when it is sent and when it is dispatched;
+    // once handed over nothing of it returns, so no route back can close
+    // under it (the recipient owns the thread, as send_to_bot always said).
+    validate: (node, parent) => node.mode === "notify" && node.status !== "queued" ? undefined : roomHandoffProblem(node, parent) ??
       (parent && store.bot(parent.botId)?.approvePeerComms && !fullAccessForSource(parent.botId, parent.threadId) && !node.approvalGranted ? "Sender now requires peer approval; submit a new approved request" : undefined),
     // Delegations' admission (canAdmitDirectTurn): a free slot admits work
     // beside a sibling that is running (#1589) or waiting on the person, so a
@@ -5254,6 +5173,16 @@ const coordinator: Coordinator = createCoordinator({
         store.appendMessage(child.threadId, { role: "bot", kind: "activity", tool: failedTurnTool(child.result) });
         if (room) store.patchGroup(room.id, { unread: true });
         else store.patchTask(child.botId, child.threadId, { unread: true });
+        return;
+      }
+      // A one-way notice returns nothing: its result stays in its own
+      // thread, and only a failure is marked there (so a restart's recovery
+      // cannot send the notice again), never in the sender's conversation.
+      if (child.mode === "notify") {
+        if (child.status !== "completed" && store.taskByThread(child.botId, child.threadId)) {
+          store.appendMessage(child.threadId, { role: "bot", kind: "activity",
+            tool: { name: `Send failed — ${child.result.split("\n", 1)[0]!.slice(0, 180)}`, ok: false, ...(child.id ? { handoffId: child.id } : {}) } });
+        }
         return;
       }
       // Same-room replies already appear in this conversation.
@@ -5337,7 +5266,10 @@ const coordinator: Coordinator = createCoordinator({
         // A cut resume running again already sent its notification, and a
         // quiet report's review stays quiet (turnAnswers).
         const quiet = turnAnswers(node.threadId, { cardContinuation: true, coordination: node }).quiet;
-      if (node.restart !== "rerun" && !quiet) {
+        // A routine run's resume is part of the run: the run's own result
+        // notifies when it ends, so its teammates' results raise nothing.
+        const routineRoot = !node.parentId && activeRoutineRunForThread(node.threadId) !== null;
+        if (node.restart !== "rerun" && !quiet && !routineRoot) {
           notify(buildNotification("delegation-settled", bot, node.threadId, `Results in from ${who}`, { avatarUrl: bot.avatarUrl }));
         }
       if (!node.parentId && !quiet) reviewAnswerThreads.add(node.threadId);
@@ -5411,26 +5343,32 @@ const coordinator: Coordinator = createCoordinator({
     },
     // A teammate ended its turn on a question for the person: one chip where
     // the work was asked for (the report chip's shape), both conversations
-    // unread, one notification — never more per park.
-    park: (node, question) => {
+    // unread, one notification — never more per park. A restart re-parks
+    // every open question (`restored`); one the person was already shown
+    // stays as it is, so a relaunch neither repeats it nor marks unread what
+    // they had read. Without a live parent there is no chip to look for, and
+    // the question already sits in the teammate's own reply.
+    park: (node, question, restored) => {
       const bot = store.bot(node.botId);
       if (!bot) return;
       const parent = node.parentId ? coordinator.node(node.parentId) : undefined;
       const title = store.taskByThread(bot.id, node.threadId)?.title ?? "Teammate work";
-      if (parent) {
-        const group = parent.groupId ? store.group(parent.groupId) : undefined;
-        const parentLive = parent.groupId ? Boolean(group && store.groupTaskByThread(group.id, parent.threadId)) : Boolean(store.taskByThread(parent.botId, parent.threadId));
-        if (parentLive) {
-          store.appendMessage(parent.threadId, {
-            role: "bot", kind: "activity",
-            from: { botId: bot.id, name: bot.name, color: bot.color },
-            tool: { name: `${bot.name} needs your input: ${question.slice(0, 180)}`, ok: true },
-            ...(node.groupId ? { comm: { groupId: node.groupId, threadId: node.threadId, withBotId: bot.id, withName: bot.name, withColor: bot.color } }
-              : { threadRef: { botId: bot.id, threadId: node.threadId, title } }),
-          });
-          if (group) store.patchGroup(group.id, { unread: true });
-          else store.patchTask(parent.botId, parent.threadId, { unread: true });
-        }
+      const chip = `${bot.name} needs your input: ${question.slice(0, 180)}`;
+      const group = parent?.groupId ? store.group(parent.groupId) : undefined;
+      let liveParent: HandoffView | undefined;
+      if (parent?.groupId) liveParent = group && store.groupTaskByThread(group.id, parent.threadId) ? parent : undefined;
+      else if (parent) liveParent = store.taskByThread(parent.botId, parent.threadId) ? parent : undefined;
+      if (restored && (!liveParent || newestQuestionChip(liveParent.threadId, node.threadId) === chip)) return;
+      if (liveParent) {
+        store.appendMessage(liveParent.threadId, {
+          role: "bot", kind: "activity",
+          from: { botId: bot.id, name: bot.name, color: bot.color },
+          tool: { name: chip, ok: true },
+          ...(node.groupId ? { comm: { groupId: node.groupId, threadId: node.threadId, withBotId: bot.id, withName: bot.name, withColor: bot.color } }
+            : { threadRef: { botId: bot.id, threadId: node.threadId, title } }),
+        });
+        if (group) store.patchGroup(group.id, { unread: true });
+        else store.patchTask(liveParent.botId, liveParent.threadId, { unread: true });
       }
       if (node.groupId) store.patchGroup(node.groupId, { unread: true });
       else store.patchTask(bot.id, node.threadId, { unread: true });
@@ -5454,6 +5392,14 @@ const coordinator: Coordinator = createCoordinator({
 activeCoordinationForThread = threadId => coordinator.activeDirect(threadId);
 const groupUsageReader = new GroupUsageReader(DATA_DIR);
 try { groupUsageReader.refresh(); } catch { /* accounting must not block startup */ }
+/** The label of the newest "needs your input" chip in `threadId` about the
+ * teammate thread `aboutThreadId`, if any (see the coordinator's `park`). */
+function newestQuestionChip(threadId: string, aboutThreadId: string): string | undefined {
+  return store.activePath(threadId).findLast((message) =>
+    message.kind === "activity" && (message.threadRef?.threadId ?? message.comm?.threadId) === aboutThreadId
+    && message.tool?.name.includes(" needs your input: ") === true)?.tool?.name;
+}
+
 /** Where the person stopped reading a conversation: its newest message now.
  * The New divider of the next unread visit goes after it. */
 function readCursor(threadId: string): { lastReadMessageId?: string } {
@@ -5564,10 +5510,6 @@ function finishGroupGoalRun(
   // A calendar-triggered team goal reuses its RoutineRun id for this card.
   // Manual goals have unrelated ids, so the manager safely ignores them.
   const routineRun = routines?.finishGoalRun(run.runId, status, safeDetail);
-  if (routineRun?.status === "cancelled") {
-    pendingDelegationWakes.delete(operation.threadId);
-    discardDelegations(commsBus, operation.threadId);
-  }
   // Member-level turn completions are intentionally private/intermediate for
   // a team goal, so the normal direct-routine notification path never fires.
   // Notify once from the correlated terminal receipt instead.
@@ -6564,9 +6506,6 @@ const repeats = new RepeatDetector({ thresholds: [5, 10, 20], maxKeysPerThread: 
 const TURN_STALL_MS = Math.max(60_000, Number(process.env.OMB_TURN_STALL_MS) || 20 * 60_000);
 /** The watchdog's words for a turn it stopped, as its thread and requester read them. */
 const STALL_CAUSE = `no activity for ${Math.round(TURN_STALL_MS / 60_000)} minutes — the turn was stopped`;
-/** How long ask_bot waits synchronously before the ask is converted into a
- * delegation claim ticket (the peer's turn keeps running either way). */
-const ASK_BOT_TIMEOUT_MS = Math.max(5_000, Number(process.env.OMB_ASK_BOT_TIMEOUT_MS) || 15_000);
 // A room waits for a busy teammate instead of dropping them, but never
 // forever: a bot parked on a permission card in another chat is "busy" until
 // a human returns. Past this cap a goal's lead is told the teammate could not
@@ -6618,8 +6557,6 @@ const watchdog = new TurnWatchdog({
     const stalled = stoppedTurnText(turn.threadId, liveTurnByThread.get(turn.threadId), STALL_CAUSE);
     if (routineRun?.target === "bot") {
       routines?.failThread(turn.threadId, `No activity for ${minutes} minutes — the routine was stopped`);
-      pendingDelegationWakes.delete(turn.threadId);
-      discardDelegations(commsBus, turn.threadId);
     }
     store.appendMessage(turn.threadId, {
       role: "bot",
@@ -6631,7 +6568,6 @@ const watchdog = new TurnWatchdog({
       reportIncident({ kind: "stalled", bot, threadId: turn.threadId, detail: STALL_CAUSE });
     }
     settleDirectFollowup(stalledGeneration, { ok: false, text: stalled });
-    finalizeDelegationWatch(turn.threadId, false, "", `Delegated turn did not finish — ${stalled}`);
     turnUsage.delete(turn.threadId);
     turnContext.delete(turn.threadId);
     roomStallCompletions.stall(turn.threadId);
@@ -6675,7 +6611,6 @@ const watchdog = new TurnWatchdog({
         if (store.taskByThread(currentBot.id, turn.threadId)) store.setTaskActivity(currentBot.id, turn.threadId, "idle");
         else store.setActivity(currentBot.id, "idle");
         directTurnBots.delete(turn.threadId);
-        retryDelegationsWaitingOn(currentBot.id);
         // The grace fallback replaces a missing turn.completed event. Release
         // every kind of work that may have queued behind this bot, including
         // connector and credential continuations.
@@ -8670,13 +8605,11 @@ bus.subscribe((event: RuntimeEvent) => {
           // Ordinary completion still drains from the existing bus subscribers.
           // An asynchronous screenshot finishes after those subscribers ran.
           if (resumeQueued) {
-            retryDelegationsWaitingOn(bot.id);
             drainQueuedSends();
             drainConnectorResumes();
             drainComputerResumes();
             drainSecretResumes();
             drainTeamSetupResumes();
-            drainDelegationWakes();
           }
           settleTrackedRequest(event.threadId);
         };
@@ -8832,49 +8765,16 @@ bus.subscribe((event: RuntimeEvent) => {
         const remaining = group ? activeGroupSpeaker(group.id) : undefined;
         if (group) store.patchGroup(group.id, { busyBotId: remaining?.botId ?? null, unread: true });
         const speakingBot = store.bot(speaker.botId);
-        if (speakingBot?.busy) {
-          store.setActivity(speakingBot.id, "idle");
-          retryDelegationsWaitingOn(speakingBot.id);
-        }
+        if (speakingBot?.busy) store.setActivity(speakingBot.id, "idle");
       }
-      // A delegated turn's terminal state belongs in the A⇄B channel:
-      // the request was mirrored there when the delegation drained, and a
-      // channel that only ever shows requests is half a record. Mirror the
-      // reply on success; mirror a failed/stopped terminal chip otherwise.
-      // Either one carries the note on approvals nobody answered: a failed
-      // turn's requester reads only its failure.
-      const delegationFailureName = unansweredApprovals.annotate(event.threadId, event.turnId, !event.ok && delegationWatch.has(event.threadId)
-        ? `Delegated turn did not finish — ${stoppedTurnText(event.threadId, completedTurnId, undefined, event.stopReason)}`
-        : "Delegated turn did not finish", false);
-      finalizeDelegationWatch(event.threadId, event.ok, unansweredApprovals.annotate(event.threadId, event.turnId, reply, event.ok), delegationFailureName);
+      // A coordinated turn's end reaches its requester through the runtime
+      // (the report hook), never through this fold.
       // group busy/unread settle in the group turn engine, which knows
       // whether more member turns are queued behind this one
       break;
     }
   }
 });
-
-/** A delegated turn's terminal state belongs in the A⇄B channel:
- * the request was mirrored there when the delegation drained, and a
- * channel that only ever shows requests is half a record. Mirror the
- * reply on success; mirror a failed/stopped terminal chip otherwise. */
-const delegationWatch = new Map<string, {
-  channelId?: string;
-  toBotId: string;
-  toBotName?: string;
-  taskId?: string;
-  sourceThreadId?: string;
-  sourceBotId?: string;
-  /** Bind a late peer result to the run that requested it, not later user
-   * work that happens to reuse that run's execution conversation. */
-  routineRunId?: string;
-  /** when the delegated turn was dispatched — elapsed time for status checks */
-  startedAtMs?: number;
-  /** Cross-bot send: leave the terminal state in the recipient thread. */
-  oneWay?: boolean;
-  /** An external runtime's handoff: record the receipt, never wake the source. */
-  completionOwner?: "external";
-}>();
 
 /** The card in this thread that is waiting on the person: an approval, a
  * question or a proposal to review, newest first. */
@@ -8888,11 +8788,8 @@ function openPersonCard(threadId: string): { kind: "approval" | "question" | "re
   return undefined;
 }
 
-/** The conversation waiting on work that runs in this thread: a Chief's
- * delegate_bot task or coordinate_bots assignment. */
+/** The conversation waiting on the coordinated work that runs in this thread. */
 function delegatorOf(threadId: string): { threadId: string; botId?: string } | undefined {
-  const watch = delegationWatch.get(threadId);
-  if (watch?.sourceThreadId) return { threadId: watch.sourceThreadId, botId: watch.sourceBotId };
   const parent = coordinator.assignerOf(threadId);
   return parent ? { threadId: parent.threadId, botId: parent.botId } : undefined;
 }
@@ -8928,67 +8825,55 @@ function settleWaitingOnPersonChips(threadId: string, resolved?: Extract<Runtime
   }
 }
 
-// Peer wake: when a delegated reply lands, resume the source bot so it can
-// fold the result in and answer the user instead of sitting idle. Mirrors
-// the cardContinuation resume pattern used for connector/credential cards.
-const delegationWakeBudget = new DelegationWakeBudget();
-const pendingDelegationWakes = new Map<string, { botId: string; targetName: string; failureReason?: string; routineRunId?: string; budgetAcquired?: boolean }>();
-
 function activeRoutineRunForThread(threadId: string): RoutineRun | null {
   const run = routines?.runForThread(threadId);
   return run && ["running", "waiting"].includes(run.status) ? run : null;
 }
 
-function routineDelegationCanResume(threadId: string, routineRunId?: string): boolean {
-  return !routineRunId || activeRoutineRunForThread(threadId)?.id === routineRunId;
+/** Who hands work on from this turn, for the root the first hand-off of the
+ * turn opens (docs/runtime-contract.md §9): a standing external runtime
+ * (its results wait in its inbox, `reply: poll`), a routine run (a webhook's
+ * is outside lineage), a Cloud guest's conversation. Undefined for a
+ * person's chat, whose origin the request's own record settles (turnOrigin). */
+function handoffOpener(capability: Pick<InternalCapability, "botId" | "threadId" | "externalRuntime">, threadId: string): HandoffOpener | undefined {
+  if (capability.externalRuntime) {
+    return {
+      requester: { kind: "external_runtime", runId: externalRunId(capability.externalRuntime), botId: capability.botId, threadId },
+      origin: { kind: "outside", source: "external_runtime", ref: threadId },
+    };
+  }
+  const run = activeRoutineRunForThread(threadId);
+  if (run) {
+    return {
+      requester: { kind: "routine_run", runId: run.id, botId: run.botId, threadId },
+      origin: run.triggerSource === "webhook"
+        ? { kind: "outside", source: "webhook", ref: run.routineId }
+        : { kind: "routine", source: "routine", ref: run.routineId },
+    };
+  }
+  if (cloudGuestDriven(threadId)) {
+    const guest = threadPersonKey(threadId);
+    return {
+      requester: { kind: "person", botId: capability.botId, threadId },
+      origin: { kind: "outside", source: "guest", ref: threadId, ...(guest ? { onBehalfOf: guest } : {}) },
+    };
+  }
+  return undefined;
 }
 
-function dispatchDelegationWake(botId: string, threadId: string, targetName: string, failureReason?: string, routineRunId?: string, budgetAcquired = false): void {
-  if (!store.taskByThread(botId, threadId)) return;
-  if (!routineDelegationCanResume(threadId, routineRunId)) return;
-  if (!budgetAcquired && !delegationWakeBudget.tryAcquire(threadId)) {
-    routines?.failThread(threadId, "Delegation follow-up limit reached; review the run before retrying");
-    return;
-  }
-  const prompt = failureReason
-    ? buildDelegationFailurePrompt(targetName, failureReason)
-    : buildDelegationRevivalPrompt(targetName);
-  void startTurn(botId, prompt, {
-    threadId,
-    cardContinuation: true,
-    unattended: isUnattended(botId, threadId),
-  })
-    .then(() => undefined)
-    .catch((error) => {
-      if (!store.taskByThread(botId, threadId)) return;
-      const message = error instanceof Error ? error.message : String(error);
-      // Raced with a user turn claiming the bot — retry once it settles.
-      // This is the same logical wake, so keep its original budget charge.
-      if (isTurnAdmissionBlocked(error)) {
-        pendingDelegationWakes.set(threadId, { botId, targetName, failureReason, routineRunId, budgetAcquired: true });
-        return;
-      }
-      store.appendMessage(threadId, {
-        role: "bot",
-        kind: "activity",
-        tool: failedTurnTool(`could not resume after delegation — ${message}`),
-      });
-      routines?.failThread(threadId, `Could not resume after delegation: ${message}`);
-    });
-}
-
-function wakeDelegationSource(source: BotRecord, threadId: string, targetName: string, failureReason?: string, routineRunId?: string): void {
-  if (!store.taskByThread(source.id, threadId)) return;
-  if (!routineDelegationCanResume(threadId, routineRunId)) return;
-  // Busy? Hold the wake until the source settles, then drain it — the
-  // delegated reply is already in the thread, so nothing is lost, and the
-  // source processes it the moment it is free rather than only on a later
-  // user nudge.
-  if (threadBusy(source.id, threadId) || botAtThreadCapacity(source.id) || activeGroupTurnForBot(source.id)) {
-    pendingDelegationWakes.set(threadId, { botId: source.id, targetName, failureReason, routineRunId });
-    return;
-  }
-  dispatchDelegationWake(source.id, threadId, targetName, failureReason, routineRunId);
+/** A routine run's "waiting": the runtime still owes this conversation
+ * something for the work its turns handed out. Either a teammate's turn is
+ * outstanding, or every teammate settled while the run's own turn was still
+ * running and the resume that returns their results has not run yet. Read
+ * when the run's turn ends, before the runtime settles that turn
+ * (the fold runs ahead of settleDirectCoordination), so the root is still
+ * "source"/"running" then and its children are what tells. */
+function runtimeWorkPending(threadId: string): boolean {
+  if (coordinator.outstandingFor(threadId).length > 0) return true;
+  return coordinator.all().some(root => !root.parentId && !root.groupId && root.threadId === threadId
+    && (root.status === "waiting" || root.status === "resume"
+      || ((root.status === "source" || root.status === "running")
+        && coordinator.children(root.id).some(child => child.reply !== "none" && child.createdAt >= (root.startedAt ?? 0)))));
 }
 
 // ── incidents: a broken run reaches the Chief of Staff ──────────────────
@@ -9074,9 +8959,9 @@ function incidentRefused(chief: BotRecord, incidentsThreadId: string, asks: Read
 function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: string; detail: string }): void {
   const { bot, threadId } = input;
   const task = store.taskByThread(bot.id, threadId);
-  // A thread another bot opened and is watching is that bot's to handle:
-  // the delegator is woken with the failure already (wakeDelegationSource).
-  if (task?.openedBy?.delegationId || delegationWatch.has(threadId) || coordinator.activeDirect(threadId)) return;
+  // A thread running coordinated work is its requester's to handle: the
+  // runtime reports the failure there (the report hook).
+  if (coordinator.activeDirect(threadId)) return;
   const group = store.groupByThread(threadId);
   const incident: Incident = {
     kind: input.kind,
@@ -9140,28 +9025,6 @@ function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: s
   void startTurn(chief.id, text, { threadId: incidents.threadId, unattended: true, peerAsk }).catch((error) => {
     incidentRefused(chief, incidents.threadId, [peerAsk], error instanceof Error ? error.message : String(error));
   });
-}
-
-function drainDelegationWakes(): void {
-  for (const [threadId, entry] of pendingDelegationWakes) {
-    if (!store.taskByThread(entry.botId, threadId) || !routineDelegationCanResume(threadId, entry.routineRunId)) {
-      pendingDelegationWakes.delete(threadId);
-      continue;
-    }
-    // Completion can precede asynchronous digest/resource settlement. Keep
-    // the wake parked until a slot is actually free; a rejected async start
-    // could otherwise requeue after the last idle-release drain has run.
-    if (threadBusy(entry.botId, threadId) || botAtThreadCapacity(entry.botId) || activeGroupTurnForBot(entry.botId)) continue;
-    pendingDelegationWakes.delete(threadId);
-    dispatchDelegationWake(entry.botId, threadId, entry.targetName, entry.failureReason, entry.routineRunId, entry.budgetAcquired);
-  }
-}
-
-function wakeUndispatchedDelegation(receipt: DelegationReceipt, routineRunId?: string): void {
-  const source = store.botByThread(receipt.sourceThreadId);
-  if (!source) return;
-  markTaskContextExternallyUpdated(source, receipt.sourceThreadId);
-  wakeDelegationSource(source, receipt.sourceThreadId, receipt.toBotName, receipt.result || "the handoff did not run", routineRunId);
 }
 
 // Provider-native sessions only know about messages produced inside their
@@ -9311,166 +9174,7 @@ const handoffs = new Handoffs({
  * lands in that transcript (no one turn there is woken), and a Chief's
  * resume answers its person: each is owned like work a person started. */
 function reportsToRequester(threadId: string): boolean {
-  const watched = delegationWatch.get(threadId);
-  return Boolean(watched && delegationReportsBack(watched)) || [...awaitedAsks].some(ask => ask.threadId === threadId)
-    || coordinator.all().some(node => node.status === "running" && node.threadId === threadId && node.parentId !== undefined);
-}
-
-/** finalizeDelegationWatch's rule for who hears a delegation's end: an
- * external runtime polls its receipt, and a requester's own conversation is
- * woken with it (wakeDelegationSource). */
-function delegationReportsBack(watched: NonNullable<ReturnType<typeof delegationWatch.get>>): boolean {
-  if (watched.oneWay) return false;
-  if (watched.completionOwner === "external") return true;
-  const sourceId = watched.sourceBotId ?? (watched.sourceThreadId ? store.botByThread(watched.sourceThreadId)?.id : undefined);
-  return Boolean(sourceId && watched.sourceThreadId && !store.groupByThread(watched.sourceThreadId)
-    && store.taskByThread(sourceId, watched.sourceThreadId));
-}
-
-/** Consume one delegated-turn watch and mirror exactly one terminal state.
- * Some harness paths settle a busy bot without a provider turn.completed
- * event, so they call this same finalizer explicitly. */
-function finalizeDelegationWatch(
-  threadId: string,
-  ok: boolean,
-  reply = "",
-  failureName = "Delegated turn did not finish",
-): boolean {
-  const watched = delegationWatch.get(threadId);
-  if (!watched) return false;
-  delegationWatch.delete(threadId);
-  const target = store.bot(watched.toBotId);
-  const targetName = target?.name ?? watched.toBotName ?? watched.toBotId;
-  const source = watched.sourceBotId
-    ? store.bot(watched.sourceBotId)
-    : (watched.sourceThreadId ? store.botByThread(watched.sourceThreadId) : undefined);
-  if (!watched.oneWay && source && target && !canReachPeer(source, target)) {
-    ok = false;
-    reply = "";
-    failureName = "Result withheld: team or peer access changed while the teammate was working";
-  }
-  // The receipt and the wake carry the whole account (stoppedTurnText); a
-  // chip shows its first line.
-  const failureChip = failureName.split("\n", 1)[0]!.slice(0, 180);
-  // The receipt is written before any mirror short-circuits: the delegating
-  // bot's check/wait_delegation must see a terminal state even when the
-  // channel or target is gone.
-  if (watched.taskId && watched.sourceThreadId) {
-    recordDelegationReceipt({
-      id: watched.taskId,
-      sourceThreadId: watched.sourceThreadId,
-      toBotId: watched.toBotId,
-      toBotName: store.bot(watched.toBotId)?.name ?? watched.toBotId,
-      status: ok ? "done" : "failed",
-      result: ok ? reply : failureName,
-    });
-  }
-  if (watched.oneWay) {
-    if (!ok && store.taskByThread(watched.toBotId, threadId)) {
-      store.appendMessage(threadId, {
-        role: "bot",
-        kind: "activity",
-        tool: { name: `Send failed — ${failureChip}`, ok: false, ...(watched.taskId ? { handoffId: watched.taskId } : {}) },
-      });
-    }
-    return true;
-  }
-  let channel: GroupRecord | undefined = watched.channelId ? store.group(watched.channelId) : undefined;
-  let terminalThreadId: string | undefined = watched.sourceThreadId;
-
-  if (source && watched.sourceThreadId) {
-    const sourceGroup = store.groupByThread(watched.sourceThreadId);
-    if (sourceGroup) {
-      // Shared-channel (or DM) source: revalidate membership, since a roster
-      // change while the target ran must not force a result into a group
-      // that no longer contains both bots.
-      const sourceStillMember = sourceGroup.memberIds.includes(source.id);
-      const targetStillMember = target ? sourceGroup.memberIds.includes(target.id) : false;
-      if (!sourceStillMember || !targetStillMember) {
-        if (target) {
-          channel = getOrCreateChannel(store, source, target);
-          terminalThreadId = channel.threadId;
-        } else {
-          // Target is gone: the source may still see the original group, but
-          // there is no peer to share a DM with. Keep the group for source.
-          terminalThreadId = sourceStillMember ? watched.sourceThreadId : undefined;
-          channel = undefined;
-        }
-      }
-      if (terminalThreadId) {
-        if (ok && reply.trim()) {
-          const sourceReply: Omit<Message, "id" | "at"> = {
-            role: "bot",
-            kind: "text",
-            text: `@${targetName} replied to the delegated task:\n\n${reply.trim()}`,
-          };
-          if (target) sourceReply.from = { botId: target.id, name: target.name, color: target.color };
-          store.appendMessage(terminalThreadId, sourceReply);
-        } else {
-          store.appendMessage(terminalThreadId, {
-            role: "bot",
-            kind: "activity",
-            tool: {
-              name: ok
-                ? `Delegation to @${targetName} completed without a text reply`
-                : `Delegation to @${targetName} failed — ${failureChip}`,
-              ok,
-            },
-          });
-        }
-        if (channel && terminalThreadId === channel.threadId && !channel.dm) {
-          store.patchGroup(channel.id, { unread: true });
-        }
-      }
-      // Group/DM sources do not have a single direct task to mark or wake.
-      // The delegated result is already in the shared transcript; a group
-      // continuation is the responsibility of the room's own turn engine.
-    } else if (store.taskByThread(source.id, watched.sourceThreadId)) {
-      // 1:1 source: the source thread is the delegating bot's own task.
-      if (ok && reply.trim()) {
-        const sourceReply: Omit<Message, "id" | "at"> = {
-          role: "bot",
-          kind: "text",
-          text: `@${targetName} replied to the delegated task:\n\n${reply.trim()}`,
-        };
-        if (target) sourceReply.from = { botId: target.id, name: target.name, color: target.color };
-        store.appendMessage(watched.sourceThreadId, sourceReply);
-      } else {
-        store.appendMessage(watched.sourceThreadId, {
-          role: "bot",
-          kind: "activity",
-          tool: {
-            name: ok
-              ? `Delegation to @${targetName} completed without a text reply`
-              : `Delegation to @${targetName} failed — ${failureChip}`,
-            ok,
-          },
-        });
-      }
-      markTaskContextExternallyUpdated(source, watched.sourceThreadId);
-      // Peer wake: a settled delegated turn resumes the source bot so it
-      // folds the result in and answers the user, instead of sitting idle
-      // with the reply only visible in the thread (the "delegated and went
-      // silent" gap). Failures wake it too — the user must hear the task did
-      // not finish. Idle-checked and burst-capped so a busy source or a
-      // re-delegating loop cannot spin up runs. An external runtime polls
-      // for the receipt instead; waking would answer it a second time.
-      if (watched.completionOwner !== "external") {
-        if (ok) {
-          wakeDelegationSource(source, watched.sourceThreadId, targetName, undefined, watched.routineRunId);
-        } else {
-          wakeDelegationSource(source, watched.sourceThreadId, targetName, failureName || "the delegated turn did not finish", watched.routineRunId);
-        }
-      }
-    }
-  }
-
-  if (target && channel) {
-    if (ok && reply.trim()) mirrorReply(commsBus, target, reply, channel);
-    else if (ok) mirrorActivity(commsBus, target, channel, "Delegated turn completed", true);
-    else mirrorActivity(commsBus, target, channel, failureChip, false);
-  }
-  return true;
+  return coordinator.all().some(node => node.status === "running" && node.threadId === threadId && node.parentId !== undefined);
 }
 
 // A bot going in circles — the same call with the same arguments, over and
@@ -9501,146 +9205,6 @@ bus.subscribe((event: RuntimeEvent) => {
   });
 });
 
-// Drain queued delegations for a source thread after its turn settles.
-// Run as a separate subscriber so the drain logic stays out of the main
-// fold (which has its own switch/case noise) and its approval + startTurn
-// calls never have to share locals with the fold's state machine.
-/** How a drained delegation becomes a real turn on the target. Shared by
- * the settle-time drain and the boot-time drain of what a previous process
- * left queued. */
-const runDelegatedTurn: DelegationRunner = (toBotId, rawText, commsDepth, sourceThreadId, channel, taskId, sourceBotId, openedThreadId, oneWay, completionOwner, origin) => {
-    // startTurn REJECTS on an ordinary condition — busy target, deleted bot,
-    // unavailable provider. Unhandled, that rejection is fatal to the
-    // harness (Node's default), which in the packaged app kills the server
-    // child. Every delegation failure has to land as a chip instead.
-    // A fresh-thread handoff runs in the thread the opener created — the
-    // drain already dropped it if that thread is gone — never in whatever
-    // the person is looking at.
-    const targetThreadId = openedThreadId ?? store.bot(toBotId)?.threadId;
-    const target = store.bot(toBotId);
-    const opener = store.bot(sourceBotId);
-    const unattended = isUnattended(sourceBotId, sourceThreadId);
-    // The inbound line is another bot's words whichever way it arrived, so
-    // it opens with the shared provenance note, which says whether the work
-    // started with the user's own request, and it records the author
-    // structurally (peerAsk) as well, so a renderer never has to take the
-    // line for the person's own message.
-    const peerAsk: Message["peerAsk"] | undefined = opener
-      ? { botId: opener.id, name: opener.name, unattended: unattended || undefined }
-      : undefined;
-    const text = withPeerProvenance(rawText, { botName: opener?.name ?? "Teammate",
-      delivery: !openedThreadId ? "delegate_bot" : oneWay ? "send_to_bot" : "start_thread", origin, unattended });
-    if (targetThreadId) {
-      delegationWatch.set(targetThreadId, {
-        channelId: channel?.id,
-        toBotId,
-        toBotName: target?.name,
-        taskId,
-        sourceThreadId,
-        sourceBotId,
-        routineRunId: activeRoutineRunForThread(sourceThreadId)?.id,
-        startedAtMs: Date.now(),
-        ...(oneWay ? { oneWay: true } : {}),
-        ...(completionOwner ? { completionOwner } : {}),
-      });
-    }
-    let failureReported = false;
-    const reportStartFailure = (error: unknown) => {
-      if (failureReported) return;
-      failureReported = true;
-      const bot = store.bot(toBotId);
-      const why = error instanceof Error ? error.message : String(error);
-      if (targetThreadId) {
-        const finalized = finalizeDelegationWatch(
-          targetThreadId,
-          false,
-          "",
-          `Delegated turn could not start — ${why.slice(0, 120)}`,
-        );
-        if (finalized) return;
-      }
-      const source = store.botByThread(sourceThreadId);
-      if (!source) return;
-      store.appendMessage(sourceThreadId, {
-        role: "bot",
-        kind: "activity",
-        tool: failedTurnTool(`delegation to @${bot?.name ?? toBotId} could not start — ${why}`),
-      });
-    };
-    return startTurn(toBotId, text, {
-      threadId: targetThreadId,
-      commsDepth,
-      unattended,
-      peerAsk,
-      // what the target hands on in turn keeps where this work started
-      origin,
-      // startTurn schedules provider/integration setup after marking the bot
-      // busy. Those asynchronous setup failures do not emit turn.completed,
-      // so clear the watch and report them through this callback too.
-      onDispatchError: reportStartFailure,
-    }).then(() => undefined).catch((err) => {
-      reportStartFailure(err);
-    });
-};
-
-function drainThreadDelegations(threadId: string): void {
-  const routineRunId = activeRoutineRunForThread(threadId)?.id;
-  drainDelegations(commsBus, approvalBus, threadId, runDelegatedTurn,
-    (receipt) => wakeUndispatchedDelegation(receipt, routineRunId));
-}
-
-// Queued handoffs expire DELEGATION_TTL_MS after they were queued. A drain
-// expires what it touches; this sweep covers a handoff nothing drains — a
-// target that never settles while its source sits idle — and wakes each
-// delegator the same way a drain-time failure does.
-const DELEGATION_SWEEP_MS = 60 * 60 * 1000;
-function expireDelegationsNow(): void {
-  expireStaleDelegations(commsBus, Date.now(), (receipt) =>
-    wakeUndispatchedDelegation(receipt, activeRoutineRunForThread(receipt.sourceThreadId)?.id));
-}
-
-// Most waiting handoffs retry from a target's turn.completed event. Some
-// setup, cancellation, room, watchdog, and provider-reload paths release a
-// bot without that event, so every explicit idle release calls this same
-// coalesced retry hook. The microtask lets the releasing state machine finish
-// before another turn claims the bot.
-const delegationRetryBots = new Set<string>();
-function retryDelegationsWaitingOn(botId: string): void {
-  if (delegationRetryBots.has(botId)) return;
-  delegationRetryBots.add(botId);
-  queueMicrotask(() => {
-    delegationRetryBots.delete(botId);
-    // Explicit idle releases (room/setup/reload/watchdog fallbacks) may not
-    // publish turn.completed. They free a waiting source continuation too.
-    drainDelegationWakes();
-    // A bot still busy in one thread has nevertheless freed a slot: every
-    // handoff waiting on it re-tests its own admission — a fresh-thread
-    // handoff asks for any free slot, a classic one the standing thread's
-    // startTurn admission — so neither waits for whole-bot idleness.
-    if (store.bot(botId)?.busy === true && botAtThreadCapacity(botId)) return;
-    const released = releaseDelegationsWaitingOn(botId);
-    for (const waitingThread of released) {
-      drainThreadDelegations(waitingThread);
-    }
-  });
-}
-
-bus.subscribe((event: RuntimeEvent) => {
-  if (shouldIgnoreProviderEvent(event)) return;
-  if (event.type !== "turn.completed") return;
-  // A turn that failed or was interrupted drops its queue rather than
-  // firing it later: the user who hit Stop does not expect the delegations
-  // that turn queued to run anyway, minutes later, on an unrelated turn.
-  if (!event.ok) discardDelegations(commsBus, event.threadId);
-  drainThreadDelegations(event.threadId);
-  // A settling bot frees itself as a delegation TARGET too: handoffs that
-  // found it busy earlier were kept queued — waiting until it's free or the
-  // 24-hour expiry, not counting retries — on their own source threads, and
-  // this is the moment they get re-evaluated.
-  const settledBot = store.botByThread(event.threadId);
-  if (settledBot) retryDelegationsWaitingOn(settledBot.id);
-});
-
 // ── steer-queue drain: messages sent while the bot was busy ────────────
 // Runs on ANY turn.completed rather than resolving the settling thread: a
 // bot busy in a room settles on the room's thread, and by the time this
@@ -9656,7 +9220,6 @@ bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
   if (event.type !== "turn.completed") return;
   drainQueuedSends();
-  drainDelegationWakes();
 });
 
 function drainQueuedSends() {
@@ -9697,58 +9260,6 @@ function drainQueuedSends() {
     (botId, threadId, head) => threadBusy(botId, threadId) || botAtThreadCapacity(botId) || Boolean(activeGroupTurnForBot(botId))
       || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
   );
-  // Asides always drain after person follow-ups (see drainAsideLane): the
-  // steer drain above can make a thread busy again, deferring its asides
-  // to the next boundary. Every path that clears a thread's send queue
-  // reaches this point, so the aside lane drains on all of them — not
-  // just turn.completed.
-  drainAsideLane();
-}
-
-/** The aside lane's boundary pass. Invoked at the end of drainQueuedSends, i.e. AFTER the steer drain on purpose:
- * a thread with both waiting starts its person follow-up first, and that
- * turn makes the thread busy again, so its asides defer to the next
- * boundary — the person's correction always lands ahead of peer context.
- * A thread already running a seam-capable turn gets its asides folded in
- * mid-turn instead (one batched call); an idle thread degrades them to a
- * single enveloped follow-up turn, exactly the shape the steer-queue
- * gives queued person messages. */
-function drainAsideLane() {
-  if (!followupsReady) return;
-  void drainAsideMessages({
-    store,
-    inject: async (botId, threadId, prompt) => {
-      const bot = store.projectBotForTask(botId, threadId) ?? store.bot(botId);
-      if (!bot?.busy) return "refused";
-      const instance = runningTurnInstance(bot, threadId);
-      if (!instance?.adapter.capabilities.queueing || !instance.adapter.steer) return "refused";
-      return instance.adapter.steer(threadId, prompt).catch((): SteerOutcome => "indeterminate");
-    },
-    run: (botId, threadId, prompt, userMessage, excludeIds, head) =>
-      new Promise<void>((resolve, reject) => {
-        void startTurn(botId, prompt, {
-          threadId,
-          userMessage,
-          excludeMessageIds: excludeIds,
-          commsDepth: head.aside.commsDepth + 1,
-          unattended: head.aside.unattended === true,
-          peerAsk: {
-            botId: head.aside.fromBotId,
-            name: head.aside.fromBotName,
-            ...(head.aside.unattended ? { unattended: true } : {}),
-          },
-          onTurnSettled: resolve,
-        }).catch((err) => {
-          store.appendMessage(threadId, {
-            role: "bot", kind: "activity",
-            tool: failedTurnTool(`queued aside could not start — ${err instanceof Error ? err.message : String(err)}`),
-          });
-          resolve();
-        }).catch(reject);
-      }),
-    isBlocked: (botId, threadId) => threadBusy(botId, threadId) || botAtThreadCapacity(botId) || Boolean(activeGroupTurnForBot(botId))
-      || parksBehindCoordination(botId, threadId),
-  }).catch((error) => console.warn("aside-queue: drain failed", error));
 }
 
 /** Keep a person's words off the transcript until a direct-thread slot is
@@ -10407,10 +9918,6 @@ async function startTurn(
   healThreadModel(botId, threadId);
   const bot = store.projectBotForTask(botId, threadId);
   if (!bot) throw Object.assign(new Error("no such task"), { status: 404 });
-  // Routines and legacy peer delivery already have their own completion
-  // owners. Only ordinary chats opt into this scheduler; its child turns
-  // carry an exact node id rather than inheriting a routine's lifetime.
-  const boundedCoordination = !opts?.automationSource && (!opts?.commsDepth || Boolean(opts?.coordination));
   if (bot.approvalGrant) {
     throw Object.assign(new Error("this bot's approval level is still being confirmed — try again"), { status: 409 });
   }
@@ -10455,10 +9962,7 @@ async function startTurn(
   // a webhook turn, or one inherited from a bot already running unattended
   if (opts?.automationSource === "webhook" || opts?.unattended) markUnattended(bot.id, threadId);
   // a person typing into this bot ends the unattended window immediately
-  else if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) {
-    clearUnattended(threadId);
-    delegationWakeBudget.reset(threadId);
-  }
+  else if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) clearUnattended(threadId);
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
   if (hostedModels && !hostedModels.allows(bot.modelSelection)) throw Object.assign(new Error(hostedModels.error()), { status: 409 });
@@ -10610,7 +10114,10 @@ async function startTurn(
     }
   }
 
-  const agentsMounted = (commsDepth < MAX_COMMS_DEPTH || Boolean(opts?.coordination)) && instance.adapter.capabilities.agentsMcp === true;
+  // Every turn that may hand work on gets the teamwork tools, whatever
+  // started it (docs/runtime-contract.md §9); the runtime's depth limit
+  // bounds the tree.
+  const agentsMounted = instance.adapter.capabilities.agentsMcp === true;
 
   // busy flips immediately so the composer locks; the dispatch itself runs
   // in the background — boat provisioning can take ~90s and must never
@@ -10711,13 +10218,11 @@ async function startTurn(
         store.setTaskActivity(bot.id, threadId, "idle");
         watchdog.settle(threadId);
         directTurnBots.delete(threadId);
-        retryDelegationsWaitingOn(bot.id);
         drainQueuedSends();
         drainConnectorResumes();
         drainComputerResumes();
         drainSecretResumes();
         drainTeamSetupResumes();
-        drainDelegationWakes();
         return;
       }
       // Keep the full branch order for delivery bookkeeping, but select actual
@@ -11448,14 +10953,7 @@ async function startTurn(
       // that ask_bot and delegate_bot would then refuse.
       const sectionPeers = reachablePeers(store.bots, bot);
       if (agentsMounted) {
-        // Only a direct human request can create separate self-owned jobs.
-        // Coordinated children and self-opened jobs stay inside their scope;
-        // a later real user message on the same task is a fresh request.
-        const origin = opts?.cardContinuation
-          ? store.activePath(threadId).findLast(message => message.role === "user" && message.kind === "text")
-          : userMessage;
-        const ownThreadCreation = boundedCoordination && !opts?.coordination && Boolean(origin && !origin.peerAsk);
-        integrations.agents = agentsIntegration(bot.id, threadId, commsDepth, skillAuthoring, dispatchClaimId, opts?.coordination?.id, boundedCoordination, ownThreadCreation, worksInWorkspace);
+        integrations.agents = agentsIntegration(bot.id, threadId, commsDepth, skillAuthoring, dispatchClaimId, opts?.coordination?.id, worksInWorkspace);
       }
       if (instance.adapter.capabilities.hooks === true && hooksEnabled()) {
         integrations.hooks = hooksIntegration(bot.id, threadId, dispatchClaimId);
@@ -11469,21 +10967,19 @@ async function startTurn(
             sectionPeers,
           )
         : [];
+      // One tool surface, one wording: every turn that may hand work on is
+      // told about coordinate_bots, whether a person, a routine, a webhook
+      // or a teammate started it (docs/runtime-contract.md §9).
       const coordinationPrompt = bot.chiefOfStaff
-        ? chiefOfStaffSystemPrompt(
-            bot.id,
-            store.bots,
-            Boolean(integrations.agents),
-            boundedCoordination,
-          )
+        ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents))
         : integrations.agents && sectionPeers.length > 0
           // Ordinary bots could always CALL the peer tools; until now the
           // one generic sentence they got never named a teammate, so the
           // first move of any collaboration was a list_bots round trip the
           // model mostly did not think to make.
-          ? peerRosterSystemPrompt(sectionPeers, boundedCoordination)
+          ? peerRosterSystemPrompt(sectionPeers)
           : "";
-      const credentialPrompt = integrations.agents ? CREDENTIAL_PROMPT + (boundedCoordination ? "" : THREADS_PROMPT) : "";
+      const credentialPrompt = integrations.agents ? CREDENTIAL_PROMPT + THREADS_PROMPT : "";
       const routinePrompt = integrations.agents ? ROUTINE_PROMPT : "";
       const profilePrompt = integrations.agents ? PROFILE_PROMPT : "";
       const recallPrompt = integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "";
@@ -11618,7 +11114,7 @@ async function startTurn(
         { id: "credential", label: "Credentials", text: credentialPrompt },
         { id: "recall", label: "Recall", text: recallPrompt },
         { id: "routine", label: "Routines", text: routinePrompt },
-        { id: "routine-execution", label: "Routine execution", text: opts?.automationSource === "schedule" || opts?.automationSource === "manual" ? ROUTINE_EXECUTION_PROMPT : "" },
+        { id: "routine-execution", label: "Routine execution", text: opts?.automationSource === "schedule" || opts?.automationSource === "manual" || opts?.automationSource === "startup" ? ROUTINE_EXECUTION_PROMPT : "" },
         { id: "profile", label: "Profile changes", text: profilePrompt },
         { id: "learn", label: "Skill authoring", text: learnPrompt },
         { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
@@ -11636,7 +11132,7 @@ async function startTurn(
         { id: "skill-instructions", label: "Skill instructions", text: skillInstructions },
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
         { id: "webhook", label: "Webhook provenance", text: opts?.automationSource === "webhook" ? WEBHOOK_PROMPT : "" },
-        { id: "mentions", label: "Mentions", text: boundedCoordination && tagged.length ? `The user named these existing teammates: ${tagged.map(b => `${peerName(b.name)} (${b.id})`).join(", ")}. Use coordinate_bots when their contribution is needed; do not substitute native helper agents for these bots.` : mentionPrompt(tagged) },
+        { id: "mentions", label: "Mentions", text: tagged.length ? `The user named these existing teammates: ${tagged.map(b => `${peerName(b.name)} (${b.id})`).join(", ")}. Use coordinate_bots when their contribution is needed; do not substitute native helper agents for these bots.` : "" },
       ]);
       turnPromptBytes.set(threadId, { stable: Buffer.byteLength(prompt.stable), volatile: Buffer.byteLength(prompt.volatile) });
       // Automatic recall rides in front of THIS turn's message, never in the
@@ -11756,13 +11252,11 @@ async function startTurn(
       if (!threadBusy(bot.id, threadId) && directTurnGenerationByThread.get(threadId) === dispatchClaimId) {
         revokeInternalCapabilityGeneration(threadId, dispatchClaimId);
         if (settlingResourceOwners.get(threadId) !== dispatchClaimId) releaseTurnResources(resourceOwner);
-        retryDelegationsWaitingOn(bot.id);
         drainQueuedSends();
         drainConnectorResumes();
         drainComputerResumes();
         drainSecretResumes();
         drainTeamSetupResumes();
-        drainDelegationWakes();
       }
     } catch (cause) {
       let e = cause;
@@ -11797,7 +11291,6 @@ async function startTurn(
         if (ownsLatestGeneration && threadBusy(bot.id, threadId)) {
           store.setTaskActivity(bot.id, threadId, "idle");
           directTurnBots.delete(threadId);
-          retryDelegationsWaitingOn(bot.id);
         }
         if (ownsLatestGeneration) {
           drainQueuedSends();
@@ -11805,7 +11298,6 @@ async function startTurn(
           drainComputerResumes();
           drainSecretResumes();
           drainTeamSetupResumes();
-          drainDelegationWakes();
         }
         return;
       }
@@ -11829,13 +11321,11 @@ async function startTurn(
           store.setTaskActivity(bot.id, threadId, "parked.computer");
         }
         directTurnBots.delete(threadId);
-        retryDelegationsWaitingOn(bot.id);
         drainQueuedSends();
         drainConnectorResumes();
         drainComputerResumes();
         drainSecretResumes();
         drainTeamSetupResumes();
-        drainDelegationWakes();
         return;
       }
       // A failed place never sticks; a person's pin stays, and the message
@@ -11914,7 +11404,6 @@ async function startTurn(
       }
       store.setTaskActivity(bot.id, threadId, "idle");
       directTurnBots.delete(threadId);
-      retryDelegationsWaitingOn(bot.id);
       opts?.onDispatchError?.(message);
       // a dispatch failure never emits turn.completed, so the settle-driven
       // drain would strand anything queued behind this turn
@@ -11923,7 +11412,6 @@ async function startTurn(
       drainComputerResumes();
       drainSecretResumes();
       drainTeamSetupResumes();
-      drainDelegationWakes();
     }
   })();
   return userMessage;
@@ -12153,22 +11641,16 @@ async function stopBotForEmergencyApprovalDowngrade(botId: string): Promise<void
   await directStop;
 }
 
-// Load queued handoffs before scheduler recovery can fail an interrupted
-// run. Its failure callback can then durably drop that work immediately;
-// nothing dispatches until the listener is ready below.
-const commsBus: CommsBus = {
-  store,
-  broadcast,
-  threadSlotFree: (botId) => !botAtThreadCapacity(botId),
-  canAdmitDirectTurn,
-};
-_loadPending();
-
 routines = new RoutineManager({
   emit: broadcast,
-  hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
-    [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
-    pendingDelegationWakes.has(threadId),
+  // Set once per desktop launch (electron/main.mjs), so a server the desktop
+  // restarts within that launch does not run startup routines again.
+  launchId: DESKTOP_MANAGED && /^[\w-]{1,100}$/.test(process.env.OMB_DESKTOP_LAUNCH_ID ?? "")
+    ? process.env.OMB_DESKTOP_LAUNCH_ID : undefined,
+  // A run waits while the runtime owes its conversation a teammate's result
+  // or the resume that returns it; at a restart the same question decides
+  // whether a cut run goes on (the runtime's restart policy) or fails.
+  hasPendingDelegations: runtimeWorkPending,
   botState: unattendedDispatchState,
   goalState: (groupId, coordinatorBotId) => {
     const group = store.group(groupId);
@@ -12262,10 +11744,12 @@ routines = new RoutineManager({
   },
   interruptTurn: async (botId, threadId) => {
     const bot = botForThread(botId, threadId);
-    pendingDelegationWakes.delete(threadId);
-    discardDelegations(commsBus, threadId);
     cancelDirectTurnDispatch(botId, threadId);
     revokeInternalCapabilitiesForThread(threadId);
+    // The person stopped the run: as with a chat's Stop, its node stops
+    // being awaited (work that never started is dropped, a teammate mid-turn
+    // finishes and reports, nothing resumes the stopped run).
+    noteTeammatesLeftRunning(botId, threadId, coordinator.stopAwaitingDirect(threadId));
     try {
       await runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId);
     } finally {
@@ -12276,8 +11760,6 @@ routines = new RoutineManager({
   onRunChanged: syncRoutineRunToSource,
   onRunFailed: (run) => {
     if (run.threadId) {
-      pendingDelegationWakes.delete(run.threadId);
-      discardDelegations(commsBus, run.threadId);
       // A run a restart failed takes its teammates' work with it, before any
       // of it runs again: its results have nowhere to go, and the person is
       // told once, here, not again by a resume in the run's hidden thread.
@@ -12655,7 +12137,6 @@ async function deleteBotWithLifecycle(botId: string, revalidate: () => void = ()
           // a peer approval naming this bot can never be meaningfully answered
           // now, and its caller would otherwise wait out the 15-minute timeout
           cancelPeerApprovalsFor(bot.id);
-          discardDelegations(commsBus, bot.threadId);
           computerControl.forget(bot.id);
           computerControlRevision.delete(bot.id);
           const target = perBotLocalVmTarget(bot.id);
@@ -12728,8 +12209,8 @@ const validateModelProposal = (selection: ModelSelection, current?: BotRecord): 
   if (current?.approvalGrant) return "Wait for the approval-level confirmation before changing this bot's model";
   if (current) {
     const mode = approvalModeFor(current);
-    const driver = registry.cliTarget(selection.instanceId)?.driverKind;
-    if (!supportsApprovalMode(selection, mode) || ((mode === "full" || mode === "custom") && driver !== registry.cliTarget(current.modelSelection.instanceId)?.driverKind)) {
+    // The same rule as every other model switch: Full carries, Custom never crosses engines.
+    if (!supportsApprovalMode(selection, mode) || engineSwitchNeedsAsk(mode, current.modelSelection, selection)) {
       return `@${current.name}'s existing permissions are incompatible with that provider. Change its permissions in bot settings, then propose the model change again.`;
     }
   }
@@ -12951,6 +12432,7 @@ const agentRoutine = (
     instructionsTruncated: safeInstructions.length > 2_000,
     continuity: routine.continuity === true,
     overlap: routine.overlap ?? "skip",
+    runOnStartup: routine.runOnStartup === true,
     skippedRuns: routine.skippedRuns ?? 0,
     lastSkippedAt: routineTimestamp(routine.lastSkippedAt),
     failureStreak: routine.failureStreak ?? 0,
@@ -13563,8 +13045,8 @@ async function runGroupMemberTurn(
     !skillAuthoringClaim.claimed &&
     !cardContinuation &&
     instance.adapter.capabilities.agentsMcp === true;
-  if ((hop < MAX_COMMS_DEPTH || orchestration?.roomHandoffId) && instance.adapter.capabilities.agentsMcp === true) {
-    integrations.agents = agentsIntegration(bot.id, threadId, hop, skillAuthoring, internalGeneration, orchestration?.roomHandoffId, !orchestration || Boolean(orchestration.roomHandoffId), false, supportsWorkspaceFiles(instance.driverKind));
+  if (instance.adapter.capabilities.agentsMcp === true) {
+    integrations.agents = agentsIntegration(bot.id, threadId, hop, skillAuthoring, internalGeneration, orchestration?.roomHandoffId, supportsWorkspaceFiles(instance.driverKind));
   }
   if (instance.adapter.capabilities.hooks === true && hooksEnabled()) {
     integrations.hooks = hooksIntegration(bot.id, threadId, internalGeneration);
@@ -14113,7 +13595,6 @@ async function runGroupMemberTurn(
     store.patchGroup(group.id, { busyBotId: remaining?.botId ?? null, unread: true });
     if (store.bot(bot.id)?.busy) {
       store.setActivity(bot.id, "idle");
-      retryDelegationsWaitingOn(bot.id);
     }
     watchdog.settle(threadId);
     return false;
@@ -14297,7 +13778,6 @@ async function runGroupMemberTurn(
     const currentBot = store.bot(bot.id);
     if (currentBot?.busy) {
       store.setActivity(currentBot.id, "idle");
-      retryDelegationsWaitingOn(currentBot.id);
     }
     watchdog.settle(threadId);
     drainQueuedSends();
@@ -14329,7 +13809,6 @@ async function runGroupMemberTurn(
       const currentBot = store.bot(bot.id);
       if (currentBot?.busy) {
         store.setActivity(bot.id, "idle");
-        retryDelegationsWaitingOn(bot.id);
         drainQueuedSends();
         drainConnectorResumes();
         drainComputerResumes();
@@ -14350,7 +13829,6 @@ async function runGroupMemberTurn(
   store.patchGroup(group.id, { busyBotId: remaining?.botId ?? null, unread: true });
   if (store.bot(bot.id)?.busy) {
     store.setActivity(bot.id, "idle");
-    retryDelegationsWaitingOn(bot.id);
   }
   if (outcome === "dispatch_failed") {
     if (skillAuthoring) skillAuthoringClaim.claimed = false;
@@ -14488,7 +13966,6 @@ async function runGroupMemberTurn(
       store.patchGroup(group.id, { busyBotId: remaining?.botId ?? null });
       if (store.bot(bot.id)?.busy) {
         store.setActivity(bot.id, "idle");
-        retryDelegationsWaitingOn(bot.id);
       }
       drainQueuedSends();
       drainConnectorResumes();
@@ -15366,7 +14843,7 @@ function roomPostEligibility(
     return {
       ok: false,
       status: 400,
-      error: "that is a one-to-one bot channel, not a room — use ask_bot or delegate_bot to reach a single bot",
+      error: "that is a one-to-one bot channel, not a room — use coordinate_bots to reach a single bot",
     };
   }
   if (!group.memberIds.includes(bot.id)) {
@@ -16617,7 +16094,6 @@ async function stopCompanyInstances(ids: string[]) {
     if (directTurnGenerationByThread.get(threadId) !== generation) continue;
     stopScreenPoller(botId, threadId); releaseLocalVmThread(threadId);
     watchdog.settle(threadId); closeOpenApprovals(threadId); directTurnBots.delete(threadId);
-    finalizeDelegationWatch(threadId, false, "", `Delegated turn did not finish — ${interrupted}`);
     routines?.failThread(threadId, "Company connection changed while this thread was running");
     if (store.taskByThread(botId, threadId)) {
       store.appendMessage(threadId, { role: "bot", kind: "activity", tool: { name: "Company connection changed — choose whether to reconnect or use a personal model", ok: false } });
@@ -16736,7 +16212,6 @@ async function reloadProviders(before: Record<string, unknown>) {
       closeOpenApprovals(threadId);
       directTurnBots.delete(threadId);
       runningTurnEngines.delete(threadId);
-      finalizeDelegationWatch(threadId, false, "", `Delegated turn did not finish — ${interrupted}`);
       routines?.failThread(threadId, "Provider settings changed while this thread was running");
       if (store.taskByThread(botId, threadId)) {
         store.appendMessage(threadId, {
@@ -16746,7 +16221,6 @@ async function reloadProviders(before: Record<string, unknown>) {
         store.setTaskActivity(botId, threadId, "idle");
       }
       settleDirectFollowup(owner?.generation, { ok: false, text: interrupted });
-      retryDelegationsWaitingOn(botId);
     }
     for (const [threadId, speaker] of rooms) {
       releaseLocalVmThread(threadId);
@@ -17626,7 +17100,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 401, { error: "unauthorized" });
       }
       if (internalCapability.generation === EXTERNAL_RUNTIME_GENERATION && !externalRuntimeMayCall(method, path)) {
-        return json(res, 403, { error: "an external runtime can only list, ask and delegate to its peers and read its delegations" });
+        return json(res, 403, { error: "an external runtime can only list its peers, hand them work with coordinate_bots and read assignment_status" });
       }
       const requiredCapabilityKind = path === "/api/internal/hook"
         ? "hooks"
@@ -17643,9 +17117,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           : "agents";
       if (internalCapability.kind !== requiredCapabilityKind) {
         return json(res, 403, { error: "this internal capability cannot access that service" });
-      }
-      if (internalCapability.roomCoordination && method === "POST" && ["/api/internal/ask-bot", "/api/internal/delegate-bot"].includes(path)) {
-        return json(res, 409, { error: "Use coordinate_bots for teamwork; it queues actual teammates and resumes you automatically." });
       }
       // Query/body sender ids remain on the wire for proxy compatibility,
       // but the opaque bearer is the authority. Refuse disagreement instead
@@ -17964,7 +17435,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           unread: boolean; openedAt: number; delegationId?: string; own: boolean;
         }> = [];
         const stateOf = (bot: BotRecord, task: TaskRecord) => {
-          if (task.activity === "waiting-on-you") return "waiting-on-you" as const;
+          // A teammate that ended on a NEEDS INPUT question waits on the
+          // person too, though its turn is over and nothing marks the task.
+          if (task.activity === "waiting-on-you" || coordinator.awaitingAnswer(task.threadId)) return "waiting-on-you" as const;
           if (threadBusy(bot.id, task.threadId)) return "running" as const;
           if (queuedThreadPosition(bot.id, task.threadId) !== null) return "queued" as const;
           if (coordinator.activeDirect(task.threadId)) return "queued" as const;
@@ -18015,6 +17488,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 403, { error: "that thread is not yours to close — only the bot that opened it, or its own bot, can" });
         }
         if (threadId === fromThreadId) return json(res, 400, { error: "you cannot close the thread you are speaking in — finish your turn instead" });
+        if (coordinator.awaitingAnswer(threadId)) {
+          return json(res, 409, { error: `#${task.title} is waiting on the person's answer to its question — it continues once they reply there, so leave it open` });
+        }
         if (threadBusy(owner.id, threadId) || queuedThreadPosition(owner.id, threadId) !== null || coordinator.activeDirect(threadId)) {
           return json(res, 409, { error: `#${task.title} is still running — wait for it to finish (list_threads), or the person can stop it from the app` });
         }
@@ -18624,368 +18100,326 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           summary: card.summary,
         });
       }
-      if (method === "POST" && path === "/api/internal/ask-bot") {
+      // ── hand-offs on the job runtime (docs/runtime-contract.md §9) ──────
+      // coordinate_bots is the one way a turn hands work on, whatever started
+      // the turn (a person, a routine, a webhook, a Cloud guest, a standing
+      // external runtime); assignment_status reads how it went. The routes
+      // the catalog's deprecated aliases call (ask_bot, delegate_bot,
+      // send_to_bot, start_thread on a peer, check/wait_delegation) run
+      // through the same two functions and add one deprecation line to their
+      // answer. Nothing outside the runtime keeps hand-off state.
+      const EXTERNAL = internalCapability.generation === EXTERNAL_RUNTIME_GENERATION;
+      const deprecated = (old: string, replacement: string) => `${old} ${/ and /.test(old) ? "are" : "is"} replaced by ${replacement}; ${/ and /.test(old) ? "they keep" : "it keeps"} working for this release.`;
+      type HandoffCall = {
+        groupId?: string;
+        botIds: string[];
+        message: string;
+        /** One line for the person about why this goes to them; rides the "Sent to" chip. */
+        reason?: string;
+        rework: boolean;
+        /** standing: the one work thread this conversation has with each teammate; new: a fresh thread on the teammate. */
+        thread: "standing" | "new";
+        /** resume: the result resumes the requester; none: a one-way notice. An external runtime polls either way. */
+        reply: "resume" | "none";
+        /** A question, answered from what the teammate knows, acting on nothing. */
+        consult: boolean;
+        doneWhen?: string;
+        /** A fresh thread's title and folder (the start_thread alias); the message names it otherwise. */
+        title?: string;
+        projectId?: string;
+        deprecation?: string;
+      };
+      const coordinateBots = async (call: HandoffCall): Promise<{ status: number; body: Record<string, unknown> }> => {
+        const extra = call.deprecation ? { deprecation: call.deprecation } : {};
+        const refuse = (status: number, error: string, more: Record<string, unknown> = {}) => ({ status, body: { error, ...more, ...extra } });
+        const source = store.groupByThread(internalCapability.threadId);
+        if (source && (source.dm || !source.memberIds.includes(internalSender.id))) {
+          return refuse(403, "Coordination needs a room you are a member of, or your own conversation.");
+        }
+        const address = { groupId: source?.id, threadId: internalCapability.threadId, botId: internalSender.id };
+        const problem = roomHandoffProblem(address);
+        if (problem) return refuse(403, problem);
+        if (call.consult && call.reply === "none") return refuse(400, "consult asks a question whose answer comes back to you; leave reply out");
+        const groupId = call.groupId ?? source?.id;
+        const destination = groupId ? store.group(groupId) : undefined;
+        if (groupId && !destination) return refuse(404, "No such room; use list_room_targets.");
+        // A room has its own thread; "new" opens a thread only on a teammate
+        // addressed directly. A standing external runtime has no turn whose
+        // fan-out the opened-threads cap bounds; the runtime's budgets do.
+        const fresh = !destination && call.thread === "new";
+        if (fresh && !EXTERNAL && internalCapability.openedThreads >= MAX_THREADS_OPENED_PER_TURN) {
+          return refuse(429, `You have already opened ${MAX_THREADS_OPENED_PER_TURN} threads this turn, which is the limit. Do not retry — finish your turn and tell the person which threads you still wanted to open, so they can open them or ask you again.`);
+        }
+        // A slot may carry a teammate's name instead of its id — the roster
+        // shows both, list_bots shows both, and a Chief reading its prompt
+        // reaches for the name. A unique reachable name resolves; anything
+        // else is refused with the id or name the caller sent and the way to
+        // the real ids (peer-roster.ts).
+        const botIds: string[] = [];
+        for (const raw of call.botIds) {
+          const resolved = resolveTeammate(store.bots, internalSender, raw);
+          if ("error" in resolved) return refuse(403, resolved.error);
+          botIds.push(resolved.id);
+        }
+        if (new Set(botIds).size !== botIds.length) return refuse(400, "bot_ids name the same teammate twice — send each teammate once");
+        const targets = botIds.map(botId => ({ groupId: destination?.id,
+          threadId: destination ? destination.id === source?.id ? address.threadId : destination.threadId : store.bot(botId)?.threadId ?? "", botId,
+        }));
+        for (const target of targets) {
+          // roomHandoffProblem's "no longer exists" is written for a route
+          // that was valid and went away. Here the id is the model's own
+          // argument — usually a display name dropped into a bot_ids slot —
+          // so say which id failed and where the real ones are, instead of
+          // telling the model a teammate it can still reach is gone. Only
+          // the id the caller sent is echoed back, never a bot's name.
+          const addressed = store.bot(target.botId);
+          const eligibility =
+            target.botId === internalSender.id ? "Choose a teammate, not yourself"
+            : !addressed ? `No bot with id "${target.botId}" — call list_bots and copy the exact id from the result`
+            : addressed.hidden ? `The bot with id "${target.botId}" is no longer available — call list_bots for the ones you can reach`
+            : roomHandoffProblem(target, address);
+          if (eligibility) return refuse(403, eligibility);
+        }
+        let approvalGranted = false;
+        if (peerReviewRequired(internalSender, address.threadId)) {
+          const verdicts = await Promise.all(targets.map(target =>
+            requestPeerApproval(approvalBus, internalSender, store.bot(target.botId)!, call.message, call.consult ? "ask_bot" : "delegate_bot", address.threadId)));
+          requireActiveInternalCapability();
+          const blocked = verdicts.flatMap((verdict, index) => verdict === "allow" ? []
+            : [{ botId: targets[index]!.botId, ...peerApprovalFailure(verdict) }]);
+          if (blocked.length) return refuse(403,
+            blocked.every(failure => failure.approvalOutcome === "deny")
+              ? "Denied by user; no work sent."
+              : `${blocked.map(failure => failure.error).join("; ")}; no work sent.`,
+            { approvals: blocked });
+          approvalGranted = true;
+        }
+        // A room shows one brief per call, addressed to the call's recipients.
+        const requestBatchKey = destination ? randomUUID() : undefined;
+        // A fresh tree keeps where this turn's work started and who hands it
+        // on (the opener); a running one already has both.
+        const origin = turnOrigin(internalCapability);
+        const opener = handoffOpener(internalCapability, address.threadId);
+        // A standing external runtime has no turn here: each call is its own
+        // root, settled when the call returns, and its results wait in its
+        // inbox (reply: poll) for assignment_status.
+        const generation = EXTERNAL ? randomUUID() : internalCapability.generation;
+        const mode: NonNullable<HandoffOptions["mode"]> = call.consult ? "consult" : call.reply === "none" ? "notify" : "work";
+        const reply: NonNullable<HandoffOptions["reply"]> = call.reply === "none" ? "none" : EXTERNAL ? "poll" : "resume";
+        const returns = reply === "none" ? "nothing comes back from it" : reply === "poll" ? "read its result with assignment_status" : "its result will resume you";
+        const sourceText = EXTERNAL ? call.message
+          : [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "";
+        // One receipt per recipient, in the order the caller addressed
+        // them. Dispatch is asynchronous (coordinator.tick), so a fresh
+        // enqueue is honestly "queued"; a repeat reports the request it
+        // repeats.
+        const receipts: PeerDeliveryReceipt[] = [];
+        // Why nothing was sent, in full: a receipt's detail is clipped.
+        const refused: string[] = [];
+        for (const target of targets) {
+          let createdThread: string | undefined;
+          try {
+            requireActiveInternalCapability();
+            // Outside a room this conversation has one thread with each
+            // teammate: the first request opens it, everything after
+            // continues it and runs once the work already there is done.
+            // thread "new" opens one more, named by the call.
+            const recipient = store.bot(target.botId);
+            if (!recipient) throw new Error("The recipient no longer exists");
+            const continued = destination || fresh ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
+            if (!destination) {
+              const opened = { botId: internalSender.id, name: internalSender.name, threadId: address.threadId, at: Date.now() };
+              const task = continued ?? (fresh
+                ? store.createTask(target.botId, call.title ?? (call.message.replace(/\s+/g, " ").trim().slice(0, 60) || `From ${internalSender.name}`), false, call.projectId, opened)
+                : store.createTask(target.botId, `@${internalSender.name} · work`, false, undefined, { ...opened, kind: "work" }));
+              if (!task) throw new Error("The recipient no longer exists");
+              target.threadId = task.threadId;
+              if (!continued) createdThread = task.threadId;
+              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId);
+            }
+            const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, target, call.message, {
+              mode, reply, thread: call.thread, approvalGranted, rework: call.rework, requestBatchKey, origin, sourceText,
+              ...(opener ? { opener } : {}), ...(call.doneWhen ? { doneWhen: call.doneWhen } : {}),
+            });
+            // A repeat lands on the request already made, possibly in a
+            // thread the person archived meanwhile; a thread opened for it
+            // is never used.
+            if (duplicate && createdThread) store.deleteTask(target.botId, createdThread);
+            else if (createdThread) {
+              threadStarters.set(createdThread, openerFrom(address.threadId));
+              if (fresh && !EXTERNAL) internalCapability.openedThreads += 1;
+            }
+            createdThread = undefined; // The durable coordinator now owns this task.
+            // Only a live request can still report: a finished one already
+            // fired its report and tick() skips it, so a repeat of it sends
+            // nothing and says how to run it again.
+            const title = destination ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
+            const finished: Partial<Record<HandoffView["status"], string>> = {
+              completed: "it already finished and its result stands; send it with rework=true to run it again",
+              failed: "it failed; send it with rework=true to retry", cancelled: "it was cancelled; send it with rework=true to retry",
+            };
+            const notSent = duplicate && finished[node.status] ? `not sent again: ${finished[node.status]}` : undefined;
+            if (notSent) refused.push(notSent);
+            receipts.push(peerDeliveryReceipt({
+              botId: node.botId,
+              botName: recipient.name,
+              outcome: notSent ? "failed" : !duplicate || node.status === "queued" ? "queued" : "injected",
+              detail: notSent ?? (duplicate
+                ? `already sent: it is ${node.status === "queued" ? "queued" : "under way"} and ${returns}`
+                : title
+                  ? `sent to "${title}"; it runs after anything still running there`
+                  : "handed to the coordinator; the teammate's turn has not started yet"),
+              requestId: node.id,
+              ...(destination ? {} : { threadId: node.threadId }),
+            }));
+            if (!duplicate) {
+              // Its status may be read next turn, once the teammate had its turn.
+              if (!EXTERNAL) delegatedThisTurn(node.id);
+              store.appendMessage(address.threadId, { role: "bot", kind: "activity",
+                from: { botId: internalSender.id, name: internalSender.name, color: internalSender.color },
+                tool: { name: "Sent to " + recipient.name + (destination && destination.id !== source?.id ? " · " + destination.name : ""), ok: true,
+                  ...(call.reason ? { output: call.reason } : {}) },
+                ...(destination ? { comm: { groupId: destination.id, threadId: node.threadId, withBotId: recipient.id, withName: recipient.name, withColor: recipient.color } }
+                  : { threadRef: { botId: recipient.id, threadId: node.threadId, title: store.taskByThread(recipient.id, node.threadId)?.title ?? "Teammate work" } }),
+              });
+            }
+          } catch (error) {
+            if (createdThread) store.deleteTask(target.botId, createdThread);
+            const said = error instanceof Error ? error.message : String(error);
+            refused.push(said);
+            // A bot hidden since the call was admitted is not the sender's to
+            // see: the receipt keeps the id it addressed and no current name.
+            const current = store.bot(target.botId);
+            receipts.push(peerDeliveryReceipt({ botId: target.botId, ...(current && !current.hidden ? { botName: current.name } : {}), outcome: "failed", detail: said }));
+          }
+        }
+        const sent = refused.length < receipts.length;
+        // The call was the external runtime's whole turn: its root now waits
+        // on the work and completes, without a turn, once the work settles.
+        if (EXTERNAL && sent) coordinator.sourceSettled(generation, true);
+        const message = reply === "none"
+          ? "Sent one way. Nothing comes back and nothing resumes you; continue your turn."
+          : reply === "poll"
+            ? "Handed to the coordinator. Read each result with assignment_status (id: a receipt's requestId, or rootId for the whole call), long-polling with wait_ms."
+            : "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait.";
+        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message } : { error: refused.join("; ") }),
+          ...(EXTERNAL && sent ? { rootId: generation } : {}), ...extra } };
+      };
+      // assignment_status: read-only. One assignment with its children and
+      // inbox, long-polled while it is not settled and wait_ms remains (a
+      // standing external runtime parks ONE cheap request here instead of a
+      // model inference per check), or everything this conversation still
+      // waits on. check_delegation and wait_delegation read the same answer.
+      const legacyDelegationMatch = method === "GET" ? path.match(/^\/api\/internal\/delegations\/([\w-]{4,64})$/) : null;
+      if (legacyDelegationMatch || (method === "GET" && path === "/api/internal/assignment-status")) {
+        const extra = legacyDelegationMatch ? { deprecation: deprecated("check_delegation and wait_delegation", "assignment_status") } : {};
+        const id = legacyDelegationMatch?.[1] ?? url.searchParams.get("id")?.trim() ?? "";
+        const fromThreadId = internalCapability.threadId;
+        if (!connectorThread(internalSender.id, fromThreadId)) return json(res, 403, { error: "source conversation does not belong to sender", ...extra });
+        type Row = NonNullable<ReturnType<Coordinator["status"]>>["assignment"];
+        const shape = (a: Row) => ({
+          id: a.id, botId: a.assignee.botId, botName: store.bot(a.assignee.botId)?.name ?? a.assignee.botId, status: a.status,
+          ...(a.outcome !== undefined ? { outcome: a.outcome } : {}), ...(a.outcomeDetail !== undefined ? { outcomeDetail: a.outcomeDetail } : {}),
+          result: a.result, ...(a.question !== undefined ? { question: a.question } : {}), mode: a.mode, reply: a.reply,
+          createdAt: a.createdAt, ...(a.startedAt !== undefined ? { startedAt: a.startedAt } : {}), ...(a.finishedAt !== undefined ? { finishedAt: a.finishedAt } : {}),
+        });
+        // Only this conversation's own tree: the root of every row it may
+        // read runs here. A row of another conversation is refused, not hidden.
+        const owned = (a: Row) => coordinator.node(a.rootId)?.threadId === fromThreadId;
+        const reachable = (a: Row) => { const target = store.bot(a.assignee.botId); return !target || target.id === internalSender.id || canReachPeer(internalSender, target); };
+        if (!id) {
+          const outstanding = coordinator.outstandingFor(fromThreadId).flatMap(n => { const row = coordinator.status(n.id)?.assignment; return row && reachable(row) ? [shape(row)] : []; });
+          return json(res, 200, { outstanding, ...extra });
+        }
+        if (internalCapability.delegatedThisTurn?.has(id)) {
+          return json(res, 409, { error: `Assignment ${id} was handed out during this turn. Finish your response now so the teammate can work; its result returns to this conversation and resumes you. Do not check or wait for it until a later turn.`, ...extra });
+        }
+        const waitMs = Math.min(Math.max(Number(url.searchParams.get("wait_ms")) || 0, 0), 240_000);
+        const deadline = Date.now() + waitMs;
+        const settled = new Set(["completed", "failed", "cancelled"]);
+        for (;;) {
+          requireActiveInternalCapability();
+          const status = coordinator.status(id);
+          if (!status) return json(res, 404, { error: "unknown assignment id", ...extra });
+          if (!owned(status.assignment)) return json(res, 403, { error: "that assignment belongs to a different conversation", ...extra });
+          if (!reachable(status.assignment)) return json(res, 403, { error: "Result withheld: team access changed while the teammate was working", ...extra });
+          if (settled.has(status.assignment.status) || Date.now() >= deadline) {
+            // A standing external runtime that read its root has read its
+            // inbox: those lanes are marked delivered, as a resumed
+            // requester's are when its resume is dispatched.
+            if (EXTERNAL && !status.assignment.parentId) {
+              const lanes = new Map<string, { botId?: string; threadId?: string; runId?: string }>();
+              for (const item of status.inbox) {
+                if (item.deliveredAt !== undefined) continue;
+                lanes.set(`${item.ownerBotId}\u0000${item.ownerThreadId}\u0000${item.ownerRunId}`, {
+                  ...(item.ownerBotId !== undefined ? { botId: item.ownerBotId } : {}),
+                  ...(item.ownerThreadId !== undefined ? { threadId: item.ownerThreadId } : {}),
+                  ...(item.ownerRunId !== undefined ? { runId: item.ownerRunId } : {}),
+                });
+              }
+              for (const lane of lanes.values()) coordinator.poll(lane);
+            }
+            const current = coordinator.status(id) ?? status;
+            return json(res, 200, { assignment: shape(current.assignment), children: current.children.map(shape), inbox: current.inbox, ...extra });
+          }
+          await new Promise((wake) => setTimeout(wake, 500));
+        }
+      }
+      // The deprecated aliases: one teammate, the standing work thread, and
+      // the deprecation line. ask_bot waits for nothing any more: the answer
+      // resumes the asker like any result.
+      if (method === "POST" && (path === "/api/internal/ask-bot" || path === "/api/internal/delegate-bot")) {
         const body = await readInternalBody();
-        const fromBotId = internalSender.id;
-        const toBotRef = String(body.toBotId ?? "");
-        const message = String(body.message ?? "").trim();
+        const consult = path === "/api/internal/ask-bot";
+        const deprecation = consult ? deprecated("ask_bot", "coordinate_bots(consult: true)") : deprecated("delegate_bot", "coordinate_bots");
         if (
           body.depth !== undefined &&
           (!Number.isInteger(body.depth) || body.depth < 0 || body.depth !== internalCapability.depth)
         ) {
-          return json(res, 403, { error: "the recursion depth does not match this turn" });
+          return json(res, 403, { error: "the recursion depth does not match this turn", deprecation });
         }
-        const depth = internalCapability.depth;
-        if (!toBotRef || !message) return json(res, 400, { error: "toBotId and message required" });
-        if (toBotRef === fromBotId) return json(res, 400, { error: "a bot cannot message itself" });
-        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: "message chains are limited to one hop", receipt: peerDeliveryReceipt({
-          botId: toBotRef, outcome: "failed", detail: "message chains are limited to one hop — the message was not sent",
-        }) });
-        // A unique reachable teammate name is accepted where an id is
-        // expected; see resolveTeammate for why.
-        const resolvedTo = resolveTeammate(store.bots, internalSender, toBotRef);
-        if ("error" in resolvedTo) return json(res, 404, { error: `no such bot: ${resolvedTo.error}` });
-        if (resolvedTo.id === fromBotId) return json(res, 400, { error: "a bot cannot message itself" });
-        const toBotId = resolvedTo.id;
-        const target = store.bot(toBotId);
-        if (!target) return json(res, 404, { error: "no such bot" });
-        // An unknown sender used to fall through: no mirroring AND no
-        // approval, while still running the peer turn. That made an
-        // unresolvable id the cheapest way past the gate, so it is now a
-        // hard refusal — every peer turn has an accountable sender.
-        const from = internalSender;
-        if (!canAccessTeam(from, target.section) || target.hidden) {
-          return json(res, 403, { error: `that bot belongs to a different section or is unavailable. ${PEER_ACCESS_HELP}` });
-        }
-        // The sender's allow-list, when it has one. Checked here rather than
-        // trusted from the roster: the tool call carries a bot id, and an id
-        // the model held from an earlier turn must not outlive the grant.
-        if (!peerAllowed(from, target)) {
-          return json(res, 403, { error: `that bot is not on this bot's allowed peers. ${PEER_ACCESS_HELP}` });
-        }
-        const fromThreadId = internalCapability.threadId;
-        // Rooms are conversations too. The task-only lookup here refused every
-        // ask made from a room turn — the bot could see its teammates and not
-        // reach them — while create_bot and the routine endpoints already
-        // accepted a group thread the sender belongs to. One ownership rule,
-        // and it is still the sender's own membership that decides.
-        if (!connectorThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source thread does not belong to sender" });
-        }
-        // A busy peer used to be a flat bounce ("try again later") — a
-        // dead-end mid-turn that models rarely retry, so the exchange just
-        // evaporated. Demote the synchronous ask into a durable handoff
-        // instead: the message waits in the delegation ledger (up to 24
-        // hours, receipts, restart-safe) and the asker gets a task id it
-        // can check next turn. If the ledger refuses (cap/depth), fall back
-        // to the plain busy bounce rather than dropping the refusal reason.
-        const queueBusyFallback = (approvalAlreadyGranted = false) => {
-          const guestThread = guestWorkThread(from, target, fromThreadId, message);
-          if (guestThread === null) return json(res, 500, { error: "couldn't open a conversation for that work" });
-          const queued = queueDelegation(
-            commsBus,
-            from,
-            { toBotId, message, reason: "asked while busy", depth, approvalAlreadyGranted, ...(guestThread ? { targetThreadId: guestThread } : {}),
-              ...externalCompletion(internalCapability), origin: turnOrigin(internalCapability) },
-            MAX_COMMS_DEPTH,
-            fromThreadId,
-          );
-          if ((queued.result !== "ok" || !queued.id) && guestThread) store.deleteTask(toBotId, guestThread);
-          if (queued.result !== "ok" || !queued.id) return json(res, 200, { busy: true, receipt: peerDeliveryReceipt({
-            botId: toBotId, botName: target.name, outcome: "failed",
-            detail: "the teammate was busy and the delegation queue refused the fallback — the message was not delivered",
-          }) });
-          // An external caller has no source turn whose completion can
-          // begin the busy wait. Drain now so the target's idle release
-          // retries this handoff, retaining any approval already granted.
-          if (internalCapability.generation === EXTERNAL_RUNTIME_GENERATION && !threadBusy(from.id, fromThreadId)) {
-            drainThreadDelegations(fromThreadId);
-          }
-          delegatedThisTurn(queued.id);
-          return json(res, 200, { busy: true, taskId: queued.id, toBotName: target.name, receipt: peerDeliveryReceipt({
-            botId: toBotId, botName: target.name, outcome: "queued", taskId: queued.id,
-            detail: "the teammate was busy; the ask was queued as a delegation instead",
-          }) });
-        };
-        // The aside lane: this ask was addressed to the conversation
-        // target.threadId holds, and that conversation is mid-turn. When
-        // the engine running it exposes a mid-turn seam, the words fold
-        // into the live turn as enveloped peer context — no interruption,
-        // no new turn, and the sender learns exactly how the send landed.
-        // A mid-turn injection is delivery, so it never routes through the
-        // peer-review card: review gates turns a peer would start, and a
-        // bot whose comms need approval keeps the delegation queue below.
-        const tryAsideDelivery = async (): Promise<Record<string, unknown> | null> => {
-          if (peerReviewRequired(from, fromThreadId)) return null;
-          // A guest's request never folds into a turn running in the
-          // owner's conversation; it waits for a confined one of its own.
-          if (cloudGuestDriven(fromThreadId)) return null;
-          // Busy elsewhere (room turn, sibling thread): the thread this ask
-          // targets is not the running one, so there is nothing to fold
-          // into here — the queue lane keeps it.
-          if (!threadBusy(toBotId, target.threadId)) return null;
-          const instance = runningTurnInstance(target, target.threadId);
-          if (!instance?.adapter.capabilities.queueing || !instance.adapter.steer) return null;
-          const steer = instance.adapter.steer;
-          queueAsideMessage(toBotId, target.threadId, message, {
-            fromBotId: from.id,
-            fromBotName: from.name,
-            unattended: isUnattended(from.id, fromThreadId),
-            commsDepth: depth,
-          });
-          const attempt = await attemptAsideInjection(store, toBotId, target.threadId, (_botId, threadId, prompt) =>
-            steer(threadId, prompt).catch((): SteerOutcome => "indeterminate"));
-          if (!attempt) return null;
-          return attempt.delivered
-            ? {
-                busy: true,
-                aside: "injected" as const,
-                toBotName: target.name,
-                message: `@${target.name} is mid-turn; your message was handed to them as an aside — peer context folded into their current work. It is not a request for a reply: continue your plan and treat their next output as possibly informed by it.`,
-              }
-            : {
-                busy: true,
-                aside: "queued" as const,
-                toBotName: target.name,
-                message: `@${target.name} is mid-turn and the aside could not be folded in yet; it is queued and will reach them as context when the turn settles. No reply is expected.`,
-              };
-        };
-        if (target.busy) {
-          const asideReceipt = await tryAsideDelivery();
-          if (asideReceipt) return json(res, 200, asideReceipt);
-          return queueBusyFallback();
-        }
-        let currentFrom = from;
-        let currentTarget = target;
-
-        // the exchange is mirrored into a bot⇄bot channel: it shows up in
-        // the sidebar like any room, keeps the pair's full history, and the
-        // user can open it and chip in. Both 1:1 threads get a clickable
-        // chip that opens the channel, so bot-to-bot turns are never
-        // invisible (they cost the user tokens).
-        //
-        // per-bot approval gate: a chief-of-staff bot without this on is
-        // free to coordinate; one with it on must wait for a human card
-        // (15-min timeout → expired) before its peer turn starts. The channel
-        // and the chips are created only AFTER the verdict, so a denied
-        // contact leaves no trace of an exchange that never happened.
-        if (peerReviewRequired(from, fromThreadId)) {
-          const verdict = await requestPeerApproval(
-            approvalBus,
-            from,
-            target,
-            message,
-            "ask_bot",
-            fromThreadId,
-          );
-          requireActiveInternalCapability();
-          if (verdict !== "allow") {
-            const failure = peerApprovalFailure(verdict);
-            return json(res, 200, { ...failure, receipt: peerDeliveryReceipt({
-              botId: toBotId, botName: target.name, outcome: "failed",
-              detail: `peer review ${failure.error} — the message was not sent`,
-            }) });
-          }
-          // The card may have been open for minutes. Re-read both records so
-          // deleted bots cannot recreate transcripts through stale objects.
-          const freshFrom = store.bot(fromBotId);
-          const freshTarget = store.bot(toBotId);
-          if (!freshFrom || !freshTarget) return json(res, 404, { error: "no such bot" });
-          if (!canAccessTeam(freshFrom, freshTarget.section) || freshTarget.hidden) {
-            return json(res, 200, { error: "that bot moved to a different section", receipt: peerDeliveryReceipt({
-              // Access no longer permits reading the peer's current profile.
-              botId: toBotId, outcome: "failed",
-              detail: "that bot moved to a different section — the message was not sent",
-            }) });
-          }
-          if (!peerAllowed(freshFrom, freshTarget)) {
-            return json(res, 200, { error: "that bot is no longer an allowed peer", receipt: peerDeliveryReceipt({
-              botId: toBotId, outcome: "failed",
-              detail: "that bot is no longer an allowed peer — the message was not sent",
-            }) });
-          }
-          // Membership can be revoked while the card is open: re-check the
-          // same way, so a bot removed from a room mid-approval cannot go on
-          // speaking through it.
-          if (!connectorThread(freshFrom.id, fromThreadId)) {
-            return json(res, 404, { error: "source conversation no longer belongs to sender" });
-          }
-          // The user just approved this exact ask_bot request. Preserve that
-          // decision if it has to become an async handoff; asking twice makes
-          // the fallback look stuck behind a second, surprising card.
-          if (freshTarget.busy) return queueBusyFallback(true);
-          currentFrom = freshFrom;
-          currentTarget = freshTarget;
-        }
-        // An ask made from inside a room is mirrored into that room — the
-        // conversation the person is actually reading — the way delegate_bot
-        // already does. The pair channel is for asks made from a bot's own
-        // thread; sending a room's ask there put the whole exchange behind
-        // an unbadged "A ⇄ B" entry nobody had a reason to open.
-        const channel = getOrCreateChannel(
-          store,
-          currentFrom,
-          currentTarget,
-          connectorThread(currentFrom.id, fromThreadId)?.group,
-        );
-        mirrorExchange(commsBus, currentFrom, currentTarget, message, channel, fromThreadId);
-        const prefixed = withPeerProvenance(message, {
-          botName: currentFrom.name,
-          delivery: "ask_bot",
-          unattended: isUnattended(currentFrom.id, fromThreadId),
-        });
-        const guestThread = guestWorkThread(currentFrom, currentTarget, fromThreadId, message);
-        if (guestThread === null) return json(res, 500, { error: "couldn't open a conversation for that work" });
-        const targetThreadId = guestThread ?? currentTarget.threadId;
-        const outcome = await askBotAndWait(toBotId, prefixed, depth, fromBotId, fromThreadId, targetThreadId);
-        requireActiveInternalCapability();
-        const replySender = store.bot(fromBotId);
-        const replyTarget = store.bot(toBotId);
-        if (!replySender || !replyTarget || !canReachPeer(replySender, replyTarget)) {
-          return json(res, 403, { error: "Result withheld: team access changed while the teammate was working" });
-        }
-        if (outcome.status === "timeout" && !delegationWatch.has(targetThreadId)) {
-          // The peer's turn is still running — only the wait ended. Convert
-          // the ask into a delegation claim ticket: the watch mirrors the
-          // terminal state into the channel AND the asker's thread when the
-          // turn settles, and check/wait_delegation read the same receipt.
-          // Losing the reply was the old behavior, and it read as "the bots
-          // don't respond to each other".
-          const taskId = newId();
-          delegationWatch.set(targetThreadId, {
-            channelId: channel.id,
-            toBotId,
-            toBotName: currentTarget.name,
-            taskId,
-            sourceThreadId: fromThreadId,
-            sourceBotId: currentFrom.id,
-            routineRunId: activeRoutineRunForThread(fromThreadId)?.id,
-            ...externalCompletion(internalCapability),
-          });
-          store.appendMessage(fromThreadId, {
-            role: "bot",
-            kind: "activity",
-            tool: { name: `@${currentTarget.name} is still working — ask converted to a delegation` },
-          });
-          delegatedThisTurn(taskId);
-          return json(res, 200, { timeout: true, taskId, toBotName: currentTarget.name, waitedMs: ASK_BOT_TIMEOUT_MS,
-            receipt: peerDeliveryReceipt({ botId: toBotId, botName: currentTarget.name, outcome: "injected", taskId,
-              detail: "the teammate's turn started and is still running; only the synchronous wait ended" }) });
-        }
-        if (outcome.status === "failed") {
-          // The asker gets the cause, what the turn did and its last words,
-          // never partial text passed off as a finished reply; the exchange
-          // gets the cause where it lives.
-          const why = outcome.text.split("\n", 1)[0]!.slice(0, 120);
-          mirrorActivity(commsBus, currentTarget, channel, `Turn failed — ${why}`, false);
-          return json(res, 200, { botName: currentTarget.name, text: outcome.text,
-            receipt: peerDeliveryReceipt({ botId: toBotId, botName: currentTarget.name, outcome: "injected",
-              detail: `the teammate's turn started and failed — ${why}` }) });
-        }
-        const reply = outcome.status === "timeout"
-          ? outcome.text || "(timed out waiting for the bot to reply)"
-          : outcome.text;
-        mirrorReply(commsBus, currentTarget, reply, channel);
-        // A dispatch error arrives as outcome "error" with the reason folded
-        // into text — to the sender it reads like a reply from the peer. The
-        // receipt is what keeps that honest: the turn never started, so the
-        // message was never delivered.
-        const dispatchFailed = outcome.status === "error";
-        return json(res, 200, { botName: currentTarget.name, text: reply,
-          receipt: peerDeliveryReceipt({ botId: toBotId, botName: currentTarget.name,
-            outcome: dispatchFailed ? "failed" : "injected",
-            detail: dispatchFailed
-              ? "the teammate's turn could not start — the message was not delivered"
-              : outcome.status === "timeout"
-                ? "the teammate's turn started and is still running"
-                : "the teammate's turn ran to completion",
-          }) });
+        const toBotRef = String(body.toBotId ?? "").trim();
+        const message = String(body.message ?? "").trim();
+        if (!toBotRef || !message) return json(res, 400, { error: "toBotId and message required", deprecation });
+        if (toBotRef === internalSender.id) return json(res, 400, { error: "a bot cannot message itself", deprecation });
+        const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 200) : undefined;
+        const result = await coordinateBots({ botIds: [toBotRef], message, reason, rework: false, thread: "standing", reply: "resume", consult, deprecation });
+        return json(res, result.status, result.body);
       }
-      // Async handoff: the source bot queues a task for a peer and goes
-      // back to the user; the peer turn runs after the source's
-      // turn.completed. Returns immediately (the caller does not wait).
-      const delegationMatch = method === "GET" ? path.match(/^\/api\/internal\/delegations\/([\w-]{4,64})$/) : null;
-      if (delegationMatch) {
-        const taskId = delegationMatch[1];
-        if (internalCapability.delegatedThisTurn?.has(taskId)) {
-          return json(res, 409, { error: `Task ${taskId} was delegated during this turn. Finish your response now so the other bot can work; its result will be delivered to this conversation automatically. Do not check or wait for a newly delegated task until a later turn.` });
+      if (method === "POST" && path === "/api/internal/coordinate-bots") {
+        const parsed = z.object({
+          groupId: z.string().min(1).max(128).optional(),
+          botIds: z.array(z.string().min(1).max(128)).min(1).max(4).refine(ids => new Set(ids).size === ids.length),
+          message: z.string().trim().min(1).max(4000),
+          reason: z.string().trim().max(200).optional(),
+          rework: z.boolean().default(false),
+          thread: z.enum(["standing", "new"]).default("standing"),
+          reply: z.enum(["resume", "none"]).default("resume"),
+          consult: z.boolean().default(false),
+          done_when: z.string().trim().max(1000).optional(),
+        }).safeParse(await readInternalBody());
+        if (!parsed.success) return json(res, 400, { error: "Provide 1-4 distinct botIds and a message of 1-4000 characters; thread is standing or new, reply is resume or none, consult is a boolean, done_when at most 1000 characters." });
+        const { groupId, botIds, message, reason, rework, thread, reply, consult, done_when: doneWhen } = parsed.data;
+        const result = await coordinateBots({ groupId, botIds, message, reason: reason || undefined, rework, thread, reply, consult, doneWhen: doneWhen || undefined });
+        return json(res, result.status, result.body);
+      }
+      if (method === "GET" && path === "/api/internal/room-targets") {
+        const source = store.groupByThread(internalCapability.threadId);
+        if (source && (source.dm || !source.memberIds.includes(internalSender.id))) {
+          return json(res, 403, { error: "Coordination needs a room you are a member of, or your own conversation." });
         }
-        const fromThreadId = internalCapability.threadId;
-        const from = internalSender;
-        if (!connectorThread(from.id, fromThreadId)) return json(res, 403, { error: "unknown sender" });
-        const waitMs = Math.min(Math.max(Number(url.searchParams.get("wait_ms")) || 0, 0), 240_000);
-        const deadline = Date.now() + waitMs;
-        // Bounded long-poll: the delegating bot parks ONE cheap HTTP request
-        // here instead of burning a model inference per status check.
-        for (;;) {
-          requireActiveInternalCapability();
-          const receipt = findDelegationReceipt(taskId);
-          if (receipt) {
-            if (receipt.sourceThreadId !== fromThreadId) {
-              return json(res, 403, { error: "that task belongs to a different conversation" });
-            }
-            const sender = store.bot(from.id);
-            const target = store.bot(receipt.toBotId);
-            if (!sender || (target && !canReachPeer(sender, target))) {
-              return json(res, 403, { error: "Result withheld: team access changed while the teammate was working" });
-            }
-            return json(res, 200, {
-              status: receipt.status, toBotName: receipt.toBotName, result: receipt.result ?? "",
-              ...(receipt.approvalOutcome ? {
-                approvalOutcome: receipt.approvalOutcome, approvalSource: receipt.approvalSource,
-              } : {}),
-            });
-          }
-          const stillQueued = pendingDelegationInfo(taskId);
-          const runningEntry = [...delegationWatch.entries()].find(([, watch]) => watch.taskId === taskId);
-          const running = runningEntry?.[1];
-          const owner = stillQueued?.sourceThreadId ?? running?.sourceThreadId;
-          if (!owner) return json(res, 404, { error: "unknown task id — delegation receipts are kept for about 48 hours" });
-          if (owner !== fromThreadId) return json(res, 403, { error: "that task belongs to a different conversation" });
-          const toBotId = stillQueued?.toBotId ?? running?.toBotId ?? "";
-          const sender = store.bot(from.id);
-          const target = store.bot(toBotId);
-          if (!sender || (target && !canReachPeer(sender, target))) {
-            return json(res, 403, { error: "Result withheld: team access changed while the teammate was working" });
-          }
-          // Nothing moves while the teammate's card waits on the person, so
-          // say so now rather than holding the long-poll to its deadline.
-          const awaitingPerson = running && runningEntry ? openPersonCard(runningEntry[0]) : undefined;
-          if (Date.now() >= deadline || awaitingPerson) {
-            if (running && runningEntry) {
-              const recent = summarizeDelegatedActivity(
-                store.messagesFor(runningEntry[0]),
-                running.startedAtMs ?? Date.now(),
-              );
-              return json(res, 200, {
-                status: "running",
-                toBotName: store.bot(toBotId)?.name ?? toBotId,
-                elapsedMs: Math.max(0, Date.now() - (running.startedAtMs ?? Date.now())),
-                recentActivity: recent,
-                ...(awaitingPerson ? {
-                  awaitingPerson: {
-                    ...awaitingPerson,
-                    threadTitle: store.taskByThread(toBotId, runningEntry[0])?.title,
-                  },
-                } : {}),
-              });
-            }
-            const queuedTarget = store.bot(toBotId);
-            return json(res, 200, {
-              status: "queued",
-              toBotName: queuedTarget?.name ?? toBotId,
-              ...(stillQueued
-                ? {
-                  // A deleted target must never read as "available" — peerStatus's
-                  // undefined/undefined fallback is "available", which is wrong here.
-                  targetStatus: queuedTarget ? peerStatus(queuedTarget.activity, queuedTarget.busy) : "unavailable",
-                  expiresInMs: Math.max(0, stillQueued.queuedAt + DELEGATION_TTL_MS - Date.now()),
-                }
-                : {}),
-            });
-          }
-          await new Promise((wake) => setTimeout(wake, 500));
-        }
+        const address = { groupId: source?.id, threadId: internalCapability.threadId, botId: internalSender.id };
+        const problem = roomHandoffProblem(address);
+        if (problem) return json(res, 403, { error: problem });
+        const rooms = store.groups.filter(g => !g.dm).map(g => ({
+          id: g.id, name: g.name, workingFolder: g.cwd || null,
+          members: g.memberIds.map(id => store.bot(id)).filter(b => b && b.id !== internalSender.id &&
+            !roomHandoffProblem({ groupId: g.id, threadId: g.id === source?.id ? address.threadId : g.threadId, botId: b.id }, address))
+            .map(b => ({ id: b!.id, name: b!.name, title: b!.title, busy: b!.busy })),
+        })).filter(g => g.members.length);
+        return json(res, 200, { currentRoom: source ? { id: source.id, name: source.name, workingFolder: source.cwd || null } : null,
+          bots: reachablePeers(store.bots, internalSender).map(bot => ({ id: bot.id, name: bot.name, title: bot.title, section: bot.section, busy: bot.busy })),
+          rooms, note: "Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
       }
       // A Chief resumes a teammate's broken thread (server/incidents.ts): the
       // same thread, its conversation and files, one more turn, with a line
@@ -19035,254 +18469,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           threadRef: { botId: target.id, threadId, title: task.title },
         });
         return json(res, 200, { started: true, message: `${target.name}'s thread #${task.title} is running again. Its result stays in that thread; you are not woken for it — check later with list_threads or session_search if you need to.` });
-      }
-      if (method === "POST" && path === "/api/internal/delegate-bot") {
-        const body = await readInternalBody();
-        const toBotRef = String(body.toBotId ?? "");
-        const message = String(body.message ?? "").trim();
-        const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined;
-        if (
-          body.depth !== undefined &&
-          (!Number.isInteger(body.depth) || body.depth < 0 || body.depth !== internalCapability.depth)
-        ) {
-          return json(res, 403, { error: "the recursion depth does not match this turn" });
-        }
-        const depth = internalCapability.depth;
-        if (!toBotRef || !message) return json(res, 400, { error: "toBotId and message required" });
-        const from = internalSender;
-        const resolvedTo = resolveTeammate(store.bots, from, toBotRef);
-        if ("error" in resolvedTo) return json(res, 404, { error: `no such bot: ${resolvedTo.error}` });
-        const toBotId = resolvedTo.id;
-        const target = store.bot(toBotId);
-        if (!target) return json(res, 404, { error: "no such bot" });
-        if (!canAccessTeam(from, target.section) || target.hidden) {
-          return json(res, 403, { error: `that bot belongs to a different section or is unavailable. ${PEER_ACCESS_HELP}` });
-        }
-        if (!peerAllowed(from, target)) {
-          return json(res, 403, { error: `that bot is not on this bot's allowed peers. ${PEER_ACCESS_HELP}` });
-        }
-        const fromThreadId = internalCapability.threadId;
-        if (!connectorThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source thread does not belong to sender" });
-        }
-        const guestThread = guestWorkThread(from, target, fromThreadId, reason ?? message);
-        if (guestThread === null) return json(res, 500, { error: "couldn't open a conversation for that work" });
-        const queued = queueDelegation(
-          commsBus,
-          from,
-          { toBotId, message, reason, depth, ...(guestThread ? { targetThreadId: guestThread } : {}), ...externalCompletion(internalCapability),
-            origin: turnOrigin(internalCapability) },
-          MAX_COMMS_DEPTH,
-          fromThreadId,
-        );
-        if ((queued.result !== "ok" || !queued.id) && guestThread) store.deleteTask(toBotId, guestThread);
-        if (queued.result !== "ok" || !queued.id) {
-          // the agent reads this string — a bare enum ("too_deep") tells it
-          // nothing about what to do instead
-          const said: Record<Exclude<QueueResult, "ok">, string> = {
-            self: "a bot cannot delegate to itself",
-            too_deep: "delegation chains are limited to one hop — do this one yourself",
-            no_target: "no such bot",
-            too_many: "too many delegations queued on this turn — finish some first",
-          };
-          const refusal = said[queued.result === "ok" ? "no_target" : queued.result];
-          return json(res, 200, { error: refusal, receipt: peerDeliveryReceipt({
-            botId: toBotId, botName: store.bot(toBotId)?.name, outcome: "failed",
-            detail: `${refusal} — nothing was queued`,
-          }) });
-        }
-        delegatedThisTurn(queued.id);
-        const targetName = store.bot(toBotId)?.name ?? toBotId;
-        // The queue normally drains when the source thread's turn completes. A
-        // caller this server did not spawn (an external runtime) has no live
-        // turn here, so its handoff would wait for an unrelated turn on that
-        // thread to settle. Nothing in flight on the source thread means there
-        // is nothing to wait for: drain now.
-        if (internalCapability.generation === EXTERNAL_RUNTIME_GENERATION && !threadBusy(from.id, fromThreadId)) {
-          drainThreadDelegations(fromThreadId);
-          const reviewed = peerReviewRequired(from, fromThreadId);
-          return json(res, 200, {
-            queued: true,
-            taskId: queued.id,
-            message: reviewed
-              ? `Queued for review — @${targetName} will pick it up once the user approves.`
-              : `Delegated — @${targetName} is picking it up now.`,
-            receipt: peerDeliveryReceipt({ botId: toBotId, botName: targetName, outcome: "queued", taskId: queued.id,
-              detail: reviewed
-                ? "the teammate's turn waits on the user's approval"
-                : "the drain started; the teammate's turn has not started yet" }),
-          });
-        }
-        const reviewed = peerReviewRequired(from, internalCapability.threadId);
-        return json(res, 200, {
-          queued: true,
-          taskId: queued.id,
-          message: reviewed
-            ? `Queued for review — @${targetName} will only pick it up if the user approves after your turn finishes.`
-            : `Delegation queued — @${targetName} will pick it up after your current turn finishes.`,
-          receipt: peerDeliveryReceipt({ botId: toBotId, botName: targetName, outcome: "queued", taskId: queued.id,
-            detail: reviewed
-              ? "the teammate's turn waits on the user's approval after your turn finishes"
-              : "the teammate's turn runs after your current turn finishes" }),
-        });
-      }
-      if (path === "/api/internal/room-targets" || path === "/api/internal/coordinate-bots") {
-        const source = store.groupByThread(internalCapability.threadId);
-        if (!internalCapability.roomCoordination || (source && (source.dm || !source.memberIds.includes(internalSender.id)))) {
-          return json(res, 403, { error: "Coordination requires an active chat turn. Finish together already manages its own teammate turns." });
-        }
-        const address = { groupId: source?.id, threadId: internalCapability.threadId, botId: internalSender.id };
-        const problem = roomHandoffProblem(address);
-        if (problem) return json(res, 403, { error: problem });
-        if (method === "GET" && path === "/api/internal/room-targets") {
-          const rooms = store.groups.filter(g => !g.dm).map(g => ({
-            id: g.id, name: g.name, workingFolder: g.cwd || null,
-            members: g.memberIds.map(id => store.bot(id)).filter(b => b && b.id !== internalSender.id &&
-              !roomHandoffProblem({ groupId: g.id, threadId: g.id === source?.id ? address.threadId : g.threadId, botId: b.id }, address))
-              .map(b => ({ id: b!.id, name: b!.name, title: b!.title, busy: b!.busy })),
-          })).filter(g => g.members.length);
-          return json(res, 200, { currentRoom: source ? { id: source.id, name: source.name, workingFolder: source.cwd || null } : null,
-            bots: reachablePeers(store.bots, internalSender).map(bot => ({ id: bot.id, name: bot.name, title: bot.title, section: bot.section, busy: bot.busy })),
-            rooms, note: "Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
-        }
-        if (method === "POST" && path === "/api/internal/coordinate-bots") {
-          const parsed = z.object({
-            groupId: z.string().min(1).max(128).optional(),
-            botIds: z.array(z.string().min(1).max(128)).min(1).max(4).refine(ids => new Set(ids).size === ids.length),
-            message: z.string().trim().min(1).max(4000),
-            rework: z.boolean().default(false),
-          }).safeParse(await readInternalBody());
-          if (!parsed.success) return json(res, 400, { error: "Provide 1-4 distinct botIds and a message of 1-4000 characters." });
-          const groupId = parsed.data.groupId ?? source?.id;
-          const destination = groupId ? store.group(groupId) : undefined;
-          if (groupId && !destination) return json(res, 404, { error: "No such room; use list_room_targets." });
-          // A slot may carry a teammate's name instead of its id — the
-          // roster shows both, list_bots shows both, and a Chief reading its
-          // prompt reaches for the name. A unique reachable name resolves;
-          // anything else is refused with the id or name the caller sent
-          // and the way to the real ids (peer-roster.ts).
-          const botIds: string[] = [];
-          for (const raw of parsed.data.botIds) {
-            const resolved = resolveTeammate(store.bots, internalSender, raw);
-            if ("error" in resolved) return json(res, 403, { error: resolved.error });
-            botIds.push(resolved.id);
-          }
-          if (new Set(botIds).size !== botIds.length) return json(res, 400, { error: "bot_ids name the same teammate twice — send each teammate once" });
-          const targets = botIds.map(botId => ({ groupId: destination?.id,
-            threadId: destination ? destination.id === source?.id ? address.threadId : destination.threadId : store.bot(botId)?.threadId ?? "", botId,
-          }));
-          for (const target of targets) {
-            // roomHandoffProblem's "no longer exists" is written for a route
-            // that was valid and went away. Here the id is the model's own
-            // argument — usually a display name dropped into a bot_ids slot —
-            // so say which id failed and where the real ones are, instead of
-            // telling the model a teammate it can still reach is gone. Only
-            // the id the caller sent is echoed back, never a bot's name.
-            const addressed = store.bot(target.botId);
-            const eligibility =
-              target.botId === internalSender.id ? "Choose a teammate, not yourself"
-              : !addressed ? `No bot with id "${target.botId}" — call list_bots and copy the exact id from the result`
-              : addressed.hidden ? `The bot with id "${target.botId}" is no longer available — call list_bots for the ones you can reach`
-              : roomHandoffProblem(target, address);
-            if (eligibility) return json(res, 403, { error: eligibility });
-          }
-          let approvalGranted = false;
-          if (peerReviewRequired(internalSender, address.threadId)) {
-            const verdicts = await Promise.all(targets.map(target =>
-              requestPeerApproval(approvalBus, internalSender, store.bot(target.botId)!, parsed.data.message, "delegate_bot", address.threadId)));
-            requireActiveInternalCapability();
-            const blocked = verdicts.flatMap((verdict, index) => verdict === "allow" ? []
-              : [{ botId: targets[index]!.botId, ...peerApprovalFailure(verdict) }]);
-            if (blocked.length) return json(res, 403, {
-              error: blocked.every(failure => failure.approvalOutcome === "deny")
-                ? "Denied by user; no work sent."
-                : `${blocked.map(failure => failure.error).join("; ")}; no work sent.`,
-              approvals: blocked,
-            });
-            approvalGranted = true;
-          }
-          // A room shows one brief per call, addressed to the call's recipients.
-          const requestBatchKey = destination ? randomUUID() : undefined;
-          // A fresh tree keeps where this turn's work started; a running one
-          // already has it.
-          const origin = turnOrigin(internalCapability);
-          // One receipt per recipient, in the order the caller addressed
-          // them. Dispatch is asynchronous (coordinator.tick), so a fresh
-          // enqueue is honestly "queued"; a repeat reports the request it
-          // repeats.
-          const receipts: PeerDeliveryReceipt[] = [];
-          // Why nothing was sent, in full: a receipt's detail is clipped.
-          const refused: string[] = [];
-          for (const target of targets) {
-            let createdThread: string | undefined;
-            try {
-              requireActiveInternalCapability();
-              // Outside a room this conversation has one thread with each
-              // teammate: the first request opens it, everything after
-              // continues it and runs once the work already there is done.
-              const continued = destination ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
-              if (!destination) {
-                const task = continued ?? store.createTask(target.botId, `@${internalSender.name} · work`, false, undefined,
-                  { botId: internalSender.id, name: internalSender.name, kind: "work", threadId: address.threadId, at: Date.now() });
-                if (!task) throw new Error("The recipient no longer exists");
-                target.threadId = task.threadId;
-                if (!continued) createdThread = task.threadId;
-                applyDelegatedLevel(internalSender, internalCapability.threadId, store.bot(target.botId)!, target.threadId);
-              }
-              const { node, duplicate } = coordinator.enqueue(address, internalCapability.generation, internalCapability.roomHandoffId,
-                target, target.botId, parsed.data.message, approvalGranted, parsed.data.rework, [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "",
-                requestBatchKey, origin);
-              // A repeat lands on the request already made, possibly in a
-              // thread the person archived meanwhile; a thread opened for it
-              // is never used.
-              if (duplicate && createdThread) store.deleteTask(target.botId, createdThread);
-              else if (createdThread) threadStarters.set(createdThread, openerFrom(address.threadId));
-              createdThread = undefined; // The durable coordinator now owns this task.
-              // Only a live request can still report: a finished one already
-              // fired its report and tick() skips it, so a repeat of it sends
-              // nothing and says how to run it again.
-              const title = destination ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
-              const finished: Partial<Record<HandoffView["status"], string>> = {
-                completed: "it already finished and its result stands; send it with rework=true to run it again",
-                failed: "it failed; send it with rework=true to retry", cancelled: "it was cancelled; send it with rework=true to retry",
-              };
-              const notSent = duplicate && finished[node.status] ? `not sent again: ${finished[node.status]}` : undefined;
-              if (notSent) refused.push(notSent);
-              receipts.push(peerDeliveryReceipt({
-                botId: node.botId,
-                botName: store.bot(node.botId)?.name,
-                outcome: notSent ? "failed" : !duplicate || node.status === "queued" ? "queued" : "injected",
-                detail: notSent ?? (duplicate
-                  ? `already sent: it is ${node.status === "queued" ? "queued" : "under way"} and its result will resume you`
-                  : title
-                    ? `sent to "${title}"; it runs after anything still running there`
-                    : "handed to the coordinator; the teammate's turn has not started yet"),
-                requestId: node.id,
-                ...(destination ? {} : { threadId: node.threadId }),
-              }));
-              if (!duplicate) {
-                const recipient = store.bot(target.botId)!;
-                store.appendMessage(address.threadId, { role: "bot", kind: "activity",
-                  from: { botId: internalSender.id, name: internalSender.name, color: internalSender.color },
-                  tool: { name: "Sent to " + recipient.name + (destination && destination.id !== source?.id ? " · " + destination.name : ""), ok: true },
-                  ...(destination ? { comm: { groupId: destination.id, threadId: node.threadId, withBotId: recipient.id, withName: recipient.name, withColor: recipient.color } }
-                    : { threadRef: { botId: recipient.id, threadId: node.threadId, title: store.taskByThread(recipient.id, node.threadId)!.title } }),
-                });
-              }
-            } catch (error) {
-              if (createdThread) {
-                store.deleteTask(target.botId, createdThread);
-              }
-              const said = error instanceof Error ? error.message : String(error);
-              refused.push(said);
-              receipts.push(peerDeliveryReceipt({ botId: target.botId, botName: store.bot(target.botId)?.name, outcome: "failed", detail: said }));
-            }
-          }
-          const sent = refused.length < receipts.length;
-          return json(res, sent ? 200 : 409, { receipts,
-            ...(sent ? { message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait." } : { error: refused.join("; ") }),
-          });
-        }
       }
       // post_to_room: a bot puts ONE message into a room it belongs to,
       // without a turn being started for anyone. Everything about it is a
@@ -19502,14 +18688,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (oneWay && target.id === from.id) {
           return json(res, 409, { error: "send_to_bot is cross-bot only; use start_thread to send independent work to yourself" });
         }
-        if (internalCapability.roomCoordination) {
-          if (target.id !== from.id && !oneWay) {
-            return json(res, 409, { error: "Use coordinate_bots for teamwork; it queues actual teammates and resumes you automatically." });
-          }
-          if (target.id === from.id && !internalCapability.ownThreadCreation) {
-            return json(res, 409, { error: "Only a direct user request can open separate self-owned threads. Finish this assigned work here; use coordinate_bots for teammates." });
-          }
-        }
         // A folder is the target's own organisation; a name is what the
         // model has, an id is what the sidebar has, so accept either.
         const folder = typeof body.folder === "string" ? body.folder.trim() : "";
@@ -19555,69 +18733,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             ...outcome,
           });
         }
-        // A peer thread is a handoff into a fresh thread: every gate the
-        // classic handoff has applies unchanged, here at queue time and
-        // again in the drain at dispatch time.
-        const depth = internalCapability.depth;
-        if (!oneWay && depth >= MAX_COMMS_DEPTH) {
-          return json(res, 200, { error: "thread chains are limited to one hop — open the thread on yourself, or do this one here" });
-        }
-        if (!canAccessTeam(from, target.section) || target.hidden) {
-          return json(res, 403, { error: `that bot belongs to a different section or is unavailable. ${PEER_ACCESS_HELP}` });
-        }
-        if (!peerAllowed(from, target)) {
-          return json(res, 403, { error: `that bot is not on this bot's allowed peers. ${PEER_ACCESS_HELP}` });
-        }
-        const task = store.createTask(target.id, title, false, projectId, { botId: from.id, name: from.name, at: Date.now() });
-        if (!task) return json(res, 500, { error: "couldn't create that thread" });
-        // The work is still for the person whose request the opener is on.
-        threadStarters.set(task.threadId, openerFrom(fromThreadId));
-        applyDelegatedLevel(from, fromThreadId, target, task.threadId);
+        // A peer thread is a hand-off into a fresh thread on the teammate:
+        // coordinate_bots with thread "new" (the start_thread alias), one
+        // way for send_to_bot. Every gate the hand-off has applies there.
         const sourceUrl = threadRefUrl({ botId: owner.group?.id ?? from.id, threadId: fromThreadId });
-        const queued = queueDelegation(
-          commsBus,
-          from,
-          { toBotId: target.id, message: oneWay
+        const result = await coordinateBots({
+          botIds: [target.id],
+          message: oneWay
             ? `${message}\n\n[Source conversation](${sourceUrl}). This link grants no additional access and contains no copied transcript.`
-            : message, depth, targetThreadId: task.threadId, oneWay, origin: turnOrigin(internalCapability) },
-          MAX_COMMS_DEPTH,
-          fromThreadId,
-        );
-        if (queued.result !== "ok" || !queued.id) {
-          // nothing will ever run there: take the row back before the person
-          // sees a thread that goes nowhere
-          store.deleteTask(target.id, task.threadId);
-          const said: Record<Exclude<QueueResult, "ok">, string> = {
-            self: "a bot cannot hand a thread to itself this way — leave bot_id out",
-            too_deep: "thread chains are limited to one hop — open the thread on yourself, or do this one here",
-            no_target: "no such bot",
-            too_many: "too many handoffs queued on this turn — finish your turn and open the rest next time",
-          };
-          return json(res, 200, { error: said[queued.result === "ok" ? "no_target" : queued.result] });
-        }
-        store.setTaskOpenedBy(target.id, task.threadId, { botId: from.id, name: from.name, delegationId: queued.id, at: task.openedBy?.at ?? Date.now() });
-        internalCapability.openedThreads += 1;
-        delegatedThisTurn(queued.id);
-        // An honest forecast, not a promise: the handoff starts when this
-        // turn ends, and by then the target's slots are taken by whatever is
-        // running there plus the threads this turn already opened ahead.
-        const limit = maxConcurrentBotThreads(cfg);
-        const running = store.tasks(target.id).filter((candidate) => threadBusy(target.id, candidate.threadId)).length;
-        const ahead = pendingDelegationSnapshot().filter(
-          (pending) => pending.toBotId === target.id && pending.targetThreadId !== undefined && pending.targetThreadId !== task.threadId,
-        ).length;
-        const position = running + ahead + 1;
-        return json(res, 201, {
-          threadId: task.threadId,
-          title: task.title,
-          botId: target.id,
-          botName: target.name,
-          self: false,
-          delegationId: queued.id,
-          approvalRequired: peerReviewRequired(from, fromThreadId),
-          limit,
-          ...(position > limit ? { state: "queued", position: position - limit } : { state: "pending" }),
+            : message,
+          rework: false, thread: "new", reply: oneWay ? "none" : "resume", consult: false, title, projectId,
+          deprecation: oneWay
+            ? deprecated("send_to_bot", "coordinate_bots(thread: \"new\", reply: \"none\")")
+            : deprecated("start_thread on a teammate", "coordinate_bots(thread: \"new\")"),
         });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/create-bot") {
         const body = await readInternalBody();
@@ -20320,20 +19450,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           lastAt: store.messagesFor(group.threadId).at(-1)?.at ?? group.createdAt,
         }))
         .sort((a, b) => b.lastAt - a.lastAt);
-      const queued = pendingDelegationSnapshot().flatMap((item) => {
-        if (!mapped.has(item.sourceBotId) || !mapped.has(item.toBotId)) return [];
-        return [{ sourceBotId: item.sourceBotId, targetBotId: item.toBotId, reason: item.reason }];
-      });
-      const running = [...delegationWatch.entries()].flatMap(([threadId, watch]) => {
-        if (!mapped.has(watch.toBotId)) return [];
-        const channel = watch.channelId ? store.group(watch.channelId) : undefined;
-        const sourceBotId = watch.sourceBotId ??
-          channel?.memberIds.find((botId) => botId !== watch.toBotId);
-        if (!sourceBotId || !mapped.has(sourceBotId)) return [];
-        return [{ sourceBotId, targetBotId: watch.toBotId, threadId, groupId: channel?.id }];
-      });
-      // Work sent with coordinate_bots lives in the room handoff tree, not in
-      // the classic delegation queue above. Ids only, like everything here.
+      // Every hand-off between bots is a runtime edge. Ids only, like
+      // everything here.
       const handoffs = coordinator.liveEdges()
         .filter((edge) =>
           mapped.has(edge.sourceBotId)
@@ -20343,8 +19461,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         handoffs.flatMap(({ state: edgeState, ...link }) => edgeState === state ? [link] : []);
       return json(res, 200, {
         collaborations,
-        queued: [...queued, ...links("queued")],
-        running: [...running, ...links("running")],
+        queued: links("queued"),
+        running: links("running"),
       });
     }
 
@@ -22179,9 +21297,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const preset = resolvedPreset && presetOffered(resolvedPreset.row, orgInstallStatuses()) ? resolvedPreset : null;
       if (body.preset !== undefined && !preset) return json(res, 404, { error: PRESET_UNAVAILABLE_MESSAGE });
       body = { ...body, ...settings, name: settings.name };
-      if (settings.approvalMode === "full" || settings.approvalMode === "custom") {
-        return json(res, 403, { error: "This approval level requires the desktop permission flow. Use the bot creation dialog or explicitly choose Ask/Auto for API creation." });
+      // Full is applied like any other level; its first conversation follows
+      // the bot. Custom still comes only through the desktop's private channel.
+      if (settings.approvalMode === "custom") {
+        return json(res, 403, { error: "Custom approval requires the desktop permission flow. Use the bot creation dialog or choose another level for API creation." });
       }
+      if (settings.approvalMode === "full" && HOSTED_WORKSPACE) return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
       if (settings.computer === "local" && settings.approvalMode === "auto" && body.acknowledgeLocalAuto !== true) {
         return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
       }
@@ -22235,6 +21356,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         selection = checked.selection;
       }
       if (hostedModels && !hostedModels.allows(selection)) return json(res, 400, { error: hostedModels.error() });
+      if (settings.approvalMode === "full" && !supportsApprovalMode(selection, "full")) {
+        return json(res, 400, { error: "This provider does not support Full access" });
+      }
       // Keep the capacity check immediately beside the synchronous write.
       // Awaiting provider discovery before this point cannot race the cap.
       if (store.bots.length >= MAX_WORKSPACE_BOTS) {
@@ -22807,14 +21931,39 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           error: "This provider does not support the selected approval level, or changing providers requires choosing Ask first",
         });
       }
+      // Full access applies at once from any client that can reach this API
+      // (owner decision, Oct 12): no desktop channel, no consent field.
+      // Custom keeps the packaged desktop's private channel, into it and out
+      // of it, because it holds restrictions the person wrote themselves.
       const requiresPrivateApprovalTransition =
-        ((requestedApprovalMode === "full" || requestedApprovalMode === "custom") &&
-          currentApprovalMode !== requestedApprovalMode) ||
+        (requestedApprovalMode === "custom" && currentApprovalMode !== "custom") ||
         (currentApprovalMode === "custom" && requestedApprovalMode !== "custom");
       if (requiresPrivateApprovalTransition) {
         return json(res, 403, {
           error: "This approval-level change can only be made from the packaged desktop app",
         });
+      }
+      if (HOSTED_WORKSPACE && requestedApprovalMode === "full" &&
+        (currentApprovalMode !== "full" || body.applyToAllThreads === true)) {
+        return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
+      }
+      // Full for the bot and every one of its conversations, the way bot
+      // settings turns it on; without it only the default (and the threads
+      // that follow it) changes, as for every other level.
+      if (body.applyToAllThreads !== undefined) {
+        if (typeof body.applyToAllThreads !== "boolean") return json(res, 400, { error: "applyToAllThreads must be true or false" });
+        if (body.applyToAllThreads && body.approvalMode !== "full") {
+          return json(res, 400, { error: "applyToAllThreads goes with approvalMode full" });
+        }
+      }
+      if (body.applyToAllThreads === true && existingBot) {
+        const threads = store.tasks(existingBot.id);
+        if (threads.some((task) => threadBusy(existingBot.id, task.threadId))) {
+          return json(res, 409, { error: "stop this bot's turns before changing its approval level" });
+        }
+        if (threads.some((task) => !supportsApprovalMode(task.modelSelection ?? targetSelection, "full"))) {
+          return json(res, 400, { error: "Every thread's provider must support Full access" });
+        }
       }
       // "Auto on this Mac" hands a bot the user's real session, so the grant
       // must prove a human saw the warning. The desktop dialog is the only
@@ -23052,6 +22201,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         bot = store.patchBot(m[1], patch);
       }
       if (!bot) return json(res, 404, { error: "no such bot" });
+      // The same one durable write the desktop's all-threads grant commits.
+      if (body.applyToAllThreads === true) store.setAllThreadApprovalMode(bot.id, "full");
       if (body.memoryUpkeep === false || body.memoryEnabled === false) memoryUpkeep.dropBot(bot.id);
       // A defined Works on is the newest explicit choice: this bot's
       // auto-recorded pins that now point elsewhere give way immediately, so
@@ -24286,11 +23437,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (profile.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
         if (threadBusy(profile.id, m[2])) return json(res, 409, { error: "stop this thread before changing its approval mode" });
         const nextMode = approvalModeFor({ ...profile, approvalGrant: undefined });
-        // Full and Custom never travel over the bot-reachable HTTP surface.
-        // The desktop's private channel copies those levels, and it is also
-        // the only way to leave Custom.
-        if (nextMode === "full" || nextMode === "custom") {
-          return json(res, 403, { error: "Refresh Full or Custom access from the packaged desktop app" });
+        // Custom never travels over the bot-reachable HTTP surface: the
+        // desktop's private channel copies it, and it is also the only way
+        // to leave Custom. Full is copied here like any other level.
+        if (nextMode === "custom") {
+          return json(res, 403, { error: "Refresh Custom access from the packaged desktop app" });
+        }
+        if (nextMode === "full" && HOSTED_WORKSPACE && approvalModeFor(current) !== "full") {
+          return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
         }
         if (approvalModeFor(current) === "custom") {
           return json(res, 403, { error: "Leaving Custom approval requires the packaged desktop app" });
@@ -24305,7 +23459,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const widensMode = approvalRank[nextMode] > approvalRank[approvalModeFor(current)];
         const nextAllow = profile.alwaysAllow ?? [];
         const widensAllow = nextAllow.some((key) => !(current.alwaysAllow ?? []).includes(key));
-        if ((widensMode || widensAllow) && auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin && store.bots.some((bot) => bot.busy)) {
+        // Full has no OMB-side guard (owner decision, Oct 12), here as on
+        // the bot and thread routes; the narrower levels keep this one.
+        if (nextMode !== "full" && (widensMode || widensAllow) && auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin && store.bots.some((bot) => bot.busy)) {
           return json(res, 409, { error: "Change approval mode from the app or a paired device while bots are working." });
         }
         const task = store.refreshTaskPermissions(profile.id, m[2]);
@@ -24368,10 +23524,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (body.approvalMode !== undefined || body.autoApprove !== undefined) {
         if (body.autoApprove !== undefined && typeof body.autoApprove !== "boolean") return json(res, 400, { error: "autoApprove must be a boolean" });
-        const mode = body.approvalMode ?? (body.autoApprove ? "auto" : "ask");
-        // Elevated modes still require the trusted desktop transition. A
-        // thread settings PATCH cannot manufacture that grant.
-        if (mode !== "ask" && mode !== "auto" && mode !== "edits") return json(res, 403, { error: "Full and Custom access require trusted desktop confirmation" });
+        const mode: unknown = body.approvalMode ?? (body.autoApprove ? "auto" : "ask");
+        if (!isApprovalMode(mode)) return json(res, 400, { error: "approvalMode must be ask, edits, auto, full, or custom" });
+        // Full applies here like any other level. Custom still needs the
+        // trusted desktop transition: a thread PATCH cannot manufacture it.
+        if (mode === "custom") return json(res, 403, { error: "Custom access requires trusted desktop confirmation" });
+        if (mode === "full" && HOSTED_WORKSPACE && approvalModeFor(current) !== "full") return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
         if (approvalModeFor(current) === "custom") return json(res, 403, { error: "Leaving Custom approval requires confirmation in the packaged desktop app" });
         if (!supportsApprovalMode(patch.modelSelection ?? current.modelSelection, mode)) {
           return json(res, 400, { error: "This provider does not support the selected approval level" });
@@ -26072,7 +25230,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           broadcast({ kind: "config", ...status });
           if (patch.threads !== undefined) {
             drainQueuedSends();
-            drainDelegationWakes();
             drainConnectorResumes();
             drainComputerResumes();
             drainSecretResumes();
@@ -26666,6 +25823,9 @@ setInterval(sweepThreadEventLogsNow, THREAD_LOG_RETENTION_SWEEP_MS).unref();
 // If we died after that point, its outcome is unknown: recover the user's words
 // and a review notice, never hand them to a model for a second execution.
 for (const row of chatFollowups()) {
+  // The aside lane is gone: a peer's words reach a teammate through the
+  // runtime now. A row it left behind is dropped, never run.
+  if (row.kind === "aside") { settleChatFollowups([row.id], null); continue; }
   if (row.status !== "dispatching" && row.status !== "interrupted") continue;
   const owned = row.kind === "channel"
     ? Boolean(store.groupByThread(row.threadId)?.id === row.ownerId)
@@ -26674,18 +25834,10 @@ for (const row of chatFollowups()) {
   settleChatFollowups([row.id], "interrupted");
   const messages = store.messagesFor(row.threadId);
   const recovered = messages.find((message) => message.queueId === row.id && message.role === "user") ?? store.appendMessage(row.threadId, {
-    // Aside rows recover enveloped: the words may already have run mid-turn,
-    // and the recovered line must keep saying whose context it was.
-    role: "user", kind: "text", text: row.kind === "aside" ? row.payload.prompt ?? row.payload.text : row.payload.text, replyToId: row.payload.replyToId,
+    role: "user", kind: "text", text: row.payload.text, replyToId: row.payload.replyToId,
     sendId: row.payload.sendId, queueId: row.id, sender: row.payload.sender,
     ...(row.kind === "channel" ? { channelMode: row.payload.mode, via: row.payload.via } : {}),
     ...(row.kind === "bot" ? spokenLineFields(row.payload.via, row.payload.callId) : {}),
-    ...(row.kind === "aside" ? {
-      aside: true,
-      peerAsk: row.payload.aside
-        ? { botId: row.payload.aside.fromBotId, name: row.payload.aside.fromBotName, ...(row.payload.aside.unattended ? { unattended: true } : {}) }
-        : undefined,
-    } : {}),
   });
   // Nor as a message a resumed session has not seen: count it as handed.
   const recoveredTask = row.kind !== "channel" ? store.taskByThread(row.ownerId, row.threadId) : undefined;
@@ -26704,7 +25856,6 @@ for (const row of chatFollowups()) {
   settleChatFollowups([row.id], null);
 }
 restoreSteeredMessages();
-restoreAsideMessages(store);
 restoreChannelMessages();
 
 // Repair known auto pins that conflict with Works on before dispatch starts.
@@ -26726,9 +25877,9 @@ server.listen(PORT, "127.0.0.1", async () => {
   followupsReady = true;
   drainQueuedSends();
   drainQueuedChannelSends();
-  // The work below wakes delegators, and a woken delegator keeps its session
-  // only on an engine that records what it was handed, which that read finds
-  // out: it starts once the read is done.
+  // The runtime's restart policy resumes requesters below, and a resumed
+  // requester keeps its session only on an engine that records what it was
+  // handed, which that read finds out: it starts once the read is done.
   if (enginesRead) {
     await enginesRead;
     if (companyShutdown) return;
@@ -26736,23 +25887,10 @@ server.listen(PORT, "127.0.0.1", async () => {
   // Startup work uses the same turn dispatcher and local tool endpoint as
   // ordinary chat. Start only once every registry is initialized and the
   // endpoint is listening; earlier dispatch can hit uninitialized bindings.
+  // Hand-offs a previous process left queued, running or waiting are the
+  // runtime's (docs/runtime-contract.md §5): its first tick dispatches them.
   routines!.start();
   memoryUpkeep.start();
-  const leftover = pendingThreads();
-  if (leftover.length) console.log(`delegations: ${leftover.length} thread(s) with queued handoffs from a previous run — draining`);
-  for (const threadId of leftover) {
-    const run = routines!.runForThread(threadId);
-    // A person can reuse a completed run's task for unrelated work. Only
-    // discard the old run's handoffs, not a later user's persisted queue.
-    const reused = run?.finishedAt !== undefined && store.botByThread(threadId) &&
-      store.activePath(threadId).some((message) => message.role === "user" && message.at > run.finishedAt!);
-    if (run && !["running", "waiting"].includes(run.status) && !reused) discardDelegations(commsBus, threadId);
-    else drainThreadDelegations(threadId);
-  }
-  // After the boot drain, not before it: that drain already expires stale
-  // leftovers, and a sweep ahead of it would wake delegators of stopped
-  // routine runs whose handoffs the loop above discards instead.
-  setInterval(expireDelegationsNow, DELEGATION_SWEEP_MS).unref();
 });
 
 // A second listener for `openmausbot serve --tunnel` (server/tunnel.ts): the

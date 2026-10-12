@@ -113,7 +113,7 @@ export class Runtime {
         if (n.status === "needs_input") {
           this.store.update(n, { kind: "restart_reconciled", at: now, detail: "needs_input: parked again" });
           this.touch(n);
-          this.safe("park", () => this.runner.park(n, n.question ?? ""));
+          this.safe("park", () => this.runner.park(n, n.question ?? "", true));
           continue;
         }
         if (n.status !== "running") continue;
@@ -191,6 +191,7 @@ export class Runtime {
     if (req.parentId && !parent) return refuse("The requesting turn no longer exists");
     if (parent && parent.status !== "running") return refuse("The requesting turn is not running");
     const brief = clip(req.brief, BRIEF_MAX);
+    const mode = req.mode ?? "work";
     const lineage = parent ? path(this.store, parent) : [];
     const root = lineage[0];
     const target = req.assignee;
@@ -201,8 +202,9 @@ export class Runtime {
     }
     if (parent) {
       // The same brief to the same teammate in the same place under one
-      // parent is one request; only rework runs a finished one again.
-      const existing = this.store.children(parent.id).findLast(c => c.brief === brief && c.assignee.botId === target.botId &&
+      // parent is one request; only rework runs a finished one again. A
+      // question (consult) or a notice with the same words is another request.
+      const existing = this.store.children(parent.id).findLast(c => c.brief === brief && c.mode === mode && c.assignee.botId === target.botId &&
         c.assignee.destination.threadId === target.destination.threadId && c.assignee.destination.groupId === target.destination.groupId);
       if (existing && !(req.rework && isTerminal(existing))) return { ok: true, assignment: existing, duplicate: true };
       if (parent.depth + 1 > this.limits.depth) return refuse(`Assignment depth limit reached (${this.limits.depth})`);
@@ -214,7 +216,6 @@ export class Runtime {
     const chiefLineage = Boolean(req.requester.chief) || lineage.some(a => a.requester.chief === true);
     const { level, source } = this.level({ own: req.levels.own, chief: req.levels.chief, origin: (root ?? req).origin.kind, chiefLineage,
       driverKind: req.driverKind });
-    const mode = req.mode ?? "work";
     const node: Assignment = {
       id: randomUUID(), rootId: parent ? parent.rootId : "", ...(parent ? { parentId: parent.id } : {}), depth: parent ? parent.depth + 1 : 0,
       // The origin is written once at the root and copied down.
