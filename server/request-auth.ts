@@ -344,6 +344,7 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["POST"], path: /^\/api\/groups$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/messages$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/interrupt$/ },
+  { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/members\/[\w-]+\/compact$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/read$/ },
   { methods: ["DELETE"], path: /^\/api\/groups\/[\w-]+\/queue\/[\w-]+$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/tasks$/ },

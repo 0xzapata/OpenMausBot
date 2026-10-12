@@ -20,6 +20,7 @@ import { selectReplay, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./contex
 import { draftSummary, foldPoint } from "./compaction-summary.ts";
 import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
+import { RoomContextTracker } from "./room-context.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -4730,6 +4731,8 @@ type GroupTurnOperation = {
 // lifetime so polling clients cannot mistake a handoff for completion.
 const groupTurnOperations = new Map<string, Set<GroupTurnOperation>>();
 const groupSpeakers = new Map<string, { botId: string; name: string; color: string }>();
+/** Each bot's context in each room, and its "Compact now" (room-context.ts). */
+const roomMemberContexts = new RoomContextTracker();
 
 function groupThreadIsWorking(groupId: string, threadId: string): boolean {
   if (groupSpeakers.has(threadId)) return true;
@@ -5432,6 +5435,7 @@ function publicGroupState(record: GroupRecord): WireGroup {
     // apart from a partial patch that did not mention the field.
     turnTimeoutMinutes: record.turnTimeoutMinutes ?? null,
     usage: usage ?? null,
+    memberContext: roomMemberContexts.forThread(group.threadId) ?? null,
     busyBotId: currentSpeaker?.botId ?? (activeWorking ? record.busyBotId : null),
     // The room works while any of its tasks does, a background goal's too:
     // the sidebar, a call and Stop read this.
@@ -8721,6 +8725,8 @@ bus.subscribe((event: RuntimeEvent) => {
         const tokens = event.usage ?? lastReported;
         const speakingBot = store.bot(speaker.botId);
         const selection = speakingBot?.modelSelection;
+        roomMemberContexts.record(event.threadId, speaker.botId, lastContext, selection?.model,
+          selection ? registry.get(selection.instanceId)?.models : undefined);
         const promptBytes = turnPromptBytes.get(event.threadId);
         turnPromptBytes.delete(event.threadId);
         bookTurnUsage({
@@ -13691,7 +13697,21 @@ async function runGroupMemberTurn(
     // was sent with, a Chief's delegated level included (request.opened).
     const turnApprovalMode = roomTurnApprovalMode(readyBot, threadId, orchestration);
     if (!done) releaseTurnLevel = roomTurnLevels.dispatched(threadId, readyBot.id, turnApprovalMode);
+    // A bot whose context in this room is nearly full (or that the person
+    // asked to compact) starts this turn on a fresh provider session; the
+    // room's recent transcript below is what every turn carries anyway.
+    const roomReset = roomMemberContexts.takeReset(threadId, readyBot.id, cfg.context);
+    if (roomReset) {
+      store.appendMessage(threadId, {
+        role: "bot", kind: "activity", from: { botId: readyBot.id, name: readyBot.name, color: readyBot.color },
+        tool: { name: roomReset.reason === "requested"
+          ? `compacted ${readyBot.name}'s context (${roomReset.percent}% full): fresh session with the room's recent messages`
+          : `${readyBot.name}'s context was ${roomReset.percent}% full: compacted to a fresh session with the room's recent messages`, ok: true },
+      });
+      broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
+    }
     guardTurnDispatch(instance.adapter.sendTurn({
+        ...(roomReset ? { sessionReset: true } : {}),
         threadId,
         botId: readyBot.id,
         text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text)),
@@ -21100,6 +21120,23 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // is now drainable must not strand behind a missed settle.
       if (after && !groupIsWorking(after)) drainQueuedChannelSends();
       return json(res, 200, { ok: true, queued: true, threadId: targetThreadId });
+    }
+    // "Compact now" for one member of a room: its next turn in the room's
+    // active thread starts on a fresh provider session (room-context.ts).
+    // Nothing runs now and the transcript is untouched.
+    m = path.match(/^\/api\/groups\/([\w-]+)\/members\/([\w-]+)\/compact$/);
+    if (m && method === "POST") {
+      const group = store.group(m[1]);
+      if (!group) return json(res, 404, { error: "no such room" });
+      if (!group.memberIds.includes(m[2])) return json(res, 404, { error: "that bot is not in this room" });
+      const notYours = cloudThreadRefusal(auth, group.threadId);
+      if (notYours) return json(res, 403, { error: notYours });
+      if (!roomMemberContexts.request(group.threadId, m[2])) {
+        return json(res, 409, { error: "this bot has no measured context in this room yet" });
+      }
+      const visible = publicGroupState(store.group(group.id) ?? group);
+      broadcast({ kind: "group", group: visible });
+      return json(res, 202, { ok: true, threadId: group.threadId, group: visible });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
     if (m && method === "POST") {
