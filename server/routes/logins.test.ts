@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { json, readBody } from "../harness/http.ts";
 import { LoginStore } from "../login-store.ts";
+import { OnePasswordLogins, sdkOnePasswordClient } from "../onepassword.ts";
+import { fakeOnePasswordSdk } from "../testing/fake-onepassword.ts";
 import { requiredScope, type RequestAuth } from "../request-auth.ts";
 import { createLoginRoutes, LOGIN_ERRORS } from "./logins.ts";
 import { dispatchRoutes } from "./table.ts";
@@ -17,6 +19,8 @@ import { dispatchRoutes } from "./table.ts";
 const PASSWORD = "fake-Settings-pass-1";
 const NEW_PASSWORD = "fake-Settings-pass-2";
 const KEY = "JBSWY3DPEHPK3PXP";
+const TOKEN = "ops_fake-route-token";
+const VAULT_PASSWORD = "fake-vault-pass";
 
 const servers: Server[] = [];
 const dirs: string[] = [];
@@ -29,9 +33,20 @@ async function serve() {
   const dir = mkdtempSync(join(tmpdir(), "omb-login-routes-"));
   dirs.push(dir);
   const store = new LoginStore({ dataDir: dir });
+  const { sdk } = fakeOnePasswordSdk({ token: TOKEN, vaults: { v1: { title: "Shared with OMB", items: [
+    { id: "i1", title: "Example", urls: ["https://vault.example.com"], username: "vault-user", password: VAULT_PASSWORD },
+  ] } } });
+  const onePassword = new OnePasswordLogins({ token: () => store.onePasswordToken(), connect: (token) => sdkOnePasswordClient(sdk, token, "0.0.0") });
   const routes = [createLoginRoutes({
     list: () => store.list(), create: (input) => store.create(input), update: (id, patch) => store.update(id, patch),
     remove: (id) => store.remove(id), botExists: (id) => ["pepper", "quill"].includes(id),
+    onePassword: {
+      status: () => onePassword.status(),
+      list: () => onePassword.list(),
+      connect: async (token) => { const status = await onePassword.refresh(token); store.setOnePasswordToken(token); return status; },
+      refresh: () => onePassword.refresh(),
+      disconnect: () => { store.setOnePasswordToken(null); onePassword.clear(); return onePassword.status(); },
+    },
   })];
   const answers: string[] = [];
   const server = createServer(async (req, res) => {
@@ -66,7 +81,7 @@ describe("Settings → Logins routes", () => {
 
     const listed = await call("GET", "/api/logins");
     expect(listed).toMatchObject({ status: 200, cache: "no-store" });
-    expect(listed.body.logins).toEqual([added.body.login]);
+    expect(listed.body).toEqual({ logins: [added.body.login], onePassword: { connected: false } });
 
     expect((await call("PATCH", `/api/logins/${id}`, { password: NEW_PASSWORD, bots: "all" })).body.login).toMatchObject({ bots: "all", hasTotp: true });
     expect(store.get(id)?.password).toBe(NEW_PASSWORD);
@@ -96,8 +111,36 @@ describe("Settings → Logins routes", () => {
     expect((await call("GET", "/api/logins")).body.logins).toEqual([]);
   });
 
+  it("connects 1Password with a token it checks first, lists its logins read-only, and never returns the token", async () => {
+    const { store, call, answers } = await serve();
+    expect((await call("GET", "/api/logins")).body).toEqual({ logins: [], onePassword: { connected: false } });
+    for (const token of ["", "ops_ has spaces", "ops_wrong-fake-token"]) {
+      expect((await call("POST", "/api/logins/1password", { token })).status, token).toBe(400);
+    }
+    expect((await call("POST", "/api/logins/1password", { token: "ops_wrong-fake-token" })).body.error).toBe("1Password did not accept the token. Paste a service account token (it starts with ops_), or make a new one.");
+    expect(store.onePasswordToken()).toBeNull();
+
+    expect(await call("POST", "/api/logins/1password", { token: TOKEN })).toMatchObject({ status: 200, body: { onePassword: { connected: true, vaults: ["Shared with OMB"], items: 1 } } });
+    expect(store.onePasswordToken()).toBe(TOKEN);
+    const listed = await call("GET", "/api/logins");
+    expect(listed.body.logins).toEqual([expect.objectContaining({ host: "vault.example.com", username: "vault-user", source: "1password", bots: "all" })]);
+    const id = listed.body.logins[0].id as string;
+    // Read-only here: it is changed in 1Password.
+    for (const method of ["PATCH", "DELETE"]) {
+      expect(await call(method, `/api/logins/${encodeURIComponent(id)}`, method === "PATCH" ? { password: "fake-x-pass" } : undefined))
+        .toMatchObject({ status: 409, body: { error: LOGIN_ERRORS.readOnly } });
+    }
+    expect((await call("POST", "/api/logins/1password/refresh", {})).body.onePassword).toMatchObject({ connected: true, items: 1 });
+
+    expect(await call("DELETE", "/api/logins/1password")).toMatchObject({ status: 200, body: { onePassword: { connected: false } } });
+    expect(store.onePasswordToken()).toBeNull();
+    expect((await call("GET", "/api/logins")).body.logins).toEqual([]);
+    for (const answer of answers) for (const secret of [TOKEN, VAULT_PASSWORD]) expect(answer).not.toContain(secret);
+  });
+
   it("takes changes as JSON only, so another page's form cannot post one", async () => {
     const { call } = await serve();
     expect((await call("POST", "/api/logins", { site: "example.com", password: PASSWORD }, "text/plain")).status).toBe(415);
+    expect((await call("POST", "/api/logins/1password", { token: TOKEN }, "text/plain")).status).toBe(415);
   });
 });

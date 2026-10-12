@@ -483,6 +483,8 @@ import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BROWSER_CONTROL_REFUSAL, BrowserRuntime, attachesToChrome, browserRuntimeEnv } from "./browser-runtime.ts";
 import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { HeldSecrets, LoginStore } from "./login-store.ts";
+import { OnePasswordLogins, sdkOnePasswordClient, type OnePasswordSdk } from "./onepassword.ts";
+import { nativeRequire } from "./data/engine.ts";
 import { fillLogin, streamInsertText, type FillCandidate } from "./login-fill.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
@@ -814,6 +816,19 @@ const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allow
 const logins = new LoginStore({ dataDir: DATA_DIR });
 const heldSecrets = new HeldSecrets(logins);
 addHeldSecretScrubber((text) => heldSecrets.scrub(text));
+// 1Password, once connected in Settings → Logins: its Login items join the
+// same fill path. The SDK is required from the staged tree on first use
+// (server/onepassword.ts), never at boot without a token.
+const onePassword = new OnePasswordLogins({
+  token: () => logins.onePasswordToken(),
+  connect: async (token) => {
+    let sdk: OnePasswordSdk;
+    try { sdk = nativeRequire()("@1password/sdk") as OnePasswordSdk; }
+    catch { throw new Error("1Password is not available in this build of OpenMausBot."); }
+    return sdkOnePasswordClient(sdk, token, serverVersion());
+  },
+});
+if (logins.onePasswordToken()) void onePassword.refresh();
 const SESSION_COOKIE = sessionCookieName(PORT, ENVIRONMENT_ID);
 const HOSTED_WORKSPACE = hostedWorkspaceConfigured();
 let workspaceAccess: WorkspaceAccess | null = null;
@@ -16061,18 +16076,24 @@ function browserPromptFor(botId: string, agentsMounted: boolean): string {
   return BUILT_IN_BROWSER_SYSTEM_PROMPT + (agentsMounted ? savedLoginsPrompt(availableLogins(botId)) : "");
 }
 
-/** Every host and username this bot has a login for. */
+/** Every host and username this bot has a login for: its saved logins and
+ * 1Password's (as last read). */
 function availableLogins(botId: string): Array<{ host: string; username: string }> {
-  return logins.hostsFor(botId);
+  return [...logins.hostsFor(botId), ...onePassword.hosts()];
 }
 
-/** The logins this bot may use on exactly this host, secrets read only
- * when one is filled. */
-function loginCandidates(botId: string, host: string): FillCandidate[] {
-  return logins.usableFor(host, botId).map((login) => ({
-    id: login.id, host: login.host, username: login.username, source: login.source,
-    secrets: async () => ({ password: login.password, totp: login.totp ?? null }),
-  }));
+/** The logins this bot may use on exactly this host, saved here or in
+ * 1Password: one fill path, two sources. Secrets are read only when one is
+ * filled. */
+async function loginCandidates(botId: string, host: string): Promise<FillCandidate[]> {
+  await onePassword.fresh();
+  return [
+    ...logins.usableFor(host, botId).map((login): FillCandidate => ({
+      id: login.id, host: login.host, username: login.username, source: login.source,
+      secrets: async () => ({ password: login.password, totp: login.totp ?? null }),
+    })),
+    ...onePassword.candidates(host),
+  ];
 }
 
 /** Where fill_login cannot reach yet, in the words the panel uses. */
@@ -16112,14 +16133,17 @@ async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, 
   try {
     const outcome = await browserRuntime.withAgentAction(session, () => fillLogin({
       username,
-      candidates: async (host) => loginCandidates(bot.id, host),
+      candidates: (host) => loginCandidates(bot.id, host),
       available: async () => availableLogins(bot.id),
     }, {
       engine: (args) => inRunningBrowser(spec.command, env, args),
       insertText: streamInsertText,
       remember: (value, kind) => heldSecrets.remember(value, kind),
     }));
-    if (outcome.ok && outcome.loginId) logins.markUsed(outcome.loginId);
+    if (outcome.ok && outcome.loginId) {
+      logins.markUsed(outcome.loginId);
+      onePassword.markUsed(outcome.loginId);
+    }
     return { ok: outcome.ok, text: outcome.text };
   } catch (error) {
     if (error instanceof Error && error.message === BROWSER_CONTROL_REFUSAL) {
@@ -16913,6 +16937,21 @@ ROUTES.push(createLoginRoutes({
   update: (id, patch) => logins.update(id, patch),
   remove: (id) => logins.remove(id),
   botExists: (id) => Boolean(store.bot(id)),
+  onePassword: {
+    status: () => onePassword.status(),
+    list: () => { void onePassword.fresh(); return onePassword.list(); },
+    connect: async (token) => {
+      const status = await onePassword.refresh(token);
+      logins.setOnePasswordToken(token);
+      return status;
+    },
+    refresh: () => onePassword.refresh(),
+    disconnect: () => {
+      logins.setOnePasswordToken(null);
+      onePassword.clear();
+      return onePassword.status();
+    },
+  },
 }));
 // The usage ledger (JSON and CSV). Admin scope stays in server/request-auth.ts.
 ROUTES.push(createUsageRoutes({

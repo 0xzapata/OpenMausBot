@@ -1,4 +1,4 @@
-import type { LoginBots, LoginSummary } from "../../shared/logins";
+import type { LoginBots, LoginSummary, OnePasswordStatus } from "../../shared/logins";
 import type { ComputerHelpRef } from "../../shared/wire";
 import { api } from "@/state/store";
 
@@ -10,8 +10,23 @@ export interface LoginFieldsInput {
   totp: string;
 }
 
-export async function listLogins(): Promise<LoginSummary[]> {
-  return (await api<{ logins: LoginSummary[] }>("/api/logins")).logins;
+/** Every login, saved here or in 1Password, and whether 1Password is connected. */
+export async function listLogins(): Promise<{ logins: LoginSummary[]; onePassword: OnePasswordStatus }> {
+  return await api<{ logins: LoginSummary[]; onePassword: OnePasswordStatus }>("/api/logins");
+}
+
+/** Connect 1Password with a service account token; the server checks it
+ * reaches 1Password before keeping it, and never sends it back. */
+export async function connectOnePassword(token: string): Promise<OnePasswordStatus> {
+  return (await api<{ onePassword: OnePasswordStatus }>("/api/logins/1password", { method: "POST", body: JSON.stringify({ token }) })).onePassword;
+}
+
+export async function refreshOnePassword(): Promise<OnePasswordStatus> {
+  return (await api<{ onePassword: OnePasswordStatus }>("/api/logins/1password/refresh", { method: "POST", body: "{}" })).onePassword;
+}
+
+export async function disconnectOnePassword(): Promise<OnePasswordStatus> {
+  return (await api<{ onePassword: OnePasswordStatus }>("/api/logins/1password", { method: "DELETE" })).onePassword;
 }
 
 export async function addLogin(site: string, fields: LoginFieldsInput, bots: LoginBots): Promise<LoginSummary> {

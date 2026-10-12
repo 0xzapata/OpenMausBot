@@ -6559,6 +6559,7 @@ describe("harness HTTP API", () => {
         host: "accounts.example.com", username: "alice@example.com", hasTotp: true, source: "card", bots: [bot.id],
       })]);
       loginId = listed.body.logins[0].id;
+      expect(listed.body.onePassword).toEqual({ connected: false });
 
       // Nothing the server answered, stored or put in the transcript holds the secrets.
       const transcript = JSON.stringify((await api("GET", `/api/threads/${bot.threadId}/messages`)).body);
