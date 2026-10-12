@@ -77,7 +77,9 @@ it.each(["already busy", "became busy during approval"])(
       const [card] = await sourceCards();
       expect(card.card.tool).toBe("ask_bot");
       expect(card.card.answered).toBeFalsy();
-      expect(readHandoffs(session.info.dataDir)).toEqual([]);
+      // Nothing handed out yet: the only row, when the peer is busy, is the
+      // root of its own running turn (every turn is one, contract §10 PR 4).
+      expect(readHandoffs(session.info.dataDir).filter(node => node.parentId || node.botId !== peer.id || node.threadId !== peerThread)).toEqual([]);
       if (scenario !== "already busy") await occupy();
       await approve(card);
       const outcome = await pendingAsk;

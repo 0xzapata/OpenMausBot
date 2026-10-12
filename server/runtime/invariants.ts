@@ -19,6 +19,7 @@ function replayStep(event: AssignmentEvent): Status | undefined {
     case "started": return "running";
     case "parked": return "needs_input";
     case "answered": return "queued";
+    case "continued": return "queued";
     case "waiting": return "waiting";
     case "resume_due": return "resume";
     case "refused": return "failed";
