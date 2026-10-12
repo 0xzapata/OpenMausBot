@@ -1,11 +1,13 @@
 // What a requester learns when the turn it assigned ends without completing.
 // The requester (a Chief of Staff, a lead) decides what happens next: send
 // what is left, send it again, or tell the person. So it is told the cause in
-// the runtime's own words — the step cap, a stall, a provider reload, a quota,
-// an error — what the turn did before it stopped, where the step cap's
-// handoff lies, and the turn's last message whole. A bare "error" or "The
-// coordinated turn was interrupted" left it guessing, and a guess re-sends the
-// whole assignment.
+// the runtime's own words — a stall, a provider reload, a quota, an error —
+// what the turn did before it stopped, and the turn's last message whole. A
+// bare "error" or "The coordinated turn was interrupted" left it guessing,
+// and a guess re-sends the whole assignment. A step cap is not an end: the
+// same turn continues in place from the handoff the driver wrote
+// (docs/runtime-contract.md §10 PR 4), so TurnStops keeps that path for the
+// continuation and no account asks anyone to assign what is left.
 //
 // The harness (index.ts) folds runtime events into TurnStops, notes there why
 // it stops a turn itself, and reads it when a coordinated or delegated turn
@@ -28,7 +30,8 @@ export interface TurnStop {
    * runtime.error, or a provider's own error sent as a reply (a usage limit,
    * an overload: RuntimeEventBase.synthetic). */
   error?: string;
-  /** The step cap's handoff: every step the turn ran, in order. */
+  /** The step cap's handoff: every step the turn ran, in order. The same
+   * turn continues from it in place (the runtime's `continue`). */
   handoffPath?: string;
 }
 
@@ -38,15 +41,6 @@ export interface TurnStop {
  * it settles, so an earlier turn's words never stand in. */
 export class TurnStops {
   readonly #byThread = new Map<string, TurnStop>();
-  readonly #handoffOwed: (threadId: string) => boolean;
-
-  /** `handoffOwed`: whether the turn on a thread owes its result to a
-   * requester, which then picks the work up from the step cap's handoff. A
-   * turn nobody awaits is continued from it on its own (turn-continuation.ts),
-   * so its account never asks anyone to assign the rest. */
-  constructor(options: { handoffOwed?: (threadId: string) => boolean } = {}) {
-    this.#handoffOwed = options.handoffOwed ?? (() => true);
-  }
 
   note(event: RuntimeEvent): void {
     if (event.type === "turn.started") {
@@ -55,8 +49,7 @@ export class TurnStops {
     }
     const error = event.type === "runtime.error" ? event.message
       : event.type === "item.completed" && event.itemType === "assistant_text" && event.synthetic ? event.text : undefined;
-    if (event.type === "cap.exhausted" ? !this.#handoffOwed(event.threadId)
-      : error === undefined || errorTranscript(error).kind !== "error") return;
+    if (event.type !== "cap.exhausted" && (error === undefined || errorTranscript(error).kind !== "error")) return;
     const stop = this.#turn(event.threadId, event.turnId);
     if (event.type === "cap.exhausted") stop.handoffPath = event.handoffPath;
     else stop.error = error;
@@ -88,7 +81,7 @@ export class TurnStops {
 
 /** The requester's account of a turn that ended without completing. The
  * cause comes first, since a result chip shows only the start; then what the
- * turn did before it stopped, the handoff, and its last message, unabridged:
+ * turn did before it stopped, and its last message, unabridged:
  * a report written before a late failure is still the teammate's report. It
  * is quoted, as data: the account reaches prompts the harness speaks in (a
  * delegator's wake), where a teammate's words must never pass for its lines. */
@@ -98,7 +91,6 @@ export function stoppedTurnOutcome(input: {
   activities: readonly Message[];
   turnId?: string;
   said?: string;
-  handoffPath?: string;
 }): string {
   const parts = [sentence(clip(input.reason, REASON_CHARS))];
   if (input.turnId) {
@@ -110,7 +102,6 @@ export function stoppedTurnOutcome(input: {
       ? `Before it stopped it made ${digest.toolCalls} tool call${digest.toolCalls === 1 ? "" : "s"}: ${digestTools(digest)}.`
       : "No tool calls were seen before it stopped.");
   }
-  if (input.handoffPath) parts.push(`Every step it took is listed in ${input.handoffPath}; to finish, assign what is left and point to that file.`);
   const said = input.said?.trim();
   return said ? `${parts.join(" ")}\nIts last message, quoted: ${JSON.stringify(said)}` : parts.join(" ");
 }

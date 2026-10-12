@@ -89,8 +89,10 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
   launch?: { integration: AgentsIntegration; system: string; evidence?: Record<string, unknown> },
   progress?: (text: string) => void): Promise<string> {
   const arg = (flag: string) => argv[argv.indexOf(flag) + 1];
-  const integration = launch?.integration ?? Object.values(JSON.parse(readAtLaunch(arg("--mcp-config"))).mcpServers as Record<string, AgentsIntegration>)
-    .find(s => s.env?.OMB_BOT_ID);
+  // The agents server, by the token only it carries: a connected-apps bridge
+  // mounted beside it names the same bot (OMB_BOT_ID) and relays to Composio.
+  const mounted = launch ? [] : Object.values(JSON.parse(readAtLaunch(arg("--mcp-config"))).mcpServers as Record<string, AgentsIntegration>);
+  const integration = launch?.integration ?? mounted.find(s => s.env?.OMB_COMMS_TOKEN) ?? mounted.find(s => s.env?.OMB_BOT_ID);
   // A depth-capped delegated turn mounts no agents server: answer from the prompt alone.
   if (!integration) {
     // Nothing in such a launch's argv says which bot it is — only the task

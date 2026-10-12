@@ -182,3 +182,32 @@ describe("runtime store: request marks", () => {
     expect(() => store.get("bad")).toThrow(/does not match the record schema/);
   });
 });
+
+describe("runtime store: a root's cards and continuation", () => {
+  it("round-trips cards and continuation whole, omits them when unset, and refuses the wrong shapes", () => {
+    const store = open();
+    const parked = assignment("parked", { status: "needs_input", question: "Connect GitHub", cards: ["msg-1", "msg-2"] });
+    store.insert(parked, { kind: "parked", at: 1_000 });
+    expect(store.get("parked")).toEqual(parked);
+    expect(store.get("parked")?.cards).toEqual(["msg-1", "msg-2"]);
+    const continued = assignment("continued", { continuation: { note: "The step cap was reached.", handoffPath: "/handoffs/1.md", count: 2 } });
+    store.insert(continued, { kind: "continued", at: 2_000 });
+    expect(store.get("continued")).toEqual(continued);
+    const bare = assignment("bare", { continuation: { note: "A seat was not free.", count: 1 } });
+    store.insert(bare, { kind: "continued", at: 3_000 });
+    expect(store.get("bare")?.continuation).toEqual({ note: "A seat was not free.", count: 1 });
+    expect("handoffPath" in store.get("bare")!.continuation!).toBe(false);
+    const plain = assignment("plain");
+    store.insert(plain, { kind: "enqueued", at: 4_000 });
+    expect("cards" in store.get("plain")!).toBe(false);
+    expect("continuation" in store.get("plain")!).toBe(false);
+    // cleared fields stay cleared on the next read
+    delete parked.cards;
+    store.update(parked);
+    expect("cards" in store.get("parked")!).toBe(false);
+    store.insert(assignment("bad-cards", { cards: "msg-1" as unknown as string[] }), { kind: "enqueued", at: 5_000 });
+    expect(() => store.get("bad-cards")).toThrow(/does not match the record schema/);
+    store.insert(assignment("bad-count", { continuation: { note: "x", count: -1 } }), { kind: "enqueued", at: 6_000 });
+    expect(() => store.get("bad-count")).toThrow(/does not match the record schema/);
+  });
+});

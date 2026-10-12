@@ -40,15 +40,14 @@ describe("TurnStops", () => {
     expect(stops.read("t1", "turn-1")).toEqual({ turnId: "turn-1", error: limit });
   });
 
-  // A turn nobody awaits is continued from its handoff on its own: its
-  // account must not also ask someone to assign the rest (two owners).
-  it("keeps a step cap's handoff only for a turn whose requester picks the work up", () => {
-    const owed = new Set(["t1"]);
-    const stops = new TurnStops({ handoffOwed: (threadId) => owed.has(threadId) });
+  // A step cap continues the same turn in place from its handoff, whoever
+  // started the turn: the path is kept for every thread.
+  it("keeps a step cap's handoff for the turn that continues from it", () => {
+    const stops = new TurnStops();
     stops.note(event({ type: "cap.exhausted", turnId: "turn-1", handoffPath: "/data/handoffs/cap-1.md", reason: "cap" }));
     stops.note(event({ type: "cap.exhausted", threadId: "t2", turnId: "turn-1", handoffPath: "/data/handoffs/cap-2.md", reason: "cap" }));
     expect(stops.read("t1", "turn-1")?.handoffPath).toBe("/data/handoffs/cap-1.md");
-    expect(stops.read("t2", "turn-1")).toBeUndefined();
+    expect(stops.read("t2", "turn-1")?.handoffPath).toBe("/data/handoffs/cap-2.md");
   });
 
   // The harness says why it is stopping a turn before it interrupts it, so
@@ -73,14 +72,14 @@ describe("TurnStops", () => {
 });
 
 describe("stoppedTurnOutcome", () => {
-  it("leads with the cause, then what the turn did and where its handoff is", () => {
+  it("leads with the cause, then what the turn did, and never asks anyone to assign what is left", () => {
     const text = stoppedTurnOutcome({
-      reason: STEP_CAP, turnId: "turn-1", handoffPath: "/data/handoffs/cap-1.md",
+      reason: STEP_CAP, turnId: "turn-1",
       activities: [tool("Bash", true), tool("Bash", false), tool("Read", true), tool("Edit", true, "turn-0")],
     });
     expect(text.startsWith(STEP_CAP)).toBe(true);
     expect(text).toContain("Before it stopped it made 3 tool calls: Bash ×2 (1 failed), Read ×1.");
-    expect(text).toContain("Every step it took is listed in /data/handoffs/cap-1.md; to finish, assign what is left and point to that file.");
+    expect(text).not.toContain("assign what is left");
     expect(text).not.toContain("Edit");
   });
 

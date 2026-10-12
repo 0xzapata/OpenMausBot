@@ -77,6 +77,11 @@ const assignmentSchema = z.object({
   question: z.string().optional(),
   answer: z.string().optional(),
   budgets: z.object({ since: z.number(), requests: z.number(), executions: z.number(), wakes: z.number() }).optional(),
+  // A root parked on the person's cards, and a node that continues in place:
+  // both must come back whole, or a park would lose its cards on the next
+  // read (the schema strips what it does not name).
+  cards: z.array(z.string()).optional(),
+  continuation: z.object({ note: z.string(), handoffPath: z.string().optional(), count: z.number().int().nonnegative() }).optional(),
   approved: z.boolean().optional(),
   batchKey: z.string().optional(),
   version: z.literal(1),

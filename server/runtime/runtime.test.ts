@@ -727,3 +727,171 @@ describe("Runtime: what the host relies on for the new modes and openers", () =>
     invariants(w);
   });
 });
+
+describe("Runtime: a root's later executions (every turn a root)", () => {
+  const cards = { question: "Connect GitHub", cards: ["msg-1", "msg-2"] };
+
+  it("end() with needsInput parks the root with its cards through the store; answer() queues the answered turn; dispatch clears the cards", async () => {
+    const w = world();
+    const root = w.runtime.begin(beginReq());
+    w.runtime.end(root.id, { ok: true, text: "Connect it.", needsInput: cards });
+    expect(w.store.get(root.id)).toMatchObject({ status: "needs_input", question: "Connect GitHub", cards: ["msg-1", "msg-2"], executions: 1 });
+    expect(w.runner.parks).toEqual([{ a: expect.objectContaining({ id: root.id, cards: ["msg-1", "msg-2"] }), question: "Connect GitHub" }]);
+    expect(w.store.inbox({ threadId: "chief-chat" })).toEqual([]);
+    w.runtime.tick();
+    expect(w.runner.runs).toHaveLength(0);
+    expect(w.runtime.answer(root.id, "The user connected GitHub.")).toBe(true);
+    expect(w.store.get(root.id)).toMatchObject({ status: "queued", answer: "The user connected GitHub.", cards: ["msg-1", "msg-2"] });
+    expect(w.store.get(root.id)?.question).toBeUndefined();
+    w.runtime.tick();
+    expect(w.runner.runs).toHaveLength(1);
+    expect(w.runner.runs[0]!.input).toMatchObject({ turn: "answered", resumed: true, restartNote: "", answer: "The user connected GitHub.", level: "auto", mode: "work" });
+    expect(w.runner.runs[0]!.a.cards).toBeUndefined();
+    expect(w.store.get(root.id)?.cards).toBeUndefined();
+    await flush();
+    expect(w.store.get(root.id)).toMatchObject({ status: "completed", result: "chief done", executions: 2 });
+    expect(w.runner.reports).toEqual([]);
+    expect(w.store.events(root.id).map(e => e.kind)).toEqual(["enqueued", "started", "parked", "answered", "admitted", "started", "settled", "reported"]);
+    invariants(w);
+  });
+
+  it("end() with continue queues the continued turn; the count survives the dispatch that consumed the continuation and the budget is not renewed", async () => {
+    const w = world((_a, input) => input.turn === "continued" && input.continuation?.note === "Cap 1."
+      ? { kind: "continue", text: "second half", note: "Cap 2.", handoffPath: "/h/2.md" } : undefined, { executions: 10 });
+    const root = w.runtime.begin(beginReq());
+    expect(w.store.get(root.id)?.budgets?.executions).toBe(1);
+    w.runtime.end(root.id, { ok: true, text: "first half", continue: { note: "Cap 1.", handoffPath: "/h/1.md" }, evidence: { commands: 2 } });
+    expect(w.store.get(root.id)).toMatchObject({ status: "queued", result: "first half", evidence: { commands: 2 },
+      continuation: { note: "Cap 1.", handoffPath: "/h/1.md", count: 1 }, budgets: { executions: 1 } });
+    w.runtime.tick();
+    expect(w.runner.runs[0]!.input).toMatchObject({ turn: "continued", resumed: true, continuation: { note: "Cap 1.", handoffPath: "/h/1.md" } });
+    expect(w.runner.runs[0]!.a.continuation).toBeUndefined();
+    expect(w.store.get(root.id)?.budgets?.executions).toBe(2);
+    await flush();
+    // the second continue counts on from the first, though the row no longer carried it
+    expect(w.store.get(root.id)).toMatchObject({ status: "queued", result: "second half", continuation: { note: "Cap 2.", handoffPath: "/h/2.md", count: 2 }, budgets: { executions: 2 } });
+    w.runtime.tick();
+    expect(w.runner.runs[1]!.input).toMatchObject({ turn: "continued", continuation: { note: "Cap 2.", handoffPath: "/h/2.md" } });
+    await flush();
+    expect(w.store.get(root.id)).toMatchObject({ status: "completed", executions: 3, budgets: { executions: 3 } });
+    expect(w.store.events(root.id).filter(e => e.kind === "continued").map(e => e.detail)).toEqual(["queued: Cap 1.", "queued: Cap 2."]);
+    invariants(w);
+  });
+
+  it("a host that ends a runtime-dispatched root turn through end() is heard once: the run() result that follows is ignored and never settles the next execution", async () => {
+    const w = world(() => "hold");
+    const root = w.runtime.begin(beginReq());
+    w.runtime.end(root.id, { ok: true, text: "", needsInput: cards });
+    w.runtime.answer(root.id, "connected");
+    w.runtime.tick();
+    expect(w.runner.held.has(root.id)).toBe(true);
+    const first = w.runner.runs[0]!;
+    // the host ends that execution itself, with a continue: no abort reaches the turn
+    w.runtime.end(root.id, { ok: true, text: "half", continue: { note: "Cap." } });
+    expect(first.signal.aborted).toBe(false);
+    expect(w.store.get(root.id)).toMatchObject({ status: "queued", executions: 2, continuation: { note: "Cap.", count: 1 } });
+    const staleResolve = w.runner.held.get(root.id)!;
+    // the next execution starts before the first run() promise resolves
+    w.runtime.tick();
+    expect(w.runner.runs).toHaveLength(2);
+    expect(w.store.get(root.id)).toMatchObject({ status: "running", executions: 3 });
+    const second = w.runner.runs[1]!;
+    // the stale result lands: the newer execution is untouched
+    staleResolve({ kind: "completed", text: "stale" });
+    await flush();
+    expect(w.store.get(root.id)).toMatchObject({ status: "running", executions: 3 });
+    expect(second.signal.aborted).toBe(false);
+    // the newer execution settles on its own result
+    await w.runner.release(root.id, { kind: "completed", text: "fresh" });
+    expect(w.store.get(root.id)).toMatchObject({ status: "completed", result: "fresh", executions: 3 });
+    invariants(w);
+  });
+
+  it("end() is for roots only and never throws: a child, an unknown id and a settled root are logged and left as they are", async () => {
+    const w = world(() => "hold");
+    const root = w.runtime.begin(beginReq());
+    const child = ok(w.runtime.enqueue(toBot("builder", root.id)));
+    w.runtime.tick();
+    expect(w.store.get(child.id)?.status).toBe("running");
+    expect(() => w.runtime.end(child.id, { ok: true, text: "done" })).not.toThrow();
+    expect(w.store.get(child.id)?.status).toBe("running");
+    expect(() => w.runtime.end("ghost", { ok: true, text: "" })).not.toThrow();
+    w.runtime.end(root.id, { ok: true, text: "" });
+    expect(w.store.get(root.id)?.status).toBe("waiting");
+    expect(() => w.runtime.end(root.id, { ok: false, text: "twice" })).not.toThrow();
+    expect(w.store.get(root.id)).toMatchObject({ status: "waiting", result: "" });
+    expect(w.logs.filter(line => /not a running root/.test(line))).toHaveLength(3);
+    invariants(w);
+  });
+
+  it("a root parked on cards never expires; a child's question does; a non-finite inputWaitMs never expires anything", async () => {
+    const w = world((a) => a.assignee.botId === "builder" ? { kind: "needs_input", question: "Region?" } : undefined, { inputWaitMs: 1_000 });
+    const root = w.runtime.begin(beginReq());
+    const child = ok(w.runtime.enqueue(toBot("builder", root.id)));
+    w.runtime.tick(); await flush();
+    w.runtime.end(root.id, { ok: true, text: "", needsInput: cards });
+    expect(w.store.get(child.id)?.status).toBe("needs_input");
+    w.clock.advance(30 * 24 * 60 * 60_000);
+    w.runtime.tick();
+    expect(w.store.get(child.id)).toMatchObject({ status: "failed", outcome: "expired" });
+    expect(w.store.get(root.id)).toMatchObject({ status: "needs_input", cards: ["msg-1", "msg-2"] });
+    invariants(w);
+
+    const v = world((a) => a.assignee.botId === "builder" ? { kind: "needs_input", question: "Region?" } : undefined, { inputWaitMs: Number.POSITIVE_INFINITY });
+    const root2 = v.runtime.begin(beginReq());
+    const child2 = ok(v.runtime.enqueue(toBot("builder", root2.id)));
+    v.runtime.tick(); await flush();
+    v.runtime.end(root2.id, { ok: true, text: "" });
+    v.clock.advance(400 * 24 * 60 * 60_000);
+    v.runtime.tick();
+    expect(v.store.get(child2.id)?.status).toBe("needs_input");
+    expect(v.store.get(root2.id)?.status).toBe("waiting");
+    invariants(v);
+  });
+
+  it("open() re-parks a root on its cards without a new item, and reruns a cut root once before failing it interrupted", async () => {
+    const store = openRuntimeStore(":memory:");
+    const first = world(undefined, {}, store);
+    const parked = first.runtime.begin(beginReq({ id: "root-parked" }));
+    first.runtime.end(parked.id, { ok: true, text: "", needsInput: cards });
+    const cut = first.runtime.begin(beginReq({ id: "root-cut", assignee: { botId: "chief", destination: { kind: "standing_thread", threadId: "other-chat" } } }));
+    first.runtime.close();
+
+    const second = world(() => "hold", {}, store);
+    expect(second.runner.parks).toEqual([{ a: expect.objectContaining({ id: "root-parked", cards: ["msg-1", "msg-2"] }), question: "Connect GitHub" }]);
+    expect(store.get("root-parked")).toMatchObject({ status: "needs_input", restarts: 0 });
+    expect(store.get("root-cut")).toMatchObject({ status: "queued", restart: "rerun", restarts: 1, executions: 1 });
+    expect(store.inbox({ threadId: "chief-chat" })).toEqual([]);
+    second.runtime.tick();
+    expect(second.runner.runs.map(r => r.a.id)).toEqual(["root-cut"]);
+    expect(second.runner.runs[0]!.input).toMatchObject({ turn: "rerun", resumed: true, restartNote: expect.stringMatching(/^OpenMausBot restarted while your previous turn here was running/) });
+    expect(store.get("root-cut")).toMatchObject({ status: "running", executions: 2 });
+    second.runtime.close();
+
+    const third = world(undefined, {}, store);
+    expect(store.get("root-cut")).toMatchObject({ status: "failed", outcome: "interrupted", restarts: 1, result: CUT_TWICE });
+    expect(store.get("root-cut")?.restart).toBeUndefined();
+    expect(third.runner.reports.map(r => [r.a.id, r.parent])).toEqual([["root-cut", undefined]]);
+    expect(store.get("root-parked")?.status).toBe("needs_input");
+    expect(third.runner.parks.map(p => p.a.id)).toEqual(["root-parked"]);
+    third.runtime.tick();
+    expect(third.runner.runs).toEqual([]);
+    invariants(third);
+    expect(cut.id).toBe("root-cut");
+    store.close();
+  });
+
+  it("prune() removes terminal trees older than before and leaves a parked root's tree alone", async () => {
+    const w = world();
+    const old = w.runtime.begin(beginReq({ id: "old" }));
+    w.runtime.end(old.id, { ok: true, text: "done" });
+    const parked = w.runtime.begin(beginReq({ id: "parked", assignee: { botId: "chief", destination: { kind: "standing_thread", threadId: "other-chat" } } }));
+    w.runtime.end(parked.id, { ok: true, text: "", needsInput: cards });
+    w.clock.advance(1_000);
+    expect(w.runtime.prune(w.clock.t)).toBe(1);
+    expect(w.store.get("old")).toBeUndefined();
+    expect(w.store.get("parked")).toMatchObject({ status: "needs_input", cards: ["msg-1", "msg-2"] });
+    expect(w.runtime.prune(w.clock.t)).toBe(0);
+    invariants(w);
+  });
+});

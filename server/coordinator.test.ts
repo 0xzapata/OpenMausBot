@@ -51,4 +51,21 @@ describe("createCoordinator", () => {
       removeTempDir(dir);
     }
   });
+
+  it("reads a root parked on the person's cards back with its cards", () => {
+    const dir = mkdtempSync(join(tmpdir(), "coordinator-"));
+    try {
+      const coordinator = createCoordinator({ dataDir: dir, host: fakeHost(), log: () => {} });
+      coordinator.beginTurn({ id: "gen-1", address: { botId: "chief", threadId: "chief-chat" }, brief: "Connect GitHub and ship", level: "auto",
+        origin: { kind: "user", request: "Connect GitHub and ship" } });
+      coordinator.endTurn("gen-1", { ok: true, text: "", cards: { question: "Connect GitHub", ids: ["msg-1"] } });
+      expect(coordinator.parkedDirect("chief-chat")?.id).toBe("gen-1");
+      const rows = readHandoffs(dir);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: "gen-1", status: "waiting", question: "Connect GitHub", cards: ["msg-1"], origin: { kind: "user", request: "Connect GitHub and ship" } });
+      coordinator.close();
+    } finally {
+      removeTempDir(dir);
+    }
+  });
 });

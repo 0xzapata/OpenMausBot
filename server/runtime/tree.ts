@@ -52,6 +52,13 @@ export function lastStartedId(store: RuntimeStore, id: string): number {
   return 0;
 }
 
+/** How many times the node has continued in place so far (a step cap, a
+ * seat it could not get): counted from its events, so the count outlives the
+ * continuation the dispatch consumes and a later limit can read it. */
+export function continuations(store: RuntimeStore, id: string): number {
+  return store.events(id).filter(e => e.kind === "continued").length;
+}
+
 /** Children handed out by the node's latest turn: enqueued after it began. */
 export function childrenSince(store: RuntimeStore, n: Assignment): Assignment[] {
   const since = lastStartedId(store, n.id);

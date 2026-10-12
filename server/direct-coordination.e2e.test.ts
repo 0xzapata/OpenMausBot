@@ -114,7 +114,9 @@ it("does not grant a specialist direct access to its supervising Chief", () => f
   f.save();
   await f.cli("send", "--bot", f.lead.id, "--task", f.lead.activeTaskId, "--text", "Check the direct peer boundary");
   expect((await f.cli("wait", "--bot", f.lead.id, "--task", f.lead.activeTaskId, "--timeout", "30")).status).toBe("settled");
-  expect(f.nodes()).toEqual([]);
+  // The refused request handed nothing on: the lead's own turn is a root
+  // (every turn is one), and nothing hangs under it.
+  expect(f.nodes().filter((node: any) => node.parentId)).toEqual([]);
   const response = f.evidence().find((turn: any) => turn.botId === f.lead.id).evidence.find((entry: any) => entry.step).response;
   expect(response.result.isError).toBe(true);
   expect(response.result.content[0].text).toContain("sender's section boundary");
@@ -482,7 +484,8 @@ it("returns nested results after Claude rejects the source's prior resume cursor
   f.plan[f.chief.id] = coordination;
   await f.start();
   expect((await f.wait()).status).toBe("settled");
-  expect(f.nodes()).toHaveLength(3);
+  // The greeting turn is a root of its own; the job's tree is the other three.
+  expect(f.nodes()).toHaveLength(4);
   expect(f.nodes().every((node: any) => node.status === "completed")).toBe(true);
   expect(f.evidence().map((turn: any) => turn.botId)).toEqual([f.chief.id, f.chief.id, f.lead.id, f.specialist.id, f.lead.id, f.chief.id]);
   const transcript = await f.messages(f.chief.activeTaskId);
@@ -732,7 +735,7 @@ it("queues a recipient at capacity, preserving its existing task and resuming on
   expect((await f.wait()).status).toBe("settled");
   expect(await f.messages(next.task.threadId)).toEqual([]);
   expect((await f.messages(f.lead.activeTaskId)).some((message: any) => message.text === "Unrelated work completed")).toBe(true);
-  expect(f.evidence().filter((turn: any) => turn.botId === f.lead.id).map((turn: any) => turn.threadId)).toEqual([f.lead.activeTaskId, f.nodes().find((node: any) => node.botId === f.lead.id).threadId]);
+  expect(f.evidence().filter((turn: any) => turn.botId === f.lead.id).map((turn: any) => turn.threadId)).toEqual([f.lead.activeTaskId, f.nodes().find((node: any) => node.parentId && node.botId === f.lead.id).threadId]);
 }), 45_000);
 
 // Steering is not cancelling. A person who types while teammates work keeps

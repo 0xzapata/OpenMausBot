@@ -46,14 +46,18 @@ export interface TurnContext {
 export type Script =
   | { kind: "complete"; text: string; evidence?: TurnEvidence }
   | { kind: "fail"; outcome: FailOutcome; text: string; evidence?: TurnEvidence }
-  | { kind: "needsInput"; question: string }
+  | { kind: "needsInput"; question: string; cards?: string[] }
+  /** The turn stopped short (a step cap) and the same node continues in place. */
+  | { kind: "continue"; text: string; note: string; handoffPath?: string; evidence?: TurnEvidence }
   | { kind: "handOut"; children: ChildSpec[]; after: Script }
   | { kind: "hang" }
   | { kind: "custom"; fn: (ctx: TurnContext) => RunResult | Promise<RunResult> };
 
 export const complete = (text: string, evidence?: TurnEvidence): Script => ({ kind: "complete", text, evidence });
 export const fail = (outcome: FailOutcome, text: string, evidence?: TurnEvidence): Script => ({ kind: "fail", outcome, text, evidence });
-export const needsInput = (question: string): Script => ({ kind: "needsInput", question });
+export const needsInput = (question: string, cards?: string[]): Script => ({ kind: "needsInput", question, ...(cards ? { cards } : {}) });
+export const continueTurn = (text: string, note: string, handoffPath?: string, evidence?: TurnEvidence): Script =>
+  ({ kind: "continue", text, note, ...(handoffPath !== undefined ? { handoffPath } : {}), ...(evidence ? { evidence } : {}) });
 export const handOut = (children: ChildSpec[], after: Script): Script => ({ kind: "handOut", children, after });
 export const hang = (): Script => ({ kind: "hang" });
 export const custom = (fn: (ctx: TurnContext) => RunResult | Promise<RunResult>): Script => ({ kind: "custom", fn });
@@ -311,7 +315,10 @@ export class FakeRunner implements TurnRunner {
       case "fail":
         return { kind: "failed", outcome: script.outcome, text: script.text, evidence: script.evidence };
       case "needsInput":
-        return { kind: "needs_input", question: script.question };
+        return { kind: "needs_input", question: script.question, ...(script.cards ? { cards: script.cards } : {}) };
+      case "continue":
+        return { kind: "continue", text: script.text, note: script.note, ...(script.handoffPath !== undefined ? { handoffPath: script.handoffPath } : {}),
+          ...(script.evidence ? { evidence: script.evidence } : {}) };
       default:
         throw new Error(`fake runner: ${script.kind} cannot settle a released turn`);
     }
@@ -354,6 +361,7 @@ export class FakeRunner implements TurnRunner {
       case "complete":
       case "fail":
       case "needsInput":
+      case "continue":
         return this.#settle(script);
       case "handOut":
         for (const child of script.children) ctx.handOut(child);

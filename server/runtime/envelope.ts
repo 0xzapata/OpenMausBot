@@ -197,6 +197,15 @@ export function envelopeNote(envelope: string): string {
   return envelope.slice(0, at) + (answer ? `\n\n${answer[1]}` : "");
 }
 
+/** Why a turn continues one that stopped short (a step cap, a seat the
+ * host could not hold) and, after a cap, where the steps so far are listed.
+ * Harness-written: the note comes from the driver's classification, the
+ * path from the handoff the harness wrote. */
+export function continuationLine(continuation: { note: string; handoffPath?: string }): string {
+  return continuation.note.trim() + (continuation.handoffPath
+    ? ` Every step so far is listed in ${continuation.handoffPath}; read it before going on.` : "");
+}
+
 /** The text a root's later execution opens with: its own turn run again
  * after a restart, the turn after the person acted on its cards, or a turn
  * that continues one that stopped short. A root is the person's own
@@ -207,9 +216,7 @@ export function composeRootTurn(a: Assignment, input: { turn: "rerun" | "answere
   const lines: string[] = [];
   if (input.restartNote) lines.push(input.restartNote.trim());
   if (input.answer !== undefined) lines.push(input.answer);
-  else if (input.continuation) {
-    lines.push(input.continuation.note.trim() + (input.continuation.handoffPath
-      ? ` Every step so far is listed in ${input.continuation.handoffPath}; read it before going on.` : ""));
-  } else if (brief) lines.push(`Continue the request you were working on: "${brief}".`);
+  else if (input.continuation) lines.push(continuationLine(input.continuation));
+  else if (brief) lines.push(`Continue the request you were working on: "${brief}".`);
   return lines.join("\n\n");
 }
