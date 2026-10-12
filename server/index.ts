@@ -11641,6 +11641,9 @@ async function stopBotForEmergencyApprovalDowngrade(botId: string): Promise<void
 
 routines = new RoutineManager({
   emit: broadcast,
+  // Set once per desktop launch (electron/main.mjs), so a server the desktop
+  // restarts within that launch does not run startup routines again.
+  launchId: /^[\w-]{1,100}$/.test(process.env.OMB_DESKTOP_LAUNCH_ID ?? "") ? process.env.OMB_DESKTOP_LAUNCH_ID : undefined,
   // A run waits while the runtime owes its conversation a teammate's result
   // or the resume that returns it; at a restart the same question decides
   // whether a cut run goes on (the runtime's restart policy) or fails.
@@ -12426,6 +12429,7 @@ const agentRoutine = (
     instructionsTruncated: safeInstructions.length > 2_000,
     continuity: routine.continuity === true,
     overlap: routine.overlap ?? "skip",
+    runOnStartup: routine.runOnStartup === true,
     skippedRuns: routine.skippedRuns ?? 0,
     lastSkippedAt: routineTimestamp(routine.lastSkippedAt),
     failureStreak: routine.failureStreak ?? 0,
