@@ -144,7 +144,7 @@ import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall } from "./recall.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
-import type { CaptureTurn } from "./memory-capture.ts";
+import type { CaptureTurn, RoomLine } from "./memory-capture.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
 import {
@@ -190,6 +190,7 @@ import {
   skillAuthoringEnabled,
   autoRecallEnabled,
   captureQuietMs,
+  roomMemoryCaptureEnabled,
   tidyHour,
   sharedComputersEnabled,
   builtInBrowserEnabled,
@@ -6730,12 +6731,21 @@ const memoryUpkeep = createMemoryUpkeep({
     broadcast({ kind: "config", ...configStatus() });
     return facts.length;
   },
-  sourceLabel: (botId, threadId) => memorySourceLabel({ task: store.taskByThread(botId, threadId), threadId }),
+  sourceLabel: (botId, threadId) => memorySourceLabel({ room: store.groupByThread(threadId), task: store.taskByThread(botId, threadId), threadId }),
+  // A room turn is asked again when its batch is captured: the switch, the
+  // room's members or who can see the bot may have changed since.
+  mayCapture: (botId, threadId) => {
+    const room = store.groupByThread(threadId);
+    return !room || roomCaptureAllowed(room, store.bot(botId));
+  },
   // Turns still waiting at the last shutdown, read back from the transcript.
   // The checks that need only stored state run again; the in-memory ones
   // (internal, unattended) already passed before the turn was queued.
   restoreTurn: (botId, threadId, turnId) => {
-    if (store.botByThread(threadId)?.id !== botId || store.groupByThread(threadId) || routines?.runForThread(threadId)) return null;
+    if (routines?.runForThread(threadId)) return null;
+    const room = store.groupByThread(threadId);
+    if (room) return roomCaptureAllowed(room, store.bot(botId)) ? captureRoomTurnFor(threadId, botId, turnId) : null;
+    if (store.botByThread(threadId)?.id !== botId) return null;
     if (CLOUD_HOME && !cloudOwnerOnlyThread(threadId)) return null;
     return captureTurnFor(threadId, turnId);
   },
@@ -6783,15 +6793,78 @@ function captureTurnFor(threadId: string, turnId: string): CaptureTurn | null {
   };
 }
 
-// A finished 1:1 turn of an upkeep bot waits for capture. Only the person's
-// own conversation: not a room, not a turn another bot or the harness
-// started (its "user" line is not the person), not a failed turn.
+/** How many room lines before a bot's reply capture reads: what it read
+ * since it last spoke there, at most this many. */
+const ROOM_CAPTURE_LINES = 12;
+
+/** Whether a room may feed this bot's memory capture (Learn from group
+ * chats): the switch is on, the bot is still a member with upkeep on, and
+ * everyone who can see the bot can see the room (roomFeedsBot) — the bot's
+ * memory reaches every chat it has, so a room fewer people can see never
+ * feeds it. Not a bot-to-bot channel (no person writes there), and never on
+ * a Cloud home, where only conversations the owner alone wrote in feed
+ * memory. */
+function roomCaptureAllowed(room: GroupRecord, bot: BotRecord | null | undefined): bot is BotRecord {
+  if (!bot || !roomMemoryCaptureEnabled(cfg) || CLOUD_HOME || room.dm) return false;
+  return room.memberIds.includes(bot.id) && upkeepEnabled(bot) && roomFeedsBot(room, bot);
+}
+
+/** One finished room turn of a member bot as capture reads it: the room
+ * lines it read since it last spoke there — the person's, other people's,
+ * other bots' — and its reply. Null when the reply is not on the active
+ * path, or no person wrote in that stretch (a chain of bots asking bots
+ * teaches nothing the person said). A webhook's post is nobody's words and
+ * is left out. */
+function captureRoomTurnFor(threadId: string, botId: string, turnId: string): CaptureTurn | null {
+  const path = store.activePath(threadId);
+  const replyAt = path.findLastIndex((message) => message.role === "bot" && message.kind === "text" && message.turnId === turnId && message.from?.botId === botId);
+  if (replyAt < 0) return null;
+  const lastSpoke = path.slice(0, replyAt).findLastIndex((message) => message.role === "bot" && message.kind === "text" && message.from?.botId === botId);
+  const lines: RoomLine[] = [];
+  for (const message of path.slice(lastSpoke + 1, replyAt)) {
+    if (message.kind !== "text" || !message.text?.trim()) continue;
+    if (message.role === "user") {
+      if (message.peerAsk || message.aside) continue;
+      const text = extractTurnImages(message.text).text;
+      lines.push(message.sender ? { by: "other", name: message.sender.name, text } : { by: "person", name: "Person", text });
+    } else if (message.role === "bot" && message.from && message.from.botId !== botId && !message.webhookPost) {
+      lines.push({ by: "peer", name: message.from.name, text: message.text });
+    }
+  }
+  const read = lines.slice(-ROOM_CAPTURE_LINES);
+  if (!read.some((line) => line.by !== "peer")) return null;
+  return {
+    person: read.filter((line) => line.by === "person").map((line) => line.text).join("\n"),
+    bot: path[replyAt]!.text ?? "",
+    // another person's words in the batch keep About me out of it
+    owner: !read.some((line) => line.by === "other"),
+    turnId,
+    room: read,
+  };
+}
+
+// A finished turn of an upkeep bot waits for capture. The person's own 1:1
+// conversation, and — with Learn from group chats on — a room the bot is a
+// member of, under roomCaptureAllowed's rules. Never a turn another bot or
+// the harness started (its "user" line is not the person), a routine's, an
+// unattended one, or a failed turn.
 bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
   if (event.type !== "turn.completed" || !event.turnId || !event.ok) return;
   try {
+    const room = store.groupByThread(event.threadId);
+    if (room) {
+      if (!roomMemoryCaptureEnabled(cfg) || isInternalTurn(event.threadId) || routines?.runForThread(event.threadId)
+        || groupGoalCoordinatorTurns.get(event.threadId)?.size) return;
+      const reply = store.activePath(event.threadId).findLast((message) => message.role === "bot" && message.kind === "text" && message.turnId === event.turnId);
+      const member = reply?.from ? store.bot(reply.from.botId) : undefined;
+      if (!roomCaptureAllowed(room, member) || isUnattended(member.id, event.threadId)) return;
+      const turn = captureRoomTurnFor(event.threadId, member.id, event.turnId);
+      if (turn) memoryUpkeep.noteTurn(member.id, event.threadId, turn);
+      return;
+    }
     const bot = store.botByThread(event.threadId);
-    if (!bot || !upkeepEnabled(bot) || store.groupByThread(event.threadId) || isInternalTurn(event.threadId)
+    if (!bot || !upkeepEnabled(bot) || isInternalTurn(event.threadId)
       || isUnattended(bot.id, event.threadId) || routines?.runForThread(event.threadId)) return;
     // On a Cloud home the bot's memory reaches its owner's turns (and a lent
     // Mac): nothing is captured from a conversation anyone else wrote in.
@@ -15919,6 +15992,7 @@ function configStatus() {
       // own Claude Code MCP servers
       claudeUserMcp: claudeUserMcpEnabled(cfg),
       autoRecall: autoRecallEnabled(cfg),
+      roomMemoryCapture: roomMemoryCaptureEnabled(cfg),
       // hand-edited config.json only; the thread menu offers Regenerate title from it
       llmThreadTitles: llmThreadTitlesEnabled(cfg),
     },

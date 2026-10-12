@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { builtInBrowserEnabled, llmThreadTitlesEnabled, routinesInConversationEnabled, sharedComputersEnabled, showToolCallsEnabled, skillAuthoringEnabled } from "./feature-flags";
+import { builtInBrowserEnabled, llmThreadTitlesEnabled, roomMemoryCaptureEnabled, routinesInConversationEnabled, sharedComputersEnabled, showToolCallsEnabled, skillAuthoringEnabled } from "./feature-flags";
 
 describe("experimental feature flags", () => {
   it("keeps skill authoring on by default, before and after the config arrives", () => {
@@ -47,5 +47,11 @@ describe("experimental feature flags", () => {
     expect(llmThreadTitlesEnabled({ features: {} })).toBe(false);
     expect(llmThreadTitlesEnabled({ features: { llmThreadTitles: false } })).toBe(false);
     expect(llmThreadTitlesEnabled({ features: { llmThreadTitles: true } })).toBe(true);
+  });
+
+  it("keeps Learn from group chats off until it is switched on", () => {
+    expect(roomMemoryCaptureEnabled(null)).toBe(false);
+    expect(roomMemoryCaptureEnabled({ features: {} })).toBe(false);
+    expect(roomMemoryCaptureEnabled({ features: { roomMemoryCapture: true } })).toBe(true);
   });
 });
