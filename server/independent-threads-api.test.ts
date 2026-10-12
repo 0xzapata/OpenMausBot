@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { launchVerificationServer, runControlOmb, type VerificationServer } from "../scripts/control-omb.ts";
 import { handleToolCall, request } from "../scripts/mcp-server.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 import { memoryDate } from "./workspace.ts";
 
 describe("independent bot tasks through the isolated control surface", () => {
@@ -130,9 +131,8 @@ describe("independent bot tasks through the isolated control surface", () => {
       requestId: expect.any(String),
       threadId: expect.any(String),
     }]);
-    const handoff = () => JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8"))
-      .find((node: any) => node.id === requestId);
-    const peerThread = handoff().threadId;
+    const handoff = () => readHandoffs(session.info.dataDir).find((node) => node.id === requestId);
+    const peerThread = handoff()!.threadId;
     expect(peerThread).not.toBe(peer.activeTaskId);
     expect(queued.body.receipts[0].threadId).toBe(peerThread);
     writeFileSync(modelFile(models[0], "gate"), "finish");
@@ -200,9 +200,8 @@ describe("independent bot tasks through the isolated control surface", () => {
     });
     expect(sent.status).toBe(200);
     const requestId = sent.body.receipts[0].requestId;
-    const handoff = () => JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8"))
-      .find((node: any) => node.id === requestId);
-    const workThread = handoff().threadId;
+    const handoff = () => readHandoffs(session.info.dataDir).find((node) => node.id === requestId);
+    const workThread = handoff()!.threadId;
     writeFileSync(modelFile(models[0], "gate"), "finish");
     // The teammate's own chips about its cards, not the Chief's "Sent to" receipt.
     const chiefChips = async () => (await api("GET", `/api/threads/${chief.activeTaskId}/messages?limit=100`)).body.messages
@@ -255,7 +254,7 @@ describe("independent bot tasks through the isolated control surface", () => {
     // action never ran, ahead of the teammate's own words.
     writeFileSync(modelFile(models[1], "gate"), "finish");
     await expect.poll(() => handoff()?.status, { timeout: 20_000 }).toBe("completed");
-    const result: string = handoff().result;
+    const result: string = handoff()!.result;
     expect(result.startsWith("[OpenMausBot: nobody answered the approval for “Bash: npm run release-check” in time, so it did not run. Do not report it as done;")).toBe(true);
     expect(result).toContain("reply to:");
     expect(result).not.toContain("git push");
@@ -337,8 +336,7 @@ describe("independent bot tasks through the isolated control surface", () => {
     const sent = await internal(token, "POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "RELEASE_CHECKS: run the release checks." });
     expect(sent.status).toBe(200);
     const requestId = sent.body.receipts[0].requestId;
-    const handoff = () => JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8"))
-      .find((node: any) => node.id === requestId);
+    const handoff = () => readHandoffs(session.info.dataDir).find((node) => node.id === requestId);
     expect(handoff()).toMatchObject({ groupId: room.id });
     writeFileSync(modelFile(models[0], "gate"), "finish");
     const unanswered = await permission(models[1], "unanswered-room", { command: "npm run release-check" });
@@ -350,7 +348,7 @@ describe("independent bot tasks through the isolated control surface", () => {
     rmSync(expiry, { force: true });
     writeFileSync(modelFile(models[1], "gate"), "finish");
     await expect.poll(() => handoff()?.status, { timeout: 20_000 }).toBe("completed");
-    expect(handoff().result.startsWith("[OpenMausBot: nobody answered the approval for “Bash: npm run release-check” in time, so it did not run.")).toBe(true);
+    expect(handoff()!.result.startsWith("[OpenMausBot: nobody answered the approval for “Bash: npm run release-check” in time, so it did not run.")).toBe(true);
   }, 60_000);
 
   it("reports a deleted one-way recipient thread in its surviving source without restarting the sender", async () => {

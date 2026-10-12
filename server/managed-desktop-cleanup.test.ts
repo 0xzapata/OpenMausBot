@@ -94,7 +94,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
     directRequestOwners: new Map(),
     autoVmClaims,
     turnResources: { release() {} }, settlingResourceOwners: new Map(), turnComputerResources: new Map(), teamComputerTurns: new Map(),
-    roomHandoffs: { stopAwaitingDirect() {} },
+    coordinator: { stopAwaitingDirect: () => [] },
     noteTeammatesLeftRunning() {},
     cancelDirectTurnDispatch: (_botId: string, threadId: string) => cancelled.push(threadId),
     cancelGroupTurnOperations: (_groupId: string, threadId: string, outcome?: { status: string; detail: string; byHarness?: boolean }) => {
@@ -487,7 +487,7 @@ it("ends a room stopped by the harness with its cause, and one the person stoppe
     const calls: string[] = [];
     const context = vm.createContext({
       pendingComputerResumes: new Map(), cancelTeamSetupResumesForThread() {},
-      roomHandoffs: { cancelRoom: (...args: string[]) => calls.push(`assignments:${args.join("|")}`) },
+      coordinator: { cancelRoom: (...args: string[]) => calls.push(`assignments:${args.join("|")}`) },
       groupTurnOperations: new Map([["g", new Set([{ threadId: "room", cancellation: new AbortController() }])]]),
       finishGroupGoalRun: (_groupId: string, _operation: unknown, status: string, detail: string) => calls.push(`goal:${status}|${detail}`),
       markCancelledProviderHandshake() {},

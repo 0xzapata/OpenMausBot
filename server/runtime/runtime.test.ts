@@ -539,3 +539,95 @@ describe("Runtime: one tree, one lane", () => {
     invariants(w);
   });
 });
+
+describe("Runtime: host-named roots and request marks", () => {
+  it("begins a root under the id the host names, or a fresh uuid", () => {
+    const w = world();
+    const named = w.runtime.begin(beginReq({ id: "gen-1" }));
+    expect(named).toMatchObject({ id: "gen-1", rootId: "gen-1", status: "running" });
+    expect(w.store.get("gen-1")?.id).toBe("gen-1");
+    const fresh = w.runtime.begin(beginReq());
+    expect(fresh.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fresh.rootId).toBe(fresh.id);
+  });
+
+  it("copies approved and batchKey onto the row and keeps them through the store", async () => {
+    const w = world();
+    const root = w.runtime.begin(beginReq({ id: "gen-2" }));
+    const marked = ok(w.runtime.enqueue(toBot("builder", root.id, undefined, { approved: true, batchKey: "batch-1" })));
+    expect(marked).toMatchObject({ approved: true, batchKey: "batch-1" });
+    expect(w.store.get(marked.id)).toMatchObject({ approved: true, batchKey: "batch-1" });
+    const plain = ok(w.runtime.enqueue(toBot("tester", root.id)));
+    expect(plain.approved).toBeUndefined();
+    expect(plain.batchKey).toBeUndefined();
+    expect("approved" in w.store.get(plain.id)!).toBe(false);
+    w.runtime.tick(); await flush();
+    expect(w.store.get(marked.id)).toMatchObject({ status: "completed", approved: true, batchKey: "batch-1" });
+    invariants(w);
+  });
+});
+
+describe("access rechecked while work runs", () => {
+  it("fails a running child whose route closes, drops its words, and the resume carries only the reason", async () => {
+    const w = world(() => "hold");
+    const root = w.runtime.begin(beginReq());
+    const child = ok(w.runtime.enqueue(toBot("builder", root.id)));
+    w.runtime.tick();
+    expect(w.store.get(child.id)?.status).toBe("running");
+    const signal = w.runner.runs[0]!.signal;
+    // The route closes under the running turn: only this child is refused.
+    w.runner.validate = a => a.id === child.id ? "Room work cannot cross the sender's section boundary" : undefined;
+    w.runtime.tick();
+    expect(w.store.get(child.id)).toMatchObject({ status: "failed", outcome: "refused", result: "Room work cannot cross the sender's section boundary" });
+    expect(signal.aborted).toBe(true);
+    // The late reply of the aborted turn changes nothing.
+    await w.runner.release(child.id, { kind: "completed", text: "PRIVATE_RESULT" });
+    expect(w.store.get(child.id)?.result).not.toContain("PRIVATE");
+    w.runtime.end(root.id, { ok: true, text: "handed out" });
+    w.runtime.tick();
+    const resume = w.runner.runs.find(r => r.a.id === root.id && r.input.resumed);
+    expect(resume?.input.settled?.map(s => s.result)).toEqual(["Room work cannot cross the sender's section boundary"]);
+    invariants(w);
+  });
+
+  it("drops a reply that lands after the route closed, before any tick could notice", async () => {
+    const w = world(() => "hold");
+    const root = w.runtime.begin(beginReq());
+    const child = ok(w.runtime.enqueue(toBot("builder", root.id)));
+    w.runtime.tick();
+    w.runner.validate = a => a.id === child.id ? "The recipient is not an allowed peer of the sender" : undefined;
+    await w.runner.release(child.id, { kind: "completed", text: "PRIVATE_RESULT" });
+    expect(w.store.get(child.id)).toMatchObject({ status: "failed", outcome: "refused", result: "The recipient is not an allowed peer of the sender" });
+    expect(w.runner.reports.map(r => r.a.id)).toEqual([child.id]);
+    invariants(w);
+  });
+});
+
+describe("a resume turn a restart cut", () => {
+  it("runs again with the same settled results, as a rerun, not as a fresh resume", async () => {
+    const store = openRuntimeStore(":memory:");
+    const first = world(() => "hold", {}, store);
+    const root = first.runtime.begin(beginReq());
+    const child = ok(first.runtime.enqueue(toBot("builder", root.id)));
+    first.runtime.tick();
+    await first.runner.release(child.id, { kind: "completed", text: "built" });
+    first.runtime.end(root.id, { ok: true, text: "handed out" });
+    first.runtime.tick();
+    const resume = first.runner.runs.find(r => r.a.id === root.id)!;
+    expect(resume.input.turn).toBe("resume");
+    expect(resume.input.settled?.map(s => s.id)).toEqual([child.id]);
+    // The restart lands while the resume turn runs: it is run again, in
+    // place, still returning the child's result, and marked as a rerun.
+    first.runtime.close();
+    const second = world(() => "hold", {}, store);
+    expect(store.get(root.id)).toMatchObject({ status: "resume", restart: "rerun", restarts: 1 });
+    second.runtime.tick();
+    const rerun = second.runner.runs.find(r => r.a.id === root.id)!;
+    expect(rerun.input.turn).toBe("resume");
+    expect(rerun.input.settled?.map(s => s.id)).toEqual([child.id]);
+    expect(rerun.input.restartNote).toContain("this turn continues it");
+    await second.runner.release(root.id, { kind: "completed", text: "reviewed" });
+    expect(store.get(root.id)).toMatchObject({ status: "completed", executions: 3 });
+    invariants(second);
+  });
+});

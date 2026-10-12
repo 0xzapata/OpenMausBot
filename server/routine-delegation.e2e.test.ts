@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb, type VerificationServer } from "../scripts/control-omb.ts";
 import { DELEGATION_WAKE_MAX_PER_WINDOW } from "./delegations.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 
 describe("routine delegation through the isolated harness", () => {
   let fixture: VerificationServer;
@@ -189,8 +190,9 @@ describe("routine delegation through the isolated harness", () => {
     }, launched.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN);
     expect(coordinated.receipts).toHaveLength(1);
     const requestId = coordinated.receipts[0].requestId;
-    const handoff = () => JSON.parse(readFileSync(join(fixture.info.dataDir, "room-handoffs.json"), "utf8"))
-      .find((node: any) => node.id === requestId);
+    // A person's request on the routine's thread is chat coordination: its
+    // tree lives in the job runtime (runtime.db), not the routine ledger.
+    const handoff = () => readHandoffs(fixture.info.dataDir).find((node) => node.id === requestId)!;
     finish(run.threadId);
     await dump(handoff().threadId);
     finish(handoff().threadId);

@@ -211,7 +211,7 @@ describe("the harness's reportsToRequester", () => {
   const code = ts.transpileModule(source.slice(from, to), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
   function owed(watch: Record<string, unknown>, rooms: string[] = []): boolean {
     const context = vm.createContext({
-      delegationWatch: new Map([["work", watch]]), awaitedAsks: new Set(), roomHandoffs: { nodes: new Map() },
+      delegationWatch: new Map([["work", watch]]), awaitedAsks: new Set(), coordinator: { all: () => [] },
       store: {
         botByThread: (threadId: string) => threadId === "chief-dm" ? { id: "chief" } : undefined,
         groupByThread: (threadId: string) => rooms.includes(threadId) ? { id: `group-${threadId}` } : undefined,

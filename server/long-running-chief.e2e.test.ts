@@ -23,12 +23,14 @@ import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb, verificationServerArgs, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { CONTROL_WAITED } from "./control-client.ts";
 import { CONSENT_RULE } from "./peer-provenance.ts";
+import { ENVELOPE_MARK } from "./runtime/envelope.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 import { hostTimeout } from "./testing/host-timeout.ts";
 import { openSse, type SseRecorder } from "./testing/sse.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-/** Every resume of a requester opens with this (coordinationTurnText). */
+/** Every resume of a requester opens with this (composeResume). */
 const SETTLED = "Your downstream room requests have settled.";
 const jsonl = (path: string) => existsSync(path)
   ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
@@ -119,7 +121,9 @@ async function chiefJob(test: (f: any) => Promise<void>) {
     /** The person's own line, from the app. */
     const say = async (threadId: string, text: string) =>
       expect((await api("POST", `/api/bots/${clive.id}/messages`, { text, threadId })).status).toBeLessThan(300);
-    const nodes = (): any[] => jsonl(join(dataDir, "room-handoffs.json")).flat();
+    // The coordinated turns as the runtime records them (DATA_DIR/runtime.db),
+    // projected onto the node shape the server reads (coordinator.ts HandoffView).
+    const nodes = (): any[] => readHandoffs(dataDir);
     /** The hand-off tree the Chief's conversation `threadId` started. */
     const tree = (threadId: string) => {
       const root = nodes().find((node) => !node.parentId && node.threadId === threadId && node.botId === clive.id);
@@ -191,9 +195,12 @@ async function chiefJob(test: (f: any) => Promise<void>) {
   }
 }
 
-/** The note an assignment from the person's own job arrives under. */
+/** The envelope an assignment from the person's own job opens with
+ * (server/runtime/envelope.ts): its mark, the Chief as requester, the person. */
+const ASSIGNED_BY_CLIVE = /^\[OpenMausBot assignment \S+ from @Clive for the user\]$/m;
+/** ...and the lineage sentence under it: the person's request, quoted, is the task. */
 const personLineage = (request: string) =>
-  `[Assigned by @Clive, another bot in this OpenMausBot workspace — for the user's request ${JSON.stringify(request)}. This is your task, sent on the user's behalf`;
+  `the user asked: ${JSON.stringify(request)}. This is your task, sent on the user's behalf: do it with your own tools and permissions.`;
 const DISTRUST = /untrusted|not human approval|rather than doing it|cannot trace/;
 
 // The flagship job. Mira consults while Eli implements; Eli's engine stops at
@@ -210,11 +217,13 @@ it("carries a consult-and-implement job over several teammate turns, through a s
       { arguments: { bot_ids: [f.mira.id], message: "CONSULT-ONE: Which CSV approach and which edge cases should we handle?" } },
       { arguments: { bot_ids: [f.eli.id], message: "IMPLEMENT-CAP: Build the invoice CSV export end to end, run the tests, and report." } },
     ], reply: "A0: Mira is consulting and Eli is implementing." },
-    { key: "A1", match: [SETTLED, "IMPLEMENT-CAP"], steps: [
+    // A resume carries each settled teammate's report (what it said), named
+    // by assignment id: the scripts match on the results, not the briefs.
+    { key: "A1", match: [SETTLED, "CONSULT-RESULT", "Stopped after 64 steps"], steps: [
       { arguments: { bot_ids: [f.eli.id], message: "FINISH-STEP: finish only the steps the handoff lists as left, and report." } },
       { arguments: { bot_ids: [f.mira.id], message: "REVIEW: review Eli's finished export.", rework: true } },
     ], reply: "A1: Eli is finishing and Mira will review." },
-    { key: "A2", match: [SETTLED, "FINISH-STEP"], reply: "A-FINAL: the CSV export is implemented and reviewed." });
+    { key: "A2", match: [SETTLED, "IMPLEMENT-FINISHED", "REVIEW-RESULT"], reply: "A-FINAL: the CSV export is implemented and reviewed." });
   f.script(f.mira.id,
     { key: "M1", match: ["CONSULT-ONE"], reply: "CONSULT-RESULT: use the stdlib csv module; handle quoting, a BOM and empty rows." },
     { key: "M2", match: ["REVIEW:"], reply: "REVIEW-RESULT: the export handles quoting, the BOM and empty rows." });
@@ -269,14 +278,22 @@ it("carries a consult-and-implement job over several teammate turns, through a s
   // Every teammate is told the work is the person's own request: its task,
   // done with its own permissions, and no bot's message is approval.
   const consult = f.prompt(f.turn("M1"));
+  expect(consult).toMatch(ASSIGNED_BY_CLIVE);
   expect(consult).toContain(personLineage(request));
   expect(consult).toContain(CONSENT_RULE);
   expect(`${f.turn("M1").system}${consult}`).not.toMatch(DISTRUST);
   // ...on the OpenAI-compatible engine as on Claude, and on rework.
   const implement = f.model.requests.find((sent: ModelRequest) => sent.lastUser.includes("IMPLEMENT-CAP"))!.lastUser;
+  expect(implement).toMatch(ASSIGNED_BY_CLIVE);
   expect(implement).toContain(personLineage(request));
   expect(implement).not.toMatch(DISTRUST);
+  expect(f.prompt(f.turn("M2"))).toMatch(ASSIGNED_BY_CLIVE);
   expect(f.prompt(f.turn("M2"))).toContain(personLineage(request));
+  // The Chief's resume carries each teammate's reply as a report, never as
+  // a bare line or a child-results array.
+  expect(f.prompt(f.turn("A1"))).toContain("[OpenMausBot report from @Mira on assignment ");
+  expect(f.prompt(f.turn("A1"))).toContain("[OpenMausBot report from @Eli on assignment ");
+  expect(f.prompt(f.turn("A1"))).not.toContain(ENVELOPE_MARK);
   // The Chief reviews reports as evidence against the person's request.
   for (const key of ["A1", "A2"]) {
     expect(f.prompt(f.turn(key))).toContain(`Review the results against the request: ${JSON.stringify(request)}`);
@@ -299,9 +316,9 @@ it("carries a consult-and-implement job over several teammate turns, through a s
 it("tells the Chief what happened to each approval: allowed, denied, or never answered and not run", () => chiefJob(async (f) => {
   f.script(f.clive.id,
     { key: "B0", match: ["PHASE-APPROVALS-JOB"], steps: [{ arguments: { bot_ids: [f.mira.id], message: "CHECK-HISTORY: check the export module's recent history." } }], reply: "B0: Mira is checking." },
-    { key: "B1", match: [SETTLED, "CHECK-HISTORY"], steps: [{ arguments: { bot_ids: [f.mira.id], message: "PUSH-BRANCH: push the export branch.", rework: true } }], reply: "B1: pushing." },
-    { key: "B2", match: [SETTLED, "PUSH-BRANCH"], steps: [{ arguments: { bot_ids: [f.mira.id], message: "RUN-TESTS: run the test suite.", rework: true } }], reply: "B2: testing." },
-    { key: "B3", match: [SETTLED, "RUN-TESTS"], reply: "APPROVALS-FINAL: history checked, push not done, tests not run." });
+    { key: "B1", match: [SETTLED, "HISTORY-RESULT"], steps: [{ arguments: { bot_ids: [f.mira.id], message: "PUSH-BRANCH: push the export branch.", rework: true } }], reply: "B1: pushing." },
+    { key: "B2", match: [SETTLED, "PUSH-RESULT"], steps: [{ arguments: { bot_ids: [f.mira.id], message: "RUN-TESTS: run the test suite.", rework: true } }], reply: "B2: testing." },
+    { key: "B3", match: [SETTLED, "TESTS-RESULT"], reply: "APPROVALS-FINAL: history checked, push not done, tests not run." });
   f.script(f.mira.id,
     { key: "MA", match: ["CHECK-HISTORY"], approve: { tool_name: "Bash", input: { command: "git log --oneline -5 -- src/export" } },
       reply: "HISTORY-RESULT: checked the history.", replyIfDenied: "HISTORY-RESULT: not checked." },
@@ -336,7 +353,11 @@ it("tells the Chief what happened to each approval: allowed, denied, or never an
   expect(f.child(job, f.mira.id, "PUSH-BRANCH").result).toBe("PUSH-RESULT: not pushed; the push was denied.");
   const unanswered = "[OpenMausBot: nobody answered the approval for “Bash: pnpm test” in time, so it did not run. Do not report it as done; it needs the person's approval.]";
   expect(f.child(job, f.mira.id, "RUN-TESTS")).toMatchObject({ status: "completed", result: `${unanswered}\n\nTESTS-RESULT: I could not run the tests.` });
-  expect(f.prompt(f.turn("B3"))).toContain(JSON.stringify(unanswered).slice(1, -1));
+  // The report quotes the result as data: a bracket that opens like a
+  // harness note becomes a parenthesis (envelope.ts escapeEnvelope), and
+  // the step that never ran is still named ahead of Mira's own words.
+  expect(f.prompt(f.turn("B3"))).toContain(JSON.stringify(unanswered.replace(/^\[/, "(")).slice(1, -1));
+  expect(f.prompt(f.turn("B3"))).toContain("[OpenMausBot report from @Mira on assignment ");
   // Each card was the engine's own: two the person answered, and one the
   // engine closed on its timer, by nobody.
   expect((await f.cards(work)).map((message: any) => [message.card.subtitle, message.card.answered, message.card.dismissed, message.card.answeredBy?.kind]))
@@ -401,7 +422,7 @@ it.each(["SIGTERM", "SIGKILL"] as const)("wakes the Chief after a restart cuts i
   expect(chiefRows.filter((name: string) => name.startsWith("error:") || name.includes("failed"))).toEqual([]);
   for (const threadId of Object.values(work)) {
     const teammateRows = await f.rows(threadId);
-    expect(teammateRows.filter((name: string) => name === "Resuming after a restart")).toHaveLength(1);
+    expect(teammateRows.filter((name: string) => name === "Resuming after a restart"), JSON.stringify(teammateRows)).toHaveLength(1);
     expect(teammateRows.filter((name: string) => name.startsWith("error:"))).toEqual([]);
   }
   // The job's one notification after the restart, as a job no restart

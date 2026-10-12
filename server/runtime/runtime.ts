@@ -13,8 +13,7 @@ import { randomUUID } from "node:crypto";
 import { composeEnvelope } from "./envelope.ts";
 import { assignmentLevel } from "./level.ts";
 import type { RuntimeStore } from "./store.ts";
-import { awaited, childrenSince, clip, CUT_TWICE, duration, isTerminal, ownsConversation, path, restartNote, settledSince,
-  wakeOwner } from "./tree.ts";
+import { awaited, childrenSince, clip, CUT_TWICE, duration, isTerminal, ownsConversation, path, restartNote, wakeOwner } from "./tree.ts";
 import { DEFAULT_LIMITS, type Assignment, type Assignee, type Clock, type EnqueueRequest, type EnqueueResult, type EnvelopeNames,
   type EventKind, type InboxItem, type InboxKind, type Level, type Limits, type LiveEdge, type Origin, type Outcome, type Owner,
   type Reply, type Requester, type RunInput, type RunResult, type StatusView, type TurnEvidence, type TurnRunner } from "./types.ts";
@@ -31,6 +30,9 @@ export interface RuntimeOptions {
 }
 
 export interface BeginRequest {
+  /** The root's id, when the host already names the requesting turn (its
+   * generation); default a fresh uuid. */
+  id?: string;
   origin: Origin;
   /** person | routine_run | external_runtime */
   requester: Requester;
@@ -145,7 +147,7 @@ export class Runtime {
    * that turn itself and ends it with end()). */
   begin(req: BeginRequest): Assignment {
     const now = this.clock.now();
-    const id = randomUUID();
+    const id = req.id ?? randomUUID();
     const root: Assignment = {
       id, rootId: id, depth: 0, origin: req.origin, requester: req.requester, assignee: req.assignee,
       mode: "work", reply: req.reply ?? "resume", brief: clip(req.brief, BRIEF_MAX), status: "running",
@@ -219,7 +221,8 @@ export class Runtime {
       origin: root ? root.origin : req.origin, requester: req.requester, assignee: target, mode,
       reply: req.reply ?? (mode === "notify" ? "none" : "resume"), brief, ...(req.doneWhen ? { doneWhen: req.doneWhen } : {}),
       status: "queued", level, levelSource: source, executions: 0, restarts: 0, createdAt: now, lastActivityAt: now, result: "",
-      rework: Boolean(req.rework), version: 1,
+      rework: Boolean(req.rework), ...(req.approved !== undefined ? { approved: req.approved } : {}),
+      ...(req.batchKey !== undefined ? { batchKey: req.batchKey } : {}), version: 1,
     };
     if (!parent) { node.rootId = node.id; node.budgets = { since: now, requests: 0, executions: 0, wakes: 0 }; }
     const problem = this.safe("validate", () => this.runner.validate(node, parent));
@@ -265,6 +268,18 @@ export class Runtime {
           this.cancelTree(n, `no activity for ${duration(this.limits.turnStallMs)}`, "failed", "stalled");
         }
       }
+    }
+    // Access is rechecked on every tick for every live row, not only at
+    // dispatch: a route or membership that changes while a teammate works
+    // ends that work with the reason, so no result crosses a boundary that
+    // closed under it (deepest first, so each row fails with its own cause).
+    for (const snapshot of [...live].sort((a, b) => b.depth - a.depth)) {
+      const n = this.store.get(snapshot.id);
+      if (!n || isTerminal(n)) continue;
+      const parent = n.parentId ? this.store.get(n.parentId) : undefined;
+      const problem = this.safe("validate", () => this.runner.validate(n, parent));
+      if (this.lastThrew || !problem) continue;
+      this.cancelTree(n, problem, "failed", "refused");
     }
     // A tree with no durable or visible progress stalls as a whole, unless
     // it is parked on the person: that time is charged to no window.
@@ -348,10 +363,16 @@ export class Runtime {
     let delivered: string[];
     try {
       const children = this.store.children(n.id);
-      const settled = settledSince(this.store, n);
+      // A resume returns every settled result of the node, not only what
+      // settled since its last turn: the requester reviews the whole of what
+      // it handed out, and the host keeps those reports out of the transcript
+      // it replays, so a session that lost them still hears them here.
+      const settled = awaited(children).filter(isTerminal);
       const names = this.names(n, parent);
+      const turn: RunInput["turn"] = resumed ? "resume" : n.restart === "rerun" ? "rerun" : n.answer !== undefined ? "answered" : "first";
       input = {
-        resumed: resumed || n.restart !== undefined,
+        turn,
+        resumed: turn !== "first",
         restartNote: restartNote(n, children, child => this.names(child, n).assignee),
         envelope: composeEnvelope(n, names, parent),
         ...(n.answer !== undefined ? { answer: n.answer } : {}),
@@ -419,6 +440,11 @@ export class Runtime {
     const now = this.clock.now();
     delete n.restart;
     delete n.answer;
+    // Access is rechecked as the turn ends, not only each tick: a reply that
+    // lands after the route closed is never retained, however fast it came.
+    const parentRow = n.parentId ? this.store.get(n.parentId) : undefined;
+    const problem = this.safe("validate", () => this.runner.validate(n, parentRow));
+    if (!this.lastThrew && problem) { this.settle(n, "failed", "refused", problem); return; }
     if (result.evidence) n.evidence = result.evidence;
     const root = n.parentId ? this.store.get(n.rootId) : n;
     if (result.kind === "needs_input") {
@@ -585,6 +611,9 @@ export class Runtime {
     n.status = status; n.outcome = outcome; n.finishedAt = now; n.lastActivityAt = now;
     if (detail !== undefined) n.outcomeDetail = clip(detail, DETAIL_MAX); else delete n.outcomeDetail;
     if (status !== "completed" && detail !== undefined && n.result === "") n.result = clip(detail, RESULT_MAX);
+    // A refusal replaces whatever the turn had said: the reader it would
+    // have reached is exactly the one the refusal is about.
+    if (outcome === "refused" && detail !== undefined) { n.result = clip(detail, RESULT_MAX); delete n.evidence; }
     delete n.question; delete n.answer;
     const kind: EventKind = status === "cancelled" ? "cancelled" : outcome === "refused" ? "refused" : "settled";
     const root = n.parentId ? this.store.get(n.rootId) : n;

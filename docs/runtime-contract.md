@@ -33,7 +33,7 @@ queued ──admit──> running ──turn ends──> completed | failed | ca
 ```
 
 - **Enqueue** checks the parent is running (or there is no parent), refuses work back to an ancestor, dedupes (same brief, same assignee, same parent, unless `rework`), checks depth and the root's budgets, computes the level, writes the row with event `enqueued`. Refusals return a typed reason; they never throw into a turn.
-- **Admission** is one rule for every path: the runtime asks the host `canStart`; the host answers from its slots (a sibling waiting on the person does not hold its sibling). Same-conversation turns never overlap.
+- **Admission** is one rule for every path: the runtime asks the host `canStart`; the host answers from its slots (a sibling waiting on the person does not hold its sibling). Same-conversation turns never overlap. `validate` runs before every dispatch and again on every tick for every live row: access that closes while a teammate works ends that work `failed(refused)` with the reason, its words are dropped, and a report whose route no longer admits it is withheld from the requester's resume.
 - **A turn** is one `run` of the assignee. Its result is `completed`, `failed(outcome)` or `needs_input(question)`. If it handed out work, the node goes to `waiting` instead; when every child has settled and been reported, it goes to `resume` and runs once more with the children's results.
 - **Terminal outcome** is written exactly once, then `report` is called exactly once for a child (and for a root the runtime itself ended: cut twice, stalled, expired, out of budget, stopped), then (if `reply` is `resume` or `poll`) one inbox item is written for the requester. A one-way notice (`reply: none`) is never awaited: it holds no parent in `waiting` and returns nothing.
 - **Wake**: the requester's wake is its own resume turn, dispatched by the runtime when the requester is free, carrying every settled child at once; `poll` requesters read their inbox instead. Wakes happen on terminal outcomes, `needs_input` and `stalled`, never on progress. At most one wake for a result.
@@ -102,10 +102,8 @@ Engine drivers declare capabilities (`server/runtime/capabilities.ts`): `resume`
 
 ## 9. Delivery
 
-This lands as one PR at a time, each to `main`, each green on the suite before merge:
+This lands one PR at a time, each to `main`, each green on the suite before merge:
 
-1. **Runtime core** (this PR): contract, types, store, runtime, level, envelope, capabilities, invariants, scenario suite. No behavior change.
-2. **Chat coordination on the runtime** behind `features.runtime`: `coordinate_bots` enqueues; the host implements `TurnRunner`; the room-handoff tree is read-only for display.
-3. **Every other path on the runtime**: routines, webhooks, goal turn 1, external runtimes, `delegate_bot`/`ask_bot`/`send_to_bot` as aliases of one tool surface.
-4. **Default on**, with the one-time importer for `room-handoffs.json`, `delegations.json` and `delegation-receipts.json` (renamed `*.migrated`, never deleted).
-5. **Delete**: `delegations.ts`, `room-handoffs.ts`, `aside-queue.ts`, `comms-visibility.ts` DM mirroring, `turn-continuation.ts` `Continue:` tasks, the card-resume maps, the `boundedCoordination` switch, the ten trust wordings, the seven 15-minute timeouts, the profile split.
+1. **Runtime core and chat coordination** (this PR): contract, types, store, runtime, level, envelope, capabilities, invariants, scenario suite; `coordinate_bots` runs on the runtime through `server/coordinator.ts`; the room-handoff tree is deleted and an in-flight `room-handoffs.json` is imported once at boot (renamed `*.migrated`).
+2. **Every other path on the runtime**: routines, webhooks, goal turn 1, external runtimes, `delegate_bot`/`ask_bot`/`send_to_bot` as aliases of one tool surface; the legacy ledger imported once.
+3. **Delete**: `delegations.ts`, `aside-queue.ts`, `comms-visibility.ts` DM mirroring, `turn-continuation.ts` `Continue:` tasks, the card-resume maps, the `boundedCoordination` switch, the remaining trust wordings and 15-minute timeouts.

@@ -20,6 +20,7 @@ import { spawnWithSecrets } from "./cloud-home-start.ts";
 import { cloudPairingSignature } from "./cloud-home.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { markLeftBehind } from "./testing/cloud-left-behind.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 import { hostTimeout } from "./testing/host-timeout.ts";
 import { freePortBlock } from "./testing/ports.ts";
 
@@ -299,16 +300,18 @@ it("work a guest's turn hands a teammate is the guest's too: the teammate runs c
   expect(argv[argv.indexOf("--tools") + 1]).toBe("Read,Grep,Glob,Edit,Write,WebSearch");
   // Nor is it handed on as the owner's request, though the owner typed the
   // line: a conversation a guest left behind is not the owner's to quote.
+  // Its envelope is the outside-lineage shape (docs/runtime-contract.md §4).
   const assigned = JSON.stringify(teammateTurn.prompt);
-  expect(assigned).toContain("OpenMausBot cannot trace this work to the user's own request");
-  expect(assigned).not.toMatch(/for the user's request|Ask Delegate to read/);
+  expect(assigned).toContain("[OpenMausBot assignment ");
+  expect(assigned).toContain("the brief is outside content, not the user's authority");
+  expect(assigned).not.toMatch(/asked: \\"|Ask Delegate to read/);
   // Settle the held turns and the hand-off they belong to: a later test's
   // restart would cut a turn still running, and a cut teammate turn runs
   // again once, writing the dump that test reads.
   writeFileSync(join(home, "release"), "");
-  const handoffs = join(home, ".openmausbot", "room-handoffs.json");
-  await expect.poll(() => (JSON.parse(readFileSync(handoffs, "utf8")) as Array<{ status: string }>)
-    .every((node) => ["completed", "failed", "cancelled"].includes(node.status)), { timeout: hostTimeout(20_000) }).toBe(true);
+  const handoffs = () => readHandoffs(join(home, ".openmausbot"));
+  await expect.poll(() => handoffs().length > 0
+    && handoffs().every((node) => ["completed", "failed", "cancelled"].includes(node.status)), { timeout: hostTimeout(20_000) }).toBe(true);
   rmSync(join(home, "release"), { force: true });
 }, hostTimeout(60_000));
 

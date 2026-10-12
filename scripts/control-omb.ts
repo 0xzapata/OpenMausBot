@@ -404,6 +404,7 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
   // Stalled-turn e2e: the stall watchdog's window elapses on a marker file
   // instead of after 20 minutes of silence (stall-clock-hooks.mjs).
   if (parentEnv.OMB_TEST_STALL_CLOCK === "1") childEnv.OMB_TEST_STALL_CLOCK = "1";
+  // Runtime coordination e2e: the server runs teammate coordination on the
   // Desktop mode: the server runs as the desktop app runs it, and the owner
   // capability the app would hand it is this one (see desktop-parent.mjs).
   if (parentEnv.OMB_TEST_DESKTOP_OWNER_TOKEN) {

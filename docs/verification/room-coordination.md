@@ -10,7 +10,7 @@ deleted conversations and revoked routes keep their existing cancellation
 behavior. This does not remove task capacity limits.
 
 A restart (quit, update, Cloud rollout or crash) never ends a job silently.
-At the next start (`reconcileRestart` in `server/room-handoffs.ts`):
+At the next start (the runtime's restart policy, `server/runtime/runtime.ts` `open()`, docs/runtime-contract.md §5):
 
 - A teammate turn the restart cut runs again once, in place: the same request
   in its own conversation and retained native session, opening with a note to
@@ -56,14 +56,17 @@ At the next start (`reconcileRestart` in `server/room-handoffs.ts`):
   as a person's own 1:1 turn with nothing sent out, is not run again, so that
   line answers it. A crash, or Windows' `SIGTERM`, cannot write that line;
   the hand-off recovery above still runs.
-- A workspace restore is not a restart (the source may still be running): it
-  ends its copy of unsettled hand-offs, "Not resumed after workspace
-  restore.", and runs none of them.
+- A workspace restore carries the runtime's record (`runtime.db`) as a
+  database snapshot, like `messages.db`, and rewrites nothing in it. At the
+  next start the restart policy above applies to what the restore brought: a
+  cut teammate turn runs again once, told to check what it already did; a
+  requester cut after handing out work waits for that work; queued work and
+  owed resumes go ahead.
 
 Regression checks (all use disposable fixtures):
 
 ```sh
-pnpm exec vitest run server/room-handoffs.test.ts server/room-handoffs-save.test.ts server/direct-coordination.e2e.test.ts server/room-coordination.e2e.test.ts
+pnpm exec vitest run server/runtime/ server/runtime-coordinator.test.ts server/direct-coordination.e2e.test.ts server/room-coordination.e2e.test.ts
 pnpm exec vitest run server/delta-context.e2e.test.ts -t "restart"
 pnpm exec vitest run server/full-access-workflows.e2e.test.ts server/room-recovery.e2e.test.ts
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/direct-coordination-ui.e2e.test.ts
@@ -176,7 +179,7 @@ Chiefs, and peer restrictions still block work. Revoking supervision before
 queued work starts prevents dispatch.
 
 ```sh
-pnpm exec vitest run server/peer-roster.test.ts server/post-to-room.test.ts server/room-coordination.e2e.test.ts server/direct-coordination.e2e.test.ts server/room-handoffs.test.ts server/peer-allowlist.e2e.test.ts
+pnpm exec vitest run server/peer-roster.test.ts server/post-to-room.test.ts server/room-coordination.e2e.test.ts server/direct-coordination.e2e.test.ts server/runtime-coordinator.test.ts server/peer-allowlist.e2e.test.ts
 ```
 
 The coordination suites use `launchVerificationServer`, `control-omb`, and the
@@ -190,7 +193,7 @@ server workflow checks, not UI or live-model verification.
 ### Broader coordination checks
 
 ```sh
-pnpm exec vitest run server/room-handoffs.test.ts server/room-coordination.e2e.test.ts src/components/GroupView.test.ts src/lib/room-activity.test.ts --maxWorkers=2
+pnpm exec vitest run server/runtime-coordinator.test.ts server/room-coordination.e2e.test.ts src/components/GroupView.test.ts src/lib/room-activity.test.ts --maxWorkers=2
 pnpm exec vitest run server/group-goal-run.e2e.test.ts server/group-goal-wait-cap.e2e.test.ts server/drivers/agents-proxy.test.ts --maxWorkers=2
 pnpm exec vitest run server/room-recovery.e2e.test.ts server/testing/room-handoff-agent.test.ts
 pnpm exec vitest run server/direct-coordination.e2e.test.ts --maxWorkers=1
@@ -295,8 +298,13 @@ already started when the person stopped the conversation above it: that process
 is left alone and reports its result. A restart runs each teammate turn it
 cut again once, in place and told to check what it already did, and tells its
 requester (see the top of this page).
-Limits: four cross-room edges, 24 child requests, 48 executions, 30 minutes per
-root. Failures return to the sender, not a false success. Model quality and
+Limits (docs/runtime-contract.md §6; `DEFAULT_LIMITS` in `server/runtime/types.ts`
+and the coordinator's overrides): depth 4; per root, 24 requests, 48 executions
+and 48 wakes since its last durable progress; a queued assignment that never
+started within 24 hours expires; four hours without durable progress fails the
+tree; a turn with no activity for 24 hours is stalled; a question to the person
+waits 30 minutes, then the assignment expires, never approved. Failures return
+to the sender, not a false success. Model quality and
 provider availability still matter; this is not a guarantee of autonomous
 correctness or permission to bypass approvals.
 

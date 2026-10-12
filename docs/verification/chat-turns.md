@@ -146,6 +146,12 @@ This does not prove resumption or cleanup of real provider sessions after a cras
 
 ### Delegation mailbox
 
+`coordinate_bots` work no longer queues here: it is an assignment on the job
+runtime (docs/runtime-contract.md §6), whose queue bound is 24 hours and whose
+every window restarts at boot. The legacy `delegate_bot` mailbox
+(`server/delegations.ts`) keeps the behaviour below until it moves to the
+runtime.
+
 Queued handoffs now wait through repeated busy turns rather than giving up
 after three. The delivery window is 24 hours; an hourly sweep expires a
 handoff that is still unable to run, reports the failure, and wakes its sender.
