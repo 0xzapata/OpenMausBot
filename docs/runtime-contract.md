@@ -100,10 +100,23 @@ The host (today `server/index.ts`) implements `TurnRunner`: `validate`, `canStar
 
 Engine drivers declare capabilities (`server/runtime/capabilities.ts`): `resume` (keeps a native session), `nativeReviewer`, `full`, `edits`, `stepCap`, `subagents`. The level rule and the continuation rule read these flags, never driver names.
 
-## 9. Delivery
+## 9. One tool surface
 
-This lands one PR at a time, each to `main`, each green on the suite before merge:
+Every turn that may hand work on, whatever started it, gets the same tools:
 
-1. **Runtime core and chat coordination** (this PR): contract, types, store, runtime, level, envelope, capabilities, invariants, scenario suite; `coordinate_bots` runs on the runtime through `server/coordinator.ts`; the room-handoff tree is deleted and an in-flight `room-handoffs.json` is imported once at boot (renamed `*.migrated`).
-2. **Every other path on the runtime**: routines, webhooks, goal turn 1, external runtimes, `delegate_bot`/`ask_bot`/`send_to_bot` as aliases of one tool surface; the legacy ledger imported once.
-3. **Delete**: `delegations.ts`, `aside-queue.ts`, `comms-visibility.ts` DM mirroring, `turn-continuation.ts` `Continue:` tasks, the card-resume maps, the `boundedCoordination` switch, the remaining trust wordings and 15-minute timeouts.
+- `coordinate_bots(bot_ids, message, reason?, rework?, thread?: "standing" | "new", reply?: "resume" | "none", consult?: true, done_when?)`. `thread: "new"` opens a new thread on the teammate; `reply: "none"` is a one-way notice that is never awaited; `consult: true` asks a question that the teammate answers from what it knows, acting on nothing, and the asker is resumed with the answer.
+- `assignment_status(id?)`: read-only; one assignment's status, outcome and result, or everything this conversation still waits on. External runtimes long-poll it; it never blocks a bot.
+- `list_bots`, `start_thread` (on yourself), `list_threads`, `close_thread`, `post_to_room`, `list_rooms`, the Chief tools and `retry_thread` are unchanged.
+
+For one release the old names stay as aliases with a deprecation line in their result: `delegate_bot`, `ask_bot` (no inline wait any more: the answer resumes the asker), `send_to_bot`, `start_thread(bot_id)` on a peer, `check_delegation`, `wait_delegation`.
+
+The requester of a root is whoever started the turn: a person's chat, a routine run (`routine_run`, with the run id), a webhook or Cloud guest (outside lineage), an external runtime (`external_runtime`, `reply: poll`: its root completes without a turn and it reads its inbox through `assignment_status`). The host passes that opener on the first hand-off of the turn; the root's resume runs as a turn of the same kind (a routine's resume is a routine turn).
+
+## 10. Delivery
+
+One PR at a time, each to `main`, each green on the suite before merge:
+
+1. **Runtime core** (#2691, merged): contract, types, store, runtime, level, envelope, capabilities, invariants, scenario suite.
+2. **Chat coordination on the runtime** (#2695, merged): `coordinate_bots` through `server/coordinator.ts`; the room-handoff tree deleted; an in-flight `room-handoffs.json` imported once.
+3. **Every hand-off on the runtime** (this PR): one tool surface (§9) for routines, webhooks, goal runs, external runtimes and Cloud guests; the legacy ledger imported once (`delegations.json`, `delegation-receipts.json`, renamed `*.migrated`); `delegations.ts`, `aside-queue.ts`, the DM mirroring, the catalog profile split and the `boundedCoordination` switch deleted.
+4. **Every turn a root**: the card-resume lanes (team setup, connector, computer park, secret) and `Continue:` tasks fold into park/answer and in-place continuation.

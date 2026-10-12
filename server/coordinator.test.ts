@@ -31,8 +31,8 @@ describe("createCoordinator", () => {
       const coordinator = createCoordinator({ dataDir: dir, host: fakeHost(), log: () => {} });
       expect(coordinator).toBeInstanceOf(RuntimeCoordinator);
       const chief = { botId: "chief", threadId: "chief-chat" };
-      const { node, duplicate } = coordinator.enqueue(chief, "gen-1", undefined, { botId: "builder", threadId: "builder-work" }, "builder",
-        "Build it", false, false, "Ship it", undefined, { kind: "user", request: "Ship it" });
+      const { node, duplicate } = coordinator.enqueue(chief, "gen-1", undefined, { botId: "builder", threadId: "builder-work" },
+        "Build it", { sourceText: "Ship it", origin: { kind: "user", request: "Ship it" } });
       expect(duplicate).toBe(false);
       expect(node).toMatchObject({ status: "queued", botId: "builder", parentId: "gen-1", kind: "work" });
       const rows = readHandoffs(dir);

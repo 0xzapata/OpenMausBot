@@ -11,14 +11,14 @@
 // as "not now" by the Runtime, so nothing here wraps it again.
 import { join } from "node:path";
 
-import type { Coordinator, CoordinatorHost, CoordinatorOptions, HandoffView, LiveHandoffEdge, RoomAddress } from "./coordinator.ts";
+import type { Coordinator, CoordinatorHost, CoordinatorOptions, HandoffOptions, HandoffView, LiveHandoffEdge, RoomAddress } from "./coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
 import { composeEnvelope, composeReport, composeResume, envelopeNote } from "./runtime/envelope.ts";
 import { Runtime } from "./runtime/runtime.ts";
 import { importLegacyHandoffs } from "./runtime/import-legacy.ts";
 import { openRuntimeStore, type RuntimeStore } from "./runtime/store.ts";
 import { childrenSince, clip, isTerminal, path } from "./runtime/tree.ts";
-import type { Assignment, Origin, RunInput, RunResult, TurnRunner } from "./runtime/types.ts";
+import type { Assignment, Origin, Owner, RunInput, RunResult, StatusView, TurnRunner } from "./runtime/types.ts";
 
 /** Refusals the model and index.ts read; the words are the legacy tree's. */
 const NOT_RUNNING = "The originating room task is no longer running";
@@ -98,7 +98,11 @@ export function view(a: Assignment, parent?: Assignment): HandoffView {
     id: a.id, rootId: a.rootId, threadId: a.assignee.destination.threadId, botId: a.assignee.botId, key: a.assignee.botId,
     text: a.brief, createdAt: a.createdAt, status, result: a.result, reported: a.reportedAt !== undefined, executions: a.executions,
     lastProgressAt: a.lastActivityAt, approvalGranted: a.approved ?? false, kind: kindOf(groupId, parent), restarts: a.restarts,
+    mode: a.mode, reply: a.reply,
   };
+  if (a.outcome !== undefined) node.outcome = a.outcome;
+  if (a.outcomeDetail !== undefined) node.outcomeDetail = a.outcomeDetail;
+  if (a.question !== undefined) node.question = a.question;
   if (a.parentId !== undefined) node.parentId = a.parentId;
   if (groupId !== undefined) node.groupId = groupId;
   if (a.batchKey !== undefined) node.requestBatchKey = a.batchKey;
@@ -179,9 +183,12 @@ export class RuntimeCoordinator implements Coordinator {
 
   // ── enqueue ──────────────────────────────────────────────────────────
 
-  enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, _key: string, text: string,
-    approvalGranted = false, rework = false, sourceText = "", requestBatchKey?: string, origin?: WorkOrigin): { node: HandoffView; duplicate: boolean } {
+  enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, text: string,
+    options: HandoffOptions = {}): { node: HandoffView; duplicate: boolean } {
     this.ready();
+    const { approvalGranted = false, rework = false, sourceText = "", requestBatchKey, origin, opener } = options;
+    const mode = options.mode ?? "work";
+    const reply = options.reply ?? (mode === "notify" ? "none" : opener?.requester.kind === "external_runtime" ? "poll" : "resume");
     let parent = parentId ? this.store.get(parentId) : this.store.get(generation);
     if (parent && parent.status !== "running") throw new Error(NOT_RUNNING);
     if (parentId && !parent) throw new Error(NOT_RUNNING);
@@ -194,8 +201,11 @@ export class RuntimeCoordinator implements Coordinator {
       if (ancestorOf(source, target)) throw new Error(ANCESTOR);
       parent = this.runtime.begin({
         id: generation,
-        origin: runtimeOrigin(origin, source),
-        requester: { kind: "person", threadId: source.threadId, botId: source.botId, chief: this.host.chiefOf(source) },
+        origin: opener?.origin ?? runtimeOrigin(origin, source),
+        requester: opener
+          ? { ...opener.requester, botId: opener.requester.botId ?? source.botId, threadId: opener.requester.threadId ?? source.threadId, chief: this.host.chiefOf(source) }
+          : { kind: "person", threadId: source.threadId, botId: source.botId, chief: this.host.chiefOf(source) },
+        ...(opener?.requester.kind === "external_runtime" ? { reply: "poll" as const } : {}),
         assignee: { botId: source.botId, destination: { kind: source.groupId ? "room_thread" : "standing_thread", threadId: source.threadId,
           ...(source.groupId ? { groupId: source.groupId } : {}) } },
         brief: sourceText.slice(0, BRIEF_MAX),
@@ -206,7 +216,7 @@ export class RuntimeCoordinator implements Coordinator {
     const lineage = path(this.store, parent);
     if (lineage.some(n => ancestorOf(address(n), target))) throw new Error(ANCESTOR);
     const siblings = this.store.children(parent.id);
-    const existing = siblings.findLast(c => c.assignee.botId === target.botId && c.assignee.destination.groupId === target.groupId && c.brief === brief);
+    const existing = siblings.findLast(c => c.assignee.botId === target.botId && c.assignee.destination.groupId === target.groupId && c.brief === brief && c.mode === mode);
     if (existing && !(rework && isTerminal(existing))) return { node: view(existing, parent), duplicate: true };
     if (!rework && siblings.some(c => kindOf(c.assignee.destination.groupId, parent) === kind && c.assignee.destination.groupId === target.groupId &&
       c.assignee.botId === target.botId && c.status === "completed")) throw new Error(ALREADY_COMPLETED);
@@ -218,7 +228,8 @@ export class RuntimeCoordinator implements Coordinator {
       requester: { kind: "bot_turn", botId: parent.assignee.botId, threadId: parent.assignee.destination.threadId, chief: this.host.chiefOf(address(parent)) },
       assignee: { botId: target.botId, destination: { kind: target.groupId ? "room_thread" : "work_thread", threadId: target.threadId,
         ...(target.groupId ? { groupId: target.groupId } : {}) } },
-      mode: "work", reply: "resume", brief: text, rework,
+      mode, reply, brief: text, rework,
+      ...(options.doneWhen ? { doneWhen: options.doneWhen } : {}),
       levels: { own: level.level },
       ...(level.driverKind !== undefined ? { driverKind: level.driverKind } : {}),
       approved: approvalGranted,
@@ -229,6 +240,26 @@ export class RuntimeCoordinator implements Coordinator {
       throw new Error(RUNTIME_DEPTH.test(result.reason) ? DEPTH : result.reason);
     }
     return { node: view(result.assignment, parent), duplicate: result.duplicate };
+  }
+
+  status(id: string): StatusView | undefined {
+    this.ready();
+    return this.runtime.status(id);
+  }
+
+  poll(owner: Owner): { items: StatusView["inbox"]; assignments: HandoffView[] } {
+    this.ready();
+    const polled = this.runtime.poll(owner);
+    return { items: polled.items, assignments: polled.assignments.map(a => this.project(a)) };
+  }
+
+  /** Non-terminal work the conversation in this thread handed out, in a
+   * room or not: what a routine run or an external runtime is waiting on. */
+  outstandingFor(threadId: string): HandoffView[] {
+    this.ready();
+    const live = this.live();
+    const mine = new Set(live.filter(a => a.assignee.destination.threadId === threadId).map(a => a.id));
+    return live.filter(a => a.parentId !== undefined && mine.has(a.parentId) && a.reply !== "none").map(a => this.project(a));
   }
 
   /** A room brief is displayed once; each recipient keeps its own execution and result. */

@@ -19154,8 +19154,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 applyDelegatedLevel(internalSender, internalCapability.threadId, store.bot(target.botId)!, target.threadId);
               }
               const { node, duplicate } = coordinator.enqueue(address, internalCapability.generation, internalCapability.roomHandoffId,
-                target, target.botId, parsed.data.message, approvalGranted, parsed.data.rework, [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "",
-                requestBatchKey, origin);
+                target, parsed.data.message, { approvalGranted, rework: parsed.data.rework, requestBatchKey, origin,
+                  sourceText: [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "" });
               // A repeat lands on the request already made, possibly in a
               // thread the person archived meanwhile; a thread opened for it
               // is never used.
