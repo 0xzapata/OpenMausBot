@@ -362,7 +362,7 @@ export function Composer({
   }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale, slashSkills]);
   const commandPickerOpen = commandCandidates.length > 0;
 
-  // Tag another bot; the agent reaches it via ask_bot.
+  // Tag another bot; the agent reaches it via coordinate_bots.
   const mention = mentionQueryAt(text, caret);
   const candidates = useMemo(() => {
     if (!mention || mention.start === dismissedAt) return [];

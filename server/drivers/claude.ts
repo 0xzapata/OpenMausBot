@@ -1662,7 +1662,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // Host tools always route through OpenMausBot's permission broker.
         if (!controlsHost) allowed.push("mcp__computer");
       }
-      // peer-agent comms (list_bots/ask_bot) — the harness builds the whole
+      // peer-agent comms (list_bots/coordinate_bots) — the harness builds the whole
       // spawn contract (command/args/env incl. the boot token) in
       // agentsIntegration(); pre-allowing matters doubly here, or the CLI's
       // own ListAgents look-alike shadows it and "@Bot" asks go nowhere
@@ -1815,7 +1815,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (authSettingsPath) args.push("--settings", authSettingsPath);
       // Our approvals and browser credentials expire at the user-turn
       // boundary. Native background workers cannot outlive that boundary;
-      // parallel bot work must use the harness's durable delegate_bot path.
+      // parallel bot work must use the harness's durable coordinate_bots path.
       env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
       const cwd = turn.cwd ?? homedir();
       const commandCwd = permissionLaunchCwd(cwd);
