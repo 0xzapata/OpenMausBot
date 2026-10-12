@@ -268,6 +268,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_TOOL_MS;
     delete process.env.FAKE_ACP_USAGE_UPDATES_FILE;
     delete process.env.FAKE_ACP_UPDATES_FILE;
+    delete process.env.OMB_ACP_PLAN_LINES;
     delete process.env.FAKE_ACP_DUMP_PROMPT;
     delete process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS;
     delete process.env.OMB_ACP_QUIET_NOTICE_MS;
@@ -729,6 +730,89 @@ describe("ACP turns (fake CLI)", () => {
     expect(lastTurn().filter((event) => event.type === "runtime.error" || event.type === "runtime.notice")).toEqual([]);
     report();
     expect(await send("turn 3")).toBe("turn 3");
+  });
+
+  const plan = (...entries: Array<[status: string, content: string]>) => ({
+    sessionUpdate: "plan",
+    entries: entries.map(([status, content]) => ({ content, priority: "medium", status })),
+  });
+  /** A turn's plan lines: each started step's title with how it completed. */
+  const planSteps = (events: EventRecorder["events"]) => events.flatMap((event) => {
+    if (event.type !== "item.started" || event.itemType !== "tool" || !event.title?.startsWith("Plan:")) return [];
+    const done = events.find((other) => other.type === "item.completed" && other.itemType === "tool" && other.itemId === event.itemId);
+    return [{ title: event.title, ok: done?.type === "item.completed" && done.itemType === "tool" ? done.ok : undefined }];
+  });
+
+  it("keeps an agent's plan out of the transcript unless plan lines are switched on", async () => {
+    const { report, send, lastTurn } = await reportingThread("plan-off");
+    report(plan(["in_progress", "Read the brief"], ["pending", "Write the tests"]));
+    await send("turn 1");
+    expect(planSteps(lastTurn())).toEqual([]);
+    // the fake's own tool call is the turn's only step
+    expect(lastTurn().filter((event) => event.type === "item.started")).toHaveLength(1);
+  });
+
+  it("shows one finished step each time an agent's plan reads differently", async () => {
+    process.env.OMB_ACP_PLAN_LINES = "1";
+    const { report, send, lastTurn } = await reportingThread("plan-lines");
+    report(
+      plan(["pending", "Read the brief"], ["pending", "Write the tests"], ["pending", "Ship it"]),
+      // the same list again says nothing new
+      plan(["pending", "Read the brief"], ["pending", "Write the tests"], ["pending", "Ship it"]),
+      plan(["in_progress", "Read the brief"], ["pending", "Write the tests"], ["pending", "Ship it"]),
+      plan(["completed", "Read the brief"], ["in_progress", "Write the tests"], ["pending", "Ship it"]),
+      // a later entry reworded: the line a person reads is the same
+      plan(["completed", "Read the brief"], ["in_progress", "Write the tests"], ["pending", "Ship it on Friday"]),
+      // not a plan anyone can read: nothing is shown, and nothing is forgotten
+      { sessionUpdate: "plan", entries: "Read the brief" },
+      { sessionUpdate: "plan" },
+      { sessionUpdate: "plan", entries: [] },
+      plan(["completed", "Read the brief"], ["in_progress", "Write the tests"], ["pending", "Ship it on Friday"]),
+      plan(["completed", "Read the brief"], ["completed", "Write the tests"], ["completed", "Ship it on Friday"]),
+    );
+    await send("turn 1");
+    expect(planSteps(lastTurn())).toEqual([
+      { title: "Plan: 0 of 3 done — next: Read the brief", ok: true },
+      { title: "Plan: 0 of 3 done — Read the brief", ok: true },
+      { title: "Plan: 1 of 3 done — Write the tests", ok: true },
+      { title: "Plan: 3 of 3 done", ok: true },
+    ]);
+    // each line is its own step, with the whole list one click away
+    const started = lastTurn().filter((event) => event.type === "item.started" && event.itemType === "tool" && event.title?.startsWith("Plan:"));
+    expect(new Set(started.map((event) => event.itemId)).size).toBe(4);
+    expect(started[2]).toMatchObject({ input: expect.stringContaining("Ship it") });
+
+    // The plan is remembered across turns: sent again it says nothing, and
+    // a new entry is one more line.
+    report(plan(["completed", "Read the brief"], ["completed", "Write the tests"], ["completed", "Ship it on Friday"]));
+    await send("turn 2");
+    expect(planSteps(lastTurn())).toEqual([]);
+    report(plan(["completed", "Read the brief"], ["completed", "Write the tests"], ["completed", "Ship it on Friday"], ["pending", "Tell the team"]));
+    await send("turn 3");
+    expect(planSteps(lastTurn())).toEqual([{ title: "Plan: 3 of 4 done — next: Tell the team", ok: true }]);
+  });
+
+  it("bounds a plan line and redacts it before it is cut", async () => {
+    process.env.OMB_ACP_PLAN_LINES = "1";
+    const { report, send, lastTurn } = await reportingThread("plan-redacted");
+    const secret = "xai-" + "a".repeat(40);
+    report(plan(["in_progress", `Rotate the deploy key ${secret} on every runner in the fleet, then check each one of them twice`]));
+    await send("turn 1");
+    const [step] = planSteps(lastTurn());
+    expect(step!.title).toMatch(/^Plan: 0 of 1 done — Rotate the deploy key «redacted \d+ chars» on every runner.*…$/);
+    expect(step!.title.length).toBeLessThanOrEqual("Plan: 0 of 1 done — ".length + 80);
+    expect(JSON.stringify(lastTurn())).not.toContain(secret);
+  });
+
+  it("does not take a plan for the turn's reply", async () => {
+    process.env.OMB_ACP_PLAN_LINES = "1";
+    process.env.FAKE_ACP_MODE = "empty-reply";
+    const { report, send, lastTurn } = await reportingThread("plan-no-reply");
+    report(plan(["in_progress", "Read the brief"]));
+    // a turn that only planned is still a lost turn, not a success
+    await send("turn 1", false);
+    expect(planSteps(lastTurn())).toEqual([{ title: "Plan: 0 of 1 done — Read the brief", ok: true }]);
+    expect(lastTurn().at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "empty_turn" });
   });
 
   it("fails clearly when an image-capable adapter meets an older ACP runtime", async () => {

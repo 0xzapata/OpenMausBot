@@ -5,6 +5,9 @@
 // fires, in a 1:1 conversation or in a room. Every scenario is run twice,
 // with the agent silent about its context and with it reporting, and the two
 // runs must compact at the same turns.
+//
+// The same fixture proves an agent's plan reaches the chat as activity, and
+// only once plan lines are switched on.
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,6 +25,7 @@ const ASKS = ["FIRST", "SECOND", "THIRD", "FOURTH"].map((label) => `${label} ${L
 
 let url = "";
 let usageFile = "";
+let updatesFile = "";
 
 const control = (...args: string[]) => runControlOmb([...args, "--url", url]) as Promise<any>;
 const api = async (method: string, path: string, body?: unknown) => {
@@ -64,7 +68,9 @@ async function withAcpServer(run: () => Promise<void>): Promise<void> {
   try {
     url = fixture.info.url;
     usageFile = join(dataDir, "acp-usage.json");
+    updatesFile = join(dataDir, "acp-updates.json");
     reports();
+    writeFileSync(updatesFile, "[]");
     // Add only the repository-owned fake ACP agent to the launcher's temporary
     // config while stopped. Never discover the person's CLI or home.
     await waitForExit(fixture.child, { signal: "SIGTERM" });
@@ -73,7 +79,7 @@ async function withAcpServer(run: () => Promise<void>): Promise<void> {
     config.instances.opencodeGo = {
       driver: "opencodeGo", displayName: "Context fixture",
       config: { cli: fileURLToPath(new URL("./testing/fake-acp-cli.ts", import.meta.url)) },
-      environment: { FAKE_ACP_MODELS: MODEL, FAKE_ACP_USAGE_UPDATES_FILE: usageFile },
+      environment: { FAKE_ACP_MODELS: MODEL, FAKE_ACP_USAGE_UPDATES_FILE: usageFile, FAKE_ACP_UPDATES_FILE: updatesFile },
     };
     writeFileSync(configPath, JSON.stringify(config));
     const log = openSync(logPath, "a", 0o600);
@@ -132,4 +138,23 @@ it("does not start a room member on a fresh session because its engine reports a
   // to compact on request either.
   expect((await group()).memberContext ?? null).toBeNull();
   expect((await api("POST", `/api/groups/${room.id}/members/${bot.id}/compact`, {})).status).toBe(409);
+}), 120_000);
+
+it("shows an agent's plan in the chat as activity only once plan lines are switched on", () => withAcpServer(async () => {
+  writeFileSync(updatesFile, JSON.stringify([{ update: { sessionUpdate: "plan", entries: [
+    { content: "Read the brief", priority: "high", status: "in_progress" },
+    { content: "Write the tests", priority: "medium", status: "pending" },
+  ] } }]));
+  /** One ask in a fresh conversation: the plan rows its transcript holds. */
+  const planRows = async (name: string) => {
+    const bot = await acpBot(name);
+    await control("send", "--bot", bot.id, "--task", bot.activeTaskId, "--text", "Plan the launch.");
+    expect((await control("wait", "--bot", bot.id, "--task", bot.activeTaskId, "--timeout", "30")).status).toBe("settled");
+    const messages = (await api("GET", `/api/threads/${bot.activeTaskId}/messages?limit=100`)).body.messages as any[];
+    return messages.filter((message) => message.kind === "activity" && String(message.tool?.name ?? "").startsWith("Plan:"))
+      .map((message) => ({ name: message.tool.name, ok: message.tool.ok }));
+  };
+  expect(await planRows("Planner, lines off")).toEqual([]);
+  expect((await api("PATCH", "/api/config", { features: { acpPlanLines: true } })).status).toBe(200);
+  expect(await planRows("Planner, lines on")).toEqual([{ name: "Plan: 0 of 2 done — Read the brief", ok: true }]);
 }), 120_000);

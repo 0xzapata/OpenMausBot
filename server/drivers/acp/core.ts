@@ -1426,10 +1426,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               break;
             }
             case "usage_update":
-            case "session_info_update": {
+            case "session_info_update":
+            case "plan": {
               // What the agent says about its own session (session-reports.ts).
               const report = readSessionReport(u, p._meta, current.state, session);
               if (report.context) emit({ ...base(threadId, current.turnId), type: "thread.token-usage.updated", input: 0, output: 0, ...report.context });
+              if (!report.step) break;
+              current.flushAssistantText();
+              const itemId = `plan-${newId()}`;
+              emit({ ...base(threadId, current.turnId), type: "item.started", itemType: "tool", itemId, ...report.step });
+              emit({ ...base(threadId, current.turnId), type: "item.completed", itemType: "tool", itemId, ok: true });
               break;
             }
           }
