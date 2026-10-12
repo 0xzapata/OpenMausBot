@@ -24,6 +24,7 @@ import {
   ROUTINE_EXECUTION_PROMPT,
   WEBHOOK_PROMPT,
   SIGN_IN_PROMPT,
+  savedLoginsPrompt,
   type ComputerPromptKind,
 } from "./system-prompt.ts";
 
@@ -195,6 +196,19 @@ describe("computerPrompt", () => {
       expect(prompt).not.toContain("At a sign-in, password");
       expect(prompt).not.toMatch(/never type (?:their|the user's) (?:password|credentials)/i);
     }
+  });
+
+  it("prefers a saved login through fill_login, before asking the person", () => {
+    expect(SIGN_IN_PROMPT).toContain("When you have a saved login for the site, open its login page in your browser and call fill_login, then submit the form");
+    expect(SIGN_IN_PROMPT.indexOf("fill_login")).toBeLessThan(SIGN_IN_PROMPT.indexOf("call request_sign_in"));
+  });
+
+  it("names a bot's saved logins by host and username only, and nothing when it has none", () => {
+    expect(savedLoginsPrompt([])).toBe("");
+    expect(savedLoginsPrompt([{ host: "accounts.example.com", username: "alice@example.com" }, { host: "localhost", username: "" }]))
+      .toBe(" Your saved logins, for fill_login on exactly these hosts: accounts.example.com (alice@example.com), localhost.");
+    const many = Array.from({ length: 45 }, (_, index) => ({ host: `site${index}.example.com`, username: "a" }));
+    expect(savedLoginsPrompt(many)).toMatch(/site39\.example\.com \(a\) and 5 more\.$/u);
   });
 });
 

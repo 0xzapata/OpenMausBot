@@ -152,6 +152,8 @@ export interface ConnectorCardData {
   error?: string;
   dismissed?: boolean;
   resumed?: boolean;
+  /** Stop ended the turn this card paused: no action, nothing resumes (shared/wire.ts). */
+  stopped?: boolean;
 }
 
 export interface SecretRequestCardData {
@@ -168,6 +170,8 @@ export interface SecretRequestCardData {
   superseded?: boolean;
   resumed?: boolean;
   error?: string;
+  /** Stop ended the turn this card paused: no entry, nothing resumes (shared/wire.ts). */
+  stopped?: boolean;
 }
 
 /** Who is driving a bot's computer: held = the person has the wheel (the
@@ -265,6 +269,8 @@ export type GroupDefaultResponder = import("../../shared/wire").GroupDefaultResp
 /** A room: several bots + you in one shared thread. */
 export interface Group {
   usage?: GroupThreadUsage | null;
+  /** Each member's context in the active thread (WireGroup.memberContext). */
+  memberContext?: import("../../shared/wire").WireGroup["memberContext"];
   id: string;
   threadId: string;
   name: string;
@@ -300,6 +306,9 @@ export interface Group {
   /** A direct-message conversation's turn ceiling. Null or absent uses the
    * global group limit. Channel conversations store theirs on each task. */
   turnTimeoutMinutes?: number | null;
+  /** Members the person stopped in this room ("stop @Bot"), by bot id. */
+  holds?: Record<string, import("../../shared/wire").RoomHold>;
+  heldMessages?: Record<string, import("../../shared/wire").RoomHeldMessage[]>;
   /** Separate conversations in this channel. DMs deliberately stay on one
    * thread and omit this collection. */
   tasks?: GroupTask[];
@@ -354,6 +363,8 @@ export interface Task {
   updatedAt?: number;
   /** what this task has spent, banked once per settled turn */
   usage?: TaskUsage;
+  /** Prompt-cache keep-warm status (server-derived, never stored). */
+  cacheKeepWarm?: import("../../shared/wire").CacheKeepWarmStatus;
   /** folder this task's turns run in, pinned on its first turn; null =
    * legacy home-folder session; absent = not pinned yet */
   cwd?: string | null;
@@ -529,6 +540,9 @@ export interface Bot {
   /** Memory upkeep (Bot settings → Memory): background capture and the
    * nightly tidy-up. On unless explicitly false. */
   memoryUpkeep?: boolean;
+  /** Prompt-cache keep-warm for this bot's Claude threads: true/false
+   * overrides the workspace setting, absent follows it (null clears over PATCH). */
+  cacheKeepWarm?: boolean | null;
   /** Which app-wide MCP servers (Plugins → MCP servers) this bot mounts, by
    * name. Absent = every enabled server; [] = none (null clears over PATCH). */
   mcpServers?: string[] | null;
@@ -717,6 +731,8 @@ export interface ConfigStatus {
   newBots?: { effort?: EffortLevel };
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
   automaticRecovery?: { enabled: boolean; backup?: ModelSelection };
+  /** Prompt-cache keep-warm for idle Claude threads. Absent from older servers. */
+  cacheKeepWarm?: { enabled: boolean; windowMinutes: number };
   localVm: { mode: "shared" | "per-bot" | "pool"; maxInstances: number; idleTimeoutMinutes?: number };
   /** `providerKeys`: names of the keys saved for OpenCode's other
    * providers, never the keys. */
@@ -824,7 +840,7 @@ export interface BrowserProfile {
 // omit it); configStatusFromFrame normalizes an absent section to 0 rounds.
 export type ConfigStatusFrame = Omit<Pick<
   ConfigStatus,
-  "xai" | "mistral" | "cerebras" | "groq" | "meta" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "toolErrors" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
+  "xai" | "mistral" | "cerebras" | "groq" | "meta" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "mcp" | "toolErrors" | "threads" | "automaticRecovery" | "cacheKeepWarm" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
 >, "toolErrors"> & Partial<Pick<ConfigStatus, "toolErrors">>;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -847,6 +863,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     toolErrors: frame.toolErrors ?? { correctiveRounds: 0 },
     threads: frame.threads,
     automaticRecovery: frame.automaticRecovery,
+    cacheKeepWarm: frame.cacheKeepWarm,
     localVm: frame.localVm,
     opencodeGo: frame.opencodeGo,
     tts: frame.tts,
@@ -972,6 +989,7 @@ export type AppSettingsSection =
   | "companion"
   | "remote"
   | "computer"
+  | "logins"
   | "usage"
   | "people"
   | "activity"
@@ -1271,6 +1289,8 @@ export type Action =
   | { type: "setConversationTurnLimit"; groupId: string; threadId: string; minutes: number | null; dm: boolean }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "interruptGroup"; groupId: string; threadId?: string; onError?: () => void }
+  /** Hold (stop) or release one member of a room without stopping the room. */
+  | { type: "setGroupHold"; groupId: string; botId: string; held: boolean }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "liveCall"; call: LiveCallState | null }
@@ -2668,6 +2688,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "createGroup":
     case "deleteGroup":
     case "interruptGroup":
+    case "setGroupHold":
     case "steerGroupQueued":
     case "createRoutine":
     case "updateRoutine":
@@ -3985,6 +4006,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "deleteGroupTask":
           api<{ group?: Partial<Group> & { id: string } }>(`/api/groups/${action.groupId}/tasks/${action.threadId}`, { method: "DELETE" })
+            .then((r) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
+            .catch(showError);
+          break;
+        case "setGroupHold":
+          api<{ group?: Partial<Group> & { id: string } }>(`/api/groups/${action.groupId}/holds`, {
+            method: "POST",
+            body: JSON.stringify({ botId: action.botId, held: action.held }),
+          })
             .then((r) => r?.group && dispatch({ type: "groupPatched", group: r.group }))
             .catch(showError);
           break;

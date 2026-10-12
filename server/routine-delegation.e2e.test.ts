@@ -159,7 +159,9 @@ describe("routine delegation through the isolated harness", () => {
     const pending = raw("POST", "/api/internal/delegate-bot", { toBotId: peer.id, message: "Produce the fixture report." }, await token(run.threadId));
     await expect.poll(async () => (await messages(run.threadId)).some((message) => message.card?.tool === "delegate_bot"), { timeout: 15_000 }).toBe(true);
     const card = (await messages(run.threadId)).find((message) => message.card?.tool === "delegate_bot");
-    expect(rows()).toEqual([]);
+    // The run's own turn is a root (every turn is one, docs/runtime-contract.md
+    // §10 PR 4); nothing was handed out under it.
+    expect(rows().map((node) => [Boolean(node.parentId), node.threadId])).toEqual([[false, run.threadId]]);
     await api("POST", `/api/bots/${source.id}/respond`, { threadId: run.threadId, requestId: card.card.requestId, behavior: "deny" });
     const denied = await pending;
     expect(denied.status).toBe(403);
@@ -170,7 +172,8 @@ describe("routine delegation through the isolated harness", () => {
     await expect.poll(async () => (await runState(run.id))?.status, { timeout: 15_000 }).toBe("completed");
     const transcript = await messages(run.threadId);
     expect(transcript.find((message) => message.card?.requestId === card.card.requestId).card.answered).toBe("deny");
-    expect(rows()).toEqual([]);
+    // Still nothing handed out; the run's root ended with its turn.
+    await expect.poll(() => rows().map((node) => [Boolean(node.parentId), node.status]), { timeout: 10_000 }).toEqual([[false, "completed"]]);
     expect(Boolean((await botState(peer.id)).busy)).toBe(false);
     expect((await botState(peer.id)).tasks).toHaveLength(1);
     evidence.push({ deniedHandoffCompleted: true, transcript });

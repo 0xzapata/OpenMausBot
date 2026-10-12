@@ -2,7 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserRuntime, TransportError, browserRuntimeEnv, type BrowserSpawnSpec } from "./browser-runtime.ts";
+import { addHeldSecretScrubber, HELD_SECRET_MASK } from "../shared/redact.ts";
+import { BrowserRuntime, TransportError, browserRuntimeEnv, formatBrowserTiming, type BrowserSpawnSpec, type BrowserTiming } from "./browser-runtime.ts";
 
 const runtimes: BrowserRuntime[] = [];
 function runtime(options: ConstructorParameters<typeof BrowserRuntime>[0] = {}) {
@@ -222,6 +223,8 @@ lines.on('line', line => {
   else if (m.params.name === 'agent_browser_snapshot' && process.env.HANG_VERIFICATION === '1') return;
   else if (m.params.name === 'agent_browser_snapshot' && process.env.EMPTY_VERIFICATION === '1') result = { content:[] };
   else if (m.params.name === 'agent_browser_snapshot' && process.env.FAIL_VERIFICATION === '1') result = { isError:true, content:[{type:'text',text:'Snapshot unavailable'}] };
+  // LEAK: a page that shows a filled password back, in every kind of result.
+  else if (process.env.LEAK && m.params.name !== 'agent_browser_get_url') result = { content:[{type:'text',text:'page says ' + process.env.LEAK},{type:'image',data:'AAAA',mimeType:'image/png'}], structuredContent:{ value: process.env.LEAK } };
   else if (m.params.name === 'agent_browser_eval' && process.env.FAIL_EVAL === '1') result = { isError:true, content:[{type:'text',text:'Evaluation failed'}] };
   else if (m.params.name === 'agent_browser_eval') result = { content:[{type:'text',text:JSON.stringify(JSON.stringify({ url:'http://fixture.test/', title:'Fixture', text:pageText + '\\nSay hello' }))}] };
   else if (m.params.name === 'agent_browser_click' && m.params.arguments.selector === '#missing') result = { isError:true, content:[{type:'text',text:'Element not found: #missing'}] };
@@ -247,6 +250,24 @@ function daemonSpec(): { spec: BrowserSpawnSpec; busy: string; calls: () => stri
 }
 
 describe("server-owned browser MCP runtime", () => {
+  it("hands no held secret back to the bot: snapshot, eval, page text, console and network results are all scrubbed", async () => {
+    const leaked = "fake-filled-Passw0rd";
+    // The default scrubber is the server's registry (shared/redact.ts), as in production.
+    const remove = addHeldSecretScrubber((text) => text.split(leaked).join(HELD_SECRET_MASK));
+    try {
+      const value = runtime();
+      const leaking = spec();
+      leaking.env.LEAK = leaked;
+      for (const name of ["agent_browser_snapshot", "agent_browser_eval", "agent_browser_read", "agent_browser_get_text", "agent_browser_console", "agent_browser_network_requests"]) {
+        const result = await value.agentRpc("leaky", leaking, "tools/call", { name, arguments: {} }) as { content: Array<{ type: string; text?: string; data?: string }> };
+        expect(JSON.stringify(result), name).not.toContain(leaked);
+        expect(result.content[0]!.text, name).toBe(`page says ${HELD_SECRET_MASK}`);
+        // A screenshot passes as it is: it cannot be scrubbed.
+        expect(result.content[1], name).toEqual({ type: "image", data: "AAAA", mimeType: "image/png" });
+      }
+    } finally { remove(); }
+  });
+
   it("captures nothing of the page while a person holds it to sign in: no screenshot, snapshot or preview frame", async () => {
     const value = runtime();
     const daemon = daemonSpec();
@@ -587,6 +608,42 @@ describe("server-owned browser MCP runtime", () => {
     await value.close("s");
     await value.agentRpc("s", spec(), "tools/call", { name: "echo" });
     expect(applyViewport).toHaveBeenCalledTimes(2);
+  });
+
+  it("times each bot call by phase, and the preview frame that held the engine", async () => {
+    const timings: BrowserTiming[] = [];
+    const value = runtime({ onTiming: (timing) => timings.push(timing), applyViewport: async () => true });
+    await value.agentRpc("s", spec(), "tools/call", { name: "agent_browser_open", arguments: { url: "https://example.com" } });
+    const [open] = timings;
+    expect(open).toMatchObject({ session: "s", tool: "agent_browser_open", outcome: "ok", inFlight: 0 });
+    expect(open.launchMs).toBeGreaterThan(0);
+    expect(open.engineMs).toBeGreaterThanOrEqual(0);
+    expect(open.observeMs).toBeGreaterThanOrEqual(0);
+    expect(open.totalMs).toBeGreaterThanOrEqual(open.launchMs! + open.engineMs! + open.observeMs!);
+    expect(open.chars).toBeGreaterThan(100);
+
+    // A frame still capturing when the bot's call starts is work the call waits behind.
+    const frame = deferred<{ png: string }>();
+    const capturing = value.previewFrame("s", () => frame.promise);
+    const click = value.agentRpc("s", spec(), "tools/call", { name: "agent_browser_click", arguments: { selector: "@e1" } });
+    frame.resolve({ png: "AAAA" });
+    await Promise.all([capturing, click]);
+    expect(timings.find((timing) => timing.tool === "preview_frame")).toMatchObject({ outcome: "ok", chars: 4, inFlight: 0 });
+    const clicked = timings.find((timing) => timing.tool === "agent_browser_click")!;
+    expect(clicked).toMatchObject({ outcome: "ok", inFlight: 1 });
+    // The page reads before and after the click are observe time, not engine time.
+    expect(clicked.observeMs).toBeGreaterThanOrEqual(0);
+
+    await value.agentRpc("refused", spec(), "tools/call", { name: "agent_browser_open", arguments: { url: "https://refused.test" } });
+    expect(timings.at(-1)).toMatchObject({ session: "refused", outcome: "error" });
+    expect(timings.at(-1)!.observeMs).toBeUndefined();
+  });
+
+  it("formats a timing as one greppable line", () => {
+    expect(formatBrowserTiming({ session: "bot-1", tool: "agent_browser_open", outcome: "ok", totalMs: 1234.4, launchMs: 900.2, engineMs: 210.6, observeMs: 120, chars: 5120, inFlight: 1 }))
+      .toBe("browser timing: agent_browser_open ok total=1234ms launch=900ms engine=211ms observe=120ms chars=5120 inflight=1 session=bot-1");
+    expect(formatBrowserTiming({ session: "bot-1", tool: "preview_frame", outcome: "error", totalMs: 3, inFlight: 0 }))
+      .toBe("browser timing: preview_frame error total=3ms inflight=0 session=bot-1");
   });
 
   it("still runs the bot's call when sizing the page fails", async () => {

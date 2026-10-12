@@ -137,13 +137,13 @@ describe("Settings in Simple mode", () => {
     expect(html).toContain("More providers for OpenCode bots");
   });
 
-  it("stacks Remote access, Servers, Local VM and the built-in browser on Computers", () => {
+  it("stacks Remote access, Servers, Local VM, the built-in browser and Logins on Computers", () => {
     fixture.section = "companion";
     const html = render();
     expect(currentPage(html)).toBe("computers");
-    expect(blocks(html)).toEqual(["companion", "desktopWorkspaces", "computer", "browser"]);
+    expect(blocks(html)).toEqual(["companion", "desktopWorkspaces", "computer", "browser", "logins"]);
     const headings = [...html.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map((match) => match[1]);
-    expect(headings).toEqual(["Remote access", "Servers", "Local VM", "Built-in browser"]);
+    expect(headings).toEqual(["Remote access", "Servers", "Local VM", "Built-in browser", "Logins"]);
     expect(html).toContain('aria-label="Enable the built-in browser"');
   });
 

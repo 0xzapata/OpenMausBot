@@ -116,6 +116,27 @@ function assistantTurnFolds(messages: Message[]): {
   return { byAnchorId, hiddenIds };
 }
 
+/** A room's settled turns, folded under their final message: in a room
+ * every member's working notes would otherwise read as one reply each.
+ * Keyed by the final (terminal) message, which stays in the transcript and
+ * carries the fold above it; the notes are left out of the room's rows. */
+export function roomTurnFolds(messages: Message[]): {
+  byTerminalId: Map<string, TurnFold>;
+  hiddenIds: Set<string>;
+} {
+  const { byAnchorId, hiddenIds } = assistantTurnFolds(messages);
+  const terminals = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role === "bot" && message.kind === "text" && message.turnId && message.turnTerminal) terminals.set(message.turnId, message.id);
+  }
+  const byTerminalId = new Map<string, TurnFold>();
+  for (const fold of byAnchorId.values()) {
+    const terminalId = terminals.get(fold.turnId);
+    if (terminalId) byTerminalId.set(terminalId, fold);
+  }
+  return { byTerminalId, hiddenIds };
+}
+
 function group(messages: Message[], foldAssistantTurns: boolean): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const folds = foldAssistantTurns
