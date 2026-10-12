@@ -5342,26 +5342,32 @@ const coordinator: Coordinator = createCoordinator({
     },
     // A teammate ended its turn on a question for the person: one chip where
     // the work was asked for (the report chip's shape), both conversations
-    // unread, one notification — never more per park.
-    park: (node, question) => {
+    // unread, one notification — never more per park. A restart re-parks
+    // every open question (`restored`); one the person was already shown
+    // stays as it is, so a relaunch neither repeats it nor marks unread what
+    // they had read. Without a live parent there is no chip to look for, and
+    // the question already sits in the teammate's own reply.
+    park: (node, question, restored) => {
       const bot = store.bot(node.botId);
       if (!bot) return;
       const parent = node.parentId ? coordinator.node(node.parentId) : undefined;
       const title = store.taskByThread(bot.id, node.threadId)?.title ?? "Teammate work";
-      if (parent) {
-        const group = parent.groupId ? store.group(parent.groupId) : undefined;
-        const parentLive = parent.groupId ? Boolean(group && store.groupTaskByThread(group.id, parent.threadId)) : Boolean(store.taskByThread(parent.botId, parent.threadId));
-        if (parentLive) {
-          store.appendMessage(parent.threadId, {
-            role: "bot", kind: "activity",
-            from: { botId: bot.id, name: bot.name, color: bot.color },
-            tool: { name: `${bot.name} needs your input: ${question.slice(0, 180)}`, ok: true },
-            ...(node.groupId ? { comm: { groupId: node.groupId, threadId: node.threadId, withBotId: bot.id, withName: bot.name, withColor: bot.color } }
-              : { threadRef: { botId: bot.id, threadId: node.threadId, title } }),
-          });
-          if (group) store.patchGroup(group.id, { unread: true });
-          else store.patchTask(parent.botId, parent.threadId, { unread: true });
-        }
+      const chip = `${bot.name} needs your input: ${question.slice(0, 180)}`;
+      const group = parent?.groupId ? store.group(parent.groupId) : undefined;
+      let liveParent: HandoffView | undefined;
+      if (parent?.groupId) liveParent = group && store.groupTaskByThread(group.id, parent.threadId) ? parent : undefined;
+      else if (parent) liveParent = store.taskByThread(parent.botId, parent.threadId) ? parent : undefined;
+      if (restored && (!liveParent || newestQuestionChip(liveParent.threadId, node.threadId) === chip)) return;
+      if (liveParent) {
+        store.appendMessage(liveParent.threadId, {
+          role: "bot", kind: "activity",
+          from: { botId: bot.id, name: bot.name, color: bot.color },
+          tool: { name: chip, ok: true },
+          ...(node.groupId ? { comm: { groupId: node.groupId, threadId: node.threadId, withBotId: bot.id, withName: bot.name, withColor: bot.color } }
+            : { threadRef: { botId: bot.id, threadId: node.threadId, title } }),
+        });
+        if (group) store.patchGroup(group.id, { unread: true });
+        else store.patchTask(liveParent.botId, liveParent.threadId, { unread: true });
       }
       if (node.groupId) store.patchGroup(node.groupId, { unread: true });
       else store.patchTask(bot.id, node.threadId, { unread: true });
@@ -5385,6 +5391,14 @@ const coordinator: Coordinator = createCoordinator({
 activeCoordinationForThread = threadId => coordinator.activeDirect(threadId);
 const groupUsageReader = new GroupUsageReader(DATA_DIR);
 try { groupUsageReader.refresh(); } catch { /* accounting must not block startup */ }
+/** The label of the newest "needs your input" chip in `threadId` about the
+ * teammate thread `aboutThreadId`, if any (see the coordinator's `park`). */
+function newestQuestionChip(threadId: string, aboutThreadId: string): string | undefined {
+  return store.activePath(threadId).findLast((message) =>
+    message.kind === "activity" && (message.threadRef?.threadId ?? message.comm?.threadId) === aboutThreadId
+    && message.tool?.name.includes(" needs your input: ") === true)?.tool?.name;
+}
+
 /** Where the person stopped reading a conversation: its newest message now.
  * The New divider of the next unread visit goes after it. */
 function readCursor(threadId: string): { lastReadMessageId?: string } {
@@ -11099,7 +11113,7 @@ async function startTurn(
         { id: "credential", label: "Credentials", text: credentialPrompt },
         { id: "recall", label: "Recall", text: recallPrompt },
         { id: "routine", label: "Routines", text: routinePrompt },
-        { id: "routine-execution", label: "Routine execution", text: opts?.automationSource === "schedule" || opts?.automationSource === "manual" ? ROUTINE_EXECUTION_PROMPT : "" },
+        { id: "routine-execution", label: "Routine execution", text: opts?.automationSource === "schedule" || opts?.automationSource === "manual" || opts?.automationSource === "startup" ? ROUTINE_EXECUTION_PROMPT : "" },
         { id: "profile", label: "Profile changes", text: profilePrompt },
         { id: "learn", label: "Skill authoring", text: learnPrompt },
         { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
@@ -11627,6 +11641,10 @@ async function stopBotForEmergencyApprovalDowngrade(botId: string): Promise<void
 
 routines = new RoutineManager({
   emit: broadcast,
+  // Set once per desktop launch (electron/main.mjs), so a server the desktop
+  // restarts within that launch does not run startup routines again.
+  launchId: DESKTOP_MANAGED && /^[\w-]{1,100}$/.test(process.env.OMB_DESKTOP_LAUNCH_ID ?? "")
+    ? process.env.OMB_DESKTOP_LAUNCH_ID : undefined,
   // A run waits while the runtime owes its conversation a teammate's result
   // or the resume that returns it; at a restart the same question decides
   // whether a cut run goes on (the runtime's restart policy) or fails.
@@ -12412,6 +12430,7 @@ const agentRoutine = (
     instructionsTruncated: safeInstructions.length > 2_000,
     continuity: routine.continuity === true,
     overlap: routine.overlap ?? "skip",
+    runOnStartup: routine.runOnStartup === true,
     skippedRuns: routine.skippedRuns ?? 0,
     lastSkippedAt: routineTimestamp(routine.lastSkippedAt),
     failureStreak: routine.failureStreak ?? 0,
@@ -17415,7 +17434,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           openedBy?: string;
         }> = [];
         const stateOf = (bot: BotRecord, task: TaskRecord) => {
-          if (task.activity === "waiting-on-you") return "waiting-on-you" as const;
+          // A teammate that ended on a NEEDS INPUT question waits on the
+          // person too, though its turn is over and nothing marks the task.
+          if (task.activity === "waiting-on-you" || coordinator.awaitingAnswer(task.threadId)) return "waiting-on-you" as const;
           if (threadBusy(bot.id, task.threadId)) return "running" as const;
           if (queuedThreadPosition(bot.id, task.threadId) !== null) return "queued" as const;
           if (coordinator.activeDirect(task.threadId)) return "queued" as const;
@@ -17471,6 +17492,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 403, { error: "that thread is not yours to close — only the bot that opened it, its own bot, or (for a thread a bot opened) a Chief of Staff can" });
         }
         if (threadId === fromThreadId) return json(res, 400, { error: "you cannot close the thread you are speaking in — finish your turn instead" });
+        if (coordinator.awaitingAnswer(threadId)) {
+          return json(res, 409, { error: `#${task.title} is waiting on the person's answer to its question — it continues once they reply there, so leave it open` });
+        }
         if (threadBusy(owner.id, threadId) || queuedThreadPosition(owner.id, threadId) !== null || coordinator.activeDirect(threadId)) {
           return json(res, 409, { error: `#${task.title} is still running — wait for it to finish (list_threads), or the person can stop it from the app` });
         }

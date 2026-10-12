@@ -273,9 +273,9 @@ export interface TurnRunner {
   /** Run one turn of the assignee. Resolves when the engine settles. The
    * signal aborts the turn (a cancel or a stop). */
   run(a: Assignment, input: RunInput, signal: AbortSignal): Promise<RunResult>;
-  /** The assignment is parked on the person; show (or re-show after a
-   * restart) what it needs. */
-  park(a: Assignment, question: string): void;
+  /** The assignment is parked on the person; show what it needs. `restored`
+   * is the restart's re-park: show it again only if it never got shown. */
+  park(a: Assignment, question: string, restored?: boolean): void;
   /** A settled child, into its requester's conversation (a chip, a line), or
    * a root that ended alone, into its own. Called once per settlement. */
   report(a: Assignment, parent?: Assignment): void;
