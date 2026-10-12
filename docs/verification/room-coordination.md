@@ -223,8 +223,8 @@ revocation. The UI test sends from the real
 composer and clicks the existing handoff receipt into the exact recipient task,
 with ordinary tool chips hidden. Screenshots and JSON are retained beside the
 fixture's printed server log; all fixture processes and temporary data are closed.
-A consultation (`coordinate_bots` with `consult: true`, or its `ask_bot`
-alias) is covered by `server/comms.test.ts` and `server/runtime-paths.e2e.test.ts`:
+A consultation (`coordinate_bots` with `consult: true`) is covered by
+`server/comms.test.ts` and `server/runtime-paths.e2e.test.ts`:
 there is no inline wait; the asker finishes its turn with a receipt and the
 teammate's answer resumes it, in a work thread of the asker's conversation
 (docs/runtime-contract.md §9).
@@ -235,8 +235,7 @@ an id; a name that means exactly one reachable teammate resolves to it and the
 work runs as if the id had been sent; a name nobody has is refused with the
 argument echoed and `list_bots` named (`No bot with id or name "…"`); a hidden
 teammate's id is refused as no longer available; a name two reachable teammates
-share is refused with the count and the way to the ids, never guessed. The same
-resolution serves the deprecated aliases (`ask_bot`, `delegate_bot`), and every
+share is refused with the count and the way to the ids, never guessed. Every
 roster line the Chief and its peers read carries the teammate's `[id: …]`, so
 the tools can be called straight from the prompt.
 Unit checks cover bounded depth/fan-out, idempotent retry, original request
@@ -257,9 +256,8 @@ routine and verifies its source-room card and error-free recovery broadcasts.
 The subprocess fixture checks malformed output, unexpected exit and bounded
 cleanup so an agent-process failure cannot silently pass or hang these tests.
 Routine checks enter through real routine execution, where `coordinate_bots`
-and, for one release, the `delegate_bot` / `ask_bot` aliases hand work on; the
-run's root names the run as its requester (docs/runtime-contract.md §9). The
-aliases answer with a deprecation line, never an error or an empty reply.
+hands work on; the run's root names the run as its requester
+(docs/runtime-contract.md §9).
 Thread checks also cover self-owned jobs, queued provenance and the transition
 from a completed routine back to a normal user conversation.
 
@@ -290,8 +288,8 @@ Every turn — a chat, a room, a routine run, a webhook run, a goal run, a Cloud
 guest's turn, a standing external runtime — hands teammate work on with the
 one `coordinate_bots` tool (work, a question with `consult`, a one-way notice
 with `reply: "none"`, a fresh thread with `thread: "new"`) and reads it with
-`assignment_status`; the deprecated aliases map onto it for one release
-(docs/runtime-contract.md §9). Any turn can still use `start_thread` to open
+`assignment_status` (docs/runtime-contract.md §9). Any turn can still use
+`start_thread` to open
 separate work on itself, without moving the person's selected conversation;
 the runtime's depth limit bounds the tree. A teammate's hand-off to a bot
 runs in that bot's work thread for the sender, never in a conversation a

@@ -117,7 +117,7 @@ Every turn that may hand work on, whatever started it, gets the same tools:
 - `assignment_status(id?)`: read-only; one assignment's status, outcome and result, or everything this conversation still waits on. External runtimes long-poll it; it never blocks a bot.
 - `list_bots`, `start_thread` (on yourself), `list_threads`, `close_thread`, `post_to_room`, `list_rooms`, the Chief tools and `retry_thread` are unchanged.
 
-For one release the old names stay as aliases with a deprecation line in their result: `delegate_bot`, `ask_bot` (no inline wait any more: the answer resumes the asker), `send_to_bot`, `start_thread(bot_id)` on a peer, `check_delegation`, `wait_delegation`.
+The old names (`delegate_bot`, `ask_bot`, `send_to_bot`, `check_delegation`, `wait_delegation`) stayed for one release as aliases with a deprecation line in their result and were removed in PR 5; `start_thread` opens a job on the bot itself.
 
 The requester of a root is whoever started the turn: a person's chat, a routine run (`routine_run`, with the run id), a webhook or Cloud guest (outside lineage), an external runtime (`external_runtime`, `reply: poll`: its root completes without a turn and it reads its inbox through `assignment_status`). The host passes that opener on the first hand-off of the turn; the root's resume runs as a turn of the same kind (a routine's resume is a routine turn).
 
