@@ -2354,9 +2354,14 @@ function externalRuntimeCapability(header: string | string[] | undefined): Inter
   };
 }
 
+/** Roots begun for a test capability minted while no turn ran in its
+ * thread (the testing route below): they stand in for a turn, so the next
+ * real turn there ends them, or the runtime would never overlap the two. */
+const standInRoots = new Set<string>();
 function beginInternalCapabilityGeneration(threadId: string, generation = randomUUID()): string {
   const previous = activeInternalGenerationByThread.get(threadId);
   if (previous) revokeInternalCapabilityGeneration(threadId, previous);
+  if (previous && standInRoots.delete(previous)) coordinator.endTurn(previous, { ok: true, text: "" });
   activeInternalGenerationByThread.set(threadId, generation);
   return generation;
 }
@@ -18248,12 +18253,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!parsed.success || !store.bot(parsed.data.botId)) {
         return json(res, 400, { error: "invalid test capability" });
       }
-      const generation = beginInternalCapabilityGeneration(parsed.data.threadId);
-      // The capability stands in for a turn of that bot in that thread, so
-      // the hand-offs it makes need what any turn's have: the turn's root,
-      // begun as a person's turn there would begin it (never ended: the
-      // stand-in has no turn end).
-      {
+      // A capability minted while a turn runs in that thread is that turn's:
+      // it joins the turn's generation, so what it hands off belongs to the
+      // turn's root, as the turn's own capability would. With no turn there
+      // it stands in for one: its own generation and a root begun as a
+      // person's turn would begin it, ended when the next real turn starts.
+      const live = activeInternalGenerationByThread.get(parsed.data.threadId);
+      const liveRoot = live ? coordinator.node(live) : undefined;
+      const generation = liveRoot && !ENDED.has(liveRoot.status) ? live! : beginInternalCapabilityGeneration(parsed.data.threadId);
+      if (generation !== live) {
+        standInRoots.add(generation);
         const minted = store.bot(parsed.data.botId)!;
         const threadId = parsed.data.threadId;
         const owner = connectorThread(minted.id, threadId);
