@@ -191,6 +191,10 @@ const ROUTINE_FIELDS_SCHEMA = {
     enum: ["skip", "queue"],
     description: "While this routine is still working, skip scheduled occurrences (default) or queue at most one run. Queue skips further occurrences until the pending run starts; it never builds an unlimited backlog. Manual and webhook requests are separate.",
   },
+  run_on_startup: {
+    type: "boolean",
+    description: "Repeating routines only: also run once each time OpenMausBot starts, besides the schedule, for a computer often off when it is due. Defaults to false.",
+  },
 } as const;
 
 // propose_profile's one sentence about for_bot_id, which a bot that is not a
@@ -518,6 +522,20 @@ const TOOL_DEFINITIONS = [
         },
       },
       required: ["credential_id"],
+    },
+  },
+  {
+    name: "request_sign_in",
+    description:
+      "Ask the person to sign in to a website themselves, in the browser or on the computer you are using now. Use it when a page needs a login you do not have, or a one-time code, CAPTCHA or other step only they can do. They get a card and a notification, sign in where you work, and press Done. Never ask for a password or code in chat. After calling it, end your turn; OpenMausBot resumes you when they finish or decline, and then check you are signed in.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        site: { type: "string", minLength: 1, maxLength: 2048, description: "The page to sign in on: its address, or the domain, such as example.com." },
+        reason: { type: "string", maxLength: 240, description: "One short sentence, in your words, on what the sign-in is for." },
+      },
+      required: ["site"],
     },
   },
   {

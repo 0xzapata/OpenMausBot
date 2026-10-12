@@ -6378,6 +6378,154 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("asks the person to sign in with one card and one notification, supersedes the older card, and resumes the bot on Done or Cancel", async () => {
+    let botId: string | undefined;
+    let stream: Awaited<ReturnType<typeof openSse>> | undefined;
+    try {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      // No turn is running, so the bot's Works on names the place.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computer: "browser",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      stream = await openSse(`${BASE}/api/events`);
+      await stream.until((frame) => frame.kind === "hello");
+      let token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const request = (site: unknown, reason?: string) => fetch(`${BASE}/api/internal/request-sign-in`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site, ...(reason ? { reason } : {}) }),
+      });
+      const notices = () => stream!.frames.filter((frame) => frame.kind === "notify" && frame.notification?.kind === "sign-in");
+      for (const site of ["javascript:alert(1)", "file:///etc/passwd", "https://user:pw@example.com/", "example", ""]) {
+        expect((await request(site)).status, site).toBe(400);
+      }
+      expect(notices()).toHaveLength(0);
+
+      const first = await request("https://example.com/login", "The monthly report is behind a login.");
+      expect(first.status).toBe(201);
+      const firstCard = await first.json() as { messageId: string; site: string; place: string };
+      expect(firstCard).toMatchObject({ site: "example.com", place: "browser" });
+      const notice = await stream.until((frame) => frame.kind === "notify" && frame.notification?.kind === "sign-in");
+      expect(notice.notification).toMatchObject({
+        botId: bot.id, threadId: bot.threadId,
+        title: `${bot.name} needs you to sign in to example.com`,
+        body: "The monthly report is behind a login.",
+      });
+      await stream.until((frame) => frame.kind === "computer-control" && frame.botId === bot.id && frame.help?.messageId === firstCard.messageId);
+      expect(notices()).toHaveLength(1);
+
+      const second = await request("www.example.com", "Still behind a login.");
+      expect(second.status).toBe(201);
+      const secondCard = await second.json() as { messageId: string };
+      await stream.until((frame) => frame.kind === "computer-control" && frame.help?.messageId === secondCard.messageId);
+      await expect.poll(() => notices().length).toBe(2);
+      const card = async (id: string) => (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === id);
+      expect((await card(firstCard.messageId)).signIn).toMatchObject({ site: "example.com", superseded: true });
+      expect(await card(secondCard.messageId)).toMatchObject({
+        kind: "signin",
+        text: `${bot.name} needs you to sign in to example.com. Open this conversation in OpenMausBot to sign in, then press Done.`,
+        signIn: { url: "https://www.example.com/", site: "example.com", place: "browser", reason: "Still behind a login." },
+      });
+      expect((await card(secondCard.messageId)).signIn.superseded).toBeUndefined();
+      const answer = (id: string, choice: "done" | "cancel") => api("POST", `/api/bots/${bot.id}/sign-in-cards/${id}/${choice}`, { threadId: bot.threadId });
+      expect((await answer(firstCard.messageId, "done")).status).toBe(409);
+
+      // Done hands back, drops the plea and resumes the bot with the news.
+      rmSync(fakeClaudeDump, { force: true });
+      expect(await answer(secondCard.messageId, "done")).toMatchObject({ status: 200, body: { done: true, resumed: true } });
+      const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
+      expect(JSON.stringify(resumed.prompt)).toContain("the person finished signing in to example.com. Check you are signed in, then continue");
+      expect((await card(secondCard.messageId)).signIn).toMatchObject({ done: true, resumed: true });
+      await stream.until((frame) => frame.kind === "computer-control" && frame.botId === bot.id && frame.helpReason === null && !frame.help);
+      // Pressing it again changes nothing; the other answer is refused.
+      expect(await answer(secondCard.messageId, "done")).toMatchObject({ status: 200, body: { done: true, resumed: true } });
+      expect((await answer(secondCard.messageId, "cancel")).status).toBe(409);
+      // This suite's engine hangs every turn; stop the resumed one.
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 10_000 }).toBe(false);
+
+      // Cancel resumes it too, with the person's no.
+      // The resumed turn's settling revoked that capability; a new turn has its own.
+      token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const thirdResponse = await request("mail.example.org");
+      const third = await thirdResponse.json() as { messageId: string };
+      expect(thirdResponse.status, JSON.stringify(third)).toBe(201);
+      rmSync(fakeClaudeDump, { force: true });
+      expect(await answer(third.messageId, "cancel")).toMatchObject({ status: 200, body: { cancelled: true, resumed: true } });
+      const declined = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
+      expect(JSON.stringify(declined.prompt)).toContain("the person declined to sign in to mail.example.org");
+      expect((await card(third.messageId)).signIn).toMatchObject({ cancelled: true, resumed: true });
+      await expect.poll(() => notices().length).toBe(3);
+    } finally {
+      if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      stream?.close();
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 60_000);
+
+  it("holds a sign-in's resume behind the turn still running, through the credential card's continuation", async () => {
+    let botId: string | undefined;
+    try {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computer: "browser",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      // A turn that keeps running (this suite's engine hangs every turn).
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "keep working on the dashboard" })).status).toBe(202);
+      await readJsonFileWhenReady(fakeClaudeDump);
+      rmSync(fakeClaudeDump, { force: true });
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const requested = await fetch(`${BASE}/api/internal/request-sign-in`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site: "example.com" }),
+      });
+      expect(requested.status).toBe(201);
+      const { messageId } = await requested.json() as { messageId: string };
+      expect(await api("POST", `/api/bots/${bot.id}/sign-in-cards/${messageId}/done`, { threadId: bot.threadId }))
+        .toMatchObject({ status: 200, body: { done: true, resumed: true } });
+      // The running turn keeps the thread: the resume waits in the queue
+      // the credential card's continuation uses, and is not dropped.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
+      const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump, 10_000);
+      expect(JSON.stringify(resumed.prompt)).toContain("the person finished signing in to example.com");
+    } finally {
+      if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 60_000);
+
+  it("refuses a sign-in request where nothing names a place to sign in", async () => {
+    let botId: string | undefined;
+    try {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const response = await fetch(`${BASE}/api/internal/request-sign-in`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, site: "example.com" }),
+      });
+      expect(response.status).toBe(409);
+      expect((await response.json() as { error: string }).error).toMatch(/no browser or computer/);
+      const messages = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages;
+      expect(messages.some((message: { kind: string }) => message.kind === "signin")).toBe(false);
+    } finally {
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+    }
+  });
+
   it("supersedes an earlier pending credential card when the same key is asked for again", async () => {
     let botId: string | undefined;
     try {
@@ -8556,13 +8704,19 @@ describe("harness HTTP API", () => {
     await api("PUT", "/api/config", { rooms: { turnTimeoutMinutes: 5 } });
   });
 
-  it("cards every ask when Claude's reviewer never started, says so once, and can hand the allow to Claude for the session", async () => {
+  it("cards asks when Claude's reviewer never started and remembers an exact configured MCP read", async () => {
     // A bot on Approve for me with Haiku 4.5: the CLI takes `auto`, runs
     // Manual, and asks about everything. OpenMausBot passes that through —
     // no rule of its own answers — and says why, once.
     const bot = (await api("POST", "/api/bots", { name: "Quill" })).body.bot;
     const conns: Socket[] = [];
     try {
+      expect((await api("POST", "/api/mcp/servers", {
+        name: "linear",
+        command: process.execPath,
+        args: ["--experimental-strip-types", FAKE_MCP_SERVER],
+      })).status).toBe(201);
+      expect((await api("PATCH", "/api/mcp/servers/linear", { enabled: true })).status).toBe(200);
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         modelSelection: { instanceId: "claude", model: "claude-haiku-4-5" },
         approvalMode: "auto",
@@ -8575,7 +8729,12 @@ describe("harness HTTP API", () => {
         mcpConfig: z.object({ mcpServers: z.object({ ogb: z.object({ args: z.array(z.string()) }) }) }),
       }).parse(await readJsonFileWhenReady(fakeClaudeDump));
       const socketPath = dump.mcpConfig.mcpServers.ogb.args[1];
-      const raise = async (id: string, command: string, extra: Record<string, unknown> = {}) => {
+      const raise = async (
+        id: string,
+        command: string,
+        extra: Record<string, unknown> = {},
+        tool = "Bash",
+      ) => {
         const conn = connect(socketPath);
         conns.push(conn);
         const answered = new Promise<{ behavior: string; always?: boolean }>((resolve) => {
@@ -8590,7 +8749,7 @@ describe("harness HTTP API", () => {
           conn.on("connect", resolve);
           conn.on("error", reject);
         });
-        conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input: { command, ...extra } }) + "\n");
+        conn.write(JSON.stringify({ t: "ask", id, tool, input: { command, ...extra } }) + "\n");
         return answered;
       };
       type Msg = { kind: string; tool?: { name: string }; card?: { title: string; subtitle: string; requestId?: string; held?: string; heldCode?: string; allowKey?: string; allowSession?: boolean; answered?: string } };
@@ -8627,6 +8786,35 @@ describe("harness HTTP API", () => {
       expect(plain).toMatchObject({ behavior: "allow" });
       expect(plain).not.toHaveProperty("always");
 
+      // A configured, read-shaped MCP tool offers an app-owned durable grant.
+      // The first request still waits for the person; the exact second one is
+      // answered automatically, even though this Claude session has no native
+      // reviewer. A different/write-shaped tool gets no such grant.
+      const firstLinear = raise("ask-linear-list-1", "list KAT issues", { team: "KAT" }, "mcp__linear__list_issues");
+      const linearCard = await expect.poll(async () => (await messages()).find((m) => m.card?.subtitle === "list KAT issues")?.card).toBeTruthy()
+        .then(async () => (await messages()).find((m) => m.card?.subtitle === "list KAT issues")!.card!);
+      expect(linearCard.allowKey).toMatch(/^provider-tool:claude:linear:list_issues:/);
+      expect((await api("POST", `/api/bots/${bot.id}/always-allow`, {
+        threadId: bot.threadId,
+        allowKey: linearCard.allowKey,
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/respond`, {
+        requestId: linearCard.requestId,
+        behavior: "allow",
+      })).status).toBe(200);
+      await expect(firstLinear).resolves.toMatchObject({ behavior: "allow" });
+
+      const repeatedLinear = raise("ask-linear-list-2", "list KAT issues again", { team: "KAT" }, "mcp__linear__list_issues");
+      await expect(repeatedLinear).resolves.toMatchObject({ behavior: "allow" });
+      expect((await messages()).find((m) => m.card?.subtitle === "list KAT issues again")).toBeUndefined();
+
+      const linearWrite = raise("ask-linear-create", "create KAT issue", { team: "KAT" }, "mcp__linear__create_issue");
+      await expect.poll(async () => (await messages()).find((m) => m.card?.subtitle === "create KAT issue")?.card?.title).toBe("Approval needed");
+      const writeCard = (await messages()).find((m) => m.card?.subtitle === "create KAT issue")!.card!;
+      expect(writeCard.allowKey).toBeUndefined();
+      expect((await api("POST", `/api/bots/${bot.id}/respond`, { requestId: writeCard.requestId, behavior: "deny" })).status).toBe(200);
+      await expect(linearWrite).resolves.toMatchObject({ behavior: "deny" });
+
       // A card that offers no session allow keeps none, whatever the answer
       // claims: widening the sandbox is allowed once at most.
       const widen = raise("ask-widen", "ls /", { dangerouslyDisableSandbox: true });
@@ -8637,10 +8825,18 @@ describe("harness HTTP API", () => {
       const once = await widen;
       expect(once).toMatchObject({ behavior: "allow" });
       expect(once).not.toHaveProperty("always");
+
+      // The grant belongs to the bot, not only to the conversation where the
+      // card appeared. A later delegated/direct task must inherit it instead
+      // of asking the person for the same exact read again.
+      const nextTask = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Later work" });
+      expect(nextTask.status).toBe(201);
+      expect(nextTask.body.task.alwaysAllow).toContain(linearCard.allowKey);
     } finally {
       for (const conn of conns) conn.destroy();
       await api("POST", `/api/bots/${bot.id}/interrupt`);
       await api("DELETE", `/api/bots/${bot.id}`);
+      await api("DELETE", "/api/mcp/servers/linear").catch(() => undefined);
     }
   });
 
@@ -10603,6 +10799,7 @@ describe("harness HTTP API", () => {
       const legacy = await api("POST", "/api/routines", {
         name: `Legacy ${fakeNameSecret}`,
         continuity: true,
+        runOnStartup: true,
         prompt: `${fakeSecret}\n${"Review the archive. ".repeat(180)}`,
         botId: bot.id,
         runOn: "maus",
@@ -10636,6 +10833,7 @@ describe("harness HTTP API", () => {
       }).parse(await listed.json());
       const legacyResult = listedBody.routines.find((routine) => routine.id === legacyRoutineId)!;
       expect(legacyResult.continuity).toBe(true);
+      expect(legacyResult.runOnStartup).toBe(true);
       expect(legacyResult.instructions).not.toContain(fakeSecret);
       expect(legacyResult.name).not.toContain(fakeNameSecret);
       expect(legacyResult.instructions).toContain("redacted");

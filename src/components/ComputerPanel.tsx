@@ -56,7 +56,8 @@ import { BrowserPanel } from "./BrowserPanel";
 // first time the tab opens, never with the app.
 const DataPanel = lazy(() => import("./data/DataPanel").then((module) => ({ default: module.DataPanel })));
 import { browserAvailable, browserUnavailableReason, builtInBrowserEnabled } from "@/lib/feature-flags";
-import { transitionComputerControlLease, type ComputerControlAction } from "@/lib/computer-control";
+import { parseComputerHelp, transitionComputerControlLease, type ComputerControlAction } from "@/lib/computer-control";
+import { SignInBanner } from "./SignInRequestCard";
 import { LocalScreenPreview } from "./LocalScreenPreview";
 import { LinuxLocalControl } from "./LinuxLocalControl";
 import { MacLocalControl } from "./MacLocalControl";
@@ -156,6 +157,7 @@ interface LocalVmStatus {
 const computerControlSnapshotSchema = z.object({
   held: z.boolean().optional().default(false),
   helpReason: z.string().nullable().optional().default(null),
+  help: z.unknown().optional().transform(parseComputerHelp),
 }).passthrough();
 
 const PANEL_WIDTH_KEY = "omb-computer-panel-width";
@@ -455,6 +457,21 @@ export function ComputerPanel({
     writeComputerPanelView(bot.id, "data");
     dispatch({ type: "dataResultFocusConsumed", requestId: requestedDataResult.requestId });
   }, [bot.id, dispatch, requestedDataResult]);
+
+  // A sign-in card's Open: the place the bot works. The built-in browser
+  // opens at its page with the person already in control; a computer opens
+  // on its view, where the banner below offers Take control.
+  const requestedSignIn = state.signInFocus?.botId === bot.id ? state.signInFocus : undefined;
+  const [signInRequest, setSignInRequest] = useState<{ url: string; site: string; nonce: number }>();
+  useEffect(() => {
+    if (!requestedSignIn || requestedSignIn.consumed) return;
+    const view = requestedSignIn.place === "browser" ? "browser" : "computer";
+    explicitPanelView.current = true;
+    setPanelView(view);
+    writeComputerPanelView(bot.id, view);
+    if (view === "browser") setSignInRequest({ url: requestedSignIn.url, site: requestedSignIn.site, nonce: requestedSignIn.requestId });
+    dispatch({ type: "signInFocusConsumed", requestId: requestedSignIn.requestId });
+  }, [bot.id, dispatch, requestedSignIn]);
 
   // Pause the screenshot poll while this bot's viewer is open; seed from the
   // live viewer so a remount/switch mid-session doesn't wrongly resume it.
@@ -962,6 +979,10 @@ export function ComputerPanel({
   // who-is-driving: SSE keeps this fresh; the mount fetch covers a panel
   // opened after the last frame (e.g. an app reload mid-hold)
   const control = state.computerControl[bot.id] ?? { held: false, helpReason: null };
+  // The bot's open sign-in request, from its plea: the panel's banner names
+  // the site and settles the card, as the card's own Done and Cancel do.
+  const signInHelp = control.help ?? null;
+  const signInAsker = signInHelp ? state.bots.find((candidate) => candidate.id === signInHelp.botId)?.name ?? bot.name : bot.name;
   useEffect(() => {
     let alive = true;
     api(`/api/bots/${bot.id}/computer/control`)
@@ -973,6 +994,7 @@ export function ComputerPanel({
           botId: bot.id,
           held: snap.held === true,
           helpReason: snap.helpReason,
+          help: snap.help,
         });
       })
       .catch(() => {});
@@ -991,6 +1013,7 @@ export function ComputerPanel({
       botId: bot.id,
       held: snap.held === true,
       helpReason: snap.helpReason,
+      help: snap.help,
     });
     return snap;
   }, [bot.id, dispatch]);
@@ -1025,6 +1048,18 @@ export function ComputerPanel({
     }
   }, [transitionControl]);
 
+  // A computer's plea gets Take control in its banner; the built-in
+  // browser's own toolbar has one, and this computer is taken in person.
+  const bannerTakesControl = Boolean(signInHelp && signInHelp.place !== "browser" && signInHelp.place !== "local" &&
+    (cloudPreviewReady || phase === "vm" || currentTeamComputer));
+  const signInBanner = (takeControl?: () => void) => signInHelp && (
+    <SignInBanner
+      help={signInHelp}
+      askerName={signInAsker}
+      takeControl={takeControl && { onClick: takeControl, disabled: controlPending || pending === "join", pending: pending === "join" }}
+      onError={setError}
+    />
+  );
 
   const openDesktop = async () => {
     const controller = new AbortController();
@@ -1525,7 +1560,8 @@ export function ComputerPanel({
       ) : panelView === "browser" && browserEnabled ? (
         <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
           {browserSwitchRow}
-          <BrowserPanel bot={bot} />
+          {signInHelp?.place === "browser" && <div className="-mt-1 mb-3">{signInBanner()}</div>}
+          <BrowserPanel bot={bot} signIn={signInRequest} />
           {errorText && (
             <div role="alert" className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">
               {errorText}
@@ -1807,33 +1843,10 @@ export function ComputerPanel({
             </button>
           )}
 
-        {/* Who is driving — take the wheel / hand it back */}
-        {(cloudPreviewReady || phase === "vm" || currentTeamComputer) && control.helpReason && !control.held && (
-          <div className="mt-3 rounded-xl border border-warning/25 bg-warning/10 p-4">
-            <div className="text-[13px] leading-relaxed text-warning">
-              <b>{bot.name}</b> {t("computer.askedHands")} {control.helpReason}
-            </div>
-            <div className="mt-2 flex gap-2">
-              <button
-                onClick={() =>
-                  phase === "vm" || cloudPreviewReady ? void openDesktop() : controlAction("take")
-                }
-                disabled={controlPending || pending === "join"}
-                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-accent py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-50"
-              >
-                {pending === "join" ? <Loader2 size={14} className="animate-spin" /> : <Hand size={14} />}
-                {t("computer.takeControl")}
-              </button>
-              <button
-                onClick={() => controlAction("dismiss-help")}
-                disabled={controlPending}
-                className="rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
-              >
-                {t("computer.dismiss")}
-              </button>
-            </div>
-          </div>
-        )}
+        {/* Who is driving — a sign-in the bot waits on, take the wheel / hand it back */}
+        {signInHelp && signInHelp.place !== "browser" && signInBanner(bannerTakesControl && !control.held
+          ? () => phase === "vm" || cloudPreviewReady ? void openDesktop() : void controlAction("take")
+          : undefined)}
         {(cloudPreviewReady || phase === "vm" || currentTeamComputer) && control.held && (
           <div className="mt-3 rounded-xl border border-accent/25 bg-accent/10 p-4">
             <div className="text-[13px] leading-relaxed text-ink">
@@ -1866,7 +1879,7 @@ export function ComputerPanel({
             {t("computer.openLiveDesktop")}
           </button>
         )}
-        {advanced && phase === "vm" && !control.held && !control.helpReason && (
+        {advanced && phase === "vm" && !control.held && !bannerTakesControl && (
           <button
             onClick={() => void openDesktop()}
             disabled={controlPending || pending === "join" || !vmViewerUrl}
@@ -1891,7 +1904,7 @@ export function ComputerPanel({
         {/* Simple mode: one row under the screen — Take control, Full screen, Sleep. */}
         {!advanced && (cloudPreviewReady || phase === "vm") && (
           <div className="mt-3 flex gap-2" data-testid="computer-actions">
-            {!control.held && !control.helpReason && (
+            {!control.held && !bannerTakesControl && (
               <button
                 type="button"
                 onClick={() => void openDesktop()}
@@ -1931,7 +1944,7 @@ export function ComputerPanel({
         {/* Cloud-only actions */}
         {advanced && cloudPreviewReady && (
           <div className="mt-3 flex gap-2">
-            {!control.held && !control.helpReason && (
+            {!control.held && !bannerTakesControl && (
               <button
                 onClick={() =>
                   void openDesktop()

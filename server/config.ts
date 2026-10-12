@@ -92,9 +92,10 @@ const vpsConfigSchema = z.object({
     message: "must be a simple SSH config alias",
   }).optional(),
 });
-/** Attach a bot's browser to a Chrome the operator already has running,
- * instead of agent-browser spawning its own (#1396). Deliberately a
- * server-owned config field, not an env-var passthrough: the ambient
+/** Where "My Chrome" is when agent-browser cannot find it by itself: a
+ * Chrome the operator already has running, on another port or machine
+ * (#1396). Only browser profiles set to My Chrome attach to it. Deliberately
+ * a server-owned config field, not an env-var passthrough: the ambient
  * process environment must never redirect a bot's browser
  * (server/browser-live.test.ts pins this guarantee down). */
 const browserEngineConfigSchema = z.object({
@@ -148,6 +149,9 @@ const browserProfileSchema = z.object({
   // directories would otherwise collide on case-insensitive filesystems.
   id: z.string().regex(BROWSER_PROFILE_ID).refine((id) => id !== "guest", "guest is reserved"),
   name: z.string().trim().min(1).max(40),
+  /** "chrome": bots on this profile use the person's own running Chrome
+   * (My Chrome) instead of the built-in browser. Absent is built-in. */
+  browser: z.literal("chrome").optional(),
 }).strict();
 // #567 accepted mixed-case and duplicate ids. This schema exists only at the
 // persisted-data boundary so an existing config can be read and migrated;
@@ -158,6 +162,7 @@ const legacyBrowserProfileSchema = z.object({
   /** Exact #567 Electron partition identity. This is persisted only by the
    * migration boundary; config PATCH callers cannot choose or redirect it. */
   partitionId: z.string().regex(LEGACY_BROWSER_PROFILE_ID).refine((id) => id !== "guest", "guest is reserved").optional(),
+  browser: z.literal("chrome").optional(),
 }).strict();
 
 interface StoredBrowserProfileMigration {
@@ -261,6 +266,7 @@ function migrateStoredBrowserProfiles(
     const id = canonicalIds[index]!;
     const partitionId = effectivePartitions[index]!;
     const migrated: BrowserProfile = { id, name: profile.name };
+    if (profile.browser) migrated.browser = profile.browser;
     if (partitionId !== id) migrated.partitionId = partitionId;
     // Exact duplicates are inherently ambiguous. Preserve the first mapping;
     // later duplicate records get isolated ids but existing bot references
@@ -644,8 +650,8 @@ export interface AppConfig {
   /** Named browser sessions any bot can be pointed at. */
   browserProfiles?: BrowserProfile[];
   /** CDP target of a Chrome the operator already has running (a bare port,
-   * e.g. "9333", or an http(s)/ws(s) URL). When set, a bot's browser
-   * attaches to it instead of agent-browser spawning its own (#1396). */
+   * e.g. "9333", or an http(s)/ws(s) URL). Browser profiles set to My Chrome
+   * attach to it instead of looking for the person's Chrome (#1396). */
   browserEngine?: { attachCdpUrl?: string };
   instances?: InstanceConfigMap;
 }

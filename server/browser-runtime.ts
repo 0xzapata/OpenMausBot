@@ -52,11 +52,17 @@ export function browserRuntimeEnv(overrides: Record<string, string | undefined>)
 export const BROWSER_VIEWPORT = { width: 1280, height: 720 } as const;
 export const BROWSER_VIEWPORT_ARGS = ["set", "viewport", String(BROWSER_VIEWPORT.width), String(BROWSER_VIEWPORT.height)] as const;
 
+/** A session attached to a Chrome that is already running: the person's own
+ * (My Chrome), found automatically or at a configured address. */
+export function attachesToChrome(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.AGENT_BROWSER_CDP || env.AGENT_BROWSER_AUTO_CONNECT);
+}
+
 /** Only a headless browser this server launches is OMB's to size. A browser
  * attached over CDP is someone's own Chrome, and a headed window is the
  * user's to size. */
 export function ownsBrowserViewport(env: NodeJS.ProcessEnv): boolean {
-  return env.AGENT_BROWSER_HEADLESS === "1" && !env.AGENT_BROWSER_CDP;
+  return env.AGENT_BROWSER_HEADLESS === "1" && !attachesToChrome(env);
 }
 
 export class TransportError extends Error {}
@@ -289,6 +295,9 @@ interface Gate {
   ready: boolean;
   releasing: boolean;
   agents: number;
+  /** Agent actions whose command reached the engine. A refused call or a
+   * preview frame counts in `agents` but leaves the page as it was. */
+  dispatched: number;
   humans: number;
   uncertain: boolean;
   /** The agent call that lost its transport (a timeout, a crash), while it is
@@ -348,7 +357,7 @@ export class BrowserRuntime {
   private gate(session: string): Gate {
     let gate = this.gates.get(session);
     if (!gate) {
-      gate = { owner: null, ready: false, releasing: false, agents: 0, humans: 0, uncertain: false, lostCall: null, closing: false, changed: new Set() };
+      gate = { owner: null, ready: false, releasing: false, agents: 0, dispatched: 0, humans: 0, uncertain: false, lostCall: null, closing: false, changed: new Set() };
       this.gates.set(session, gate);
     }
     return gate;
@@ -430,6 +439,7 @@ export class BrowserRuntime {
     const phases: Partial<BrowserTiming> = {};
     const invoke = async () => {
       const launchStarted = performance.now();
+      let dispatched = false;
       const entry = this.connect(session, spec);
       await entry.client.ready;
       beforeDispatch?.();
@@ -471,6 +481,7 @@ export class BrowserRuntime {
           if (this.gate(session).owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
         }
         const engineStarted = performance.now();
+        if (method === "tools/call") { dispatched = true; gate.dispatched++; }
         let result = await entry.client.rpc(method, request);
         phases.engineMs = performance.now() - engineStarted;
         beforeDispatch?.(); // A turn revoked while the tool ran receives no result.
@@ -543,6 +554,7 @@ export class BrowserRuntime {
         }
         throw error;
       }
+      finally { if (dispatched) gate.dispatched--; }
     };
     if (method !== "tools/call") return invoke();
     try {
@@ -615,8 +627,9 @@ export class BrowserRuntime {
     }
   }
 
-  /** Resolves true when the grant had to wait for the bot's own browser
-   * action to finish: the page may have changed since the person aimed. */
+  /** Resolves true when the grant had to wait for a bot command the engine
+   * received: the page may have changed since the person aimed. A wait for a
+   * refused call or a preview frame is not one, so the person's input stands. */
   async take(session: string, owner: string): Promise<boolean> {
     if (!owner) throw new Error("Browser control requires an owner.");
     const gate = this.gate(session);
@@ -624,7 +637,7 @@ export class BrowserRuntime {
     if (gate.owner !== null && gate.owner !== owner) throw new Error("Another person controls this browser.");
     gate.owner = owner; // synchronous: no new agent work slips in while draining.
     gate.ready = false;
-    const waited = gate.agents > 0;
+    const waited = gate.dispatched > 0;
     await new Promise<void>((resolve, reject) => {
       const finish = (error?: Error) => {
         clearTimeout(timer);

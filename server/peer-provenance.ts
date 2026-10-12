@@ -38,6 +38,7 @@
 
 import { z } from "zod";
 import { redactSecretsInText } from "../shared/redact.ts";
+import type { RoutineRunTrigger } from "../shared/routines.ts";
 import type { WireMessage as Message } from "../shared/wire.ts";
 import { peerName } from "./peer-roster.ts";
 
@@ -82,7 +83,7 @@ export function workOrigin(line: RequestLine | undefined): WorkOrigin {
  * passes no line: nothing on a stored line says a routine or a webhook
  * wrote it, so one whose request record moved on proves nothing. */
 export function requestWorkOrigin({ trigger, guest, handed, continued, line }: {
-  trigger?: "schedule" | "manual" | "webhook";
+  trigger?: RoutineRunTrigger;
   guest?: boolean;
   handed?: WorkOrigin;
   continued?: WorkOrigin;
