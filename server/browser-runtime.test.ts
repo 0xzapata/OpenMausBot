@@ -70,16 +70,17 @@ describe("browser takeover gate", () => {
     await expect(value.withAgentAction("s", async () => "safe screenshot")).resolves.toBe("safe screenshot");
   });
 
-  it("says whether a take waited for the bot's action, and when an interruption needs a restart", async () => {
+  it("keeps the person's input after a take behind a preview frame, and says when an interruption needs a restart", async () => {
     const value = runtime();
     await expect(value.take("s", "owner")).resolves.toBe(false);
     value.release("s", "owner");
-    const action = deferred();
-    const pending = value.withAgentAction("s", () => action.promise);
+    // A preview frame holds the gate but sends no command that moves the page.
+    const frame = deferred();
+    const pending = value.previewFrame("s", () => frame.promise);
     const observed = expect(pending).rejects.toThrow(/paused/);
     const taking = value.take("s", "owner");
-    action.resolve(); await observed;
-    await expect(taking).resolves.toBe(true);
+    frame.resolve(); await observed;
+    await expect(taking).resolves.toBe(false);
     expect(value.interrupted("s")).toBe(false);
     await expect(value.withHumanAction("s", "owner", async () => { throw new Error("navigation timed out"); })).rejects.toThrow(/timed out/);
     expect(value.interrupted("s")).toBe(true);
@@ -365,6 +366,33 @@ describe("server-owned browser MCP runtime", () => {
     await expect(value.agentRpc("s", spec(), "tools/list", {})).resolves.toMatchObject({ initialized: true });
     await value.take("s", "owner");
     expect(value.canControl("s", "owner")).toBe(true);
+  });
+  // The panel drops the person's input only when the page may have moved. A
+  // password typed while the gate refused the bot's fill used to be lost.
+  it("says a take waited only for a bot command the engine received", async () => {
+    const value = runtime({ takeoverTimeoutMs: 5_000 });
+    const daemon = daemonSpec();
+    try {
+      // Refused: the take lands after the call entered the gate, before dispatch.
+      let taking: Promise<boolean> | undefined;
+      const refused = value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_fill", arguments: { selector: "@e3", text: "ada" } },
+        () => { taking ??= value.take("s", "owner"); });
+      await expect(refused).rejects.toThrow(/paused/);
+      await expect(taking).resolves.toBe(false);
+      expect(daemon.calls()).toEqual([]);
+      value.release("s", "owner");
+      // Received: the engine is still running the command when the take lands.
+      writeFileSync(daemon.busy, "busy");
+      const running = value.agentRpc("s", daemon.spec, "tools/call", { name: "agent_browser_get_url" });
+      const discarded = expect(running).rejects.toThrow(/paused/);
+      await vi.waitFor(() => expect(daemon.calls()).toEqual(["agent_browser_get_url"]));
+      const waited = value.take("s", "owner");
+      rmSync(daemon.busy);
+      await discarded;
+      await expect(waited).resolves.toBe(true);
+    } finally {
+      daemon.cleanup();
+    }
   });
   it("does not assume an MCP timeout stopped an accepted daemon action", async () => {
     // The real daemon detaches from its MCP parent: transport exit is not
