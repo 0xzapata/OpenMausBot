@@ -298,6 +298,13 @@ function routineFields(args: Json): { fields: Json; error?: string } {
   if (args.continuity != null && typeof args.continuity !== "boolean") {
     return { fields, error: "continuity must be true or false." };
   }
+  if (args.run_on_startup != null && args.runOnStartup != null && args.run_on_startup !== args.runOnStartup) {
+    return { fields, error: "Choose one run_on_startup value; run_on_startup and runOnStartup disagree." };
+  }
+  const runOnStartup = args.run_on_startup ?? args.runOnStartup;
+  if (runOnStartup != null && typeof runOnStartup !== "boolean") {
+    return { fields, error: "run_on_startup must be true or false." };
+  }
   if (args.overlap !== undefined && args.overlap !== "skip" && args.overlap !== "queue") {
     return { fields, error: "overlap must be skip or queue." };
   }
@@ -319,6 +326,7 @@ function routineFields(args: Json): { fields: Json; error?: string } {
   else if (timeoutMinutes != null) fields.timeoutMinutes = timeoutMinutes;
   if (typeof args.continuity === "boolean") fields.continuity = args.continuity;
   if (args.overlap !== undefined) fields.overlap = args.overlap;
+  if (typeof runOnStartup === "boolean") fields.runOnStartup = runOnStartup;
   return { fields };
 }
 

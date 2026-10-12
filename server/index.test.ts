@@ -10543,6 +10543,7 @@ describe("harness HTTP API", () => {
       const legacy = await api("POST", "/api/routines", {
         name: `Legacy ${fakeNameSecret}`,
         continuity: true,
+        runOnStartup: true,
         prompt: `${fakeSecret}\n${"Review the archive. ".repeat(180)}`,
         botId: bot.id,
         runOn: "maus",
@@ -10576,6 +10577,7 @@ describe("harness HTTP API", () => {
       }).parse(await listed.json());
       const legacyResult = listedBody.routines.find((routine) => routine.id === legacyRoutineId)!;
       expect(legacyResult.continuity).toBe(true);
+      expect(legacyResult.runOnStartup).toBe(true);
       expect(legacyResult.instructions).not.toContain(fakeSecret);
       expect(legacyResult.name).not.toContain(fakeNameSecret);
       expect(legacyResult.instructions).toContain("redacted");

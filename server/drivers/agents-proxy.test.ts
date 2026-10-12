@@ -772,6 +772,7 @@ describe("agents-proxy MCP surface", () => {
     expect(create.inputSchema.properties).not.toHaveProperty("duration_minutes");
     expect(create.inputSchema.properties.timeout_minutes).toMatchObject({ minimum: 5, maximum: 240 });
     expect(create.inputSchema.properties.continuity).toMatchObject({ type: "boolean" });
+    expect(create.inputSchema.properties.run_on_startup).toMatchObject({ type: "boolean" });
     expect(create.inputSchema.properties.clear_timeout.type).toBe("boolean");
     expect(schedule.properties.every_minutes).toMatchObject({ minimum: 5, maximum: 1_440 });
     expect(schedule.properties.window_start.type).toBe("string");
@@ -1577,6 +1578,7 @@ describe("agents-proxy MCP surface", () => {
       duration_minutes: 45,
       timeout_minutes: 15,
       continuity: true,
+      run_on_startup: true,
     });
     expect(lastRoutineRequestBody).toEqual({
       fromBotId: "bot-asker",
@@ -1589,6 +1591,7 @@ describe("agents-proxy MCP surface", () => {
         runOn: "maus",
         timeoutMinutes: 15,
         continuity: true,
+        runOnStartup: true,
       },
     });
     expect(res.result.content[0].text).toContain("confirmation card");
@@ -1668,6 +1671,8 @@ describe("agents-proxy MCP surface", () => {
     { timeout_minutes: 10, timeoutMinutes: 20 },
     { clear_timeout: true, timeoutMinutes: 10 },
     { continuity: "true" },
+    { run_on_startup: "yes" },
+    { run_on_startup: true, runOnStartup: false },
     { clear_timeout: "true" },
   ])("refuses malformed execution settings without silently dropping them: %j", async (settings) => {
     lastRoutineRequestBody = null;
@@ -1767,14 +1772,14 @@ describe("agents-proxy MCP surface", () => {
     const update = await callTool("propose_routine_action", {
       routine_id: "routine-1",
       action: "update",
-      changes: { name: "Weekday brief", clear_timeout: true, continuity: false },
+      changes: { name: "Weekday brief", clear_timeout: true, continuity: false, run_on_startup: false },
     });
     expect(lastRoutineRequestBody).toEqual({
       fromBotId: "bot-asker",
       fromThreadId: "thread-asker-routine",
       action: "update",
       routineId: "routine-1",
-      changes: { name: "Weekday brief", timeoutMinutes: null, continuity: false },
+      changes: { name: "Weekday brief", timeoutMinutes: null, continuity: false, runOnStartup: false },
     });
     expect(update.result.content[0].text).toContain("has not been applied");
 
