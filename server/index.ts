@@ -480,7 +480,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { RepeatDetector, callKey } from "./repeat-detector.ts";
+import { loopGuardSettings, startLoopGuard } from "./loop-guard.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -3208,7 +3208,7 @@ function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
   return task;
 }
 
-async function interruptDirectThread(botId: string, threadId: string): Promise<void> {
+async function interruptDirectThread(botId: string, threadId: string, cause?: string): Promise<void> {
   // A root queued on a computer seat, or parked on the person's cards, has
   // settled its provider but still owns a future execution. Stop cancels
   // that too (stopAwaitingDirect below, decision 4): the chip that said it
@@ -3224,9 +3224,10 @@ async function interruptDirectThread(botId: string, threadId: string): Promise<v
   // into a stopped chat; assignments that never started are dropped. A
   // teammate already mid-turn keeps its own provider process, finishes, and
   // its result is still recorded here. The cards a parked node waits on
-  // offer no action any more (decision 4).
+  // offer no action any more (decision 4). `cause`: the harness stopped the
+  // turn itself (the loop guard), and a requester reads that, not "by user".
   stopParkedCards(threadId);
-  noteTeammatesLeftRunning(threadId, coordinator.stopAwaitingDirect(threadId));
+  noteTeammatesLeftRunning(threadId, coordinator.stopAwaitingDirect(threadId, cause));
   const owner = botForThread(botId, threadId);
   const generation = directTurnGenerationByThread.get(threadId);
   cancelDirectTurnDispatch(botId, threadId);
@@ -7201,11 +7202,6 @@ const turnUsage = new Map<string, { input: number; output: number; cachedInput?:
 /** What the window held on the latest model call of the turn in flight, banked beside the totals at turn.completed. */
 const turnContext = new Map<string, { tokens?: number; window?: number }>();
 
-// Bounded per active turn. OpenHands uses a bounded recent-event scan for
-// the same class of stuck-loop detection; retaining an unlimited set of
-// unique arguments would let one pathological turn grow the server forever.
-const repeats = new RepeatDetector({ thresholds: [5, 10, 20], maxKeysPerThread: 256 });
-
 // ── stall watchdog ─────────────────────────────────────────────────────
 // Room turns have a configurable absolute ceiling. The main 1:1 path had
 // none, so a wedged CLI left its bot busy forever. The watchdog stops a turn whose thread has emitted NOTHING for stallMs —
@@ -10163,31 +10159,33 @@ const handoffs = new Handoffs({
 
 
 // A bot going in circles — the same call with the same arguments, over and
-// over in one turn — gets a chip at 5, 10 and 20 repeats. Observe and say
-// so; the human has Stop. Keyed on tool + arguments, so a bare tool name
-// (Claude's item.started carries only that) is never counted: five "Bash"
-// may be five different commands. Arguments come from ACP item titles and
-// from every permission ask's summary (the command being approved).
-bus.subscribe((event: RuntimeEvent) => {
-  if (shouldIgnoreProviderEvent(event)) return;
-  if (event.type === "turn.completed" || event.type === "session.exited") return void repeats.settle(event.threadId);
-  let key: string | null = null;
-  if (event.type === "item.started" && event.itemType === "tool") {
-    // a title with more than a bare identifier is a call with arguments
-    // (ACP: "echo hi", "Read src/x.ts"); a bare "Bash" is not countable
-    const title = event.title ?? "";
-    if (/\s|\//.test(title.trim())) key = callKey("tool", title);
-  } else if (event.type === "request.opened" && event.requestType === "permission") key = callKey(event.tool, event.summary);
-  if (!key) return;
-  const { threshold } = repeats.record(event.threadId, key);
-  if (!threshold) return;
-  const [tool, ...rest] = key.split(":");
-  const args = rest.join(":");
-  store.appendMessage(event.threadId, {
-    role: "bot",
-    kind: "activity",
-    tool: { name: `Same call repeated ${threshold}× — ${tool}: ${args.slice(0, 80)}${args.length > 80 ? "…" : ""} — it may be stuck`, ok: false },
-  });
+// over in one turn — gets a chip at 5, 10 and 20 repeats and, with the loop
+// guard on, a note in its turn and then a stop (server/loop-guard.ts). Only in
+// a bot's own conversations: a room's Stop ends the whole room's work.
+const loopingEngine = (threadId: string) => {
+  const bot = store.botByThread(threadId);
+  return bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined;
+};
+const repeats = startLoopGuard({
+  subscribe: (listener) => bus.subscribe((event) => { if (!shouldIgnoreProviderEvent(event)) listener(event); }),
+  settings: () => loopGuardSettings(cfg),
+  append: (threadId, tool) => void store.appendMessage(threadId, { role: "bot", kind: "activity", tool }),
+  exempt: (threadId) => !store.botByThread(threadId) || watchdog.waiting(threadId),
+  // The decision a person's own message gets there (acceptDirectSend).
+  canSteer: (threadId) => {
+    const engine = loopingEngine(threadId);
+    return admit("direct-busy", { pendingComputerSelection: Boolean(computerSelectionTurns.get(threadId)?.selected),
+      engineCanSteer: Boolean(engine?.capabilities.queueing && engine.steer) }).action === "steer";
+  },
+  steer: async (threadId, note) => (await loopingEngine(threadId)?.steer?.(threadId, note)) ?? "refused",
+  // The person's Stop, with the harness's cause where Stop says "by user".
+  interrupt: async (threadId, cause) => {
+    const bot = store.botByThread(threadId);
+    if (!bot) return;
+    turnStops.stopping(threadId, liveTurnByThread.get(threadId), cause);
+    routines?.failThread(threadId, `${cause.charAt(0).toUpperCase()}${cause.slice(1)}`);
+    await interruptDirectThread(bot.id, threadId, cause);
+  },
 });
 
 // ── steer-queue drain: messages sent while the bot was busy ────────────

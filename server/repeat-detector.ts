@@ -1,9 +1,11 @@
 // Noticing a bot that is going in circles: the same tool call, the same
 // arguments, again and again in one turn. Nothing watched for that, and
-// it is the user's money. This only OBSERVES — it counts and says so; the
-// human has Stop. Cutting a call off, or steering the model, needs the
-// harness to own the call or to be able to speak mid-turn, neither of which
-// is true for CLI drivers today (see plan items 3.2 / 3.3).
+// it is the user's money. This file only COUNTS, and stays pure: what is
+// done about a count is server/loop-guard.ts — a chip in the chat always
+// and, with the loop guard switched on, a note steered into the running
+// turn (adapters take a message mid-turn now: ProviderAdapter.steer) and
+// then the person's Stop. Cutting off the one call itself is still not the
+// harness's to do: a CLI driver owns its calls.
 
 /** Tool name plus its arguments, whitespace-normalized. A bare tool name
  * is not a call worth counting: "Bash" five times may be five different
