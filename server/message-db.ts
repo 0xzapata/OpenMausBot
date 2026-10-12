@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { DATA_DIR } from "./config.ts";
-import { peerProvenanceAuthor } from "./peer-provenance.ts";
+import { peerProvenanceAuthor, type WorkOrigin } from "./peer-provenance.ts";
 import type { ResolvedSender, SteerQueueReason } from "../shared/wire.ts";
 import type { Message } from "./store.ts";
 import type { UsageTrigger } from "./usage-ledger.ts";
@@ -55,6 +55,10 @@ function open(): DatabaseSync {
       PRIMARY KEY (thread_id, id)
     );
     CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id);
+    -- at is not part of the primary key, so newest-per-thread reads cannot
+    -- walk these rows in time order on messages_thread. Created on every
+    -- open, including a database that already has messages.
+    CREATE INDEX IF NOT EXISTS messages_thread_at ON messages(thread_id, at);
     CREATE TABLE IF NOT EXISTS thread_state (
       thread_id TEXT PRIMARY KEY,
       active_leaf_id TEXT
@@ -224,6 +228,8 @@ export interface FollowupPayload {
   prompt?: string;
   replyToId?: string;
   sendId?: string;
+  /** The Data result the words were sent about; the drained line keeps it. */
+  dataContext?: Message["dataContext"];
   reason?: SteerQueueReason;
   unattended?: boolean;
   peerAsk?: Message["peerAsk"];
@@ -240,6 +246,9 @@ export interface FollowupPayload {
   /** Who the usage ledger books the turn these words start to. Absent on
    * rows written before this existed. */
   trigger?: UsageTrigger;
+  /** A thread a bot opened on itself: where the opener's work started
+   * (peer-provenance.ts). Absent is outside. */
+  origin?: WorkOrigin;
   /** When the words were queued (epoch ms), so drain-time coalescing can
    * tell a contiguous burst from hours-apart texts. Rows written before
    * this existed read as queued at restore time. */
@@ -499,6 +508,20 @@ export function setActiveLeaf(threadId: string, leafId: string | null): void {
 /** Newest message timestamp per thread. One grouped read, chunked under
  * SQLite's variable limit. Threads with no rows are absent. */
 export function latestMessageAts(threadIds: readonly string[]): Map<string, number> {
+  return newestAts(threadIds, "");
+}
+
+/** Newest line a person sent from an app, per thread: a user line with the
+ * sendId every client send carries (a routine's or a webhook's prompt has
+ * none) that no bot delivered (peerAsk) and no other interface relayed.
+ * Threads without one are absent. */
+export function latestPersonLineAts(threadIds: readonly string[]): Map<string, number> {
+  return newestAts(threadIds, "AND role = 'user' AND kind = 'text' AND json_extract(json, '$.sendId') IS NOT NULL " +
+    "AND json_extract(json, '$.peerAsk') IS NULL AND json_extract(json, '$.relayed') IS NULL");
+}
+
+/** MAX(at) per thread over the rows `where` keeps, as latestMessageAts reads it. */
+function newestAts(threadIds: readonly string[], where: string): Map<string, number> {
   const ids = [...new Set(threadIds.filter((id) => id.length > 0))];
   const out = new Map<string, number>();
   const chunk = 400;
@@ -506,7 +529,7 @@ export function latestMessageAts(threadIds: readonly string[]): Map<string, numb
     const slice = ids.slice(i, i + chunk);
     const placeholders = slice.map(() => "?").join(", ");
     const rows = db()
-      .prepare(`SELECT thread_id, MAX(at) AS at FROM messages WHERE thread_id IN (${placeholders}) GROUP BY thread_id`)
+      .prepare(`SELECT thread_id, MAX(at) AS at FROM messages WHERE thread_id IN (${placeholders}) ${where} GROUP BY thread_id`)
       .all(...slice) as Array<{ thread_id: string; at: number }>;
     for (const row of rows) {
       if (typeof row.at === "number" && Number.isFinite(row.at)) out.set(row.thread_id, row.at);
@@ -834,6 +857,13 @@ export function indexMemoryFile(botId: string, path: string, text: string, stat:
 
 export function removeMemoryFile(botId: string, path: string): void {
   db().prepare("DELETE FROM memory_files WHERE bot_id = ? AND path = ?").run(botId, path);
+}
+
+/** Remove one bot's memory-file rows. The delete trigger drops the
+ * matching external-content FTS rows, the same way deleting a thread's
+ * messages drops theirs. */
+export function deleteBotMemoryFiles(botId: string): void {
+  db().prepare("DELETE FROM memory_files WHERE bot_id = ?").run(botId);
 }
 
 /** What is indexed for a bot, so the caller can compare against the disk. */

@@ -1,6 +1,7 @@
 import { Code, Eye } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { ACTION_ICON } from "@/components/MessageActions";
 
 /** Props for the {@link RawToggleAction} component. */
 export interface RawToggleActionProps {
@@ -30,7 +31,7 @@ export function RawToggleAction({ active, onToggle, className }: RawToggleAction
         className,
       )}
     >
-      {active ? <Eye size={14} aria-hidden="true" /> : <Code size={14} aria-hidden="true" />}
+      {active ? <Eye {...ACTION_ICON} aria-hidden="true" /> : <Code {...ACTION_ICON} aria-hidden="true" />}
     </button>
   );
 }
@@ -47,6 +48,7 @@ export interface RawMarkdownViewProps {
 export function RawMarkdownView({ text, className }: RawMarkdownViewProps) {
   return (
     <pre
+      dir="auto"
       data-testid="raw-markdown-view"
       tabIndex={0}
       className={cn(

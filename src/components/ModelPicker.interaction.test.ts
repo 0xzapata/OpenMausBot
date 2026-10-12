@@ -175,7 +175,7 @@ describe("ModelPicker with a signed-out or missing Claude", () => {
     fixture.instances = [codex, notFound()];
     const html = open(bot("claude", "claude-opus-5-5")).html;
     expect(html).toContain('aria-label="Claude"');
-    expect(html).toContain("Install Claude");
+    expect(html).toContain("Set up Claude");
     expect(html).toContain("`claude` CLI not found");
     expect(html).toContain("npm install -g @anthropic-ai/claude-code");
     // Local models need the CLI too, so there is no way in to them yet.

@@ -4,7 +4,7 @@
 // the only clean slate is a second bot. A task is a real boundary — its
 // own transcript and its own provider session — so sensitive work, a
 // long job and a quick question can sit side by side under one agent.
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Check, ChevronDown, FolderInput, Pencil, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
 import { useStore, type Bot, type BotProject, type Group, type Task } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -357,7 +357,7 @@ function ConversationTaskPicker({
                       className="min-w-0 flex-1 text-left"
                       title={t("task.renameHint")}
                     >
-                      <div className="truncate text-[13px] text-ink">{task.title}</div>
+                      <div dir="auto" className="truncate text-[13px] text-ink">{task.title}</div>
                       <div className="text-[11px] text-ink-secondary">
                         {task.activity === "waiting-on-you" ? `${t("task.waiting")} · ` : task.waitingForTeammates ? `${t("task.waitingOnTeammate")} · ` : task.busy ? `${t("chat.activity.working")} · ` : task.unread ? `${t("task.unread")} · ` : ""}
                         <TaskUpdatedTime task={task} now={now} />
@@ -453,7 +453,7 @@ export function BotActivityPicker({ bot }: { bot: Bot }) {
           {task.title} · {task.activity === "waiting-on-you" ? t("task.waiting") : task.waitingForTeammates ? t("task.waitingOnTeammate") : task.busy || task.activity === "working" ? t("chat.activity.working") : task.queued ? t("task.queued") : t("task.unread")}
         </option>)}
       </select>
-      <span className="truncate text-[12px] text-ink-secondary">{bot.tasks?.find((task) => task.threadId === bot.threadId)?.title}</span>
+      <span dir="auto" className="truncate text-[12px] text-ink-secondary">{bot.tasks?.find((task) => task.threadId === bot.threadId)?.title}</span>
     </div>
   );
 }
@@ -484,11 +484,17 @@ export function TaskPicker({ bot }: { bot: Bot }) {
  * transcript is the private bot-to-bot exchange rather than user work. */
 export function GroupTaskPicker({ group }: { group: Group }) {
   const { dispatch } = useStore();
+  const tasks = useMemo(() => {
+    return (group.tasks ?? []).map((task) => ({
+      ...task,
+      busy: Boolean(task.working || task.busyBotId),
+    }));
+  }, [group.tasks]);
   return (
     <ConversationTaskPicker
       threadId={group.threadId}
-      tasks={orderedThreadList(group.tasks ?? [])}
-      busy={Boolean(group.working || group.busyBotId)}
+      tasks={orderedThreadList(tasks)}
+      busy={false}
       onNew={() => dispatch({ type: "newGroupTask", groupId: group.id })}
       onSwitch={(threadId) => dispatch({ type: "switchGroupTask", groupId: group.id, threadId })}
       onRename={(threadId, title) => dispatch({ type: "renameGroupTask", groupId: group.id, threadId, title })}

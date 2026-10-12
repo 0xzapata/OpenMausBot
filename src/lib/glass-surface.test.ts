@@ -31,7 +31,10 @@ describe("glass surface", () => {
     expect(surface).toContain("var(--color-ink) 10%");
     expect(surface).toMatch(/inset 0 1px 0/);
     expect(rule(".glass-card")).toContain("var(--color-card) 60%");
-    expect(rule(".glass-scrim")).toContain("backdrop-filter");
+    const scrim = rule(".glass-scrim");
+    expect(scrim).toContain("background: color-mix(in srgb, black 28%, transparent)");
+    const scrimRules = [...css.matchAll(/\.glass-scrim\s*\{[^}]*\}/g)].map((match) => match[0]).join("\n");
+    expect(scrimRules).not.toMatch(/(?:-webkit-)?backdrop-filter\s*:/);
     for (const selector of [".glass-surface", ".glass-card", ".glass-scrim", ".glass-rail"]) {
       expect(rule(selector), selector).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     }
@@ -89,8 +92,8 @@ describe("glass surface", () => {
 
   it("lets the Apps contents reflow inside the pop-up rather than overflow it", () => {
     const apps = readFileSync(join(src, "components", "PluginsPanel.tsx"), "utf8");
-    expect(apps).toContain('className="@container pt-3"');
-    expect(apps).toContain("grid grid-cols-1 gap-3 @lg:grid-cols-2 @3xl:grid-cols-3");
+    expect(apps).toContain('data-apps-grid className="@container flex flex-col gap-7 pt-1"');
+    expect(apps).toContain("grid grid-cols-1 items-start gap-x-6 gap-y-1 @xl:grid-cols-2");
     const mcp = readFileSync(join(src, "components", "McpServersPanel.tsx"), "utf8");
     expect(mcp).toContain('data-mcp-row className="flex flex-wrap items-center gap-3"');
     expect(mcp).toContain('data-mcp-row-actions className="ml-auto flex flex-wrap items-center justify-end gap-1"');

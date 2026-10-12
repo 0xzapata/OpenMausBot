@@ -681,16 +681,18 @@ export async function withMcpSignIn(
   servers: Record<string, McpServerSpec>,
   manager: McpOAuthManager,
 ): Promise<Record<string, McpServerSpec>> {
+  // Each refresh is its own token request with its own timeout: fetch them
+  // together so a turn waits for the slowest server, not the sum of all.
+  const entries = await Promise.all(Object.entries(withoutPendingSignIn(servers, manager)).map(
+    async ([name, server]): Promise<[string, McpServerSpec] | null> => {
+      if (!isUrlServer(server) || manager.authState(name, server.url) !== "signed-in") return [name, server];
+      const token = await manager.accessToken(name, server.url);
+      if (!token) return null;
+      const headers = Object.fromEntries(Object.entries(server.headers).filter(([key]) => key.toLowerCase() !== "authorization"));
+      return [name, { ...server, headers: { ...headers, Authorization: `Bearer ${token}` } }];
+    },
+  ));
   const out: Record<string, McpServerSpec> = {};
-  for (const [name, server] of Object.entries(withoutPendingSignIn(servers, manager))) {
-    if (!isUrlServer(server) || manager.authState(name, server.url) !== "signed-in") {
-      out[name] = server;
-      continue;
-    }
-    const token = await manager.accessToken(name, server.url);
-    if (!token) continue;
-    const headers = Object.fromEntries(Object.entries(server.headers).filter(([key]) => key.toLowerCase() !== "authorization"));
-    out[name] = { ...server, headers: { ...headers, Authorization: `Bearer ${token}` } };
-  }
+  for (const entry of entries) if (entry) out[entry[0]] = entry[1];
   return out;
 }

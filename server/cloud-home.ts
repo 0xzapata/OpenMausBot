@@ -19,7 +19,9 @@
 //
 // Cloud Pro includes no AI. The person signs in on the machine with their own
 // Claude or ChatGPT account, or an API key, exactly as on any server; nothing
-// on a Cloud home is ever routed to a platform model gateway.
+// on a Cloud home is ever routed to a platform model gateway. The one
+// exception is a free trial's Claude credit, on OpenMausBot's own chat engine
+// until they connect their own (cloud-credit-provider.ts).
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
@@ -116,13 +118,14 @@ export { cloudHomeOffersPlace } from "../shared/cloud-home.ts";
  * the person's, no Local VM), in the words the person reads; undefined for a
  * place it offers. A turn's error shows 160 characters, so each fits. */
 export function cloudHomePlaceRefusal(place: Surface): string | undefined {
-  if (place === "local") return "This computer isn't a place on My Cloud. Set Works on to Auto, Cloud computer or Browser, or lend your Mac under Settings → OpenMausBot Cloud.";
+  if (place === "local") return "This computer isn't a place on My Cloud. Set Works on to Auto, Cloud computer or Browser, or lend your Mac under Settings → MausBot Cloud.";
   if (place === "vm") return "Bots on My Cloud can't use a Local VM. Set Works on to Auto, Cloud computer or Browser.";
   return undefined;
 }
 
-/** The Cloud's setup checklist (docs/cloud-pro.md) has a "try something"
- * step that is done once a bot's turn finishes on the machine itself. The
+/** The Cloud's setup checklist (docs/cloud-pro.md) counts a first job as given,
+ * and a Cloud set up without one as done, once a bot's turn finishes on the
+ * machine itself. The
  * server records when, once, in this Cloud's own onboarding record: that
  * section never travels with Move to Cloud (workspace-backup-policy.ts), so a
  * moved-in history of turns does not count. Null when there is nothing to
@@ -196,7 +199,7 @@ export function createCloudPairing(options: {
       const ttl = Math.min((ttlSeconds as number | undefined) ?? CLOUD_PAIRING_DEFAULT_TTL_S, browser ? CLOUD_BROWSER_SIGN_IN_MAX_TTL_S : CLOUD_PAIRING_MAX_TTL_S);
       const opened = sessions.openPairing({
         scopes: ["admin", "client"],
-        label: typeof label === "string" && label.trim() ? label.trim() : "OpenMausBot Cloud",
+        label: typeof label === "string" && label.trim() ? label.trim() : "MausBot Cloud",
         ttlMs: ttl * 1000,
         browser,
         ...(browser ? { owner: owner as string } : {}),

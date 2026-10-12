@@ -446,11 +446,11 @@ describe("persistent routine results destinations", () => {
     let created = 0;
     h.options.isResultsThread = (botId, threadId) => visible.get(threadId) === botId;
     h.options.resolveResultsThread = (routine, forceNew) => {
-      if (!forceNew && visible.get(routine.resultsThreadId ?? "") === routine.botId) return routine.resultsThreadId;
+      if (!forceNew && visible.get(routine.resultsThreadId ?? "") === routine.botId) return { threadId: routine.resultsThreadId! };
       if (!forceNew && !routine.resultsThreadId && routine.sourceThreadId === "trusted-source") return undefined;
       const id = `results-${++created}`;
       visible.set(id, routine.botId);
-      return id;
+      return { threadId: id };
     };
     return { ...h, visible, created: () => created };
   }
@@ -643,6 +643,62 @@ describe("persistent routine results destinations", () => {
     expect(h.manager.runNow(routine.id)?.resultsThreadId).toBe("results-1");
   });
 
+  it("reports into the main thread each run finds and never saves it on the routine", async () => {
+    const h = resultsHarness();
+    let main = "first-chat";
+    h.options.resolveResultsThread = (routine, forceNew) => !forceNew && h.visible.get(routine.resultsThreadId ?? "") === routine.botId
+      ? { threadId: routine.resultsThreadId! } : { threadId: main, main: true };
+    const routine = h.manager.create({ ...input(), resultsThreadId: "chosen" });
+    const chosen = h.manager.runNow(routine.id)!;
+    await h.manager.tick();
+    complete(h, "thread-1");
+    // The chosen thread is gone: runs report into the main thread again.
+    h.visible.delete("chosen");
+    const first = h.manager.runNow(routine.id)!;
+    await h.manager.tick();
+    complete(h, "thread-2");
+    expect(h.manager.listRoutines()[0]?.resultsThreadId).toBeUndefined();
+    // The person moved on to another conversation; so does the next report.
+    main = "later-chat";
+    const second = h.manager.runNow(routine.id)!;
+    expect([chosen, first, second].map((run) => run.resultsThreadId)).toEqual(["chosen", "first-chat", "later-chat"]);
+    h.visible.set("chosen", "maus-1");
+    expect(h.manager.update(routine.id, { resultsThreadId: "chosen" })?.resultsThreadId).toBe("chosen");
+    expect(h.manager.update(routine.id, { resultsThreadId: null })?.resultsThreadId).toBeUndefined();
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8")).routines[0]).not.toHaveProperty("resultsThreadId");
+    expect(h.created()).toBe(0);
+  });
+
+  it("clears the default v0.1.98 to v0.1.107 saved as a destination once, and keeps a later pick of that thread", () => {
+    const h = resultsHarness();
+    h.visible.set("first-chat", "maus-1");
+    h.options.frozenResultsThread = (botId, threadId) => botId === "maus-1" && threadId === "first-chat";
+    const frozen = h.manager.create({ ...input(), resultsThreadId: "first-chat" });
+    const chosen = h.manager.create({ ...input(), name: "Chosen report", resultsThreadId: "chosen" });
+    const saved = JSON.parse(readFileSync(h.options.file!, "utf8"));
+    expect(saved.frozenResultsCleared).toBe(true);
+    // A file those versions wrote has no marker.
+    delete saved.frozenResultsCleared;
+    writeFileSync(h.options.file!, JSON.stringify(saved));
+    const destination = (manager: RoutineManager, id: string) => manager.listRoutines().find((routine) => routine.id === id)?.resultsThreadId;
+    // Nothing clears before whose threads are whose is settled (a Cloud
+    // home's earlier keys), and a save meanwhile does not say it is done.
+    const booting = new RoutineManager(h.options);
+    expect(destination(booting, frozen.id)).toBe("first-chat");
+    booting.update(chosen.id, { name: "Chosen report, renamed" });
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8"))).not.toHaveProperty("frozenResultsCleared");
+    const upgraded = new RoutineManager(h.options);
+    upgraded.clearFrozenResultsThreads();
+    expect(destination(upgraded, frozen.id)).toBeUndefined();
+    expect(destination(upgraded, chosen.id)).toBe("chosen");
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8")).frozenResultsCleared).toBe(true);
+    // Picked after the upgrade, the same thread is a person's choice.
+    upgraded.update(frozen.id, { resultsThreadId: "first-chat" });
+    const later = new RoutineManager(h.options);
+    later.clearFrozenResultsThreads();
+    expect(destination(later, frozen.id)).toBe("first-chat");
+  });
+
   it("replaces a deleted destination only for future runs without rewriting active snapshots", async () => {
     const h = resultsHarness();
     const routine = h.manager.create({ ...input(), resultsThreadId: "chosen" });
@@ -770,6 +826,51 @@ describe("RoutineManager", () => {
     expect(create("Below minimum", 4).durationMinutes).toBe(5);
     expect(create("Default").durationMinutes).toBe(30);
     expect(create("Above maximum", 241).durationMinutes).toBe(240);
+  });
+
+  it("refuses to overwrite a routines file it could not read", () => {
+    const h = harness();
+    const input = {
+      name: "Health check",
+      prompt: "Check the fixture",
+      botId: "maus-1",
+      schedule: { type: "interval" as const, everyMinutes: 5, anchorAt: new Date(2026, 7, 17, 8, 0, 0).getTime() },
+    };
+    h.manager.create({ ...input, name: "First" });
+    h.manager.create({ ...input, name: "Second" });
+    const file = h.options.file as string;
+    const corrupt = readFileSync(file, "utf8").slice(0, 100);
+    writeFileSync(file, corrupt);
+    const reloaded = new RoutineManager(h.options);
+    expect(reloaded.listRoutines()).toEqual([]);
+    expect(() => reloaded.create(input)).toThrow(expect.objectContaining({ status: 503 }));
+    expect(() => reloaded.remove("anything")).toThrow(expect.objectContaining({ status: 503 }));
+    expect(() => reloaded.enqueueWebhook({
+      webhookId: "hook-1",
+      webhookName: "Lead",
+      prompt: "Qualify it",
+      botId: "maus-1",
+      runOn: "maus",
+      deliveryId: "evt-1",
+      receivedAt: Date.now(),
+    })).toThrow(expect.objectContaining({ status: 503 }));
+    expect(readFileSync(file, "utf8")).toBe(corrupt);
+  });
+
+  it("treats a routines file with a damaged top-level shape as unreadable", () => {
+    const h = harness();
+    const file = h.options.file as string;
+    const damaged = JSON.stringify({ version: 1, routines: "garbage", runs: [] });
+    writeFileSync(file, damaged);
+    const reloaded = new RoutineManager(h.options);
+    expect(reloaded.listRoutines()).toEqual([]);
+    expect(() => reloaded.create({
+      name: "Health check",
+      prompt: "Check the fixture",
+      botId: "maus-1",
+      schedule: { type: "interval" as const, everyMinutes: 5, anchorAt: new Date(2026, 7, 17, 8, 0, 0).getTime() },
+    })).toThrow(expect.objectContaining({ status: 503 }));
+    expect(readFileSync(file, "utf8")).toBe(damaged);
   });
 
   it("validates, preserves, and clears the optional safety timeout", () => {
@@ -1110,6 +1211,19 @@ describe("RoutineManager", () => {
 
     const reloaded = new RoutineManager(h.options);
     expect(reloaded.listRoutines()).toMatchObject([{ id: valid.id, name: "Valid interval" }]);
+
+    // Unrelated writes must not delete the row that failed to load.
+    const malformedOnDisk = stored.routines.find((routine) => routine.id === malformed.id);
+    reloaded.create({
+      name: "Added later",
+      prompt: "Unrelated write",
+      botId: "maus-valid",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+    const saved = JSON.parse(readFileSync(h.options.file!, "utf8")) as { routines: Array<{ id: string }> };
+    expect(saved.routines.find((routine) => routine.id === malformed.id)).toEqual(malformedOnDisk);
+    expect(saved.routines).toHaveLength(3);
+    expect(new RoutineManager(h.options).listRoutines().map((routine) => routine.name).sort()).toEqual(["Added later", "Valid interval"]);
   });
 
   it("persists confirmation receipts with the scheduler mutation and removes them after settlement", () => {
@@ -2546,8 +2660,9 @@ describe("RoutineManager", () => {
     expect(h.failed).toHaveLength(1);
   });
 
-  it.each(["error", "tool_error"])(
-    "preserves the detailed runtime error when a turn ends with generic %s",
+  // "quota" and "stop_sequence": an account past its weekly limit (Oct 9-10)
+  it.each(["error", "tool_error", "quota", "stop_sequence"])(
+    "keeps the run's own error over the provider's stop token %s",
     async (stopReason) => {
       const h = harness();
       const routine = h.manager.create({

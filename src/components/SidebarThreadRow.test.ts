@@ -320,6 +320,34 @@ describe("threadUpdatedLabel", () => {
   });
 });
 
+describe("thread title direction", () => {
+  const now = Date.UTC(2026, 8, 25, 12, 0, 0);
+  const row = (title: string, openedBy?: { botId: string; name: string; at: number }) => renderToStaticMarkup(createElement(SidebarThreadRow, {
+    task: { threadId: "t", title, updatedAt: now - 2 * 3_600_000, ...(openedBy ? { openedBy } : {}) },
+    ownerId: "b", current: false, now, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), locale: "en",
+  }));
+  const titleSpan = (markup: string, title: string) => {
+    const match = markup.match(new RegExp(`<span dir="auto" class="([^"]*)">${title}</span>`));
+    expect(match).not.toBeNull();
+    return match?.[1] ?? "";
+  };
+
+  it("renders the title with dir=auto and leaves the time a fixed column", () => {
+    const arabic = "انسخ محتوى الذكاء الاصطناعي وصمم منشورات";
+    const arabicClass = titleSpan(row(arabic), arabic);
+    const englishClass = titleSpan(row("New thread"), "New thread");
+    const withByline = titleSpan(row("QA PR 245", { botId: "scout", name: "Scout", at: 1 }), "QA PR 245");
+    for (const classes of [arabicClass, englishClass, withByline]) {
+      expect(classes).toContain("min-w-0");
+      expect(classes).toContain("flex-1");
+      expect(classes).toContain("max-w-max");
+      expect(classes).toContain("truncate");
+    }
+    expect(row("New thread")).toMatch(/<time [^>]*class="[^"]*\bshrink-0\b[^"]*"/);
+    expect(row(arabic)).not.toContain("<button dir=");
+  });
+});
+
 describe("orderedThreadList", () => {
   const task = (threadId: string, over: Record<string, unknown> = {}) => ({
     threadId,
@@ -613,5 +641,40 @@ describe("Regenerate title", () => {
     const again = buttonWithLabel(renderRow(task, "scout", false, { onRegenerateTitle }), "Regenerate title")!;
     expect(again.props!.disabled).toBe(false);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("Thread link", () => {
+  it("shows the assigned link as a chip and removes it from the menu", () => {
+    vi.stubGlobal("window", { innerWidth: 1024, innerHeight: 768 });
+    vi.stubGlobal("document", { body: { nodeType: 1 } });
+    const task = { threadId: "t1", title: "Fix the login", link: "https://github.com/o/r/pull/42" };
+    const onLink = vi.fn();
+    const closed = renderRow(task, "scout", true, { onLink });
+    let chip: RowNode | undefined;
+    walk(closed, (element) => { if (element.type === "a") chip = element; });
+    expect(chip?.props).toMatchObject({ href: task.link, target: "_blank", "aria-label": "Open #42" });
+    expect(textOf(chip)).toBe("#42");
+    let other: RowNode | undefined;
+    walk(renderRow({ ...task, link: "https://docs.example.com/plan" }, "scout", true, { onLink }), (element) => { if (element.type === "a") other = element; });
+    expect(textOf(other)).toBe("Link");
+    expect(other?.props?.["aria-label"]).toBe("Open https://docs.example.com/plan");
+    (moreMenuButton(closed)!.props!.onClick as (event: unknown) => void)({ currentTarget: { getBoundingClientRect: () => ({ left: 100, bottom: 200 }) } });
+    (buttonWithLabel(renderRow(task, "scout", false, { onLink }), "Remove link")!.props!.onClick as () => void)();
+    expect(onLink).toHaveBeenCalledWith(task, null);
+    const unlinked = { threadId: "t2", title: "No link" };
+    (moreMenuButton(renderRow(unlinked, "scout", true, { onLink }))!.props!.onClick as (event: unknown) => void)({ currentTarget: { getBoundingClientRect: () => ({ left: 100, bottom: 200 }) } });
+    expect(buttonWithLabel(renderRow(unlinked, "scout", false, { onLink }), "Remove link")).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it("places the chip before the timestamp, outside the row button", () => {
+    const now = Date.UTC(2026, 8, 25, 12, 0, 0);
+    const markup = renderToStaticMarkup(createElement(SidebarThreadRow, {
+      task: { threadId: "t", title: "Fix", updatedAt: now - 3_600_000, link: "https://github.com/o/r/pull/42" },
+      ownerId: "b", current: false, now, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), locale: "en",
+    }));
+    expect(markup.indexOf("</button>")).toBeLessThan(markup.indexOf(">#42</a>"));
+    expect(markup.indexOf(">#42</a>")).toBeLessThan(markup.indexOf("<time"));
   });
 });

@@ -97,6 +97,12 @@ describe("callRecordLines", () => {
     expect(ids(transcript, "c1")).toEqual(["step:s1", "step:s2"]);
   });
 
+  it("does not repeat Data result navigation as a call's tool step", () => {
+    const result = { ...step("result", "m1", "data_show"),
+      dataResult: { botId: "b", cardId: "table", title: "Sales", kind: "table" as const } };
+    expect(ids([spoken("m1", "show sales", "c1"), result, step("s1", "m1", "Read")], "c1")).toEqual(["step:s1"]);
+  });
+
   it("is empty for a call nothing was asked on", () => {
     expect(callRecordLines([callRow("r1", "c1")], "c1")).toEqual([]);
   });

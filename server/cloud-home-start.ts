@@ -51,7 +51,7 @@ const SERVER_ENV_NAMES = new Set([
   "PATH", "SHELL", "HOSTNAME", "LANG", "LANGUAGE", "TZ", "TERM", "TMPDIR", "NO_COLOR", "NODE_ENV", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
   "AGENT_BROWSER_EXECUTABLE_PATH", "OMB_STATIC_DIR", "OMB_DATA_DIR",
   "OMB_CLOUD_ROLE", "OMB_CLOUD_MACHINE_ID", "OMB_CLOUD_ADMIN_URL", "OMB_CLOUD_IMAGE", "OMB_PUBLIC_URL", "OMB_WEBHOOK_PUBLIC_URL",
-  "OMB_CLOUD_BOAT_URL", "OMB_CLOUD_VOICE_URL", "OMB_CLOUD_DECIDER_URL", "OMB_TTS_DEFAULT_VOICE",
+  "OMB_CLOUD_BOAT_URL", "OMB_CLOUD_VOICE_URL", "OMB_CLOUD_DECIDER_URL", "OMB_CLOUD_AI_URL", "OMB_TTS_DEFAULT_VOICE",
 ]);
 export function serverEnvironmentAllowed(name: string): boolean {
   return SERVER_ENV_NAMES.has(name) || name.startsWith("LC_");
@@ -104,10 +104,13 @@ export function codeTrustProblem(files: readonly string[], home: string, stat: (
 
 /** Start the server with its secrets on an inherited pipe (never its
  * environment), as `ids` when given. The pipe is written and closed at once;
- * nothing else is ever sent on it. */
+ * nothing else is ever sent on it. With `capture`, its stdout and stderr are
+ * pipes the caller reads instead of this process's inherited descriptors. */
 export function spawnWithSecrets(command: string, args: string[], env: NodeJS.ProcessEnv, secrets: Record<string, string>,
-  ids?: { uid: number; gid: number } | null): ChildProcess {
-  const child = spawn(command, args, { env, stdio: ["inherit", "inherit", "inherit", "pipe"], ...(ids ? { uid: ids.uid, gid: ids.gid } : {}) });
+  ids?: { uid: number; gid: number } | null, capture = false): ChildProcess {
+  const child = spawn(command, args, { env,
+    stdio: capture ? ["inherit", "pipe", "pipe", "pipe"] : ["inherit", "inherit", "inherit", "pipe"],
+    ...(ids ? { uid: ids.uid, gid: ids.gid } : {}) });
   const pipe = child.stdio[SECRETS_FD] as NodeJS.WritableStream | null;
   pipe?.on("error", () => { /* the child is gone; its exit is handled by the caller */ });
   pipe?.end(JSON.stringify(secrets));
@@ -117,7 +120,7 @@ export function spawnWithSecrets(command: string, args: string[], env: NodeJS.Pr
 export function startCloudHome(env: NodeJS.ProcessEnv = process.env) {
   process.umask(0o077);
   const config = cloudHomeConfiguration(env);
-  if (!config) throw new Error("This image runs a My Cloud machine for OpenMausBot Cloud; set its boot contract (docs/cloud-pro.md).");
+  if (!config) throw new Error("This image runs a My Cloud machine for MausBot Cloud; set its boot contract (docs/cloud-pro.md).");
   // Logged here once: the server child never sees what they are about.
   for (const warning of config.warnings) console.warn(`cloud home: ${warning}`);
   const home = env.HOME || "/data";

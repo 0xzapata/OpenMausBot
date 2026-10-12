@@ -9,12 +9,14 @@ import { BotAvatar } from "./Avatar";
 import { cn } from "@/lib/cn";
 import type { SearchHit } from "@/lib/search-hit";
 import { landOnSearchHit } from "@/lib/focus-message";
+import { useShowThreads } from "@/lib/thread-preferences";
 
 export const MIN_QUERY = 2;
 const DEBOUNCE_MS = 250;
 
 export function SearchResults({ query, onLanded }: { query: string; onLanded: () => void }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const q = query.trim();
@@ -45,7 +47,7 @@ export function SearchResults({ query, onLanded }: { query: string; onLanded: ()
 
   const land = async (hit: SearchHit) => {
     try {
-      await landOnSearchHit(hit, state, dispatch);
+      await landOnSearchHit(hit, state, dispatch, showThreads);
       onLanded();
     } catch (e) {
       dispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
@@ -81,7 +83,7 @@ export function SearchResults({ query, onLanded }: { query: string; onLanded: ()
                 {hit.task ? <span className="truncate">· {hit.task}</span> : null}
                 <span className="ml-auto shrink-0 tabular-nums">{formatTime(hit.at)}</span>
               </span>
-              <span className={cn("mt-0.5 line-clamp-2 text-[12.5px] leading-snug", hit.role === "user" ? "text-ink" : "text-ink-secondary")}>
+              <span dir="auto" className={cn("mt-0.5 line-clamp-2 text-[12.5px] leading-snug", hit.role === "user" ? "text-ink" : "text-ink-secondary")}>
                 {hit.kind === "activity" && <Wrench size={11} className="mr-1 inline text-ink-secondary" />}
                 {before}
                 <mark className="rounded-sm bg-accent/25 px-0.5 text-ink">{match}</mark>

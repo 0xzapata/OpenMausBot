@@ -11,6 +11,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { soulFile, soulHash } from "./bot-folder.ts";
 import { flushProfileHistory, readHistory, recordProfileChange } from "./profile-versions.ts";
 import { DATA_DIR } from "./config.ts";
+import {
+  beginMemoryTurn,
+  endMemoryTurn,
+  flushMemoryJournal,
+  journalFile,
+  journalMemoryWrite,
+  resetMemoryJournalState,
+} from "./memory-journal.ts";
 import type { ModelSelection } from "./contracts.ts";
 import * as mdb from "./message-db.ts";
 import { peerAllowKey } from "./peer-approval-key.ts";
@@ -1591,8 +1599,11 @@ describe("Store", () => {
       if (change.type === "thread") changes.push({ type: "thread", activeLeafId: change.activeLeafId });
     });
 
-    const edited = store.branchMessage(bot.threadId, original.id, "v2", "edit-send-id")!;
+    const edited = store.branchMessage(bot.threadId, original.id, "v2", "edit-send-id", undefined, { cardId: "c_1", draftSql: "select 1" })!;
     expect(edited.sendId).toBe("edit-send-id");
+    // a rerun keeps the Data context its words were sent with, as its own field
+    expect(edited.dataContext).toEqual({ cardId: "c_1", draftSql: "select 1" });
+    expect(edited.text).toBe("v2");
     // a fork is a sibling, not a child of the visible leaf, so the message
     // frame alone never moves a client's leaf: the thread frame must follow
     expect(changes).toEqual([
@@ -2004,10 +2015,15 @@ describe("Store redacts bot-authored secrets on write", () => {
       role: "bot",
       kind: "activity",
       tool: { name: `Bash: export TOKEN=${key}`, ok: true, summary: `export TOKEN=${key}` },
+      dataResult: { botId: bot.id, cardId: "c_1", title: `Revenue ${key}`, kind: "table", sql: `SELECT '${key}' AS token` },
     });
     expect(chip.tool?.name).not.toContain(key);
     expect(chip.tool?.summary).not.toContain(key);
     expect(chip.tool?.summary).toContain("«redacted");
+    expect(chip.dataResult?.title).not.toContain(key);
+    expect(chip.dataResult?.title).toContain("«redacted");
+    expect(chip.dataResult?.sql).not.toContain(key);
+    expect(chip.dataResult?.sql).toContain("«redacted");
     const card = store.appendMessage(bot.threadId, {
       role: "bot",
       kind: "options",
@@ -2219,6 +2235,38 @@ describe("Store task usage", () => {
   });
 });
 
+describe("Store askedAt from before builds kept it", () => {
+  beforeEach(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+  });
+
+  // Builds before askedAt kept where a person wrote only in transcripts.
+  it("fills a thread's askedAt from the newest line a person sent there, once per data directory", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ name: "Upgraded" });
+    const first = bot.threadId;
+    const later = store.createTask(bot.id, "Later")!.threadId;
+    const run = store.createTask(bot.id, "Run")!.threadId;
+    store.patchTask(bot.id, run, { routineRunId: "run-1" });
+    const asked = store.appendMessage(first, { role: "user", kind: "text", text: "Good morning.", sendId: "send-1" });
+    store.appendMessage(first, { role: "bot", kind: "text", text: "Morning!" });
+    // A routine's prompt, and a hidden run's lines, are no one's words here.
+    store.appendMessage(later, { role: "user", kind: "text", text: "Report this run's state." });
+    store.appendMessage(run, { role: "user", kind: "text", text: "Go.", sendId: "send-2" });
+    expect(existsSync(join(DATA_DIR, "asked-at-filled"))).toBe(true);
+    rmSync(join(DATA_DIR, "asked-at-filled"));
+    const upgraded = new Store(selection);
+    expect(upgraded.taskByThread(bot.id, first)?.askedAt).toBe(asked.at);
+    expect(upgraded.taskByThread(bot.id, later)).not.toHaveProperty("askedAt");
+    expect(upgraded.taskByThread(bot.id, run)).not.toHaveProperty("askedAt");
+    expect(toWireTask(upgraded.taskByThread(bot.id, first)!, selection())).not.toHaveProperty("askedAt");
+    // Once: since then every person's line stamps its thread as it is
+    // written (index.ts startTurn), so no later start reads a transcript.
+    upgraded.appendMessage(later, { role: "user", kind: "text", text: "Hello.", sendId: "send-3" });
+    expect(new Store(selection).taskByThread(bot.id, later)).not.toHaveProperty("askedAt");
+  });
+});
+
 describe("Store task working folder", () => {
   beforeEach(() => {
     rmSync(DATA_DIR, { recursive: true, force: true });
@@ -2240,6 +2288,18 @@ describe("Store task working folder", () => {
     // a new task starts in the bot's current folder
     const next = store.createTask(bot.id, "second")!;
     expect(store.pinTaskCwd(bot.id, next.threadId)).toBe("/tmp/project-b");
+  });
+
+  it("persists a new task's explicit folder before its first turn without changing the bot default", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ cwd: "/tmp/default-project" });
+    const task = store.createTask(bot.id, "Explicit project", true, undefined, undefined, undefined, undefined, "/tmp/chosen-project")!;
+    expect(task.cwd).toBe("/tmp/chosen-project");
+    expect(bot.cwd).toBe("/tmp/default-project");
+    const reloaded = new Store(selection);
+    reloaded.patchBot(bot.id, { cwd: "/tmp/later-project" });
+    expect(reloaded.pinTaskCwd(bot.id, task.threadId)).toBe("/tmp/chosen-project");
+    expect(reloaded.createTask(bot.id)?.cwd).toBeUndefined();
   });
 
   it("pins a private-only conversation to its own folder when it first runs, and never moves one that already ran elsewhere", () => {
@@ -2426,6 +2486,7 @@ describe("soul", () => {
       ] };
     store.applyTeamSetup(request);
     expect(new Store(selection).bot("created-by-chief")?.visibility).toEqual({ people: ["hr@example.test"] });
+    expect(new Store(selection).bot("created-by-chief")).toMatchObject({ composio: false, connectorTools: {}, approvePeerComms: false });
     const open = new Store(selection);
     const everyoneChief = open.createBot({ name: "Ops", section: "Ops" });
     open.patchBot(everyoneChief.id, { chiefOfStaff: true });
@@ -2441,6 +2502,48 @@ describe("soul", () => {
     expect(existsSync(soulFile(bot.id))).toBe(true);
     store.deleteBot(bot.id);
     expect(existsSync(join(DATA_DIR, "bots", bot.id))).toBe(false);
+  });
+
+  it("deleteBot removes the memory journal, the memory index, and the in-memory baseline", async () => {
+    resetMemoryJournalState();
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const other = store.createBot();
+    journalMemoryWrite(bot.id, "memory/notes.md", "vendor list\n", { actor: "person", via: "ui" });
+    journalMemoryWrite(other.id, "memory/notes.md", "other notes\n", { actor: "person", via: "ui" });
+    await flushMemoryJournal(bot.id);
+    await flushMemoryJournal(other.id);
+    mdb.indexMemoryFile(bot.id, "memory/notes.md", "vendor list\n", { mtimeMs: 1, bytes: 12 });
+    mdb.indexMemoryFile(other.id, "memory/notes.md", "other notes\n", { mtimeMs: 2, bytes: 12 });
+    beginMemoryTurn(bot.id, bot.threadId);
+    expect(endMemoryTurn(bot.threadId)).toEqual([]);
+    expect(existsSync(journalFile(bot.id))).toBe(true);
+    expect(mdb.indexedMemoryFiles(bot.id).map((file) => file.path)).toContain("memory/notes.md");
+
+    expect(store.deleteBot(bot.id)).toBe(true);
+
+    expect(existsSync(journalFile(bot.id))).toBe(false);
+    expect(mdb.indexedMemoryFiles(bot.id)).toEqual([]);
+    expect(mdb.recallMemory("vendor", bot.id)).toEqual([]);
+    expect(existsSync(journalFile(other.id))).toBe(true);
+    expect(mdb.indexedMemoryFiles(other.id).map((file) => file.path)).toEqual(["memory/notes.md"]);
+    expect(mdb.recallMemory("notes", other.id).map((hit) => hit.file)).toEqual(["memory/notes.md"]);
+    // a baseline left behind would journal the deleted files the next time a turn looked
+    beginMemoryTurn(bot.id, "after-delete");
+    expect(endMemoryTurn("after-delete")).toEqual([]);
+    expect(existsSync(journalFile(bot.id))).toBe(false);
+
+    mdb.closeMessageDb();
+    const raw = new DatabaseSync(join(DATA_DIR, "messages.db"));
+    try {
+      expect(() => raw.exec("INSERT INTO memory_fts(memory_fts) VALUES('integrity-check')")).not.toThrow();
+      const gone = raw.prepare("SELECT COUNT(*) AS n FROM memory_files WHERE bot_id = ?").get(bot.id) as { n: number };
+      const kept = raw.prepare("SELECT COUNT(*) AS n FROM memory_files WHERE bot_id = ?").get(other.id) as { n: number };
+      expect(gone.n).toBe(0);
+      expect(kept.n).toBe(1);
+    } finally {
+      raw.close();
+    }
   });
 
   it("reviewed setup freezes legacy thread settings and persists valid team grants and its receipt on reload", () => {

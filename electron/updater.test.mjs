@@ -58,8 +58,7 @@ function mainRule() {
     app: { isPackaged: true, getPath: () => "/unused", getVersion: () => "1.0.0" }, process: { platform: "darwin" },
     path: { join: (...parts) => parts.join("/") }, os: { hostname: () => "mac" }, shell: {}, safeStorage: {},
     createCloudAccountStore: () => ({}), rememberCloudHome: () => {}, rememberedCloudHome, computerSharing: null,
-    sendUpdaterState: () => {},
-    // the local server's Pro answer (pro-plan.node-test.mjs runs this onState for it)
+    sendUpdaterState: () => {}, refreshCloudMenus: () => {}, announceCloudReady: () => {},
     syncProPlan: () => {},
     createCloudAccountClient: (options) => {
       signIn.options = options;

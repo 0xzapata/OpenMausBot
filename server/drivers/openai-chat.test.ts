@@ -327,6 +327,59 @@ describe("createOpenAIChatRuntime tool approvals", () => {
       await instance.dispose();
     }
   }, 20_000);
+
+  it("completes the turn when a question goes unanswered, without tainting the final answer", async () => {
+    // An unanswered question is absence, not a "no": the card times out or the
+    // person closes it, the model is told not to guess, and the turn ends with
+    // its final answer intact — unlike a denied tool op, it must not end the
+    // turn as tool_error.
+    const askBody = 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask1","type":"function","function":{"name":"ask_user","arguments":'
+      + JSON.stringify(JSON.stringify({ questions: [{ question: "Ship the fixture?", options: [{ label: "Yes" }, { label: "No" }] }] }))
+      + '}}]}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n';
+    const finalBody = 'data: {"choices":[{"index":0,"delta":{"content":"Proceeded without the answer."}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n';
+    const bodies: any[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/models")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(bodies.length === 1 ? askBody : finalBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }));
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "compat-noreply", displayName: "Compat NoReply", enabled: true,
+      config: OpenAICompatDriver.decodeConfig({ url: "https://api.example.com/v1", apiKeyEnv: "K", model: "m" }),
+      environment: { K: "secret" },
+    });
+    const events: RuntimeEvent[] = [];
+    instance.adapter.onEvent((event) => events.push(event));
+    try {
+      await instance.adapter.sendTurn({ threadId: "noreply", text: "hi", approvalMode: "full" });
+      const opened = await vi.waitFor(() => {
+        const found = events.find((event) => event.type === "request.opened");
+        if (!found) throw new Error("waiting for the question card");
+        return found;
+      }, { timeout: 10_000 });
+      expect(opened).toMatchObject({ requestType: "question", tool: "ask_user" });
+      // Close the card without answering: the same null the 15-minute timeout
+      // produces.
+      expect(await instance.adapter.respondToRequest("noreply", opened.requestId!, { behavior: "deny" })).toBe("rejected");
+      await vi.waitFor(() => {
+        if (!events.some((event) => event.type === "turn.completed")) throw new Error("turn still running");
+      }, { timeout: 10_000 });
+      const completed = events.find((event) => event.type === "turn.completed") as any;
+      expect(completed.ok).toBe(true);
+      expect(completed.stopReason).not.toBe("tool_error");
+      expect(completed.denials).toBeUndefined();
+      expect(events.some((event) => event.type === "runtime.error")).toBe(false);
+      const toolMessage = (bodies[1].messages as any[]).at(-1);
+      expect(JSON.parse(toolMessage.content)).toEqual({
+        ok: true,
+        result: "The person did not answer this question. Do not guess an answer; ask again later or proceed without it.",
+      });
+    } finally {
+      await instance.dispose();
+    }
+  }, 20_000);
 });
 
 describe("createOpenAIChatRuntime mid-turn steer", () => {
@@ -633,6 +686,51 @@ describe("createOpenAIChatRuntime refused tool calls", () => {
     expect(requests).toBe(1);
     expect(events.some((event) => event.type === "turn.retrying")).toBe(false);
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
+  });
+});
+
+describe("createOpenAIChatRuntime HTTP error text", () => {
+  // MOCA-228: an xAI account with no credits left answered with a raw,
+  // cut-off JSON envelope instead of the provider's own sentence.
+  const XAI_NO_CREDITS = "Your team 0000-fixture has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit.";
+  const failure = async (status: number, body: string) => {
+    const fetchMock = vi.fn(async (url: string | URL) =>
+      String(url).endsWith("/chat/completions") ? new Response(body, { status }) : new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await GrokDriver.create({
+      instanceId: "xaiApi", displayName: "xAI", enabled: true,
+      config: GrokDriver.decodeConfig({ url: "https://xai.invalid/v1" }),
+      environment: { XAI_API_KEY: "fixture-key" },
+    });
+    const events: RuntimeEvent[] = [];
+    const stop = instance.adapter.onEvent((event) => events.push(event));
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hi" });
+    await vi.waitFor(() => {
+      if (!events.some((event) => event.type === "turn.completed")) throw new Error("turn still running");
+    });
+    stop();
+    const error = events.find((event) => event.type === "runtime.error") as { message: string } | undefined;
+    const calls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/chat/completions")).length;
+    return { message: error?.message, calls };
+  };
+
+  it("shows an out-of-credits account in the provider's own words, whole, and does not retry it", async () => {
+    const { message, calls } = await failure(402, JSON.stringify({
+      code: "The caller does not have permission to execute the specified operation",
+      error: XAI_NO_CREDITS,
+    }));
+    expect(message).toBe(`xAI HTTP 402: ${XAI_NO_CREDITS}`);
+    expect(calls).toBe(1);
+  });
+
+  it("reads an OpenAI-style error envelope's message", async () => {
+    const { message } = await failure(401, JSON.stringify({ error: { message: "Incorrect API key provided", code: "invalid_api_key" } }));
+    expect(message).toBe("xAI HTTP 401: Incorrect API key provided (invalid_api_key)");
+  });
+
+  it("keeps a body that is not a JSON error envelope as it was sent", async () => {
+    expect((await failure(400, "upstream rejected the request")).message).toBe("xAI HTTP 400: upstream rejected the request");
+    expect((await failure(400, JSON.stringify({ status: "rejected" }))).message).toBe('xAI HTTP 400: {"status":"rejected"}');
   });
 });
 

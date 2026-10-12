@@ -130,7 +130,7 @@ test("main starts its server with the answer and hands it every change", () => {
     assert.ok(end > start, to);
     return source.slice(start, end);
   };
-  const spawn = slice("async function startServerOn(port)", "utilityProcess.fork(entry");
+  const spawn = slice("async function startServerOn(port,", "utilityProcess.fork(entry");
   assert.ok(spawn.includes("...proPlanRelay.environment(),"), "the spawn environment carries OMB_PRO_PLAN");
   assert.ok(spawn.indexOf("...proPlanRelay.environment(),") > spawn.indexOf("...process.env,"), "never inherited from the launching shell");
   assert.match(slice("const serverSupervisor = createServerSupervisor({", "onUnavailable()"), /onReady\(proc\) \{\n\s+serverProc = proc;[\s\S]*\n\s+syncProPlan\(\);\n/);
@@ -144,9 +144,10 @@ test("main starts its server with the answer and hands it every change", () => {
     app: { isPackaged: true, getPath: () => "/unused", getVersion: () => "1.0.0" }, process: { platform: "darwin" },
     path: { join: (...parts) => parts.join("/") }, os: { hostname: () => "mac" }, shell: {}, safeStorage: {},
     createCloudAccountStore: () => ({}), rememberCloudHome: () => {}, rememberedCloudHome: () => null, rememberedHome: null, sendUpdaterState: () => {},
+    refreshCloudMenus: () => {}, announceCloudReady: () => {},
     createCloudAccountClient: options => { signIn.options = options; return { state: () => signIn.state }; },
   });
-  vm.runInContext(`${slice("function syncProPlan(", "\nfunction syncManagedComposioCredentials")}\n${slice("function ensureCloudAccount() {", "\nfunction ensureManagedDesktop")}`, context);
+  vm.runInContext(`${slice("function syncProPlan(", "\nfunction syncManagedComposioCredentials")}\n${slice("function ensureCloudAccount() {", "\n/** The free trial")}`, context);
   const publish = state => { signIn.state = state; signIn.options.onState(state); };
 
   // The server starts before the sign-in is read, and is ready with "not Pro".

@@ -54,6 +54,16 @@ describe("titleConversationExcerpt", () => {
 });
 
 describe("threadTitlePrompt", () => {
+  it("names from the person's words as typed: the Data context is its own field, and nothing in the text is stripped", () => {
+    const sent = message("user", "Compare monthly sales", { dataContext: { cardId: "c_1", draftSql: "SELECT private_draft".repeat(200) } });
+    expect(titleConversationExcerpt([sent, message("bot", "Sales increased.")])).toBe("User: Compare monthly sales\nBot: Sales increased.");
+    expect(threadTitlePrompt(sent.text!)).toBe(threadTitlePrompt("Compare monthly sales"));
+    // a pasted envelope is just text the person typed
+    const typed = '<data-context>{"cardId":"c_1"}</data-context>\nCompare monthly sales';
+    expect(threadTitlePrompt(typed)).toContain(typed);
+    expect(titleConversationExcerpt([message("user", typed)])).toBe(`User: ${typed.replace("\n", " ")}`);
+  });
+
   it("asks for a short title from the first message, or from the conversation so far", () => {
     expect(threadTitlePrompt("fix the login", "first-message")).toContain("begins with the message below");
     const prompt = threadTitlePrompt(`User: fix the login\n${"x".repeat(5_000)}`, "conversation");

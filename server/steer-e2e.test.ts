@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { withoutTurnClock } from "./testing/turn-clock-text.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = join(SERVER_DIR, "testing", "fake-claude-cli.ts");
@@ -41,6 +42,9 @@ posixOnly("mid-turn steering e2e", () => {
     return { status: res.status, body: await res.json() };
   };
   const getBot = async (id: string) => (await api("GET", "/api/bots")).body.bots.find((b: any) => b.id === id);
+  /** When a person last wrote in the thread, as the server keeps it (server/main-thread.ts). */
+  const askedAt = (botId: string, threadId: string) => (JSON.parse(readFileSync(join(home, ".openmausbot", "bots.json"), "utf8")) as any[])
+    .find((bot) => bot.id === botId).tasks.find((task: any) => task.threadId === threadId).askedAt;
   /** Pair a second device the way a teammate does, and send as them. A
    * queue is a delay, never a change of author: their words must still be
    * theirs when they finally reach the transcript. */
@@ -188,7 +192,7 @@ posixOnly("mid-turn steering e2e", () => {
 
       await waitFor(async () => (await getBot(created.id)).busy === false, "the turn to settle");
       const bot = await getBot(created.id);
-      const texts = bot.messages.filter((m: any) => m.kind === "text").map((m: any) => `${m.role}:${m.text}`);
+      const texts = bot.messages.filter((m: any) => m.kind === "text").map((m: any) => `${m.role}:${m.role === "bot" ? withoutTurnClock(m.text) : m.text}`);
       // order: greeting, first, the fake's opening line, the steered message
       // (appended when it was sent — mid-turn), then ONE reply carrying it
       expect(texts.slice(1)).toEqual([
@@ -199,6 +203,8 @@ posixOnly("mid-turn steering e2e", () => {
       ]);
       const steered = bot.messages.find((m: any) => m.text === "and also this");
       expect(steered.steered).toBe(true);
+      // Steered words are a person writing here, as the words that started the turn were.
+      expect(askedAt(created.id, created.threadId)).toBe(steered.at);
       // one turn, not two: exactly one reply
       expect(bot.messages.filter((m: any) => m.role === "bot" && m.kind === "text" && m.text.startsWith("reply to:"))).toHaveLength(1);
       // the tool chip keeps its command after the result settles it — the
@@ -255,7 +261,7 @@ posixOnly("mid-turn steering e2e", () => {
     // and the pass dies with the turn, once the turn is really over
     expect(await internalTools()).toBe(401);
     const bot = await getBot(created.id);
-    const texts = bot.messages.filter((m: any) => m.kind === "text").map((m: any) => `${m.role}:${m.text}`);
+    const texts = bot.messages.filter((m: any) => m.kind === "text").map((m: any) => `${m.role}:${m.role === "bot" ? withoutTurnClock(m.text) : m.text}`);
     expect(texts.slice(1)).toEqual([
       "user:first",
       "bot:hello from fake claude",
@@ -342,7 +348,7 @@ posixOnly("mid-turn steering e2e", () => {
     const followUp = nativeRows
       .filter((row) => row.dir === "out" && row.source === "claude.sdk.message")
       .at(-1)?.msg;
-    expect(followUp.message.content).toEqual([
+    expect(followUp.message.content.map((block: any) => block.type === "text" ? { ...block, text: withoutTurnClock(block.text) } : block)).toEqual([
       {
         type: "image",
         source: { type: "base64", media_type: "image/png", data: "[image data: 12 base64 chars]" },
@@ -601,6 +607,8 @@ posixOnly("mid-turn steering e2e", () => {
     // pressing Steer moves the words, it does not re-author them
     expect(folded.sender).toEqual(PAIRED);
     expect(steered.body.messages[0].sender).toEqual(PAIRED);
+    // and the person wrote them here, as if a drained turn had started with them
+    expect(askedAt(created.id, created.threadId)).toBe(folded.at);
 
     await api("POST", `/api/bots/${created.id}/interrupt`);
     await waitFor(async () => (await getBot(created.id)).busy === false, "the queue-steered turn to settle");

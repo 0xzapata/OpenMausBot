@@ -20,7 +20,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AudioLines, Check, ChevronDown, Loader2, Phone, PhoneOff, X } from "lucide-react";
 
-import { useStore, visibleMessages, type Bot } from "@/state/store";
+import { useShowThreads } from "@/lib/thread-preferences";
+import { openBot, useStore, visibleMessages, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { currentCall, deferCallCleanup, endCall, startCall, useOnCall } from "@/lib/call";
@@ -97,6 +98,7 @@ export function CallTargetButton({
   onStart: (mode: CallMode) => void;
 }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const { capabilities, ready: capabilitiesReady } = useDesktopCapabilities();
   const media = useLiveMedia();
   const liveThreadId = liveCapable ? threadId : undefined;
@@ -271,7 +273,7 @@ export function CallTargetButton({
   // already running, stay.
   if (liveMode && !onCall && liveLineHeldElsewhere(media, state.liveCall)) return null;
   return (
-    <div ref={rootRef} className="relative flex items-center">
+    <div ref={rootRef} className="relative flex items-center gap-0.5">
       <button
         ref={buttonRef}
         disabled={liveElsewhere || (onLiveCall && media.phase === "ending")}
@@ -298,17 +300,18 @@ export function CallTargetButton({
         title={label}
         data-call-button={placement}
         className={cn(
-          "relative flex shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-60",
+          "relative flex shrink-0 items-center justify-center disabled:opacity-60",
+          "rounded-l-3xl rounded-r-lg active:rounded-3xl transition-[color,background,border-radius]",
           composer ? "size-8" : "size-9",
           active
             ? "bg-danger text-white hover:brightness-110"
             : composer
               ? unavailable
                 ? "bg-control text-ink-tertiary hover:text-ink-secondary"
-                : "bg-control text-ink hover:bg-raised"
+                : "bg-control text-ink hover:bg-raised-hover"
               : unavailable
-                ? "text-ink-tertiary hover:bg-raised hover:text-ink-secondary"
-                : "text-ink-secondary hover:bg-raised hover:text-ink",
+                ? "text-ink-tertiary hover:bg-raised-hover hover:text-ink-secondary"
+                : "text-ink-secondary hover:bg-raised-hover hover:text-ink",
         )}
       >
         {active
@@ -334,7 +337,12 @@ export function CallTargetButton({
           aria-controls={menuOpen ? menuId : undefined}
           aria-label={t("call.mode.menu")}
           title={t("call.mode.menu")}
-          className={cn("-ml-1 flex w-4 items-center justify-center rounded-full text-ink-secondary transition-colors hover:text-ink disabled:opacity-40", composer ? "h-8" : "h-9")}
+          className={cn(
+              "grid place-content-center",
+              "bg-control w-8 hover:bg-raised-hover text-ink-secondary hover:text-ink disabled:opacity-40 transition-colors",
+              "rounded-l-lg rounded-r-3xl active:rounded-3xl transition-[color,background,border-radius]",
+              composer ? "h-8" : "h-9"
+            )}
         >
           <ChevronDown size={13} className={cn("transition-transform", menuOpen && "rotate-180")} />
         </button>
@@ -413,7 +421,7 @@ export function CallTargetButton({
                 setHelpOpen(false);
                 if (remoteClient) {
                   // In a room the agent is a member: open its chat first.
-                  if (setupBot.id !== targetId) dispatch({ type: "select", id: setupBot.id });
+                  if (setupBot.id !== targetId) openBot(dispatch, setupBot, showThreads);
                   dispatch({ type: "toggleSettings", open: true, section: "voice" });
                   return;
                 }
@@ -473,7 +481,7 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
         if (event.key === "Tab") onClose();
         else navigateThreadMenu(event);
       }}
-      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
+      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl space-y-1", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
     >
       {CALL_MODES.map((entry) => {
         const unavailable = entry.id === "turns" ? turnsUnavailable : null;

@@ -8,6 +8,7 @@
  * server/store.ts; the wire projection is typed so a new server field
  * fails compilation until it is either declared here or explicitly listed
  * as server-private. */
+import type { DataBroadcast } from "./data-surface.ts";
 import type { ApprovalMode } from "./approval-mode.ts";
 import type { ToolScope } from "./tool-scope.ts";
 import type { CommandAllowlistCandidate } from "./command-allowlist.ts";
@@ -141,6 +142,8 @@ export interface WireTask {
   /** The person pinned this thread above the update-ordered list. Only true
    * is stored; absence means unpinned. */
   pinned?: boolean;
+  link?: string;
+  linkAuto?: boolean;
   /** Epoch ms of the newest message, or createdAt when the thread has none.
    * Server-derived. Clients must not write it. */
   updatedAt?: number;
@@ -161,6 +164,9 @@ export interface WireTask {
   autoApprove?: boolean;
   alwaysAllow?: string[];
   unread?: boolean;
+  /** The newest message on screen the last time the person read this
+   * conversation. The New divider goes after it. */
+  lastReadMessageId?: string;
   /** true after an edit/branch-switch rewound the visible conversation. */
   rewound?: boolean;
   pinnedMessageId?: string;
@@ -249,6 +255,10 @@ export interface WireBot {
   id: string;
   /** The task selected in the UI; running turns keep their own thread id. */
   threadId: string;
+  /** The bot's main thread (server/main-thread.ts): where a routine without
+   * a thread of its own reports, and what a bot opens to while threads are
+   * hidden. Server-derived; absent only for a bot without threads. */
+  mainThreadId?: string;
   /** every task this bot has, newest first, projected like wireTask */
   tasks?: WireTask[];
   /** Projects group this bot's threads; older bots have no projects. */
@@ -413,7 +423,7 @@ export interface WireMessage {
    * and video a bot attached with attach_file; they are opened through the
    * message-scoped file route, never by path. */
   attachments?: Array<
-    | { kind: "image"; path: string; mime: string }
+    | { kind: "image"; path: string; mime: string; name?: string }
     | { kind: "file"; path: string; mime: string; name: string }
     | { kind: "audio"; path: string; mime: string; durationMs?: number }
   >;
@@ -508,14 +518,25 @@ export interface WireMessage {
    * not know it ignore it. */
   routedBy?: { provider: "jev"; probability: number };
   /** Set on the user-role line another bot delivered into this bot's own
-   * conversation (ask_bot, start_thread). */
-  peerAsk?: { botId: string; name: string; unattended?: boolean };
+   * conversation (ask_bot, start_thread). `incident`: the line is
+   * OpenMausBot's Team incidents report about that bot's broken run in
+   * `threadId` (server/incidents.ts), not its words; `notified`: that
+   * failure already buzzed the person (a run that could not start, a
+   * failed routine). */
+  peerAsk?: { botId: string; name: string; unattended?: boolean; incident?: { threadId: string; notified?: boolean } };
   /** emoji reactions; by = "user" or a member botId. */
   reactions?: Array<{ emoji: string; by: string }>;
   /** comm chips: "Messaged @X", linking to the bot-bot channel. */
   comm?: { groupId: string; threadId?: string; withBotId: string; withName: string; withColor: string };
   /** thread chips: "Opened thread #Title on @X". */
   threadRef?: { botId: string; threadId: string; title: string };
+  /** A published Data result, linked to its bot's main viewer. */
+  dataResult?: { botId: string; cardId: string; title: string; kind: "table" | "chart" | "text"; sql?: string };
+  /** user messages: the Data result the person was viewing when they sent
+   * this (shared/data-context.ts). Its own field, so `text` stays exactly
+   * what they typed; the server puts the hint in front of the text it
+   * sends the model for this turn and for every retry of it. */
+  dataContext?: { cardId: string; draftSql?: string };
   /** user messages waiting in the steer-queue while the bot is mid-turn. */
   queued?: boolean;
   /** steer-queue entry this drained user line came from. */
@@ -690,6 +711,10 @@ export interface GroupTask {
   /** The first message already drove a title attempt for this thread, so a
    * later one does not rename a room the person may have retitled. */
   titleFromFirstMessage?: true;
+  /** Whether a turn is actively running in this thread. */
+  working?: boolean;
+  /** The member bot currently speaking or generating in this thread, if any. */
+  busyBotId?: string | null;
 }
 
 /** A room as a client may see it: the record plus the computed working
@@ -708,6 +733,9 @@ export interface WireGroup {
   /** The room's shared instructions. */
   bulletin: string;
   unread: boolean;
+  /** The newest message on screen the last time the person read this
+   * conversation. The New divider goes after it. */
+  lastReadMessageId?: string;
   createdAt: number;
   /** true for auto-created bot-bot channels. */
   dm?: boolean;
@@ -801,6 +829,9 @@ export type ServerFrame =
    * computer (absent: a Local VM). */
   | { kind: "computer"; botId: string; state: "provisioning" | "waking"; place?: "cloud" }
   | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null }
+  /** A bot's data sheet changed (a card added, updated, failed, removed; a
+   * table loaded). Whole sheet each time: see shared/data-surface.ts. */
+  | DataBroadcast
   | { kind: "bot.deleted"; botId: string }
   | { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }
   /** The config status object spread flat into the frame; its full typing

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { writeFileAtomic } from "./atomic.ts";
+import { workOriginSchema, type WorkOrigin } from "./peer-provenance.ts";
 
 const nodeSchema = z.object({
   id: z.string(), rootId: z.string(), parentId: z.string().optional(),
@@ -14,10 +15,23 @@ const nodeSchema = z.object({
   lastProgressAt: z.number().optional(),
   approvalGranted: z.boolean().default(false),
   kind: z.enum(["work", "assignment"]).default("work"),
+  /** On a root: where the tree's work started (peer-provenance.ts). Every
+   * node in the tree is framed by it; absent is outside. */
+  origin: workOriginSchema.optional(),
+  /** Turns of this node a restart cut and ran again in place. */
+  restarts: z.number().int().nonnegative().default(0),
+  /** Its next turn, or the one running now, follows a restart and says so:
+   * "rerun" is its own cut turn run again; "cut", its own turn was cut after
+   * handing out the work it now waits on; "teammates", only work it waits on
+   * was cut. Cleared when that turn settles (a node ended another way keeps
+   * it, inert). */
+  restart: z.enum(["rerun", "cut", "teammates"]).optional(),
 });
 export type RoomHandoff = z.infer<typeof nodeSchema>;
 export type RoomAddress = Pick<RoomHandoff, "groupId" | "threadId" | "botId">;
 export const ROOM_HANDOFF_LIMITS = { depth: 4, requests: 24, executions: 48, lifetimeMs: 30 * 60_000, minRunwayMs: 10 * 60_000, queueMs: 60 * 60_000, hardCapMs: 4 * 60 * 60_000 };
+/** A turn a restart cut runs again once; cut again, it ends with this. */
+export const ROOM_HANDOFF_CUT_TWICE = "Interrupted by another OpenMausBot restart after resuming once; not resumed again. Some of its steps may already have taken effect.";
 /** Renders elapsed milliseconds as whole minutes, or seconds under one minute. */
 const duration = (ms: number) => ms >= 60_000 ? `${Math.floor(ms / 60_000)}m` : `${Math.floor(ms / 1000)}s`;
 const terminal = (n: RoomHandoff) => ["completed", "failed", "cancelled"].includes(n.status);
@@ -27,13 +41,16 @@ export interface RoomHandoffHooks {
   validate(node: RoomHandoff, parent?: RoomHandoff): string | undefined;
   busy(node: RoomHandoff): boolean;
   run(node: RoomHandoff, resumed: boolean, signal: AbortSignal): Promise<{ ok: boolean; text: string }>;
-  report(child: RoomHandoff, parent: RoomHandoff): void;
+  /** A settled child, to its requester; a root a restart ended, alone. */
+  report(child: RoomHandoff, parent?: RoomHandoff): void;
   changed(groupIds: ReadonlySet<string>, directThreadIds: ReadonlySet<string>): void;
 }
 
 /** A bounded tree of addressed room turns. Waiting for children never holds a
  * room/provider queue; reporting is data, and only the named parent is resumed.
- * Interrupted processes are never replayed after restart (tools may have effects).
+ * A turn a restart cut runs again once, in place, told to check what it
+ * already did (tools may have effects); its requester is told
+ * (reconcileRestart).
  */
 export class RoomHandoffs {
   readonly nodes = new Map<string, RoomHandoff>();
@@ -43,33 +60,196 @@ export class RoomHandoffs {
   private readonly hooks: RoomHandoffHooks;
   private readonly now: () => number;
   private readonly limits: typeof ROOM_HANDOFF_LIMITS;
+  /** Clocks do not run while the server is down: every time budget of a
+   * tree that outlived a restart starts again here. Counts carry on. */
+  private readonly bootAt: number;
+  /** Set by close(): shutdown has begun. */
+  private closing = false;
   /** Per-root pause accounting for the tree lifetime clock. */
   private readonly pauses = new Map<string, { accumulatedMs: number; since?: number }>();
+  /** Tick-local status updates. One fsync at the end, not one per node. */
+  private batch: { dirty: boolean; groups: Set<string>; threads: Set<string> } | null = null;
+  /** Settlements that resolve in the same turn share one fsync. */
+  private settleDirty = false;
+  private settleScheduled = false;
+  private deferSettle = false;
+  private readonly settleGroups = new Set<string>();
+  private readonly settleThreads = new Set<string>();
 
   constructor(file: string, hooks: RoomHandoffHooks, now: () => number = Date.now,
     limits: Partial<typeof ROOM_HANDOFF_LIMITS> = {}) {
-    this.file = file; this.hooks = hooks; this.now = now;
+    this.file = file; this.hooks = hooks; this.now = now; this.bootAt = now();
     this.limits = { ...ROOM_HANDOFF_LIMITS, ...limits };
     try {
       const saved = z.array(nodeSchema).max(10_000).parse(JSON.parse(readFileSync(file, "utf8")));
       const ids = new Map(saved.map(n => [n.id, n]));
       if (ids.size !== saved.length || saved.some(n => !ids.has(n.rootId) || ids.get(n.rootId)?.parentId ||
         (n.parentId && (!ids.has(n.parentId) || ids.get(n.parentId)?.rootId !== n.rootId)))) throw new Error("Invalid room handoff tree");
-      for (const n of saved) {
-        if (!terminal(n)) { n.status = "failed"; n.result = "Interrupted by server restart; not replayed."; }
-        this.nodes.set(n.id, n);
-      }
+      for (const n of saved) this.nodes.set(n.id, n);
+      this.reconcileRestart();
       this.save();
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") this.loadError = "Room handoff storage is unreadable; repair it before sending new work.";
     }
   }
 
+  /** A restart cut every turn that was running. None ends silently and
+   * none runs again more than once:
+   * - a turn that had handed out work waits for it, and its resume says the
+   *   turn was cut ("cut"); nothing of it runs again;
+   * - any other cut turn runs again once, in place, in its retained session,
+   *   told to check what it already did first ("rerun");
+   * - a rerun cut too ends failed, reported to its requester (a root, in its
+   *   own conversation).
+   * A requester waiting on a cut turn hears what the restart did on its
+   * next turn ("teammates"). Queued work and owed resumes go ahead. */
+  private reconcileRestart() {
+    for (const n of this.nodes.values()) {
+      const fate = this.cutFate(n);
+      if (!fate) continue;
+      if (fate === "wait") {
+        n.status = "waiting"; n.restart = "cut";
+      } else if (fate === "end") {
+        n.status = "failed"; n.result = ROOM_HANDOFF_CUT_TWICE; delete n.restart;
+        if (!n.parentId) n.reported = false;
+      } else {
+        n.status = this.children(n.id).length ? "resume" : "queued"; n.restart = "rerun"; n.restarts++;
+      }
+      const parent = n.parentId ? this.nodes.get(n.parentId) : undefined;
+      if (parent && !terminal(parent) && !parent.restart) parent.restart = "teammates";
+    }
+  }
+  /** What the next boot does with this node if a restart cuts it now: "wait"
+   * for the work its turn handed out, run that turn "again", or "end" it
+   * (its one rerun was cut too); undefined when no turn of it is running. */
+  private cutFate(n: RoomHandoff): "wait" | "again" | "end" | undefined {
+    if (n.status !== "source" && n.status !== "running") return undefined;
+    if (n.status === "source" || this.children(n.id).some(c => c.createdAt >= (n.startedAt ?? n.createdAt))) return "wait";
+    return n.restart === "rerun" ? "end" : "again";
+  }
+  /** The turn running in this conversation is one the next start goes on
+   * with (it waits on its work, or runs again), so a shutdown's line that it
+   * was cut would be false; that start says what happened instead. */
+  continuesAfterRestart(threadId: string): boolean {
+    return [...this.nodes.values()].some(n => {
+      const fate = !n.groupId && n.threadId === threadId ? this.cutFate(n) : undefined;
+      return fate === "wait" || fate === "again";
+    });
+  }
+
+  /** Shutdown has begun: dispatch nothing more, and leave a turn the
+   * teardown fails (or the source turn it ends) as it is, for the next boot
+   * to find cut. A quit then ends where a crash does, whatever the engine.
+   * A turn that still finishes keeps its result. */
+  close() { this.closing = true; }
+
+  /** What a restart did to this node's turn and to the work it waits on, for
+   * the first turn after it ("" when nothing): a cut turn runs again in its
+   * own conversation, so it checks before it repeats, and a requester learns
+   * which of its teammates ran again. Ends with a newline. */
+  restartNote(node: RoomHandoff, nameOf: (botId: string) => string): string {
+    if (!node.restart) return "";
+    const own = node.restart === "rerun"
+      ? "OpenMausBot restarted while your previous turn here was running and cut it off; this turn continues it. First check what that turn already did (files, commits, messages, anything sent or started) and verify anything uncertain, so nothing is done twice; then finish and report as usual. A restart alone is not a blocker."
+      : node.restart === "cut" ? "OpenMausBot restarted before your previous turn here finished, after it sent work to teammates. Check what that turn already did before repeating any of it." : "";
+    // Only a rerun that completed is known to have finished; any other end
+    // (never started, start refused, stopped or expired mid-run) may leave
+    // part of it done, and its result says how it ended.
+    const cut = this.children(node.id).filter(child => child.restarts > 0).map(child => `${nameOf(child.botId)} (${
+      child.result === ROOM_HANDOFF_CUT_TWICE ? "cut again while resuming, so not resumed a second time: it may be partly done"
+        : child.status === "completed" ? "resumed once in place and told to check what it had already done"
+        : `set to resume once but ended ${child.status} before finishing, so it may be partly done: see its result`})`);
+    const teammates = cut.length ? `A restart cut these teammates' turns: ${cut.join("; ")}. Check their results as usual.` : "";
+    return own || teammates ? `${[own, teammates].filter(Boolean).join(" ")}\n` : "";
+  }
+
   private save() { writeFileAtomic(this.file, JSON.stringify([...this.nodes.values()]), { mode: 0o600 }); }
-  private publish(...nodes: RoomHandoff[]) {
+  private remember(nodes: readonly RoomHandoff[], groups: Set<string>, threads: Set<string>) {
+    for (const node of nodes) {
+      if (node.groupId) groups.add(node.groupId);
+      else threads.add(node.threadId);
+    }
+  }
+  private emit(groups: ReadonlySet<string>, threads: ReadonlySet<string>) {
+    if (groups.size === 0 && threads.size === 0) return;
+    this.hooks.changed(groups, threads);
+  }
+  /** Acceptance and caller-visible stops. The write finishes before return,
+   * so a failed disk rolls the accept back and a crash keeps the accept. */
+  private commit(...nodes: RoomHandoff[]) {
     this.save();
-    this.hooks.changed(new Set(nodes.flatMap(node => node.groupId ? [node.groupId] : [])),
-      new Set(nodes.filter(node => !node.groupId).map(node => node.threadId)));
+    if (this.batch) this.batch.dirty = false;
+    this.settleDirty = false;
+    const groups = new Set(this.settleGroups);
+    const threads = new Set(this.settleThreads);
+    this.settleGroups.clear();
+    this.settleThreads.clear();
+    this.remember(nodes, groups, threads);
+    this.emit(groups, threads);
+  }
+  private publish(...nodes: RoomHandoff[]) {
+    if (this.batch) {
+      this.batch.dirty = true;
+      this.remember(nodes, this.batch.groups, this.batch.threads);
+      return;
+    }
+    if (this.deferSettle) {
+      this.settleDirty = true;
+      this.remember(nodes, this.settleGroups, this.settleThreads);
+      this.scheduleSettleFlush();
+      return;
+    }
+    this.commit(...nodes);
+  }
+  private scheduleSettleFlush() {
+    if (this.settleScheduled) return;
+    if (!this.settleDirty && this.settleGroups.size === 0 && this.settleThreads.size === 0) return;
+    this.settleScheduled = true;
+    queueMicrotask(() => {
+      this.settleScheduled = false;
+      if (this.settleDirty) {
+        try {
+          this.save();
+          this.settleDirty = false;
+        } catch (error) {
+          // The next tick writes the same map. A throw here would be uncaught.
+          console.error("room handoffs:", error);
+          return;
+        }
+      }
+      const groups = new Set(this.settleGroups);
+      const threads = new Set(this.settleThreads);
+      this.settleGroups.clear();
+      this.settleThreads.clear();
+      this.emit(groups, threads);
+    });
+  }
+  /** Write what the open tick changed so far, now. Change notices still go
+   * out once, at the end of the tick. */
+  private saveBatch() {
+    if (!this.batch || (!this.batch.dirty && !this.settleDirty)) return;
+    this.save();
+    this.batch.dirty = false;
+    this.settleDirty = false;
+  }
+  private flushBatch() {
+    const batch = this.batch;
+    this.batch = null;
+    if (!batch) return;
+    // Keep failed tick writes in the same retry ledger as settlements. Do not
+    // leave a batch open: user accepts/stops must still save immediately.
+    for (const id of batch.groups) this.settleGroups.add(id);
+    for (const id of batch.threads) this.settleThreads.add(id);
+    this.settleDirty ||= batch.dirty;
+    if (this.settleDirty) {
+      this.save();
+      this.settleDirty = false;
+    }
+    const groups = new Set(this.settleGroups);
+    const threads = new Set(this.settleThreads);
+    this.settleGroups.clear();
+    this.settleThreads.clear();
+    this.emit(groups, threads);
   }
   children(id: string) { return [...this.nodes.values()].filter(n => n.parentId === id); }
   root(n: RoomHandoff) { return this.nodes.get(n.rootId)!; }
@@ -84,8 +264,9 @@ export class RoomHandoffs {
 
   /** The tree lifetime clock pauses while any node in the tree is actively
    * executing: the budget bounds coordination sprawl, not the runtime of
-   * dispatched work. Accounting is in-memory; a restart fails every
-   * interrupted node anyway, so no pause span survives one. */
+   * dispatched work. Accounting is in-memory: no pause span survives a
+   * restart, and none needs to, since a surviving tree's clocks start again
+   * at boot (bootAt). */
   private trackExecutionPauses(): void {
     const now = this.now();
     const executing = new Set<string>();
@@ -117,15 +298,19 @@ export class RoomHandoffs {
     if (!pause) return 0;
     return pause.accumulatedMs + (pause.since != null ? this.now() - pause.since : 0);
   }
+  /** A clock anchor, never before this boot: downtime is nobody's budget. */
+  private since(at: number): number {
+    return Math.max(at, this.bootAt);
+  }
   /** The lifetime budget consumed so far: wall clock minus paused time. */
   private effectiveAgeMs(root: RoomHandoff): number {
-    return Math.max(0, this.now() - root.createdAt - this.pausedMs(root));
+    return Math.max(0, this.now() - this.since(root.createdAt) - this.pausedMs(root));
   }
   /** The wall-clock cap is a stall window, not a total-age limit: it is
    * measured from the tree's creation or its last durable progress,
    * whichever is later. */
   private capOrigin(root: RoomHandoff): number {
-    return root.lastProgressAt ?? root.createdAt;
+    return this.since(root.lastProgressAt ?? root.createdAt);
   }
   /** Records durable progress on the root — a dispatch, a settlement, or a
    * cancellation — restarting the hard-cap stall window from now. */
@@ -138,11 +323,11 @@ export class RoomHandoffs {
    * wall-clock hard cap clamps every extension: a tree that never stops
    * executing still dies, so runway extensions cannot compound forever. */
   private deadline(n: RoomHandoff): number {
-    const anchor = n.status === "running" ? n.startedAt ?? n.createdAt : n.createdAt;
+    const anchor = this.since(n.status === "running" ? n.startedAt ?? n.createdAt : n.createdAt);
     const root = this.root(n);
     const ceiling = n.status === "queued" && n.executions === 0
       ? anchor + this.limits.queueMs
-      : root.createdAt + this.limits.lifetimeMs + this.pausedMs(root);
+      : this.since(root.createdAt) + this.limits.lifetimeMs + this.pausedMs(root);
     const normal = Math.min(Math.max(ceiling, anchor + this.limits.minRunwayMs), this.capOrigin(root) + this.limits.hardCapMs);
     // An in-flight synthesis turn keeps at least the runway its dispatch
     // promised even when the hard cap lands mid-run; the cap still clamps
@@ -182,7 +367,7 @@ export class RoomHandoffs {
    * never started reports the queue window it waited out, not the tree's. */
   private lifetimeError(n: RoomHandoff): string {
     if (n.status === "queued" && n.executions === 0) {
-      return `Room handoff queue budget exhausted: never started while waiting for a busy teammate after ${duration(this.now() - n.createdAt)} of the ${duration(this.limits.queueMs)} queue window`;
+      return `Room handoff queue budget exhausted: ${n.restart === "rerun" ? "not resumed after a restart" : "never started"} while waiting for a busy teammate after ${duration(this.now() - this.since(n.createdAt))} of the ${duration(this.limits.queueMs)} queue window`;
     }
     const root = this.root(n);
     return `Room handoff lifetime budget exhausted: node was ${n.status} after ${duration(this.effectiveAgeMs(root))} of the ${duration(this.limits.lifetimeMs)} tree lifetime`;
@@ -191,7 +376,7 @@ export class RoomHandoffs {
    * execution never pauses long enough to age its lifetime budget. */
   private hardCapError(n: RoomHandoff): string {
     const root = this.root(n);
-    const first = `Room handoff hard cap exhausted: node was ${n.status} after ${duration(this.now() - root.createdAt)} of the ${duration(this.limits.hardCapMs)} wall-clock cap`;
+    const first = `Room handoff hard cap exhausted: node was ${n.status} after ${duration(this.now() - this.since(root.createdAt))} of the ${duration(this.limits.hardCapMs)} wall-clock cap`;
     // Graceful expiry: settled children are real work the tree produced,
     // so the expiry still carries a bounded digest of their results. A
     // wide tree cannot turn the error into a dump: each result is tailed
@@ -212,7 +397,7 @@ export class RoomHandoffs {
 
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined,
     target: RoomAddress, key: string, text: string, approvalGranted = false,
-    rework = false, sourceText = "", requestBatchKey?: string): { node: RoomHandoff; duplicate: boolean } {
+    rework = false, sourceText = "", requestBatchKey?: string, origin?: WorkOrigin): { node: RoomHandoff; duplicate: boolean } {
     if (this.loadError) throw new Error(this.loadError);
     let parent = parentId ? this.nodes.get(parentId) : this.nodes.get(generation);
     if (parentId && (!parent || parent.status !== "running")) throw new Error("The originating room task is no longer running");
@@ -220,7 +405,8 @@ export class RoomHandoffs {
       throw new Error("The handoff belongs to a different room speaker");
     }
     const fresh = !parent;
-    parent ??= { ...source, id: generation, rootId: generation, key: "root", text: sourceText.slice(0, 12_000), createdAt: this.now(), status: "source", result: "", reported: true, executions: 0, approvalGranted: false, kind: "work" };
+    parent ??= { ...source, id: generation, rootId: generation, key: "root", text: sourceText.slice(0, 12_000), createdAt: this.now(), status: "source", result: "", reported: true, executions: 0, approvalGranted: false, kind: "work", restarts: 0,
+      ...(origin ? { origin } : {}) };
     const kind = target.groupId && target.groupId === source.groupId ? "assignment" : "work";
     const path = this.path(parent);
     if (path.some(n => n.botId === target.botId && (!n.groupId || !target.groupId || n.groupId === target.groupId))) {
@@ -263,12 +449,12 @@ export class RoomHandoffs {
     }
     const node: RoomHandoff = { ...target, id: randomUUID(), rootId: parent.rootId, parentId: parent.id,
       key, text, createdAt: this.now(), status: "queued", result: "", reported: false, executions: 0, approvalGranted,
-      kind, ...(target.groupId && requestBatchKey ? { requestBatchKey } : {}) };
+      kind, restarts: 0, ...(target.groupId && requestBatchKey ? { requestBatchKey } : {}) };
     const problem = this.hooks.validate(node, parent);
     if (problem) throw new Error(problem);
     if (fresh) this.nodes.set(parent.id, parent);
     this.nodes.set(node.id, node);
-    try { this.publish(node, parent); } catch (e) { this.nodes.delete(node.id); if (fresh) this.nodes.delete(parent.id); throw e; }
+    try { this.commit(node, parent); } catch (e) { this.nodes.delete(node.id); if (fresh) this.nodes.delete(parent.id); throw e; }
     return { node, duplicate: false };
   }
 
@@ -283,7 +469,7 @@ export class RoomHandoffs {
 
   sourceSettled(generation: string, ok: boolean) {
     const node = this.nodes.get(generation);
-    if (!node || node.status !== "source") return;
+    if (!node || node.status !== "source" || (!ok && this.closing)) return;
     // An accepted assignment belongs to the queue, not the provider that
     // submitted it. A failed/expired source turn must not erase that work.
     // Explicit Stop, deletion and revoked routes still cancel separately.
@@ -303,9 +489,11 @@ export class RoomHandoffs {
     this.trackExecutionPauses();
     this.publish(node);
   }
-  cancelRoom(groupId: string, threadId?: string) {
+  /** A harness stop (a provider reload) passes its own cause and fails the
+   * work, so a requester never reads it as the person's Stop. */
+  cancelRoom(groupId: string, threadId?: string, reason = "Stopped by user", status: "failed" | "cancelled" = "cancelled") {
     for (const n of this.nodes.values()) {
-      if (n.groupId === groupId && (!threadId || n.threadId === threadId) && !terminal(n)) this.cancelTree(n, "Stopped by user");
+      if (n.groupId === groupId && (!threadId || n.threadId === threadId) && !terminal(n)) this.cancelTree(n, reason, status);
     }
   }
   cancelDirect(threadId: string, reason = "Stopped by user") {
@@ -335,18 +523,35 @@ export class RoomHandoffs {
       return Boolean(parent && !parent.groupId && parent.threadId === threadId);
     });
   }
+  /** Teammate work that has not settled yet, as ids only: who asked, who is
+   * working on it, and where. The request and result text stay out, so the
+   * Team map can show the link without reading anyone's conversation. */
+  liveEdges(): Array<{ sourceBotId: string; targetBotId: string; state: "queued" | "running"; threadId: string; groupId?: string }> {
+    return [...this.nodes.values()].flatMap(node => {
+      if (terminal(node) || !node.parentId) return [];
+      const parent = this.nodes.get(node.parentId);
+      if (!parent || parent.botId === node.botId) return [];
+      return [{
+        sourceBotId: parent.botId, targetBotId: node.botId,
+        state: node.status === "queued" ? "queued" as const : "running" as const,
+        threadId: node.threadId, ...(node.groupId ? { groupId: node.groupId } : {}),
+      }];
+    });
+  }
   /** Stop this conversation without reaching into a teammate that is already
    * working. Its provider process is left alone: it finishes and its result
    * is still reported here. Work that never started is cancelled, because
-   * nothing is lost. This conversation stops being awaited either way, so no
-   * teammate result resumes a stopped chat. Returns what was left running. */
+   * nothing is lost, and so is a cut turn still owed its rerun: nothing of it
+   * runs, and Stop means stop. This conversation stops being awaited either
+   * way, so no teammate result resumes a stopped chat. Returns what was left
+   * running. */
   stopAwaitingDirect(threadId: string, reason = "Stopped by user"): RoomHandoff[] {
     const left: RoomHandoff[] = [];
     for (const node of this.nodes.values()) {
       if (node.groupId || node.threadId !== threadId || terminal(node)) continue;
       for (const child of this.children(node.id)) {
         if (terminal(child)) continue;
-        if (child.status === "queued") this.cancelTree(child, "Stopped before it started");
+        if (child.status === "queued") this.cancelTree(child, child.restart === "rerun" ? "Stopped before it resumed" : "Stopped before it started");
         else left.push(child);
       }
       node.status = "cancelled"; node.result = reason;
@@ -358,7 +563,16 @@ export class RoomHandoffs {
   }
 
   tick() {
-    if (this.loadError) return;
+    if (this.loadError || this.closing) return;
+    this.batch = { dirty: false, groups: new Set(), threads: new Set() };
+    try {
+      this.tickBody();
+    } finally {
+      this.flushBatch();
+    }
+  }
+
+  private tickBody() {
     this.trackExecutionPauses();
     // Validate and expire deepest nodes first so each one is failed with its
     // own status; an ancestor's cancellation then only sweeps what is left.
@@ -376,8 +590,9 @@ export class RoomHandoffs {
     }
     for (const n of this.nodes.values()) {
       const parent = n.parentId ? this.nodes.get(n.parentId) : undefined;
-      if (terminal(n) && parent && !n.reported) {
-        this.hooks.report(n, parent); n.reported = true; this.publish(n, parent);
+      if (terminal(n) && !n.reported) {
+        this.saveBatch();
+        this.hooks.report(n, parent); n.reported = true; this.publish(...parent ? [n, parent] : [n]);
       }
       if (n.status === "waiting") {
         const children = this.children(n.id);
@@ -389,14 +604,17 @@ export class RoomHandoffs {
       if (parent && (parent.status === "source" || parent.status === "running") &&
         (parent.threadId === n.threadId || (n.groupId && n.groupId === parent.groupId))) continue;
       // A stopped source stops waiting; only work that never started is
-      // dropped with it. A teammate mid-turn keeps its process and reports.
-      if (parent && terminal(parent) && n.status === "queued") { this.cancelTree(n, "Originating request has ended"); continue; }
+      // dropped with it. A teammate mid-turn keeps its process and reports,
+      // and so does one the person left working that a restart then cut.
+      if (parent && terminal(parent) && n.status === "queued" && n.startedAt === undefined) { this.cancelTree(n, "Originating request has ended"); continue; }
       if (this.hooks.busy(n)) continue;
       const root = this.root(n);
       const executionCost = 1;
       if (root.executions + executionCost > this.limits.executions) { this.cancelTree(n, "Room execution budget exhausted", "failed"); continue; }
       const resumed = n.status === "resume";
       const childCount = this.children(n.id).length;
+      const before = { status: n.status, startedAt: n.startedAt, lastProgressAt: root.lastProgressAt,
+        pause: this.pauses.get(root.id), since: this.pauses.get(root.id)?.since };
       root.executions += executionCost; n.status = "running"; n.startedAt = this.now();
       this.stampProgress(root);
       // Open the pause at the moment execution starts, not at the next tick:
@@ -405,27 +623,55 @@ export class RoomHandoffs {
       pause.since ??= this.now();
       this.pauses.set(root.id, pause);
       this.publish(n, root);
+      // The file must say running before the child starts. Everything this
+      // tick changed so far shares this one write. If it fails, the node is
+      // put back as it was and nothing starts; the next tick tries again.
+      try {
+        this.saveBatch();
+      } catch (error) {
+        root.executions -= executionCost;
+        n.status = before.status;
+        if (before.startedAt === undefined) delete n.startedAt; else n.startedAt = before.startedAt;
+        if (before.lastProgressAt === undefined) delete root.lastProgressAt; else root.lastProgressAt = before.lastProgressAt;
+        if (!before.pause) this.pauses.delete(root.id);
+        else before.pause.since = before.since;
+        throw error;
+      }
       const controller = new AbortController();
       this.controllers.set(n.id, controller);
       void this.hooks.run(n, resumed, controller.signal).then(result => {
-        if (terminal(n)) return;
-        n.result = result.text.slice(0, 12_000);
-        if (this.children(n.id).length > childCount) n.status = "waiting";
-        else if (!result.ok) this.cancelTree(n, n.result || "Room agent failed", "failed");
-        else { n.status = "completed"; this.stampProgress(root); }
-        // Close the paused span with the settlement itself: work enqueued
-        // before the next periodic tick must be admitted against the aged
-        // budget, not the still-open pause's overstated runway.
-        this.trackExecutionPauses();
-        this.publish(n);
-      }).catch(e => {
-        if (terminal(n)) return;
-        n.result = String(e).slice(0, 1000);
-        if (this.children(n.id).length > childCount) {
-          n.status = "waiting";
+        this.deferSettle = true;
+        try {
+          if (terminal(n) || (!result.ok && this.closing)) return;
+          delete n.restart;
+          n.result = result.text.slice(0, 12_000);
+          if (this.children(n.id).length > childCount) n.status = "waiting";
+          else if (!result.ok) this.cancelTree(n, n.result || "Room agent failed", "failed");
+          else { n.status = "completed"; this.stampProgress(root); }
+          // Close the paused span with the settlement itself: work enqueued
+          // before the next periodic tick must be admitted against the aged
+          // budget, not the still-open pause's overstated runway.
           this.trackExecutionPauses();
           this.publish(n);
-        } else this.cancelTree(n, n.result, "failed");
+        } finally {
+          this.deferSettle = false;
+          this.scheduleSettleFlush();
+        }
+      }).catch(e => {
+        this.deferSettle = true;
+        try {
+          if (terminal(n) || this.closing) return;
+          delete n.restart;
+          n.result = String(e).slice(0, 1000);
+          if (this.children(n.id).length > childCount) {
+            n.status = "waiting";
+            this.trackExecutionPauses();
+            this.publish(n);
+          } else this.cancelTree(n, n.result, "failed");
+        } finally {
+          this.deferSettle = false;
+          this.scheduleSettleFlush();
+        }
       })
         .finally(() => this.controllers.delete(n.id));
     }

@@ -11,7 +11,7 @@ import { canWorkOnCloud } from "../../shared/cloud-computer";
 // An inherited team Boat is shown as a shared resource, managed from Team map;
 // it must never fall back to this host or become a private Cloud selection.
 import { Switch } from "./SettingsPrimitives";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { waitForLocalVmReady } from "@/lib/local-vm-readiness";
 import {
@@ -20,6 +20,7 @@ import {
   Box,
   Check,
   Cloud,
+  Database,
   FolderOpen,
   Sparkles,
   Globe,
@@ -51,6 +52,9 @@ import { RoutinesSection } from "./bot-settings/RoutinesSection";
 import { routineRunLabel, routineRunTone } from "@/lib/routine-display";
 import { AndroidDevicePanel, useAndroidUsbDevices } from "./AndroidDevicePanel";
 import { BrowserPanel } from "./BrowserPanel";
+// The Data tab's code (and, behind it, vega-embed) loads the
+// first time the tab opens, never with the app.
+const DataPanel = lazy(() => import("./data/DataPanel").then((module) => ({ default: module.DataPanel })));
 import { browserAvailable, browserUnavailableReason, builtInBrowserEnabled } from "@/lib/feature-flags";
 import { transitionComputerControlLease, type ComputerControlAction } from "@/lib/computer-control";
 import { LocalScreenPreview } from "./LocalScreenPreview";
@@ -178,7 +182,7 @@ export function ComputerPanel({
   onOpenVmWorkspace?: (botId: string) => void;
 }) {
   // Docked flush under the Windows caption corner: drop the header 16px.
-  const { padClass } = useCaptionChrome();
+  const { padClass, dragProps } = useCaptionChrome();
   // The panel is a fixed column by default; a drag handle on its left edge
   // makes it wide enough to actually read a page in the Browser tab.
   const [panelWidth, setPanelWidth] = useState(readPanelWidth);
@@ -373,6 +377,8 @@ export function ComputerPanel({
   // the Computer tab instead of an empty pane.
   const advanced = useAdvancedMode();
   const [storedPanelView, setPanelView] = useState<ComputerPanelView>(() => readComputerPanelView(bot.id));
+  const requestedDataResult = state.dataResultFocus?.botId === bot.id ? state.dataResultFocus : undefined;
+  const [dataRequest, setDataRequest] = useState<{ id: string; requestId: number }>();
   const panelView: ComputerPanelView = advanced
     ? storedPanelView === "files" ? "computer" : storedPanelView
     : storedPanelView === "routines" || storedPanelView === "android" ? "computer" : storedPanelView;
@@ -417,21 +423,38 @@ export function ComputerPanel({
   const selectedInstance = state.instances.find(
     (instance) => instance.instanceId === bot.modelSelection.instanceId,
   );
+  const explicitPanelView = useRef(false);
   const selectPanelView = (view: ComputerPanelView) => {
+    explicitPanelView.current = true;
     setPanelView(view);
     writeComputerPanelView(bot.id, view);
   };
 
   const previousPanelTarget = useRef<string | null>(null);
+  // What the tab follows: the conversation and the place it works in. Not
+  // the model (connectionKey carries it for the viewer's own reconnects; a
+  // model change must leave the Data, Files or Routines tab alone) and not
+  // Auto resolving its surface, which is why this holds the chosen place.
+  const panelTargetKey = `${profileBot.id}:${profileBot.threadId}:${livePlace}:${profileBot.cloudBackend ?? "box"}`;
   useEffect(() => {
     // Restore a manually chosen tab on reopen. After a real thread/place
     // change, follow that target once; busy/tool events never steal the tab.
     const previous = previousPanelTarget.current;
-    if (previous === viewerConnectionKey && !(bot.computer === "browser" && browserEnabled)) return;
-    previousPanelTarget.current = viewerConnectionKey;
+    if (previous === panelTargetKey && (explicitPanelView.current || !(bot.computer === "browser" && browserEnabled))) return;
+    if (previous !== panelTargetKey) explicitPanelView.current = false;
+    previousPanelTarget.current = panelTargetKey;
     setPanelView(bot.computer === "browser" && browserEnabled ? "browser"
       : previous === null ? readComputerPanelView(bot.id) : "computer");
-  }, [viewerConnectionKey, bot.id, bot.computer, browserEnabled]);
+  }, [panelTargetKey, bot.id, bot.computer, browserEnabled]);
+
+  useEffect(() => {
+    if (!requestedDataResult || requestedDataResult.consumed) return;
+    explicitPanelView.current = true;
+    setDataRequest(requestedDataResult);
+    setPanelView("data");
+    writeComputerPanelView(bot.id, "data");
+    dispatch({ type: "dataResultFocusConsumed", requestId: requestedDataResult.requestId });
+  }, [bot.id, dispatch, requestedDataResult]);
 
   // Pause the screenshot poll while this bot's viewer is open; seed from the
   // live viewer so a remount/switch mid-session doesn't wrongly resume it.
@@ -1404,7 +1427,9 @@ export function ComputerPanel({
         className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-accent/40 focus-visible:bg-accent/60 max-md:hidden"
       />
       {/* Header: tabs centred as a segmented pill; gear and close pinned to the edges. */}
-      <div className={cn("px-4 py-3", padClass)}>
+      {/* ml-1.5 keeps the header's drag region clear of the resize handle,
+          which comes first in the DOM (a later drag region wins). */}
+      <div {...dragProps} className={cn("ml-1.5 py-3 pl-2.5 pr-4", padClass)}>
         <div className="relative flex min-h-7 items-center justify-center">
           {advanced && (
             <button
@@ -1462,6 +1487,15 @@ export function ComputerPanel({
               {placeLive && livePlace === "browser" && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid="browser-tab-live" />}
             </button>
             )}
+            <button
+              type="button"
+              data-tour="computer-data"
+              onClick={() => selectPanelView("data")}
+              aria-pressed={panelView === "data"}
+              className={tabClass(panelView === "data")}
+            >
+              <Database size={13} /> {t("computer.tab.data")}
+            </button>
             {!advanced && (
             <button
               type="button"
@@ -1513,6 +1547,12 @@ export function ComputerPanel({
               </div>
             )}
           </div>
+        </div>
+      ) : panelView === "data" ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <Suspense fallback={<div className="flex flex-1 items-center justify-center text-[13px] text-ink-secondary" role="status">{t("data.loading")}</div>}>
+            <DataPanel key={bot.id} bot={bot} requestedCard={dataRequest} />
+          </Suspense>
         </div>
       ) : panelView === "files" ? (
         <ComputerFilesPane bot={bot} />

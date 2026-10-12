@@ -57,11 +57,13 @@ Use only mapped, tested commands:
 - [Peer approval denial, expiry, and cancellation](peer-approvals.md)
 - [Waiting for an occupied desktop](computer-wait.md)
 - [Chat UI, driven headlessly](chat-ui.md)
+- [Phone web app installation and safe areas](phone-web-app.md)
 - [Welcome flow and guided tour](onboarding.md)
 - [Channels](channels.md)
 - [In-chat team coordination](room-coordination.md)
 - [Chief access to additional teams](team-access.md)
 - [Engines and Doctor](engines.md)
+- [Cline engine and native loopback qualification](cline.md)
 - [Claude coordination and turn-scoped tools](claude-tool-lifecycle.md)
 - [Codex bot instructions](codex-instructions.md)
 - [Codex browser routing and native search](codex-browser-routing.md)
@@ -93,6 +95,11 @@ Other renderer-only behavior—Settings, sidebar drag-and-drop, the VM modal, th
 built-in browser panel, and updater UI—is still not proven by the harness. Use
 the relevant Electron/package smoke test and state that limitation. Add a map
 entry only after the shared control surface can really drive it.
+
+The [switchable local environments recipe](local-environments.md) verifies
+creating, switching between and recovering named local environments by hand on
+a packaged desktop install; the control surface cannot drive it, so it is not
+in the map above.
 
 The [MCP sign-in fixture](mcp-sign-in.md) checks remote sign-in, callback URL
 paste-back, MCP tools and logout cancellation through the real settings panel
@@ -165,6 +172,13 @@ through the real renderer in an isolated fake-engine workspace.
 The [rich tables fixture](rich-tables.md) checks Markdown tables and message-scoped
 CSV/TSV previews, large-file virtualization, sorting, search, export and keyboard
 interaction in a disposable workspace.
+
+The [recent files fixture](computer-files.md) mounts the Files panel with synthetic
+digest rows and real message-scoped downloads from a disposable workspace.
+
+The [Data viewer fixture](data.md) checks real DuckDB loading, querying, export,
+restart persistence, result history and the full renderer's 100,000-row grid
+in a disposable workspace with synthetic data.
 
 The [people invitation fixture](people.md) checks hosted workspace sign-in,
 roles and device revocation through the real HTTP API with a stubbed email

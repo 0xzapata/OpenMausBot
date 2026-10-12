@@ -11,6 +11,7 @@ import { closeMessageDb,
   indexMemoryFile,
   indexedMemoryFiles,
   insertMessage,
+  latestPersonLineAts,
   latestSaidByBot,
   readMessageText,
   recentMessages,
@@ -368,6 +369,65 @@ describe("message-db", () => {
     expect(path.at(-1)?.text).toBe("edited");
     // both branches survive in the tree
     expect(reloaded.messagesFor(bot.threadId).filter((m) => m.parentId === first.parentId)).toHaveLength(2);
+  });
+});
+
+describe("latestPersonLineAts", () => {
+  beforeEach(() => {
+    closeMessageDb();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    mkdirSync(DATA_DIR, { recursive: true });
+  });
+
+  it("is each thread's newest line a person sent from an app, never a prompt, a bot's delivery, a relayed line or a reply", () => {
+    insertMessage("chat", msg("asked", "Good morning.", { at: 10, sendId: "send-1" }));
+    // A routine's or a webhook's prompt carries no sendId.
+    insertMessage("chat", msg("prompt", "Report this run's state.", { at: 20 }));
+    insertMessage("chat", msg("delivered", "Take this over.", { at: 30, sendId: "send-2", peerAsk: { botId: "teammate", name: "Teammate" } }));
+    insertMessage("chat", msg("relayed", "Sent from Slack.", { at: 40, sendId: "send-3", relayed: true }));
+    insertMessage("chat", msg("reply", "Morning!", { at: 50, role: "bot", sendId: "send-4" }));
+    insertMessage("webhook", msg("payload", "Handle the build event.", { at: 60 }));
+    insertMessage("later", msg("first", "One.", { at: 70, sendId: "send-5" }));
+    insertMessage("later", msg("second", "Two.", { at: 80, sendId: "send-6" }));
+    expect(Object.fromEntries(latestPersonLineAts(["chat", "webhook", "later", "empty"]))).toEqual({ chat: 10, later: 80 });
+  });
+});
+
+describe("messages_thread_at", () => {
+  beforeEach(() => {
+    closeMessageDb();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    mkdirSync(DATA_DIR, { recursive: true });
+  });
+
+  it("plans a thread's latest rows on messages_thread_at", () => {
+    for (let thread = 0; thread < 4; thread += 1) {
+      for (let n = 0; n < 50; n += 1) {
+        insertMessage(`thread-${thread}`, msg(`m-${thread}-${n}`, "hello from the bot", { role: "bot", at: n }));
+      }
+    }
+    closeMessageDb();
+    const raw = new DatabaseSync(join(DATA_DIR, "messages.db"));
+    const planOf = (sql: string) => raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all()
+      .map((row) => String((row as { detail: string }).detail))
+      .join("\n");
+    try {
+      // Same statements as latestSaidByBot and latestMessageAts.
+      const said = planOf(
+        "SELECT thread_id, id, at, head FROM (" +
+          "SELECT m.thread_id, m.id, m.at, substr(m.text, 1, 400) AS head, " +
+          "ROW_NUMBER() OVER (PARTITION BY m.thread_id ORDER BY m.at DESC) AS rn " +
+          "FROM messages m " +
+          "WHERE m.kind = 'text' AND m.role = 'bot' AND m.text IS NOT NULL AND m.at >= ? AND m.thread_id IN (?, ?) " +
+          "AND (json_extract(m.json, '$.from.botId') IS NULL OR json_extract(m.json, '$.from.botId') = ?)" +
+          ") WHERE rn = 1 ORDER BY at DESC LIMIT ?",
+      );
+      const ats = planOf("SELECT thread_id, MAX(at) AS at FROM messages WHERE thread_id IN (?, ?) GROUP BY thread_id");
+      expect(said).toContain("messages_thread_at");
+      expect(ats).toContain("messages_thread_at");
+    } finally {
+      raw.close();
+    }
   });
 });
 
