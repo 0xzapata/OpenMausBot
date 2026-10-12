@@ -280,17 +280,18 @@ export function CallTargetButton({
         title={label}
         data-call-button={placement}
         className={cn(
-          "relative flex shrink-0 items-center justify-center transition-colors disabled:opacity-60 rounded-l-3xl rounded-r-lg",
+          "relative flex shrink-0 items-center justify-center disabled:opacity-60",
+          "rounded-l-3xl rounded-r-lg active:rounded-3xl transition-[color,background,border-radius]",
           composer ? "size-8" : "size-9",
           active
             ? "bg-danger text-white hover:brightness-110"
             : composer
               ? unavailable
                 ? "bg-control text-ink-tertiary hover:text-ink-secondary"
-                : "bg-control text-ink hover:bg-raised"
+                : "bg-control text-ink hover:bg-raised-hover"
               : unavailable
-                ? "text-ink-tertiary hover:bg-raised hover:text-ink-secondary"
-                : "text-ink-secondary hover:bg-raised hover:text-ink",
+                ? "text-ink-tertiary hover:bg-raised-hover hover:text-ink-secondary"
+                : "text-ink-secondary hover:bg-raised-hover hover:text-ink",
         )}
       >
         {active
@@ -317,7 +318,9 @@ export function CallTargetButton({
           aria-label={t("call.mode.menu")}
           title={t("call.mode.menu")}
           className={cn(
-              "bg-control w-8 hover:bg-raised flex items-center justify-center text-ink-secondary transition-colors hover:text-ink disabled:opacity-40 rounded-l-lg rounded-r-3xl",
+              "grid place-content-center",
+              "bg-control w-8 hover:bg-raised-hover text-ink-secondary hover:text-ink disabled:opacity-40 transition-colors",
+              "rounded-l-lg rounded-r-3xl active:rounded-3xl transition-[color,background,border-radius]",
               composer ? "h-8" : "h-9"
             )}
         >
@@ -447,7 +450,7 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
         if (event.key === "Tab") onClose();
         else navigateThreadMenu(event);
       }}
-      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
+      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl space-y-1", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
     >
       {CALL_MODES.map((entry) => {
         const unavailable = entry.id === "turns" ? turnsUnavailable : null;

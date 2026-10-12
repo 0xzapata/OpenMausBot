@@ -154,6 +154,11 @@
 
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Segoe UI", system-ui, sans-serif;
+
+  /* Add a rounded transition class.
+     For situations where multiple transition-properties need to be set simultaneously,
+     please use transition-[...], for example, transition-[color,background,border-radius] */
+  --transition-property-rounded: border-radius;
 }
 
 /* Tokens that no utility generates — declared outside `@theme` so Tailwind
