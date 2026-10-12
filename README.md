@@ -448,6 +448,10 @@ cannot use a localhost link. `--local` ignores saved remote access for one launc
 `--no-pair` suppresses phone prompts and invitations but does not disable a saved
 remote connection.
 
+The web UI can also be installed from Safari or Chrome as a standalone phone
+app. See [Install the phone web app](docs/phone-web-app.md) for Home Screen
+installation and pairing.
+
 Run `openmausbot setup` to reconfigure without resetting bots or conversations;
 the saved model default applies only to new bots. Native setup confirms provider
 sign-in; API setup asks before a potentially billable test message. API keys are

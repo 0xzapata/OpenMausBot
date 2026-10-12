@@ -1,6 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import vm from "node:vm";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeEvent } from "./contracts.ts";
@@ -84,7 +86,7 @@ interface FakeHarness {
   failNextStart: () => void;
 }
 
-function harness(options?: { taskTitle?: string; taskForEveryThread?: boolean }): FakeHarness {
+function harness(options?: { taskTitle?: string; taskForEveryThread?: boolean; requested?: Set<string> }): FakeHarness {
   const calls: FakeHarness["calls"] = { createTask: [], startTurn: [], append: [] };
   const task = { threadId: "thread-cont", title: "Continue: Whatever", projectId: undefined as string | undefined, approvalMode: "ask" as const, modelSelection: undefined };
   let clock = 1_000_000;
@@ -104,6 +106,7 @@ function harness(options?: { taskTitle?: string; taskForEveryThread?: boolean })
   const sub = makeCapContinuationSubscriber({
     store: store as unknown as Parameters<typeof makeCapContinuationSubscriber>[0]["store"],
     startTurn: startTurn as unknown as Parameters<typeof makeCapContinuationSubscriber>[0]["startTurn"],
+    reportsToRequester: (threadId) => options?.requested?.has(threadId) === true,
     now: () => clock,
   });
   return {
@@ -172,10 +175,54 @@ describe("makeCapContinuationSubscriber", () => {
     expect(String(msg.tool.name)).toContain("/tmp/handoff.md");
   });
 
+  // A teammate's assigned turn returns its stop and handoff to the requester,
+  // who sends what is left: an unattended second owner would redo the same
+  // work beside that re-send, and its result would never reach the requester.
+  it("leaves work another bot awaits to that requester, and keeps continuing a person's own", async () => {
+    const requested = new Set(["thread-1"]);
+    const h = harness({ requested });
+    h.sub(capEvent());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.calls.createTask.length).toBe(0);
+    expect(h.calls.startTurn.length).toBe(0);
+    expect(h.calls.append.length).toBe(0);
+    // Read when the cap lands: once the assignment settled, the thread is the person's again.
+    requested.clear();
+    h.sub(capEvent());
+    await vi.waitFor(() => expect(h.calls.startTurn.length).toBe(1));
+  });
+
   it("ignores events that are not cap.exhausted", async () => {
     const h = harness();
     h.sub({ threadId: "thread-1", type: "turn.completed", ok: false } as RuntimeEvent);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(h.calls.createTask.length).toBe(0);
+  });
+});
+
+// Which turns are their requester's to recover (index.ts reportsToRequester),
+// run without starting a server. A coordinated teammate turn is owned by its
+// assigner, which resumes with the outcome; a requesting turn (a root), a
+// turn not yet started, and a thread with no assignment are nobody's to
+// recover here, so the step cap continues the work on its own as before.
+describe("the harness's reportsToRequester", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  const from = source.indexOf("\nfunction reportsToRequester("), to = source.indexOf("\n// A bot going in circles");
+  if (from < 0 || to <= from) throw new Error("reportsToRequester section moved");
+  const code = ts.transpileModule(source.slice(from, to), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
+  function owed(nodes: Array<Record<string, unknown>>): boolean {
+    const context = vm.createContext({ coordinator: { all: () => nodes } });
+    vm.runInContext(code, context, { filename: "index.ts (reportsToRequester fixture)" });
+    return context.reportsToRequester("work") as boolean;
+  }
+
+  it("owes a coordinated teammate's step cap to its assigner, and nothing else", () => {
+    expect(owed([{ status: "running", threadId: "work", parentId: "root" }])).toBe(true);
+    // a requesting turn answers its person; a queued or settled assignment runs no turn
+    expect(owed([{ status: "running", threadId: "work" }])).toBe(false);
+    expect(owed([{ status: "queued", threadId: "work", parentId: "root" }])).toBe(false);
+    expect(owed([{ status: "completed", threadId: "work", parentId: "root" }])).toBe(false);
+    expect(owed([{ status: "running", threadId: "other", parentId: "root" }])).toBe(false);
+    expect(owed([])).toBe(false);
   });
 });

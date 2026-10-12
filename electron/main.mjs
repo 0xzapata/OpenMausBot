@@ -25,6 +25,7 @@ import { pollServerIdentity } from "./server-boot-probe.mjs";
 import { createServerSupervisor } from "./server-supervisor.mjs";
 import { serverChildLaunch } from "./server-child-launch.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
+import { chatLinkFrom, chatLinkFromCommandLine } from "./chat-link.mjs";
 import { createOrganizationEntry, isOrganizationDeepLink, takeOrganizationDeepLink, organizationRestartIntent, withOrganizationRestartIntent, withoutOrganizationRestartIntent } from "./organization-entry.mjs";
 import { windowChromeOptions } from "./window-chrome.mjs";
 import { createAllWindowsClosedQuit } from "./window-all-closed.mjs";
@@ -82,9 +83,11 @@ import localOriginModule from "./local-origin.cjs";
 import { buildApplicationMenu } from "./menu.mjs";
 import { createComputerSharing, validateSharedFolders } from "./computer-sharing.mjs";
 import { acquireDataDirLease } from "./data-dir-lease.mjs";
+import { switchLocalEnvironment } from "./environment-switch.mjs";
 import { createManagedDesktopClient, createManagedDesktopRelay, createManagedDesktopStore } from "./managed-desktop.mjs";
 import { CHECKOUT_SOURCES, cloudMenuSublabel, cloudPlanSnapshot, createCloudAccountClient, createCloudAccountStore } from "./cloud-account.mjs";
 import { createTrialNotices } from "./cloud-trial-notice.mjs";
+import { createProPlanRelay } from "./pro-plan.mjs";
 import { cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome } from "./cloud-home.mjs";
 import { createCloudEntry } from "./cloud-entry.mjs";
 import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, parseCloudMoveStatus } from "./cloud-move.mjs";
@@ -129,6 +132,7 @@ const cloudEntry = createCloudEntry({
 });
 cloudEntry.fromLaunch(process.argv);
 let pendingPackageInstallUrl = pendingOrganizationEntry ? null : packageUrlFromCommandLine(process.argv);
+let pendingChatLink = pendingOrganizationEntry ? null : chatLinkFromCommandLine(process.argv);
 let organizationEntryReady = false;
 let mainWindow = null;
 const serverUnavailableWindows = new WeakSet();
@@ -238,36 +242,68 @@ if (!app.requestSingleInstanceLock()) {
 // would allow a concurrent second instance.
 nativeAutoUpdater.on("before-quit-for-update", () => releaseSingleInstanceLock(app));
 
-function deliverPackageInstall(win) {
-  if (!pendingPackageInstallUrl || !win || win.isDestroyed()) return;
-  if (win.webContents.isLoadingMainFrame()) return;
-  // A package installs into THIS computer's workspace, so it is handed to the
-  // local UI only. Showing a remote server: switch back to Local first; the
-  // pending link is delivered when that page finishes loading.
+/** Hand a pending link to THIS computer's UI. False while it has to wait: the
+ * page is loading, or a remote server is showing, in which case the window
+ * switches back to Local and the link is delivered when that page loads. */
+function sendToLocalPage(win, channel, value) {
+  if (!win || win.isDestroyed() || win.webContents.isLoadingMainFrame()) return false;
   let showingLocal = false;
   try {
     showingLocal = new URL(win.webContents.getURL()).origin === rendererOrigin();
   } catch {}
   if (!showingLocal) {
-    if (activeEnvironment(environmentsState)) void workspaceMenuAction(() => switchEnvironment(LOCAL_ID));
-    return;
+    if (activeRemote(environmentsState)) void workspaceMenuAction(() => switchEnvironment(LOCAL_ID));
+    return false;
   }
-  win.webContents.send("package:install", pendingPackageInstallUrl);
-  pendingPackageInstallUrl = null;
+  win.webContents.send(channel, value);
+  return true;
+}
+
+// A package installs into this computer's workspace.
+function deliverPackageInstall(win = mainWindow) {
+  if (pendingPackageInstallUrl && sendToLocalPage(win, "package:install", pendingPackageInstallUrl)) pendingPackageInstallUrl = null;
+}
+
+// A chat link names a chat on this computer.
+function deliverChatLink(win = mainWindow) {
+  if (pendingChatLink && sendToLocalPage(win, "chat:open", pendingChatLink)) pendingChatLink = null;
+}
+
+// Set once boot has made its first window; until then boot owns window creation.
+let openWindowForLink = null;
+
+/** Bring the app forward for a link. macOS keeps running with every window
+ * closed, and open-url does not fire activate there, so a link that finds no
+ * window opens one; its pending link is delivered when that page loads. */
+function revealForLink() {
+  if (desktopTray?.show()) return;
+  // The app window, where the link opens, even when another window (a
+  // desktop viewer) had focus. While the loading screen is up it owns that.
+  const appWindow = !startupScreen && mainWindow && !mainWindow.isDestroyed() ? [mainWindow] : BrowserWindow.getAllWindows();
+  if (activateExistingWindow(appWindow)) return;
+  openWindowForLink?.();
 }
 
 function queuePackageInstall(rawLink) {
   const packageUrl = packageUrlFromDeepLink(rawLink);
   if (!packageUrl) return false;
   pendingPackageInstallUrl = packageUrl;
-  if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
-  const target = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
-  deliverPackageInstall(target);
+  revealForLink();
+  deliverPackageInstall();
+  return true;
+}
+
+function queueChatLink(rawLink) {
+  const link = chatLinkFrom(rawLink);
+  if (!link) return false;
+  pendingChatLink = link;
+  revealForLink();
+  deliverChatLink();
   return true;
 }
 
 app.on("open-url", (event, url) => {
-  if (!queueOrganizationEntry(url) && !cloudEntry.fromUrl(url) && !queuePackageInstall(url)) return;
+  if (!queueOrganizationEntry(url) && !cloudEntry.fromUrl(url) && !queuePackageInstall(url) && !queueChatLink(url)) return;
   event.preventDefault();
 });
 
@@ -279,9 +315,13 @@ app.on("second-instance", (_event, commandLine) => {
   if (cloudEntry.fromArgs(commandLine)) return;
   const packageUrl = packageUrlFromCommandLine(commandLine);
   if (packageUrl) pendingPackageInstallUrl = packageUrl;
-  if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
-  const target = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
-  deliverPackageInstall(target);
+  const chatLink = chatLinkFromCommandLine(commandLine);
+  if (chatLink) pendingChatLink = chatLink;
+  revealForLink();
+  // The app window, not whichever window is listed first: the loading
+  // screen or a desktop viewer can be, and neither is the chat page.
+  deliverPackageInstall();
+  deliverChatLink();
 });
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
@@ -295,6 +335,14 @@ let serverReady = !app.isPackaged;
 let secureCredentials = {};
 let secureCredentialState = null;
 let desktopDataDirLease = null;
+// The data folder this process actually leases and runs its server child on.
+// It follows the lease — set at boot, on every switch acquire, and on
+// rollback — not environmentsState.activeId, which also points at a remote
+// server or a fallback and so can drift from the folder the child owns.
+let runningDataDir = null;
+// One local-environment switch at a time: it stops the child and hands the
+// data-dir lease, and its probe can run a full boot timeout.
+let localSwitchInFlight = false;
 let managedDesktop = null;
 let cloudAccount = null;
 // Settles once a saved Cloud sign-in is restored and checked (or there is none).
@@ -319,10 +367,18 @@ let companyBackupClientStateRequest = null;
 let companyRestoreCommitting = false;
 let companyBackupConfigurationRevision = 0;
 const managedDesktopRelay = createManagedDesktopRelay();
+// Whether the person counts as Pro, which starting a Live call needs
+// (pro-plan.mjs): kept here, where the Cloud sign-in lives, and handed to the
+// local server as the answer alone (syncProPlan).
+const proPlanRelay = createProPlanRelay();
 const utilityServerExits = new WeakMap();
 const UTILITY_SERVER_STOP_TIMEOUT_MS = 6_500;
 const trustedApprovalMode = createTrustedApprovalModeCoordinator({ randomId: randomUUID });
 const desktopMutationToken = randomBytes(32).toString("base64url");
+// One id for this launch of the app, given to every server child it starts:
+// routines marked to run when the app starts run once per launch, not again
+// when the app restarts a crashed server or switches back to a workspace.
+const desktopLaunchId = randomUUID();
 const companionMutationToken = randomBytes(32).toString("base64url");
 const serverSupervisor = createServerSupervisor({
   restart: () => startServerOn(SERVER_PORT),
@@ -336,6 +392,8 @@ const serverSupervisor = createServerSupervisor({
     // Re-read the latest account credentials; registration may have completed
     // while the replacement child's health probe was pending.
     syncManagedComposioCredentials();
+    // The Pro answer too: the Cloud sign-in may have changed since the spawn.
+    syncProPlan();
     // A restarted runtime has no library catalog until main sends it again.
     orgLibrary?.runtimeReady();
     if (managedDesktop) void managedDesktop.refresh().catch(() => {});
@@ -343,7 +401,7 @@ const serverSupervisor = createServerSupervisor({
     // Existing chat windows reconnect in place, preserving unsent drafts.
     // A window opened during the outage is still on our error page instead.
     for (const win of BrowserWindow.getAllWindows()) {
-      if (!serverUnavailableWindows.has(win) || activeEnvironment(environmentsState)) continue;
+      if (!serverUnavailableWindows.has(win) || activeRemote(environmentsState)) continue;
       void win.loadURL(`http://127.0.0.1:${SERVER_PORT}`).then(() => {
         serverUnavailableWindows.delete(win);
       }).catch((error) => {
@@ -1035,11 +1093,13 @@ function ensureCloudAccount() {
       // Signing out, another account or another machine ends lending at once;
       // a renewed sign-in resumes it (computer-sharing.mjs cloudLendingVerdict).
       computerSharing?.cloudChanged();
+      // The local server's Pro answer, for the next Live call it starts.
+      syncProPlan(state);
       // My Cloud's line in the Server menu ("Always on", or the trial's end).
       refreshCloudMenus();
       announceCloudReady(state);
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.mainFrame.url.startsWith(`${rendererOrigin()}/`) &&
-        !activeEnvironment(environmentsState) && !desktopRemoteAccess) mainWindow.webContents.send("cloud-account:state-changed", state);
+        !activeRemote(environmentsState) && !desktopRemoteAccess) mainWindow.webContents.send("cloud-account:state-changed", state);
     },
   });
   return cloudAccount;
@@ -1117,7 +1177,7 @@ async function openCloudAdd(source) {
   await cloudAccountRestored();
   const state = ensureCloudAccount().state();
   if (cloudOwned(state)) { await anotherCloudBox(state); return; }
-  if (activeEnvironment(environmentsState)) persistEnvironments(withActive(environmentsState, LOCAL_ID));
+  if (activeRemote(environmentsState)) persistEnvironments(withActive(environmentsState, LOCAL_ID));
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow({ deferNavigation: true });
   if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
   const action = source === "app_howto" ? "cloud-add-howto" : "cloud-add";
@@ -1205,7 +1265,7 @@ function ensureManagedDesktop() {
       // Remote pages never receive local identity events, even if they were
       // loaded in this window after an earlier local subscription.
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.mainFrame.url.startsWith(`${rendererOrigin()}/`) &&
-          !activeEnvironment(environmentsState) && !desktopRemoteAccess) {
+          !activeRemote(environmentsState) && !desktopRemoteAccess) {
         mainWindow.webContents.send("organization:state-changed", state);
       }
     },
@@ -1296,7 +1356,7 @@ function receiveCompanyBackupClientState(event, input) {
 
 function publishCompanyBackupState(value) {
   companyBackupState = { ...value, ...(companyBackupSchedule ? { schedule: companyBackupSchedule.state() } : {}) };
-  if (mainWindow && !mainWindow.isDestroyed() && !activeEnvironment(environmentsState) && !desktopRemoteAccess &&
+  if (mainWindow && !mainWindow.isDestroyed() && !activeRemote(environmentsState) && !desktopRemoteAccess &&
       mainWindow.webContents.mainFrame.url.startsWith(`${rendererOrigin()}/`)) mainWindow.webContents.send("company-backups:state-changed", companyBackupState);
 }
 
@@ -1420,7 +1480,7 @@ function receivePhoneSecretSave(proc, rawMessage) {
   return true;
 }
 
-async function startServerOn(port) {
+async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmentDir(environmentsState, desktopDataDir())) {
   if (desktopShutdownStarted) return { proc: null, abort: true };
   // A bootstrap beside index.js that turns on Node's compile cache for this
   // child, so a relaunch skips recompiling the server bundle.
@@ -1434,11 +1494,12 @@ async function startServerOn(port) {
     // server gets only a private capability that validates that same live
     // owner; fallback-port children must not race to replace the parent lease.
     ...desktopDataDirLease.utilityServerLeaseEnvironment(),
-    OMB_DATA_DIR: desktopDataDir(),
+    OMB_DATA_DIR: dataDir,
     // A packaged utility child must never fall back to a descriptor inherited
     // from the launching shell. It starts fail-closed until this exact main
     // process sends the private in-memory connection after spawn.
     OMB_DESKTOP_PARENT: "1",
+    OMB_DESKTOP_LAUNCH_ID: desktopLaunchId,
     OMB_STATIC_DIR: path.join(process.resourcesPath, "ui"),
     OMB_RESOURCES_PATH: process.resourcesPath,
     OMB_SKILLS_DIR: path.join(process.resourcesPath, "skills"),
@@ -1455,6 +1516,10 @@ async function startServerOn(port) {
     // the server prefers these over config.json, whose plaintext fields
     // the boot migration has deleted
     ...workspaceCredentialEnv(secureCredentials),
+    // OMB_PRO_PLAN, set here and never inherited from the launching shell:
+    // the server starts with the answer the Cloud sign-in gives now ("0"
+    // until it is read), and syncProPlan keeps it current after.
+    ...proPlanRelay.environment(),
   });
   delete childEnv.OMB_BROWSER_CONNECTION;
   // Set here or not at all, never inherited from the launching shell. The
@@ -1557,6 +1622,19 @@ async function startServerPackaged() {
   }
   serverStartConflictOnly = everyPortForeignOwned;
   return false;
+}
+
+/** Update the Pro answer from the Cloud sign-in (its current state, or the
+ * one just published) and hand it to the running server over its private
+ * port. A server that is not running yet starts with it (OMB_PRO_PLAN). */
+function syncProPlan(state = cloudAccount?.state()) {
+  proPlanRelay.update(state);
+  if (!serverProc) return;
+  try {
+    serverProc.postMessage(proPlanRelay.message());
+  } catch (error) {
+    slog(`Pro plan sync failed: ${error?.message ?? error}`);
+  }
 }
 
 function syncManagedComposioCredentials() {
@@ -1831,7 +1909,7 @@ ipcMain.on("desktop:unread-count", (event, value) => {
 // The app switches by loading the chosen server's own UI (electron/menu.mjs).
 // Only {id, name, origin} is stored here; the session credential is the
 // HttpOnly cookie /pair set for that origin, kept by Chromium's cookie jar.
-const { LOCAL_ID, activeEnvironment, allowedOrigins, parseEnvironments, parseHostedWorkspaceLink, serializeEnvironments, withActive, withEnvironment, withoutEnvironment, workspaceMenuTemplate, workspaceNavigationAllowed, workspaceSenderAllowed, workspaceSummary, workspaceWindowTitle } = environmentsModule;
+const { LOCAL_ID, activeEnvironment, activeRemote, allowedOrigins, bootEnvironmentDir, parseEnvironments, parseHostedWorkspaceLink, serializeEnvironments, startupEnvironmentDir, withActive, withEnvironment, withLocalEnvironment, withMicrophone, withoutEnvironment, workspaceMenuTemplate, workspaceNavigationAllowed, workspaceSenderAllowed, workspaceSummary, workspaceWindowTitle } = environmentsModule;
 let environmentsState = { environments: [], activeId: LOCAL_ID };
 let computerSharing;
 const sharingPrompts = new Set();
@@ -1919,7 +1997,7 @@ function stopLending() {
  * window, with none of the openmausbot://cloud link's automatic actions. */
 async function openLendingSettings() {
   if (!app.isPackaged || desktopRemoteAccess || !serverReady) return;
-  if (activeEnvironment(environmentsState)) persistEnvironments(withActive(environmentsState, LOCAL_ID));
+  if (activeRemote(environmentsState)) persistEnvironments(withActive(environmentsState, LOCAL_ID));
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow({ deferNavigation: true });
   if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
   if (!win.webContents.isLoadingMainFrame() && senderIsLocal({ sender: win.webContents })) win.webContents.send("app:open-settings", "cloud-settings");
@@ -1964,7 +2042,15 @@ function environmentsFile() {
 
 function readEnvironments() {
   try {
-    return parseEnvironments(fs.readFileSync(environmentsFile(), "utf8"));
+    const state = parseEnvironments(fs.readFileSync(environmentsFile(), "utf8"));
+    // Stamp local entries with whether their dir is absent right now: the
+    // renderer offers "forget and delete" and the menu marks the row from
+    // this, and it is only true at read time.
+    return {
+      ...state,
+      environments: state.environments.map((entry) =>
+        entry.kind === "local" ? { ...entry, missing: !fs.existsSync(entry.dataDir) } : { ...entry, missing: false }),
+    };
   } catch {
     return { environments: [], activeId: LOCAL_ID };
   }
@@ -2034,9 +2120,145 @@ function navigateMainWindow(url) {
  * (cloud-home.mjs rememberedCloudHome). */
 let rememberedHome = null;
 
+/** The data-directory lease for a switch or rollback target: the default dir
+ * carries the same legacy `.opengrokbot` guard the boot path uses, any other
+ * dir leases plainly. */
+function acquireDataDirLeaseFor(dir) {
+  return dir === desktopDataDir()
+    ? acquireDataDirLease(dir, { legacyDataDir: path.join(app.getPath("home"), ".opengrokbot") })
+    : acquireDataDirLease(dir);
+}
+
+/** Move the server child onto `targetDir`'s environment. The supervisor is
+ * paused first: stopping the child here is deliberate, and its recovery
+ * would fork on the wrong data dir. resume() is in a finally — on every
+ * path, including a releaseLease/persistActive throw escaping the
+ * orchestrator, the supervisor must not stay paused. */
+async function switchLocalEnvironmentTo(targetDir, targetId) {
+  if (!app.isPackaged) return { ok: false, error: "dev" };
+  // One switch owns the child and the lease until it settles; its probe can
+  // run a full boot timeout, and a second switch sharing that window would
+  // be un-paused by the first's finally mid-handoff.
+  if (localSwitchInFlight) return { ok: false, error: "busy" };
+  const previousDir = runningDataDir ?? startupEnvironmentDir(environmentsState, desktopDataDir());
+  let startedProc = null;
+  let switchSucceeded = false;
+  const failedSwitch = () => {
+    // Orchestrator error strings are an open set ("locked", "unavailable",
+    // raw probe outcomes): one generic dialog, the specific string in the log.
+    dialog.showErrorBox(
+      "Could not switch environments",
+      "OpenMausBot could not switch to that environment. The app log has the details.",
+    );
+    return { ok: false, error: "switch-failed" };
+  };
+  localSwitchInFlight = true;
+  serverSupervisor.pause();
+  try {
+    const result = await switchLocalEnvironment({
+      targetDir,
+      targetId,
+      port: SERVER_PORT,
+      deps: {
+        stopChild: async () => {
+          // A child that will not die keeps writing to its folder after this
+          // process would hand that folder's lease away. Abort the switch
+          // with the lease still held — the same "stuck-child" refusal
+          // startServerOn applies to a sibling server. An absent or
+          // already-exited child is a successful stop.
+          const proc = serverProc;
+          if (proc && !(await stopUtilityServer(proc))) throw new Error("the server child did not stop");
+        },
+        releaseLease: async () => {
+          desktopDataDirLease?.release();
+          desktopDataDirLease = null;
+        },
+        acquireLease: async (dir) => {
+          desktopDataDirLease = acquireDataDirLeaseFor(dir);
+          runningDataDir = dir;
+        },
+        createDir: async (dir) => {
+          await fs.promises.mkdir(dir, { recursive: true });
+        },
+        // startServerOn health-probes its own child by PID and answers with
+        // a proc only once that child is ready, so no second poll is needed.
+        startChild: async (port) => {
+          const started = await startServerOn(port, targetDir);
+          if (!started.proc) return null;
+          startedProc = started.proc;
+          serverSupervisor.ready(started.proc);
+          return started.proc;
+        },
+        probeReady: async () => "ready",
+        rollback: async () => {
+          // Owns the restart on every failure path: kill a survived child,
+          // hand the lease back, bring the old environment up.
+          if (startedProc) await stopUtilityServer(startedProc);
+          try {
+            desktopDataDirLease?.release();
+          } catch (error) {
+            slog(`switch rollback lease release failed: ${error?.message ?? error}`);
+          }
+          desktopDataDirLease = null;
+          desktopDataDirLease = acquireDataDirLeaseFor(previousDir);
+          runningDataDir = previousDir;
+          const restored = await startServerOn(SERVER_PORT, previousDir);
+          // Adoption is the caller's job (startServerOn only watches):
+          // without the ready mark the rolled-back child is no one's —
+          // serverProc stays null, so the next switch's stopChild would
+          // skip it and collide on the port, and no recovery is armed.
+          if (restored.proc) serverSupervisor.ready(restored.proc);
+          else {
+            const error = new Error(`could not restart the server on ${previousDir}`);
+            slog(`switch rollback ${error.message}`);
+            throw error;
+          }
+        },
+        persistActive: (id) => persistEnvironments(withActive(environmentsState, id)),
+        log: slog,
+      },
+    });
+    if (!result.ok) {
+      slog(`environment switch to ${targetDir} failed (${result.error})`);
+      return failedSwitch();
+    }
+    switchSucceeded = true;
+    navigateMainWindow(rendererOrigin());
+    return { ok: true };
+  } catch (error) {
+    slog(`environment switch to ${targetDir} failed (${error?.message ?? error})`);
+    return failedSwitch();
+  } finally {
+    localSwitchInFlight = false;
+    serverSupervisor.resume();
+    // The rollback above owns the restart on most failure paths, but an
+    // orchestrator rejection before rollback runs (a throwing releaseLease)
+    // or a failed rollback leaves this environment with no server at all.
+    // Fork once more onto whatever is ACTIVE — the default dataDir argument
+    // follows environmentsState. Never on success.
+    if (!switchSucceeded && (!serverProc || !serverSupervisor.isCurrent(serverProc))) {
+      slog(`environment switch to ${targetDir} left no server child; restarting the active environment`);
+      try {
+        const revived = await startServerOn(SERVER_PORT);
+        if (revived.proc) serverSupervisor.ready(revived.proc);
+        else slog(`could not restart the server after the failed environment switch`);
+      } catch (error) {
+        slog(`restart after failed environment switch threw (${error?.message ?? error})`);
+      }
+    }
+  }
+}
+
 async function switchEnvironment(id) {
   if (id === environmentsState.activeId || (id !== LOCAL_ID && !environmentsState.environments.some((entry) => entry.id === id))) return;
   const entry = environmentsState.environments.find((candidate) => candidate.id === id);
+  if (entry?.kind === "local") return await switchLocalEnvironmentTo(entry.dataDir, entry.id);
+  // Leaving any named folder for "This computer" is the same flow onto the
+  // default dir, even when the window shows a remote server but the child is
+  // still on a named folder ("This computer" has no entry of its own).
+  if (id === LOCAL_ID && (runningDataDir ?? desktopDataDir()) !== desktopDataDir()) {
+    return await switchLocalEnvironmentTo(desktopDataDir(), LOCAL_ID);
+  }
   // "My Cloud" opens through the Cloud's own connection: never a page that
   // asks for a pairing code the person has no server to read from.
   if (entry && cloudAccount && isCloudHomeEntry(entry, { homeOrigin: cloudAccount.homeTarget()?.origin, remembered: rememberedHome })) {
@@ -2049,6 +2271,39 @@ async function switchEnvironment(id) {
   }
   persistEnvironments(withActive(environmentsState, id));
   navigateMainWindow(activeOrigin());
+}
+
+/** Register a named local environment. An omitted dataDir lands beside the
+ * home directory as `.openmausbot-<slug>`; a supplied one must be exactly
+ * its normalized absolute form with no "." or ".." segments — the registry
+ * and every later lease/child on it take this exact string. */
+function createLocalEnvironment(name, dataDir) {
+  if (!app.isPackaged) return { ok: false, error: "dev", state: environmentsState };
+  const state = environmentsState;
+  let candidateDir;
+  if (dataDir === undefined || dataDir === null || dataDir === "") {
+    const slug = typeof name === "string"
+      ? name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+      : "";
+    // A missing or blank name is rejected; a name with no ASCII letters (a
+    // Hindi or Japanese name, say) gets a generated suffix instead — the slug
+    // is a directory hint, not a requirement.
+    if (typeof name !== "string" || !name.trim()) return { ok: false, error: "name", state };
+    candidateDir = path.join(os.homedir(), `.openmausbot-${slug || randomUUID().slice(0, 8)}`);
+  } else {
+    candidateDir = typeof dataDir === "string" ? dataDir.trim() : "";
+    if (
+      !candidateDir
+      || candidateDir.split("/").some((segment) => segment === "." || segment === "..")
+      || candidateDir !== path.normalize(candidateDir)
+    ) {
+      return { ok: false, error: "path", state };
+    }
+  }
+  const result = withLocalEnvironment(state, { name, dataDir: candidateDir }, randomUUID, desktopDataDir());
+  if (!result.ok) return { ok: false, error: result.error, state };
+  persistEnvironments(result.state);
+  return { ok: true, state: environmentsState };
 }
 
 const organizationEntry = createOrganizationEntry({
@@ -2081,7 +2336,7 @@ const organizationEntry = createOrganizationEntry({
   openLocalSettings: async () => {
     if (!app.isPackaged) throw new Error("Organization sign-in requires the installed desktop app.");
     if (!serverReady) throw new Error("This installation is unavailable. Restart the app and try organization sign-in again.");
-    if (desktopRemoteAccess || activeEnvironment(environmentsState)) throw new Error("Choose this computer before signing in with your organization.");
+    if (desktopRemoteAccess || activeRemote(environmentsState)) throw new Error("Choose this computer before signing in with your organization.");
     const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow({ deferNavigation: true });
     if (!win.webContents.isLoadingMainFrame() && senderIsLocal({ sender: win.webContents })) {
       win.webContents.send("app:open-settings", "organization");
@@ -2119,7 +2374,7 @@ async function openCloudEntry() {
   // Let a saved sign-in finish restoring first: the view must not take it for
   // signed out and start another.
   await cloudAccountRestored();
-  const active = activeEnvironment(environmentsState);
+  const active = activeRemote(environmentsState);
   const showingCloud = Boolean(active) && active.origin === cloudAccount?.homeTarget()?.origin;
   if (active && !showingCloud) persistEnvironments(withActive(environmentsState, LOCAL_ID));
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow({ deferNavigation: !showingCloud });
@@ -2228,24 +2483,92 @@ async function cloudHomeSignedIn(origin) {
   }
 }
 
-async function forgetEnvironment(id) {
+// A saved server hears the microphone only once the person said yes: asked on
+// its first Live call (one dialog per server at a time), remembered on its
+// record so forgetting the server takes it back. "Don't Allow" holds until the
+// app quits or the server is forgotten, so a page cannot keep re-asking.
+const remoteMicrophoneAsks = new Map();
+const remoteMicrophoneRefused = new Set();
+function askRemoteMicrophone(origin) {
+  const env = activeEnvironment(environmentsState);
+  if (!env || env.origin !== origin || env.microphone === true || remoteMicrophoneRefused.has(origin)) return null;
+  if (!remoteMicrophoneAsks.has(origin)) {
+    const ask = (async () => {
+      const options = {
+        type: "question",
+        buttons: ["Allow", "Don’t Allow"],
+        defaultId: 1,
+        cancelId: 1,
+        message: `Allow “${env.name}” to use the microphone?`,
+        detail: `${new URL(origin).host} wants to hear you for a Live call. Allow only a server you trust; this app remembers your answer for this server until you forget it.`,
+      };
+      const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+      const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+      if (response !== 0) return void remoteMicrophoneRefused.add(origin);
+      // Saved on the same record only if it is still there (not forgotten meanwhile).
+      if (environmentsState.environments.some((e) => e.id === env.id && e.origin === origin)) persistEnvironments(withMicrophone(environmentsState, env.id));
+    })().finally(() => remoteMicrophoneAsks.delete(origin));
+    remoteMicrophoneAsks.set(origin, ask);
+  }
+  return remoteMicrophoneAsks.get(origin);
+}
+
+async function forgetEnvironment(id, purge = false) {
   const env = environmentsState.environments.find((e) => e.id === id);
   if (!env) return;
-  const { response } = await dialog.showMessageBox({
-    type: "warning",
-    buttons: ["Forget", "Cancel"],
-    defaultId: 1,
-    cancelId: 1,
-    message: `Forget “${env.name}”?`,
-    detail: "This app signs out of that server. The server keeps its own session list; revoke it there too if the device is gone.",
-  });
-  if (response !== 0) return;
+  // The environment this app is running on has no child to move away from
+  // and no folder this dialog could safely remove: switching away is the
+  // step that must come first. The UI hides the button; this is the guard.
+  if (env.kind === "local" && environmentsState.activeId === id) return { ok: false, error: "active" };
+  // A local entry has no server to sign out of; its confirmation is the
+  // Settings keep-or-delete-files panel. Only the remote wording belongs
+  // in a native dialog.
+  if (env.kind !== "local") {
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      buttons: ["Forget", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      message: `Forget “${env.name}”?`,
+      detail: "This app signs out of that server. The server keeps its own session list; revoke it there too if the device is gone.",
+    });
+    if (response !== 0) return;
+  }
   sharingController().forget(env);
+  remoteMicrophoneRefused.delete(env.origin);
   const wasActive = environmentsState.activeId === id;
+  if (purge === true && env.kind === "local") {
+    // Delete the environment's data dir only when its name is unmistakably
+    // an OpenMausBot data dir and it is not (or inside) this app's own
+    // default dir — "This computer" must never be rm -rf'd from here.
+    // Until the delete has actually happened the entry stays: a failed
+    // purge must not silently orphan the folder behind the registry's back.
+    if (localSwitchInFlight) return { ok: false, error: "busy" };
+    const resolved = path.resolve(env.dataDir);
+    const root = path.resolve(desktopDataDir());
+    // Canonical compare: a symlink named like a data dir must not let the
+    // guard mistake it for a safe target (or miss a real one). realpath
+    // throws on a missing folder, which rm's force:true then removes anyway.
+    const canonical = (dir) => { try { return fs.realpathSync(dir); } catch { return dir; } };
+    const resolvedCanon = canonical(resolved);
+    const rootCanon = canonical(root);
+    if (runningDataDir && canonical(runningDataDir) === resolvedCanon) return { ok: false, error: "active" };
+    if (path.basename(resolved).startsWith(".openmausbot") && resolvedCanon !== rootCanon && !resolvedCanon.startsWith(rootCanon + path.sep)) {
+      try {
+        await fs.promises.rm(resolved, { recursive: true, force: true });
+      } catch (error) {
+        slog(`forget environment: purge failed (${error?.message ?? error})`);
+        return { ok: false, error: "purge" };
+      }
+    } else {
+      slog(`forget environment: purge skipped for ${env.dataDir}`);
+    }
+  }
   persistEnvironments(withoutEnvironment(environmentsState, id));
   // Leave a removed workspace immediately; forgetting an inactive connection
   // must not reload the local app or discard a Settings form/chat draft.
   if (wasActive) navigateMainWindow(activeOrigin());
+  if (!env.origin) return { ok: true };
   try {
     // Revoke the session on the server while the cookie is still here.
     const response = await session.defaultSession.fetch(`${env.origin}/api/auth/logout`, { method: "POST", credentials: "include", headers: { origin: env.origin }, signal: AbortSignal.timeout(5_000) });
@@ -2261,6 +2584,7 @@ async function forgetEnvironment(id) {
   } catch (error) {
     slog(`forget server: storage clear failed: ${error?.message ?? error}`);
   }
+  return { ok: true };
 }
 
 /**
@@ -2419,7 +2743,7 @@ function createWindow({ deferNavigation = false } = {}) {
   });
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (!isMainFrame || errorCode === -3) return; // -3: aborted by a newer navigation
-    const remote = activeEnvironment(environmentsState);
+    const remote = activeRemote(environmentsState);
     if (!remote) return;
     let origin = null;
     try {
@@ -2434,7 +2758,13 @@ function createWindow({ deferNavigation = false } = {}) {
     });
     void workspaceMenuAction(() => switchEnvironment(LOCAL_ID));
   });
-  win.webContents.on("did-finish-load", () => deliverPackageInstall(win));
+  // A pending link is handed over once the page has stopped loading. Not on
+  // did-finish-load: Electron still reports the main frame as loading then,
+  // and the hand-off's own guard would refuse it.
+  win.webContents.on("did-stop-loading", () => {
+    deliverPackageInstall(win);
+    deliverChatLink(win);
+  });
   win.webContents.on("did-finish-load", () => void offerComputerSharing(win));
 
   // Native context menu for text inputs — without this, right-click does
@@ -2552,7 +2882,7 @@ function createWindow({ deferNavigation = false } = {}) {
     });
   }
 
-  const remote = activeEnvironment(environmentsState);
+  const remote = activeRemote(environmentsState);
   if (!serverReady && (desktopRemoteAccess || (app.isPackaged && !remote))) serverUnavailableWindows.add(win);
   // The confirmed native organisation action supplies the fixed local URL.
   if (deferNavigation) return win;
@@ -2569,9 +2899,10 @@ function createWindow({ deferNavigation = false } = {}) {
 }
 
 // Local-control screen preview — served from the main process so the Screen
-// Recording permission prompt attributes to the app, never the server
+// Recording permission prompt attributes to the app, never the server.
+// Windows captures without a permission step; Linux has its own preview.
 ipcMain.handle("screen:frame", localOnly("screen:frame", async () => {
-  if (process.platform !== "darwin") return null;
+  if (process.platform !== "darwin" && process.platform !== "win32") return null;
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
     thumbnailSize: { width: 1280, height: 800 },
@@ -3339,14 +3670,25 @@ ipcMain.handle("dialog:confirm", localWorkspaceOnly("dialog:confirm", async (_ev
 ipcMain.handle("environments:state", localWorkspaceOnly("environments:state", (event) => ({
   localOrigin: rendererOrigin(),
   remote: !senderIsLocal(event),
+  packaged: app.isPackaged,
   activeId: environmentsState.activeId,
   environments: environmentsState.environments,
 })));
 ipcMain.handle("environments:switch", localWorkspaceOnly("environments:switch", (_event, id) => switchEnvironment(typeof id === "string" ? id : LOCAL_ID)));
+ipcMain.handle("environments:create", localWorkspaceOnly("environments:create", (_event, name, dataDir) => createLocalEnvironment(
+  typeof name === "string" ? name : "",
+  typeof dataDir === "string" ? dataDir : undefined,
+)));
+ipcMain.handle("environments:pick-dir", localWorkspaceOnly("environments:pick-dir", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "createDirectory"] });
+  const chosen = canceled ? null : filePaths[0];
+  return chosen ? { ok: true, path: chosen } : { ok: false };
+}));
 ipcMain.handle("environments:add-from-link", localWorkspaceOnly("environments:add-from-link", (_event, link, name) => {
   return connectHostedWorkspace(link, typeof name === "string" ? name : undefined);
 }));
-ipcMain.handle("environments:forget", localWorkspaceOnly("environments:forget", (_event, id) => forgetEnvironment(typeof id === "string" ? id : "")));
+ipcMain.handle("environments:forget", localWorkspaceOnly("environments:forget", (_event, id, purge) => forgetEnvironment(typeof id === "string" ? id : "", purge === true)));
 
 // A cloud page can ask for the native chooser, not choose a destination or
 // mutate the desktop's saved list. Only native menu clicks perform those acts.
@@ -3510,14 +3852,37 @@ app.whenReady().then(async () => {
     item.setSavePath(collisionFreeDownloadPath(app.getPath("downloads"), item.getFilename()));
     revealDownloadWhenDone(item, (filePath) => shell.showItemInFolder(filePath));
   });
+  // Read the registry before the lease: a named local environment is the one
+  // this launch owns its data dir for, so the lease and the child's
+  // OMB_DATA_DIR must both follow it. Dev mode keeps today's behavior.
+  environmentsState = readEnvironments();
+  // A named environment whose folder is gone (unmounted volume, deleted) is
+  // NOT leased or created at boot — that would silently raise an empty setup
+  // where the person's data used to be. Come up on This computer and say so;
+  // this mirrors the unhealthy-boot fallback below, before anything touches
+  // the missing dir. Dev mode keeps today's behavior.
+  let bootDataDir = desktopDataDir();
+  if (app.isPackaged) {
+    const boot = bootEnvironmentDir(environmentsState, desktopDataDir());
+    if (boot.fellBack) {
+      slog(`boot environment ${boot.missingDir} is missing; falling back to the default data dir`);
+      persistEnvironments({ ...environmentsState, activeId: LOCAL_ID });
+      dialog.showErrorBox(
+        "The environment's folder is missing",
+        `${boot.missingDir} is not there anymore, so OpenMausBot came up on this computer's default data folder instead. Restore or remount that folder, then choose the environment again from the Server menu.`,
+      );
+    }
+    bootDataDir = boot.dataDir;
+  }
   if (app.isPackaged) {
     try {
       // Acquire before either plaintext credential migration reads or writes
       // config.json. The parent retains ownership across utility-child port
       // fallbacks and restarts for the entire desktop process lifetime.
-      desktopDataDirLease = acquireDataDirLease(desktopDataDir(), {
+      desktopDataDirLease = acquireDataDirLease(bootDataDir, {
         legacyDataDir: path.join(app.getPath("home"), ".opengrokbot"),
       });
+      runningDataDir = bootDataDir;
     } catch (error) {
       dialog.showErrorBox(
         "OpenMausBot could not start safely",
@@ -3641,7 +4006,46 @@ app.whenReady().then(async () => {
       slog(`desktop companion relay failed: ${error?.message ?? error}`);
     }
   } else if (app.isPackaged) {
-    await startServerPackaged();
+    const booted = await startServerPackaged();
+    if (!booted && !desktopShutdownStarted && bootDataDir !== desktopDataDir()) {
+      // A named environment failed the whole port schedule: it may live on a
+      // disk that went away mid-boot. Fall back to This computer once so the
+      // app always comes up somewhere, and say what happened.
+      slog(`boot environment ${bootDataDir} did not start; falling back to the default data dir`);
+      persistEnvironments({ ...environmentsState, activeId: LOCAL_ID });
+      try {
+        desktopDataDirLease?.release();
+      } catch (error) {
+        slog(`boot fallback lease release failed: ${error?.message ?? error}`);
+      }
+      desktopDataDirLease = null;
+      try {
+        desktopDataDirLease = acquireDataDirLease(desktopDataDir(), {
+          legacyDataDir: path.join(app.getPath("home"), ".opengrokbot"),
+        });
+        runningDataDir = desktopDataDir();
+      } catch (error) {
+        dialog.showErrorBox(
+          "OpenMausBot could not start safely",
+          error?.message ?? "Another process is using this OpenMausBot data folder.",
+        );
+        app.quit();
+        return;
+      }
+      const retried = await startServerPackaged();
+      if (retried) {
+        dialog.showErrorBox(
+          "The environment was unhealthy",
+          `OpenMausBot could not start on ${bootDataDir} and came up on this computer's default data folder instead. Choose that environment again from the Server menu once it is available.`,
+        );
+      } else {
+        dialog.showErrorBox(
+          "OpenMausBot could not start",
+          `OpenMausBot could not start on ${bootDataDir} or on this computer's default data folder. Check that both folders are readable, then start the app again.`,
+        );
+        app.quit();
+      }
+    }
   }
   if (desktopShutdownStarted) return;
   if (app.isPackaged && !desktopRemoteAccess) void ensureManagedDesktop().start().then(() => companyBackupSchedule.start()).catch(() => {});
@@ -3668,20 +4072,22 @@ app.whenReady().then(async () => {
   // serial) stay off. Client mode's loopback relay is the local UI. The
   // person's own Cloud, open in this window, also gets the microphone for a
   // Live call and clipboard writes for its copy buttons (only those): it is
-  // theirs alone. No other server does. A call placed while the saved sign-in
+  // theirs alone. No other server does unasked. A call placed while the saved sign-in
   // is still restoring waits for it. The active paired server, in this
-  // window's main frame, may also write the clipboard. Neither ever reads it;
-  // both are re-evaluated per request, so a server switch or sign-out withdraws it.
+  // window's main frame, may also write the clipboard, and use the microphone
+  // once the person allowed it (askRemoteMicrophone). Neither ever reads the
+  // clipboard; all is re-evaluated per request, so a server switch or sign-out withdraws it.
   appPermissions = appPermissionHandlers({
     rendererOrigin,
     mainContents: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
     cloudHomeOrigin: myCloud,
     cloudHomeRestoring: () => cloudAccountRestoring ? cloudAccountRestored() : null,
     activeRemoteOrigin: () => activeEnvironment(environmentsState)?.origin ?? null,
+    activeRemoteMicrophone: () => activeEnvironment(environmentsState)?.microphone === true,
+    askRemoteMicrophone,
   });
   session.defaultSession.setPermissionRequestHandler(appPermissions.request);
   session.defaultSession.setPermissionCheckHandler(appPermissions.check);
-  environmentsState = readEnvironments();
   // Maintainer grants never start while computer sharing is off: no poll
   // loop, no registration, no grant replay from disk. Lending to the person's
   // own Cloud is gated by their Cloud sign-in instead, so its saved grant
@@ -3730,6 +4136,9 @@ app.whenReady().then(async () => {
   // by itself; only "Restart to update", the person's click, installs
   startUpdater();
   refreshApplicationMenu();
+  openWindowForLink = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  };
   app.on("activate", () => {
     if (desktopTray?.show()) return;
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

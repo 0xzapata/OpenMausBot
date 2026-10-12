@@ -115,6 +115,8 @@ let boatStubPort = 0;
 const boatRouteCalls: Array<{ method: string; path: string }> = [];
 const boatPromptBodies: Array<Record<string, unknown>> = [];
 let boatSlowRequestCount = 0;
+/** Holds a "box_slow" credential check open until released; unset, it takes 150 ms. */
+let boatSlowHold: Promise<void> | null = null;
 let managedBoatRows: Array<Record<string, unknown>> = [];
 let managedBoatListRowsOverride: Array<Record<string, unknown>> | null = null;
 let managedBoatListStatus = 200;
@@ -446,6 +448,7 @@ beforeAll(async () => {
   mkdirSync(join(home, ".openmausbot"), { recursive: true });
   mkdirSync(join(staticDir, "assets"), { recursive: true });
   writeFileSync(join(staticDir, "index.html"), "<!doctype html><title>Packaged OpenMausBot</title>");
+  writeFileSync(join(staticDir, "manifest.webmanifest"), '{"name":"Fixture web app","display":"standalone","start_url":"/"}');
   writeFileSync(join(staticDir, "assets", "smoke.css"), "body { color: white; }");
   writeFileSync(
     join(home, ".openmausbot", "config.json"),
@@ -617,6 +620,12 @@ beforeAll(async () => {
   writeFileSync(linkedImage, "png preview bytes");
   writeFileSync(generatedImage, "generated image bytes");
   writeFileSync(userAttachment, "%PDF shared from the phone\n", { mode: 0o600 });
+  // A picture a bot saved outside the room's folders, and the copy attach_file made of it.
+  const outsideImage = join(home, "Downloads", "sideboard.png");
+  const deliveredImage = join(privateAttachments, "5e1dbd0a-7c3a-4f1e-9b2d-6a0c4f8e2b71.png");
+  mkdirSync(join(home, "Downloads"), { recursive: true });
+  writeFileSync(outsideImage, "outside photo bytes");
+  writeFileSync(deliveredImage, "delivered photo bytes");
   writeFileSync(
     join(home, ".openmausbot", "messages-test-linked-file-room-thread.json"),
     JSON.stringify({
@@ -679,6 +688,24 @@ beforeAll(async () => {
           role: "user",
           kind: "text",
           text: `<attached-file path="${linkedFile}" />`,
+        },
+        // A side branch: a reply showing an outside picture, alone and then
+        // after the turn delivered it with attach_file.
+        {
+          id: "outside-image-message", at: 9, parentId: "user-outside-file-message", role: "bot", kind: "text",
+          text: `Heidi, 51 – Sideboard\n\n![Sideboard](<${pathToFileURL(outsideImage).href}>)\n\nEinschätzung`,
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
+        },
+        { id: "photo-request-message", at: 10, parentId: "outside-image-message", role: "user", kind: "text", text: "Show me the photo" },
+        {
+          id: "delivered-image-message", at: 11, parentId: "photo-request-message", role: "bot", kind: "text", text: "",
+          attachments: [{ kind: "image", path: deliveredImage, mime: "image/png", name: "sideboard.png" }],
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
+        },
+        {
+          id: "delivered-image-reply-message", at: 12, parentId: "delivered-image-message", role: "bot", kind: "text",
+          text: `Heidi, 51 – Sideboard\n\n![Sideboard](<${pathToFileURL(outsideImage).href}>)\n\nEinschätzung`,
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
         },
       ],
     }),
@@ -964,7 +991,7 @@ beforeAll(async () => {
       && new URL(req.url ?? "/", "http://box.invalid").pathname === "/boxes"
     ) {
       boatSlowRequestCount += 1;
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await (boatSlowHold ?? new Promise((resolve) => setTimeout(resolve, 150)));
     }
     if (
       req.headers.authorization === "Bearer box_route" ||
@@ -1711,6 +1738,11 @@ describe("harness HTTP API", () => {
     const index = await fetch(`${BASE}/index.html`);
     expect(index.headers.get("cache-control")).toBe("no-cache");
     await index.arrayBuffer();
+
+    const manifest = await fetch(`${BASE}/manifest.webmanifest`, { headers: { host: "workspace.example.test" } });
+    expect(manifest.status).toBe(200);
+    expect(manifest.headers.get("content-type")).toBe("application/manifest+json");
+    expect(await manifest.json()).toMatchObject({ display: "standalone" });
 
     // Content-hashed build output: the browser keeps it instead of
     // downloading the whole bundle again on every load.
@@ -2857,14 +2889,27 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("keeps bot-to-bot channels single-threaded and blocks task changes on an open approval", async () => {
+  it("keeps bot-to-bot channels single-threaded and lets another task start beside an open approval", async () => {
     const dm = await api("POST", "/api/groups/test-dm/tasks", {});
     expect(dm.status).toBe(400);
     expect(dm.body.error).toMatch(/one canonical conversation/i);
 
-    const blocked = await api("POST", "/api/groups/test-stranded-room/tasks", {});
-    expect(blocked.status).toBe(409);
-    expect(blocked.body.error).toMatch(/waiting on you/i);
+    // A card holds only its own task: the person can start another while it
+    // waits, and the card stays in its task to be answered there.
+    const created = await api("POST", "/api/groups/test-stranded-room/tasks", {});
+    expect(created.status).toBe(201);
+    const taskThreadId = created.body.task.threadId as string;
+    expect(taskThreadId).not.toBe("test-stranded-room-thread");
+    try {
+      const back = await api("POST", "/api/groups/test-stranded-room/tasks/test-stranded-room-thread", {});
+      expect(back.status).toBe(200);
+      const card = back.body.group.messages.find((message: { id: string }) => message.id === "stranded-card")?.card;
+      expect(card?.requestId).toBe("stranded-request");
+      expect(card.answered).toBeFalsy();
+    } finally {
+      await api("POST", "/api/groups/test-stranded-room/tasks/test-stranded-room-thread", {});
+      await api("DELETE", `/api/groups/test-stranded-room/tasks/${taskThreadId}`);
+    }
   });
 
   it("keeps Chief room changes behind pending user approvals", async () => {
@@ -5468,7 +5513,7 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("keeps Full and Custom bots on Codex when the paired model route changes providers", async () => {
+  it("carries a Full bot's access across engines silently, and keeps Custom bots on Codex", async () => {
     const isolatedHome = mkdtempSync(join(tmpdir(), "omb-trusted-mode-model-"));
     const isolatedData = join(isolatedHome, ".openmausbot");
     const isolatedStatic = join(isolatedHome, "static");
@@ -5498,7 +5543,9 @@ describe("harness HTTP API", () => {
       approvalMode,
       autoApprove: false,
     }));
-    writeFileSync(join(isolatedData, "bots.json"), JSON.stringify(trustedBots));
+    // A third Full bot changes engine by itself: its access must ride along.
+    const carrier = { ...trustedBots[0], id: "full-carry", threadId: "full-carry-thread", name: "full carrier", createdAt: 3 };
+    writeFileSync(join(isolatedData, "bots.json"), JSON.stringify([...trustedBots, carrier]));
 
     let isolatedStderr = "";
     const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
@@ -5536,14 +5583,28 @@ describe("harness HTTP API", () => {
       const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
       const targetSelection = { instanceId: claude.instanceId, model: claude.models.default };
 
-      for (const seeded of trustedBots) {
+      // Full carries silently to an engine that runs it (owner, Oct 12): no
+      // reset to Ask, no confirmation, on the bot and its selected thread.
+      const carried = await isolatedApi("PATCH", `/api/bots/${carrier.id}/model`, targetSelection);
+      expect(carried.status, JSON.stringify(carried.body)).toBe(200);
+      const afterCarry = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === carrier.id,
+      );
+      expect(afterCarry).toMatchObject({ approvalMode: "full", modelSelection: targetSelection });
+      const carriedThread = afterCarry.tasks.find((task: { threadId: string }) => task.threadId === carrier.threadId);
+      expect(carriedThread.modelSelection).toEqual(targetSelection);
+      // the thread keeps no level of its own: it runs at the bot's Full
+      expect(carriedThread.approvalMode ?? afterCarry.approvalMode).toBe("full");
+
+      // Custom's rules belong to Codex: it never crosses engines.
+      for (const seeded of trustedBots.filter((candidate) => candidate.approvalMode === "custom")) {
         const rejected = await isolatedApi("PATCH", `/api/bots/${seeded.id}/model`, targetSelection);
         expect(rejected.status, seeded.approvalMode).toBe(400);
         expect(rejected.body.error).toMatch(/requires choosing Ask first/i);
         const scoped = await isolatedApi("PATCH", `/api/bots/${seeded.id}/tasks/${seeded.threadId}`, {
           modelSelection: targetSelection, updateBotDefault: true, approvalMode: "ask",
         });
-        expect(scoped.status, seeded.approvalMode).toBe(seeded.approvalMode === "custom" ? 403 : 400);
+        expect(scoped.status, seeded.approvalMode).toBe(403);
         expect(scoped.body.error).toMatch(/Custom approval|resetApprovalToAsk/i);
         const unchanged = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
           (candidate: { id: string }) => candidate.id === seeded.id,
@@ -5577,10 +5638,10 @@ describe("harness HTTP API", () => {
       expect(switched.status).toBe(200);
       expect(switched.body.bot).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", autoApprove: false });
       expect(switched.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", alwaysAllow: [] });
-      // The sibling follows the bot onto Claude. Its Full access belonged to
-      // Codex, so it goes back to Ask in the same write, never rides along.
+      // The sibling follows the bot onto Claude and keeps its own Full: Full
+      // carries across engines, and the reset was the bot's and this thread's.
       expect(switched.body.bot.tasks.find((task: { threadId: string }) => task.threadId === sibling.threadId))
-        .toMatchObject({ modelSelection: targetSelection, followsBotModel: true, approvalMode: "ask", alwaysAllow: [] });
+        .toMatchObject({ modelSelection: targetSelection, followsBotModel: true, approvalMode: "full" });
       const created = await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "New defaults" });
       expect(created.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask" });
       const refusedCustom = trustedBots.find(candidate => candidate.approvalMode === "custom")!;
@@ -7037,15 +7098,23 @@ describe("harness HTTP API", () => {
       await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.groups.find(
         (candidate: { id: string }) => candidate.id === room.id,
       )?.working).toBe(true);
-      const rejected = await held.finish();
-      expect(rejected.status).toBe(409);
-      expect(rejected.body.error).toMatch(/working/i);
+      const finished = await held.finish();
       const current = (await api("GET", "/api/bots?messages=0")).body.groups.find(
         (candidate: { id: string }) => candidate.id === room.id,
       );
-      expect(current.threadId).toBe(room.threadId);
-      expect(current.tasks).toHaveLength(1);
-      expect(current.tasks[0].title).not.toBe("Delayed task");
+      const running = current.tasks.find((task: { threadId: string }) => task.threadId === room.threadId);
+      expect(running.working).toBe(true);
+      if (method === "POST") {
+        // Each task has its own queue: a new one starts beside the running one.
+        expect(finished.status).toBe(201);
+        expect(current.tasks).toHaveLength(2);
+      } else {
+        // Renaming the running task still waits for it, checked after the body.
+        expect(finished.status).toBe(409);
+        expect(finished.body.error).toMatch(/running/i);
+        expect(current.tasks).toHaveLength(1);
+        expect(running.title).not.toBe("Delayed task");
+      }
     } finally {
       held.close();
       await api("POST", `/api/groups/${room.id}/interrupt`, {});
@@ -7229,7 +7298,7 @@ describe("harness HTTP API", () => {
     await api("DELETE", `/api/bots/${bot.id}`);
   });
 
-  it("stores safe approval levels and refuses trusted modes over HTTP", async () => {
+  it("stores safe approval levels and Full over HTTP, and keeps Custom on the desktop", async () => {
     const bot = (await api("POST", "/api/bots", {
       modelSelection: { instanceId: "codex", model: "fixture-codex-model" },
     })).body.bot;
@@ -7246,19 +7315,24 @@ describe("harness HTTP API", () => {
       expect(ask.status).toBe(200);
       expect(ask.body.bot).toMatchObject({ approvalMode: "ask", autoApprove: false });
 
-      // Both modes are equivalent to native Codex configuration grants. A
-      // tool can call this loopback route, so even a forged renderer-only
-      // acknowledgement must not cross the trusted desktop boundary.
-      for (const approvalMode of ["full", "custom"]) {
-        for (const body of [
-          { approvalMode },
-          { approvalMode, acknowledgeFullAccess: true },
-        ]) {
-          const rejected = await api("PATCH", `/api/bots/${bot.id}`, body);
-          expect(rejected.status, JSON.stringify(body)).toBe(403);
-          expect(rejected.body.error).toMatch(/desktop app/i);
-        }
+      // Full needs no desktop channel and no consent field (owner decision,
+      // Oct 12): any client that can reach this API turns it on.
+      const full = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" });
+      expect(full.status).toBe(200);
+      expect(full.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask" })).status).toBe(200);
+
+      // Custom still crosses only the desktop's private channel: a tool can
+      // call this loopback route, and even a forged acknowledgement must not
+      // get it past the trusted desktop boundary.
+      for (const body of [{ approvalMode: "custom" }, { approvalMode: "custom", acknowledgeFullAccess: true }]) {
+        const rejected = await api("PATCH", `/api/bots/${bot.id}`, body);
+        expect(rejected.status, JSON.stringify(body)).toBe(403);
+        expect(rejected.body.error).toMatch(/desktop app/i);
       }
+      const thread = await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { approvalMode: "custom" });
+      expect(thread.status).toBe(403);
+      expect(thread.body.error).toMatch(/Custom access requires trusted desktop confirmation/);
 
       const stored = (await api("GET", "/api/bots")).body.bots.find(
         (candidate: { id: string }) => candidate.id === bot.id,
@@ -7269,27 +7343,82 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("requires private desktop consent for Claude Full and rejects Codex-only Custom", async () => {
-    const bot = (await api("POST", "/api/bots", {
-      modelSelection: { instanceId: "claude", model: "fixture-claude-model" },
-    })).body.bot;
+  it("applies Full access over HTTP at once, and the bot's next turns run at Full", async () => {
+    const created: string[] = [];
+    const permissionModeOf = async (botId: string, threadId: string) => {
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "check the level", threadId })).status).toBe(202);
+      // The first turn on a fresh engine waits on its CLI probes.
+      const { argv } = await readJsonFileWhenReady<{ argv: string[] }>(fakeClaudeDump, 15_000);
+      expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId })).status).toBe(200);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: { id: string }) => entry.id === botId)?.tasks
+        .find((task: { threadId: string }) => task.threadId === threadId)?.busy, { timeout: 5_000 }).toBe(false);
+      return argv[argv.indexOf("--permission-mode") + 1];
+    };
+    const threadMode = (bot: { tasks: Array<{ threadId: string; approvalMode?: string }> }, threadId: string) =>
+      bot.tasks.find((task) => task.threadId === threadId)?.approvalMode;
     try {
-      for (const approvalMode of ["full", "custom"]) {
-        const rejected = await api("PATCH", `/api/bots/${bot.id}`, {
-          approvalMode,
-          acknowledgeFullAccess: true,
-        });
-        expect(rejected.status, approvalMode).toBe(approvalMode === "full" ? 403 : 400);
-        expect(rejected.body.error).toMatch(approvalMode === "full" ? /desktop app/i : /does not support/i);
-      }
-      const stored = (await api("GET", "/api/bots")).body.bots.find(
-        (candidate: { id: string }) => candidate.id === bot.id,
-      );
-      expect(stored.approvalMode).toBeUndefined();
+      const bot = (await api("POST", "/api/bots", {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).body.bot;
+      created.push(bot.id);
+      // A conversation that already holds its own Ask level.
+      const older = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Older Ask thread" })).body.task;
+      expect(older.approvalMode).toBe("ask");
+
+      // The bot, and the thread that follows it, run at Full on the next turn.
+      const full = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" });
+      expect(full.status).toBe(200);
+      expect(full.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      // The first conversation holds no level of its own: it follows the bot.
+      expect(threadMode(full.body.bot, bot.threadId) ?? full.body.bot.approvalMode).toBe("full");
+      expect(threadMode(full.body.bot, older.threadId)).toBe("ask");
+      expect(await permissionModeOf(bot.id, bot.threadId)).toBe("bypassPermissions");
+      expect(await permissionModeOf(bot.id, older.threadId)).toBe("default");
+
+      // Bot settings' scope: every existing thread takes Full too.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full", applyToAllThreads: "yes" })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask", applyToAllThreads: true })).status).toBe(400);
+      const everywhere = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full", applyToAllThreads: true });
+      expect(everywhere.status).toBe(200);
+      expect(everywhere.body.bot.tasks.map((task: { approvalMode?: string }) => task.approvalMode)).toEqual(["full", "full"]);
+      expect(await permissionModeOf(bot.id, older.threadId)).toBe("bypassPermissions");
+
+      // One thread from the composer, and Refresh permissions from the sidebar.
+      expect((await api("PATCH", `/api/bots/${bot.id}/tasks/${older.threadId}`, { approvalMode: "ask" })).status).toBe(200);
+      const thread = await api("PATCH", `/api/bots/${bot.id}/tasks/${older.threadId}`, { approvalMode: "full" });
+      expect(thread.status).toBe(200);
+      expect(thread.body.task).toMatchObject({ approvalMode: "full", autoApprove: false });
+      expect((await api("PATCH", `/api/bots/${bot.id}/tasks/${older.threadId}`, { approvalMode: "ask" })).status).toBe(200);
+      const refreshed = await api("PATCH", `/api/bots/${bot.id}/tasks/${older.threadId}`, { refreshPermissions: true });
+      expect(refreshed.status).toBe(200);
+      expect(refreshed.body.task).toMatchObject({ approvalMode: "full" });
+
+      // An engine without a Custom mapping still cannot be set to Custom.
+      const custom = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "custom" });
+      expect(custom.status).toBe(400);
+      expect(custom.body.error).toMatch(/does not support/i);
+
+      // Creation takes Full too, and the new bot's first conversation runs at it.
+      const born = await api("POST", "/api/bots", {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, settings: { approvalMode: "full" },
+      });
+      expect(born.status).toBe(201);
+      created.push(born.body.bot.id);
+      expect(born.body.bot).toMatchObject({ approvalMode: "full", autoApprove: false });
+      expect(await permissionModeOf(born.body.bot.id, born.body.bot.threadId)).toBe("bypassPermissions");
+      const customBirth = await api("POST", "/api/bots", {
+        modelSelection: { instanceId: "codex", model: "fixture-codex-model" }, settings: { approvalMode: "custom" },
+      });
+      expect(customBirth.status).toBe(403);
+      expect((await api("POST", "/api/bots", {
+        modelSelection: { instanceId: "ghost", model: "fixture-ghost-model" }, settings: { approvalMode: "full" },
+      })).status).toBe(400);
     } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
+      for (const id of created) await api("DELETE", `/api/bots/${id}`);
     }
-  });
+  }, 60_000);
 
   it("pins provider approval support at the thread settings gate", async () => {
     const codex = (await api("POST", "/api/bots", {
@@ -7880,6 +8009,10 @@ describe("harness HTTP API", () => {
 
   it("excludes new Boat turns, lifecycle actions, and bot deletion while a token change validates", async () => {
     let botId = "";
+    // The check stays open until every refusal below is seen: a save that
+    // reloads no engine is over in moments.
+    let release = () => {};
+    boatSlowHold = new Promise<void>((resolve) => { release = resolve; });
     try {
       expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots")).body.bot;
@@ -7896,11 +8029,14 @@ describe("harness HTTP API", () => {
       expect(turn.status).toBe(409);
       expect(turn.body.error).toMatch(/Boat account settings are being updated/i);
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(409);
+      release();
       expect((await changing).status).toBe(200);
 
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
       botId = "";
     } finally {
+      release();
+      boatSlowHold = null;
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
     }
@@ -8439,7 +8575,7 @@ describe("harness HTTP API", () => {
         mcpConfig: z.object({ mcpServers: z.object({ ogb: z.object({ args: z.array(z.string()) }) }) }),
       }).parse(await readJsonFileWhenReady(fakeClaudeDump));
       const socketPath = dump.mcpConfig.mcpServers.ogb.args[1];
-      const raise = async (id: string, command: string) => {
+      const raise = async (id: string, command: string, extra: Record<string, unknown> = {}) => {
         const conn = connect(socketPath);
         conns.push(conn);
         const answered = new Promise<{ behavior: string; always?: boolean }>((resolve) => {
@@ -8454,7 +8590,7 @@ describe("harness HTTP API", () => {
           conn.on("connect", resolve);
           conn.on("error", reject);
         });
-        conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input: { command } }) + "\n");
+        conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input: { command, ...extra } }) + "\n");
         return answered;
       };
       type Msg = { kind: string; tool?: { name: string }; card?: { title: string; subtitle: string; requestId?: string; held?: string; heldCode?: string; allowKey?: string; allowSession?: boolean; answered?: string } };
@@ -8490,6 +8626,17 @@ describe("harness HTTP API", () => {
       const plain = await second;
       expect(plain).toMatchObject({ behavior: "allow" });
       expect(plain).not.toHaveProperty("always");
+
+      // A card that offers no session allow keeps none, whatever the answer
+      // claims: widening the sandbox is allowed once at most.
+      const widen = raise("ask-widen", "ls /", { dangerouslyDisableSandbox: true });
+      await expect.poll(async () => (await messages()).find((m) => m.card?.subtitle === "ls /")?.card?.title).toBe("Approval needed");
+      const widenCard = (await messages()).find((m) => m.card?.subtitle === "ls /")!.card!;
+      expect(widenCard.allowSession).toBeUndefined();
+      expect((await api("POST", `/api/bots/${bot.id}/respond`, { requestId: widenCard.requestId, behavior: "allow", always: true })).status).toBe(200);
+      const once = await widen;
+      expect(once).toMatchObject({ behavior: "allow" });
+      expect(once).not.toHaveProperty("always");
     } finally {
       for (const conn of conns) conn.destroy();
       await api("POST", `/api/bots/${bot.id}/interrupt`);
@@ -9179,6 +9326,46 @@ describe("harness HTTP API", () => {
       await api("PATCH", "/api/config", { features: { browser: false }, browserProfiles: [] }).catch(() => undefined);
       if (room) await api("DELETE", `/api/groups/${room.id}`).catch(() => undefined);
       await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  }, 60_000);
+
+  it.each(["direct", "room"] as const)("loads the browser tools up front only when the browser is the conversation's place in %s turns", async (target) => {
+    // Behind Claude's tool search, the first browser action costs a model
+    // step. Works on: Browser preloads them. Auto, which only falls back to
+    // the browser, keeps them deferred, so turns that never browse stay small.
+    const bots: string[] = [];
+    const rooms: string[] = [];
+    const mounted = async (computer: "browser" | undefined) => {
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      bots.push(bot.id);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        approvalMode: "auto",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+        ...(computer ? { computer } : {}),
+      })).status).toBe(200);
+      let path = `/api/bots/${bot.id}/messages`;
+      if (target === "room") {
+        const room = (await api("POST", "/api/groups", { name: `Browser preload ${bots.length}`, memberIds: [bot.id] })).body.group;
+        rooms.push(room.id);
+        expect((await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" })).status).toBe(200);
+        path = `/api/groups/${room.id}/messages`;
+      }
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", path, { text: "Check the website." })).status).toBe(202);
+      const dump = await readJsonFileWhenReady(fakeClaudeDump) as { mcpConfig: { mcpServers: { browser?: { alwaysLoad?: boolean } } } };
+      expect(dump.mcpConfig.mcpServers.browser).toBeDefined();
+      return dump.mcpConfig.mcpServers.browser!;
+    };
+    try {
+      expect((await api("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
+      expect((await mounted(undefined)).alwaysLoad).toBeUndefined();
+      expect((await mounted("browser")).alwaysLoad).toBe(true);
+    } finally {
+      for (const id of rooms) await api("POST", `/api/groups/${id}/interrupt`, {}).catch(() => undefined);
+      for (const id of bots) await api("POST", `/api/bots/${id}/interrupt`, {}).catch(() => undefined);
+      await api("PATCH", "/api/config", { features: { browser: false } }).catch(() => undefined);
+      for (const id of rooms) await api("DELETE", `/api/groups/${id}`).catch(() => undefined);
+      for (const id of bots) await api("DELETE", `/api/bots/${id}`).catch(() => undefined);
     }
   }, 60_000);
 
@@ -9883,7 +10070,7 @@ describe("harness HTTP API", () => {
       // and structural guards therefore cannot see a false idle window.
       const immediate = (await api("GET", "/api/bots?messages=0")).body;
       expect(immediate.groups.find((group: { id: string }) => group.id === room.id)?.working).toBe(true);
-      expect((await api("POST", `/api/groups/${room.id}/tasks`, { title: "Too soon" })).status).toBe(409);
+      expect((await api("PATCH", `/api/groups/${room.id}/tasks/${room.threadId}`, { title: "Too soon" })).status).toBe(409);
       expect((await api("PATCH", `/api/groups/${room.id}`, { memberIds: [first.id] })).status).toBe(409);
 
       const interrupted = await api("POST", `/api/groups/${room.id}/interrupt`, {
@@ -10416,6 +10603,7 @@ describe("harness HTTP API", () => {
       const legacy = await api("POST", "/api/routines", {
         name: `Legacy ${fakeNameSecret}`,
         continuity: true,
+        runOnStartup: true,
         prompt: `${fakeSecret}\n${"Review the archive. ".repeat(180)}`,
         botId: bot.id,
         runOn: "maus",
@@ -10449,6 +10637,7 @@ describe("harness HTTP API", () => {
       }).parse(await listed.json());
       const legacyResult = listedBody.routines.find((routine) => routine.id === legacyRoutineId)!;
       expect(legacyResult.continuity).toBe(true);
+      expect(legacyResult.runOnStartup).toBe(true);
       expect(legacyResult.instructions).not.toContain(fakeSecret);
       expect(legacyResult.name).not.toContain(fakeNameSecret);
       expect(legacyResult.instructions).toContain("redacted");
@@ -12872,6 +13061,28 @@ describe("message pages", () => {
     expect((await fetch(
       `${BASE}/api/threads/${threadId}/messages/prose-file-message/file?preview=1&ref=0`,
     )).status).toBe(400);
+  });
+
+  it("shows the copy a bot delivered of an outside picture, and says why one it never delivered is refused", async () => {
+    const threadId = "test-linked-file-room-thread";
+    const ref = "Heidi, 51 – Sideboard\n\n".length;
+    const refused = await fetch(`${BASE}/api/threads/${threadId}/messages/outside-image-message/file?preview=1&ref=${ref}`);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { code?: string }).code).toBe("outside_workspace");
+
+    const delivered = await fetch(`${BASE}/api/threads/${threadId}/messages/delivered-image-reply-message/file?preview=1&ref=${ref}`);
+    expect(delivered.status).toBe(200);
+    expect(delivered.headers.get("content-type")).toBe("image/png");
+    expect(await delivered.text()).toBe("delivered photo bytes");
+
+    // a link to it saves the same copy
+    const saved = await fetch(`${BASE}/api/threads/${threadId}/messages/delivered-image-reply-message/file`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: pathToFileURL(join(home, "Downloads", "sideboard.png")).href }),
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.text()).toBe("delivered photo bytes");
   });
 
   it("downloads an exact user attachment only from the private attachment store", async () => {

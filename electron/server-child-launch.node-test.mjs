@@ -50,11 +50,22 @@ test("no cache where the app's path changes every launch: AppImage and App Trans
 
 test("main forks what the helper picks and hands only the server the cache directory", () => {
   const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  const start = main.indexOf("async function startServerOn(port)");
+  const start = main.indexOf("async function startServerOn(port,");
   const body = main.slice(start, main.indexOf("utilityProcess.fork(entry", start));
   assert.match(body, /const \{ entry, compileCacheDir \} = serverChildLaunch\(\{\n\s+resourcesPath: process\.resourcesPath,\n\s+userData: app\.getPath\("userData"\),/);
   assert.match(body, /delete childEnv\.OMB_SERVER_COMPILE_CACHE;\n\s+if \(compileCacheDir\) childEnv\.OMB_SERVER_COMPILE_CACHE = compileCacheDir;/);
   assert.doesNotMatch(body, /path\.join\(process\.resourcesPath, "server", "index\.js"\)/);
+});
+
+test("every server child of one launch gets that launch's id, never one from the shell", () => {
+  const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  // Top level: one id for the whole launch, shared by restarts and switches.
+  assert.match(main, /\nconst desktopLaunchId = randomUUID\(\);\n/);
+  const start = main.indexOf("async function startServerOn(port,");
+  const body = main.slice(start, main.indexOf("utilityProcess.fork(entry", start));
+  const spread = body.indexOf("...process.env,");
+  const launch = body.indexOf("OMB_DESKTOP_LAUNCH_ID: desktopLaunchId,");
+  assert.ok(spread > 0 && launch > spread, "the launch id is set after, so over, the inherited environment");
 });
 
 // A staged copy of the bootstrap beside a stand-in index.js, run on this

@@ -399,13 +399,13 @@ export function SidebarProfileMenu({ iconOnly = false }: { iconOnly?: boolean } 
       <SidebarPopoverMenu
         items={items}
         ariaLabel={name}
-        triggerClassName={iconOnly ? "rounded-xl" : "w-full"}
+        triggerClassName={iconOnly ? "shrink-0 rounded-xl" : "w-full"}
         triggerTitle={iconOnly ? name : undefined}
         renderTrigger={({ open }) => iconOnly ? (
           <span
             ref={triggerRef}
             className={cn(
-              "relative flex items-center justify-center rounded-xl px-2 py-2 transition-colors",
+              "relative flex size-[46px] items-center justify-center rounded-xl transition-colors",
               open ? "bg-raised" : "hover:bg-raised/50",
             )}
           >
@@ -424,7 +424,7 @@ export function SidebarProfileMenu({ iconOnly = false }: { iconOnly?: boolean } 
           <span
             ref={triggerRef}
             className={cn(
-              "flex min-h-10 w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors",
+              "flex min-h-[46px] w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors",
               open ? "bg-raised" : "hover:bg-raised/50",
             )}
           >
