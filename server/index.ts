@@ -18260,7 +18260,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // person's turn would begin it, ended when the next real turn starts.
       const live = activeInternalGenerationByThread.get(parsed.data.threadId);
       const liveRoot = live ? coordinator.node(live) : undefined;
-      const generation = liveRoot && !ENDED.has(liveRoot.status) ? live! : beginInternalCapabilityGeneration(parsed.data.threadId);
+      // Only a real turn is joined: a stand-in from an earlier mint is replaced
+      // (and ended), as the next turn would replace it.
+      const generation = liveRoot && !ENDED.has(liveRoot.status) && !standInRoots.has(live!) ? live! : beginInternalCapabilityGeneration(parsed.data.threadId);
       if (generation !== live) {
         standInRoots.add(generation);
         const minted = store.bot(parsed.data.botId)!;
