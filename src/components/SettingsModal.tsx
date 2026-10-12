@@ -429,6 +429,19 @@ function BrowserNotificationsRow() {
   const [permission, setPermission] = useState<NotificationPermission>(() => {
     return typeof Notification !== "undefined" ? Notification.permission : "default";
   });
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible" && typeof Notification !== "undefined") {
+        setPermission(Notification.permission);
+      }
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
   const messageNotifications = useMessageNotifications();
   if (typeof Notification === "undefined") return null;
 
