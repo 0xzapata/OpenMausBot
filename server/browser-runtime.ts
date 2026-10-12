@@ -1,5 +1,6 @@
 import { killCliTree, spawnCli } from "./procs.ts";
-import { DEFAULT_BROWSER_RESULT_BUDGET, describePageChange, OBSERVE_PAGE_SCRIPT, parsePageState, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments, type PageState } from "./browser-tool-shape.ts";
+import { scrubHeldSecrets } from "../shared/redact.ts";
+import { DEFAULT_BROWSER_RESULT_BUDGET, describePageChange, OBSERVE_PAGE_SCRIPT, parsePageState, scrubBrowserResult, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments, type PageState } from "./browser-tool-shape.ts";
 
 export interface BrowserSpawnSpec {
   command: string;
@@ -286,11 +287,15 @@ export class BrowserRuntime {
   private options: { requestTimeoutMs: number; takeoverTimeoutMs: number; idleMs: number; maxPending: number; resultBudget: number; recoveryCheckMs: number };
   private closeBrowser: CloseBrowser;
   private applyViewport?: ApplyViewport;
+  /** Held secrets (a filled login's password, a fresh one-time code) out of
+   * every tool result before the bot reads it. */
+  private scrub: (text: string) => string;
 
-  constructor({ closeBrowser, applyViewport, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser; applyViewport?: ApplyViewport } = {}) {
+  constructor({ closeBrowser, applyViewport, scrub, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser; applyViewport?: ApplyViewport; scrub?: (text: string) => string } = {}) {
     this.options = { requestTimeoutMs: 120_000, takeoverTimeoutMs: 15_000, idleMs: 60_000, maxPending: 16, resultBudget: DEFAULT_BROWSER_RESULT_BUDGET, recoveryCheckMs: 30_000, ...options };
     this.closeBrowser = closeBrowser ?? (async () => false);
     this.applyViewport = applyViewport;
+    this.scrub = scrub ?? scrubHeldSecrets;
   }
 
   private gate(session: string): Gate {
@@ -339,7 +344,15 @@ export class BrowserRuntime {
     return this.withAgentAction(session, capture);
   }
 
+  /** One MCP request from the bot's turn. Every tool result it answers,
+   * the runtime's own recovery notes included, is scrubbed of held secrets
+   * on the way out. */
   async agentRpc(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void): Promise<unknown> {
+    const result = await this.agentRequest(session, spec, method, params, beforeDispatch);
+    return method === "tools/call" ? scrubBrowserResult(result, this.scrub) : result;
+  }
+
+  private async agentRequest(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void): Promise<unknown> {
     if (method !== "tools/list" && method !== "tools/call") throw new Error("Unsupported browser method.");
     // tools/list bypasses withAgentAction (a human may hold control), so it
     // must refuse the closing window itself or its client outlives restart().
