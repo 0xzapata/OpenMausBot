@@ -57,7 +57,8 @@ import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signIn
 
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { RoomMemberLock } from "./room-member-lock.ts";
-import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode } from "./auto-approve.ts";
+import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode, undeliveredApprovalTool } from "./auto-approve.ts";
+import { bindSafetyFloor, denyAtSafetyFloor, safetyFloorOn } from "./safety-floor-gate.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
 import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
@@ -889,6 +890,9 @@ bindThreadLogCapProvider(() => threadEventLogMaxBytes(cfg));
 // The decision log keeps month files for at least this many days. Read per
 // prune, so a Settings change applies at the next one without a restart.
 bindDecisionRetention(() => decisionRetentionDays(cfg.decisions?.retentionDays));
+// The safety floor (server/safety-floor-gate.ts) is off unless switched on;
+// read per request, so a Settings save applies to the next one.
+bindSafetyFloor(() => cfg);
 // The decision model (server/decider): reads cfg per call, so a Settings
 // save applies to the next decision. It never throws into a turn.
 const decider = createDecider({ config: () => cfg, dataDir: DATA_DIR });
@@ -9272,6 +9276,10 @@ bus.subscribe((event: RuntimeEvent) => {
           (sourceGeneration !== undefined && directTurnGenerationByThread.get(event.threadId) === sourceGeneration) ||
           (sourceSpeaker !== undefined && groupSpeakers.get(event.threadId) === sourceSpeaker)
         );
+        // One more necessary condition before any automatic allow: a shell
+        // command on the safety floor's never-list is denied here instead.
+        if (denyAtSafetyFloor({ event, requestId, bot: asker, adapter: instance?.adapter, isCurrent, say: pushMessage,
+          release: () => watchdog.setWaitingOnHuman(event.threadId, false) })) break;
         // The chip is written only AFTER the provider takes the answer.
         // Claiming approval first and correcting later means a moment
         // where the transcript says "approved" over a request nothing
@@ -9281,16 +9289,7 @@ bus.subscribe((event: RuntimeEvent) => {
           if (!isCurrent()) return;
           if (outcome !== "allowed-once") {
             watchdog.setWaitingOnHuman(event.threadId, false);
-            if (outcome !== "unavailable") pushMessage({
-              role: "bot", kind: "activity",
-              tool: outcome === "rejected"
-                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist"
-                  ? "the saved command permission"
-                  : verdict.source === "tool-allowlist"
-                    ? "the saved tool permission"
-                    : "Full access"}.`, ok: false }
-                : failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting."),
-            });
+            if (outcome !== "unavailable") pushMessage({ role: "bot", kind: "activity", tool: undeliveredApprovalTool(outcome, verdict.source) });
             return;
           }
           pushMessage({
@@ -16983,6 +16982,7 @@ function configStatus() {
     billing: { currency: cfg.billing?.currency ?? "USD", prices: cfg.billing?.prices ?? {} },
     // how long the approval decision log is kept, after env and default
     decisions: { retentionDays: decisionRetentionDays(cfg.decisions?.retentionDays) },
+    safetyFloor: { enabled: safetyFloorOn() }, // after OMB_SAFETY_FLOOR, so an operator can see the switch took
     // the base URL is a setting, not a secret; the key stays write-only
     openaiCompat: { configured: Boolean(cfg.openaiCompat?.key), url: cfg.openaiCompat?.url ?? "" },
     composio: {

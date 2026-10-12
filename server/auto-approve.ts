@@ -9,8 +9,15 @@
 // for me also allows a web search, and that is the one action the app itself
 // grants. Questions never come through here: a bot's question always reaches
 // a human.
+//
+// One thing sits under every grant here, when it is switched on: the safety
+// floor (server/safety-floor.ts), a short never-list of shell commands. The
+// request.opened fold checks it after a verdict below says "approve" and
+// before that approval is delivered (denyAtSafetyFloor in
+// server/safety-floor-gate.ts), so no grant in this file can allow one.
 
 import { supportsApprovalMode, type ApprovalMode } from "../shared/approval-mode.ts";
+import { failedTurnTool, type FailedTurnTool } from "../shared/failed-turn.ts";
 import { isOutboundTool } from "../shared/outbound.ts";
 import type { ProviderAdapter, RequestOutcome } from "./contracts.ts";
 
@@ -163,6 +170,20 @@ export function autoVerdict(
   }
   if (mode === "auto" || mode === "custom") return { approve: null, source: "native-approval" };
   return { approve: null, source: "no-grant" };
+}
+
+/** The row a transcript gets when an automatic approval did not land: the
+ * provider refused the action despite the grant that answered, or the answer
+ * could not be delivered at all. `unavailable` and `allowed-once` have no
+ * row, so callers do not ask for one. */
+export function undeliveredApprovalTool(
+  outcome: Exclude<RequestOutcome, "allowed-once" | "unavailable"> | "failed",
+  source: AutoVerdictSource,
+): FailedTurnTool | { name: string; ok: false } {
+  if (outcome !== "rejected") return failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting.");
+  const grant = source === "command-allowlist" ? "the saved command permission"
+    : source === "tool-allowlist" ? "the saved tool permission" : "Full access";
+  return { name: `The provider rejected this action despite ${grant}.`, ok: false };
 }
 
 /** Every fixed note a held card can show, by catalog key.
