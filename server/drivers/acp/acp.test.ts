@@ -267,6 +267,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_GROK_VERSION;
     delete process.env.FAKE_ACP_TOOL_MS;
     delete process.env.FAKE_ACP_USAGE_UPDATES_FILE;
+    delete process.env.FAKE_ACP_UPDATES_FILE;
     delete process.env.FAKE_ACP_DUMP_PROMPT;
     delete process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS;
     delete process.env.OMB_ACP_QUIET_NOTICE_MS;
@@ -554,6 +555,95 @@ describe("ACP turns (fake CLI)", () => {
     usage(50000);
     expect(await send("turn 1")).toBe("turn 1");
     expect(await send("turn 2")).toBe("turn 2");
+  });
+
+  // One split-prompt thread whose agent reports on its own session: report()
+  // sets the session updates the fake sends before the next prompt result,
+  // send() returns the prompt text the agent received, and lastTurn() the
+  // events of the turn just sent.
+  const reportingThread = async (name: string) => {
+    const dump = join(scratch, `acp-${name}.json`);
+    const updatesFile = join(scratch, `acp-${name}-updates.json`);
+    process.env.FAKE_ACP_DUMP = dump;
+    process.env.FAKE_ACP_DUMP_PROMPT = "1";
+    process.env.FAKE_ACP_UPDATES_FILE = updatesFile;
+    writeFileSync(updatesFile, "[]");
+    await create();
+    const threadId = `t-acp-${name}-` + randomUUID();
+    let lastTurnId = "";
+    /** Whole session/update params, for a `_meta` beside the update. */
+    const reportParams = (...params: object[]) => writeFileSync(updatesFile, JSON.stringify(params));
+    const report = (...updates: object[]) => reportParams(...updates.map((update) => ({ update })));
+    const send = async (text: string, ok = true) => {
+      const { turnId } = await instance.adapter.sendTurn({
+        threadId,
+        text,
+        system: FULL,
+        systemStable: "Standing rules.",
+        systemVolatile: "Memory: likes quiet hours.",
+      });
+      lastTurnId = turnId;
+      expect(await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId)).toMatchObject({ ok });
+      return (JSON.parse(readFileSync(dump + ".prompt.json", "utf8")) as Array<{ type: string; text: string }>)[0]?.text;
+    };
+    return { threadId, report, reportParams, send, lastTurn: () => recorder.events.filter((event) => event.turnId === lastTurnId) };
+  };
+  /** A turn's usage events, down to their figures: an absent key stays absent. */
+  const usageFigures = (events: EventRecorder["events"]) => events.flatMap((event) => {
+    if (event.type !== "thread.token-usage.updated") return [];
+    const usage = event;
+    const keys = ["input", "output", "cachedInput", "contextTokens", "contextWindow"] as const;
+    return [Object.fromEntries(keys.filter((key) => key in usage).map((key) => [key, usage[key]]))];
+  });
+
+  it("reports the context an agent says it holds, and the window when it names one", async () => {
+    const { report, send, lastTurn } = await reportingThread("context-report");
+    report(
+      { sessionUpdate: "usage_update", used: 48_000, size: 200_000 },
+      // opencode nests its figures under `usage`
+      { sessionUpdate: "usage_update", usage: { used: 61_000, size: 128_000 } },
+    );
+    await send("turn 1");
+    // The context reading is its own event. The turn's token count is still
+    // the prompt result's, and still the last usage event of the turn.
+    expect(usageFigures(lastTurn())).toStrictEqual([
+      { input: 0, output: 0, contextTokens: 48_000, contextWindow: 200_000 },
+      { input: 0, output: 0, contextTokens: 61_000, contextWindow: 128_000 },
+      { input: 10, output: 5 },
+    ]);
+  });
+
+  it("reports the context alone when the agent names no usable window", async () => {
+    const { report, send, lastTurn } = await reportingThread("context-only");
+    report(
+      { sessionUpdate: "usage_update", used: 48_000 },
+      { sessionUpdate: "usage_update", used: 49_000, size: 0 },
+      { sessionUpdate: "usage_update", used: 50_000, size: -200_000 },
+      { sessionUpdate: "usage_update", used: 51_000, size: "200000" },
+      { sessionUpdate: "usage_update", usage: { used: 52_000 } },
+    );
+    await send("turn 1");
+    expect(usageFigures(lastTurn())).toStrictEqual([
+      { input: 0, output: 0, contextTokens: 48_000 },
+      { input: 0, output: 0, contextTokens: 49_000 },
+      { input: 0, output: 0, contextTokens: 50_000 },
+      { input: 0, output: 0, contextTokens: 51_000 },
+      { input: 0, output: 0, contextTokens: 52_000 },
+      { input: 10, output: 5 },
+    ]);
+  });
+
+  it("reports no context for a usage update that is not a positive count", async () => {
+    const { report, send, lastTurn } = await reportingThread("context-not-positive");
+    report(
+      { sessionUpdate: "usage_update", used: 0, size: 200_000 },
+      { sessionUpdate: "usage_update", used: -48_000, size: 200_000 },
+      { sessionUpdate: "usage_update", used: "48000", size: 200_000 },
+      { sessionUpdate: "usage_update", used: null, size: 200_000 },
+      { sessionUpdate: "usage_update", size: 200_000 },
+    );
+    await send("turn 1");
+    expect(usageFigures(lastTurn())).toStrictEqual([{ input: 10, output: 5 }]);
   });
 
   it("fails clearly when an image-capable adapter meets an older ACP runtime", async () => {

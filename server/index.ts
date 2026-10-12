@@ -18,7 +18,7 @@ import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntime
 import { z } from "zod";
 import { selectReplay, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
 import { draftSummary, foldPoint } from "./compaction-summary.ts";
-import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget.ts";
+import { compactBudget, compactionReading, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker } from "./room-context.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
@@ -9715,8 +9715,8 @@ bus.subscribe((event: RuntimeEvent) => {
         const tokens = event.usage ?? lastReported;
         const speakingBot = store.bot(speaker.botId);
         const selection = speakingBot?.modelSelection;
-        roomMemberContexts.record(event.threadId, speaker.botId, lastContext, selection?.model,
-          selection ? registry.get(selection.instanceId)?.models : undefined);
+        const measured = compactionReading(registry.get(event.providerInstanceId ?? selection?.instanceId ?? "")?.adapter.capabilities, lastContext);
+        roomMemberContexts.record(event.threadId, speaker.botId, measured, selection?.model, selection ? registry.get(selection.instanceId)?.models : undefined);
         const promptBytes = turnPromptBytes.get(event.threadId);
         turnPromptBytes.delete(event.threadId);
         bookTurnUsage({
@@ -10110,7 +10110,7 @@ async function compactConversation(input: {
   });
   const history = selected.transcript.filter(entry => entry.id);
   if (!history.length) return;
-  const measurement = task.lastContextModel === `${instance.instanceId}:${model}` && !task.rewound ? task.usage?.context : undefined;
+  const measurement = compactionReading(instance.adapter.capabilities, task.lastContextModel === `${instance.instanceId}:${model}` && !task.rewound ? task.usage?.context : undefined);
   const window = contextWindowFor(model, instance.models, measurement?.window);
   const bytes = history.reduce((n, entry) => n + Buffer.byteLength(entry.text), 0);
   let floor = task.contextFloor;

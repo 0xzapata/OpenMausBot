@@ -341,6 +341,13 @@ export interface ProviderAdapter {
      * execution, no reads outside its folder). Absent: such a turn is
      * refused. */
     guestTurns?: "confined";
+    /** What the driver's `contextTokens` / `contextWindow` may be used for.
+     * "meter" = they are the engine's own account of its window (an ACP
+     * agent's `usage_update`), shown on the context meter and nowhere else:
+     * OpenMausBot's own compaction is timed as if the engine had reported
+     * nothing (compactionReading in context-budget.ts). Absent: the reading
+     * also times compaction, as Claude's and Codex's do. */
+    contextReading?: "meter";
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;

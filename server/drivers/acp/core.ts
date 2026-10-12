@@ -44,6 +44,7 @@ import {
   classifyQuiet, describeQuiet, lastSeenPhrase, LogTail, quietKey, sampleProcessTree,
   type LogSignal, type ProcessSample, type QuietState,
 } from "./quiet-status.ts";
+import { readSessionReport } from "./session-reports.ts";
 
 /**
  * A `host::model` pick talks to a loopback server with its own key.
@@ -448,10 +449,6 @@ const ACP_STUCK_AFTER_MS = 180_000;
  * re-send the full prompt after this many bare turns as a backstop to
  * compaction detection. */
 const ACP_PROMPT_RE_ANCHOR_TURNS = 8;
-/** A reported context below this share of the peak marks a compaction.
- * OpenCode compactions measured 30-52% of the peak; ordinary dips stay
- * above 83%. A false alarm costs one extra full prompt. */
-const ACP_COMPACTION_COLLAPSE_RATIO = 0.6;
 // Read lazily (not at import) so a test can shorten the window. Unlike the
 // setup calls above, session/prompt legitimately streams for minutes, so a
 // wall-clock deadline would false-positive: this guard only trips when the
@@ -1429,14 +1426,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               break;
             }
             case "usage_update": {
-              // opencode 1.18 sends `used` flat; ignore non-positive reports
-              const used = u.used ?? u.usage?.used;
-              if (typeof used !== "number" || !(used > 0)) break;
-              if (current.state.usagePeak !== null && used < current.state.usagePeak * ACP_COMPACTION_COLLAPSE_RATIO) {
-                current.state.usageCompacted = true;
-              }
-              if (current.state.usagePeak === null || used > current.state.usagePeak) current.state.usagePeak = used;
-              current.state.usageLast = used;
+              // What the agent says about its own session (session-reports.ts).
+              const report = readSessionReport(u, current.state);
+              if (report.context) emit({ ...base(threadId, current.turnId), type: "thread.token-usage.updated", input: 0, output: 0, ...report.context });
               break;
             }
           }
@@ -2390,6 +2382,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             // turn, which safely overrides a legacy instance fullAuto value.
             // Direct adapter calls that omit it still fail closed in sendTurn.
             localComputerMcp: true,
+            contextReading: "meter", // shown on the context meter; never times OpenMausBot's compaction
           },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),

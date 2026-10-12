@@ -12,6 +12,18 @@ export function contextWindowFor(model: string | undefined, catalog?: ModelCatal
   return positive(inferred) ? inferred : DEFAULT_CONTEXT_WINDOW;
 }
 
+/** The context reading OpenMausBot's own compaction may act on: the fold
+ * before a 1:1 turn, and a room member's fresh session. A driver that marks
+ * its reading `contextReading: "meter"` (the ACP family: an agent's own
+ * `usage_update`) has it shown and nothing else, so for those engines both
+ * are timed exactly as they were before the engine's figures were read: the
+ * fold from the transcript estimate and the model's window, a room member
+ * never from a threshold. Letting such a reading time compaction is a
+ * separate decision; it is made by dropping the mark, in one place. */
+export function compactionReading<T>(capabilities: { contextReading?: "meter" } | undefined, reading: T | undefined): T | undefined {
+  return capabilities?.contextReading === "meter" ? undefined : reading;
+}
+
 /** Leave headroom even for a small local model. An 8k lower bound would
  * make compaction unreachable on models whose entire window is 8k. */
 export function compactBudget(window: number, compactAt?: number, nativeCompactAt?: number): number {

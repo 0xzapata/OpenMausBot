@@ -99,7 +99,8 @@
 //   FAKE_ACP_RPC_FAILURE_METHOD  initialize, session/new or session/prompt (default).
 //   FAKE_ACP_RPC_FAILURE_GATE  hold the error until this file exists.
 //   FAKE_ACP_RPC_FAILURE_AFTER_OUTPUT  emit text + a tool result before failing.
-//   FAKE_ACP_RPC_FAILURE_AFTER_USAGE  emit scripted usage updates before failing.
+//   FAKE_ACP_RPC_FAILURE_AFTER_USAGE  emit the scripted usage updates and
+//                       FAKE_ACP_UPDATES_FILE's updates before failing.
 //   FAKE_ACP_LOAD_ERROR  JSON-RPC error object returned by session/load.
 //   FAKE_ACP_MODELS      comma-separated model ids. Enables the opencode-shaped
 //                        surface: session/new and session/load return
@@ -133,6 +134,12 @@
 //   FAKE_ACP_USAGE_UPDATES_FILE  JSON array of numbers, re-read on every
 //                        session/prompt; each is sent as a usage_update
 //                        { used: n, size: 200000 } before the result
+//   FAKE_ACP_UPDATES_FILE  JSON array of session/update params
+//                        ({ update, _meta? }), re-read on every session/prompt
+//                        and sent as they are, in order, before the result:
+//                        any update an agent can report about its session
+//                        (a usage_update of any shape, a session_info_update
+//                        with vendor _meta, a plan)
 //   FAKE_ACP_MODE_ACK_FILE  path of a file read on every mode switch: while it
 //                        exists, "empty" answers without configOptions (the
 //                        switch cannot be confirmed) and "error" refuses it,
@@ -511,7 +518,15 @@ async function listMcpTools(entry: AnyMcpEntry, handshake: unknown): Promise<str
 // the session this process established, for FAKE_ACP_REJECT_LIVE_LOAD_FILE
 let liveSession: string | null = null;
 let rpcFailure: unknown = null;
-function emitUsageUpdates(): void {
+function emitSessionReports(): void {
+  const updatesFile = process.env.FAKE_ACP_UPDATES_FILE;
+  if (updatesFile && existsSync(updatesFile)) {
+    try {
+      for (const params of JSON.parse(readFileSync(updatesFile, "utf8")) as unknown[]) {
+        if (params && typeof params === "object") out({ jsonrpc: "2.0", method: "session/update", params });
+      }
+    } catch {}
+  }
   const usageFile = process.env.FAKE_ACP_USAGE_UPDATES_FILE;
   if (usageFile && existsSync(usageFile)) {
     try {
@@ -528,7 +543,7 @@ function failRpc(msg: { method: string; id: unknown }): boolean {
   const failureFile = process.env.FAKE_ACP_RPC_FAILURE_FILE;
   if (failureFile && existsSync(failureFile)) rpcFailure = JSON.parse(readFileSync(failureFile, "utf8"));
   if (!rpcFailure) return false;
-  if (msg.method === "session/prompt" && process.env.FAKE_ACP_RPC_FAILURE_AFTER_USAGE === "1") emitUsageUpdates();
+  if (msg.method === "session/prompt" && process.env.FAKE_ACP_RPC_FAILURE_AFTER_USAGE === "1") emitSessionReports();
   if (msg.method === "session/prompt" && process.env.FAKE_ACP_RPC_FAILURE_AFTER_OUTPUT === "1") playTurn();
   const fail = () => {
     recordMethod(`${msg.method}.error`);
@@ -931,7 +946,7 @@ function handle(msg: any) {
         return;
       }
       const complete = () => {
-        emitUsageUpdates();
+        emitSessionReports();
         recordMethod("session/prompt.result");
         result(
           msg.id,
