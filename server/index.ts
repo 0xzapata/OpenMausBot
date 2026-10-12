@@ -22496,6 +22496,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // the card it came from may remember it.
       const refusal = cardAnswerRefusal(auth, bot.threadId, pending.card!.requestId!, "allow");
       if (refusal) return json(res, 403, { error: refusal });
+      // This is a standing permission for the bot, not merely for the thread
+      // that happened to raise the card. Save it on the bot defaults so a
+      // fresh direct or delegated task inherits it, while also updating the
+      // current task's independent permission snapshot immediately.
+      const savedBot = store.bot(bot.id)!;
+      store.patchBot(bot.id, {
+        alwaysAllow: [...new Set([...(savedBot.alwaysAllow ?? []), allowKey])].slice(0, 200),
+      });
       store.patchTask(bot.id, bot.threadId, {
         alwaysAllow: [...new Set([...(bot.alwaysAllow ?? []), allowKey])].slice(0, 200),
       });

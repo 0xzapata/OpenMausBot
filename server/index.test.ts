@@ -8601,6 +8601,13 @@ describe("harness HTTP API", () => {
       const once = await widen;
       expect(once).toMatchObject({ behavior: "allow" });
       expect(once).not.toHaveProperty("always");
+
+      // The grant belongs to the bot, not only to the conversation where the
+      // card appeared. A later delegated/direct task must inherit it instead
+      // of asking the person for the same exact read again.
+      const nextTask = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Later work" });
+      expect(nextTask.status).toBe(201);
+      expect(nextTask.body.task.alwaysAllow).toContain(linearCard.allowKey);
     } finally {
       for (const conn of conns) conn.destroy();
       await api("POST", `/api/bots/${bot.id}/interrupt`);
