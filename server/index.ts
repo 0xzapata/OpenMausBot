@@ -12731,8 +12731,8 @@ const validateModelProposal = (selection: ModelSelection, current?: BotRecord): 
   if (current?.approvalGrant) return "Wait for the approval-level confirmation before changing this bot's model";
   if (current) {
     const mode = approvalModeFor(current);
-    const driver = registry.cliTarget(selection.instanceId)?.driverKind;
-    if (!supportsApprovalMode(selection, mode) || ((mode === "full" || mode === "custom") && driver !== registry.cliTarget(current.modelSelection.instanceId)?.driverKind)) {
+    // The same rule as every other model switch: Full carries, Custom never crosses engines.
+    if (!supportsApprovalMode(selection, mode) || engineSwitchNeedsAsk(mode, current.modelSelection, selection)) {
       return `@${current.name}'s existing permissions are incompatible with that provider. Change its permissions in bot settings, then propose the model change again.`;
     }
   }
