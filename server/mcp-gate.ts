@@ -155,6 +155,15 @@ function spill(tool: string, text: string): string | undefined {
   }
 }
 
+/** Whether `text` is `value` serialized (key order aside, which JSON keeps). */
+function sameJson(text: string, value: unknown): boolean {
+  try {
+    return JSON.stringify(JSON.parse(text)) === JSON.stringify(value);
+  } catch {
+    return false;
+  }
+}
+
 /** Rewrite one `tools/call` result in place. Returns true when anything was
  * actually trimmed, so the caller can report it on stderr. */
 function trimCallResult(result: Json, tool: string): boolean {
@@ -174,21 +183,32 @@ function trimCallResult(result: Json, tool: string): boolean {
 
   const share = Math.floor(BUDGET / textBlocks.length);
   const path = spill(tool, textBlocks.map((block) => block.text).join("\n"));
+  // The usual shape: one text block that is structuredContent serialized.
+  const structuredIsText = textBlocks.length === 1 && Boolean(result.structuredContent) && typeof result.structuredContent === "object"
+    && sameJson(textBlocks[0]!.text, result.structuredContent);
   let trimmed = false;
+  let keptValue: unknown;
   for (const block of textBlocks) {
     const outcome = trimResultText({ text: block.text, budget: share, spillPath: path, spillHint: SPILL_HINT, toolName: tool });
     if (!outcome.trimmed) continue;
     block.text = outcome.text;
+    keptValue = outcome.value;
     trimmed = true;
   }
 
   // A tool that also answers with structuredContent would otherwise hand the
-  // provider a second, full copy of everything just cut. Trim it the same way
-  // — structurally only, so it stays valid against the tool's output schema —
-  // and leave it untouched when it cannot be cut without mangling it.
+  // provider a second, full copy of everything just cut. When it is the same
+  // data as the text, it keeps exactly the records the text kept; otherwise
+  // it is trimmed the same way on its own — structurally only, so it stays
+  // valid against the tool's output schema — and left untouched when it
+  // cannot be cut without mangling it.
   if (trimmed && result.structuredContent && typeof result.structuredContent === "object") {
-    const structured = trimStructured(result.structuredContent, BUDGET);
-    if (structured) result.structuredContent = structured.value as Json;
+    if (structuredIsText && keptValue && typeof keptValue === "object") {
+      result.structuredContent = keptValue as Json;
+    } else {
+      const structured = trimStructured(result.structuredContent, BUDGET);
+      if (structured) result.structuredContent = structured.value as Json;
+    }
   }
   return trimmed;
 }

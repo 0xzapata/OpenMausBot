@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { gateServer, mcpStdioServer } from "./mcp-gate-config.ts";
+import { gateServer, mcpStdioServer, resultBudget, serverResultBudget } from "./mcp-gate-config.ts";
+import { DEFAULT_RESULT_BUDGET } from "./mcp-trim.ts";
 
 const server = { command: "example-mcp", args: ["--stdio"], env: { TOKEN: "disposable-test-token" } };
 const input = { name: "notes", server, threadId: "disposable-thread", budget: 0 };
@@ -20,6 +21,23 @@ describe("MCP scope configuration", () => {
   it("rejects malformed scopes and unmountable scoped servers instead of returning a bypass", () => {
     expect(() => gateServer({ ...input, toolScope: { allow: null } as never })).toThrow(/tool selection/i);
     expect(() => gateServer({ ...input, server: {}, toolScope: { allow: [] } })).toThrow(/MCP server/i);
+  });
+});
+
+describe("result budget", () => {
+  it("uses a server's own budget, else the environment's, else the default", () => {
+    expect(resultBudget({})).toBe(DEFAULT_RESULT_BUDGET);
+    expect(serverResultBudget("motion", { motion: 40_000 }, {})).toBe(40_000);
+    // 0 is a real setting (never trim), not a missing one
+    expect(serverResultBudget("motion", { motion: 0 }, { OMB_MCP_RESULT_BUDGET: "12000" })).toBe(0);
+    expect(serverResultBudget("notes", { motion: 40_000 }, { OMB_MCP_RESULT_BUDGET: "12000" })).toBe(12_000);
+    expect(serverResultBudget("notes", undefined, {})).toBe(DEFAULT_RESULT_BUDGET);
+    // an inherited name is not a setting
+    expect(serverResultBudget("toString", {}, {})).toBe(DEFAULT_RESULT_BUDGET);
+  });
+
+  it("hands the gate the budget it was given", () => {
+    expect(gateServer({ ...input, budget: 40_000 })!.env.OMB_GATE_BUDGET).toBe("40000");
   });
 });
 

@@ -21,6 +21,20 @@ export function resultBudget(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_RESULT_BUDGET;
 }
 
+/** The budget for one bot-owned server: its own `resultBudget` (from the
+ * MCP server editor; 0 = never trim), else the app-wide one above. A tool
+ * that returns big structured documents (a 110-layer composition) needs more
+ * than the default; a shopping search needs less. */
+export function serverResultBudget(
+  name: string,
+  perServer: Readonly<Record<string, number>> | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const own = perServer && Object.hasOwn(perServer, name) ? perServer[name] : undefined;
+  if (typeof own === "number" && Number.isFinite(own) && own >= 0) return Math.floor(own);
+  return resultBudget(env);
+}
+
 /** Where a thread's oversized results are kept so the bot can read them back.
  * Under the app's data directory, not the user's project folder: these are
  * the harness's spill, and it sweeps them after a day. */

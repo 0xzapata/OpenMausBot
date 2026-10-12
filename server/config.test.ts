@@ -7,6 +7,7 @@ import type { JsonValue } from "./schema.ts";
 import { cacheUntilConfigChanges,
   changedInstanceIds,
   customMcpServers,
+  customMcpResultBudgets,
   engineLaunches,
   DATA_DIR,
   ensureDirs,
@@ -1895,6 +1896,18 @@ describe("customMcpServers", () => {
 
   it("returns {} when the section is absent", () => {
     expect(customMcpServers({} as Parameters<typeof customMcpServers>[0])).toEqual({});
+  });
+
+  it("keeps a per-server result budget out of the spec and reports it on its own", () => {
+    const config = cfg({
+      motion: { command: "effectcraft-mcp", resultBudget: 40_000 },
+      raw: { url: "https://raw.example/mcp", resultBudget: 0 },
+      plain: { command: "notes-mcp" },
+    });
+    // the spec an engine mounts never carries a field it might reject
+    expect(customMcpServers(config).motion).toEqual({ command: "effectcraft-mcp", args: [], env: {} });
+    expect(customMcpResultBudgets(config, ["motion", "raw", "plain", "gone"])).toEqual({ motion: 40_000, raw: 0 });
+    expect(customMcpResultBudgets(config, ["plain"])).toEqual({});
   });
 
   it("narrows to a bot's own list when one is given, and to nothing for an empty list", () => {

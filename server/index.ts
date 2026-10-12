@@ -214,6 +214,7 @@ import {
   EVENTS_DIR,
   NATIVE_DIR,
   customMcpServers,
+  customMcpResultBudgets,
   onConfigSaved,
   CLAUDE_API_INSTANCE,
   liveSettingsFor,
@@ -10555,7 +10556,11 @@ async function startTurn(
       // never pre-allowed, so every call rides the normal permission flow.
       if (instance.adapter.capabilities.customMcp === true) {
         const custom = await withMcpSignIn(engineMcpServers(bot), mcpOAuth);
-        if (Object.keys(custom).length) integrations.custom = custom;
+        if (Object.keys(custom).length) {
+          integrations.custom = custom;
+          const budgets = customMcpResultBudgets(cfg, Object.keys(custom));
+          if (Object.keys(budgets).length) integrations.customResultBudgets = budgets;
+        }
       }
       // CLI engines work inside the bot's own workspace directory rather
       // than the user's home: a bot with file tools and acceptEdits gets a
@@ -13277,7 +13282,11 @@ async function runGroupMemberTurn(
   // user-configured MCP servers: same gating as the 1:1 site above.
   if (instance.adapter.capabilities.customMcp === true) {
     const custom = await withMcpSignIn(engineMcpServers(bot), mcpOAuth);
-    if (Object.keys(custom).length) integrations.custom = custom;
+    if (Object.keys(custom).length) {
+      integrations.custom = custom;
+      const budgets = customMcpResultBudgets(cfg, Object.keys(custom));
+      if (Object.keys(budgets).length) integrations.customResultBudgets = budgets;
+    }
   }
   // Connected-app discovery is intentionally awaited before a provider owns
   // the bot. An interrupt during that setup window must still stop the queued
@@ -16276,7 +16285,7 @@ function mcpServerBody(body: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!body || typeof body !== "object") return out;
   const record = body as Record<string, unknown>;
-  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled"]) {
+  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled", "resultBudget"]) {
     if (record[key] !== undefined) out[key] = record[key];
   }
   return out;

@@ -1,11 +1,24 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { parseMcpArguments, parseMcpEnvironment, parseMcpHeaders, parseMcpOAuthClient } from "./McpServersPanel";
+import { parseMcpArguments, parseMcpEnvironment, parseMcpHeaders, parseMcpOAuthClient, parseMcpResultBudget } from "./McpServersPanel";
 import { setLocale, t } from "@/lib/i18n";
 
 afterEach(() => setLocale("en"));
 
 describe("MCP server form", () => {
+  it("reads the result size limit: blank is the default, 0 never trims, grouping is fine", () => {
+    expect(parseMcpResultBudget("")).toEqual({ ok: true, value: undefined });
+    expect(parseMcpResultBudget("  ")).toEqual({ ok: true, value: undefined });
+    expect(parseMcpResultBudget("0")).toEqual({ ok: true, value: 0 });
+    expect(parseMcpResultBudget("40000")).toEqual({ ok: true, value: 40_000 });
+    expect(parseMcpResultBudget("40,000")).toEqual({ ok: true, value: 40_000 });
+    expect(parseMcpResultBudget("40 000")).toEqual({ ok: true, value: 40_000 });
+    for (const bad of ["-1", "12.5k", "lots", "3000000"]) {
+      expect(parseMcpResultBudget(bad)).toEqual({ ok: false, error: { key: "mcp.err.resultBudget" } });
+    }
+    expect(t("mcp.resultBudgetHint")).toContain("8,000");
+  });
+
   it("uses one explicit argument per line", () => {
     expect(parseMcpArguments("-y\n  @scope/server  \n\n--read-only")).toEqual([
       "-y",
