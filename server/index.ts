@@ -2934,6 +2934,15 @@ function stopParkedCards(threadId: string): void {
 /** A direct root in this thread the runtime still owes something: parked on
  * the person's cards, waiting on teammates, due a resume, or queued to
  * continue in place. Never a root whose own turn is running. */
+/** The runtime still owes this conversation a turn of its own: a cut turn
+ * it reruns after a restart, or a continuation queued on the computer seat.
+ * Held words wait behind it, as they waited behind the turn it continues;
+ * a root waiting on teammates or parked on cards holds nothing back (a
+ * typed line there is its own turn, decision 3). */
+function directRootQueued(threadId: string): boolean {
+  return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId && n.status === "queued");
+}
+
 function directRootPending(threadId: string): boolean {
   return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId &&
     (n.status === "waiting" || n.status === "resume" || n.status === "queued"));
@@ -10088,7 +10097,7 @@ function drainQueuedSendsNow() {
     // Team incidents reports never park behind handed-on work (admission's
     // "incident" surface says why).
     (botId, threadId, head) => threadBusy(botId, threadId) || botAtThreadCapacity(botId) || Boolean(activeGroupTurnForBot(botId))
-      || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
+      || directRootQueued(threadId) || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
   );
 }
 
