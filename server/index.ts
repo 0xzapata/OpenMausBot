@@ -2908,10 +2908,7 @@ function directRootPending(threadId: string): boolean {
  * a root parked on the person's cards or queued on a seat: those are not
  * teammates (a typed line starts a new root there, decision 3). */
 function awaitingTeammates(threadId: string): boolean {
-  // A teammate still working for a conversation that stopped awaiting it
-  // (Stop: its requester node is cancelled, the teammate keeps its process
-  // and reports) is nobody's wait: its parent has ended.
-  if (coordinator.outstandingDirect(threadId).some((child) => !ENDED.has(coordinator.node(child.parentId!)?.status ?? "cancelled"))) return true;
+  if (coordinator.outstandingDirect(threadId).length > 0) return true;
   return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId &&
     (n.status === "resume" || (n.status === "waiting" && n.question === undefined && !n.cards?.length)));
 }

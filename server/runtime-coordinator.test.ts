@@ -428,11 +428,17 @@ describe("RuntimeCoordinator: stops", () => {
     w.coordinator.tick();
     expect(w.coordinator.node(b.id)?.status).toBe("running");
     expect(w.coordinator.node(t.id)?.status).toBe("queued");
+    expect(w.coordinator.outstandingDirect("chief-chat").map(n => n.id).sort()).toEqual([b.id, t.id].sort());
+    expect(w.coordinator.assignerOf("builder-work")?.id).toBe("gen-1");
     const left = w.coordinator.stopAwaitingDirect("chief-chat");
     expect(left.map(n => n.id)).toEqual([b.id]);
     expect(w.coordinator.node(t.id)).toMatchObject({ status: "cancelled", result: "Stopped before it started" });
     expect(w.coordinator.node("gen-1")).toMatchObject({ status: "cancelled", result: "Stopped by user" });
     expect(w.host.runs[0]!.signal.aborted).toBe(false);
+    // the teammate left running is nobody's wait: its requester ended, so
+    // nothing is outstanding for that conversation and nobody assigned it
+    expect(w.coordinator.outstandingDirect("chief-chat")).toEqual([]);
+    expect(w.coordinator.assignerOf("builder-work")).toBeUndefined();
     await w.host.release(b.id, { ok: true, text: "built anyway" });
     expect(w.coordinator.node(b.id)).toMatchObject({ status: "completed", result: "built anyway", reported: true });
     expect(w.host.reports.at(-1)).toMatchObject({ child: { id: b.id }, parent: { id: "gen-1", status: "cancelled" } });

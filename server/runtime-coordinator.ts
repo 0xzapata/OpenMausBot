@@ -404,26 +404,30 @@ export class RuntimeCoordinator implements Coordinator {
   }
 
   /** The conversation that assigned the unsettled direct work running in
-   * this thread, or undefined when nothing it does is awaited. */
+   * this thread, or undefined when nothing it does is awaited. A teammate
+   * still working for a conversation that stopped awaiting it (Stop: its
+   * requester node ended, the teammate keeps its process) is nobody's. */
   assignerOf(threadId: string): HandoffView | undefined {
     this.ready();
     for (const n of this.live()) {
       if (!n.parentId || !this.direct(n, threadId)) continue;
       const parent = this.store.get(n.parentId);
-      if (parent) return this.project(parent);
+      if (parent && !isTerminal(parent)) return this.project(parent);
     }
     return undefined;
   }
 
   /** Work this conversation handed out that has not settled yet and that
-   * comes back to it: a one-way notice is never outstanding. */
+   * comes back to it: a one-way notice is never outstanding, and nothing is
+   * once the requesting node ended (a Stop leaves a teammate mid-turn, but
+   * its result returns to nobody). */
   outstandingDirect(threadId: string): HandoffView[] {
     this.ready();
     const out: HandoffView[] = [];
     for (const n of this.live()) {
       if (!n.parentId || n.reply === "none") continue;
       const parent = this.store.get(n.parentId);
-      if (parent && this.direct(parent, threadId)) out.push(view(n, parent));
+      if (parent && !isTerminal(parent) && this.direct(parent, threadId)) out.push(view(n, parent));
     }
     return out;
   }
