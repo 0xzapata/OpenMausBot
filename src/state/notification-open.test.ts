@@ -16,6 +16,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerFrame } from "../../shared/wire";
 import type { Action, AppState, BotAnnouncement } from "./store";
+import { LAST_CONVERSATION_KEY } from "@/lib/last-conversation";
 
 class FixtureEventSource {
   static opened: FixtureEventSource[] = [];
@@ -79,6 +80,13 @@ function Probe() {
 }
 
 beforeAll(() => {
+  // Use persistent browser-like storage even on Node versions without it.
+  const saved = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => saved.get(key) ?? null,
+    setItem: (key: string, value: string) => saved.set(key, value),
+    removeItem: (key: string) => saved.delete(key),
+  });
   vi.stubGlobal("EventSource", FixtureEventSource);
   vi.stubGlobal("Notification", FixtureNotification);
   vi.stubGlobal("fetch", (path: string, init?: RequestInit) => {
@@ -111,6 +119,8 @@ afterAll(() => vi.unstubAllGlobals());
 /** The app as it opens, on the conversation it remembers. */
 async function launch() {
   server = structuredClone(scout);
+  // A previous scenario must not decide which bot this launch restores.
+  localStorage.setItem(LAST_CONVERSATION_KEY, firstBot);
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -123,6 +133,8 @@ async function launch() {
 beforeEach(async () => {
   firstBot = "other";
   await launch();
+  expect(state.selectedId).toBe("other");
+  expect(server.threadId).toBe("left-behind");
   requests.length = 0;
   FixtureNotification.shown.length = 0;
 });

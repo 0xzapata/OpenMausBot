@@ -117,6 +117,9 @@ const find = (rendered: { nodes: Node[] }, attr: string, value: unknown = true) 
   rendered.nodes.find((node) => node.props[attr] === value)!;
 const click = (node: Node) => (node.props.onClick as () => void)();
 const isSimple = (rendered: { nodes: Node[] }) => rendered.nodes.some((node) => node.type === SimpleBotPanel);
+// the accordion row for a section: its button's aria-expanded
+const rowOpen = (rendered: { nodes: Node[] }, id: string) =>
+  (Children.toArray(find(rendered, "data-bot-settings-section", id).props.children)[0] as Node).props["aria-expanded"] === true;
 
 const skill = (name: string, enabled: boolean): ManagedSkill => ({ name, description: `${name} helper`, enabled, source: "github:x/y", warnings: [] });
 
@@ -337,6 +340,65 @@ describe("the bot settings dialog", () => {
   it("keeps Edit profile on the Simple panel", () => {
     fixture.storeState = { settingsOpen: true, botSettingsSection: "identity", botSettingsExpandAccordion: true };
     expect(isSimple(dialog(makeBot()))).toBe(true);
+  });
+
+  it("a stored section opens expanded in the full view", () => {
+    fixture.advanced = true;
+    fixture.storeState = {
+      settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
+      botSettingsSectionStored: true, botSettingsExpandRemembered: true,
+    };
+    const rendered = dialog(makeBot());
+    expect(isSimple(rendered)).toBe(false);
+    expect(rowOpen(rendered, "model")).toBe(true);
+  });
+
+  it("a stored section never forces the full view in simple mode", () => {
+    fixture.storeState = {
+      settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
+      botSettingsSectionStored: true, botSettingsExpandRemembered: true,
+    };
+    expect(isSimple(dialog(makeBot()))).toBe(true);
+  });
+
+  it("a deep link wins over the stored section", () => {
+    fixture.storeState = {
+      settingsOpen: true, botSettingsSection: "skills", botSettingsExpandAccordion: true,
+      botSettingsSectionStored: true,
+    };
+    const rendered = dialog(makeBot());
+    expect(isSimple(rendered)).toBe(false);
+    expect(rowOpen(rendered, "skills")).toBe(true);
+  });
+
+  it("searching collapses a remembered-expanded row like a deep-linked one", () => {
+    fixture.advanced = true;
+    fixture.storeState = {
+      settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
+      botSettingsSectionStored: true, botSettingsExpandRemembered: true,
+    };
+    expect(rowOpen(dialog(makeBot()), "model")).toBe(true);
+    const search = dialog(makeBot()).nodes.find((node) => node.props["aria-label"] === "Search settings")!;
+    (search.props.onChange as (e: unknown) => void)({ target: { value: "model" } });
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleSettings", open: true });
+    // the reducer answers that bare open with the rail collapsed
+    fixture.storeState = { ...fixture.storeState, botSettingsExpandAccordion: false, botSettingsExpandRemembered: false };
+    expect(rowOpen(dialog(makeBot()), "model")).toBe(false);
+  });
+
+  it("one click on a remembered-expanded row collapses it", () => {
+    fixture.advanced = true;
+    fixture.storeState = {
+      settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
+      botSettingsSectionStored: true, botSettingsExpandRemembered: true,
+    };
+    expect(rowOpen(dialog(makeBot()), "model")).toBe(true);
+    const row = find(dialog(makeBot()), "data-bot-settings-section", "model");
+    click(Children.toArray(row.props.children)[0] as Node);
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleSettings", open: true });
+    // the reducer answers that click with the rail collapsed
+    fixture.storeState = { ...fixture.storeState, botSettingsExpandAccordion: false, botSettingsExpandRemembered: false };
+    expect(rowOpen(dialog(makeBot()), "model")).toBe(false);
   });
 
   it("leaves Advanced mode on today's panel", () => {

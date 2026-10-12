@@ -43,6 +43,7 @@ import type { ComputerStart } from "@/lib/computer-start";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { readLastConversation, rememberConversation } from "@/lib/last-conversation";
+import { readLastBotSection, rememberBotSection } from "@/lib/last-bot-section";
 import { showNotification, type NotificationTarget } from "@/lib/notify";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { speaker } from "@/lib/tts";
@@ -1040,6 +1041,11 @@ export interface AppState {
   botSettingsSection: BotSettingsSection;
   /** True only when the open action named a section — accordion expands that row. */
   botSettingsExpandAccordion: boolean;
+  /** True when this device has a section choice to restore (lib/last-bot-section). */
+  botSettingsSectionStored: boolean;
+  /** True only on an opening that expanded the remembered section; a deep
+   * link is never it, so it can never force the Simple panel's full view. */
+  botSettingsExpandRemembered: boolean;
   /** bots whose computer is starting for a turn (src/lib/computer-start.ts) */
   computerStarts: Record<string, ComputerStart>;
   /** Bot removals waiting for the server to verify that no persistent
@@ -1816,7 +1822,6 @@ export function reducer(state: AppState, action: Action): AppState {
           unreadDivider: openedUnreadDivider(state, room.threadId, room.unread, room.messages, room.lastReadMessageId),
           activeView: "chat",
           selectedId: action.id,
-          botSettingsSection: action.id !== state.selectedId ? "overview" : state.botSettingsSection,
           groups: state.groups.map((g) => (g.id === action.id ? { ...g, unread: false } : g)),
         };
       }
@@ -1830,7 +1835,6 @@ export function reducer(state: AppState, action: Action): AppState {
               : state.unreadDivider,
             activeView: "chat",
             selectedId: action.id,
-            botSettingsSection: action.id !== state.selectedId ? "overview" : state.botSettingsSection,
           },
           action.id,
           "switch",
@@ -2176,15 +2180,23 @@ export function reducer(state: AppState, action: Action): AppState {
       // A targeted settings link opens that bot without navigating to chat
       // or marking its conversations read, even when another panel is open.
       const open = action.open ?? (action.botId !== undefined || !state.settingsOpen);
+      const freshOpen = open && !state.settingsOpen;
+      const named = action.section !== undefined;
       return {
         ...state,
         selectedId,
         settingsOpen: open,
         activityOpen: open ? false : state.activityOpen,
-        botSettingsSection: action.section ?? (selectedId !== state.selectedId ? "overview" : state.botSettingsSection),
-        // Mascot / bare open omits `section` → accordion stays fully collapsed.
-        // Deep links expand that row even when the panel is already open.
-        botSettingsExpandAccordion: open ? action.section !== undefined : false,
+        // The pointer persists across bots and rooms (select) and across
+        // switches to another bot's profile; a deep link names its target.
+        botSettingsSection: action.section ?? state.botSettingsSection,
+        // A bare fresh open re-expands the section this device last viewed;
+        // a deep link expands the row it names.
+        botSettingsExpandAccordion: open ? named || (freshOpen && state.botSettingsSectionStored) : false,
+        // Only an opening that expanded the remembered row sets this; a deep
+        // link forces the full view for sections Simple skips.
+        botSettingsExpandRemembered: open ? !named && freshOpen && state.botSettingsSectionStored : false,
+        botSettingsSectionStored: named || state.botSettingsSectionStored,
         // Preserve the computer and inspector surfaces; their own controls
         // can open bot settings. App settings are mutually exclusive.
         appSettingsOpen: open ? false : state.appSettingsOpen,
@@ -2708,6 +2720,8 @@ export const initialState: AppState = {
   tourOpen: false,
   botSettingsSection: "overview",
   botSettingsExpandAccordion: false,
+  botSettingsSectionStored: false,
+  botSettingsExpandRemembered: false,
   computerStarts: {},
   deletingBots: {},
   computerControl: {},
@@ -3020,13 +3034,21 @@ const StoreContext = createContext<{
   refreshModels: (instanceId: string) => Promise<void>;
 } | null>(null);
 
+/** Lazy useReducer init: adopt the section this device last viewed once per
+ * launch, so a bare open starts there. The exported initialState stays
+ * "overview"/false and the reducer never touches localStorage. */
+function restoreBotSettingsSection(state: AppState): AppState {
+  const section = readLastBotSection();
+  return section ? { ...state, botSettingsSection: section, botSettingsSectionStored: true } : state;
+}
+
 export function StoreProvider({ children }: { children: ReactNode }) {
   const taskWrites = useRef(new Map<string, { botId: string; updatesDefault: boolean; promise: Promise<BotAnnouncement>; execution: Promise<unknown>; patch: TaskUpdatePatch }>()).current;
   const withTaskWrites = (bot: BotAnnouncement): BotAnnouncement => ({
     ...bot,
     tasks: bot.tasks?.map((task) => ({ ...task, ...taskPatchFields(taskWrites.get(task.threadId)?.patch ?? {}) })),
   });
-  const [state, rawDispatch] = useReducer(reducer, initialState);
+  const [state, rawDispatch] = useReducer(reducer, initialState, restoreBotSettingsSection);
   const stateRef = useRef(state);
   stateRef.current = state;
   const showThreads = useShowThreads();
@@ -3041,6 +3063,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.selectedId) rememberConversation(state.selectedId);
   }, [state.selectedId]);
+  // Rail clicks, deep links and remembered openings all carry the accordion
+  // flag, so only a section actually viewed is written; a bare open that
+  // stays collapsed never is.
+  useEffect(() => {
+    if (state.settingsOpen && state.botSettingsExpandAccordion) rememberBotSection(state.botSettingsSection);
+  }, [state.settingsOpen, state.botSettingsExpandAccordion, state.botSettingsSection]);
   const botPatchQueue = useMemo(
     () =>
       createBotPatchQueue({

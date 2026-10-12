@@ -97,10 +97,14 @@ describe.each([false, true])("with threads shown: %s", (shown) => {
       menu: { botId, x: 0, y: 0 }, onClose: vi.fn(), onArchive: vi.fn(), onDelete: vi.fn(), onMoveToSection: vi.fn(), onNewFolder: vi.fn(), onNewTaskFolder: vi.fn(),
     })).find((node) => node.props.role === "menuitem" && label(node) === "Edit Profile")!;
     menu("atlas").props.onClick!();
-    expect(actions()).toEqual([opened("atlas"), { type: "toggleSettings", open: true, section: "identity" }]);
+    expect(actions()).toEqual([opened("atlas"), { type: "toggleSettings", open: true }]);
     fixture.dispatch.mockReset();
     menu("scout").props.onClick!();
-    expect(actions()).toEqual([{ type: "select", id: "scout" }, { type: "toggleSettings", open: true, section: "identity" }]);
+    expect(actions()).toEqual([{ type: "select", id: "scout" }, { type: "toggleSettings", open: true }]);
+    fixture.dispatch.mockReset();
+    fixture.state = { ...fixture.state, settingsOpen: true };
+    menu("atlas").props.onClick!();
+    expect(actions()).toEqual([opened("atlas")]);
   });
 
   it("opens the next bot after archiving the one on screen, and the archived one again on Undo", async () => {

@@ -278,6 +278,10 @@ const dumpEnv = Object.fromEntries(
     "FACTORY_API_KEY",
     "UNSLOTH_STUDIO_AUTH_TOKEN",
     "CURSOR_API_KEY",
+    "CLINE_API_KEY",
+    "CLINE_PROVIDER",
+    "CLINE_MODEL",
+    "CLINE_MCP_SETTINGS_PATH",
     "CURSOR_AUTH_TOKEN",
     "KIMI_MODEL_NAME",
     "KIMI_MODEL_API_KEY",
@@ -678,6 +682,10 @@ function handle(msg: any) {
       break;
     }
     case "authenticate":
+      if (mode === "authenticate-failed") {
+        out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "Login expired" } });
+        break;
+      }
       result(msg.id, {});
       break;
     case "_x.ai/mcp/list":

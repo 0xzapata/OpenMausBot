@@ -250,6 +250,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_HOLD_ON_CANCELLED;
     delete process.env.XAI_API_KEY;
     delete process.env.OPENCODE_API_KEY;
+    delete process.env.CLINE_API_KEY;
     delete process.env.CURSOR_API_KEY;
     delete process.env.CURSOR_AUTH_TOKEN;
     delete process.env.BOX_TOKEN;
@@ -764,6 +765,7 @@ describe("ACP turns (fake CLI)", () => {
     process.env.FAKE_ACP_DUMP = dump;
     process.env.XAI_API_KEY = "xai-should-not-leak";
     process.env.OPENCODE_API_KEY = "opencode-should-not-leak";
+    process.env.CLINE_API_KEY = "cline-should-not-leak";
     process.env.CURSOR_API_KEY = "cursor-should-not-leak";
     process.env.CURSOR_AUTH_TOKEN = "cursor-token-should-not-leak";
     // workspace credentials with no CLI consumer at all — held by the
@@ -781,6 +783,7 @@ describe("ACP turns (fake CLI)", () => {
     expect(seen.argv).toContain("--permission-mode");
     expect(seen.env.XAI_API_KEY).toBeUndefined();
     expect(seen.env.OPENCODE_API_KEY).toBeUndefined();
+    expect(seen.env.CLINE_API_KEY).toBeUndefined();
     expect(seen.env.CURSOR_API_KEY).toBeUndefined();
     expect(seen.env.CURSOR_AUTH_TOKEN).toBeUndefined();
     expect(seen.env.BOX_TOKEN).toBeUndefined();

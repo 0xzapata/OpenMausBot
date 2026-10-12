@@ -35,6 +35,14 @@ describe("engine library", () => {
     expect(engineReady(instance({ access: "custom", snapshot: { state: "unavailable", authenticated: true } }))).toBe(false);
   });
 
+  it("keeps an installed Cline engine in setup until its provider is configured", () => {
+    const cline = instance({ driverKind: "clineAgent", displayName: "Cline", snapshot: { state: "available", authenticated: false } });
+    expect(engineReady(cline)).toBe(false);
+    expect(engineReady({ ...cline, snapshot: { state: "available" } })).toBe(false);
+    expect(renderToStaticMarkup(createElement(EngineCard, { instance: cline, children: null }))).toContain("Sign-in required");
+    expect(engineReady({ ...cline, snapshot: { state: "available", authenticated: true } })).toBe(true);
+  });
+
   it("uses an accessible disclosure and keeps controls mounted while collapsed", () => {
     const html = renderToStaticMarkup(createElement(EngineCard, { instance: instance(), children: createElement("input", { "aria-label": "Path draft" }) }));
     expect(html).toContain('<details data-engine-card="claude"');
