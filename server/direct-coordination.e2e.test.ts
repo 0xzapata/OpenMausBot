@@ -850,7 +850,8 @@ it("runs a teammate's hand-off to the Chief in the Chief's work thread for that 
   await expect.poll(async () => (await f.messages(f.chief.activeTaskId)).some((message: any) => message.tool?.name === "Engineering lead replied"), { timeout: 15_000 }).toBe(true);
   // Both trees settle: the coordination's review and Ops's own resume.
   await expect.poll(() => f.evidence().map((turn: any) => turn.planKey).filter(Boolean).sort(), { timeout: 20_000 }).toEqual(["assign", "note", "resume", "review", "send"]);
-  expect(f.nodes().every((node: any) => node.status === "completed")).toBe(true);
+  // The last settlement lands a tick after its turn's end.
+  await expect.poll(() => f.nodes().every((node: any) => node.status === "completed"), { timeout: 10_000 }).toBe(true);
 }), 60_000);
 
 // Stop belongs to the conversation it was pressed in. It stops this bot and
