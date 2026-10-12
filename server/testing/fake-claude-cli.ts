@@ -55,6 +55,15 @@
 //                      fresh each run: a one-shot prompt containing a marker
 //                      gets that reply (first match wins), before
 //                      FAKE_CLAUDE_TEXT_FILE is consulted.
+//   FAKE_CLAUDE_CACHE_READ_TOKENS cache_read_input_tokens each ordinary
+//                      turn's model calls report (default 2).
+//   FAKE_CLAUDE_PING_DUMP path: a keep-warm ping (one-shot json run with
+//                      --fork-session) writes {argv, env, prompt, mcpConfig,
+//                      settings, systemPrompt} here, read while its private
+//                      files still exist.
+//   FAKE_CLAUDE_PING_USAGE JSON usage for a keep-warm ping's result
+//                      (default: a warm read of 150000, write of 40).
+//   FAKE_CLAUDE_PING_RESULT raw json result for a keep-warm ping, verbatim.
 //   FAKE_CLAUDE_TEXT_DUMP like FAKE_CLAUDE_DUMP, but for one-shot text runs,
 //                      so they never overwrite a turn's dump mid-test.
 //   FAKE_CLAUDE_TEXT_HANG when set, the one-shot text mode never replies —
@@ -355,6 +364,29 @@ if (["text", "json"].includes(argAfter("--output-format") ?? "")) {
     process.stdin.on("data", (chunk) => { input += chunk; });
     process.stdin.on("end", () => resolve(input));
   });
+  // A keep-warm ping: a fork of a live session that is never persisted.
+  if (argv.includes("--fork-session")) {
+    const read = (flag: string) => {
+      const path = argAfter(flag);
+      if (!path) return null;
+      try { return readFileSync(path, "utf8"); } catch { return null; }
+    };
+    if (process.env.FAKE_CLAUDE_PING_DUMP) {
+      writeDumpAtomic(process.env.FAKE_CLAUDE_PING_DUMP, JSON.stringify({
+        pid: process.pid, argv, env: process.env, prompt, cwd: process.cwd(),
+        mcpConfig: JSON.parse(read("--mcp-config") ?? "null"),
+        settings: JSON.parse(read("--settings") ?? "null"),
+        systemPrompt: read("--append-system-prompt-file"),
+      }, null, 2));
+    }
+    const pingModel = argAfter("--model") ?? "claude-fake";
+    const usage = JSON.parse(process.env.FAKE_CLAUDE_PING_USAGE ?? '{"input_tokens":4,"cache_read_input_tokens":150000,"cache_creation_input_tokens":40,"output_tokens":3}');
+    process.stdout.write(process.env.FAKE_CLAUDE_PING_RESULT ?? JSON.stringify({
+      type: "result", is_error: false, result: "warm", session_id: "fake-fork", usage, total_cost_usd: 0.05,
+      modelUsage: { [pingModel]: { costUSD: 0.05 } },
+    }));
+    process.exit(0);
+  }
   // Memory upkeep's background one-shots (on for every bot) never overwrite
   // the shared turn dump a test reads; FAKE_CLAUDE_TEXT_DUMP still records them.
   const upkeepCall = /You are the (?:CAPTURE|TIDY|ORGANIZE) step of a memory system/.test(prompt);
@@ -797,7 +829,10 @@ const playTurn = (prompt: JsonValue, late = false) => {
     const context = runHooks("SessionStart", { source: "compact" });
     if (context.trim()) replyParts = [`${context.trim()}\n\n${replyParts[0] ?? ""}`, ...replyParts.slice(1)];
   }
-  const usage = { input_tokens: 10, cache_read_input_tokens: 2, output_tokens: 5 };
+  // FAKE_CLAUDE_CACHE_READ_TOKENS: a big cached context on each model call
+  // (keep-warm arms only above 50k), default 2.
+  const cacheRead = Number(process.env.FAKE_CLAUDE_CACHE_READ_TOKENS);
+  const usage = { input_tokens: 10, cache_read_input_tokens: Number.isSafeInteger(cacheRead) && cacheRead > 0 ? cacheRead : 2, output_tokens: 5 };
   if (scriptedToolCalls) {
     // scripted calls come first, each settled before the reply text
     for (const call of scriptedToolCalls) {

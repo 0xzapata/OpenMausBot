@@ -144,6 +144,7 @@ import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall } from "./recall.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
+import { createCacheKeepWarm, type KeepWarmStatus, type KeepWarmTarget } from "./cache-keepwarm.ts";
 import type { CaptureTurn } from "./memory-capture.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
@@ -180,6 +181,7 @@ import {
   parseConfigPatch,
   roomTurnTimeoutMinutes,
   mcpCallTimeoutMinutes,
+  cacheKeepWarmSettings,
   threadEventLogMaxBytes,
   maxConcurrentBotThreads,
   threadEventLogRetentionDays,
@@ -3966,6 +3968,8 @@ if (browserCleanupReferencesReconciled) browserCleanup.startPending();
  * than the desktop window did. Stripped here rather than at each call site
  * so a new broadcast cannot forget. */
 let activeCoordinationForThread = (_threadId: string): boolean => false;
+/** Prompt-cache keep-warm status per thread; bound once keep-warm exists. */
+let cacheKeepWarmStatus = (_threadId: string): KeepWarmStatus | undefined => undefined;
 /** One thread as a client sees it. `botModel` is its bot's model: a thread
  * without a model of its own runs on it (toWireTask). */
 const wireTask = (task: TaskRecord, botModel: ModelSelection): WireTask => {
@@ -3973,7 +3977,8 @@ const wireTask = (task: TaskRecord, botModel: ModelSelection): WireTask => {
   // timer, no device skew. The 0 sentinel ("until new activity") is not a
   // time and survives reads; only a wake event in the store clears it.
   const { snoozedUntil, ...base } = toWireTask(task, botModel);
-  const coordinated = { ...base, waitingForTeammates: activeCoordinationForThread(task.threadId) && !task.busy };
+  const keepWarm = cacheKeepWarmStatus(task.threadId);
+  const coordinated = { ...base, waitingForTeammates: activeCoordinationForThread(task.threadId) && !task.busy, ...(keepWarm ? { cacheKeepWarm: keepWarm } : {}) };
   const asleep = snoozedUntil === 0 || (snoozedUntil !== undefined && snoozedUntil > Date.now());
   return asleep ? { ...coordinated, snoozedUntil } : coordinated;
 };
@@ -6782,6 +6787,99 @@ function captureTurnFor(threadId: string, turnId: string): CaptureTurn | null {
     turnId,
   };
 }
+
+// Prompt-cache keep-warm (server/cache-keepwarm.ts; design from Cache Tax,
+// MIT, Karan Bansal): an idle Claude thread with a big context gets one
+// forked, tool-less cache read per idle stretch while its window is open,
+// instead of a full re-write on the next message. Off unless switched on.
+const keepWarmTargets = new Map<string, KeepWarmTarget>();
+const keepWarmContext = new Map<string, number>();
+/** The bot a thread's turn runs for: its own 1:1 thread, or a room's speaker. */
+function keepWarmBotFor(threadId: string): BotRecord | null {
+  return store.botByThread(threadId) ?? (groupSpeakers.get(threadId) ? store.bot(groupSpeakers.get(threadId)!.botId) : null);
+}
+const cacheKeepWarm = createCacheKeepWarm({
+  now: () => Date.now(),
+  after: (ms, fn) => {
+    const timer = setTimeout(fn, ms);
+    timer.unref?.();
+    return { cancel: () => clearTimeout(timer) };
+  },
+  windowMs: (botId) => {
+    const bot = store.bot(botId);
+    const workspace = cacheKeepWarmSettings(cfg);
+    const on = bot?.cacheKeepWarm ?? workspace.enabled;
+    return bot && on ? workspace.windowMinutes * 60_000 : null;
+  },
+  ineligible: ({ threadId, botId, instanceId }) => {
+    if (!store.bot(botId)) return "the bot was deleted";
+    if (!store.taskByThread(botId, threadId) && !store.groupByThread(threadId)) return "the thread was deleted";
+    const instance = registry.get(instanceId);
+    if (!instance?.adapter.cacheKeepWarm) return "this engine cannot keep its cache warm";
+    if (policyModelRefusal(instance)) return "this engine is not allowed here";
+    // A metered API key's cache lives five minutes: pinging it costs more
+    // than the re-write it saves (see server/cache-keepwarm.ts).
+    if (registry.lastSnapshot(instanceId)?.billing !== "subscription") return "keep-warm runs only on a Claude subscription sign-in";
+    return null;
+  },
+  busy: ({ threadId, botId }) => threadBusy(botId, threadId) || botHasActiveTurn(botId) || Boolean(store.groupByThread(threadId)?.busyBotId),
+  overBudget: () => spendState(cfg, DATA_DIR)?.exceeded === true,
+  ping: async ({ threadId, instanceId }, signal) => {
+    const warm = registry.get(instanceId)?.adapter.cacheKeepWarm;
+    return warm ? warm.ping(threadId, { signal }) : { ok: false, reason: "this engine cannot keep its cache warm" };
+  },
+  hold: ({ threadId, instanceId }, until) => { registry.get(instanceId)?.adapter.cacheKeepWarm?.hold(threadId, until); },
+  book: ({ threadId, botId, instanceId }, result) => {
+    const bot = store.bot(botId);
+    const instance = registry.get(instanceId);
+    if (!bot || !instance) return;
+    // The ledger only (spend and the cap): a ping is not a turn of the thread.
+    bookTurnUsage({
+      botId: bot.id,
+      botName: bot.name,
+      threadId,
+      instanceId,
+      driverKind: instance.driverKind,
+      model: result.model ?? store.taskByThread(bot.id, threadId)?.modelSelection?.model ?? bot.modelSelection.model,
+      input: result.input + result.cacheRead + result.cacheWrite,
+      output: result.output,
+      cachedInput: result.cacheRead,
+      costUsd: result.costUsd,
+      trigger: { kind: "bot", botId: bot.id },
+    });
+  },
+  changed: ({ threadId }) => {
+    const bot = store.botByThread(threadId);
+    if (bot) broadcast({ kind: "bot", bot: wireBot(bot) });
+  },
+});
+cacheKeepWarmStatus = (threadId) => cacheKeepWarm.status(threadId);
+onConfigSaved((before, after) => {
+  if (JSON.stringify(before.cacheKeepWarm ?? null) !== JSON.stringify(after.cacheKeepWarm ?? null)) setImmediate(() => cacheKeepWarm.refresh());
+});
+bus.subscribe((event: RuntimeEvent) => {
+  if (shouldIgnoreProviderEvent(event)) return;
+  try {
+    if (event.type === "thread.token-usage.updated") {
+      if (event.contextTokens !== undefined) keepWarmContext.set(event.threadId, event.contextTokens);
+    } else if (event.type === "turn.started") {
+      keepWarmContext.delete(event.threadId);
+      const bot = keepWarmBotFor(event.threadId);
+      if (bot && event.providerInstanceId) keepWarmTargets.set(event.threadId, { threadId: event.threadId, botId: bot.id, instanceId: event.providerInstanceId });
+      cacheKeepWarm.noteTurnStarted(event.threadId);
+    } else if (event.type === "turn.completed") {
+      const target = keepWarmTargets.get(event.threadId);
+      const contextTokens = keepWarmContext.get(event.threadId);
+      keepWarmTargets.delete(event.threadId);
+      keepWarmContext.delete(event.threadId);
+      // A routine run's thread is one-off: nobody comes back to it warm.
+      if (!target || routines?.runForThread(event.threadId)) return;
+      cacheKeepWarm.noteTurnCompleted(target, { ok: event.ok, stopReason: event.stopReason, contextTokens });
+    }
+  } catch (error) {
+    console.warn(`cache keep-warm: ${(error as Error).message}`);
+  }
+});
 
 // A finished 1:1 turn of an upkeep bot waits for capture. Only the person's
 // own conversation: not a room, not a turn another bot or the harness
@@ -12153,6 +12251,7 @@ async function deleteBotWithLifecycle(botId: string, revalidate: () => void = ()
           webhooks.disableForBot(bot.id);
           calendarCalls!.removeBot(bot.id);
           browserLive.closeForBot(bot.id);
+          cacheKeepWarm.cancelBot(bot.id);
           await forgetTemporaryBrowser(bot.id);
           // The bot's database and sheet go with the bot; a failure here
           // must not undo a deletion the store already made durable.
@@ -15893,6 +15992,7 @@ function configStatus() {
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
     mcp: { callTimeoutMinutes: mcpCallTimeoutMinutes(cfg) },
     automaticRecovery: cfg.automaticRecovery ?? { enabled: false },
+    cacheKeepWarm: cacheKeepWarmSettings(cfg),
     // absent effort = no level is sent, so clients can tell it from any level
     newBots: cfg.newBots?.effort ? { effort: cfg.newBots.effort } : {},
     threads: {
@@ -21824,6 +21924,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (typeof body.memoryUpkeep !== "boolean") return json(res, 400, { error: "memoryUpkeep must be true or false" });
         patch.memoryUpkeep = body.memoryUpkeep;
       }
+      // Prompt-cache keep-warm: true/false overrides the workspace, null follows it.
+      if (body.cacheKeepWarm !== undefined) {
+        if (body.cacheKeepWarm !== null && typeof body.cacheKeepWarm !== "boolean") return json(res, 400, { error: "cacheKeepWarm must be true, false or null" });
+        patch.cacheKeepWarm = body.cacheKeepWarm ?? undefined;
+      }
       // per-bot gate on the app's built-in browser
       if (body.browser !== undefined) {
         if (typeof body.browser !== "boolean") return json(res, 400, { error: "browser must be true or false" });
@@ -22200,6 +22305,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // The same one durable write the desktop's all-threads grant commits.
       if (body.applyToAllThreads === true) store.setAllThreadApprovalMode(bot.id, "full");
       if (body.memoryUpkeep === false || body.memoryEnabled === false) memoryUpkeep.dropBot(bot.id);
+      if (body.cacheKeepWarm !== undefined) cacheKeepWarm.refresh();
       // A defined Works on is the newest explicit choice: this bot's
       // auto-recorded pins that now point elsewhere give way immediately, so
       // the next turn on each thread follows the new setting. Person-set pins
@@ -25945,6 +26051,7 @@ const gracefulShutdown = createGracefulShutdown({
       routines?.stop();
       calendarCalls?.stop();
       memoryUpkeep.stop();
+      cacheKeepWarm.dispose();
       webhookIngress?.server.close();
       tunnelListener?.close();
     },
