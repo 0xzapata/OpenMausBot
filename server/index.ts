@@ -651,6 +651,7 @@ import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
+import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
@@ -16565,6 +16566,7 @@ ROUTES.push(createBotMemoryRoutes({
   },
 }));
 ROUTES.push(createDeciderRoutes({ decider }));
+ROUTES.push(createSignInCardRoutes({ settle: settleSignIn }));
 ROUTES.push(createBrowserSiteRoutes({
   target: (which) => {
     const engine = browserEngineStatus();
@@ -25646,15 +25648,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const state = currentSecretState(m[1], threadId, message.id);
       if (!state) return json(res, 409, { error: "this credential request is no longer available" });
       return json(res, 200, { dismissed: true, resumed: state.resumed });
-    }
-
-    // A sign-in card's two answers. Nothing secret crosses here: the person
-    // typed the password into the page itself, never into OpenMausBot.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/sign-in-cards\/([\w-]+)\/(done|cancel)$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      const result = settleSignIn(m[1], String(body.threadId ?? ""), m[2], m[3] === "done" ? "done" : "cancelled");
-      return json(res, result.status, result.body);
     }
 
     // Inline connection cards are bound to both the bot and the exact task
