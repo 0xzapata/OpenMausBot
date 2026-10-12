@@ -140,6 +140,26 @@ assignments open for the run's thread (docs/runtime-contract.md §9), and the
 run completes when their results have resumed it as a routine turn. Status,
 result and scheduled/manual trigger must agree with the saved server record.
 
+## Run on startup
+
+A repeating routine's **Advanced** section offers **Also run when OpenMausBot
+starts**. In the isolated renderer, create a daily routine with it ticked, then
+reopen the editor: the box stays ticked. A one-time routine does not offer it.
+Startup needs a restart on the same data, which this launcher does not do;
+`server/routines-startup.test.ts` restarts a real fixture server on its own
+store and requires exactly one completed **On startup** run.
+
+The desktop gives every server child of one launch the same
+`OMB_DESKTOP_LAUNCH_ID`, and `routines.json` records the launch whose startup
+runs were queued. A crash recovery or switching back to a workspace within
+that launch queues none; the next launch does. A server without the variable,
+such as a standalone one, counts every process start.
+
+```sh
+pnpm exec vitest run server/routines.test.ts server/routines-startup.test.ts server/routine-requests.test.ts server/drivers/agents-proxy.test.ts shared/package-format.test.ts server/package-export.test.ts server/package-import.test.ts
+node --test electron/server-child-launch.node-test.mjs
+```
+
 ## Evidence and cleanup
 
 Keep screenshots or a browser action transcript for renderer checks, and the
