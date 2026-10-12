@@ -245,6 +245,9 @@ interface Gate {
   ready: boolean;
   releasing: boolean;
   agents: number;
+  /** Agent actions whose command reached the engine. A refused call or a
+   * preview frame counts in `agents` but leaves the page as it was. */
+  dispatched: number;
   humans: number;
   uncertain: boolean;
   /** The agent call that lost its transport (a timeout, a crash), while it is
@@ -287,7 +290,7 @@ export class BrowserRuntime {
   private gate(session: string): Gate {
     let gate = this.gates.get(session);
     if (!gate) {
-      gate = { owner: null, ready: false, releasing: false, agents: 0, humans: 0, uncertain: false, lostCall: null, closing: false, changed: new Set() };
+      gate = { owner: null, ready: false, releasing: false, agents: 0, dispatched: 0, humans: 0, uncertain: false, lostCall: null, closing: false, changed: new Set() };
       this.gates.set(session, gate);
     }
     return gate;
@@ -361,6 +364,7 @@ export class BrowserRuntime {
       return url === null ? stillBusyToolError(lostCall) : recoveredResult(lostCall, url);
     }
     const invoke = async () => {
+      let dispatched = false;
       const entry = this.connect(session, spec);
       await entry.client.ready;
       beforeDispatch?.();
@@ -397,6 +401,7 @@ export class BrowserRuntime {
           beforeDispatch?.();
           if (this.gate(session).owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
         }
+        if (method === "tools/call") { dispatched = true; gate.dispatched++; }
         let result = await entry.client.rpc(method, request);
         beforeDispatch?.(); // A turn revoked while the tool ran receives no result.
         if (method === "tools/list") {
@@ -463,6 +468,7 @@ export class BrowserRuntime {
         }
         throw error;
       }
+      finally { if (dispatched) gate.dispatched--; }
     };
     if (method !== "tools/call") return invoke();
     try {
@@ -535,8 +541,9 @@ export class BrowserRuntime {
     }
   }
 
-  /** Resolves true when the grant had to wait for the bot's own browser
-   * action to finish: the page may have changed since the person aimed. */
+  /** Resolves true when the grant had to wait for a bot command the engine
+   * received: the page may have changed since the person aimed. A wait for a
+   * refused call or a preview frame is not one, so the person's input stands. */
   async take(session: string, owner: string): Promise<boolean> {
     if (!owner) throw new Error("Browser control requires an owner.");
     const gate = this.gate(session);
@@ -544,7 +551,7 @@ export class BrowserRuntime {
     if (gate.owner !== null && gate.owner !== owner) throw new Error("Another person controls this browser.");
     gate.owner = owner; // synchronous: no new agent work slips in while draining.
     gate.ready = false;
-    const waited = gate.agents > 0;
+    const waited = gate.dispatched > 0;
     await new Promise<void>((resolve, reject) => {
       const finish = (error?: Error) => {
         clearTimeout(timer);
