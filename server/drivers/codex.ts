@@ -54,6 +54,7 @@ import { CodexDeviceAuthController } from "./codex-device-auth.ts";
 import { codexAccountEmail, codexHome } from "./codex-identity.ts";
 import { keyRejected, noteKeyAccepted, noteKeyRejected } from "../key-rejections.ts";
 import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
+import { safetyFloorBlock } from "../safety-floor-gate.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
 import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
@@ -1282,7 +1283,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             : isAdditionalPermission
               ? { permissions: allow ? grantedPermissions(params.permissions) : {}, scope: "turn" }
               : { decision: allow ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" };
-        if (autoAcceptPermissions && isPermission) {
+        // Full access answers here, inside the driver, with nobody looking.
+        // A shell command on the safety floor's never-list is not answered:
+        // it is raised below like any other request, and the harness denies
+        // it there (server/safety-floor-gate.ts).
+        const floored = (method === "execCommandApproval" || method === "item/commandExecution/requestApproval") &&
+          typeof params.command === "string" && safetyFloorBlock(params.command) !== null;
+        if (autoAcceptPermissions && isPermission && !floored) {
           return send({
             jsonrpc: "2.0",
             id: msg.id,

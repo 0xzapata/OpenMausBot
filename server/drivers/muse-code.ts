@@ -23,6 +23,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
 import { execCli } from "../procs.ts";
 import { redactSecretsInText } from "../redact.ts";
+import { safetyFloorBlock } from "../safety-floor-gate.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import { parseProtocolAskQuestions, questionAnswersById, type ProtocolAskQuestion } from "../../shared/ask-question.ts";
@@ -449,7 +450,10 @@ export const MuseCodeDriver: ProviderDriver<MuseConfig> = {
         case "approval/requested": {
           const approval = params as unknown as MuseApproval;
           if (!active || !Array.isArray(approval.availableChoices)) return;
-          if (state.approvalMode === "allowAll") {
+          // Not for a shell command on the safety floor's never-list: that
+          // one is raised as a request below, and the harness denies it
+          // (server/safety-floor-gate.ts).
+          if (state.approvalMode === "allowAll" && !safetyFloorBlock(approval.subject?.command)) {
             // Full access answers what Muse still asks, as Full does everywhere.
             const choice = museChoice(approval.availableChoices, "allow");
             if (choice) void decide(state, approval, choice).catch(() => {});

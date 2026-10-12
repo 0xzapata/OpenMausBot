@@ -86,6 +86,7 @@ import { acpPermissionCommand, permissionLaunchCwd } from "../permission-command
 import { commandSummary, toolDetailPreview } from "../../tool-summary.ts";
 import { extractMcpImages } from "../../mcp-tool-images.ts";
 import { redactSecretsInText } from "../../redact.ts";
+import { safetyFloorBlock } from "../../safety-floor-gate.ts";
 import { recoveryPromptFor } from "../../resume-recovery.ts";
 import { sessionIdlePolicy } from "../session-idle.ts";
 import { classifyError } from "../retry.ts";
@@ -1225,7 +1226,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
           const toolCall = params.toolCall ?? {};
           const isQuestion = String(toolCall.toolCallId ?? "").startsWith("interaction_");
-          if (current.turnConfig.fullAuto && current.turn.approvalMode === undefined && !isQuestion) {
+          // The two branches below answer inside the driver, with nobody
+          // looking. A shell command on the safety floor's never-list is
+          // answered by neither: it is raised as a request like any other,
+          // for a person, or for the harness to deny at Full access
+          // (server/safety-floor-gate.ts).
+          const floored = !isQuestion && typeof toolCall.rawInput?.command === "string" && safetyFloorBlock(toolCall.rawInput.command) !== null;
+          if (current.turnConfig.fullAuto && current.turn.approvalMode === undefined && !isQuestion && !floored) {
             const allow = optionFor("allow");
             if (!allow) missing("allow");
             return send({
@@ -1237,7 +1244,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           const kind = String(toolCall.kind ?? "");
           // an earlier "Always allow this session" on this exact operation
           const operationKey = isQuestion || current.controlsHost ? null : sessionOperationKey(toolCall);
-          if (operationKey && sessionAllows.get(threadId)?.has(operationKey)) {
+          if (operationKey && !floored && sessionAllows.get(threadId)?.has(operationKey)) {
             const allow = optionFor("allow");
             if (allow) {
               return send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: allow } } });
