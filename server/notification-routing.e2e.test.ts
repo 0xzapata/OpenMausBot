@@ -244,11 +244,12 @@ describe("a room turn belongs to the room", () => {
     }
   }, 40_000);
 
-  it("sends a takeover raised mid-room to the room, not to the bot's DM", async () => {
+  it("sends a sign-in request raised mid-room to the room, not to the bot's DM", async () => {
     const bot = await createBot("Handsy", "stuck");
     let roomId: string | undefined;
-    let requestId: string | undefined;
     try {
+      // Name the sign-in destination without mounting a real browser.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "browser", browser: false })).status).toBe(200);
       const room = (await api("POST", "/api/groups", {
         name: "War Room",
         memberIds: [bot.id],
@@ -263,22 +264,26 @@ describe("a room turn belongs to the room", () => {
       try {
         const asked = await api(
           "POST",
-          `/api/internal/computer-control?botId=${bot.id}`,
-          { reason: "the login page wants a code" },
-          await capability(bot.id, room.threadId, "computer"),
+          "/api/internal/request-sign-in",
+          { site: "example.com", reason: "the login page wants a code" },
+          await capability(bot.id, room.threadId),
         );
-        expect(asked.status).toBe(200);
-        requestId = asked.body.requestId;
+        expect(asked.status).toBe(201);
+        expect(asked.body).toMatchObject({ site: "example.com", place: "browser" });
+        expect((await groupState(room.id))?.messages).toContainEqual(expect.objectContaining({
+          id: asked.body.messageId, kind: "signin", from: expect.objectContaining({ botId: bot.id }),
+          signIn: expect.objectContaining({ site: "example.com", place: "browser" }),
+        }));
 
         const frame = await stream.until(
-          (candidate) => candidate.kind === "notify" && candidate.notification?.kind === "takeover",
+          (candidate) => candidate.kind === "notify" && candidate.notification?.kind === "sign-in",
           15_000,
         );
         expect(frame.notification).toMatchObject({
           botId: bot.id,
           threadId: room.threadId,
           groupId: room.id,
-          title: "Handsy in War Room needs your hands",
+          title: "Handsy in War Room needs you to sign in to example.com",
           body: "the login page wants a code",
         });
         // the DM is exactly where the person must NOT be sent: the screen
@@ -288,14 +293,7 @@ describe("a room turn belongs to the room", () => {
         stream.close();
       }
     } finally {
-      if (requestId) {
-        await api(
-          "DELETE",
-          `/api/internal/computer-control?botId=${bot.id}`,
-          { requestId },
-          await capability(bot.id, roomId ? (await groupState(roomId)).threadId : bot.threadId, "computer"),
-        ).catch(() => undefined);
-      }
+      // Deleting the fixture bot also forgets its outstanding computer plea.
       await cleanup([roomId], [bot.id]);
     }
   }, 45_000);
