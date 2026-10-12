@@ -39,12 +39,21 @@ const api = async (
   body?: unknown,
   headers: Record<string, string> = {},
 ): Promise<{ status: number; body: any }> => {
-  const response = await fetch(`${base}${path}`, {
-    method,
-    headers: { ...(body ? { "content-type": "application/json" } : {}), ...headers },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  return { status: response.status, body: response.status === 204 ? null : await response.json() };
+  const startedAt = Date.now();
+  let phase = "fetch";
+  try {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: { ...(body ? { "content-type": "application/json" } : {}), ...headers },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    phase = "body read";
+    return { status: response.status, body: response.status === 204 ? null : await response.json() };
+  } catch (cause) {
+    throw new Error(`${method} ${path} failed during ${phase} after ${Date.now() - startedAt}ms ` +
+      `(server exit=${child?.exitCode ?? "null"}, signal=${child?.signalCode ?? "null"})\n` +
+      `Server stderr (last 4096 characters):\n${stderr.slice(-4096)}`, { cause });
+  }
 };
 
 /** Let one held turn finish. A gate written before the turn starts lets it
