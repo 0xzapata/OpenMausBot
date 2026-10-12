@@ -121,7 +121,23 @@ off. It keeps the notes in shape without the bot having to decide to:
     with), so recall finds it later.
   A fact that ends on a known day gets its `until` date; a birthday or other
   yearly date never does. Turns started by another bot or by the harness,
-  rooms and failed turns are never read.
+  routine runs and failed turns are never read; rooms only with **Learn from
+  group chats** (below).
+- **Learning from group chats.** The **Learn from group chats** switch under
+  Memory upkeep (`features.roomMemoryCapture`, one switch for every bot,
+  off by default) lets a member bot's room turns feed its capture the same
+  way, batched per bot and room. What the bot read since it last spoke
+  there is read with its reply, under room rules: the person's own lines
+  count as theirs; another person's lines give only facts about the shared
+  work and never reach About me (a batch holding them adds nothing to About
+  me); another bot's lines give only an outcome it verified or a decision
+  the person agreed to, never its suggestions or claims. A stretch with no
+  person's words is skipped. Entries are sourced to the room:
+  `- 2026-09-25 · from room "Launch" (noticed) · The launch moved to Friday`.
+  A room fewer people can see than the bot never feeds it (the same rule as
+  the recent-work brief), checked again when the batch is captured, as are
+  the switch and the bot's membership. Bot-to-bot channels, room hand-offs,
+  goal runs and, on a Cloud home, every room are left out.
   Turns still waiting when the app quits or restarts through its normal
   shutdown are kept as their ids (never their text) in
   `memory-capture-pending.json`, at most 50 chats, and read back from the
