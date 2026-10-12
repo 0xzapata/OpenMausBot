@@ -505,3 +505,35 @@ describe("a guest's composer on a Cloud home", () => {
     fixture.canWrite = null;
   });
 });
+
+const { awayFromMainThread, openBot } = await import("@/state/store");
+
+describe("the way back to the bot's own conversation", () => {
+  const visiting: Bot = {
+    ...bot, threadId: "side", mainThreadId: "main",
+    tasks: [
+      { threadId: "main", title: "Our chat", createdAt: 1, busy: false, activity: "idle" },
+      { threadId: "side", title: "Routine report", createdAt: 2, busy: false, activity: "idle" },
+    ],
+  };
+  const header = (shown: boolean, of: Bot) => {
+    fixture.showThreads = shown;
+    try { return renderToStaticMarkup(createElement(ChatView, { bot: of })); } finally { fixture.showThreads = true; }
+  };
+
+  it("offers it with threads hidden while a side thread is open, and opens the main thread", () => {
+    expect(header(false, visiting)).toContain("data-chathead-back");
+    expect(header(false, visiting)).toContain("Back to your chat");
+    expect(awayFromMainThread(visiting, false)).toBe(true);
+    fixture.dispatch.mockReset();
+    openBot(fixture.dispatch, visiting, false);
+    expect(fixture.dispatch.mock.calls.map(([action]) => action)).toContainEqual(expect.objectContaining({ threadId: "main" }));
+  });
+
+  it("never with threads shown, nor in the main thread itself", () => {
+    expect(header(true, visiting)).not.toContain("data-chathead-back");
+    expect(header(false, { ...visiting, threadId: "main" })).not.toContain("data-chathead-back");
+    // a bot whose main thread this window has no row for yet stays put
+    expect(header(false, { ...visiting, mainThreadId: "unknown" })).not.toContain("data-chathead-back");
+  });
+});
