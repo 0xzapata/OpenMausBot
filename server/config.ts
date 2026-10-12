@@ -584,6 +584,7 @@ const appConfigSchema = z.object({
   /** The authorization decision log (server/decision-log.ts): days of month
    * files kept, at least; OMB_DECISION_RETENTION_DAYS wins when set. */
   decisions: z.object({ retentionDays: z.number().int().min(1).max(3650).optional() }).strict().optional(),
+  loopGuard: z.object({ enabled: z.boolean().optional(), steerAt: z.number().int().min(2).max(1000).optional(), stopAt: z.number().int().min(2).max(1000).optional() }).strict().optional(), // server/loop-guard.ts; OMB_LOOP_GUARD=1 switches it on too
   localVm: localVmConfigSchema.optional(),
   features: featureConfigSchema.optional(),
   onboarding: onboardingConfigSchema.optional(),
@@ -646,6 +647,7 @@ export interface AppConfig {
   openrouter?: { key?: string };
   budgets?: { monthlyUsd?: number; warnAtPercent?: number };
   decisions?: { retentionDays?: number };
+  loopGuard?: { enabled?: boolean; steerAt?: number; stopAt?: number }; // tell a looping turn, then stop it; off by default (server/loop-guard.ts)
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };
   composio?: { apiKey?: string; userId?: string; sessionId?: string };
@@ -824,7 +826,6 @@ export function liveSettingsFor(cfg: AppConfig): LiveSettings {
   };
 }
 
-
 /** Accepts a full config or a parsed patch: the concurrency limit may be
  * read from either, and a patch may legitimately omit it. */
 export function maxConcurrentBotThreads(cfg: { threads?: { maxConcurrentPerBot?: number } }): number {
@@ -955,7 +956,6 @@ export function claudeUserMcpEnabled(cfg: AppConfig): boolean {
 export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
   return cfg.features?.llmThreadTitles === true;
 }
-
 
 /** Opt-in shared skills library (skills lane S1): one store at the data dir
  * that bots reference by assignment instead of per-workspace copies. Off
@@ -1428,7 +1428,7 @@ export function saveConfig(
   // back after we have successfully recognized the legacy list.
   const storedProfiles = storedBrowserProfilesSchema.safeParse(disk.browserProfiles);
   if (storedProfiles.success) disk.browserProfiles = storedProfiles.data;
-  for (const key of ["xai", "anthropic", "mistral", "cerebras", "groq", "meta", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "live", "profile", "rooms", "mcp", "threads", "context", "memory", "localVm", "features", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
+  for (const key of ["xai", "anthropic", "mistral", "cerebras", "groq", "meta", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "live", "profile", "rooms", "mcp", "threads", "context", "memory", "localVm", "features", "budgets", "billing", "decisions", "loopGuard", "onboarding", "browserEngine", "newBots"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
