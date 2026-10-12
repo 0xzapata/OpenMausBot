@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { builtInBrowserEnabled, llmThreadTitlesEnabled, routinesInConversationEnabled, sharedComputersEnabled, showToolCallsEnabled, skillAuthoringEnabled } from "./feature-flags";
+import { builtInBrowserEnabled, llmThreadTitlesEnabled, parseSkillReviewSteps, roomMemoryCaptureEnabled, routinesInConversationEnabled, sharedComputersEnabled, showToolCallsEnabled, skillAuthoringEnabled, skillReviewEnabled, skillReviewSteps } from "./feature-flags";
 
 describe("experimental feature flags", () => {
   it("keeps skill authoring on by default, before and after the config arrives", () => {
@@ -12,6 +12,22 @@ describe("experimental feature flags", () => {
 
   it("switches skill authoring off only on an explicit opt-out", () => {
     expect(skillAuthoringEnabled({ features: { skillAuthoring: false } })).toBe(false);
+  });
+
+  it("learns skills automatically only after an opt-in, and never without skill authoring", () => {
+    expect(skillReviewEnabled(null)).toBe(false);
+    expect(skillReviewEnabled({ features: {} })).toBe(false);
+    expect(skillReviewEnabled({ features: { skillReview: true } })).toBe(true);
+    expect(skillReviewEnabled({ features: { skillReview: true, skillAuthoring: false } })).toBe(false);
+  });
+
+  it("reviews after ten tool steps by default, within 3 to 100", () => {
+    expect(skillReviewSteps(null)).toBe(10);
+    expect(skillReviewSteps({ features: { skillReviewSteps: 25 } })).toBe(25);
+    expect(skillReviewSteps({ features: { skillReviewSteps: 1 } })).toBe(3);
+    expect(skillReviewSteps({ features: { skillReviewSteps: 500 } })).toBe(100);
+    expect(parseSkillReviewSteps(" 12 ")).toBe(12);
+    for (const bad of ["", "2", "101", "4.5", "-5", "ten"]) expect(parseSkillReviewSteps(bad)).toBeNull();
   });
 
   it("keeps the experimental browser off until explicitly enabled", () => {
@@ -47,5 +63,11 @@ describe("experimental feature flags", () => {
     expect(llmThreadTitlesEnabled({ features: {} })).toBe(false);
     expect(llmThreadTitlesEnabled({ features: { llmThreadTitles: false } })).toBe(false);
     expect(llmThreadTitlesEnabled({ features: { llmThreadTitles: true } })).toBe(true);
+  });
+
+  it("keeps Learn from group chats off until it is switched on", () => {
+    expect(roomMemoryCaptureEnabled(null)).toBe(false);
+    expect(roomMemoryCaptureEnabled({ features: {} })).toBe(false);
+    expect(roomMemoryCaptureEnabled({ features: { roomMemoryCapture: true } })).toBe(true);
   });
 });

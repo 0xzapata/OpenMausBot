@@ -75,6 +75,14 @@ function deprecationLine(name: string, r: Json): string {
   const replacement = ALIAS_OF[name] ?? "coordinate_bots";
   return `Deprecated: ${name} is an alias of ${replacement} and works for this release; call ${replacement.split(" ")[0]} next time.`;
 }
+/** request_sign_in's answer names the place the person was sent to, in the
+ * words the panel and the prompt use (server/surface.ts surfaceLabel). */
+const SIGN_IN_PLACES: Record<string, string> = {
+  browser: "your built-in browser",
+  local: "this computer",
+  vm: "the Local VM",
+  cloud: "the cloud computer",
+};
 /** Every result of a hand-off ends the same way: the result returns here. */
 const RESUMES_YOU = "The result returns here and resumes you automatically; finish your turn without checking or waiting for it.";
 
@@ -976,6 +984,18 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     }
     return {
       text: `A secure ${r.label ?? CREDENTIAL_TARGETS[credentialId].label} request is ready. The desktop app and a freshly QR-paired mobile app show its secure entry card; older mobile pairings explain how to pair again or finish on the computer. End this turn; OpenMausBot will resume the task after the user saves or declines. Never ask them to paste the key into chat.`,
+    };
+  }
+  if (name === "request_sign_in") {
+    const site = typeof args.site === "string" ? args.site.trim() : "";
+    if (!site) return { text: "request_sign_in needs site: the page's address or its domain, such as example.com.", isError: true };
+    const reason = typeof args.reason === "string" ? args.reason.trim().slice(0, 240) : "";
+    const r = await api("/api/internal/request-sign-in", {
+      method: "POST",
+      body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, site, ...(reason ? { reason } : {}) }),
+    });
+    return {
+      text: `The person was asked to sign in to ${r.site ?? site} on ${SIGN_IN_PLACES[String(r.place)] ?? "the place you work"}. Your turn ends now: say in one short line that you are waiting for them, then stop. OpenMausBot resumes you when they finish or decline. Never ask for the password or a code in chat.`,
     };
   }
   if (name === "send_voice_note") {

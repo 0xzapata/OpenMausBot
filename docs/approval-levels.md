@@ -2,10 +2,11 @@
 
 Approval levels belong to a bot and apply to its next provider turn, including
 when that provider resumes an existing native thread. Each level is one of the
-provider's own permission modes, passed through. OpenMausBot does not judge an
-action itself: there is no app-side allowlist, classifier, or pattern rule. A
-native tool request that reaches you is one the provider left for you. In Full
-Access, OMB also applies its own configuration tools without another approval.
+provider's own permission modes, passed through. A native tool request that
+reaches you is one the provider left for you. OpenMausBot only answers from an
+explicit grant: Full Access, a saved exact command or MCP read-shaped tool, or
+the narrow built-in web-search allowance under Approve for me. In Full Access,
+OMB also applies its own configuration tools without another approval.
 
 | Level | Behavior |
 | --- | --- |
@@ -89,9 +90,20 @@ native session, so their driver keeps the allow for that bot, that exact tool
 and that exact server (as launched: a changed command, URL or credential is
 another server, and a bridge into a VM or a Boat is new each turn) for the
 rest of the conversation, in memory until the server restarts. Another bot in
-the same room asks again. OpenMausBot keeps no standing grant for a provider's tool. It is not
-offered for computer control, for a sandbox change or on a guest's turn. The
-harness's own agents tools (coordinating teammates, threads, memory) never
+the same room asks again.
+
+For a read-shaped tool from a configured custom MCP server, the card also
+offers **Always allow**. This is an explicit standing grant for that exact bot,
+provider instance, MCP server, tool name, and current server configuration. A
+different tool still asks; editing the server command, URL, headers, or
+credentials invalidates the grant. It is not offered for create/update/delete
+tools, computer control, a sandbox change, an unconfigured server, or a guest's
+turn. A custom MCP server controls its own tool names, so only remember tools
+from a server you trust. The grant applies to the bot's current and future
+conversations, including newly delegated work. Saved entries are visible and
+revocable in the bot's Access settings.
+
+The harness's own agents tools (coordinating teammates, threads, memory) never
 ask on Claude, Codex or API models: OpenMausBot authorizes each of those
 routes itself.
 
@@ -106,10 +118,11 @@ Claude Code accepts `--permission-mode auto` for every model and, when auto
 mode is unavailable to the session, starts in Manual without an error. On
 Claude Code 2.1.266 that is the case for Claude Haiku 4.5 and Sonnet 4.5,
 and for any organization that set `disableAutoMode`. In that session the bot
-asks before each action. The Claude driver reads the mode the session actually
-runs in from the CLI's `init` frame; when Approve for me was requested and the
-session runs Manual, the chat shows one notice per session naming the model.
-Choose a model the reviewer supports, Auto-accept edits, or Full access to
+asks before each action unless you have explicitly remembered that exact MCP
+read tool. The Claude driver reads the mode the session actually runs in from
+the CLI's `init` frame; when Approve for me was requested and the session runs
+Manual, the chat shows one notice per session naming the model. Choose a model
+the reviewer supports, remember the MCP reads you trust, or use Full access to
 stop the prompts.
 
 ### Changing a bot's engine
