@@ -146,6 +146,7 @@ import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall } from "./recall.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
+import { createSkillReview, turnToolSteps } from "./skill-review.ts";
 import type { CaptureTurn } from "./memory-capture.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
@@ -190,6 +191,8 @@ import {
   routinesInConversationEnabled,
   claudeUserMcpEnabled,
   skillAuthoringEnabled,
+  skillReviewEnabled,
+  skillReviewSteps,
   autoRecallEnabled,
   captureQuietMs,
   tidyHour,
@@ -6860,6 +6863,102 @@ bus.subscribe((event: RuntimeEvent) => {
   }
 });
 
+// Learn skills automatically (server/skill-review.ts): tool steps are counted
+// per bot and conversation, and past the threshold the bot's own engine
+// reviews the conversation in the background. Its changes go through the
+// skill_manage staging path and show as receipts with Undo. Same gates as a
+// bot writing its own skills: skill authoring on, an engine that mounts the
+// agents tools, a turn the person started (not a peer hop, routine or
+// unattended run), and a conversation that is the bot's own.
+const skillReview = createSkillReview({
+  enabled: () => skillReviewEnabled(cfg),
+  threshold: () => skillReviewSteps(cfg),
+  bot: (botId) => store.bot(botId) ?? undefined,
+  engine: (botId) => {
+    const bot = store.bot(botId);
+    const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
+    if (!bot || !instance || policyModelRefusal(instance) || instance.adapter.capabilities.agentsMcp !== true) return null;
+    const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
+    if (!generate) return null;
+    return {
+      generateText: async (prompt, options) => {
+        // a workspace at its spend limit runs no review
+        assertWithinBudget(cfg, DATA_DIR);
+        const threadId = `skill-review-${randomUUID()}`;
+        return generate(prompt, { ...options, onUsage: (usage) => bookTurnUsage({
+          botId: bot.id,
+          botName: bot.name,
+          threadId,
+          instanceId: instance.instanceId,
+          driverKind: instance.driverKind,
+          model: usage.model,
+          input: usage.input ?? 0,
+          output: usage.output ?? 0,
+          ...(usage.cachedInput !== undefined ? { cachedInput: usage.cachedInput } : {}),
+          costUsd: usage.costUsd ?? null,
+          trigger: { kind: "bot", botId: bot.id },
+        }, usage.input !== undefined && usage.output !== undefined, bot.threadId) });
+      },
+    };
+  },
+  busy: (botId) => workspaceMaintenance.active || botHasActiveTurn(botId),
+  transcript: (botId, threadId) => {
+    const owned = connectorThread(botId, threadId);
+    if (!owned || selfApplyBlocked(threadId)) return null;
+    return { messages: store.activePath(threadId), room: Boolean(owned.group) };
+  },
+  skills: (botId) => listSkills(botId).map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    editable: skill.editable,
+    enabled: skill.enabled,
+    sha256: skill.sha256,
+    ...(skill.editable ? { body: readSkillFile(botId, skill.name) } : {}),
+  })),
+  currentSha: (botId, name) => listSkills(botId).find((skill) => skill.name === name)?.sha256 ?? null,
+  apply: (botId, threadId, change) => {
+    const bot = store.bot(botId);
+    if (!bot) return { ok: false, error: "unknown bot" };
+    // A bot's own skill applies with a receipt and Undo; a change that would
+    // need a person's review is not raised from the background.
+    const direct = appliesDirectly(botId, threadId, botId);
+    if (!direct) return { ok: false, error: "this conversation cannot apply skill changes without review" };
+    const staged = stageSkillWrite(botId, {
+      action: change.action,
+      targetName: change.action === "update" ? change.name : undefined,
+      files: [{ path: "SKILL.md", content: change.skillMd }],
+      gist: change.gist || undefined,
+      source: learnSource("automatic review of this conversation"),
+    });
+    if ("error" in staged) return { ok: false, error: staged.error };
+    const applied = applyOwnStagedSkill(bot, threadId, staged, direct);
+    return "error" in applied ? { ok: false, error: applied.error } : { ok: true };
+  },
+  statePath: join(DATA_DIR, "skill-review.json"),
+  log: (line) => console.log(line),
+});
+
+bus.subscribe((event: RuntimeEvent) => {
+  if (shouldIgnoreProviderEvent(event)) return;
+  if (event.type !== "turn.completed" || !event.turnId) return;
+  try {
+    const messages = store.activePath(event.threadId);
+    const reply = messages.findLast((message) => message.role === "bot" && message.kind === "text" && message.turnId === event.turnId);
+    const room = store.groupByThread(event.threadId);
+    const bot = room ? (reply?.from ? store.bot(reply.from.botId) : undefined) : store.botByThread(event.threadId);
+    if (!bot) return;
+    // Only a turn that delivered its reply to the person counts: not a
+    // failed or stopped turn, a peer hop, a routine run, or unattended work.
+    const counts = event.ok && Boolean(reply?.text?.trim()) && !isInternalTurn(event.threadId)
+      && !isUnattended(bot.id, event.threadId) && !routines?.runForThread(event.threadId)
+      && !(CLOUD_HOME && !cloudOwnerOnlyThread(event.threadId));
+    if (counts) skillReview.noteTurn(bot.id, event.threadId, turnToolSteps(messages, event.turnId, bot.id, Boolean(room)));
+    skillReview.botSettled(bot.id);
+  } catch (error) {
+    console.warn(`skill review: could not count a turn: ${(error as Error).message}`);
+  }
+});
+
 // One line per finished turn in the bot's daily log (server/recent-work.ts):
 // what it said last, the tools it used, whether the turn failed. What a bot
 // did in one conversation was invisible from every other; the log is where
@@ -12229,6 +12328,7 @@ async function deleteBotWithLifecycle(botId: string, revalidate: () => void = ()
           // cannot be erased under a stale approval.
           revalidate();
           store.deleteBot(bot.id, setupRequest);
+          skillReview.dropBot(bot.id);
           // Removing schedules is not a security revocation. Keep them intact
           // if the bot/receipt write fails, so a failed deletion is retryable.
           routines!.disableForBot(bot.id);
@@ -15038,6 +15138,28 @@ function skillCardCopy(staged: { action: "create" | "update"; name: string; gist
   };
 }
 
+/** Apply a skill the bot staged for itself, with the one-line receipt and
+ * Undo in the conversation (skill_manage and the automatic review). A failed
+ * apply withdraws the staged write. */
+function applyOwnStagedSkill(
+  from: BotRecord,
+  threadId: string,
+  staged: Exclude<ReturnType<typeof stageSkillWrite>, { error: string }>,
+  direct: DirectApply,
+): ReturnType<typeof applySkillWriteWithReceipt> {
+  // What an update replaces, so Undo can put it back.
+  const previousSkillMd = staged.action === "update" ? readSkillFile(from.id, staged.name) : null;
+  const previousSource = listSkills(from.id).find((skill) => skill.name === staged.name)?.source;
+  const previous = previousSkillMd !== null && previousSource ? { preview: previousSkillMd, source: previousSource } : undefined;
+  const applied = applySkillWriteWithReceipt(from.id, staged, () => {
+    const receipt = appendSkillRequestCard({ botId: from.id, threadId, staged, applied: true, previous });
+    appendDecision(DATA_DIR, { threadId, requestId: receipt.requestId, botId: from.id, botName: from.name,
+      tool: "stage_skill", summary: receipt.summary, decision: "auto-approved", source: direct });
+  });
+  if ("error" in applied) rejectStagedSkillWrite(from.id, staged.id);
+  return applied;
+}
+
 function appendSkillRequestCard(args: {
   botId: string;
   threadId: string;
@@ -15074,6 +15196,8 @@ function appendSkillRequestCard(args: {
     ...(args.applied && args.previous ? { previous: args.previous } : {}),
   };
   const from = store.bot(args.botId);
+  // The bot changed its skills here: automatic review starts counting again.
+  skillReview.noteSkillChange(args.botId, args.threadId);
   store.appendMessage(args.threadId, {
     role: "bot",
     kind: "options",
@@ -16209,6 +16333,8 @@ function configStatus() {
     },
     features: {
       skillAuthoring: skillAuthoringEnabled(cfg),
+      skillReview: cfg.features?.skillReview === true,
+      skillReviewSteps: skillReviewSteps(cfg),
       skillsLibrary: skillsLibraryEnabled(cfg),
       showToolCalls: showToolCallsEnabled(cfg),
       routinesInConversation: routinesInConversationEnabled(cfg),
@@ -18402,19 +18528,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
         if ("error" in staged) return json(res, 422, { error: staged.error });
         if (direct) {
-          // What an update replaces, so Undo can put it back.
-          const previousSkillMd = staged.action === "update" ? readSkillFile(from.id, staged.name) : null;
-          const previousSource = listSkills(from.id).find((skill) => skill.name === staged.name)?.source;
-          const previous = previousSkillMd !== null && previousSource ? { preview: previousSkillMd, source: previousSource } : undefined;
-          const applied = applySkillWriteWithReceipt(from.id, staged, () => {
-            const receipt = appendSkillRequestCard({ botId: from.id, threadId: fromThreadId, staged, applied: true, previous });
-            appendDecision(DATA_DIR, { threadId: fromThreadId, requestId: receipt.requestId, botId: from.id, botName: from.name,
-              tool: "stage_skill", summary: receipt.summary, decision: "auto-approved", source: direct });
-          });
-          if ("error" in applied) {
-            rejectStagedSkillWrite(from.id, staged.id);
-            return json(res, 422, { state: "failed", error: applied.error });
-          }
+          const applied = applyOwnStagedSkill(from, fromThreadId, staged, direct);
+          if ("error" in applied) return json(res, 422, { state: "failed", error: applied.error });
           return json(res, 201, { state: "applied", stagedId: staged.id, name: staged.name, action: staged.action,
             gist: staged.gist, warnings: staged.warnings, ...applied, summary: `Skill ${staged.name} ${staged.action === "create" ? "enabled" : "updated"}.` });
         }
@@ -21125,6 +21240,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const updated = store.deleteGroupTask(group.id, m[2]);
       if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
       clearTurnDigestState(m[2]);
+      skillReview.dropThread(m[2]);
       revokeInternalCapabilitiesForThread(m[2]);
       rejectDeletedThreadSkillStages(stagedSkillCleanups);
       return json(res, 200, { group: groupWithThread(updated) });
@@ -21171,6 +21287,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         cancelTeamSetupResumesForThread(threadId);
         lastReply.delete(threadId);
         clearTurnDigestState(threadId);
+        skillReview.dropThread(threadId);
       }
       routines!.disableForGroup(group.id);
       store.deleteGroup(group.id);
@@ -23918,6 +24035,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const updated = store.deleteTask(m[1], m[2]);
       if (!updated) return json(res, 404, { error: "no such task" });
       clearTurnDigestState(m[2]);
+      skillReview.dropThread(m[2]);
       revokeInternalCapabilitiesForThread(m[2]);
       handoffs.forget(m[2]);
       settleDirectFollowup(directTurnGenerationByThread.get(m[2]));
@@ -26320,6 +26438,7 @@ const gracefulShutdown = createGracefulShutdown({
       routines?.stop();
       calendarCalls?.stop();
       memoryUpkeep.stop();
+      skillReview.stop();
       webhookIngress?.server.close();
       tunnelListener?.close();
     },
