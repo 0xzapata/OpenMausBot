@@ -552,6 +552,13 @@ export const Transcript = memo(function Transcript({
               </div>
             )}
             {divider}
+            {/* the speaker heads the whole turn: its folded notes, then its reply */}
+            {m.from && (
+              (m.kind === "text" && botTextShowsSpeaker(items, i))
+              || (!user && m.kind !== "text" && newCluster && !(m.kind === "activity" && m.comm) && !laterTextOwns(items, i, m.from.botId, m.at))
+            ) && (
+              <ClusterLabel bot={memberOf(m.from.botId)} name={m.from.name} color={m.from.color} />
+            )}
             {fold && (
               <TurnNarrationRun
                 label={fold.label}
@@ -571,12 +578,6 @@ export const Transcript = memo(function Transcript({
                   </div>
                 ))}
               </TurnNarrationRun>
-            )}
-            {m.from && (
-              (m.kind === "text" && botTextShowsSpeaker(items, i))
-              || (!user && m.kind !== "text" && newCluster && !(m.kind === "activity" && m.comm) && !laterTextOwns(items, i, m.from.botId, m.at))
-            ) && (
-              <ClusterLabel bot={memberOf(m.from.botId)} name={m.from.name} color={m.from.color} />
             )}
             {row}
           </div>
