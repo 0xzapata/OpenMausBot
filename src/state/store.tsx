@@ -4230,7 +4230,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             }
             // Provider turns already get one server-authored completion notice,
             // after settling, with quiet/internal turns suppressed server-side.
-            if (!frame.message.turnId && messageNotificationsEnabled()) {
+            // Coordinator request/provenance rows precede that turnId; they
+            // are assignments, not replies or completed work.
+            if (!frame.message.turnId && frame.message.roomRequest?.phase !== "request" && messageNotificationsEnabled()) {
               const key = `${frame.threadId}:${frame.message.id}`;
               if (owner && owner.notifications !== false && frame.message.text?.trim() && !notifiedMessages.has(key)) {
                 notifiedMessages.add(key);

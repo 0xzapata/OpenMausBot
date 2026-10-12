@@ -173,6 +173,24 @@ describe("following a notification", () => {
     expect(FixtureNotification.shown).toHaveLength(1);
   });
 
+  it.each([undefined, { botId: "other", name: "Other", color: "blue" }])("keeps a coordinator request silent before its provider turn starts (sender %j)", async (from) => {
+    // coordinator.run records this provenance row before markInternalTurn and
+    // before a provider turnId exists, including on a known child task.
+    stream().send({ kind: "message", threadId: "finished", message: {
+      id: "assignment", role: "bot", kind: "text", text: "@Scout inspect the report", at: 1,
+      roomRequest: { id: "coordination-1", phase: "request" }, ...(from ? { from } : {}),
+    } });
+    await settle();
+    expect(FixtureNotification.shown).toHaveLength(0);
+    // A genuine non-provider update is still news, even when a peer sent it.
+    stream().send({ kind: "message", threadId: "finished", message: {
+      id: "peer-update", role: "bot", kind: "text", text: "The report is available", at: 2,
+      from: { botId: "other", name: "Other", color: "blue" },
+    } });
+    await settle();
+    expect(FixtureNotification.shown).toHaveLength(1);
+  });
+
   it("alerts once for non-provider messages and opens the actual task with threads hidden", async () => {
     await threadsShown(false);
     const frame = { kind: "message", threadId: "finished", message: { id: "peer-text", role: "bot", kind: "text", text: "A direct update", at: 1 } };
