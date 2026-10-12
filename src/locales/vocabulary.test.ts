@@ -69,6 +69,8 @@ const ALLOWED: ReadonlyArray<{ file: string; snippet?: string; why: string }> = 
   { file: "server/workspace-backup.ts", snippet: "OMB-WORKSPACE-1", why: "a backup file's format marker" },
   { file: "electron/cloud-move.mjs", snippet: "OMB-WORKSPACE-1", why: "a backup file's format marker" },
   { file: "electron/company-backups.mjs", snippet: "OMB-WORKSPACE-1", why: "a backup file's format marker" },
+  { file: "server/runtime/envelope.ts", snippet: "[OMB assignment", why: "internal provenance envelope marker recognised by escapeNotes, not UI copy" },
+  { file: "server/runtime/envelope.ts", snippet: "[OMB report from", why: "internal provenance report marker recognised by escapeNotes, not UI copy" },
 ];
 
 function* sources(dir: string): Generator<string> {
