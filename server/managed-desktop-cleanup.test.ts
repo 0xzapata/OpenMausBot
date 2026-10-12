@@ -91,6 +91,8 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
       interruptCalls.push(threadId); started.get(threadId)!.resolve(); return interrupted.get(threadId)!.promise;
     } } }) },
     turnResourceOwners: owners, directTurnGenerationByThread: generations, directTurnBots: directBots, groupSpeakers: speakers,
+    // each fixture room has one thread, keyed like its group
+    activeGroupSpeaker: (groupId: string) => speakers.get(groupId),
     directRequestOwners: new Map(),
     autoVmClaims,
     turnResources: { release() {} }, settlingResourceOwners: new Map(), turnComputerResources: new Map(), teamComputerTurns: new Map(),
@@ -410,6 +412,7 @@ function reloadFixture() {
       groupByThread: (threadId: string) => rooms.has(threadId) ? { id: `group-${threadId}` } : undefined,
       patchGroup() {}, setActivity() {},
     },
+    activeGroupSpeaker: () => undefined,
     threadBusy: (_botId: string, threadId: string) => threads.find(thread => thread.threadId === threadId)!.busy,
     groupSpeakers: new Map([...rooms].map(([threadId, room]) => [threadId, { botId: room.botId }])), turnResourceOwners: new Map(threads.map(thread => [thread.threadId, { threadId: thread.threadId, generation: `gen-${thread.threadId}` }])),
     providerAuthSessions: { clearInstance: (id: string) => log.push(`auth:${id}`) },
@@ -486,6 +489,7 @@ it("ends a room stopped by the harness with its cause, and one the person stoppe
     const calls: string[] = [];
     const context = vm.createContext({
       pendingComputerResumes: new Map(), cancelTeamSetupResumesForThread() {},
+      roomMemberLock: { releaseThread: (threadId: string) => calls.push(`member-claims:${threadId}`) },
       coordinator: { cancelRoom: (...args: string[]) => calls.push(`assignments:${args.join("|")}`) },
       groupTurnOperations: new Map([["g", new Set([{ threadId: "room", cancellation: new AbortController() }])]]),
       finishGroupGoalRun: (_groupId: string, _operation: unknown, status: string, detail: string) => calls.push(`goal:${status}|${detail}`),
@@ -498,7 +502,9 @@ it("ends a room stopped by the harness with its cause, and one the person stoppe
   };
   expect(run({ status: "stopped", detail: "Turn interrupted — provider settings changed.", byHarness: true })).toEqual([
     "assignments:g|room|Turn interrupted — provider settings changed.|failed",
+    // the stopped thread hands back every member it was holding
+    "member-claims:room",
     "goal:stopped|Turn interrupted — provider settings changed.",
   ]);
-  expect(run()).toEqual(["assignments:g|room", "goal:stopped|Stopped by you."]);
+  expect(run()).toEqual(["assignments:g|room", "member-claims:room", "goal:stopped|Stopped by you."]);
 });
