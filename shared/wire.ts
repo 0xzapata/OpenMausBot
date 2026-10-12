@@ -408,7 +408,7 @@ export interface WireMessage {
   roomRequest?: { id: string; phase: "request" | "result" };
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "signin" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
   text?: string;
   digest?: TurnDigest;
   compaction?: {
@@ -430,6 +430,8 @@ export interface WireMessage {
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
+  /** signin rows: the bot asked the person to sign in to a site themselves. */
+  signIn?: SignInRequestCardData;
   /** One idempotently updated status card for a routine run. */
   routineRun?: RoutineRunCardData;
   /** Terminal receipt for a bounded multi-bot channel goal. */
@@ -684,6 +686,38 @@ export interface SecretRequestCardData {
   error?: string;
 }
 
+/** A bot asked the person to sign in to a website themselves
+ * (shared/sign-in-request.ts). OpenMausBot never sees the password: the
+ * person types it into the page, in the place the bot works. */
+export interface SignInRequestCardData {
+  /** The page to open, an http(s) address. */
+  url: string;
+  /** Its host, the card's headline. */
+  site: string;
+  /** The bot's own words: why it needs the sign-in. */
+  reason?: string;
+  /** Where the login has to happen: the place the asking turn worked in. */
+  place: Surface;
+  done?: boolean;
+  cancelled?: boolean;
+  /** A newer request for the same site in this conversation replaced this
+   * card; it no longer offers Done or Cancel. */
+  superseded?: boolean;
+  resumed?: boolean;
+  error?: string;
+}
+
+/** The open sign-in request a bot's computer plea stands for, so whichever
+ * panel shows the plea can settle that card. */
+export interface ComputerHelpRef {
+  /** The asking bot: a team computer's plea reaches every member's panel. */
+  botId: string;
+  threadId: string;
+  messageId: string;
+  site: string;
+  place: Surface;
+}
+
 /** Who answers a room message nobody was @mentioned in. `auto` asks the
  * decision model (server/decider/room-routing.ts) and falls back to
  * `fallbackBotId` (else the first member) whenever it is off or unsure.
@@ -828,7 +862,7 @@ export type ServerFrame =
    * one progress line until its first screen frame. `place` names a cloud
    * computer (absent: a Local VM). */
   | { kind: "computer"; botId: string; state: "provisioning" | "waking"; place?: "cloud" }
-  | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null }
+  | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null; help?: ComputerHelpRef | null }
   /** A bot's data sheet changed (a card added, updated, failed, removed; a
    * table loaded). Whole sheet each time: see shared/data-surface.ts. */
   | DataBroadcast

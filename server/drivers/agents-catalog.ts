@@ -521,6 +521,20 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "request_sign_in",
+    description:
+      "Ask the person to sign in to a website themselves, in the browser or on the computer you are using now. Use it when a page needs a login you do not have, or a one-time code, CAPTCHA or other step only they can do. They get a card and a notification, sign in where you work, and press Done. Never ask for a password or code in chat. After calling it, end your turn; OpenMausBot resumes you when they finish or decline, and then check you are signed in.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        site: { type: "string", minLength: 1, maxLength: 2048, description: "The page to sign in on: its address, or the domain, such as example.com." },
+        reason: { type: "string", maxLength: 240, description: "One short sentence, in your words, on what the sign-in is for." },
+      },
+      required: ["site"],
+    },
+  },
+  {
     name: "send_voice_note",
     description:
       "Send the user a voice note: a short spoken message synthesized with your configured voice, stored as audio, and attached to your reply when the turn ends. Write the note as speakable words, exactly as it should be said — no lists, links or markdown meant for screens. The same text becomes the note's visible caption and transcript, so the person can read or listen. Use it for warmth, tone or emphasis a written line cannot carry; use ordinary text otherwise.",
