@@ -89,15 +89,16 @@ sent: the lines for each of Claude's turns. Its evidence is
 A line shows the tool, what it acted on and `ok`, `failed` or `no result
 recorded`. What it acted on is the command beside the chip in the chat, or, for
 a call whose chip shows none (a `Read`, a search), one argument from the input
-preview behind the chip: the command, file, search pattern, query or URL. Never
-a tool result, and nothing else of the preview (a `Write`'s content, an `Edit`'s
+preview behind the chip: the command, file, search pattern, query or URL, or the
+whole input when it is one plain string (a Codex web search's query). Never a
+tool result, and nothing else of the preview (a `Write`'s content, an `Edit`'s
 old and new text). It is redacted, then clipped to 120 characters; a long path
 keeps its end. At most 20 lines are sent, the most recent, only for calls
 between the first and last replayed message, and only from the bytes of
 `rebuildBytes` that messages left unused: the messages selected are the same
 with the setting on or off. Engines that replay natively (API models sent the
 transcript itself) and room turns are unchanged. A call is still named without a
-target when its preview holds none of those as a top-level argument.
+target when its preview is arguments that hold none of those at the top level.
 
 ## Bounds and limitations
 

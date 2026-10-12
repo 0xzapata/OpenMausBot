@@ -197,7 +197,10 @@ describe("tool history in a rebuilt session", () => {
       it("still yields the bare line for a row with no preview, or a preview that names no target", () => {
         expect(toolReplayLine({ name: "Read", ok: true })).toBe("[ran: Read — ok]");
         expect(toolReplayLine({ name: "Read", ok: true, input: "" })).toBe("[ran: Read — ok]");
-        expect(toolReplayLine({ name: "Read", ok: true, input: "not a preview: \"file_path\": \"/x\"" })).toBe("[ran: Read — ok]");
+        // arguments that did not parse, and the previews that stand in for content
+        expect(toolReplayLine({ name: "Read", ok: true, input: '{ not arguments: "file_path": "/x"' })).toBe("[ran: Read — ok]");
+        expect(line("Read", "x".repeat(300_000))).toBe("[ran: Read — ok]");
+        expect(line("Read", `data:image/png;base64,${"A".repeat(64)}`)).toBe("[ran: Read — ok]");
         expect(line("TodoWrite", { todos: [{ content: "TODO_BODY", path: "/nested/not-a-target" }] })).toBe("[ran: TodoWrite — ok]");
         expect(line("Agent", { description: "DESCRIPTION_BODY", prompt: "PROMPT_BODY" })).toBe("[ran: Agent — ok]");
         expect(line("edit", [{ path: "/repo/a.ts", diff: "DIFF_BODY" }])).toBe("[ran: edit — ok]");
@@ -220,6 +223,18 @@ describe("tool history in a rebuilt session", () => {
       it("adds the target to a title that does not have it", () => {
         // ACP: a spoken title, the file only in the arguments
         expect(line("Read file", { path: "/repo/a.ts" })).toBe("[ran: Read file: /repo/a.ts — ok]");
+      });
+
+      it("takes a plain-text input as the target: it is the call's one argument", () => {
+        // Codex's web search: the driver previews the query itself (server/testing/fake-codex-app-server.ts)
+        expect(line("web_search", "OpenMausBot")).toBe("[ran: web_search: OpenMausBot — ok]");
+        expect(preview("OpenMausBot")).toBe("OpenMausBot");
+        const key = `sk-ant-${"a".repeat(32)}`;
+        const searched = toolReplayLine({ name: "web_search", ok: true, input: `docs for ${key}\nsecond line` });
+        expect(searched).toMatch(/^\[ran: web_search: docs for «redacted \d+ chars» second line — ok\]$/);
+        const long = line("web_search", `${"word ".repeat(2_000)}`);
+        expect([...long]).toHaveLength(TOOL_LINE_MAX_CHARS);
+        expect(long).toMatch(/^\[ran: web_search: (word )+w?o?r?d?… — ok\]$/);
       });
 
       it("masks a secret-shaped value, whether or not the preview was redacted before it was stored", () => {

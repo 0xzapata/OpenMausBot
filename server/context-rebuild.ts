@@ -63,9 +63,14 @@ const TARGET_LINE = new RegExp(`^ {2}"(${TARGET_KEYS.join("|")})": ("(?:[^"\\\\]
 /** What a call acted on, read from its input preview: the file, the search
  * pattern, the command. Only a target argument's own value; never the rest
  * of the preview (a Write's content, an Edit's old and new text). Undefined
- * when the preview names none, or is not arguments at all. */
+ * when the preview names none. */
 function inputTarget(preview: string | undefined): { key: string; value: string } | undefined {
   if (!preview) return undefined;
+  // Not a document of arguments: the call took one plain string, and that
+  // is what it acted on (Codex previews a web search as the query itself).
+  // The previews that stand in for content ("[large content omitted]") and
+  // arguments that never parsed open with a bracket, and are no target.
+  if (!/^\s*[[{]/.test(preview)) return { key: "text", value: preview };
   const found = new Map<string, string>();
   for (const [, key, literal] of preview.matchAll(TARGET_LINE)) {
     if (found.has(key!)) continue;
