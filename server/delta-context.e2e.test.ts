@@ -731,9 +731,11 @@ it.each(["SIGTERM", "SIGKILL"] as const)("runs each teammate turn a restart cut 
     try {
       f.open(f.gate("lead"));
       await expect.poll(async () => (await f.messages()).some((m: any) => m.text === "RESTART_REVIEWED"), { timeout: 30_000 }).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // The final text precedes turn completion and the runtime's durable settlement.
+      await expect.poll(() => f.nodes().map((node: any) => node.status), { timeout: 30_000 })
+        .toEqual(["completed", "completed", "completed"]);
       // The job's one notification, as a job no restart touched sends.
-      expect(stream.frames.filter((frame) => frame.kind === "notify").map((frame) => [frame.notification?.kind, frame.notification?.body]))
+      await expect.poll(() => stream.frames.filter((frame) => frame.kind === "notify").map((frame) => [frame.notification?.kind, frame.notification?.body]), { timeout: 30_000 })
         .toEqual([["delegation-settled", "Results in from Engineering lead, Ops"]]);
     } finally {
       stream.close();
