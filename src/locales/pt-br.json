@@ -742,8 +742,6 @@
   "approvalMode.learnMore": "Saiba mais",
   "approvalMode.customLocalOnly": "A aprovação personalizada só pode ser alterada no app de desktop instalado",
   "approvalMode.customLocalOnlyDot": "A aprovação personalizada só pode ser alterada no app de desktop instalado.",
-  "approvalMode.antigravityLocalOnly": "Automático (acesso total) está disponível no app de desktop instalado.",
-  "approvalMode.trustedLocalOnly": "Acesso total e Personalizado estão disponíveis no app de desktop instalado.",
   "onboarding.welcome": "Boas-vindas ao {app}",
   "onboarding.intro": "Bots que fazem trabalho de verdade no próprio computador. Diga quem você é e avisamos quando algo grande sair.",
   "onboarding.name": "Seu nome",
