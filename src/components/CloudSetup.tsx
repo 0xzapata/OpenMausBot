@@ -26,7 +26,8 @@ import type { MausMotion } from "@/lib/mascot";
 import { hintSeenPatch, type WelcomeViewer } from "@/lib/onboarding";
 import type { LocaleKey } from "@/locales";
 import type { Routine } from "@/lib/routines";
-import { api, useStore } from "@/state/store";
+import { useShowThreads } from "@/lib/thread-preferences";
+import { api, openBot, useStore } from "@/state/store";
 
 const TITLE: Record<CloudSetupStep, LocaleKey> = {
   cloud: "cloudSetup.cloud.title", job: "cloudSetup.job.title", engine: "cloudSetup.engine.title", plan: "cloudSetup.plan.title", move: "cloudSetup.move.title",
@@ -120,6 +121,7 @@ function CloudReady({ routine, onDone }: { routine?: Routine; onDone: () => void
 
 export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const [hidden, setHidden] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveSkipped, setMoveSkipped] = useState(false);
@@ -179,11 +181,14 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
   // The question already fills the chat pane: the step need not offer it.
   const asking = state.activeView === "chat" && cloudIntentShown(cloudIntentDue({ ...facts, reopened: false }), intent);
   const askAgain = () => withViewTransition(() => { reopenCloudIntent(true); dispatch({ type: "showChat" }); });
-  // The chat where the bot is setting itself up.
+  // The chat where the bot is setting itself up, opened as its row would
+  // (openBot): with threads hidden its main thread, where the person sent the
+  // job, never a thread an activity row left it on.
   const jobBot = intent.sent?.botId;
   const openJobChat = () => {
     dispatch({ type: "showChat" });
-    if (jobBot) dispatch({ type: "select", id: jobBot });
+    const bot = state.bots.find((candidate) => candidate.id === jobBot);
+    if (bot) openBot(dispatch, bot, showThreads);
   };
   const hint = (key: LocaleKey) => <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">{t(key)}</p>;
   const action = (label: LocaleKey, onClick: () => void) => <button type="button" className={PRIMARY} onClick={onClick}>{t(label)}<ArrowRight size={13} aria-hidden="true" /></button>;

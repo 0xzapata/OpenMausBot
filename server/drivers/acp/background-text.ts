@@ -29,7 +29,7 @@ export interface AcpOneShotInput {
   /** The auth method to call, or null for none. */
   pickAuthMethod: (methods: Array<{ id?: string }>) => string | null;
   /** True when a failed or missing auth method must stop the call. */
-  authRequired: boolean;
+  authRequired: boolean | "if-requested";
   loginNote: string;
   /** Per-session settings (mode, model) between session/new and the prompt. */
   configure?: (ctx: { request: (method: string, params: unknown, timeoutMs?: number) => Promise<any>; sessionId: string; session: any }) => Promise<void>;
@@ -168,7 +168,7 @@ export function runAcpOneShot(input: AcpOneShotInput): Promise<string> {
         } catch {
           if (input.authRequired) throw new Error(input.loginNote);
         }
-      } else if (input.authRequired) {
+      } else if (input.authRequired === true) {
         throw new Error(input.loginNote);
       }
       const session = await request("session/new", { cwd: input.cwd, mcpServers: [] });

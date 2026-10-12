@@ -421,6 +421,8 @@ export interface ProviderSnapshot {
 // login (Codex, Grok) signs in from the app instead (drivers/device-auth.ts),
 // and signInCommand stays its terminal route.
 export interface EngineInstall {
+  /** Added by the registry: commands run on this server, not its web client. */
+  platform?: "darwin" | "win32" | "linux";
   /** One-liner per platform. Omit a platform that has no such command —
    * the UI falls back to docsUrl rather than offering something that
    * cannot work there (a curl|bash line is not a Windows command). */

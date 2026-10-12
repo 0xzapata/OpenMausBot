@@ -289,6 +289,15 @@ describe("review fixes", () => {
     expect(oauth.counts.register).toBe(2);
   });
 
+  it("accepts a returned iss when the resource lists its issuer with a trailing slash", async () => {
+    await setup({ listIssuerWithSlash: true, returnIss: true });
+    const started = await manager.start("docs", mcp.url);
+    const callback = (await fetch(started.authorizationUrl!, { redirect: "manual" })).headers.get("location")!;
+    expect(new URL(callback).searchParams.get("iss")).toBe(oauth.issuer);
+    expect((await manager.completeCallback("docs", started.flowId, callback)).phase).toBe("succeeded");
+    expect(oauth.counts.token).toBe(1);
+  });
+
   it("refuses metadata that claims another issuer", async () => {
     await setup({ claimIssuer: "https://someone-else.example.com" });
     await expect(manager.start("docs", mcp.url)).rejects.toMatchObject({ code: "not-oauth" });

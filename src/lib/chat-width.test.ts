@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHAT_WIDTH_IDS, DEFAULT_CHAT_WIDTH, applyChatWidth, readChatWidth } from "./chat-width";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -21,6 +21,8 @@ describe("chat width", () => {
     });
     vi.stubGlobal("document", { documentElement: { dataset: {} as DOMStringMap } });
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it("defaults to full width", () => {
     expect(DEFAULT_CHAT_WIDTH).toBe("full");
@@ -54,6 +56,28 @@ describe("chat width", () => {
   it("ignores an unknown stored value", () => {
     localStorage.setItem("omb-chat-width", "huge");
     expect(readChatWidth()).toBe("full");
+  });
+
+  it.each(CHAT_WIDTH_IDS)("restores %s before paint without changing other appearance preferences", (id) => {
+    localStorage.setItem("omb-chat-width", id);
+    localStorage.setItem("omb-color-user-bubbles", "1");
+    document.documentElement.dataset.skin = "midnight";
+    applyChatWidth(readChatWidth());
+    expect(document.documentElement.dataset.chatWidth).toBe(id === "full" ? undefined : id);
+    expect(document.documentElement.dataset.skin).toBe("midnight");
+    expect(localStorage.getItem("omb-color-user-bubbles")).toBe("1");
+  });
+
+  it("still applies a session choice when storage cannot be read or written", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("quota"); },
+    });
+    expect(readChatWidth()).toBe("full");
+    expect(() => applyChatWidth("wide")).not.toThrow();
+    expect(document.documentElement.dataset.chatWidth).toBe("wide");
+    applyChatWidth("full");
+    expect(document.documentElement.dataset.chatWidth).toBeUndefined();
   });
 
   it("leaves no hard-coded 42rem bubble cap in the components", () => {

@@ -150,7 +150,7 @@ describe("sidebar rows", () => {
     const message = { ...reply("a3", "a2", "One more thing."), at: NOW };
     const changed = await rowRendersAfter(update((current) => reducer(current, { type: "messageAdded", threadId: "atlas-now", message })));
     expect(changed).toEqual({ bots: { Atlas: 1 }, threads: { "Report draft": 1 } });
-    expect(document.querySelector('[data-sidebar-thread-row="atlas-now"]')?.textContent).toContain(t("task.updated.justNow"));
+    expect(document.querySelector('[data-sidebar-thread-row="atlas-now"]')?.parentElement?.textContent).toContain(t("task.updated.justNow"));
   });
 
   it("renders only the renamed thread's row among the threads", async () => {
@@ -177,7 +177,7 @@ describe("sidebar rows", () => {
       const changed = await rowRendersAfter(draw);
       expect(changed.bots).toEqual({ Atlas: 1, Scout: 1, Pepper: 1 });
       expect(Object.keys(changed.threads)).toHaveLength(3);
-      expect(document.querySelector('[data-sidebar-thread-row="atlas-earlier"]')?.textContent).toContain("vor 2 Std.");
+      expect(document.querySelector('[data-sidebar-thread-row="atlas-earlier"]')?.parentElement?.textContent).toContain("vor 2 Std.");
     } finally {
       setLocale("en");
       await draw();

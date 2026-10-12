@@ -77,6 +77,23 @@ function providerError(json: CompletionJson): string | null {
   return null;
 }
 
+/** An error envelope's machine code ("invalid_api_key"), never a sentence. */
+const MACHINE_CODE = /^[a-z][a-z0-9_]*$/;
+
+/** What a failed HTTP response says, for the person: a JSON error envelope's
+ *  own message ("Your team has used all available credits…") instead of the
+ *  envelope, or the raw body when it carries none. The envelope's machine
+ *  code follows the message, after the cut, because trial-credit.ts reads it. */
+function httpErrorDetail(body: string, limit = 500): string {
+  let json: CompletionJson | undefined;
+  try { json = object(JSON.parse(body)); } catch { json = undefined; }
+  const message = json ? providerError(json) : null;
+  if (!message || message === "unknown error") return body.slice(0, limit);
+  const code = object(json?.error)?.code;
+  const suffix = typeof code === "string" && MACHINE_CODE.test(code) ? ` (${code})` : "";
+  return message.slice(0, limit) + suffix;
+}
+
 interface NativeLog {
   source: string;
   outgoing(turn: SendTurnInput, messages: OpenAIChatMessage[], model: string, tools: ChatToolDefinition[]): unknown;
@@ -374,7 +391,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       if (!response.ok) {
         const body = await response.text().catch(() => "");
         if (rejectsKey(response.status, body)) noteKeyRejected(options.apiUrl, options.apiKey);
-        const message = `${options.httpErrorLabel} HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
+        const message = `${options.httpErrorLabel} HTTP ${response.status}${body ? `: ${httpErrorDetail(body)}` : ""}`;
         if (rejectsToolsParameter(response.status, body)) throw new UnsupportedChatToolsError(message);
         const refusal = refusedToolCall(response.status, body);
         if (refusal) throw new RejectedToolCallError(message, refusal);

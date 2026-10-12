@@ -67,7 +67,9 @@ export function BotSettingsDialog({ bot, overlay = false }: {
   // (or a deep link to a section it does not cover) switches to the full
   // fold-out view for this opening only — App remounts the panel per open.
   const advanced = useAdvancedMode();
-  const wantsFullView = !collapsed && !SIMPLE_PANEL_SECTIONS.has(section);
+  // A remembered opening expands its row but never forces the full view:
+  // non-advanced profiles keep opening the Details/Library panel.
+  const wantsFullView = !collapsed && !SIMPLE_PANEL_SECTIONS.has(section) && !state.botSettingsExpandRemembered;
   const [showAll, setShowAll] = useState(wantsFullView);
   useEffect(() => {
     if (wantsFullView) setShowAll(true);

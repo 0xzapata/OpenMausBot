@@ -20,6 +20,8 @@ const fixture = vi.hoisted(() => ({
   setNotificationSounds: vi.fn(),
   sendKey: "enter" as SendKey,
   setSendKey: vi.fn(),
+  colorUserBubbles: false,
+  setColorUserBubbles: vi.fn(),
   advancedMode: false,
   setAdvancedMode: vi.fn(),
   api: vi.fn(),
@@ -57,6 +59,10 @@ vi.mock("@/lib/send-key", async (importOriginal) => ({
   useSendKey: () => fixture.sendKey,
   setSendKey: fixture.setSendKey,
 }));
+vi.mock("@/lib/user-bubble-preference", () => ({
+  useColorUserBubbles: () => fixture.colorUserBubbles,
+  setColorUserBubbles: fixture.setColorUserBubbles,
+}));
 vi.mock("@/lib/interface-mode", () => ({
   useAdvancedMode: () => fixture.advancedMode,
   setAdvancedMode: fixture.setAdvancedMode,
@@ -81,6 +87,7 @@ beforeEach(() => {
   fixture.sidebarDensity = "comfortable";
   fixture.notificationSounds = true;
   fixture.sendKey = "enter";
+  fixture.colorUserBubbles = false;
   // these pin the Advanced rail; Simple has its own suite (SettingsModal.simple.test.ts)
   fixture.advancedMode = true;
   fixture.switches = [];
@@ -214,6 +221,40 @@ describe("Settings → Appearance", () => {
   it("finds the send key by the keys' names on every platform", () => {
     const appearance = SECTIONS.find((section) => section.id === "appearance")!;
     for (const query of ["enter", "return", "shift+enter", "ctrl+enter", "cmd", "cmd+enter", "⌘", "⌘+enter", "command", "send", "new line", "ime"]) {
+      expect(sectionMatches(appearance, query), query).toBe(true);
+    }
+  });
+
+  it("offers the bot-colored message toggle in Appearance, off until chosen", () => {
+    const html = render();
+    expect(html).toContain("Color my messages");
+    expect(html).toContain("bot&#x27;s color");
+    expect(html).toContain("Rooms keep the neutral bubble");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Color my messages with the bot's color")!;
+    expect(toggle.checked).toBe(false);
+    toggle.onClick!({} as never);
+    expect(fixture.setColorUserBubbles).toHaveBeenCalledWith(true);
+    expect(fixture.api).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["full", "Full width"],
+    ["wide", "Wide"],
+    ["compact", "Compact"],
+  ])("shows the saved chat width (%s) alongside message colors", (width, label) => {
+    vi.stubGlobal("localStorage", { getItem: (key: string) => key === "omb-chat-width" ? width : null });
+    const html = render();
+    expect(html).toContain('aria-label="Chat width"');
+    expect(html).toContain(`<option value="${width}" selected="">${label}</option>`);
+    for (const option of ["Full width", "Wide", "Compact"]) expect(html).toContain(`>${option}</option>`);
+    expect(html).toContain("Color my messages");
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("finds chat width and message colors in Appearance", () => {
+    const appearance = SECTIONS.find((section) => section.id === "appearance")!;
+    for (const query of ["width", "wide", "compact", "bubble", "color"]) {
       expect(sectionMatches(appearance, query), query).toBe(true);
     }
   });

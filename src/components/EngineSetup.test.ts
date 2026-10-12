@@ -2,11 +2,17 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
+import { EngineSetup, EngineUpdateNotice, installCommandFor, needsCli, needsSignIn } from "./EngineSetup";
 import { engineStatus } from "./ModelPicker";
 import { StoreProvider, type InstanceInfo } from "@/state/store";
 
 afterEach(() => vi.unstubAllGlobals());
+
+it("chooses the server installer even when the client has a different OS", () => {
+  vi.stubGlobal("window", { ogb: { platform: "win32" } });
+  expect(installCommandFor({ platform: "linux", command: { linux: "linux-install", win32: "windows-install" } })).toBe("linux-install");
+  expect(installCommandFor({ platform: "linux", command: { win32: "windows-only" } })).toBeNull();
+});
 
 function instance(snapshot: InstanceInfo["snapshot"]): InstanceInfo {
   return {

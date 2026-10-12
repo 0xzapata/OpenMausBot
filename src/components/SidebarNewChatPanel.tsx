@@ -4,7 +4,7 @@
 // new (a bot, a group chat) sit on top, so the panel is never a dead end.
 import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { Plus, Users, X } from "lucide-react";
-import { useStore, type Bot } from "@/state/store";
+import { openBot, useStore, type Bot } from "@/state/store";
 import { rankByName } from "@/lib/palette-rank";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
@@ -113,8 +113,9 @@ export function SidebarNewChatPanel({
   const rowLabel = showThreads ? t("sidebar.newChat.start") : t("sidebar.newChat.open");
 
   const start = (bot: Bot) => {
-    // Simple mode keeps one conversation per bot, so it opens that one.
-    dispatch(showThreads ? { type: "newTask", botId: bot.id } : { type: "select", id: bot.id });
+    // With threads hidden a bot is one conversation, so it opens that one.
+    if (showThreads) dispatch({ type: "newTask", botId: bot.id });
+    else openBot(dispatch, bot, false);
     onClose();
   };
   const activate = (index: number) => {

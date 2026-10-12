@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import { Loader2, Menu } from "lucide-react";
-import { CLOUD_LINK_SETTINGS, StoreProvider, useStore } from "@/state/store";
+import { CLOUD_LINK_SETTINGS, openBot, StoreProvider, useStore } from "@/state/store";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { useWelcomeViewer, WelcomeGate } from "@/components/onboarding/WelcomeGate";
 import { cloudSignInDue, spotlightsQuiet, type WelcomeViewer } from "@/lib/onboarding";
 import { FirstConversationTour } from "@/components/onboarding/FirstConversationTour";
@@ -37,9 +38,12 @@ import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { effectiveLanguage, useLanguageChoice } from "@/lib/language-preference";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone-pairing";
+import { useExternalChatLinks } from "@/hooks/use-external-chat-links";
+import { ChatNotice } from "@/components/ChatErrorBanner";
 
 function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const { capabilities } = useDesktopCapabilities();
   const captionChrome = useCaptionChrome();
   const unreadCount =
@@ -87,6 +91,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     window.history.replaceState(null, "", rest);
     dispatch(phonePairingSettingsAction());
   }, [dispatch]);
+  useExternalChatLinks(state, dispatch);
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than
   // cancelling them with md:, which would still emit a translate value and
@@ -164,20 +169,20 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         const target = bots[Number(e.key) - 1];
         if (target) {
           e.preventDefault();
-          dispatch({ type: "select", id: target.id });
+          openBot(dispatch, target, showThreads);
         }
       } else if (e.shiftKey && (e.key === "[" || e.key === "]")) {
         const idx = bots.findIndex((b) => b.id === state.selectedId);
         const next = bots[(idx + (e.key === "]" ? 1 : -1) + bots.length) % bots.length];
         if (next) {
           e.preventDefault();
-          dispatch({ type: "select", id: next.id });
+          openBot(dispatch, next, showThreads);
         }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state.bots, state.selectedId, state.shortcutsOpen, dispatch]);
+  }, [state.bots, state.selectedId, state.shortcutsOpen, showThreads, dispatch]);
 
   useEffect(() => {
     window.ogb?.setUnreadCount?.(unreadCount);
@@ -354,6 +359,8 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       ) : (
         <main className="relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-3 bg-app text-ink-secondary">
           <WindowDragStrip />
+          {/* a chat link opened with no bots here still says it found nothing */}
+          <div className="w-full max-w-md"><ChatNotice notice={state.notice} /></div>
           <Loader2 size={20} className="animate-spin" />
           <div className="text-[14px]">
             {state.connected ? "No bots yet" : "Connecting to the bot server…"}
