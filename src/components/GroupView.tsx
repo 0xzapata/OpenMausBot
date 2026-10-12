@@ -55,6 +55,7 @@ import { ExportTranscriptMenu } from "./ExportTranscriptMenu";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
+import { SignInRequestCard } from "./SignInRequestCard";
 import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { GoalRunCard } from "./GoalRunCard";
 import { AttachmentGallery, MessageAttachmentGallery, replyAttachmentGroup } from "./AttachmentGallery";
@@ -483,6 +484,8 @@ export const Transcript = memo(function Transcript({
           // one of those questions, and answers in its own card.
           m.kind === "secret" && m.secret && m.from?.botId ? (
             <SecretRequestCard botId={m.from.botId} threadId={group.threadId} message={m} />
+          ) : m.kind === "signin" && m.signIn && m.from?.botId ? (
+            <SignInRequestCard botId={m.from.botId} botName={m.from.name} threadId={group.threadId} message={m} />
           ) : m.kind === "connector" && m.connector && m.from?.botId ? (
             <ConnectorCard botId={m.from.botId} threadId={group.threadId} message={m} />
           ) : m.kind === "options" && m.card?.requestId && m.card.questionRequest ? (

@@ -89,8 +89,8 @@ import { redactSecretsInText } from "../../redact.ts";
 import { recoveryPromptFor } from "../../resume-recovery.ts";
 import { sessionIdlePolicy } from "../session-idle.ts";
 import { classifyError } from "../retry.ts";
-import { canUseMcpServer, narrowsNativeTools, parseToolScope } from "../../../shared/tool-scope.ts";
-import { gateServer, mcpStdioServer } from "../../mcp-gate-config.ts";
+import { narrowsNativeTools, parseToolScope } from "../../../shared/tool-scope.ts";
+import { turnStdioMcpServers } from "../turn-mcp.ts";
 
 /** Failures the person fixes on their provider account, not by retrying:
  * the process that reported one is healthy and stays pooled. */
@@ -875,61 +875,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       // server named before every tool came back "Tool not found"). The
       // catalog passes through whole: the agent searches tools itself.
       type AcpMcpServer = { name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> };
-      const acpMcpServers = (turn: SendTurnInput) => {
-        const servers: AcpMcpServer[] = [];
-        const acpEnv = (env: Record<string, string>) =>
-          Object.entries(env).map(([name, value]) => ({ name, value: String(value) }));
-        const agents = turn.integrations?.agents;
-        if (agents) {
-          servers.push({ name: "agents", command: agents.command, args: agents.args, env: acpEnv(agents.env) });
-        }
-        const composio = turn.integrations?.composio;
-        if (composio) {
-          servers.push({
-            name: "composio",
-            command: composio.command,
-            args: composio.args,
-            env: acpEnv(composio.env),
-          });
-        }
-        const browser = turn.integrations?.browser;
-        if (browser) {
-          servers.push({ name: "browser", command: browser.command, args: browser.args, env: acpEnv(browser.env) });
-        }
-        const data = turn.integrations?.data;
-        if (data) {
-          servers.push({ name: "data", command: data.command, args: data.args, env: acpEnv(data.env) });
-        }
-        // The bot's computer, mounted exactly like the Claude driver does:
-        // host and sandbox Cua connections expose Cua Driver's own MCP server.
-        // (A cloud boat is not mounted here at all: a cloud turn runs ON the boat.)
-        if (turn.integrations?.localComputer) {
-          const local = turn.integrations.localComputer;
-          servers.push({
-            name: "computer",
-            command: local.command,
-            args: local.args,
-            env: acpEnv(local.env ?? {}),
-          });
-        }
-        // user-configured servers, after the built-ins: a residual name
-        // collision keeps the built-in (reserved names are filtered at the
-        // config boundary; this is defense in depth).
-        for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
-          if (servers.some((existing) => existing.name === name)) continue;
-          const stdio = "url" in server ? mcpStdioServer(server, { nodeEnv: { ELECTRON_RUN_AS_NODE: "1" } }) : server;
-          if (!stdio) continue;
-          servers.push({ name, command: stdio.command, args: stdio.args ?? [], env: acpEnv(stdio.env ?? {}) });
-        }
-        if (turn.toolScope === undefined) return servers;
-        return servers.filter((server) => canUseMcpServer(turn.toolScope, server.name)).map((server) => {
-          const original = { command: server.command, args: server.args, env: Object.fromEntries(server.env.map(({ name, value }) => [name, value])) };
-          const gated = gateServer({ name: server.name, server: original, threadId: turn.threadId, budget: 0,
-            toolScope: turn.toolScope, nodeEnv: { ELECTRON_RUN_AS_NODE: "1" } });
-          if (!gated) throw new Error("Tool selection requires an MCP gate.");
-          return { name: server.name, command: gated.command, args: gated.args, env: acpEnv(gated.env) };
-        });
-      };
+      const acpMcpServers = (turn: SendTurnInput): AcpMcpServer[] =>
+        turnStdioMcpServers(turn).map((server) => ({ ...server,
+          env: Object.entries(server.env).map(([name, value]) => ({ name, value: String(value) })) }));
 
       /** While a prompt runs, notice when the agent goes quiet and tell the
        *  person what it is doing: retrying, compressing, waiting on its
