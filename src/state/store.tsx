@@ -965,6 +965,7 @@ export type AppSettingsSection =
   | "companion"
   | "remote"
   | "computer"
+  | "logins"
   | "usage"
   | "people"
   | "activity"

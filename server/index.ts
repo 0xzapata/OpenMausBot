@@ -456,6 +456,7 @@ import {
   ROUTINE_EXECUTION_PROMPT,
   WEBHOOK_PROMPT,
   resolveComputerPromptKind,
+  savedLoginsPrompt,
   teamAvailabilityPart,
 } from "./system-prompt.ts";
 import { readCuaConnection, readCuaUnavailableReason, gatedLocalComputer } from "./local-computer.ts";
@@ -470,13 +471,17 @@ import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
-import { redactSecretsInText } from "./redact.ts";
+import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
-import { BrowserRuntime, attachesToChrome, browserRuntimeEnv } from "./browser-runtime.ts";
+import { BROWSER_CONTROL_REFUSAL, BrowserRuntime, attachesToChrome, browserRuntimeEnv } from "./browser-runtime.ts";
 import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
+import { HeldSecrets, LoginStore } from "./login-store.ts";
+import { fillLogin, streamInsertText, type FillCandidate } from "./login-fill.ts";
+import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
+import { savedLoginResumePrompt } from "../shared/logins.ts";
 import { BrowserLive } from "./browser-live.ts";
 import {
   agentBrowserFrame,
@@ -491,6 +496,7 @@ import {
   browserEngineStatus,
   browserSessionId,
   describeBrowserEngine,
+  inRunningBrowser,
   setBrowserViewport,
 } from "./browser-engine.ts";
 import { createScreenFrameSource, type ScreenCapture } from "./screen-frame-source.ts";
@@ -797,6 +803,13 @@ if (CLOUD_HOME && Object.keys(CLOUD_SECRETS).length === 0) {
 // Who each thread is for, when a signed-in person can be named (server-private).
 const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json"));
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
+// Saved website logins (Settings → Logins, the sign-in card's Save), sealed
+// in the data folder. Every value they hold is scrubbed from whatever a bot
+// or a transcript can read from here on (shared/redact.ts runs this inside
+// every redaction, and the browser runtime on every tool result).
+const logins = new LoginStore({ dataDir: DATA_DIR });
+const heldSecrets = new HeldSecrets(logins);
+addHeldSecretScrubber((text) => heldSecrets.scrub(text));
 const SESSION_COOKIE = sessionCookieName(PORT, ENVIRONMENT_ID);
 const HOSTED_WORKSPACE = hostedWorkspaceConfigured();
 let workspaceAccess: WorkspaceAccess | null = null;
@@ -4097,7 +4110,7 @@ function previewSystemPrompt(bot: BotRecord) {
     { id: "cloud-home", label: "My Cloud", text: CLOUD_HOME ? cloudHomePrompt(agentsMounted && lendingEnabled()) : "" },
     { id: "composio", label: "Connected apps", text: caps?.composioMcp && bot.composio !== false && composio.configured(cfg) ? composioSystemPrompt(bot.connectorTools) + describeConnectorScopes(bot.connectorScopes) : "" },
     { id: "mcp", label: "MCP servers", text: caps?.customMcp ? customMcpPrompt(Object.keys(engineMcpServers(bot))) : "" },
-    { id: "browser", label: "Browser", text: previewPlan.browser ? BUILT_IN_BROWSER_SYSTEM_PROMPT : "" },
+    { id: "browser", label: "Browser", text: previewPlan.browser ? browserPromptFor(bot.id, agentsMounted) : "" },
     { id: "coordination", label: "Team", text: agentsMounted && coordination ? ` ${coordination}` : "" },
     { id: "credential", label: "Credentials", text: agentsMounted ? CREDENTIAL_PROMPT : "" },
     { id: "routine", label: "Routines", text: agentsMounted ? ROUTINE_PROMPT : "" },
@@ -11159,7 +11172,7 @@ async function startTurn(
         // bot whose driver actually mounted the tools
         { id: "composio", label: "Connected apps", text: integrations.composio ? composioSystemPrompt(liveBot?.connectorTools ?? bot.connectorTools) + describeConnectorScopes((liveBot ?? bot).connectorScopes) : "" },
         { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) },
-        { id: "browser", label: "Browser", text: integrations.browser ? BUILT_IN_BROWSER_SYSTEM_PROMPT : "" },
+        { id: "browser", label: "Browser", text: integrations.browser ? browserPromptFor(bot.id, Boolean(integrations.agents)) : "" },
         { id: "data", label: "Data", text: integrations.data ? BUILT_IN_DATA_SYSTEM_PROMPT : "" },
         { id: "coordination", label: "Team", text: coordinationPrompt ? ` ${coordinationPrompt}` : "" },
         { id: "assignment", label: "Teammate task", text: coordinationNode?.parentId ? `\n${coordinationSystemInstructions()}` : "" },
@@ -13605,7 +13618,7 @@ async function runGroupMemberTurn(
     { id: "team-computer", label: "Team computer", text: teamComputerPrompt(roomTeamComputer) },
     { id: "plan", label: "Surface", text: surfacePrompt({ computer: roomTeamComputer ? "cloud" : roomVmTarget ? "vm" : surfaceOfComputerKind(roomComputerKind), browser: Boolean(integrations.browser) }, { note: roomPlan.note, cloudHome: Boolean(CLOUD_HOME) }) },
     { id: "cloud-home", label: "My Cloud", text: CLOUD_HOME ? cloudHomePrompt(Boolean(integrations.agents) && lendingEnabled()) : "" },
-    { id: "browser", label: "Browser", text: integrations.browser ? BUILT_IN_BROWSER_SYSTEM_PROMPT : "" },
+    { id: "browser", label: "Browser", text: integrations.browser ? browserPromptFor(bot.id, Boolean(integrations.agents)) : "" },
     { id: "data", label: "Data", text: integrations.data ? BUILT_IN_DATA_SYSTEM_PROMPT : "" },
     { id: "recall", label: "Recall", text: integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "" },
     teamAvailabilityPart(outsideRoom),
@@ -15793,8 +15806,10 @@ function signInMessage(botId: string, threadId: string, messageId: string): Mess
 /** Done or Cancel. The person hands back what they held for the sign-in,
  * its plea goes, and the bot resumes through the credential card's own
  * continuation. Pressing the same answer again only retries a resume that
- * failed; the other answer, or a superseded card, is refused. */
-function settleSignIn(botId: string, threadId: string, messageId: string, outcome: "done" | "cancelled"):
+ * failed; the other answer, or a superseded card, is refused. `saved`: the
+ * card was answered by saving a login for that host (saveLoginFromCard), so
+ * the bot is told to call fill_login. */
+function settleSignIn(botId: string, threadId: string, messageId: string, outcome: "done" | "cancelled", saved?: { host: string }):
   { status: number; body: Record<string, unknown> } {
   const bot = store.bot(botId);
   const message = signInMessage(botId, threadId, messageId);
@@ -15811,11 +15826,111 @@ function settleSignIn(botId: string, threadId: string, messageId: string, outcom
     if (card.place === "browser") browserLive.handBack(currentBrowserSession(bot.id, bot.browserProfile));
     else for (const key of pleaded.length ? pleaded : [botComputerControlKey(bot)]) computerControl.release(key);
   }
+  const savedLogin = saved?.host ?? card.savedLogin;
   store.patchMessage(threadId, message.id, {
-    signIn: { ...card, ...(outcome === "done" ? { done: true } : { cancelled: true }), resumed: true, error: undefined },
+    signIn: { ...card, ...(outcome === "done" ? { done: true } : { cancelled: true }), ...(savedLogin ? { savedLogin } : {}), resumed: true, error: undefined },
   });
-  dispatchSecretResume({ botId, threadId, messageId: message.id, prompt: signInResumePrompt(card.site, outcome) });
-  return { status: 200, body: { [outcome]: true, resumed: true } };
+  dispatchSecretResume({ botId, threadId, messageId: message.id,
+    prompt: savedLogin ? savedLoginResumePrompt(savedLogin) : signInResumePrompt(card.site, outcome) });
+  return { status: 200, body: { [outcome]: true, resumed: true, ...(savedLogin ? { saved: true, host: savedLogin } : {}) } };
+}
+
+/** The card's second answer: the person saves a login for the page the
+ * card names (its exact host), usable by the asking bot, and the bot
+ * resumes to call fill_login there. The login is saved before the card
+ * settles, so a refused or failed save leaves the card open. */
+function saveLoginFromCard(botId: string, threadId: string, messageId: string, body: Record<string, unknown>):
+  { status: number; body: Record<string, unknown> } {
+  const message = signInMessage(botId, threadId, messageId);
+  if (!store.bot(botId) || !message?.signIn) return { status: 404, body: { error: "no such sign-in request" } };
+  const card = message.signIn;
+  if (card.superseded) return { status: 409, body: { error: "this sign-in request was superseded by a newer one" } };
+  if (signInOutcome(card)) return { status: 409, body: { error: "this sign-in request was already answered" } };
+  let host: string;
+  try { host = new URL(card.url).hostname.toLowerCase(); }
+  catch { return { status: 409, body: { error: "this sign-in request has no page address to save a login for" } }; }
+  const fields = parseLoginFields(body, { passwordRequired: true });
+  if (!fields.ok) return { status: 400, body: { error: fields.error } };
+  const totp = parseTotpField(body.totp);
+  if (!totp.ok) return { status: 400, body: { error: totp.error } };
+  logins.create({ host, username: fields.value.username ?? "", password: fields.value.password!, totp: totp.value ?? null, source: "card", bots: [botId] });
+  return settleSignIn(botId, threadId, messageId, "done", { host });
+}
+
+/** The browser section of a turn's prompt: the built-in browser's tools and
+ * sign-in policy, and — where fill_login is mounted (the agents tools) — the
+ * saved logins this bot may sign in with, by host and username only. */
+function browserPromptFor(botId: string, agentsMounted: boolean): string {
+  return BUILT_IN_BROWSER_SYSTEM_PROMPT + (agentsMounted ? savedLoginsPrompt(availableLogins(botId)) : "");
+}
+
+/** Every host and username this bot has a login for. */
+function availableLogins(botId: string): Array<{ host: string; username: string }> {
+  return logins.hostsFor(botId);
+}
+
+/** The logins this bot may use on exactly this host, secrets read only
+ * when one is filled. */
+function loginCandidates(botId: string, host: string): FillCandidate[] {
+  return logins.usableFor(host, botId).map((login) => ({
+    id: login.id, host: login.host, username: login.username, source: login.source,
+    secrets: async () => ({ password: login.password, totp: login.totp ?? null }),
+  }));
+}
+
+/** Where fill_login cannot reach yet, in the words the panel uses. */
+const FILL_LOGIN_ELSEWHERE: Record<Surface, string> = {
+  browser: "your built-in browser",
+  local: "this computer",
+  vm: "the Local VM",
+  cloud: "the cloud computer",
+};
+
+/** A bot's fill_login: the login page open in the browser this turn works
+ * in, filled by the server (server/login-fill.ts) as one browser action, so
+ * a person holding the browser pauses it like any other. The answer is a
+ * status in words, never a value. */
+async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, rawUsername: unknown): Promise<{ ok: boolean; text: string }> {
+  const threadId = capability.threadId;
+  const place = signInPlace(bot, threadId);
+  if (place !== "browser") {
+    return { ok: false, text: place
+      ? `fill_login works in the built-in browser and My Chrome, not on ${FILL_LOGIN_ELSEWHERE[place]} yet. Call request_sign_in so the person signs in there.`
+      : "fill_login works in the built-in browser, and this conversation has none. Call request_sign_in instead." };
+  }
+  const current = botForThread(bot.id, threadId) ?? bot;
+  if (current.browser === false || current.computer === "off" || !builtInBrowserEnabled(cfg)) {
+    return { ok: false, text: "The built-in browser is off for you here, so fill_login has nothing to fill. Call request_sign_in instead." };
+  }
+  const engine = browserEngineStatus();
+  if (engine.kind !== "ready") return { ok: false, text: "The browser is not available on this computer right now. Call request_sign_in instead." };
+  const session = currentBrowserSession(current.id, current.browserProfile);
+  const profileTarget = current.browserProfile && current.browserProfile !== "guest" ? browserProfilePartitionTarget(cfg, current.browserProfile) : null;
+  const spec = usedBrowserSessions.get(session) ?? browserSessionSpec(engine.binaryPath, session, profileTarget?.profileId ?? current.browserProfile);
+  if (!claimTurnResource(capability, `browser:${session}`)) {
+    return { ok: false, text: "Another conversation is using this browser. Wait until it finishes, then call fill_login again." };
+  }
+  const env = browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session });
+  const username = typeof rawUsername === "string" ? rawUsername.slice(0, 512) : undefined;
+  try {
+    const outcome = await browserRuntime.withAgentAction(session, () => fillLogin({
+      username,
+      candidates: async (host) => loginCandidates(bot.id, host),
+      available: async () => availableLogins(bot.id),
+    }, {
+      engine: (args) => inRunningBrowser(spec.command, env, args),
+      insertText: streamInsertText,
+      remember: (value, kind) => heldSecrets.remember(value, kind),
+    }));
+    if (outcome.ok && outcome.loginId) logins.markUsed(outcome.loginId);
+    return { ok: outcome.ok, text: outcome.text };
+  } catch (error) {
+    if (error instanceof Error && error.message === BROWSER_CONTROL_REFUSAL) {
+      return { ok: false, text: "The person is using this browser right now. Wait for them to hand it back, then call fill_login again." };
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ok: false, text: `Could not fill the login: ${redactSecretsInText(reason)} Call request_sign_in if it keeps failing.` };
+  }
 }
 
 bus.subscribe((event: RuntimeEvent) => {
@@ -16566,7 +16681,7 @@ ROUTES.push(createBotMemoryRoutes({
   },
 }));
 ROUTES.push(createDeciderRoutes({ decider }));
-ROUTES.push(createSignInCardRoutes({ settle: settleSignIn }));
+ROUTES.push(createSignInCardRoutes({ settle: settleSignIn, saveLogin: saveLoginFromCard }));
 ROUTES.push(createBrowserSiteRoutes({
   target: (which) => {
     const engine = browserEngineStatus();
@@ -16590,6 +16705,13 @@ ROUTES.push(createBrowserSiteRoutes({
   },
   list: (target) => listSignedInSites(target),
   signOut: (target, site) => signOutOfSites(target, site),
+}));
+ROUTES.push(createLoginRoutes({
+  list: () => logins.list(),
+  create: (input) => logins.create(input),
+  update: (id, patch) => logins.update(id, patch),
+  remove: (id) => logins.remove(id),
+  botExists: (id) => Boolean(store.bot(id)),
 }));
 // The usage ledger (JSON and CSV). Admin scope stays in server/request-auth.ts.
 ROUTES.push(createUsageRoutes({
@@ -19196,6 +19318,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const body = await readInternalBody();
         const result = requestSignIn(internalSender, internalCapability.threadId, body.site, body.reason);
         return "error" in result ? json(res, result.status, { error: result.error }) : json(res, 201, result);
+      }
+      if (method === "POST" && path === "/api/internal/fill-login") {
+        const body = await readInternalBody();
+        const outcome = await fillLoginForTurn(internalSender, internalCapability, body.username);
+        // A turn stopped while the page was filled receives no answer.
+        requireActiveInternalCapability();
+        return json(res, 200, outcome);
       }
       if (method === "POST" && path === "/api/internal/voice-note") {
         const body = await readInternalBody();

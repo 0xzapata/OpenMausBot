@@ -687,8 +687,9 @@ export interface SecretRequestCardData {
 }
 
 /** A bot asked the person to sign in to a website themselves
- * (shared/sign-in-request.ts). OpenMausBot never sees the password: the
- * person types it into the page, in the place the bot works. */
+ * (shared/sign-in-request.ts): they type the password into the page, in the
+ * place the bot works, or save a login the server fills for the bot. The
+ * bot never sees the password either way. */
 export interface SignInRequestCardData {
   /** The page to open, an http(s) address. */
   url: string;
@@ -703,6 +704,9 @@ export interface SignInRequestCardData {
   /** A newer request for the same site in this conversation replaced this
    * card; it no longer offers Done or Cancel. */
   superseded?: boolean;
+  /** Answered by saving a login (shared/logins.ts): the exact host it was
+   * saved for, which the bot then fills with fill_login. */
+  savedLogin?: string;
   resumed?: boolean;
   error?: string;
 }

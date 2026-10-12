@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { addHeldSecretScrubber, HELD_SECRET_MASK } from "../shared/redact.ts";
 import { BrowserRuntime, TransportError, browserRuntimeEnv, type BrowserSpawnSpec } from "./browser-runtime.ts";
 
 const runtimes: BrowserRuntime[] = [];
@@ -221,6 +222,8 @@ lines.on('line', line => {
   else if (m.params.name === 'agent_browser_snapshot' && process.env.HANG_VERIFICATION === '1') return;
   else if (m.params.name === 'agent_browser_snapshot' && process.env.EMPTY_VERIFICATION === '1') result = { content:[] };
   else if (m.params.name === 'agent_browser_snapshot' && process.env.FAIL_VERIFICATION === '1') result = { isError:true, content:[{type:'text',text:'Snapshot unavailable'}] };
+  // LEAK: a page that shows a filled password back, in every kind of result.
+  else if (process.env.LEAK && m.params.name !== 'agent_browser_get_url') result = { content:[{type:'text',text:'page says ' + process.env.LEAK},{type:'image',data:'AAAA',mimeType:'image/png'}], structuredContent:{ value: process.env.LEAK } };
   else if (m.params.name === 'agent_browser_eval' && process.env.FAIL_EVAL === '1') result = { isError:true, content:[{type:'text',text:'Evaluation failed'}] };
   else if (m.params.name === 'agent_browser_eval') result = { content:[{type:'text',text:JSON.stringify(JSON.stringify({ url:'http://fixture.test/', title:'Fixture', text:pageText + '\\nSay hello' }))}] };
   else if (m.params.name === 'agent_browser_click' && m.params.arguments.selector === '#missing') result = { isError:true, content:[{type:'text',text:'Element not found: #missing'}] };
@@ -246,6 +249,24 @@ function daemonSpec(): { spec: BrowserSpawnSpec; busy: string; calls: () => stri
 }
 
 describe("server-owned browser MCP runtime", () => {
+  it("hands no held secret back to the bot: snapshot, eval, page text, console and network results are all scrubbed", async () => {
+    const leaked = "fake-filled-Passw0rd";
+    // The default scrubber is the server's registry (shared/redact.ts), as in production.
+    const remove = addHeldSecretScrubber((text) => text.split(leaked).join(HELD_SECRET_MASK));
+    try {
+      const value = runtime();
+      const leaking = spec();
+      leaking.env.LEAK = leaked;
+      for (const name of ["agent_browser_snapshot", "agent_browser_eval", "agent_browser_read", "agent_browser_get_text", "agent_browser_console", "agent_browser_network_requests"]) {
+        const result = await value.agentRpc("leaky", leaking, "tools/call", { name, arguments: {} }) as { content: Array<{ type: string; text?: string; data?: string }> };
+        expect(JSON.stringify(result), name).not.toContain(leaked);
+        expect(result.content[0]!.text, name).toBe(`page says ${HELD_SECRET_MASK}`);
+        // A screenshot passes as it is: it cannot be scrubbed.
+        expect(result.content[1], name).toEqual({ type: "image", data: "AAAA", mimeType: "image/png" });
+      }
+    } finally { remove(); }
+  });
+
   it("captures nothing of the page while a person holds it to sign in: no screenshot, snapshot or preview frame", async () => {
     const value = runtime();
     const daemon = daemonSpec();
