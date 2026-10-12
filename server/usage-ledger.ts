@@ -15,12 +15,18 @@ import { billableFor, type PriceList } from "./prices.ts";
 
 /** Who asked for the turn. A person is named by the email they signed in
  * with when the server knows it (email sign-in), else by their device
- * label; `owner` is the machine itself (loopback, the desktop app). */
+ * label; `owner` is the machine itself (loopback, the desktop app).
+ * `helper` is a small writing job the helper model did for a bot whose own
+ * engine cannot (server/side-jobs.ts): the row's bot is that bot, its
+ * instance and model are the helper's, and `job` says which job. Kept apart
+ * from `bot` so what the helper costs can be read on its own. A reader that
+ * predates it files the row under `bot`. */
 export type UsageTrigger =
   | { kind: "user"; email?: string; label?: string }
   | { kind: "owner" }
   | { kind: "routine"; routineId?: string; label?: string }
-  | { kind: "bot"; botId?: string };
+  | { kind: "bot"; botId?: string }
+  | { kind: "helper"; botId?: string; job?: string };
 
 export interface UsageRow {
   at: string;
@@ -232,6 +238,8 @@ export function triggerKey(trigger: UsageTrigger): string {
       return "owner";
     case "routine":
       return `routine:${trigger.routineId ?? trigger.label ?? "unknown"}`;
+    case "helper":
+      return "helper";
     default:
       return "bot";
   }
@@ -245,6 +253,8 @@ export function triggerLabel(trigger: UsageTrigger): string {
       return "This computer";
     case "routine":
       return `Routine: ${trigger.label ?? trigger.routineId ?? "unknown"}`;
+    case "helper":
+      return "Helper model";
     default:
       return "Bot to bot";
   }
