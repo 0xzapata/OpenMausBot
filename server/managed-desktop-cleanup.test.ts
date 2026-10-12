@@ -66,6 +66,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
   // stop awaiting the conversation's teammates, cancel the person's message.
   const directRequestOwners = new Map<string, { messageId?: string; stopped: boolean; generations: Set<string> }>();
   const stopAwaiting: string[] = [], patched: Array<[string, string, object]> = [];
+  const stoppedCards: string[] = [];
   for (const threadId of threadIds) {
     const bot = { id: threadId, busy: true, modelSelection: { instanceId: "company" } };
     bots.set(threadId, bot); tasks.set(threadId, { threadId, busy: true });
@@ -104,7 +105,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
     autoVmClaims,
     turnResources: { release() {} }, settlingResourceOwners: new Map(), turnComputerResources: new Map(), teamComputerTurns: new Map(),
     coordinator: { stopAwaitingDirect: (threadId: string) => { stopAwaiting.push(threadId); return []; } },
-    noteTeammatesLeftRunning() {},
+    noteTeammatesLeftRunning() {}, stopParkedCards: (threadId: string) => stoppedCards.push(threadId),
     cancelDirectTurnDispatch: (_botId: string, threadId: string) => cancelled.push(threadId),
     cancelGroupTurnOperations: (_groupId: string, threadId: string, outcome?: { status: string; detail: string; byHarness?: boolean }) => {
       cancelled.push(threadId);
@@ -310,15 +311,18 @@ const turnResultCode = ts.transpileModule([
 
 function turnResultFixture() {
   const state = { cards: [] as Array<{ id: string; waits: string }> };
-  const parkedRootsToReconcile = new Set<string>();
+  const parkedNodesToReconcile = new Set<string>();
   const context = vm.createContext({
     resumableCards: () => state.cards,
-    parkedRootsToReconcile,
+    parkedNodesToReconcile,
+    // The evidence builders (turn-outcome.ts) are not under test here.
+    turnRows: () => [],
+    turnEvidence: () => ({}),
   });
   vm.runInContext(turnResultCode, context, { filename: "index.ts (turn result fixture)" });
   const root = { id: "root-1", threadId: "t", botId: "b", createdAt: 1 };
   return {
-    state, parkedRootsToReconcile,
+    state, parkedNodesToReconcile,
     parks: context.computerParks as Map<string, string>,
     seats: context.parkedSeats as Map<string, string>,
     freeNote: context.COMPUTER_FREE_NOTE as string,
@@ -330,7 +334,8 @@ function turnResultFixture() {
 it("a turn parked at the computer wait ceiling ends as a continuation of its root, queued on the seat", () => {
   const f = turnResultFixture();
   f.parks.set("g1", "computer:host");
-  expect(f.end(f.root, "g1", { ok: false, text: "parked" })).toEqual({ ok: false, text: "parked", cap: { note: f.freeNote } });
+  // Every direct result carries the execution's evidence (here the stub's empty one); a seat wait leaves it progress-unknown.
+  expect(f.end(f.root, "g1", { ok: false, text: "parked" })).toEqual({ ok: false, text: "parked", evidence: {}, cap: { note: f.freeNote } });
   expect(f.freeNote).toContain("the computer this conversation waited for is free again");
   expect(f.seats.get("root-1")).toBe("computer:host");
   // The seat is read once, where that turn settles.
@@ -350,18 +355,18 @@ it("a root whose turn left resumable cards parks on them, and is looked at again
   const f = turnResultFixture();
   f.state.cards = [{ id: "card-1", waits: "provide the OpenAI API key" }, { id: "card-2", waits: "connect Gmail" }];
   expect(f.end(f.root, "g1", { ok: true, text: "asked" })).toEqual({
-    ok: true, text: "asked",
+    ok: true, text: "asked", evidence: {},
     cards: { question: "Waiting on the person: provide the OpenAI API key; connect Gmail", ids: ["card-1", "card-2"] },
   });
-  expect([...f.parkedRootsToReconcile]).toEqual(["root-1"]);
+  expect([...f.parkedNodesToReconcile]).toEqual(["root-1"]);
   expect(f.seats.size).toBe(0);
 });
 
 it("a turn that left nothing open ends its root as it ended", () => {
   const f = turnResultFixture();
   const outcome = { ok: true, text: "done" };
-  expect(f.end(f.root, "g1", outcome)).toBe(outcome);
-  expect(f.parkedRootsToReconcile.size).toBe(0);
+  expect(f.end(f.root, "g1", outcome)).toEqual({ ...outcome, evidence: {} });
+  expect(f.parkedNodesToReconcile.size).toBe(0);
 });
 
 // The runtime's admission hook for a direct node (createCoordinator's
