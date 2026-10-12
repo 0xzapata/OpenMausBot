@@ -69,6 +69,7 @@ Regression checks (all use disposable fixtures):
 pnpm exec vitest run server/runtime/ server/runtime-coordinator.test.ts server/direct-coordination.e2e.test.ts server/room-coordination.e2e.test.ts
 pnpm exec vitest run server/delta-context.e2e.test.ts -t "restart"
 pnpm exec vitest run server/full-access-workflows.e2e.test.ts server/room-recovery.e2e.test.ts
+pnpm exec vitest run server/room-roots.e2e.test.ts
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/direct-coordination-ui.e2e.test.ts
 ```
 
@@ -111,6 +112,27 @@ the sender resumes in the original conversation. A lead can consult its own
 specialists; it never inherits the parent Chief's cross-team access or permissions.
 Advice is not a verification
 receipt: the lead must ask the reviewer to run the requested checks.
+
+Every room member's turn is a root of the runtime, as a person's turn in a
+direct chat is (docs/runtime-contract.md §1, §10 PR 5): a chat-round
+responder, a chained @mention, a goal step and a card continuation alike. Its
+hand-offs (`coordinate_bots` from the member) are that root's children; a room
+turn with no hand-offs leaves one row and nothing under it. A member's card (a
+credential, a connection, a team-setup decision, a sign-in) parks that
+member's root and no other member's; the room keeps accepting messages while
+it waits; the person's act on the card runs the member again with the lane's
+line, as in a direct chat. Stop in the room settles a parked member's cards as
+stopped: a card completed afterwards saves its facts and starts nothing. The
+computer wait ceiling queues the member's root to continue when the seat
+frees, as it does a direct root ([computer-wait](computer-wait.md)); a goal
+step parked that way is routed around by its run and never run a second time.
+A restart reruns a member's cut turn once in place (the room shows "Resuming
+after a restart" from the member and no interrupted line), never one that
+already acted outward, and never a goal step whose run ended with the restart.
+`server/room-roots.e2e.test.ts` proves each of these on the real server with
+the scripted engine; `server/room-coordination.e2e.test.ts` reads the same
+rows for every hand-off it checks (a refused call leaves no hand-off row; a
+restart leaves the sender's root resumed once, never rerun).
 
 Outside a room, a conversation has one thread with each recipient, titled
 “@Clive · work”. The first request opens it; every later request from that
