@@ -2959,6 +2959,43 @@ describe("run on startup", () => {
     expect(booted.listRoutines()[0].nextRunAt).toBeGreaterThan(routine.nextRunAt! + 13 * 60 * 60_000);
   });
 
+  it.each([2, 14])("does not start an interval that ended offline after %s hours", async (hours) => {
+    const h = harness(start);
+    const endsAt = start + hours * 60 * 60_000;
+    const routine = h.manager.create(daily({ runOnStartup: true,
+      schedule: { type: "interval", everyMinutes: 60, anchorAt: start, endsAt } }));
+    h.setNow(endsAt + 1);
+    const booted = new RoutineManager(h.options);
+    booted.start();
+    try {
+      await expect.poll(() => booted.isTicking).toBe(false);
+      expect(h.started).toHaveLength(0);
+      expect(booted.listRuns()).toHaveLength(1);
+      expect(booted.listRuns()[0]).toMatchObject({ routineId: routine.id, triggerSource: "schedule", status: "missed" });
+      expect(booted.listRoutines()[0]).toMatchObject({ enabled: false, nextRunAt: null });
+      expect(new RoutineManager(h.options).listRoutines()[0]).toMatchObject({ enabled: false, nextRunAt: null });
+    } finally {
+      booted.stop();
+    }
+  });
+
+  it.each([-1, 0])("still allows startup just before or at the inclusive interval end (%s ms)", async (offset) => {
+    const h = harness(start);
+    const endsAt = start + 14 * 60 * 60_000;
+    h.manager.create(daily({ runOnStartup: true,
+      schedule: { type: "interval", everyMinutes: 60, anchorAt: start, endsAt } }));
+    h.setNow(endsAt + offset);
+    const booted = new RoutineManager(h.options);
+    booted.start();
+    try {
+      await expect.poll(() => h.started.length).toBe(1);
+      expect(booted.listRuns()).toHaveLength(1);
+      expect(booted.listRuns()[0]).toMatchObject({ triggerSource: "startup", status: "running", scheduledFor: endsAt + offset });
+    } finally {
+      booted.stop();
+    }
+  });
+
   it("runs once per desktop launch, not again when that launch restarts its server", async () => {
     const h = harness(start);
     h.manager.create(daily({ runOnStartup: true }));

@@ -1549,7 +1549,8 @@ export class RoutineManager {
     if (launchId !== undefined && launchId === this.startupLaunchId) return true;
     const now = this.now();
     const flagged = this.routines.filter((routine) =>
-      routine.enabled && routine.runOnStartup && routine.schedule.type !== "once");
+      routine.enabled && routine.runOnStartup && routine.schedule.type !== "once" &&
+      (routine.schedule.type !== "interval" || routine.schedule.endsAt === undefined || now <= routine.schedule.endsAt));
     const marked = flagged.filter((routine) =>
       !(routine.nextRunAt != null && routine.nextRunAt <= now && now - routine.nextRunAt <= CATCH_UP_MS) &&
       !this.runs.some((run) => run.routineId === routine.id && ["queued", "running", "waiting"].includes(run.status)));
