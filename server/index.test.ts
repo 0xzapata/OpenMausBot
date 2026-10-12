@@ -448,6 +448,7 @@ beforeAll(async () => {
   mkdirSync(join(home, ".openmausbot"), { recursive: true });
   mkdirSync(join(staticDir, "assets"), { recursive: true });
   writeFileSync(join(staticDir, "index.html"), "<!doctype html><title>Packaged OpenMausBot</title>");
+  writeFileSync(join(staticDir, "manifest.webmanifest"), '{"name":"Fixture web app","display":"standalone","start_url":"/"}');
   writeFileSync(join(staticDir, "assets", "smoke.css"), "body { color: white; }");
   writeFileSync(
     join(home, ".openmausbot", "config.json"),
@@ -1737,6 +1738,11 @@ describe("harness HTTP API", () => {
     const index = await fetch(`${BASE}/index.html`);
     expect(index.headers.get("cache-control")).toBe("no-cache");
     await index.arrayBuffer();
+
+    const manifest = await fetch(`${BASE}/manifest.webmanifest`, { headers: { host: "workspace.example.test" } });
+    expect(manifest.status).toBe(200);
+    expect(manifest.headers.get("content-type")).toBe("application/manifest+json");
+    expect(await manifest.json()).toMatchObject({ display: "standalone" });
 
     // Content-hashed build output: the browser keeps it instead of
     // downloading the whole bundle again on every load.
