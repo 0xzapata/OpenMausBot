@@ -5,7 +5,7 @@
 // a child of the previous turn inside the current one, and the node would
 // wait on work it already returned.
 import type { RuntimeStore } from "./store.ts";
-import { terminal, type Assignment, type AssignmentEvent, type Owner } from "./types.ts";
+import { terminal, type Assignment, type Owner } from "./types.ts";
 
 /** A turn a restart cut runs again once; cut again, it ends with this. */
 export const CUT_TWICE = "Interrupted by another OpenMausBot restart after resuming once; not resumed again. Some of its steps may already have taken effect.";
@@ -34,25 +34,28 @@ export function path(store: RuntimeStore, n: Assignment): Assignment[] {
   return out;
 }
 
-const lastId = (events: readonly AssignmentEvent[], kinds: readonly AssignmentEvent["kind"][]): number => {
-  for (let i = events.length - 1; i >= 0; i--) if (kinds.includes(events[i]!.kind)) return events[i]!.id;
+/** The id of the event that began the node's latest turn that was not cut
+ * by a restart (0 when none). A turn a restart cut and set to run again
+ * never returned anything, so what "began since" it began is still owed:
+ * its rerun anchors at the turn before it. */
+export function lastStartedId(store: RuntimeStore, id: string): number {
+  const events = store.events(id);
+  let cut = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.kind === "restart_reconciled" && /: rerun /.test(event.detail ?? "")) cut += 1;
+    else if (event.kind === "started") {
+      if (cut > 0) { cut -= 1; continue; }
+      return event.id;
+    }
+  }
   return 0;
-};
-
-/** The id of the event that began the node's latest turn (0 when none). */
-export const lastStartedId = (store: RuntimeStore, id: string): number => lastId(store.events(id), ["started"]);
+}
 
 /** Children handed out by the node's latest turn: enqueued after it began. */
 export function childrenSince(store: RuntimeStore, n: Assignment): Assignment[] {
   const since = lastStartedId(store, n.id);
   return store.children(n.id).filter(c => (store.events(c.id)[0]?.id ?? 0) > since);
-}
-
-/** Awaited children that settled after the node's latest turn began: what
- * its next turn returns, in createdAt order. */
-export function settledSince(store: RuntimeStore, n: Assignment): Assignment[] {
-  const since = lastStartedId(store, n.id);
-  return awaited(store.children(n.id)).filter(c => isTerminal(c) && lastId(store.events(c.id), ["settled", "refused", "cancelled"]) > since);
 }
 
 /** The lane a node's result is written to: its requester, as recorded (a

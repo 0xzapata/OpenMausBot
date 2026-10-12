@@ -516,7 +516,8 @@ describe("RuntimeCoordinator: restarts", () => {
       expect(after.coordinator.continuesAfterRestart("chief-chat")).toBe(false);
       after.coordinator.tick();
       expect(after.host.runs).toHaveLength(1);
-      expect(after.host.runs[0]!.resumed).toBe(true);
+      // A rerun is not a resume: the host sees a fresh turn with the restart note in front.
+      expect(after.host.runs[0]!.resumed).toBe(false);
       expect(after.host.runs[0]!.text).toMatch(/^OpenMausBot restarted while your previous turn here was running and cut it off;.*\n\[OpenMausBot assignment /);
       await flush();
       expect(after.coordinator.node(node.id)).toMatchObject({ status: "completed", restarts: 1 });

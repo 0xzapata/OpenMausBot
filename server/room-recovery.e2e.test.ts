@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { handleToolCall, request } from "../scripts/mcp-server.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 
 it("boots and reports an interrupted routine back to its source room", async () => {
   const fixture = await launchVerificationServer();
@@ -79,6 +80,9 @@ it("ends the teammate work of a routine a restart failed instead of running it a
       id: "cut-run", routineId: "cut-routine", routineName: "Weekly export", botId: chief.id, target: "bot", runOn: "maus",
       threadId: chief.activeTaskId, status: "running", prompt: "Have Engineering build the export", createdAt: at, scheduledFor: at, startedAt: at,
     }] }));
+    // The tree as the server before the job runtime left it: imported once
+    // at boot into runtime.db (server/runtime/import-legacy.ts), then the
+    // routine's restart failure must take it down before any of it reruns.
     const node = { result: "", executions: 0, approvalGranted: false, kind: "work", restarts: 0, rootId: "cut-root" };
     writeFileSync(join(dataDir, "room-handoffs.json"), JSON.stringify([
       { ...node, id: "cut-root", key: "root", botId: chief.id, threadId: chief.activeTaskId, text: "Have Engineering build the export", createdAt: at, status: "source", reported: true, executions: 1 },
@@ -97,7 +101,8 @@ it("ends the teammate work of a routine a restart failed instead of running it a
     }, { timeout: 10_000, interval: 150 }).toBe(true);
     const { runs } = await request("/api/routines", {}, url) as any;
     expect(runs[0]).toMatchObject({ status: "failed", error: "OpenMausBot restarted while this routine was running" });
-    const nodes = () => JSON.parse(readFileSync(join(dataDir, "room-handoffs.json"), "utf8"));
+    const nodes = () => readHandoffs(dataDir);
+    expect(existsSync(join(dataDir, "room-handoffs.json.migrated"))).toBe(true);
     // Reported to the run's thread like any ended work; never run again.
     await expect.poll(() => nodes().find((n: any) => n.id === "cut-work")?.reported, { timeout: 10_000 }).toBe(true);
     expect(nodes().map((n: any) => [n.id, n.status, n.result])).toEqual([

@@ -56,9 +56,12 @@ At the next start (the runtime's restart policy, `server/runtime/runtime.ts` `op
   as a person's own 1:1 turn with nothing sent out, is not run again, so that
   line answers it. A crash, or Windows' `SIGTERM`, cannot write that line;
   the hand-off recovery above still runs.
-- A workspace restore is not a restart (the source may still be running): it
-  ends its copy of unsettled hand-offs, "Not resumed after workspace
-  restore.", and runs none of them.
+- A workspace restore carries the runtime's record (`runtime.db`) as a
+  database snapshot, like `messages.db`, and rewrites nothing in it. At the
+  next start the restart policy above applies to what the restore brought: a
+  cut teammate turn runs again once, told to check what it already did; a
+  requester cut after handing out work waits for that work; queued work and
+  owed resumes go ahead.
 
 Regression checks (all use disposable fixtures):
 
@@ -295,8 +298,13 @@ already started when the person stopped the conversation above it: that process
 is left alone and reports its result. A restart runs each teammate turn it
 cut again once, in place and told to check what it already did, and tells its
 requester (see the top of this page).
-Limits: four cross-room edges, 24 child requests, 48 executions, 30 minutes per
-root. Failures return to the sender, not a false success. Model quality and
+Limits (docs/runtime-contract.md §6; `DEFAULT_LIMITS` in `server/runtime/types.ts`
+and the coordinator's overrides): depth 4; per root, 24 requests, 48 executions
+and 48 wakes since its last durable progress; a queued assignment that never
+started within 24 hours expires; four hours without durable progress fails the
+tree; a turn with no activity for 24 hours is stalled; a question to the person
+waits 30 minutes, then the assignment expires, never approved. Failures return
+to the sender, not a false success. Model quality and
 provider availability still matter; this is not a guarantee of autonomous
 correctness or permission to bypass approvals.
 

@@ -8,6 +8,7 @@ import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.
 import { request } from "../scripts/mcp-server.ts";
 import { rebuiltSessionNotice } from "./resume-recovery.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 import { openSse } from "./testing/sse.ts";
 
 /** What a fixture turn was told: the instructions its process was launched
@@ -45,7 +46,9 @@ async function fixtureSession(test: (f: any) => Promise<void>, fakeEnv: NodeJS.P
       [specialist.id]: { reply: "CSV boundary cases verified" },
     };
     const save = () => writeFileSync(planPath, JSON.stringify(plan));
-    const nodes = () => existsSync(join(session.info.dataDir, "room-handoffs.json")) ? JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8")) : [];
+    // The coordinated turns as the runtime records them (DATA_DIR/runtime.db),
+    // projected onto the node shape the server reads (coordinator.ts HandoffView).
+    const nodes = () => readHandoffs(session.info.dataDir);
     const evidence = () => existsSync(`${planPath}.evidence.jsonl`) ? readFileSync(`${planPath}.evidence.jsonl`, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
     const messages = async (threadId: string) => (await api(`/api/threads/${threadId}/messages`)).messages;
     const start = async () => { save(); return cli("send", "--bot", chief.id, "--task", chief.activeTaskId, "--text", "Please have Engineering build and independently verify a CSV export. Own the result."); };
@@ -266,8 +269,11 @@ it.each(["resume", "stop", "failed resume", "failed root"] as const)("keeps a gu
       expectedTurnId: waiting.activeTurnId, expectedExecutionId: waiting.executionId };
     if (action === "failed root") {
       await api("PATCH", `/api/bots/${f.chief.id}`, { chiefOfStaff: false, hidden: true });
+      // The runtime rechecks addresses before every dispatch (contract §8):
+      // the root is refused when its resume comes due, once the teammate
+      // mid-turn has settled, and nothing of it runs again.
+      writeFileSync(gate, "release the isolated teammate after its root lost its Chief");
       await expect.poll(() => f.nodes().find((node: any) => node.id === waiting.executionId)?.status, { timeout: 15_000 }).toBe("failed");
-      writeFileSync(gate, "release the isolated teammate after its root failed");
       const finalWait = await f.wait();
       evidence.push({ command: ["wait", "--bot", f.chief.id, "--task", threadId, "--timeout", "30"], result: finalWait });
       expect(finalWait.status).toBe("settled");
@@ -865,15 +871,24 @@ it("deleting the waiting source cancels its tree and never recreates the deleted
 }), 45_000);
 
 it("withholds direct results when the owner's cross-team grant is revoked", () => fixture(async f => {
-  f.plan[f.lead.id] = { delayMs: 3000, reply: "PRIVATE_ENGINEERING_RESULT" };
+  // The grant goes while the teammate's engine is in its turn (its ready
+  // file is written from inside it): a record that says "running" is
+  // written at dispatch, before the turn is even set up.
+  const ready = join(f.session.info.dataDir, "private-work.ready");
+  const gate = join(f.session.info.dataDir, "private-work.gate");
+  f.plan[f.lead.id] = { readyFile: ready, gateFile: gate, reply: "PRIVATE_ENGINEERING_RESULT" };
   await f.start();
-  await expect.poll(() => f.nodes().find((node: any) => node.parentId)?.status, { timeout: 15_000 }).toBe("running");
+  await expect.poll(() => existsSync(ready), { timeout: 15_000 }).toBe(true);
   await f.api(`/api/bots/${f.chief.id}`, { managedSections: [] }, "PATCH");
+  writeFileSync(gate, "finish the private work after the grant went");
   expect((await f.wait()).status).toBe("settled");
-  expect(f.nodes().find((node: any) => node.parentId).status).toBe("failed");
+  // The Chief lost access while the teammate worked: whatever the Chief's
+  // review turn was told, the private result is not in it.
   const resumed = f.evidence().find((turn: any) => turn.botId === f.chief.id && turn.resumed);
+  expect(JSON.stringify(resumed), told(resumed).slice(-1_500)).not.toContain("PRIVATE_ENGINEERING_RESULT");
+  const child = f.nodes().find((node: any) => node.parentId);
+  expect(child.status, `${JSON.stringify(child)}\n${told(resumed).slice(-1_500)}`).toBe("failed");
   expect(resumed.prompt.message.content).toContain("Result withheld");
-  expect(JSON.stringify(resumed)).not.toContain("PRIVATE_ENGINEERING_RESULT");
 }), 45_000);
 
 it("retains returned direct reports for follow-up turns but rechecks access before replay", () => fixture(async f => {
@@ -925,7 +940,7 @@ it("runs the owed direct follow-up while the same bot works in another thread", 
   await expect.poll(async () => (await chiefTasks()).find((task: any) => task.title === "Independent hold")?.busy, { timeout: 20_000 }).toBe(true);
   // The owed follow-up belongs to this conversation alone: it must dispatch
   // even while the bot stays busy in its sibling thread.
-  const root = () => f.nodes().find((node: any) => node.key === "root");
+  const root = () => f.nodes().find((node: any) => !node.parentId);
   await expect.poll(() => root()?.status, { timeout: 10_000 }).toBe("running");
   writeFileSync(gate, "");
   await expect.poll(() => root()?.status, { timeout: 10_000 }).toBe("completed");

@@ -866,6 +866,37 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
       db.exec("COMMIT");
     } finally { db.close(); }
   }
+  // The job runtime's record: a restore is not a restart, and the source may
+  // still be running its unsettled work, so the copy's ends here with the
+  // reason instead of rerunning once at the next boot (runtime contract §5
+  // applies to restarts, never to a copy). Settled rows travel as they are.
+  const runtimePath = join(prepared, "runtime.db");
+  if (existsSync(runtimePath)) {
+    const db = new DatabaseSync(runtimePath);
+    try {
+      db.exec("BEGIN");
+      const now = Date.now();
+      const update = db.prepare("UPDATE assignments SET status = 'failed', finished_at = ?, json = ? WHERE id = ?");
+      const event = db.prepare("INSERT INTO assignment_events (assignment_id, at, kind, detail) VALUES (?, ?, 'settled', ?)");
+      for (const row of db.prepare("SELECT id, json FROM assignments WHERE status NOT IN ('completed', 'failed', 'cancelled')").iterate()) {
+        const assignment: unknown = JSON.parse(String(row.json));
+        if (!record(assignment)) continue;
+        assignment.status = "failed";
+        assignment.outcome = "interrupted";
+        assignment.outcomeDetail = "Not resumed after workspace restore.";
+        assignment.result = "Not resumed after workspace restore.";
+        assignment.finishedAt = now;
+        assignment.lastActivityAt = now;
+        delete assignment.restart;
+        delete assignment.question;
+        delete assignment.answer;
+        update.run(now, JSON.stringify(assignment), row.id);
+        event.run(row.id, now, "failed: interrupted — Not resumed after workspace restore.");
+      }
+      db.exec("COMMIT");
+      db.exec("PRAGMA journal_mode = DELETE");
+    } finally { db.close(); }
+  }
   return prepared;
 }
 

@@ -382,15 +382,19 @@ export class RuntimeCoordinator implements Coordinator {
   private async run(a: Assignment, input: RunInput, signal: AbortSignal): Promise<RunResult> {
     const parent = a.parentId ? this.store.get(a.parentId) : undefined;
     const node = view(a, parent);
+    // The host's "resumed" is the requester's resume with its teammates'
+    // results, never a rerun after a restart or the turn after an answer:
+    // those open with the envelope again (and the restart note first).
+    const resumed = input.turn === "resume";
     const settled = input.settled ?? [];
-    const body = settled.length
+    const body = resumed
       ? composeResume(a, this.host.names(node, parent && this.project(parent)),
-        settled.map(child => composeReport(child, this.host.names(view(child, a), node))))
+        settled.map(child => composeReport(this.readable(child, a, node), this.host.names(view(child, a), node))))
       : input.envelope;
     // A room whose transcript already carries the brief gets the note alone;
     // a resume carries its reports either way.
-    const note = settled.length ? body : envelopeNote(body);
-    const result = await this.host.run(node, input.resumed, signal,
+    const note = resumed ? body : envelopeNote(body);
+    const result = await this.host.run(node, resumed, signal,
       { text: `${input.restartNote}${body}`, note: `${input.restartNote}${note}`, restartNote: input.restartNote });
     if (signal.aborted) return { kind: "failed", outcome: "stopped", text: result.text };
     if (!result.ok) return { kind: "failed", outcome: "provider_error", text: result.text };
@@ -407,6 +411,16 @@ export class RuntimeCoordinator implements Coordinator {
 
   private direct(a: Assignment, threadId: string): boolean {
     return a.assignee.destination.groupId === undefined && a.assignee.destination.threadId === threadId;
+  }
+
+  /** A settled child's report as its requester may read it: a route or
+   * membership that no longer admits it withholds the words (the host's
+   * validate decides, as it did for the chip), and only the reason travels. */
+  private readable(child: Assignment, parent: Assignment, parentView: HandoffView): Assignment {
+    const problem = this.host.validate(view(child, parent), parentView);
+    if (!problem) return child;
+    const { evidence: _evidence, ...rest } = child;
+    return { ...rest, result: `Result withheld: ${problem}` };
   }
 
   private project(a: Assignment): HandoffView {
