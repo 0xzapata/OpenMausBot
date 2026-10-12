@@ -1464,7 +1464,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
   const avatarSize = iconOnly ? 44 : density === "compact" ? (showThreads ? 26 : 36) : (showThreads ? 32 : 44);
   // the visible branch, so a version switch changes the row with the chat
   const visible = useVisibleMessages(bot);
-  const last = visible.at(-1);
+  const last = lastNonReceipt(visible);
   // the role from Bot Settings → Title is not drawn in the row: a row is the
   // name and what was last said. The role and the Chief of Staff mark stay
   // in the avatar's tooltip and are read out with the name.

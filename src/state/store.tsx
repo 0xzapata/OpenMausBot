@@ -171,7 +171,7 @@ export interface SecretRequestCardData {
 export interface Message {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
   text?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
@@ -186,6 +186,9 @@ export interface Message {
   routineRun?: RoutineRunCardData;
   /** Durable lifecycle receipt for a goal-driven channel run. */
   goalRun?: GroupGoalRunCardData;
+  /** call rows: one finished Live call (its id, times and length, and a
+   * title when the bot's engine named it). Never anything said on it. */
+  call?: import("../../shared/wire").LiveCallRecord;
   /** How a channel user message should be handled. Absent means ordinary chat. */
   channelMode?: "chat" | "goal";
   /** activity messages: tool name + outcome. `spoken` is the server's
@@ -198,6 +201,11 @@ export interface Message {
   /** a user message that did not come from typing here: through the
    * server's API, or spoken during a Live call. */
   via?: "api" | "call";
+  /** user lines spoken on a Live call: which call (only with via "call"). */
+  callId?: string;
+  /** The user line whose turn produced this message (activity, cards and
+   * answers), when the server could prove it. */
+  requestMessageId?: string;
   /** Provider turn that produced this message. */
   turnId?: string;
   /** Last assistant text item from a settled provider turn. */
@@ -1458,6 +1466,13 @@ export function openNotificationTarget(
 export function botOpensTo(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): string {
   return !threadsShown && bot.mainThreadId && bot.tasks?.some((task) => task.threadId === bot.mainThreadId)
     ? bot.mainThreadId : bot.threadId;
+}
+
+/** With threads hidden the bot is one conversation, its main thread; a side
+ * thread a notification, a chip or an activity row opened is a visit, so the
+ * chat header offers the way back (ChatView). Never with threads shown. */
+export function awayFromMainThread(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): boolean {
+  return !threadsShown && botOpensTo(bot, false) !== bot.threadId;
 }
 
 /** Open a bot itself: its row, its pinned circle, the palette, the + menu,
