@@ -524,15 +524,16 @@ describe("Store", () => {
     store.switchTaskModel(bot.id, first.threadId, next, true, true);
     expect(bot).toMatchObject({ modelSelection: next, approvalMode: "ask", alwaysAllow: [] });
     // The thread it was changed from now follows the bot; a sibling that
-    // follows moves to the new engine and, its Full access belonging to the
-    // old one, back to Ask; a thread's own model and level stay.
+    // follows moves to the new engine and keeps the level it had: Full
+    // carries across engines (#2697), and the reset was the bot's and the
+    // switched thread's. A thread's own model and level stay.
     expect(first.modelSelection).toBeUndefined();
-    expect(sibling).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
+    expect(sibling).toMatchObject({ approvalMode: "full", alwaysAllow: ["old-tool"] });
     expect(store.projectBotForTask(bot.id, sibling.threadId)?.modelSelection).toEqual(next);
     expect(picked).toMatchObject({ modelSelection: opus, approvalMode: "full", alwaysAllow: ["old-tool"] });
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)).toMatchObject({ modelSelection: next, approvalMode: "ask" });
-    expect(reloaded.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "ask" });
+    expect(reloaded.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "full" });
     expect(reloaded.taskByThread(bot.id, picked.threadId)).toMatchObject({ modelSelection: opus, approvalMode: "full" });
   });
 
@@ -1194,6 +1195,34 @@ describe("Store", () => {
     const persisted: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
     expect(persisted.find((bot) => bot.id === requester.id)?.alwaysAllow).toEqual(
       reloaded.bot(requester.id)?.alwaysAllow,
+    );
+  });
+
+  it("promotes task-only provider tool grants to the bot default", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const first = store.activeTask(bot.id)!;
+    const second = store.createTask(bot.id)!;
+    store.patchTask(bot.id, first.threadId, {
+      alwaysAllow: ["provider-tool:claude:linear:list_issues:config-one", "Bash:git status"],
+    });
+    store.patchTask(bot.id, second.threadId, {
+      alwaysAllow: ["provider-tool:claude:linear:list_comments:config-one"],
+    });
+
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)?.alwaysAllow).toEqual([
+      "provider-tool:claude:linear:list_comments:config-one",
+      "provider-tool:claude:linear:list_issues:config-one",
+    ]);
+    expect(reloaded.createTask(bot.id)?.alwaysAllow).toEqual([
+      "provider-tool:claude:linear:list_comments:config-one",
+      "provider-tool:claude:linear:list_issues:config-one",
+    ]);
+
+    const persisted: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
+    expect(persisted.find((candidate) => candidate.id === bot.id)?.alwaysAllow).toEqual(
+      reloaded.bot(bot.id)?.alwaysAllow,
     );
   });
 

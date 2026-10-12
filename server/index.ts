@@ -58,6 +58,7 @@ import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signIn
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode } from "./auto-approve.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
+import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
 import { updateClaudeCli } from "./claude-update.ts";
 import { configuredAccountDirectory, assertSeparateClaudeAccount, claudeAccountInfo, createClaudeAccountSchema, instanceSettingsSchema, newClaudeAccount } from "./claude-accounts.ts";
@@ -650,6 +651,7 @@ import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
+import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
@@ -8250,7 +8252,8 @@ bus.subscribe((event: RuntimeEvent) => {
       const permission = event.requestType === "permission" && !event.questions?.length;
       // A permission request here is one the provider left for a person: its
       // own mode already ran (Ask, Edits, Auto's reviewer, Custom's config).
-      // Only the person's explicit Full access or exact saved command answers.
+      // Only the person's explicit Full access, exact saved command, or exact
+      // remembered MCP read tool answers.
       // Approve for me allows a web search. The app does not guess whether
       // the action is safe. A QUESTION always reaches the human — even Full
       // access never invents an answer.
@@ -8271,10 +8274,24 @@ bus.subscribe((event: RuntimeEvent) => {
       const command = permission && asker && event.requestId && !event.requiresExplicitApproval && event.command && !guestDriven
         ? commandAllowlistCandidate({ ...event.command, providerInstanceId: event.providerInstanceId ?? asker.modelSelection.instanceId })
         : null;
+      // A person may remember one exact read-shaped tool from one configured
+      // MCP server. Bind it to the provider and current server config: a
+      // provider switch or server edit invalidates the grant rather than
+      // silently transferring it. Built-in tools and unconfigured/spoofed
+      // server names never get a durable key.
+      const providerInstanceId = asker ? event.providerInstanceId ?? asker.modelSelection.instanceId : "";
+      const providerTool = permission && asker && event.requestId && !event.requiresExplicitApproval && !guestDriven
+        ? providerMcpTool(event.tool)
+        : null;
+      const configuredMcp = providerTool && asker ? engineMcpServers(asker)[providerTool.server] : undefined;
+      const toolAllowKey = configuredMcp === undefined
+        ? null
+        : providerToolAllowKey(providerInstanceId, event.tool, configuredMcp);
       const verdict = permission && asker && event.requestId
         ? autoVerdict(effectiveApprovalMode, event.tool, {
           requiresExplicitApproval: event.requiresExplicitApproval,
           commandAllowed: Boolean(command && commandAllowlist.matches(asker.id, command)),
+          toolAllowed: Boolean(toolAllowKey && asker.alwaysAllow?.includes(toolAllowKey)),
         })
         : null;
       // Auto's reviewer is the engine's own. Claude accepts `--permission-mode
@@ -8324,7 +8341,11 @@ bus.subscribe((event: RuntimeEvent) => {
             if (outcome !== "unavailable") pushMessage({
               role: "bot", kind: "activity",
               tool: outcome === "rejected"
-                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist" ? "the saved command permission" : "Full access"}.`, ok: false }
+                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist"
+                  ? "the saved command permission"
+                  : verdict.source === "tool-allowlist"
+                    ? "the saved tool permission"
+                    : "Full access"}.`, ok: false }
                 : failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting."),
             });
             return;
@@ -8344,6 +8365,7 @@ bus.subscribe((event: RuntimeEvent) => {
             summary,
             decision: "auto-approved",
             source: verdict.source,
+            rule: verdict.source === "tool-allowlist" ? toolAllowKey ?? undefined : undefined,
           });
         })().catch(() => {
           // A receipt failure must neither crash the server nor manufacture
@@ -8376,6 +8398,10 @@ bus.subscribe((event: RuntimeEvent) => {
             ? { version: 1, questions, ...(event.origin === "output" ? { origin: "output" as const } : {}) }
             : undefined,
           commandAllowlist: command ?? undefined,
+          // Unlike the provider's session-only allow, this exact MCP read
+          // grant survives restarts and remains visible/revocable under the
+          // bot's Access settings.
+          allowKey: toolAllowKey ?? undefined,
           // Provider-owned session grants remain separate from exact commands.
           // Never on a guest's turn: an "always" for it would outlive it.
           allowSession: permission && event.allowSession && !event.requiresExplicitApproval && !guestDriven ? true : undefined,
@@ -16540,6 +16566,7 @@ ROUTES.push(createBotMemoryRoutes({
   },
 }));
 ROUTES.push(createDeciderRoutes({ decider }));
+ROUTES.push(createSignInCardRoutes({ settle: settleSignIn }));
 ROUTES.push(createBrowserSiteRoutes({
   target: (which) => {
     const engine = browserEngineStatus();
@@ -21743,6 +21770,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // the card it came from may remember it.
       const refusal = cardAnswerRefusal(auth, bot.threadId, pending.card!.requestId!, "allow");
       if (refusal) return json(res, 403, { error: refusal });
+      // This is a standing permission for the bot, not merely for the thread
+      // that happened to raise the card. Save it on the bot defaults so a
+      // fresh direct or delegated task inherits it, while also updating the
+      // current task's independent permission snapshot immediately.
+      const savedBot = store.bot(bot.id)!;
+      store.patchBot(bot.id, {
+        alwaysAllow: [...new Set([...(savedBot.alwaysAllow ?? []), allowKey])].slice(0, 200),
+      });
       store.patchTask(bot.id, bot.threadId, {
         alwaysAllow: [...new Set([...(bot.alwaysAllow ?? []), allowKey])].slice(0, 200),
       });
@@ -25613,15 +25648,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const state = currentSecretState(m[1], threadId, message.id);
       if (!state) return json(res, 409, { error: "this credential request is no longer available" });
       return json(res, 200, { dismissed: true, resumed: state.resumed });
-    }
-
-    // A sign-in card's two answers. Nothing secret crosses here: the person
-    // typed the password into the page itself, never into OpenMausBot.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/sign-in-cards\/([\w-]+)\/(done|cancel)$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      const result = settleSignIn(m[1], String(body.threadId ?? ""), m[2], m[3] === "done" ? "done" : "cancelled");
-      return json(res, result.status, result.body);
     }
 
     // Inline connection cards are bound to both the bot and the exact task
