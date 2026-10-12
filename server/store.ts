@@ -321,6 +321,14 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       error: out.secret.error ? redactSecretsInText(out.secret.error) : undefined,
     };
   }
+  if (out.signIn) {
+    // The bot's own words: a model can paste a secret into a reason too.
+    out.signIn = {
+      ...out.signIn,
+      reason: out.signIn.reason ? redactSecretsInText(out.signIn.reason) : undefined,
+      error: out.signIn.error ? redactSecretsInText(out.signIn.error) : undefined,
+    };
+  }
   return out;
 }
 
@@ -822,6 +830,20 @@ export class Store {
         b.alwaysAllow = [...new Set(migrated)];
         botsMigrated = true;
       }
+    }
+    // Early builds of durable provider-tool grants saved them only on the
+    // task that raised the approval card. The UI promised a standing bot
+    // grant, so recover those exact app-issued keys into the bot defaults;
+    // never promote ordinary task/session grants such as shell commands.
+    for (const b of this.bots) {
+      const taskProviderGrants = (b.tasks ?? []).flatMap((task) =>
+        (task.alwaysAllow ?? []).filter((key) => key.startsWith("provider-tool:")),
+      );
+      if (!taskProviderGrants.length) continue;
+      const migrated = [...new Set([...(b.alwaysAllow ?? []), ...taskProviderGrants])].slice(0, 200);
+      if (JSON.stringify(migrated) === JSON.stringify(b.alwaysAllow ?? [])) continue;
+      b.alwaysAllow = migrated;
+      botsMigrated = true;
     }
     const botIds = new Set(this.bots.map((b) => b.id));
     for (const g of this.groups) {
