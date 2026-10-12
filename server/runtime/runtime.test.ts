@@ -631,3 +631,99 @@ describe("a resume turn a restart cut", () => {
     invariants(second);
   });
 });
+
+describe("Runtime: what the host relies on for the new modes and openers", () => {
+  it("status(root) carries its children's inbox items in the resume lane too; status(child) shows its own", async () => {
+    const w = world();
+    const root = w.runtime.begin(beginReq());
+    const a = ok(w.runtime.enqueue(toBot("a", root.id)));
+    const b = ok(w.runtime.enqueue(toBot("b", root.id)));
+    w.runtime.tick(); await flush();
+    expect(w.runtime.status(root.id)?.inbox.map(i => [i.assignmentId, i.kind, i.deliveredAt])).toEqual([[a.id, "settled", undefined], [b.id, "settled", undefined]]);
+    expect(w.runtime.status(root.id)?.children.map(c => c.id)).toEqual([a.id, b.id]);
+    expect(w.runtime.status(a.id)).toMatchObject({ assignment: { id: a.id, status: "completed" }, children: [], inbox: [expect.objectContaining({ assignmentId: a.id })] });
+    expect(w.runtime.status("nope")).toBeUndefined();
+    w.runtime.end(root.id, { ok: true, text: "" });
+    w.runtime.tick(); await flush();
+    invariants(w);
+  });
+
+  it("poll and stopRequester work by run id alone, for a root whose requester has nothing else", async () => {
+    const w = world(() => "hold");
+    const ext = { kind: "external_runtime" as const, runId: "run-9" };
+    const root = w.runtime.begin(beginReq({ requester: ext, origin: { kind: "outside", source: "external_runtime" }, reply: "poll" }));
+    const a = ok(w.runtime.enqueue(toBot("a", root.id, "Do A", { requester: { kind: "bot_turn", botId: "chief", threadId: "chief-chat", runId: "run-9" }, reply: "poll" })));
+    const b = ok(w.runtime.enqueue(toBot("b", root.id, "Do B", { requester: { kind: "bot_turn", botId: "chief", threadId: "chief-chat", runId: "run-9" }, reply: "poll" })));
+    w.runner.canStartAnswer = () => w.runner.runs.length === 0;
+    w.runtime.tick();
+    expect(w.runner.runs.map(r => r.a.id)).toEqual([a.id]);
+    await w.runner.release(a.id, { kind: "completed", text: "A done" });
+    // the result is in the run's lane, and in the thread's: both owners read it
+    expect(w.runtime.poll({ runId: "run-9" }).items.map(i => i.assignmentId)).toEqual([a.id]);
+    expect(w.runtime.poll({ runId: "run-9" }).items).toEqual([]);
+    expect(w.store.inbox({ threadId: "chief-chat" }).map(i => i.assignmentId)).toEqual([a.id]);
+    expect(w.runtime.outstanding({ runId: "run-9" }).map(x => x.id)).toEqual([root.id]);
+    // the external runtime stops: what never started is dropped, the root is cancelled
+    expect(w.runtime.stopRequester({ runId: "run-9" })).toEqual([]);
+    expect(w.store.get(b.id)).toMatchObject({ status: "cancelled", outcomeDetail: "Stopped before it started" });
+    expect(w.store.get(root.id)).toMatchObject({ status: "cancelled", outcome: "stopped" });
+    expect(w.runtime.outstanding({ runId: "run-9" })).toEqual([]);
+    invariants(w);
+  });
+
+  it("a notify child never holds its parent: waiting → resume → completed while the notice still runs, and it writes no inbox item", async () => {
+    const w = world(a => a.mode === "notify" ? "hold" : undefined);
+    const root = w.runtime.begin(beginReq());
+    w.runner.canStartAnswer = false;
+    const work = ok(w.runtime.enqueue(toBot("builder", root.id)));
+    const notice = ok(w.runtime.enqueue(toBot("ops", root.id, "FYI", { mode: "notify" })));
+    expect(notice).toMatchObject({ mode: "notify", reply: "none" });
+    expect(w.runtime.outstanding({ threadId: "chief-chat" }).map(x => x.id)).toEqual([work.id]);
+    w.runtime.end(root.id, { ok: true, text: "handed out" });
+    expect(w.store.get(root.id)?.status).toBe("waiting");
+    w.runner.canStartAnswer = true;
+    w.runtime.tick(); await flush();
+    expect(w.store.get(work.id)?.status).toBe("completed");
+    expect(w.store.get(notice.id)?.status).toBe("running");
+    w.runtime.tick();
+    expect(w.store.get(root.id)).toMatchObject({ status: "running", executions: 2 });
+    expect(w.runner.runs.at(-1)?.input.settled?.map(s => s.id)).toEqual([work.id]);
+    await flush();
+    expect(w.store.get(root.id)?.status).toBe("completed");
+    await w.runner.release(notice.id, { kind: "completed", text: "noted" });
+    expect(w.store.get(notice.id)).toMatchObject({ status: "completed", reportedAt: expect.any(Number) });
+    expect(w.store.inbox({ threadId: "chief-chat" }).map(i => i.assignmentId)).toEqual([work.id]);
+    expect(w.store.events(notice.id).some(e => e.kind === "woken")).toBe(false);
+    invariants(w);
+  });
+
+  it("an external poll root whose only children are notices completes at end()", async () => {
+    const w = world(() => "hold");
+    const ext = { kind: "external_runtime" as const, runId: "run-3" };
+    const root = w.runtime.begin(beginReq({ requester: ext, origin: { kind: "outside", source: "external_runtime" }, reply: "poll" }));
+    const notice = ok(w.runtime.enqueue(toBot("ops", root.id, "FYI", { mode: "notify", requester: { kind: "bot_turn", botId: "chief", threadId: "chief-chat", runId: "run-3" } })));
+    expect(notice.reply).toBe("none");
+    w.runtime.end(root.id, { ok: true, text: "sent a notice" });
+    expect(w.store.get(root.id)).toMatchObject({ status: "completed", outcome: "done", reportedAt: expect.any(Number) });
+    expect(w.runtime.outstanding({ runId: "run-3" })).toEqual([]);
+    w.runtime.tick();
+    expect(w.store.get(notice.id)?.status).toBe("running");
+    await w.runner.release(notice.id, { kind: "completed", text: "noted" });
+    expect(w.runtime.poll({ runId: "run-3" }).items).toEqual([]);
+    invariants(w);
+  });
+
+  it("the same words as work and as a consultation are two requests", async () => {
+    const w = world();
+    const root = w.runtime.begin(beginReq());
+    const work = ok(w.runtime.enqueue(toBot("builder", root.id, "Is the export done?")));
+    const consult = ok(w.runtime.enqueue(toBot("builder", root.id, "Is the export done?", { mode: "consult" })));
+    expect(consult.id).not.toBe(work.id);
+    expect(consult).toMatchObject({ mode: "consult", reply: "resume" });
+    expect(w.runtime.enqueue(toBot("builder", root.id, "Is the export done?", { mode: "consult" }))).toMatchObject({ ok: true, duplicate: true, assignment: { id: consult.id } });
+    w.runtime.tick(); await flush(); w.runtime.tick(); await flush();
+    w.runtime.end(root.id, { ok: true, text: "" });
+    w.runtime.tick(); await flush();
+    invariants(w);
+  });
+});

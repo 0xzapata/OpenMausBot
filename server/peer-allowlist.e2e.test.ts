@@ -25,7 +25,8 @@ import { freePortBlock } from "./testing/ports.ts";
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
 const FAKE_CLAUDE = join(SERVER_DIR, "testing", "fake-claude-cli.ts");
-const REFUSED = "not on this bot's allowed peers";
+/** The hand-off refusal for a peer off the sender's allow-list (roomHandoffProblem). */
+const REFUSED = "not an allowed peer";
 const TEST_CAPABILITY_KEY = "peer-allowlist-fixture-capability";
 
 let child: ChildProcess;
@@ -221,7 +222,7 @@ describe("peer allow-list", () => {
     }
   }, 45_000);
 
-  it("requires an explicit Chief grant for legacy consultation and revokes it on demotion", async () => {
+  it("requires an explicit Chief grant for a consultation through the ask_bot alias and revokes it on demotion", async () => {
     await hideSeededBot();
     const clive = await createBot("Clive", "plain");
     const specialist = await createBot("Engineer", "plain");
@@ -236,9 +237,11 @@ describe("peer allow-list", () => {
       const token = await mintCapability(clive.id, clive.threadId);
       expect(await peerNames(clive.id, token)).toEqual(["Engineer"]);
       const outcome = await api("POST", "/api/internal/ask-bot", { toBotId: specialist.id, message: "Review this small test plan" }, { authorization: `Bearer ${token}` });
-      expect(outcome.status).toBe(200);
+      expect(outcome.status, JSON.stringify(outcome.body)).toBe(200);
       expect(outcome.body.error).toBeUndefined();
-      expect(outcome.body.text).toBeTruthy();
+      // a consultation on the runtime: accepted now, answered in a later turn
+      expect(outcome.body.receipts).toEqual([expect.objectContaining({ botId: specialist.id, outcome: "queued" })]);
+      expect(String(outcome.body.deprecation)).toContain("ask_bot is replaced by coordinate_bots(consult: true)");
       await api("PATCH", `/api/bots/${clive.id}`, { chiefOfStaff: false });
       await api("PATCH", `/api/bots/${clive.id}`, { chiefOfStaff: true });
       expect(await peerNames(clive.id, token)).toEqual([]);
@@ -346,8 +349,9 @@ describe("peer allow-list", () => {
         { fromBotId: asker.id, toBotId: quill.id, message: "Quill, take this" },
         { authorization: `Bearer ${token}` },
       );
-      expect(allowedDelegation.status).toBe(200);
-      expect(allowedDelegation.body.queued).toBe(true);
+      expect(allowedDelegation.status, JSON.stringify(allowedDelegation.body)).toBe(200);
+      expect(allowedDelegation.body.receipts).toEqual([expect.objectContaining({ botId: quill.id, outcome: "queued" })]);
+      expect(String(allowedDelegation.body.deprecation)).toContain("delegate_bot is replaced by coordinate_bots");
     } finally {
       for (const bot of [asker, quill, patch]) {
         await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => undefined);
@@ -422,10 +426,12 @@ describe("peer allow-list", () => {
       });
       expect(allowed.status).toBe(200);
 
-      // the human said yes to a contact that is no longer permitted
+      // the human said yes to a contact that is no longer permitted: the
+      // runtime re-checks the route as it admits the hand-off, and refuses
       const outcome = await parked;
-      expect(outcome.status).toBe(200);
-      expect(String(outcome.body.error)).toBe("that bot is no longer an allowed peer");
+      expect(outcome.status, JSON.stringify(outcome.body)).toBe(409);
+      expect(String(outcome.body.error)).toContain(REFUSED);
+      expect(outcome.body.receipts).toEqual([expect.objectContaining({ botId: helper.id, outcome: "failed", detail: expect.stringContaining(REFUSED) })]);
       // and the peer turn never started: no inbound message, nothing to mirror
       expect(
         (await botMessages(helper.id)).some(

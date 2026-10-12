@@ -646,8 +646,6 @@
   "approvalMode.learnMore": "En savoir plus",
   "approvalMode.customLocalOnly": "L'autorisation personnalisée se modifie uniquement dans l'application de bureau installée",
   "approvalMode.customLocalOnlyDot": "L'autorisation personnalisée se modifie uniquement dans l'application de bureau installée.",
-  "approvalMode.antigravityLocalOnly": "Automatique (accès complet) est disponible dans l'application de bureau installée.",
-  "approvalMode.trustedLocalOnly": "Accès complet et Personnalisé sont disponibles dans l'application de bureau installée.",
   "approval.someone": "Quelqu'un",
   "approval.tool.action": "une action",
   "approval.tool.runCommand": "exécuter une commande",

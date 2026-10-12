@@ -2996,6 +2996,25 @@ describe("run on startup", () => {
     expect(restarted.listRuns().map((run) => run.triggerSource)).toEqual(["schedule"]);
   });
 
+  it("records an empty desktop launch before a startup routine is later created", async () => {
+    const h = harness(start);
+    const launched = new RoutineManager({ ...h.options, launchId: "launch-a" });
+    launched.start();
+    await launched.tick();
+    launched.stop();
+    launched.create(daily({ runOnStartup: true }));
+    const restarted = new RoutineManager({ ...h.options, launchId: "launch-a" });
+    restarted.start();
+    await restarted.tick();
+    restarted.stop();
+    expect(restarted.listRuns()).toHaveLength(0);
+    const relaunched = new RoutineManager({ ...h.options, launchId: "launch-b" });
+    relaunched.start();
+    await expect.poll(() => h.started.length).toBe(1);
+    relaunched.stop();
+    expect(relaunched.listRuns()[0]).toMatchObject({ triggerSource: "startup" });
+  });
+
   it("never marks a one-time routine, and never starts one that a file marked", async () => {
     const h = harness(start);
     const once = h.manager.create(daily({ runOnStartup: true, schedule: { type: "once", at: start + 24 * 60 * 60_000 } }));

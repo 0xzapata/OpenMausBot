@@ -646,8 +646,6 @@
   "approvalMode.learnMore": "Más información",
   "approvalMode.customLocalOnly": "La aprobación personalizada solo se cambia en la app de escritorio instalada",
   "approvalMode.customLocalOnlyDot": "La aprobación personalizada solo se cambia en la app de escritorio instalada.",
-  "approvalMode.antigravityLocalOnly": "Automático (acceso total) está disponible en la app de escritorio instalada.",
-  "approvalMode.trustedLocalOnly": "Acceso total y Personalizado están disponibles en la app de escritorio instalada.",
   "approval.someone": "Alguien",
   "approval.tool.action": "una acción",
   "approval.tool.runCommand": "ejecutar un comando",

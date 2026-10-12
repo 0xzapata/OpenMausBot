@@ -1773,8 +1773,6 @@
   "approvalMode.learnMore": "Learn more",
   "approvalMode.customLocalOnly": "Custom approval must be changed in the local packaged desktop app",
   "approvalMode.customLocalOnlyDot": "Custom approval must be changed in the local packaged desktop app.",
-  "approvalMode.antigravityLocalOnly": "Auto (full access) is available in the local packaged desktop app.",
-  "approvalMode.trustedLocalOnly": "Full and Custom are available in the packaged desktop app.",
   "onboarding.welcome": "Welcome to {app}",
   "onboarding.intro": "Bots that do real work on their own computer. Tell us who you are and we’ll let you know when big things ship.",
   "onboarding.name": "Your name",

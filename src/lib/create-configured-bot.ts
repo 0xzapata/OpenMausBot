@@ -1,4 +1,4 @@
-import { api, persistBotUpdate, type Bot } from "@/state/store";
+import { api, desktopApprovalBridge, persistBotUpdate, persistTaskApproval, type Bot } from "@/state/store";
 import type { Routine } from "./routines";
 import type { BotCreationDraft } from "./bot-creation-draft";
 import { imageAttachmentFromFile } from "./composer-attachments";
@@ -23,7 +23,7 @@ export async function createConfiguredBot(
   draft: BotCreationDraft,
   request: typeof api = api,
   update: typeof persistBotUpdate = persistBotUpdate,
-  approvals = typeof window === "undefined" ? undefined : window.ogb?.approvals,
+  approvals = desktopApprovalBridge(),
   visibility?: BotVisibility,
 ): Promise<{ bot: Bot; warnings: string[] }> {
   const template = await preparedBotTemplate(draft);
@@ -50,15 +50,17 @@ export async function createConfiguredBot(
       request, approvals, bot);
     bot = { ...bot, ...patched };
     if (profile.approvalMode === "full" || profile.approvalMode === "custom") {
-      // persistBotUpdate grants the bot default first. An initial thread is
-      // already present, so it also needs the native thread-scoped grant.
-      if (patched.approvalMode !== profile.approvalMode || !approvals) {
+      // persistBotUpdate sets the bot default first. An initial thread is
+      // already present, so it takes the level in its own write: through the
+      // desktop's private bridge when there is one, over the API for Full
+      // when there is not (Custom cannot get this far without the bridge).
+      if (patched.approvalMode !== profile.approvalMode) {
         throw new Error("The bot's requested approval level was not granted");
       }
-      const granted = await approvals.setMode(bot.id, profile.approvalMode, {
-        threadId: bot.threadId, threadOnly: true,
+      const granted = await persistTaskApproval(bot.id, bot.threadId, {
+        approvalMode: profile.approvalMode,
         acknowledgeLocalAuto: draft.consent.acknowledgeLocalAuto === true,
-      });
+      }, approvals, request);
       if (granted.approvalMode !== profile.approvalMode) {
         throw new Error("The initial thread's requested approval level was not granted");
       }
