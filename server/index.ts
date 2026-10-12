@@ -394,6 +394,7 @@ import {
   supportsWorkspaceFiles,
   updateMemory,
   appendMemoryLog,
+  memoryLogPath,
   memorySystemPrompt,
   memorySourceLabel,
   searchMemoryFiles,
@@ -408,6 +409,7 @@ import {
   endMemoryTurn,
   flushAllMemoryJournals,
   journalMemoryWrite,
+  journalTurnWrite,
   type MemoryJournalEntry,
 } from "./memory-journal.ts";
 import {
@@ -7260,7 +7262,7 @@ const memoryUpkeep = createMemoryUpkeep({
     const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
     // an engine the organisation disallows never receives memory text
     if (!bot || !instance || policyModelRefusal(instance)) return null;
-    // generateMemoryText: the ACP engines' upkeep-only one-shot, on their own provider
+    // generateMemoryText: the ACP engines' and Codex's background-only one-shot, on their own provider
     const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
     return generate ? {
       generateText: async (prompt, options) => {
@@ -7657,13 +7659,18 @@ bus.subscribe((event: RuntimeEvent) => {
     // On a Cloud home the log feeds recall in the owner's turns: only the
     // owner's own conversations leave a line.
     if (CLOUD_HOME && (room || !cloudOwnerOnlyThread(event.threadId))) return;
-    const writeLine = () => appendMemoryLog(bot.id, line, {
+    // The line lands after this turn's journal diff (endMemoryTurn), so it
+    // is journaled here as the turn's own, not left for the next turn's
+    // start to credit to the person.
+    const now = new Date();
+    const writeLine = () => journalTurnWrite(bot.id, memoryLogPath(now), event.threadId, () => appendMemoryLog(bot.id, line, {
+      now,
       source: memorySourceLabel({
         room,
         task: store.taskByThread(bot.id, event.threadId),
         threadId: event.threadId,
       }),
-    });
+    }));
     if (lendingMemory) lendingMemory.trustedWrite(bot.id, writeLine); else writeLine();
   } catch {
     // a missing note never fails a turn

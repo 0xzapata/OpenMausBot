@@ -177,6 +177,23 @@ describe("MemoryUpkeepCard", () => {
     const off = render(createElement(MemoryUpkeepCard, { enabled: false, status: null, tidying: false, onToggle: noop, onTidy: noop, rooms }));
     expect(off).not.toContain("Learn from group chats");
   });
+
+  it("says under Learn from group chats when this bot's engine can't make the background call, and only then", () => {
+    const rooms = { enabled: true, saving: false, error: "", onToggle: noop };
+    const line = "can't make the background model call this needs, so it won't learn anything from group chats";
+    const cannot = render(createElement(MemoryUpkeepCard, { enabled: true, status: { enabled: true, modelSteps: false }, tidying: false, onToggle: noop, onTidy: noop, rooms }));
+    expect(cannot).toContain(line);
+    // the line sits with the group chat switch, before the card's own note
+    expect(cannot.indexOf(line)).toBeLessThan(cannot.indexOf("can't make the quick background model call upkeep uses"));
+    expect(cannot).not.toContain("Claude and chat-model engines");
+    const can = render(createElement(MemoryUpkeepCard, { enabled: true, status: { enabled: true, modelSteps: true }, tidying: false, onToggle: noop, onTidy: noop, rooms }));
+    expect(can).toContain("Learn from group chats");
+    expect(can).not.toContain(line);
+    expect(can).not.toContain("can't make the quick background model call");
+    // switched off, the line still says what turning it on would do
+    const off = render(createElement(MemoryUpkeepCard, { enabled: true, status: { enabled: true, modelSteps: false }, tidying: false, onToggle: noop, onTidy: noop, rooms: { ...rooms, enabled: false } }));
+    expect(off).toContain(line);
+  });
 });
 
 describe("LendingReviewNotice", () => {
