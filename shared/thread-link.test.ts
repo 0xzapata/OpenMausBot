@@ -10,6 +10,7 @@ describe("thread links", () => {
     expect(threadLinkUrl("not a url")).toBeNull();
     expect(threadLinkUrl(42)).toBeNull();
     expect(threadLinkUrl(`https://example.com/${"a".repeat(2_048)}`)).toBeNull();
+    expect(threadLinkUrl(`https://example.com/${"é".repeat(1_000)}`)).toBeNull();
   });
 
   it("labels pull requests, issues, merge requests and nothing else", () => {
@@ -23,6 +24,8 @@ describe("thread links", () => {
   it("finds the last pull or merge request a reply names", () => {
     expect(lastChangeRequestUrl("Opened https://github.com/o/r/pull/1 then [#2](https://github.com/o/r/pull/2/files).")).toBe("https://github.com/o/r/pull/2");
     expect(lastChangeRequestUrl("See https://gitlab.example.com/g/r/-/merge_requests/9, done")).toBe("https://gitlab.example.com/g/r/-/merge_requests/9");
+    expect(lastChangeRequestUrl("https://github.com/o/r/pull/1 then https://github.com/o/r/pull/12abc")).toBe("https://github.com/o/r/pull/1");
+    expect(lastChangeRequestUrl("https://gitlab.example.com/g/r/-/merge_requests/9x")).toBeNull();
     expect(lastChangeRequestUrl("Issue https://github.com/o/r/issues/3 and https://example.com")).toBeNull();
   });
 });

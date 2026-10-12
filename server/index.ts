@@ -8546,7 +8546,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (completedTurnId) {
         const terminal = store.markTerminalAssistantMessage(event.threadId, completedTurnId);
         if (terminal) store.patchMessage(event.threadId, terminal.id, { turnSucceeded: event.ok });
-        if (bot) store.suggestTaskLink(bot.id, event.threadId, store.activePath(event.threadId)
+        if (bot && event.ok) store.suggestTaskLink(bot.id, event.threadId, store.activePath(event.threadId)
           .filter((message) => message.role === "bot" && message.kind === "text" && message.turnId === completedTurnId)
           .map((message) => message.text ?? "").join("\n"));
       }

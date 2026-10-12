@@ -1351,7 +1351,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   }, [lastUserMessage, bot.busy, bot.id, bot.threadId, dispatch]);
 
   const currentLink = profile.tasks?.find((task) => task.threadId === bot.threadId)?.link;
-  const threadLink = useMemo(() => canWrite
+  const threadLink = useMemo(() => canWrite !== false
     ? { link: currentLink, assign: (link: string | null) => dispatch({ type: "updateTask", botId: bot.id, threadId: bot.threadId, patch: { link } }) }
     : null, [canWrite, currentLink, bot.id, bot.threadId, dispatch]);
 
