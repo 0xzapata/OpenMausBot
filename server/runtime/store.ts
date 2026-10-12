@@ -74,6 +74,8 @@ const assignmentSchema = z.object({
   question: z.string().optional(),
   answer: z.string().optional(),
   budgets: z.object({ since: z.number(), requests: z.number(), executions: z.number(), wakes: z.number() }).optional(),
+  approved: z.boolean().optional(),
+  batchKey: z.string().optional(),
   version: z.literal(1),
 });
 

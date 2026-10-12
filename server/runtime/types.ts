@@ -139,6 +139,10 @@ export interface Assignment {
   answer?: string;
   /** On a root only: the budget window since its last durable progress. */
   budgets?: { since: number; requests: number; executions: number; wakes: number };
+  /** A peer-review card allowed this before it was sent. */
+  approved?: boolean;
+  /** A room brief shown once per call: every recipient of that call shares it. */
+  batchKey?: string;
   /** Schema version of the row. */
   version: 1;
 }
@@ -198,6 +202,10 @@ export interface EnqueueRequest {
   levels: { own: Level; chief?: Level };
   /** The assignee's engine, for the level cap (shared/approval-mode.ts). */
   driverKind?: string;
+  /** A peer-review card allowed this before it was sent. */
+  approved?: boolean;
+  /** A room brief shown once per call. */
+  batchKey?: string;
 }
 
 export type EnqueueResult =

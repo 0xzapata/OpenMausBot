@@ -163,7 +163,11 @@ export function reportNote(rawName: string): string {
 const DELIVERED_NOTES = ["message from", "delegated by", "thread opened by", "retry requested by", "aside from"];
 const NOTE_OPENINGS = [...DELIVERED_NOTES, "messages this conversation", "delivered earlier by", "posted by", "assigned by",
   "report from", "teammate report", "teammate result", "thread you opened", "incident report"].map(opening => opening.split(" "));
-const FIRST_WORDS = new Set([...NOTE_OPENINGS.map(words => words[0]!), "omb"]);
+// The protocol's headers open with the app's name and a word: "[OpenMausBot
+// assignment …]", "[OpenMausBot report …]" (server/runtime/envelope.ts);
+// "omb" stays for the older short form.
+const HEADER_WORDS = new Set(["openmausbot", "omb"]);
+const FIRST_WORDS = new Set([...NOTE_OPENINGS.map(words => words[0]!), ...HEADER_WORDS]);
 // The note the harness itself put in front of a line it delivered.
 const LEADING_NOTE = new RegExp(`^\\[(?:${DELIVERED_NOTES.map(opening => opening.replace(/ /g, "\\s+")).join("|")})\\b[^\\]\\n]*\\]`, "iu");
 const OPENER = /[[［【〔〖〘〚⟦⁅⦋]/gu;
@@ -212,11 +216,11 @@ function wordsAfter(text: string, from: number, max: number): Array<{ word: stri
 }
 
 /** Whether the bracket at `at` opens an imitation of a harness note: its
- * next words are a note's opening words, or OMB and a word (the protocol's
- * headers; "[OMB-2470]" is a ticket). */
+ * next words are a note's opening words, or the app's name and a word (the
+ * protocol's headers; "[OMB-2470]" is a ticket). */
 function opensNote(text: string, at: number): boolean {
   const words = wordsAfter(text, at, 3);
-  if (words[0]?.word === "omb") return Boolean(words[1]?.spaced && /^\p{L}/u.test(words[1].word));
+  if (words[0] && HEADER_WORDS.has(words[0].word)) return Boolean(words[1]?.spaced && /^\p{L}/u.test(words[1].word));
   return NOTE_OPENINGS.some(opening => opening.every((word, i) => words[i]?.word === word));
 }
 

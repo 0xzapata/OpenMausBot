@@ -539,3 +539,30 @@ describe("Runtime: one tree, one lane", () => {
     invariants(w);
   });
 });
+
+describe("Runtime: host-named roots and request marks", () => {
+  it("begins a root under the id the host names, or a fresh uuid", () => {
+    const w = world();
+    const named = w.runtime.begin(beginReq({ id: "gen-1" }));
+    expect(named).toMatchObject({ id: "gen-1", rootId: "gen-1", status: "running" });
+    expect(w.store.get("gen-1")?.id).toBe("gen-1");
+    const fresh = w.runtime.begin(beginReq());
+    expect(fresh.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fresh.rootId).toBe(fresh.id);
+  });
+
+  it("copies approved and batchKey onto the row and keeps them through the store", async () => {
+    const w = world();
+    const root = w.runtime.begin(beginReq({ id: "gen-2" }));
+    const marked = ok(w.runtime.enqueue(toBot("builder", root.id, undefined, { approved: true, batchKey: "batch-1" })));
+    expect(marked).toMatchObject({ approved: true, batchKey: "batch-1" });
+    expect(w.store.get(marked.id)).toMatchObject({ approved: true, batchKey: "batch-1" });
+    const plain = ok(w.runtime.enqueue(toBot("tester", root.id)));
+    expect(plain.approved).toBeUndefined();
+    expect(plain.batchKey).toBeUndefined();
+    expect("approved" in w.store.get(plain.id)!).toBe(false);
+    w.runtime.tick(); await flush();
+    expect(w.store.get(marked.id)).toMatchObject({ status: "completed", approved: true, batchKey: "batch-1" });
+    invariants(w);
+  });
+});

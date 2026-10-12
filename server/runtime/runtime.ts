@@ -31,6 +31,9 @@ export interface RuntimeOptions {
 }
 
 export interface BeginRequest {
+  /** The root's id, when the host already names the requesting turn (its
+   * generation); default a fresh uuid. */
+  id?: string;
   origin: Origin;
   /** person | routine_run | external_runtime */
   requester: Requester;
@@ -145,7 +148,7 @@ export class Runtime {
    * that turn itself and ends it with end()). */
   begin(req: BeginRequest): Assignment {
     const now = this.clock.now();
-    const id = randomUUID();
+    const id = req.id ?? randomUUID();
     const root: Assignment = {
       id, rootId: id, depth: 0, origin: req.origin, requester: req.requester, assignee: req.assignee,
       mode: "work", reply: req.reply ?? "resume", brief: clip(req.brief, BRIEF_MAX), status: "running",
@@ -219,7 +222,8 @@ export class Runtime {
       origin: root ? root.origin : req.origin, requester: req.requester, assignee: target, mode,
       reply: req.reply ?? (mode === "notify" ? "none" : "resume"), brief, ...(req.doneWhen ? { doneWhen: req.doneWhen } : {}),
       status: "queued", level, levelSource: source, executions: 0, restarts: 0, createdAt: now, lastActivityAt: now, result: "",
-      rework: Boolean(req.rework), version: 1,
+      rework: Boolean(req.rework), ...(req.approved !== undefined ? { approved: req.approved } : {}),
+      ...(req.batchKey !== undefined ? { batchKey: req.batchKey } : {}), version: 1,
     };
     if (!parent) { node.rootId = node.id; node.budgets = { since: now, requests: 0, executions: 0, wakes: 0 }; }
     const problem = this.safe("validate", () => this.runner.validate(node, parent));

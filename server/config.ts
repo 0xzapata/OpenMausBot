@@ -342,6 +342,11 @@ const featureConfigSchema = z.object({
    * read by assignment instead of per-workspace copies. Off until
    * explicitly enabled — see skillsLibraryEnabled. */
   skillsLibrary: z.boolean().optional(),
+  /** The job runtime (docs/runtime-contract.md) carries teammate
+   * coordination instead of the room-handoff tree. Off until explicitly
+   * enabled; a cut-over switch, not a setting, removed once the runtime is
+   * the only path — see runtimeEnabled. */
+  runtime: z.boolean().optional(),
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
  * it survives cleared site data and is shared by every paired client. Hint
@@ -654,7 +659,7 @@ export interface AppConfig {
    * seats shared by all conversations, with per-thread affinity (#1654). */
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean };
+  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; runtime?: boolean };
   /** First-run progress; see onboardingConfigSchema. */
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   /** Named browser sessions any bot can be pointed at. */
@@ -921,6 +926,13 @@ export function claudeUserMcpEnabled(cfg: AppConfig): boolean {
  * answers anything unusable leaves the snippet untouched. */
 export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
   return cfg.features?.llmThreadTitles === true;
+}
+
+/** Teammate coordination runs on the job runtime (server/runtime/) instead
+ * of the room-handoff tree: the config switch, or OMB_RUNTIME=1 so an e2e
+ * run can start a server with it on (scripts/control-omb.ts passes it). */
+export function runtimeEnabled(cfg: AppConfig): boolean {
+  return process.env.OMB_RUNTIME === "1" || cfg.features?.runtime === true;
 }
 
 /** Opt-in shared skills library (skills lane S1): one store at the data dir
