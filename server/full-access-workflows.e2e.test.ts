@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 
 it("applies requested Full Access workflows through MCP without duplicate approvals, while exact Ask tasks still wait", async () => {
   const fixture = await launchVerificationServer({}, undefined, undefined, undefined, undefined, { scripted: true });
@@ -194,7 +195,9 @@ it("applies requested Full Access workflows through MCP without duplicate approv
     await run(chief, chief.activeTaskId, "Have Ada independently verify the fixture reporting instructions and return the result.", [
       step("coordinate_bots", { bot_ids: [peer.id], request_key: "verify-monthly", message: "Verify the fixture reporting instructions and state your result." }),
     ], { guarded: "full", resumeReply: "Ada verified the fixture reporting instructions; requested work is complete." });
-    const handoffs = JSON.parse(readFileSync(join(dataDir, "room-handoffs.json"), "utf8"));
+    // The coordinated turns as the runtime records them (DATA_DIR/runtime.db).
+    const handoffs = readHandoffs(dataDir);
+    expect(handoffs.length).toBeGreaterThan(0);
     expect(handoffs.every((node: any) => node.status === "completed")).toBe(true);
     expect(providerTurns().filter(turn => turn.botId === peer.id)).toHaveLength(1);
     // A Full-access Chief's delegation runs Full: Ada's own level is Ask,

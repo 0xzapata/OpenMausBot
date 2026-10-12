@@ -164,3 +164,21 @@ describe("runtime store", () => {
     }
   });
 });
+
+describe("runtime store: request marks", () => {
+  it("round-trips approved and batchKey, and refuses the wrong types", () => {
+    const store = open();
+    const root = assignment("root", { status: "running" });
+    store.insert(root, { kind: "enqueued", at: 1_000 });
+    const marked = child("marked", root, { approved: true, batchKey: "batch-1" });
+    store.insert(marked, { kind: "enqueued", at: 2_000 });
+    expect(store.get("marked")).toEqual(marked);
+    expect(store.get("marked")).toMatchObject({ approved: true, batchKey: "batch-1" });
+    const plain = child("plain", root);
+    store.insert(plain, { kind: "enqueued", at: 3_000 });
+    expect("approved" in store.get("plain")!).toBe(false);
+    expect("batchKey" in store.get("plain")!).toBe(false);
+    store.insert(child("bad", root, { approved: "yes" as unknown as boolean }), { kind: "enqueued", at: 4_000 });
+    expect(() => store.get("bad")).toThrow(/does not match the record schema/);
+  });
+});

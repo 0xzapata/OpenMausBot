@@ -284,7 +284,9 @@ describe("§2 lifecycle", () => {
     const rootRuns = w.runner.runs(root.id);
     expect(rootRuns).toHaveLength(2);
     expect(rootRuns[0].input!.settled?.map((a) => a.id)).toEqual([firstRow.id]);
-    expect(rootRuns[1].input!.settled?.map((a) => a.id)).toEqual([second.id]);
+    // A resume returns every settled result of the node, so the rework's
+    // resume carries the first round's result again beside its own.
+    expect(rootRuns[1].input!.settled?.map((a) => a.id)).toEqual([firstRow.id, second.id]);
     expect(get(w, root.id).status).toBe("completed");
     expect(w.store.all()).toHaveLength(3);
     invariants(w);
