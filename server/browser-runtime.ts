@@ -19,6 +19,9 @@ const BROWSER_RESTART_TOOL_SPEC = {
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
 };
 const BROWSER_INTERRUPTED = `The browser engine is stuck. Press Restart in the Browser panel, or call ${BROWSER_RESTART_TOOL}, before using browser tools again.`;
+/** Told on the first call after an idle close (closeIfIdle). A temporary
+ * browser saves nothing, so its sign-ins went with it. */
+const idleClosedNote = (saves: boolean) => `Your browser sat unused and was closed to free memory; this call opened it again. Pages you had open are gone (${saves ? "saved sign-ins are kept" : "it is a temporary browser, so its sign-ins are gone too"}), so open the page you need again before using earlier @eN refs.`;
 const RESTART_COST = "a restart closes every tab and loses page state such as form input and sign-ins";
 /** Actions whose result also says what changed on the page, so the model
  * need not spend a step reading it back. */
@@ -308,6 +311,18 @@ interface Gate {
   lostCall: string | null;
   closing: boolean;
   changed: Set<() => void>;
+  /** Live views open on this browser (watch): it is never idle while one is. */
+  watchers: number;
+  /** The bot's MCP requests in flight (agentRpc), a tool listing included. */
+  calls: number;
+  /** When a bot, a person or a live view last used it. */
+  lastUsed: number;
+  /** Its launch settings, as last used: an idle close closes with them. */
+  spec?: BrowserSpawnSpec;
+  /** An idle close in progress: agent calls and new views wait for it. */
+  idleClose?: Promise<void>;
+  /** Closed while idle since the last agent call, which is told so. */
+  idleClosed: boolean;
 }
 
 /** A session's MCP client, the launch settings it was started with, and its
@@ -362,7 +377,7 @@ export class BrowserRuntime {
   private gate(session: string): Gate {
     let gate = this.gates.get(session);
     if (!gate) {
-      gate = { owner: null, ready: false, releasing: false, agents: 0, dispatched: 0, humans: 0, uncertain: false, lostCall: null, closing: false, changed: new Set() };
+      gate = { owner: null, ready: false, releasing: false, agents: 0, dispatched: 0, humans: 0, uncertain: false, lostCall: null, closing: false, changed: new Set(), watchers: 0, calls: 0, lastUsed: Date.now(), idleClosed: false };
       this.gates.set(session, gate);
     }
     return gate;
@@ -390,6 +405,7 @@ export class BrowserRuntime {
       return result;
     } finally {
       gate.agents--;
+      gate.lastUsed = Date.now();
       this.changed(gate);
     }
   }
@@ -415,8 +431,22 @@ export class BrowserRuntime {
    * the runtime's own recovery notes included, is scrubbed of held secrets
    * on the way out. */
   async agentRpc(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void): Promise<unknown> {
-    const result = await this.agentRequest(session, spec, method, params, beforeDispatch);
-    return method === "tools/call" ? scrubBrowserResult(result, this.scrub) : result;
+    // A call that arrives while its idle browser closes waits, then reopens
+    // it. Without one, nothing is awaited: the call is counted in the same
+    // turn of the event loop, so no idle close can start under it.
+    for (let closing = this.gates.get(session)?.idleClose; closing; closing = this.gates.get(session)?.idleClose) await closing;
+    const gate = this.gate(session);
+    gate.spec = spec;
+    gate.calls++;
+    let result: unknown;
+    try { result = await this.agentRequest(session, spec, method, params, beforeDispatch); }
+    finally { gate.calls--; gate.lastUsed = Date.now(); }
+    if (method !== "tools/call") return result;
+    if (!gate.idleClosed) return scrubBrowserResult(result, this.scrub);
+    gate.idleClosed = false;
+    const content = (result as { content?: unknown } | null)?.content;
+    const note = idleClosedNote(spec.env.AGENT_BROWSER_RESTORE_SAVE !== "never");
+    return scrubBrowserResult({ ...result as object, content: [{ type: "text", text: note }, ...Array.isArray(content) ? content : []] }, this.scrub);
   }
 
   private async agentRequest(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void): Promise<unknown> {
@@ -697,6 +727,7 @@ export class BrowserRuntime {
     if (!owner || !gate || gate.owner !== owner) return;
     gate.ready = false;
     gate.releasing = true;
+    gate.lastUsed = Date.now();
     this.changed(gate); // don't admit agents until pending human input drains.
   }
 
@@ -716,7 +747,62 @@ export class BrowserRuntime {
       }
       throw error;
     }
-    finally { gate.humans--; this.changed(gate); }
+    finally { gate.humans--; gate.lastUsed = Date.now(); this.changed(gate); }
+  }
+
+  /** A live view opened on this browser: it stays open while watched, and
+   * its idle time starts when the last view leaves. Call the returned
+   * function once the view closes. */
+  watch(session: string, spec: { command: string; args?: readonly string[]; env?: Record<string, string | undefined> }): () => void {
+    const gate = this.gate(session);
+    gate.watchers++;
+    gate.spec = { command: spec.command, args: [...spec.args ?? []], env: { ...spec.env } };
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      gate.watchers--;
+      gate.lastUsed = Date.now();
+    };
+  }
+
+  /** Resolves once an idle close of this browser in progress is over. */
+  async settled(session: string): Promise<void> { await this.gates.get(session)?.idleClose; }
+
+  /** Close a browser nothing has used for `idleMs`: no bot call, no person's
+   * hold or input, no open live view (the caller checks that no turn holds
+   * it). Saved sign-ins stay, and the next call opens it again. The same
+   * barrier as a restart, so nothing reaches the browser while it closes.
+   * A browser attached to the person's own Chrome is never closed. `spec`
+   * is its launch settings for one nothing here has called yet (a turn
+   * that has not used it): its idle time starts at this first look. */
+  async closeIfIdle(session: string, idleMs: number, spec?: { command: string; args?: readonly string[]; env: Record<string, string | undefined> }): Promise<boolean> {
+    const gate = spec ? this.gate(session) : this.gates.get(session);
+    if (gate && !gate.spec && spec) gate.spec = { command: spec.command, args: [...spec.args ?? []], env: { ...spec.env } };
+    const launch = gate?.spec;
+    if (!gate || !launch || attachesToChrome(launch.env) || !(idleMs > 0) || Date.now() - gate.lastUsed < idleMs) return false;
+    if (gate.calls || gate.agents || gate.humans || gate.owner !== null || gate.closing || gate.releasing || gate.watchers) return false;
+    gate.closing = true;
+    gate.ready = false;
+    let finished!: () => void;
+    gate.idleClose = new Promise((resolve) => { finished = resolve; });
+    this.changed(gate);
+    try {
+      if (!await this.closeBrowser(session, launch)) return false;
+      await this.clients.get(session)?.client.stop();
+      await this.clients.get(session)?.client.stop(); // see restart()
+      gate.uncertain = false;
+      gate.lostCall = null;
+      gate.idleClosed = true;
+      return true;
+    } catch {
+      return false;
+    } finally {
+      gate.closing = false;
+      gate.idleClose = undefined;
+      finished();
+      this.changed(gate);
+    }
   }
 
   /** Exclusive recovery. Unlike take(), this never waits through active work
@@ -792,7 +878,7 @@ export class BrowserRuntime {
     await this.clients.get(session)?.client.stop();
     gate.closing = false;
     this.changed(gate);
-    if (!gate.owner && !gate.agents && !gate.humans) { this.gates.delete(session); this.toolLists.delete(session); }
+    if (!gate.owner && !gate.agents && !gate.humans && !gate.watchers && !gate.calls) { this.gates.delete(session); this.toolLists.delete(session); }
   }
 
   async closeAll(): Promise<void> {

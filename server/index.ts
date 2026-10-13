@@ -62,7 +62,7 @@ import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts"
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
 import { claudeAccountInfo } from "./claude-accounts.ts";
 import {
-  BrowserCleanupCoordinator,
+  BrowserCleanupCoordinator, BrowserSweep, browserIdleMs,
   requireBrowserCleanupAcknowledged,
   type BrowserCleanupWireRequest,
 } from "./browser-lifecycle-cleanup.ts";
@@ -438,7 +438,7 @@ import {
   clearBrowserSessionState,
   closeBrowserSession,
   browserEngineStatus,
-  browserSessionId,
+  browserSessionId, isTemporaryBrowserSession,
   describeBrowserEngine,
   inRunningBrowser,
   setBrowserViewport,
@@ -3313,20 +3313,19 @@ const browserRuntime = new BrowserRuntime({
   onTiming: process.env.OMB_BROWSER_TIMING === "1" ? (timing) => console.info(formatBrowserTiming(timing)) : undefined,
 });
 const browserLive = new BrowserLive({ runtime: browserRuntime });
-// Every browser session this server has used, with its launch settings. The
-// agent-browser daemon outlives its MCP transport, so stopping the transports
-// at shutdown left the daemon and its Chrome running until the engine's
-// one-hour idle timeout. Shutdown closes these (closeServerBrowsers).
+// Every browser session this server has used, with its launch settings.
 const usedBrowserSessions = new Map<string, { command: string; env: Record<string, string> }>();
-async function closeServerBrowsers(): Promise<void> {
-  await Promise.all([...usedBrowserSessions].map(async ([session, spec]) => {
-    // A Chrome attached over CDP is the person's own; it is not ours to close.
-    if (attachesToChrome(spec.env)) return;
-    // Closing saves the session's logins, which come back on its next use.
-    const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }), 4_000);
-    if (!closed) console.warn(`browser ${session}: could not close its browser at shutdown`);
-  }));
-}
+// The agent-browser daemon outlives its MCP transport and this server: the
+// sweep closes this data dir's browsers at boot, once idle, and at shutdown
+// (server/browser-lifecycle-cleanup.ts). My Chrome is the person's own.
+const browserSweep = new BrowserSweep({
+  engine: () => { const engine = browserEngineStatus(); return engine.kind === "ready" ? engine.binaryPath : null; },
+  owns: (session) => isTemporaryBrowserSession(session) || store.bots.some((bot) => browserSessionId(bot.id, "") === session)
+    || (cfg.browserProfiles ?? []).some((profile) => !usesMyChrome(profile.id) && currentBrowserSession("", profile.id) === session),
+  live: (session) => usedBrowserSessions.has(session),
+  held: (session) => !turnResources.free(`browser:${session}`),
+  closeIdle: (session) => browserRuntime.closeIfIdle(session, browserIdleMs(cfg), usedBrowserSessions.get(session)),
+});
 // Temporary profiles last for this server run, but are never saved to disk.
 // The viewer and the agent must address the SAME temporary browser.
 const temporaryBrowserSessions = new Map<string, string>();
@@ -21978,6 +21977,7 @@ restoreChannelMessages();
 server.listen(PORT, "127.0.0.1", async () => {
   companyRuntimeReady();
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
+  browserSweep.start(); // what an earlier run left closes now, then once a minute
   // Words queued before the restart start first, ahead of anything sent from
   // now on. Their turns wait for the engines read at start like every turn.
   followupsReady = true;
@@ -22084,10 +22084,10 @@ const gracefulShutdown = createGracefulShutdown({
     // Every open DuckDB database flushes and closes; the next start reopens them.
     async () => { await dataEngine.closeAll().catch((error) => console.warn("data: close failed", error)); },
     async () => {
-      // Each temporary browser leaves usedBrowserSessions before its first
-      // await, so closeServerBrowsers does not close it a second time.
+      // A temporary browser's own close and the sweep's close of the same
+      // browser are one close (closeBrowserSession joins them).
       const temporaries = [...temporaryBrowserSessions.keys()].map((botId) => forgetTemporaryBrowser(botId));
-      await Promise.all([...temporaries, closeServerBrowsers()]);
+      await Promise.all([...temporaries, browserSweep.closeAll()]);
       await browserRuntime.closeAll();
     },
     () => liveCalls.shutdown(),

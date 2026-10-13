@@ -165,6 +165,17 @@ system prompt teaches them. No adapter.
   false). LinkedIn can still refuse an attached browser (#894); My Chrome
   avoids Google's refusal, not every site's bot detection.
 
+### 6. Process hygiene — implemented
+
+A close waits until the daemon and its Chrome have exited, and stops their
+process groups past its deadline; a browser that is not running is never
+sent `close`. A browser nobody has used for `browserEngine.idleTimeoutMinutes`
+(10 by default) closes and keeps its saved sign-ins; a sweep at boot, every
+minute and at shutdown closes this data dir's browsers that nothing here uses,
+such as those a crash left, and stops any Chrome whose daemon was killed. The
+Docker and Podman compose files run an init and give Chrome 512 MB of shared
+memory. Details: [Process hygiene](../browser-packaging.md#process-hygiene).
+
 ## Not doing
 
 - Bundling Steel, browser-use or Playwright MCP. Power users can add any of
