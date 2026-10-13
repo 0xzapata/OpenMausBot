@@ -12,13 +12,12 @@
 //   DIR/transcripts/    each conversation of the job, .json and .md
 //   DIR/files/          files the replies link to, per conversation
 //   DIR/screens/        screen captures, per conversation
-import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { basename, extname, join, relative, resolve } from "node:path";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
-import { redactSecretsInText } from "../../shared/redact.ts";
 import { messageFileTargets } from "../message-file.ts";
 import { EXIT, flag, HeadlessError, parseCount, parseSize, usageError } from "./args.ts";
 import { readJob, type HeadlessClient } from "./client.ts";
@@ -43,16 +42,18 @@ export interface ExportOptions {
 
 const TRANSCRIPT_MESSAGES = 2_000;
 const MESSAGE_TEXT_MAX = 50_000;
-const MARKDOWN_MAX = 5_000_000;
 const enc = encodeURIComponent;
 
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "conversation";
 
-/** A name made safe to write: one path segment, no control or reserved characters. */
-function safeName(raw: string): string {
+/** A name made safe to write on any system: one path segment, no control
+ * or reserved characters, no trailing dot or space (Windows drops them), and
+ * never a Windows device name (con.md would be the console there). */
+export function safeName(raw: string): string {
   // eslint-disable-next-line no-control-regex
-  const name = basename(raw.replace(/[\\/]/g, "_")).replace(/[\x00-\x1f<>:"|?*]/g, "_").trim();
-  return !name || name === "." || name === ".." ? "file" : name.slice(0, 120);
+  const name = basename(raw.replace(/[\\/]/g, "_")).replace(/[\x00-\x1f<>:"|?*]/g, "_").trim().slice(0, 120).replace(/[. ]+$/, "");
+  if (!name) return "file";
+  return /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(name) ? `_${name}` : name;
 }
 
 /** A file name from the server's content-disposition, else the link's own. */
@@ -90,6 +91,50 @@ export function exportFolder(dir: string, force: boolean): string {
   return out;
 }
 
+/** A transcript for people to read, written from the messages the export
+ * keeps (the .json's, secrets already removed), as the app's own Markdown
+ * export lays it out: so a long conversation's .md ends with the job, not
+ * with its first few megabytes. */
+function markdownOf(title: string, messages: readonly Rec[], botName: string): string {
+  const lines: string[] = [`# ${title}`, ""];
+  for (const message of messages) {
+    const who = message.role === "user"
+      ? `${message.sender?.name ?? "User"}${message.via === "api" ? " (via the local API)" : ""}`
+      : message.from?.name ?? botName;
+    if (message.kind === "text" && message.text) lines.push(`**${who}:**`, "", String(message.text), "");
+    else if (message.kind === "activity" && message.tool) lines.push(`> ${message.tool.name}`, "");
+    else if (message.kind === "screen") lines.push("> [screen capture]", "");
+    else if (message.kind === "options" && message.card) lines.push(`> ${message.card.title}${message.card.answered ? ` — answered: ${message.card.answered}` : ""}`, "");
+  }
+  return lines.join("\n");
+}
+
+/** Under --force: what an earlier export wrote in this folder, as its
+ * manifest lists it, is removed before this one writes, so no file of an
+ * older job is left beside this one's. Only files that manifest names, inside
+ * the folder; anything else in it is left alone. */
+function removeEarlierExport(out: string): void {
+  let manifest: Rec;
+  try {
+    manifest = JSON.parse(readFileSync(join(out, "manifest.json"), "utf8")) as Rec;
+  } catch {
+    return;
+  }
+  const listed = [manifest.transcripts, manifest.files, manifest.screens].flatMap((entries) => Array.isArray(entries) ? entries as Rec[] : [])
+    .map((entry) => entry?.file).filter((file): file is string => typeof file === "string");
+  const written = [...listed, ...listed.filter((file) => /^transcripts[\\/].*\.json$/.test(file)).map((file) => file.replace(/\.json$/, ".md")), "job.json", "manifest.json"];
+  for (const file of written) {
+    const target = resolve(out, file);
+    const inside = relative(out, target);
+    if (!inside || inside.startsWith("..") || isAbsolute(inside)) continue;
+    try { rmSync(target, { force: true }); } catch { continue; } // a folder of that name is not a file it wrote
+    // and the folders that held only what it wrote
+    for (let folder = dirname(target); relative(out, folder) && !relative(out, folder).startsWith(".."); folder = dirname(folder)) {
+      try { rmdirSync(folder); } catch { break; }
+    }
+  }
+}
+
 const OVER_LIMIT = Symbol("over the byte limit");
 
 /** A response body into a new file, counting as it goes: past `limit` bytes it
@@ -121,6 +166,7 @@ const refusal = async (response: Response | null): Promise<string> =>
 
 export async function exportJob(client: HeadlessClient, options: ExportOptions, output: Output): Promise<Rec> {
   const out = exportFolder(options.out, options.force === true);
+  if (options.force) removeEarlierExport(out);
   const maxFiles = options.maxFiles ?? 200;
   const maxScreens = options.maxScreens ?? 100;
   const maxBytes = options.maxBytes ?? 500_000_000;
@@ -130,8 +176,10 @@ export async function exportJob(client: HeadlessClient, options: ExportOptions, 
   for (const dir of ["transcripts", "files", "screens"]) mkdirSync(join(out, dir), { recursive: true });
 
   const threads = new Map<string, string>([[options.threadId, "conversation"]]);
+  const botNames = new Map<string, string>();
   for (const node of nodes) {
     if (!threads.has(node.threadId)) threads.set(node.threadId, `${node.botName}${node.threadTitle ? `-${node.threadTitle}` : ""}`);
+    if (!node.groupId && !botNames.has(node.threadId)) botNames.set(node.threadId, String(node.botName));
   }
   const transcripts: Rec[] = [];
   const files: Rec[] = [];
@@ -157,7 +205,8 @@ export async function exportJob(client: HeadlessClient, options: ExportOptions, 
       return;
     }
     bytes += written;
-    into.push({ ...about, file: relative(out, file), bytes: written });
+    // with /, as the transcripts' paths are, whatever system wrote it
+    into.push({ ...about, file: relative(out, file).split(sep).join("/"), bytes: written });
   };
   const fileRoute = (threadId: string, messageId: string, body: Rec) =>
     client.raw(`/api/threads/${enc(threadId)}/messages/${enc(messageId)}/file`, {
@@ -198,10 +247,10 @@ export async function exportJob(client: HeadlessClient, options: ExportOptions, 
     const all: Rec[] = Array.isArray(transcript.messages) ? transcript.messages : [];
     const kept = all.slice(-TRANSCRIPT_MESSAGES).map((message) => typeof message.text === "string" && message.text.length > MESSAGE_TEXT_MAX
       ? { ...message, text: `${message.text.slice(0, MESSAGE_TEXT_MAX)}…` } : message);
-    writeFileSync(join(out, "transcripts", `${name}.json`), `${JSON.stringify(redactDeep({ name: transcript.name, threadId, label,
-      ...(all.length > kept.length ? { truncated: all.length - kept.length } : {}), messages: kept }), null, 2)}\n`, { mode: 0o600 });
-    const markdown = await client.raw(`/api/threads/${enc(threadId)}/export?format=markdown`).then((response) => response.ok ? response.text() : "").catch(() => "");
-    if (markdown) writeFileSync(join(out, "transcripts", `${name}.md`), redactSecretsInText(markdown.slice(0, MARKDOWN_MAX)), { mode: 0o600 });
+    const redacted = redactDeep({ name: transcript.name, threadId, label, ...(all.length > kept.length ? { truncated: all.length - kept.length } : {}), messages: kept });
+    writeFileSync(join(out, "transcripts", `${name}.json`), `${JSON.stringify(redacted, null, 2)}\n`, { mode: 0o600 });
+    const title = String(redacted.name ?? label);
+    writeFileSync(join(out, "transcripts", `${name}.md`), markdownOf(title, redacted.messages, botNames.get(threadId) ?? "Bot"), { mode: 0o600 });
     transcripts.push({ threadId, label, file: `transcripts/${name}.json`, messages: kept.length, ...(all.length > kept.length ? { truncated: all.length - kept.length } : {}) });
 
     // the files its replies link to or attach, each under that reply's grant
