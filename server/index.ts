@@ -480,7 +480,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { loopGuardSettings, startLoopGuard } from "./host/loop-guard.ts";
+import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -6550,6 +6550,7 @@ store.onChange((change) => {
       directRequestOwners.delete(change.threadId);
       stoppedTurns.delete(change.threadId);
       turnStops.forget(change.threadId);
+      repeats.settle(change.threadId);
       routines?.forgetRoutineRequestReceiptsForThread(change.threadId);
       // A deleted destination must not strand an approval in an internal
       // task. Keep each run's snapshot and expose its execution as fallback.
@@ -10158,19 +10159,18 @@ const handoffs = new Handoffs({
 });
 
 
-// A bot going in circles — the same call with the same arguments, over and
-// over in one turn — gets a chip at 5, 10 and 20 repeats and, with the loop
-// guard on, a note in its turn and then a stop (host/loop-guard.ts). Only in
-// a bot's own conversations: a room's Stop ends the whole room's work.
+// A bot going in circles gets a chip at 5, 10 and 20 identical calls in a turn
+// and, with the loop guard on, a note when one command keeps failing the same
+// way (server/host/loop-guard.ts). Only in a bot's own conversations.
 const loopingEngine = (threadId: string) => {
   const bot = store.botByThread(threadId);
   return bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined;
 };
-const repeats = startLoopGuard({
-  subscribe: (listener) => bus.subscribe((event) => { if (!shouldIgnoreProviderEvent(event)) listener(event); }),
+const repeats = createLoopGuard({
   settings: () => loopGuardSettings(cfg),
   append: (threadId, tool) => void store.appendMessage(threadId, { role: "bot", kind: "activity", tool }),
-  exempt: (threadId) => !store.botByThread(threadId) || watchdog.waiting(threadId),
+  live: (threadId) => { const bot = store.botByThread(threadId); return Boolean(bot && threadBusy(bot.id, threadId)); },
+  waiting: (threadId) => watchdog.waiting(threadId),
   // The decision a person's own message gets there (acceptDirectSend).
   canSteer: (threadId) => {
     const engine = loopingEngine(threadId);
@@ -10187,6 +10187,7 @@ const repeats = startLoopGuard({
     await interruptDirectThread(bot.id, threadId, cause);
   },
 });
+bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) repeats.onEvent(event); });
 
 // ── steer-queue drain: messages sent while the bot was busy ────────────
 // Runs on ANY turn.completed rather than resolving the settling thread: a

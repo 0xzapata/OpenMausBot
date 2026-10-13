@@ -12,10 +12,10 @@ import { writeFileAtomic } from "./atomic.ts";
 import { withoutComputerEngine } from "./computer-engine-removal.ts";
 import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
 import { EFFORT_LEVELS, type EffortLevel, type LiveSettings } from "../shared/wire.ts";
-import { isModelVariant, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
+import { isModelVariant, type InstanceConfigMap, type McpServerSpec, type ModelSelection } from "./contracts.ts";
 import { DEFAULT_WINDOW_MINUTES, MAX_WINDOW_MINUTES } from "./cache-keepwarm.ts";
 import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-icon.ts";
-import type { McpServerSpec } from "./contracts.ts";
+import { loopGuardConfigSchema, type LoopGuardConfig } from "./host/loop-guard.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 
@@ -584,7 +584,7 @@ const appConfigSchema = z.object({
   /** The authorization decision log (server/decision-log.ts): days of month
    * files kept, at least; OMB_DECISION_RETENTION_DAYS wins when set. */
   decisions: z.object({ retentionDays: z.number().int().min(1).max(3650).optional() }).strict().optional(),
-  loopGuard: z.object({ enabled: z.boolean().optional(), steerAt: z.number().int().min(2).max(1000).optional(), stopAt: z.number().int().min(2).max(1000).optional() }).strict().optional(), // server/loop-guard.ts; OMB_LOOP_GUARD=1 switches it on too
+  loopGuard: loopGuardConfigSchema.optional(),
   localVm: localVmConfigSchema.optional(),
   features: featureConfigSchema.optional(),
   onboarding: onboardingConfigSchema.optional(),
@@ -647,7 +647,7 @@ export interface AppConfig {
   openrouter?: { key?: string };
   budgets?: { monthlyUsd?: number; warnAtPercent?: number };
   decisions?: { retentionDays?: number };
-  loopGuard?: { enabled?: boolean; steerAt?: number; stopAt?: number }; // tell a looping turn, then stop it; off by default (server/loop-guard.ts)
+  loopGuard?: LoopGuardConfig;
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };
   composio?: { apiKey?: string; userId?: string; sessionId?: string };

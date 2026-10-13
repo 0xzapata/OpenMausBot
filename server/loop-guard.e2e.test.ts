@@ -2,9 +2,10 @@
 // Claude engine playing a turn that runs one shell command twelve times,
 // failing the same way every time, and then holds. Off, the turn is left
 // exactly as it always was. On, the harness's note reaches the engine inside
-// the same turn and never the transcript, and at the stop count the turn
-// ends on a failed-turn line that Retry belongs to.
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// the same turn and never the transcript, and the turn is not stopped. With
+// a stop count set as well, the turn ends there on a failed-turn line that
+// Retry belongs to.
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -15,12 +16,12 @@ import { lastNonReceipt } from "../src/lib/receipts.ts";
 import { openSse } from "./testing/sse.ts";
 
 const CALLS = 12;
-const NOTE = "[OpenMausBot: this exact call has failed the same way 5 times in a row: Bash: git status. Change approach, or stop and report what is blocking.]";
-const STOPPED = "the same call failed the same way 10 times in a row (Bash: git status) — the turn was stopped";
+const NOTE = "[OpenMausBot: this exact call has failed the same way 5 times in a row: “Bash: git status”. Change approach, or stop and report what is blocking.]";
+const STOPPED = "the same call failed the same way 10 times in a row: “Bash: git status” — the turn was stopped";
 /** What the command prints, every time. Never in anything the harness writes. */
 const OUTPUT = "fatal: not a git repository (or any of the parent directories): .git";
 
-it("leaves a stuck turn alone when off; tells it at 5 in a row and stops it at 10 when on", async () => {
+it("leaves a stuck turn alone when off; on, tells it at 5 in a row and stops it only with a stop count set", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "omb-loop-guard-"));
   // the engine holds its turn open until this file exists, and says here
   // when it has read a message steered into that turn
@@ -88,8 +89,9 @@ it("leaves a stuck turn alone when off; tells it at 5 in a row and stops it at 1
     expect(names(await messages(quiet.thread)).filter((name) => name !== "Bash")).toEqual([]);
     rmSync(gate);
 
-    // ── on: the note goes into the running turn at the fifth in a row ──
-    await api("PATCH", "/api/config", { loopGuard: { enabled: true, stopAt: 50 } });
+    // ── on, and nothing else set: the note at the fifth in a row, and no stop
+    // however long it goes on (twelve here) ──
+    await api("PATCH", "/api/config", { loopGuard: { enabled: true } });
     const told = await start("Told");
     await vi.waitFor(() => {
       if (!existsSync(received)) throw new Error("waiting for the engine to read the note");
@@ -108,7 +110,7 @@ it("leaves a stuck turn alone when off; tells it at 5 in a row and stops it at 1
     rmSync(gate);
     rmSync(received);
 
-    // ── on, and it keeps going: stopped at the tenth in a row ──
+    // ── on, with a stop count: stopped at the tenth in a row ──
     // a patch of one knob keeps the others: the guard is still on
     await api("PATCH", "/api/config", { loopGuard: { stopAt: 10 } });
     const stopped = await start("Stopped", 10);
@@ -123,6 +125,20 @@ it("leaves a stuck turn alone when off; tells it at 5 in a row and stops it at 1
     expect(stoppedRows.some(isReply)).toBe(false);
     expect(lastNonReceipt(stoppedRows)?.id).toBe(failed[0].id);
     expect((await api("GET", "/api/bots")).bots.find((bot: any) => bot.id === stopped.id).busy).toBe(false);
+
+    // ── the server's log has one line for each thing the guard did, and
+    // never the command ──
+    const logged = (thread: string) => readFileSync(fixture.info.logPath, "utf8").split("\n")
+      .filter((line) => line.startsWith("[loop-guard] ") && line.includes(`thread=${thread} `));
+    expect(logged(quiet.thread)).toEqual([]);
+    expect(logged(told.thread)).toEqual([`[loop-guard] steer sent: thread=${told.thread} failures-in-a-row=5`]);
+    // the note for the stopped turn was on its way when the turn was stopped:
+    // whichever way that went, it is said once
+    await vi.waitFor(() => {
+      expect(logged(stopped.thread).filter((line) => line.startsWith("[loop-guard] steer "))).toHaveLength(1);
+    }, { timeout: 30_000, interval: 50 });
+    expect(logged(stopped.thread)).toContain(`[loop-guard] stop sent: thread=${stopped.thread} failures-in-a-row=10`);
+    expect(readFileSync(fixture.info.logPath, "utf8").split("\n").filter((line) => line.startsWith("[loop-guard] ")).join("\n")).not.toContain("git status");
   } finally {
     stream.close();
     await fixture.close();

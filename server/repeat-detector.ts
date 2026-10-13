@@ -4,10 +4,10 @@
 // stays pure: what is done about a count is host/loop-guard.ts, a chip in
 // the chat. A count is not grounds to act: a healthy turn runs its tests ten
 // times. With the loop guard switched on, the note steered into the running
-// turn (adapters take a message mid-turn now: ProviderAdapter.steer) and the
-// stop after it follow a narrower thing, repeat-streak.ts: the same command
-// failing the same way, back to back. Cutting off the one call itself is
-// still not the harness's to do: a CLI driver owns its calls.
+// turn (adapters take a message mid-turn now: ProviderAdapter.steer), and
+// the stop where one is asked for, follow a narrower thing, repeat-streak.ts:
+// the same command failing the same way, back to back. Cutting off the one
+// call itself is still not the harness's to do: a CLI driver owns its calls.
 
 /** Tool name plus its arguments, whitespace-normalized. A bare tool name
  * is not a call worth counting: "Bash" five times may be five different
