@@ -57,7 +57,7 @@ const NOT_SHOWN = /\[(?:redacted|(?:binary|large) content omitted|additional (?:
 /** Whether a preview or a summary stands for more than it shows: a value
  * masked, left out or cut. Two that read the same are then not proof of the
  * same call, which is what the loop guard needs before it stops a turn for
- * repeating one (server/loop-guard.ts). */
+ * repeating one (server/host/loop-guard.ts). */
 export function previewIsPartial(preview: string): boolean {
   return NOT_SHOWN.test(preview) || preview.includes(HELD_SECRET_MASK);
 }

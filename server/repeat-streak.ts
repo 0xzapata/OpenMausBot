@@ -7,7 +7,7 @@
 // gh run view …`, a `tail` of a log that has not moved), which is work, and a
 // success ends the streak like any other command does. This file only
 // tracks that streak, and stays pure; what is done about one is
-// server/loop-guard.ts.
+// server/host/loop-guard.ts.
 import { createHash } from "node:crypto";
 
 import { previewIsPartial } from "./tool-summary.ts";

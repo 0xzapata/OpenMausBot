@@ -1,7 +1,7 @@
 // Noticing a bot that is going in circles: the same tool call, the same
 // arguments, again and again in one turn. Nothing watched for that, and
 // it is the user's money. This file only COUNTS, across the whole turn, and
-// stays pure: what is done about a count is server/loop-guard.ts, a chip in
+// stays pure: what is done about a count is host/loop-guard.ts, a chip in
 // the chat. A count is not grounds to act: a healthy turn runs its tests ten
 // times. With the loop guard switched on, the note steered into the running
 // turn (adapters take a message mid-turn now: ProviderAdapter.steer) and the

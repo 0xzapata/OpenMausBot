@@ -5,9 +5,9 @@
 // command, succeeding with the same output) or only waiting is never touched.
 import { describe, expect, it, vi } from "vitest";
 
-import { failedTurnCause } from "../shared/failed-turn.ts";
-import { parseConfigPatch, parseStoredConfig } from "./config.ts";
-import type { RuntimeEvent, SteerOutcome } from "./contracts.ts";
+import { failedTurnCause } from "../../shared/failed-turn.ts";
+import { parseConfigPatch, parseStoredConfig } from "../config.ts";
+import type { RuntimeEvent, SteerOutcome } from "../contracts.ts";
 import { loopGuardSettings, startLoopGuard, type LoopGuardSettings } from "./loop-guard.ts";
 
 const T = "thread-1";

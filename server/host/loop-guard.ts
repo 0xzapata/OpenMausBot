@@ -31,13 +31,13 @@
 //
 // The counting and the streak are pure and live in their own files;
 // everything this touches is handed in, so server/index.ts only wires it.
-import { failedTurnTool } from "../shared/failed-turn.ts";
-import { nameIsCommand } from "../shared/tool-name.ts";
-import type { RuntimeEvent, SteerOutcome } from "./contracts.ts";
-import { quoteInNote } from "./peer-provenance.ts";
-import { RepeatDetector, callKey } from "./repeat-detector.ts";
-import { RepeatStreak, failureDigest } from "./repeat-streak.ts";
-import { COMMAND_SUMMARY_MAX, previewIsPartial } from "./tool-summary.ts";
+import { failedTurnTool } from "../../shared/failed-turn.ts";
+import { nameIsCommand } from "../../shared/tool-name.ts";
+import type { RuntimeEvent, SteerOutcome } from "../contracts.ts";
+import { quoteInNote } from "../peer-provenance.ts";
+import { RepeatDetector, callKey } from "../repeat-detector.ts";
+import { RepeatStreak, failureDigest } from "../repeat-streak.ts";
+import { COMMAND_SUMMARY_MAX, previewIsPartial } from "../tool-summary.ts";
 
 export interface LoopGuardSettings {
   enabled: boolean;

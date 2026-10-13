@@ -480,7 +480,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { loopGuardSettings, startLoopGuard } from "./loop-guard.ts";
+import { loopGuardSettings, startLoopGuard } from "./host/loop-guard.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -10160,7 +10160,7 @@ const handoffs = new Handoffs({
 
 // A bot going in circles — the same call with the same arguments, over and
 // over in one turn — gets a chip at 5, 10 and 20 repeats and, with the loop
-// guard on, a note in its turn and then a stop (server/loop-guard.ts). Only in
+// guard on, a note in its turn and then a stop (host/loop-guard.ts). Only in
 // a bot's own conversations: a room's Stop ends the whole room's work.
 const loopingEngine = (threadId: string) => {
   const bot = store.botByThread(threadId);
