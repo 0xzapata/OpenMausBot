@@ -22,11 +22,12 @@
 // A hook that never arrives is caught by the reading kept here: one that is
 // lower than after the member's turn before, in the same session, means the
 // session was compacted. Not when that turn reported none; when no earlier
-// reading of the session is held (it began on that turn, or the member's
-// earlier turns in it ran before a server restart or while the setting was
-// off); or when the turn regrew the session past its earlier reading. The
-// doc (docs/verification/context-compaction.md) lists exactly these, and
-// what a process kept warm past the idle time changes.
+// reading of the session is held (it began on that turn, no turn in it
+// reported a reading before, or the member's earlier turns in it ran while
+// the setting was off or were not managed); or when the turn regrew the
+// session past its earlier reading. The doc
+// (docs/verification/context-compaction.md) lists exactly these, and what a
+// process kept warm past the idle time changes.
 //
 // Measurements live in memory on purpose. They describe a warm process, and
 // warm processes do not outlive this server either.
