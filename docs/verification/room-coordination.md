@@ -1,7 +1,7 @@
 # In-chat team coordination
 
 Independent bot conversations now dispatch as soon as a handoff is accepted;
-speakers in the same group chat still serialize. A Chief waiting for returned
+speakers in the same group chat still serialize (and say so; with parallel room jobs on, several room jobs run side by side, see below). A Chief waiting for returned
 results exposes `waitingForTeammates: true`, not a fake active `busy` turn.
 The chat header shows **Teammates working**, leaves the composer usable and
 retains Stop. Explicit command-line `wait` still waits for the whole result.
@@ -216,6 +216,43 @@ The e2e test launches the isolated scripted fixture, has a Lead hand three
 members work in one room, holds the first on a gate, and checks the Lead's
 receipts and the room's `group` frames (2 of 3 and 3 of 3, both waiting on
 the first), then that the line clears once all three settle.
+
+### Parallel room jobs (opt-in)
+
+With `features.parallelRoomJobs` on (`PATCH /api/config` with
+`{"features": {"parallelRoomJobs": true}}`, or `config.json`), a
+`coordinate_bots` call that sends work to two or more members of a room, or
+into a room whose members already have jobs out, does not queue them in the
+room's thread. Each job runs in a thread of its own on its member, opened by
+the requester from the room (titled "<room> · <brief>", in the room's
+working folder), so the members work side by side:
+
+- The room shows "Sent to <member>" with a link to that thread, then one
+  result card per job as it finishes (`roomRequest.phase: "result"`, the
+  report's text and the thread link). The requester resumes once, in the
+  room, with every result, and a finished job's thread folds away.
+- One member's jobs from the same conversation share its thread and run
+  there in turn: a member never runs two of them at once, and a member busy
+  speaking in a room is not started beside it.
+- A member who leaves the room stops its job ("no longer a member of this
+  room"). Stop in the room drops the jobs that have not started; one already
+  running keeps its process and reports, as any teammate's thread does.
+- Receipts say "runs in its own thread … in parallel with the other room
+  jobs", and the message says the results post back into the room.
+
+A single job into a quiet room, a one-way notice, and every room with the
+flag off keep running in the room's thread, in turn.
+
+```sh
+pnpm exec vitest run server/room-queue.e2e.test.ts -t "parallel room jobs"
+```
+
+The e2e test turns the flag on in the isolated fixture, has a Lead send two
+members a job and then a second job to the first, holds both first jobs on
+gates and checks they are running at the same moment, each in its own thread,
+with the second job queued in the first member's thread. After release it
+checks three result cards and three "Sent to" lines in the room, the
+first member's two turns in one thread, and one resume of the Lead.
 
 ### Rooms containing a supervising Chief
 

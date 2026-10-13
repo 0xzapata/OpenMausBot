@@ -343,6 +343,10 @@ const featureConfigSchema = z.object({
   /** Learn from group chats: memory upkeep also reads a member bot's room
    * turns. Off until explicitly enabled — see roomMemoryCaptureEnabled. */
   roomMemoryCapture: z.boolean().optional(),
+  /** Work handed to several members of one room runs side by side, each
+   * job in a thread of its own, instead of one member at a time in the
+   * room. Off until explicitly enabled — see parallelRoomJobsEnabled. */
+  parallelRoomJobs: z.boolean().optional(),
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
  * it survives cleared site data and is shared by every paired client. Hint
@@ -670,7 +674,7 @@ export interface AppConfig {
    * seats shared by all conversations, with per-thread affinity (#1654). */
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; roomMemoryCapture?: boolean };
+  features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; roomMemoryCapture?: boolean; parallelRoomJobs?: boolean };
   /** First-run progress; see onboardingConfigSchema. */
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   /** Named browser sessions any bot can be pointed at. */
@@ -895,6 +899,18 @@ export function autoRecallEnabled(cfg: AppConfig): boolean {
  * it either way (roomFeedsBot in server/index.ts). */
 export function roomMemoryCaptureEnabled(cfg: AppConfig): boolean {
   return cfg.features?.roomMemoryCapture === true;
+}
+
+/** Parallel room jobs: when a requester hands work to several members of a
+ * room at once (or into a room whose members are already working through
+ * a line of jobs), each job runs in a thread of its own on that member,
+ * beside the room, and posts its result card back into the room; the
+ * requester resumes once with every result. Off by default, where same-room
+ * jobs take turns in the room's own thread. Enabled in
+ * ~/.openmausbot/config.json (`{"features": {"parallelRoomJobs": true}}`)
+ * or with PATCH /api/config. */
+export function parallelRoomJobsEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.parallelRoomJobs === true;
 }
 
 export const DEFAULT_CAPTURE_QUIET_MS = 2 * 60_000;

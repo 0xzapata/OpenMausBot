@@ -62,3 +62,73 @@ it("tells the requester and the room that three same-room jobs run in turn", asy
     await session.close();
   }
 }, 90_000);
+
+it("with parallel room jobs on, runs each member's job in its own thread at once and posts the results back into the room", async () => {
+  const session = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, { scripted: true });
+  const env = { OPENMAUSBOT_URL: session.info.url };
+  const cli = (...args: string[]) => runControlOmb(args, { env }) as Promise<any>;
+  const api = (path: string, body?: unknown, method = "POST") => request(path, body === undefined ? {} : { method, headers: { Origin: session.info.url }, body: JSON.stringify(body) }, session.info.url) as Promise<any>;
+  const tool = (name: string, args: Record<string, unknown>) => handleToolCall(name, args, (path, options) => request(path, options, session.info.url)) as Promise<any>;
+  try {
+    expect((await api("/api/config", { features: { parallelRoomJobs: true } }, "PATCH")).features.parallelRoomJobs).toBe(true);
+    const lead = (await cli("new-bot", "--name", "Lead", "--section", "A")).bot;
+    const first = (await cli("new-bot", "--name", "First", "--section", "A")).bot;
+    const second = (await cli("new-bot", "--name", "Second", "--section", "A")).bot;
+    const room = (await tool("create_channel", { name: "Studio", member_ids: [lead.id, first.id, second.id] })).channel;
+    const planPath = join(session.info.dataDir, "room-plan.json");
+    const file = (name: string) => join(session.info.dataDir, name);
+    writeFileSync(planPath, JSON.stringify({
+      [lead.id]: {
+        steps: [
+          { arguments: { bot_ids: [first.id, second.id], message: "Each of you, cut one part" } },
+          // More work for a member already busy with a job: it waits in that
+          // member's own thread, so one member never runs two jobs at once.
+          { arguments: { bot_ids: [first.id], message: "Then cut the trailer" } },
+        ],
+        reply: "Assigned", resumeReply: "All parts reviewed",
+      },
+      [first.id]: { turns: [
+        { reply: "First part cut", gateFile: file("first.gate"), readyFile: file("first.ready") },
+        { reply: "Trailer cut" },
+      ] },
+      [second.id]: { reply: "Second part cut", gateFile: file("second.gate"), readyFile: file("second.ready") },
+    }));
+    await cli("send-channel", "--channel", room.id, "--text", "@Lead Split the work");
+    // Both members are mid-job at the same moment: neither waits on the other.
+    await expect.poll(() => existsSync(file("first.ready")) && existsSync(file("second.ready")), { timeout: 30_000 }).toBe(true);
+    const jobs = () => readHandoffs(session.info.dataDir).filter((n: any) => n.parentId);
+    const running = jobs().filter((n: any) => n.status === "running");
+    expect(running.map((n: any) => n.botId).sort()).toEqual([first.id, second.id].sort());
+    // Each job runs in a thread of the member's own, not the room's thread.
+    expect(jobs().every((n: any) => n.groupId === undefined && n.threadId !== room.activeTaskId)).toBe(true);
+    const trailer = jobs().find((n: any) => n.text === "Then cut the trailer");
+    const firstJob: any = jobs().find((n: any) => n.botId === first.id && n.text === "Each of you, cut one part");
+    expect(trailer).toMatchObject({ status: "queued", threadId: firstJob.threadId });
+
+    const lines = () => readFileSync(`${planPath}.evidence.jsonl`, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const leadTurn = lines().find((t: any) => t.botId === lead.id && !t.resumed);
+    const answer = JSON.parse(leadTurn.evidence.find((e: any) => e.step).response.result.content[0].text);
+    expect(answer.message).toContain("These run in parallel, each in a thread of its own beside this room");
+    expect(answer.receipts.every((r: any) => r.detail.includes("in parallel with the other room jobs") && r.threadId && !r.queue)).toBe(true);
+
+    writeFileSync(file("first.gate"), "release");
+    writeFileSync(file("second.gate"), "release");
+    expect((await cli("wait", "--channel", room.id, "--timeout", "45")).status).toBe("settled");
+    await expect.poll(() => jobs().every((n: any) => n.status === "completed"), { timeout: 20_000 }).toBe(true);
+    // The trailer ran after the first job, in the same thread.
+    const firstTurns = lines().filter((t: any) => t.botId === first.id);
+    expect(firstTurns.map((t: any) => t.threadId)).toEqual([firstJob.threadId, firstJob.threadId]);
+
+    // The room reads coherently: where each job went, each result card, and
+    // the requester's one review of all of them.
+    const messages = (await api(`/api/threads/${room.activeTaskId}/messages`, undefined, "GET")).messages;
+    const results = messages.filter((m: any) => m.roomRequest?.phase === "result");
+    expect(results.map((m: any) => m.from?.botId).sort()).toEqual([first.id, first.id, second.id].sort());
+    expect(results.every((m: any) => m.threadRef?.threadId && m.tool?.ok === true && m.tool?.output)).toBe(true);
+    expect(messages.filter((m: any) => m.tool?.name?.startsWith("Sent to ")).length).toBe(3);
+    expect(lines().filter((t: any) => t.botId === lead.id && t.resumed).length).toBe(1);
+    expect(JSON.stringify(messages)).toContain("All parts reviewed");
+  } finally {
+    await session.close();
+  }
+}, 120_000);

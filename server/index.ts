@@ -168,6 +168,7 @@ import {
   autoRecallEnabled,
   captureQuietMs,
   roomMemoryCaptureEnabled,
+  parallelRoomJobsEnabled,
   tidyHour,
   sharedComputersEnabled,
   builtInBrowserEnabled,
@@ -5320,6 +5321,11 @@ function roomHandoffProblem(node: Pick<HandoffView, "groupId" | "threadId" | "bo
   if (node.groupId && (!group || group.dm || !store.groupTaskByThread(group.id, node.threadId))) return "Destination room task no longer exists";
   if (!node.groupId && !store.taskByThread(bot.id, node.threadId)) return "Destination bot task no longer exists";
   if (group && !group.memberIds.includes(bot.id)) return "The addressed agent is no longer a member of this room";
+  // A room job running in a thread of its own (parallel room jobs) still
+  // answers to the room it was sent from: a member who left it stops.
+  const laneThread = laneRoomThread(node);
+  const laneRoom = laneThread ? store.groupByThread(laneThread) : undefined;
+  if (laneRoom && !laneRoom.dm && !laneRoom.memberIds.includes(bot.id)) return "The addressed agent is no longer a member of this room";
   // Every reader matters, including members not addressed to speak. The
   // recipient must be allowed to read its destination; the sender's grant
   // cannot silently give a specialist access to another team's transcript.
@@ -5910,6 +5916,14 @@ function publicGroupState(record: GroupRecord): WireGroup {
     // Always present, so a frame with nobody waiting clears the last one.
     queue: roomLineOf(record),
   };
+}
+
+/** The room thread a job running in a thread of its own was sent from
+ * (parallel room jobs), read from who opened that thread. */
+function laneRoomThread(n: Pick<HandoffView, "botId" | "threadId" | "groupId">): string | undefined {
+  if (n.groupId) return undefined;
+  const opener = store.taskByThread(n.botId, n.threadId)?.openedBy;
+  return opener?.kind === "work" && opener.threadId && store.groupByThread(opener.threadId) ? opener.threadId : undefined;
 }
 
 /** Who waits in each of the room's threads, in the order they will run: the
@@ -16994,6 +17008,7 @@ function configStatus() {
       claudeUserMcp: claudeUserMcpEnabled(cfg),
       autoRecall: autoRecallEnabled(cfg),
       roomMemoryCapture: roomMemoryCaptureEnabled(cfg),
+      parallelRoomJobs: parallelRoomJobsEnabled(cfg),
       // hand-edited config.json only; the thread menu offers Regenerate title from it
       llmThreadTitles: llmThreadTitlesEnabled(cfg),
     },
@@ -19555,6 +19570,19 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const mode: NonNullable<HandoffOptions["mode"]> = call.consult ? "consult" : call.reply === "none" ? "notify" : "work";
         const reply: NonNullable<HandoffOptions["reply"]> = call.reply === "none" ? "none" : EXTERNAL ? "poll" : "resume";
         const returns = reply === "none" ? "nothing comes back from it" : reply === "poll" ? "read its result with assignment_status" : "its result will resume you";
+        // Parallel room jobs (features.parallelRoomJobs): same-room speakers
+        // take turns, so work for several members, or for a room already
+        // working through a line of jobs, would run one job at a time. Each
+        // job runs instead in a thread of its own on its member, beside the
+        // room ("lane"): the room shows where it went, its result card posts
+        // back into the room, and the requester resumes once with all of
+        // them. One member's jobs from this conversation share its lane and
+        // run there in turn, so a member never runs two of them at once.
+        // A single job into a quiet room runs in the room, as before.
+        const roomThreadId = destination ? targets[0]!.threadId : undefined;
+        const roomLineBusy = Boolean(destination) && coordinator.all().some(n => n.parentId !== undefined && (n.status === "queued" || n.status === "running")
+          && (n.groupId === destination!.id ? n.threadId === roomThreadId : laneRoomThread(n) === roomThreadId));
+        const lanes = Boolean(destination) && mode !== "notify" && parallelRoomJobsEnabled(cfg) && (targets.length > 1 || roomLineBusy);
         // One receipt per recipient, in the order the caller addressed
         // them. Dispatch is asynchronous (coordinator.tick), so a fresh
         // enqueue is honestly "queued"; a repeat reports the request it
@@ -19573,6 +19601,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             const recipient = store.bot(target.botId);
             if (!recipient) throw new Error("The recipient no longer exists");
             const continued = destination || fresh ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
+            let lane: { threadId: string; title: string } | undefined;
+            if (destination && lanes) {
+              // The room's membership and routes were checked above, against
+              // the room; from here the job is the member's own thread.
+              const opened = { botId: internalSender.id, name: internalSender.name, threadId: target.threadId, kind: "work" as const, at: Date.now() };
+              const snippet = call.message.replace(/\s+/g, " ").trim().slice(0, 48);
+              const existing = store.workThread(target.botId, internalSender.id, target.threadId);
+              const task = existing ?? store.createTask(target.botId, `${destination.name} · ${snippet || "room job"}`, false, undefined, opened,
+                undefined, undefined, store.pinGroupCwd(destination.id, target.threadId) ?? undefined);
+              if (!task) throw new Error("The recipient no longer exists");
+              if (!existing) createdThread = task.threadId;
+              lane = { threadId: task.threadId, title: task.title };
+              applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, task.threadId);
+            }
             if (!destination) {
               const opened = { botId: internalSender.id, name: internalSender.name, threadId: address.threadId, at: Date.now() };
               const task = continued ?? (fresh
@@ -19583,8 +19625,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (!continued) createdThread = task.threadId;
               applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId);
             }
-            const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, target, call.message, {
-              mode, reply, thread: call.thread, approvalGranted, rework: call.rework, requestBatchKey,
+            const routed = lane ? { botId: target.botId, threadId: lane.threadId } : target;
+            const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, routed, call.message, {
+              mode, reply, thread: lane ? "new" : call.thread, approvalGranted, rework: call.rework, ...(lane ? {} : { requestBatchKey }),
               ...(call.doneWhen ? { doneWhen: call.doneWhen } : {}),
             });
             // A repeat lands on the request already made, possibly in a
@@ -19599,7 +19642,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             // Only a live request can still report: a finished one already
             // fired its report and tick() skips it, so a repeat of it sends
             // nothing and says how to run it again.
-            const title = destination ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
+            const title = destination && !lane ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
             const finished: Partial<Record<HandoffView["status"], string>> = {
               completed: "it already finished and its result stands; send it with rework=true to run it again",
               failed: "it failed; send it with rework=true to retry", cancelled: "it was cancelled; send it with rework=true to retry",
@@ -19612,11 +19655,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               outcome: notSent ? "failed" : !duplicate || node.status === "queued" ? "queued" : "injected",
               detail: notSent ?? (duplicate
                 ? `already sent: it is ${node.status === "queued" ? "queued" : "under way"} and ${returns}`
-                : title
-                  ? `sent to "${title}"; it runs after anything still running there`
-                  : "handed to the coordinator; the teammate's turn has not started yet"),
+                : lane
+                  ? `runs in its own thread "${lane.title}", in parallel with the other room jobs; its result posts in this room and ${returns}`
+                  : title
+                    ? `sent to "${title}"; it runs after anything still running there`
+                    : "handed to the coordinator; the teammate's turn has not started yet"),
               requestId: node.id,
-              ...(destination ? {} : { threadId: node.threadId }),
+              ...(destination && !lane ? {} : { threadId: node.threadId }),
             }));
             if (!duplicate) {
               // Its status may be read next turn, once the teammate had its turn.
@@ -19625,7 +19670,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 from: { botId: internalSender.id, name: internalSender.name, color: internalSender.color },
                 tool: { name: "Sent to " + recipient.name + (destination && destination.id !== source?.id ? " · " + destination.name : ""), ok: true,
                   ...(call.reason ? { output: call.reason } : {}) },
-                ...(destination ? { comm: { groupId: destination.id, threadId: node.threadId, withBotId: recipient.id, withName: recipient.name, withColor: recipient.color } }
+                ...(destination && !lane ? { comm: { groupId: destination.id, threadId: node.threadId, withBotId: recipient.id, withName: recipient.name, withColor: recipient.color } }
                   : { threadRef: { botId: recipient.id, threadId: node.threadId, title: store.taskByThread(recipient.id, node.threadId)?.title ?? "Teammate work" } }),
               });
             }
@@ -19661,7 +19706,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           : reply === "poll"
             ? "Handed to the coordinator. Read each result with assignment_status (id: a receipt's requestId, or rootId for the whole call), long-polling with wait_ms."
             : "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait.";
-        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message: sequential ? `${sequential} ${message}` : message } : { error: refused.join("; ") }),
+        const parallel = lanes && reply !== "none"
+          ? "These run in parallel, each in a thread of its own beside this room; each posts its result card here when it finishes, and you resume once with all of them."
+          : undefined;
+        const lead = [parallel, sequential].filter(Boolean).join(" ");
+        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message: lead ? `${lead} ${message}` : message } : { error: refused.join("; ") }),
           ...(EXTERNAL && sent ? { rootId: generation } : {}) } };
       };
       // assignment_status: read-only. One assignment with its children and
