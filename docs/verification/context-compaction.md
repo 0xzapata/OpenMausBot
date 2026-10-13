@@ -90,21 +90,45 @@ A compaction is therefore noticed in two ways: the engine's hook says so
 while the turn runs, and, should the hook never arrive, the member's next
 reading is lower than the last one kept for that session. A member's last
 reading, its record and its place as last speaker are kept for as long as
-its turn runs, whatever is dispatched in other rooms meanwhile. With the
-hook delivered, no case is known that leaves a member without a line. What
-is still not caught is a compaction on a turn whose hook was lost and whose
-reading cannot show it, which is one of three things:
+its turn runs, whatever is dispatched in other rooms meanwhile; the reading
+is kept for a day after the member's last turn ended (as long as a turn
+never seen to end is kept), the record and the last speaker for the ten
+minutes. With the hook delivered, no case is known that leaves a member
+without a line. What is still not caught is a compaction on a turn whose
+hook was lost and whose reading cannot show it, which is one of these:
 
 - the turn reported no reading (the room keeps the one before, which is not
   lower);
-- there is no earlier reading of that session to fall from: the session
-  began on that very turn, or no turn in it reported a reading before;
+- no earlier reading of that session is held to fall from: the session
+  began on that very turn (a reset, a new session after another member's
+  turn or a failed one, a refused resume), or the member's earlier turns in
+  it ran before a server restart or while the setting was off. The last is
+  by design: switching the setting off forgets every reading, so when it is
+  switched on again while a session is warm, the first turn back is a start
+  that goes on in that session, and a compaction on it has nothing to fall
+  from;
 - the turn went on to grow the session past its earlier reading (a long
-  turn that began in a small session).
+  turn that began in a small session, or one that compacted early and
+  worked on).
 
 The member's next turn is then sent only the new lines although its session
-holds the engine's summary in place of the earlier ones; the turn after
-that is judged afresh.
+holds the engine's summary in place of the earlier ones, and so is every
+turn after it: the session's context grows again from the summary, so no
+later reading falls, until another rule in the table gives a start (another
+member's turn on the instance, ten quiet minutes, a turn that did not
+complete ok, the 80% rule, the room's own reset, or a later compaction whose
+hook does arrive). On main the same warm session would be sent the last
+lines again on every turn.
+
+Prompt-cache keep-warm (`cacheKeepWarm`, off by default) holds a member's
+Claude process past the ten minutes, for its window (three hours by
+default, a day at most). It changes nothing about when a member is resumed:
+a turn more than ten minutes after the member's last turn ended is a start
+whatever the process did. It changes which session that start goes on in:
+the kept process takes it, so the session holds more than the record says
+(safe: a line sent twice at worst, as on main), and a compaction on that
+start with its hook lost is seen only by a reading that outlived the ten
+minutes, which is why a reading is kept for a day.
 
 If Claude Code cannot reopen the session, the driver starts a new one from
 the whole turn and says so in the room, as it does in a 1:1 chat. Two things
