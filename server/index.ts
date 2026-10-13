@@ -415,7 +415,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { RepeatDetector, callKey } from "./repeat-detector.ts";
+import { RepeatDetector, callKey, toolItemKey } from "./repeat-detector.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -10084,10 +10084,7 @@ bus.subscribe((event: RuntimeEvent) => {
   if (event.type === "turn.completed" || event.type === "session.exited") return void repeats.settle(event.threadId);
   let key: string | null = null;
   if (event.type === "item.started" && event.itemType === "tool") {
-    // a title with more than a bare identifier is a call with arguments
-    // (ACP: "echo hi", "Read src/x.ts"); a bare "Bash" is not countable
-    const title = event.title ?? "";
-    if (/\s|\//.test(title.trim())) key = callKey("tool", title);
+    key = toolItemKey(event.title, event.input);
   } else if (event.type === "request.opened" && event.requestType === "permission") key = callKey(event.tool, event.summary);
   if (!key) return;
   const { threshold } = repeats.record(event.threadId, key);

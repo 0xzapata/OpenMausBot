@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { RepeatDetector, callKey } from "./repeat-detector.ts";
+import { RepeatDetector, callKey, toolItemKey } from "./repeat-detector.ts";
 
 describe("callKey", () => {
   it("keys on tool plus arguments, normalizing whitespace, and ignores a bare tool name", () => {
@@ -11,6 +11,32 @@ describe("callKey", () => {
     // ACP titles that are just the tool name again carry no arguments
     expect(callKey("Bash", "Bash")).toBeNull();
     expect(callKey("Read", "Read src/index.ts")).toBe("Read:Read src/index.ts");
+  });
+});
+
+describe("toolItemKey", () => {
+  it("counts a title with arguments and never a bare tool name", () => {
+    expect(toolItemKey("echo hi", undefined)).toBe("tool:echo hi");
+    expect(toolItemKey("Read src/x.ts", undefined)).toBe("tool:Read src/x.ts");
+    expect(toolItemKey("Bash", undefined)).toBeNull();
+    expect(toolItemKey("Bash", '{"command":"ls"}')).toBeNull();
+    expect(toolItemKey(undefined, undefined)).toBeNull();
+  });
+
+  it("tells apart calls an adapter titles alike by their input", () => {
+    const d = new RepeatDetector({ thresholds: [5] });
+    const hits: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const r = d.record("t1", toolItemKey("Running list_directory", `{"path":"/notes/${i}"}`)!);
+      if (r.threshold) hits.push(r.threshold);
+    }
+    expect(hits).toEqual([]);
+    // the same path over and over is still a loop
+    for (let i = 0; i < 5; i++) {
+      const r = d.record("t1", toolItemKey("Running list_directory", '{"path":"/notes/0"}')!);
+      if (r.threshold) hits.push(r.threshold);
+    }
+    expect(hits).toEqual([5]);
   });
 });
 
