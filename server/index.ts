@@ -370,11 +370,13 @@ import {
   listStagedSkillWrites,
   isSkillName,
   readSkillFile,
+  readSkillReferences,
   rejectStagedSkillWrite,
   setSkillEnabled,
   skillPackageStamps,
   skillsSystemPrompt,
   expandSkillCommandTurnText,
+  skillReferencesSha256,
   stageSkillWrite,
   undoSkillWrite,
 } from "./skills.ts";
@@ -13483,7 +13485,9 @@ function undoSkillCard(botId: string, threadId: string, messageId: string): Undo
     stagedId: request.stagedId,
     name: request.name,
     action: request.action,
-    ...(request.previous ? { previous: { skillMd: request.previous.preview, source: request.previous.source } } : {}),
+    ...(request.previous
+      ? { previous: { skillMd: request.previous.preview, source: request.previous.source, references: request.previous.references ?? [] } }
+      : {}),
   });
   if ("stale" in undone) return { claimed: true, state: "invalid", error: UNDO_STALE, status: 409, stale: true };
   if ("error" in undone) return { claimed: true, state: "invalid", error: undone.error, status: 409 };
@@ -16007,17 +16011,25 @@ function rejectDeletedThreadSkillStages(cleanups: Array<{ botId: string; stagedI
   for (const cleanup of cleanups) rejectStagedSkillWrite(cleanup.botId, cleanup.stagedId);
 }
 
-function skillCardCopy(staged: { action: "create" | "update"; name: string; gist: string; warnings: string[] }): {
+function skillCardCopy(staged: {
+  action: "create" | "update";
+  name: string;
+  gist: string;
+  warnings: string[];
+  files?: Array<{ path: string }>;
+}): {
   title: string;
   subtitle: string;
   tool: string;
 } {
   const warnings = staged.warnings.length ? `\n\nWarnings:\n- ${staged.warnings.join("\n- ")}` : "";
+  const references = (staged.files ?? []).filter((file) => file.path !== "SKILL.md").length;
+  const referenceNote = references ? ` It keeps ${references} reference file${references === 1 ? "" : "s"} the bot reads when needed.` : "";
   return {
     title: staged.action === "create"
       ? `Enable skill "${staged.name}"?`
       : `Update skill "${staged.name}"?`,
-    subtitle: `${staged.gist || staged.name}\n\nAdds one line to the prompt index; the body is read only when used.${warnings}`,
+    subtitle: `${staged.gist || staged.name}\n\nAdds one line to the prompt index; the body is read only when used.${referenceNote}${warnings}`,
     tool: "stage_skill",
   };
 }
@@ -16033,8 +16045,11 @@ function applyOwnStagedSkill(
 ): ReturnType<typeof applySkillWriteWithReceipt> {
   // What an update replaces, so Undo can put it back.
   const previousSkillMd = staged.action === "update" ? readSkillFile(from.id, staged.name) : null;
+  const previousReferences = staged.action === "update" ? readSkillReferences(from.id, staged.name) : null;
   const previousSource = listSkills(from.id).find((skill) => skill.name === staged.name)?.source;
-  const previous = previousSkillMd !== null && previousSource ? { preview: previousSkillMd, source: previousSource } : undefined;
+  const previous = previousSkillMd !== null && previousReferences !== null && previousSource
+    ? { preview: previousSkillMd, source: previousSource, ...(previousReferences.length ? { references: previousReferences } : {}) }
+    : undefined;
   const applied = applySkillWriteWithReceipt(from.id, staged, () => {
     const receipt = appendSkillRequestCard({ botId: from.id, threadId, staged, applied: true, previous });
     appendDecision(DATA_DIR, { threadId, requestId: receipt.requestId, botId: from.id, botName: from.name,
@@ -16058,6 +16073,7 @@ function appendSkillRequestCard(args: {
     source: string;
     files: Array<{ path: string; content: string }>;
     sha256: string;
+    referencesSha256?: string;
     warnings: string[];
   };
 }): { requestId: string; summary: string } {
@@ -16075,6 +16091,12 @@ function appendSkillRequestCard(args: {
     source: args.staged.source,
     preview: args.staged.files.find((file) => file.path === "SKILL.md")?.content ?? "",
     sha256: args.staged.sha256,
+    ...(args.staged.referencesSha256
+      ? {
+          references: args.staged.files.filter((file) => file.path !== "SKILL.md"),
+          referencesSha256: args.staged.referencesSha256,
+        }
+      : {}),
     warnings: args.staged.warnings,
     createdAt: Date.now(),
     ...(args.applied && args.previous ? { previous: args.previous } : {}),
@@ -16185,7 +16207,7 @@ function resolveSkillRequest(args: {
     };
   }
   const previewSha256 = createHash("sha256").update(request.preview).digest("hex");
-  if (previewSha256 !== request.sha256) {
+  if (previewSha256 !== request.sha256 || skillReferencesSha256(request.references ?? []) !== request.referencesSha256) {
     return { claimed: true, status: 422, error: "the skill preview changed after review — deny and recreate it" };
   }
   const staged = getStagedSkillWrite(args.botId, request.stagedId);
@@ -16195,6 +16217,7 @@ function resolveSkillRequest(args: {
     // the old card can be settled without asking the model to recreate it.
     const replayed = applyStagedSkillWrite(args.botId, request.stagedId, {
       expectedSha256: request.sha256,
+      expectedReferencesSha256: request.referencesSha256 ?? null,
     });
     if (
       "error" in replayed ||
@@ -16231,12 +16254,14 @@ function resolveSkillRequest(args: {
     staged.action !== request.action ||
     staged.name !== request.name ||
     staged.source !== request.source ||
-    staged.sha256 !== request.sha256
+    staged.sha256 !== request.sha256 ||
+    staged.referencesSha256 !== request.referencesSha256
   ) {
     return { claimed: true, status: 422, error: "the staged skill no longer matches this approval card" };
   }
   const applied = applyStagedSkillWrite(args.botId, request.stagedId, {
     expectedSha256: request.sha256,
+    expectedReferencesSha256: request.referencesSha256 ?? null,
     onApplied: () => {
       const patched = store.patchMessage(args.threadId, message.id, {
         card: { ...card, answered: "allow", held: undefined },
@@ -19371,10 +19396,22 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (action === "update" && !targetName) {
           return json(res, 400, { error: "skill_name is required when action is update" });
         }
+        const references = body.references === undefined ? [] : body.references;
+        if (
+          !Array.isArray(references) ||
+          !references.every((file): file is { path: string; content: string } =>
+            Boolean(file) && typeof file === "object" && typeof (file as { path?: unknown }).path === "string" &&
+            typeof (file as { content?: unknown }).content === "string")
+        ) {
+          return json(res, 400, { error: 'references must be a list of { path: "references/<topic>.md", content } objects' });
+        }
         const staged = stageSkillWrite(from.id, {
           action,
           targetName: targetName || undefined,
-          files: [{ path: "SKILL.md", content: skillMd }],
+          files: [
+            { path: "SKILL.md", content: skillMd },
+            ...references.map((file) => ({ path: file.path.trim(), content: file.content })),
+          ],
           gist: typeof body.gist === "string" ? body.gist : undefined,
           source: learnSource(source),
         });

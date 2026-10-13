@@ -267,8 +267,18 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       const previewSha256 = preview !== undefined && preview === originalPreview
         ? createHash("sha256").update(preview).digest("hex")
         : undefined;
+      // Reference files ride the same binding: any scrub change makes the
+      // whole card deny-only.
+      const originalReferences = card.skillRequest.references;
+      const references = originalReferences?.map((file) => ({
+        path: redactSecretsInText(file.path),
+        content: redactSecretsInText(file.content),
+      }));
+      const referencesUnchanged = (references ?? []).every((file, index) =>
+        file.path === originalReferences![index]!.path && file.content === originalReferences![index]!.content);
       const sha256 = card.skillRequest.sha256 !== undefined
         && card.skillRequest.sha256 === previewSha256
+        && referencesUnchanged
         ? card.skillRequest.sha256
         : undefined;
       card.skillRequest = {
@@ -279,6 +289,7 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
           : redactSecretsInText(card.skillRequest.source),
         preview,
         sha256,
+        ...(references ? { references } : {}),
         warnings: card.skillRequest.warnings.map((warning) => redactSecretsInText(warning)),
       };
     }

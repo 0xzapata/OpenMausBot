@@ -808,6 +808,21 @@ const TOOL_DEFINITIONS = [
           description:
             "The full SKILL.md including YAML frontmatter. Example: ---\\nname: file-expense\\ndescription: Files an expense in the company portal.\\n---\\n\\n# File expense\\n",
         },
+        references: {
+          type: "array",
+          maxItems: 8,
+          description:
+            "Optional detail files kept inside the skill, each at most 32KB like SKILL.md. Use them when SKILL.md would pass 32KB: keep the core steps in SKILL.md, move long rule lists or examples here, and link each file from SKILL.md (for example \"For edge cases, read references/edge-cases.md.\"). On update, references you leave out stay as they are; empty content removes one.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              path: { type: "string", description: "references/<topic>.md, with lowercase letters, digits, and hyphens in <topic>." },
+              content: { type: "string", description: "The full Markdown file; empty removes it on update." },
+            },
+            required: ["path", "content"],
+          },
+        },
         gist: {
           type: "string",
           description: "Optional one-line summary of the skill change, included in its applied result or pending review.",

@@ -27,6 +27,7 @@ import {
   listStagedSkillWrites,
   parseSkillMd,
   readSkillFile,
+  readSkillReferences,
   rejectStagedSkillWrite,
   removeSkill,
   scanSkillText,
@@ -1186,6 +1187,133 @@ describe("staged skill writes", () => {
     for (const dir of [".claude/skills", ".agents/skills", ".grok/skills"]) {
       expect(existsSync(join(workspaceDir(bot), dir, "integrity-check"))).toBe(false);
     }
+  });
+});
+
+describe("learned skill references", () => {
+  const ref = (topic: string, text = `# ${topic}\n\nDetail for ${topic}.\n`) => ({ path: `references/${topic}.md`, content: text });
+  const learn = (
+    action: "create" | "update",
+    files: Array<{ path: string; content: string }>,
+    instructions = "Files expenses.",
+  ) => {
+    const staged = stageSkillWrite(bot, {
+      action,
+      ...(action === "update" ? { targetName: "file-expense" } : {}),
+      files: [{ path: "SKILL.md", content: SKILL("file-expense", instructions) }, ...files],
+    });
+    if ("error" in staged) throw new Error(staged.error);
+    const applied = applySkillWriteWithReceipt(bot, staged, () => {});
+    if ("error" in applied) throw new Error(applied.error);
+    return staged;
+  };
+
+  it("explains an oversized SKILL.md with both sizes and where the detail goes", () => {
+    learn("create", []);
+    const big = SKILL("file-expense") + "- another rule\n".repeat(2_500);
+    const result = stageSkillWrite(bot, {
+      action: "update",
+      targetName: "file-expense",
+      files: [{ path: "SKILL.md", content: big }],
+    });
+    expect("error" in result && result.error).toMatch(/at most 32KB; this SKILL\.md is \d+\.\dKB, the current version is 0\.\dKB\./);
+    expect("error" in result && result.error).toContain("references/<topic>.md");
+    expect("error" in result && result.error).toContain("link each one from SKILL.md");
+
+    const created = stageSkillWrite(bot, { action: "create", files: [{ path: "SKILL.md", content: big.replace("file-expense", "other-skill") }] });
+    expect("error" in created && created.error).toMatch(/this SKILL\.md is \d+\.\dKB\. Keep SKILL\.md/);
+  });
+
+  it("installs reviewed reference files beside SKILL.md and binds them to the review", () => {
+    const staged = learn("create", [ref("edge-cases"), ref("approvers")]);
+    expect(staged.files.map((file) => file.path)).toEqual(["SKILL.md", "references/approvers.md", "references/edge-cases.md"]);
+    expect(staged.referencesSha256).toMatch(/^[a-f0-9]{64}$/);
+    const directory = join(workspaceDir(bot), "skills", "file-expense");
+    expect(readFileSync(join(directory, "references", "edge-cases.md"), "utf8")).toContain("Detail for edge-cases.");
+    expect(readSkillReferences(bot, "file-expense")?.map((file) => file.path)).toEqual([
+      "references/approvers.md",
+      "references/edge-cases.md",
+    ]);
+    expect(listSkills(bot)[0]).toMatchObject({ name: "file-expense", enabled: true });
+  });
+
+  it("keeps unmentioned references on update, replaces named ones, and removes empty ones", () => {
+    learn("create", [ref("edge-cases"), ref("approvers")]);
+    // Only a reference changes: still a real update.
+    learn("update", [ref("edge-cases", "# Edge cases\n\nNew rule.\n")]);
+    expect(readSkillReferences(bot, "file-expense")).toEqual([
+      ref("approvers"),
+      ref("edge-cases", "# Edge cases\n\nNew rule.\n"),
+    ]);
+    learn("update", [{ path: "references/approvers.md", content: "" }], "Files expenses, v2.");
+    expect(readSkillReferences(bot, "file-expense")).toEqual([ref("edge-cases", "# Edge cases\n\nNew rule.\n")]);
+    expect(readSkillFile(bot, "file-expense")).toContain("v2");
+    learn("update", [{ path: "references/edge-cases.md", content: " " }]);
+    expect(readSkillReferences(bot, "file-expense")).toEqual([]);
+    expect(listSkills(bot)[0]).toMatchObject({ enabled: true });
+  });
+
+  it("rejects unsafe paths, too many references, and oversized references", () => {
+    for (const path of ["references/../SKILL.md", "scripts/run.sh", "references/Upper.md", "references/a/b.md", "notes.md"]) {
+      const result = stageSkillWrite(bot, {
+        action: "create",
+        files: [{ path: "SKILL.md", content: SKILL("file-expense") }, { path, content: "x" }],
+      });
+      expect(result, path).toMatchObject({ error: expect.stringMatching(/SKILL\.md|references\/<topic>\.md/) });
+    }
+    const many = Array.from({ length: 9 }, (_, index) => ref(`topic-${index}`));
+    expect(stageSkillWrite(bot, { action: "create", files: [{ path: "SKILL.md", content: SKILL("file-expense") }, ...many] }))
+      .toMatchObject({ error: expect.stringContaining("at most 8") });
+    expect(stageSkillWrite(bot, {
+      action: "create",
+      files: [{ path: "SKILL.md", content: SKILL("file-expense") }, ref("huge", "x".repeat(33 * 1024))],
+    })).toMatchObject({ error: expect.stringContaining("references/huge.md must be at most 32KB; it is 33.0KB") });
+    expect(listStagedSkillWrites(bot)).toEqual([]);
+  });
+
+  it("refuses a staged reference changed after review, or a reviewer who saw different references", () => {
+    const staged = stageSkillWrite(bot, {
+      action: "create",
+      files: [{ path: "SKILL.md", content: SKILL("file-expense") }, ref("edge-cases")],
+    });
+    if ("error" in staged) throw new Error(staged.error);
+    expect(applyStagedSkillWrite(bot, staged.id, { expectedSha256: staged.sha256, expectedReferencesSha256: null }))
+      .toMatchObject({ error: expect.stringContaining("changed after review") });
+    const path = join(DATA_DIR, "skill-state", bot, "staged.json");
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    raw.writes[staged.id].files[1].content = "Unreviewed.";
+    writeFileSync(path, JSON.stringify(raw));
+    expect(applyStagedSkillWrite(bot, staged.id, { expectedSha256: staged.sha256 }))
+      .toMatchObject({ error: expect.stringContaining("changed after review") });
+    expect(listSkills(bot)).toEqual([]);
+  });
+
+  it("blocks enablement and updates when an installed reference is edited outside review", () => {
+    learn("create", [ref("edge-cases")]);
+    writeFileSync(join(workspaceDir(bot), "skills", "file-expense", "references", "edge-cases.md"), "Tampered.");
+    expect(listSkills(bot)[0]).toMatchObject({ enabled: false });
+    expect(readSkillReferences(bot, "file-expense")).toBeNull();
+    expect(stageSkillWrite(bot, {
+      action: "update",
+      targetName: "file-expense",
+      files: [{ path: "SKILL.md", content: SKILL("file-expense", "Changed.") }],
+    })).toMatchObject({ error: expect.stringContaining("changed after review") });
+  });
+
+  it("undo restores the exact earlier file set", () => {
+    learn("create", []);
+    const previous = readSkillFile(bot, "file-expense")!;
+    const source = listSkills(bot)[0]!.source;
+    const updated = learn("update", [ref("edge-cases")], "Moved detail out.");
+    expect(undoSkillWrite(bot, {
+      stagedId: updated.id,
+      name: "file-expense",
+      action: "update",
+      previous: { skillMd: previous, source, references: [] },
+    })).toEqual({ undone: true });
+    expect(readSkillFile(bot, "file-expense")).toBe(previous);
+    expect(readSkillReferences(bot, "file-expense")).toEqual([]);
+    expect(listSkills(bot)[0]).toMatchObject({ enabled: true });
   });
 });
 
