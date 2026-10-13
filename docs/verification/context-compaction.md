@@ -54,21 +54,42 @@ With `"context": { "roomSessions": true }` in config.json (or
 member whose own provider session is known to hold the room is sent only the
 lines that session has not been handed, under one note, instead of the
 bounded transcript again. The room remembers, in memory, which native session
-ran each member's last turn in a thread and what it was handed. Every other
-turn is the call described above, unchanged: a member's first turn, a turn
-after a server restart, after another member's turn on the same engine
-instance (the driver keeps one process per thread), after a turn that failed,
-was stopped, timed out or was held, after Compact now or the automatic
-threshold, after ten quiet minutes (the driver's own idle time), when the
-member missed more lines than the window holds, when its model, folder,
-instructions, approval level, tools or connections changed, and any guest's
-turn. If Claude Code cannot reopen the session, the driver starts a new one
-from the whole turn and says so in the room, as it does in a 1:1 chat.
+ran each member's last turn in a thread, which lines it was handed and how
+each read. A line that reads differently now than when it was shown (a digest
+that gained its file list, a teammate's report, which is rendered from the
+request's state at that moment) is sent again, marked as replacing the
+earlier copy. With the setting off nothing is remembered or computed.
 
-Only Claude Code is covered, and only a CLI new enough to declare strict
-resume (2.1.267): it is the engine that goes on in a warm session between
-room turns. Codex, ACP agents, Pi, Muse Code and the API models keep the call
-above whatever the setting says.
+Only Claude Code is covered, and only when all of these hold: the CLI is new
+enough to declare strict resume (2.1.267), and the turn mounts the
+engine-hook channel (on unless `OMB_HOOKS=0`), which is how the harness hears
+that the engine compacted a session. Codex, ACP agents, Pi, Muse Code and the
+API models keep the call described above whatever the setting says, and so
+does Claude Code without the hook channel.
+
+Every other turn is the call described above, unchanged:
+
+| When | The member's turn |
+|---|---|
+| Its first turn in the thread, or after a server restart | whole transcript |
+| Another member's turn came between, on the same engine instance (the driver keeps one process per thread) | whole transcript |
+| Its last turn failed, was stopped, held, timed out, or ended in another session than it began in | whole transcript |
+| Compact now, or the automatic 90% threshold | whole transcript, fresh session, the usual line |
+| **Claude Code compacted the session** (`PreCompact`, `SessionStart` with source `compact`) | whole transcript on the same warm session: it holds the CLI's summary now, not the room's lines. Also for a turn that was running when it compacted |
+| Its last measured context here is at 80% or more of where the engine compacts (`OMB_CLAUDE_AUTOCOMPACT`, 200,000 tokens by default; the model's window when that is `auto` or `off`) | whole transcript, so no delta is handed to a session about to compact |
+| Ten quiet minutes (the driver's own idle time) | whole transcript |
+| It missed more lines than the window holds | whole transcript |
+| Its model, folder, instructions, approval level, tools, connections or `claudeUserMcp` changed, or the engine instance was reloaded | whole transcript |
+| A guest's turn | whole transcript, nothing remembered |
+
+If Claude Code cannot reopen the session, the driver starts a new one from
+the whole turn and says so in the room, as it does in a 1:1 chat. Two things
+the harness cannot see can make the driver reopen the recorded session from
+disk where the turn would otherwise have started a new one: a warm process
+that ended by itself, and a change in something only the driver keys its
+process on (the project's `.mcp.json`, the account's credentials, a base URL,
+a model alias). The session reopened is the recorded one and holds what the
+room says it holds; what that costs has not been measured.
 
 ```sh
 pnpm exec vitest run server/room-sessions.e2e.test.ts
@@ -84,7 +105,9 @@ new session; so is a turn after a failed one and after a stopped one; Compact
 now starts a fresh session with the usual line, and the next turn is a delta
 against it; a line posted with `post_to_room` while the member worked arrives
 once, in its next turn, under its provenance note; a refused `--resume` ends
-with the whole turn on a new session and the driver's notice. No real engine
+with the whole turn on a new session and the driver's notice; after the fake
+CLI compacts the session (its hooks reach the harness with the room's thread
+and the member) the next turn is the whole window again. No real engine
 runs: what a live Claude Code session costs across a resume is not measured
 here.
 

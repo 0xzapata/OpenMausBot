@@ -5,14 +5,20 @@
 // (host/room-transcript.ts) and resumes no stored session. What grows is a
 // warm provider process the driver keeps between one bot's consecutive turns
 // in the same room (Claude's idle session reuse), which re-reads that
-// transcript on top of everything it already holds. With
-// `context.roomSessions` on (host/room-sessions.ts), a member whose own
-// session is known to hold the room is sent only the lines it has not been
-// handed instead; the session still grows, more slowly. Starting the turn
-// with the existing `sessionReset` flag drops exactly that native backlog and
+// transcript on top of everything it already holds. Starting the turn with
+// the existing `sessionReset` flag drops exactly that native backlog and
 // nothing the room relies on, so it is a room's compaction: the transcript
 // stays whole, and the fresh session gets the same bounded context a room
 // turn has always carried.
+//
+// Room sessions (host/room-sessions.ts; `context.roomSessions`, off by
+// default) change one thing: a member whose own session is known to hold the
+// room is sent only the lines it has not been handed, so that session grows
+// more slowly. Claude Code only, and only on a turn that mounts the
+// engine-hook channel, because that is how the harness hears of the engine's
+// own compaction: when Claude Code compacts a member's session, what the
+// session was handed is no longer what it holds, and the member's next turn
+// carries the whole transcript again, as every turn does without the setting.
 //
 // Measurements live in memory on purpose. They describe a warm process, and
 // warm processes do not outlive this server either.

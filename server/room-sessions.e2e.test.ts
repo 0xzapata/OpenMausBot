@@ -28,11 +28,12 @@ const jsonl = (path: string) => existsSync(path)
 type Launch = { botId: string | null; pid: number; resume: string | null; sessionId: string | null; mode: string };
 type Turn = { botId: string; pid: number; threadId: string; prompt: { message?: { content?: unknown } } };
 
-async function fixture(test: (f: Awaited<ReturnType<typeof build>>) => Promise<void>, env: NodeJS.ProcessEnv = {}) {
+async function fixture(test: (f: Awaited<ReturnType<typeof build>>) => Promise<void>, env: NodeJS.ProcessEnv = {}, scripted = true) {
   // A measured context far below the room's 90% threshold: Compact now needs
-  // a reading, and nothing compacts by itself.
+  // a reading, and nothing compacts by itself. `scripted: false` runs the
+  // fake without the room plan, for the modes only its own turn loop plays.
   const session = await launchVerificationServer({ ...process.env, FAKE_CLAUDE_VERSION: "2.1.270", FAKE_CLAUDE_CONTEXT_TOKENS: "20000", ...env },
-    undefined, undefined, undefined, undefined, { scripted: true });
+    undefined, undefined, undefined, undefined, { scripted });
   try {
     await test(await build(session));
   } finally {
@@ -68,6 +69,8 @@ async function build(session: Awaited<ReturnType<typeof launchVerificationServer
     "if (mode) process.env.FAKE_CLAUDE_MODE = mode;",
     "let botId = null;",
     'try { for (const s of Object.values(JSON.parse(readFileSync(after("--mcp-config"), "utf8")).mcpServers ?? {})) botId = s?.env?.OMB_BOT_ID ?? botId; } catch {}',
+    // every prompt a bot's engine consumed, for a fake that runs without the room plan
+    `if (botId) process.env.FAKE_CLAUDE_PROMPTS = ${JSON.stringify(join(dataDir, "consumed-"))} + botId + ".jsonl";`,
     'if (after("--resume") || after("--session-id")) {',
     `  appendFileSync(${JSON.stringify(launchesPath)}, JSON.stringify({ botId, pid: process.pid, resume: after("--resume"), sessionId: after("--session-id"), mode: process.env.FAKE_CLAUDE_MODE ?? "happy" }) + "\\n");`,
     "  const launched = modeNow();",
@@ -98,8 +101,10 @@ async function build(session: Awaited<ReturnType<typeof launchVerificationServer
   };
   const launches = (botId: string) => (jsonl(launchesPath) as Launch[]).filter((launch) => launch.botId === botId);
   const turns = (botId: string) => (jsonl(`${planPath}.evidence.jsonl`) as Turn[]).filter((turn) => turn.botId === botId);
+  /** The prompts a bot's engine consumed, in order, shaped like `turns` for `text`. */
+  const consumed = (botId: string) => jsonl(join(dataDir, `consumed-${botId}.jsonl`)).map((prompt) => ({ prompt }) as Pick<Turn, "prompt">);
   return {
-    url, dataDir, control, api, plan, save, bot, room, launches, turns,
+    url, dataDir, control, api, plan, save, bot, room, launches, turns, consumed,
     /** Switch `context.roomSessions`. */
     roomSessions: async (on: boolean) => expect((await api("PATCH", "/api/config", { context: { roomSessions: on } })).status).toBe(200),
     /** What the member replies on its next turn (and every one after). */
@@ -116,7 +121,7 @@ async function build(session: Awaited<ReturnType<typeof launchVerificationServer
     /** The text an engine turn received, without the clock line and without
      * the note a warm Claude process is given when the volatile half of its
      * instructions changed (drivers/claude.ts): neither is the room's text. */
-    text(turn: Turn | undefined): string {
+    text(turn: Pick<Turn, "prompt"> | undefined): string {
       const content = turn?.prompt?.message?.content;
       const raw = typeof content === "string" ? content
         : Array.isArray(content) ? content.map((block: any) => typeof block === "string" ? block : block?.text ?? "").join("\n") : "";
@@ -391,3 +396,29 @@ it("leaves an engine that does not promise strict resume alone even with the set
   expect(f.launches(editor.id).map((launch) => launch.resume)).toEqual([null]);
   // a Claude CLI from before --system-prompt-snapshot: the driver does not declare strictResume
 }, { FAKE_CLAUDE_VERSION: "2.1.200" }), hostTimeout(60_000));
+
+it("sends the whole window again after Claude Code compacted the member's session", () => fixture(async (f) => {
+  const editor = await f.bot("Editor");
+  const bay = await f.room("Edit bay", [editor]);
+  await f.roomSessions(true);
+  await f.send(bay, "@Editor Cut the intro. ALPHA_7");
+  await f.send(bay, "@Editor Trim the middle. CHARLIE_7");
+  await f.send(bay, "@Editor Tighten the outro. ECHO_7");
+
+  const [first, second, third] = f.consumed(editor.id);
+  expect(f.text(first)).toBe(`${PERSON}: @Editor Cut the intro. ALPHA_7\n\n(Reply to the conversation above as Editor.)`);
+  // The second turn resumed the session with a delta. While it ran, the CLI
+  // compacted that session and told the harness through its hooks, which
+  // carry the room's thread and the member: both lines land in the room.
+  expect(f.text(second)).toContain(NOTE);
+  expect(count(f.text(second), "ALPHA_7")).toBe(0);
+  const compactions = (await f.messages(bay.activeTaskId)).map((message) => message.tool?.name ?? "").filter((name) => name.startsWith("context compact"));
+  expect(compactions.slice(0, 2)).toEqual(["context compaction started (auto)", expect.stringMatching(/^context compacted — re-sent the last \d+ digests?$/)]);
+  // The session holds the CLI's summary now, not the room's lines: the next
+  // turn carries the whole window, as every turn does with the setting off.
+  expect(f.text(third)).not.toContain(NOTE);
+  for (const sentinel of ["ALPHA_7", "CHARLIE_7", "ECHO_7"]) expect(count(f.text(third), sentinel), sentinel).toBe(1);
+  // No reset and no resume by id: the one warm process, as on main.
+  expect(f.launches(editor.id).map((launch) => launch.resume)).toEqual([null]);
+  // the fake compacts on every turn of a process after its first
+}, { FAKE_CLAUDE_HOOKS: "1", FAKE_CLAUDE_COMPACT: "1" }, false), hostTimeout(90_000));
