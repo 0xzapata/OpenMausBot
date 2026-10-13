@@ -11,6 +11,7 @@ import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shar
 import { writeFileAtomic } from "./atomic.ts";
 import { withoutComputerEngine } from "./computer-engine-removal.ts";
 import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
+import { replaySettings } from "./replay-settings.ts";
 import { EFFORT_LEVELS, type EffortLevel, type LiveSettings } from "../shared/wire.ts";
 import { isModelVariant, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
 import { DEFAULT_WINDOW_MINUTES, MAX_WINDOW_MINUTES } from "./cache-keepwarm.ts";
@@ -565,19 +566,13 @@ const appConfigSchema = z.object({
   rooms: roomConfigSchema.optional(),
   mcp: mcpConfigSchema.optional(),
   context: z.object({
-    rebuildBytes: z.number().int().min(1_024).max(1_000_000).optional(),
     compactAt: z.number().positive().max(10_000_000).optional(),
     autoCompact: z.boolean().optional(),
     /** Before a bot's room turn, start a fresh provider session once its
      * context in that room reaches this (fraction below 1, or a token
      * count). Default 0.9; autoCompact: false turns it off too. */
     roomCompactAt: z.number().positive().max(10_000_000).optional(),
-    /** A session rebuilt from an inline replay (an engine switched in
-     * mid-thread, a rewind, a lost session, a compaction) is also told which
-     * tools already ran, one line per call (server/context-rebuild.ts). Off
-     * unless true; OMB_REPLAY_TOOL_HISTORY=1 or =0 wins when set. */
-    replayToolHistory: z.boolean().optional(),
-  }).optional(),
+  }).extend(replaySettings).optional(), // rebuildBytes, replayToolHistory
   /** Memory upkeep timing, for bots with Memory upkeep switched on. */
   memory: z.object({
     /** Quiet time after a turn before its facts are captured (ms). */

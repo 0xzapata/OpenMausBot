@@ -1,6 +1,7 @@
 import { isContextMessage } from "./delta-context.ts";
 import { escapeNotes } from "./peer-provenance.ts";
 import { redactSecretsInText } from "./redact.ts";
+import { replayToolHistoryEnabled } from "./replay-settings.ts";
 import type { Message } from "./store.ts";
 
 import { nameIsCommand } from "../shared/tool-name.ts";
@@ -21,7 +22,8 @@ export interface ReplayEntry {
 // replay also names each earlier tool call on one line, between the two
 // messages it ran between. Only the inline replay: a driver that replays
 // natively (SendTurnInput.transcript) and a session that resumes are sent
-// exactly what they are sent without it.
+// exactly what they are sent without it. The setting, its schema and its
+// environment override are in server/replay-settings.ts.
 
 /** One earlier tool call, as a rebuilt session is told about it. */
 export interface ReplayToolCall {
@@ -38,18 +40,6 @@ export interface ReplayToolCall {
 export const REPLAY_TOOL_LINE_CAP = 20;
 /** Characters one tool line may run to, outcome included. */
 export const TOOL_LINE_MAX_CHARS = 120;
-
-/** `context.replayToolHistory`, off unless switched on. OMB_REPLAY_TOOL_HISTORY
- * wins over the file when it is "1" (on) or "0" (off). */
-export function replayToolHistoryEnabled(
-  settings: { replayToolHistory?: boolean } | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  const override = env.OMB_REPLAY_TOOL_HISTORY?.trim();
-  if (override === "1") return true;
-  if (override === "0") return false;
-  return settings?.replayToolHistory === true;
-}
 
 /** The argument that names what a call acted on, most telling first: a
  * search's pattern says more than the folder it searched. */

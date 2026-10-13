@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   boundedContextText,
   replayToolCalls,
-  replayToolHistoryEnabled,
   selectReplay,
   toolReplayLine,
   REPLAY_TOOL_LINE_CAP,
@@ -373,26 +372,6 @@ describe("tool history in a rebuilt session", () => {
         expect(line("Grep", { pattern: "first\n  second\tthird" })).toBe("[ran: Grep: first second third — ok]");
         expect(line("Grep", { pattern: "first\u0085second\u2028third" })).toBe("[ran: Grep: first second third — ok]");
       });
-    });
-  });
-
-  describe("replayToolHistoryEnabled", () => {
-    it("is off unless the setting is switched on", () => {
-      expect(replayToolHistoryEnabled(undefined, NO_ENV)).toBe(false);
-      expect(replayToolHistoryEnabled({}, NO_ENV)).toBe(false);
-      expect(replayToolHistoryEnabled({ replayToolHistory: false }, NO_ENV)).toBe(false);
-      expect(replayToolHistoryEnabled(ON, NO_ENV)).toBe(true);
-    });
-
-    it("lets OMB_REPLAY_TOOL_HISTORY win over the file, both ways", () => {
-      expect(replayToolHistoryEnabled(undefined, { OMB_REPLAY_TOOL_HISTORY: "1" })).toBe(true);
-      expect(replayToolHistoryEnabled({ replayToolHistory: false }, { OMB_REPLAY_TOOL_HISTORY: "1" })).toBe(true);
-      expect(replayToolHistoryEnabled(ON, { OMB_REPLAY_TOOL_HISTORY: "0" })).toBe(false);
-      // anything else is not an answer: the file decides
-      for (const value of ["", "true", "yes", "2"]) {
-        expect(replayToolHistoryEnabled(ON, { OMB_REPLAY_TOOL_HISTORY: value })).toBe(true);
-        expect(replayToolHistoryEnabled(undefined, { OMB_REPLAY_TOOL_HISTORY: value })).toBe(false);
-      }
     });
   });
 

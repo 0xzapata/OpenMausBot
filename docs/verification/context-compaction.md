@@ -75,7 +75,7 @@ off by default, and off the replay is byte-for-byte what it was.
 
 ```sh
 pnpm exec vitest run server/replay-tool-history.e2e.test.ts
-pnpm exec vitest run server/context-rebuild.test.ts server/turn-context.test.ts server/config.test.ts
+pnpm exec vitest run server/context-rebuild.test.ts server/replay-settings.test.ts server/turn-context.test.ts server/config.test.ts
 ```
 
 The fixture's engine runs a command and reads a file each turn. The test rewinds
