@@ -215,7 +215,7 @@ import {
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
-import { createQuotaSwitch } from "./quota-switch.ts";
+import { createQuotaSwitchHost } from "./host/quota-switch.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
   addDisabledMcpServer,
@@ -13783,27 +13783,12 @@ const ROOM_POST_MAX_CHARS = 4_000;
 // can call resolvePeerComms without holding a reference back to here.
 const approvalBus: ApprovalBus = { store, broadcast, notify, autoApply: fullAccessForSource };
 
-// quota-switch (server/quota-switch.ts): a person's turn that ends on its engine's usage limit offers another
-// engine. What only the server has: the thread's model-switch gate, its request record and a person's send.
-const quotaSwitch = createQuotaSwitch({
-  store, coordinator, registry, turnStops,
-  access: instanceId => providerConfigs()[instanceId]?.access ?? registry.access(instanceId),
-  refusal: policyModelRefusal,
-  gate: (thread, selection) => checkedTaskModelSwitch(thread, selection, false, false, true),
-  reset: (from, to) => hostedModels?.resetTask(from, to),
-  busy: threadBusy,
-  request: threadId => directRequestOwners.get(threadId),
-  resend: (botId, threadId, message, replyTo, spoken) => startOrQueueDirectMessage(botId, threadId, message.text ?? "", replyTo, undefined, message.sender, undefined, spoken.via, spoken.callId, message.dataContext),
+// quota-switch (server/host/quota-switch.ts): a person's turn that ends on its engine's usage limit offers another
+// engine, and a respond endpoint asks harnessCardOutcome about a card the harness raised itself.
+const { quotaSwitch, harnessCardOutcome } = createQuotaSwitchHost({
+  store, coordinator, registry, turnStops, approvalBus, hostedModels, providerConfigs, policyModelRefusal,
+  checkedTaskModelSwitch, threadBusy, directRequestOwners, startOrQueueDirectMessage,
 });
-
-/** A card the harness raised itself, on this thread: a peer approval or a
- * quota-switch offer. Settled here, with the outcome a respond endpoint
- * answers; undefined for any other card, which the endpoint goes on to deliver. */
-async function harnessCardOutcome(threadId: string, requestId: string, behavior: "allow" | "deny" | "answer", message: unknown): Promise<string | undefined> {
-  if (!store.messagesFor(threadId).some(candidate => candidate.card?.requestId === requestId)) return undefined;
-  if (resolvePeerComms(approvalBus, requestId, behavior)) return behavior === "allow" ? "allowed-once" : "rejected";
-  return await quotaSwitch.answer(threadId, requestId, behavior, message) ?? undefined;
-}
 
 // Approvals live only in memory, so any peer card still open on disk is one
 // whose resolver died with the previous process. Left alone it can never be
