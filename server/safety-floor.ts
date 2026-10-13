@@ -438,12 +438,13 @@ function lex(source: string, windows: boolean): Reading {
 
 /** Commands that run the command line after them. `values`: the one-letter
  * options that take a value of their own, `named` the long ones. `asks`: the
- * options that make it report on a command instead of running it. */
-const PREFIXES: Record<string, { values?: string; named?: string[]; operands?: number; asks?: string; asksNamed?: string[] }> = {
+ * options that make it report on a command instead of running it. `split`:
+ * the option whose value is more of the command's own arguments (`env -S`). */
+const PREFIXES: Record<string, { values?: string; named?: string[]; operands?: number; asks?: string; asksNamed?: string[]; split?: { letter: string; named: string } }> = {
   // `sudo -l rm` lists whether rm may be run; it runs nothing.
   sudo: { values: "CDghpRrtTUu", named: ["user", "group", "host", "prompt", "chdir", "chroot", "role", "type", "other-user", "close-from", "command-timeout"], asks: "l", asksNamed: ["list"] },
   doas: { values: "Cu" },
-  env: { values: "uCS", named: ["unset", "chdir", "split-string"] },
+  env: { values: "uCS", named: ["unset", "chdir", "split-string"], split: { letter: "S", named: "split-string" } },
   nice: { values: "n", named: ["adjustment"] },
   timeout: { values: "ks", named: ["kill-after", "signal"], operands: 1 },
   exec: { values: "a" },
@@ -464,9 +465,37 @@ function programName(word: string): string {
   return word.slice(Math.max(word.lastIndexOf("/"), word.lastIndexOf("\\")) + 1).toLowerCase().replace(/\.(?:exe|com|cmd|bat)$/, "");
 }
 
+/** The words `env -S` makes of its value, or null when they cannot be told
+ * from here: env expands `$NAME`, reads backslash escapes and drops a `#`
+ * comment itself, and a value the shell computed is not known at all. */
+function splitWords(value: string | undefined): string[] | null {
+  if (value === undefined) return [];
+  if (/[$\\#]/.test(value) || value.includes(DYNAMIC)) return null;
+  const words: string[] = [];
+  let word: string | null = null;
+  let quote = "";
+  for (const char of value) {
+    if (quote) {
+      if (char === quote) quote = "";
+      else word = (word ?? "") + char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      word ??= "";
+    } else if (/\s/.test(char)) {
+      if (word !== null) words.push(word);
+      word = null;
+    } else word = (word ?? "") + char;
+  }
+  if (quote) return null;
+  if (word !== null) words.push(word);
+  return words;
+}
+
 /** The index of the word that is the command itself, past variable
- * assignments, shell keywords and prefix commands; -1 when there is none. */
-function commandIndex(words: string[]): number {
+ * assignments, shell keywords and prefix commands; -1 when there is none.
+ * `env -S LINE` is rewritten in `words` to the arguments env makes of LINE;
+ * `unread` is told when it cannot be. */
+function commandIndex(words: string[], unread: () => void): number {
   let index = 0;
   while (index < words.length) {
     const word = words[index];
@@ -485,18 +514,49 @@ function commandIndex(words: string[]): number {
     while (index < words.length && /^-./.test(words[index])) {
       const option = words[index++];
       if (option === "--") break;
+      // `env -S LINE`, `-SLINE`, `--split-string=LINE` (GNU takes any
+      // start of the long name): env reads LINE as more of its own
+      // arguments, so they take the option's place and are read on from
+      // here. `spliced` is how many words the option took.
+      let line: string | undefined;
+      let spliced = 0;
       if (option.startsWith("--")) {
         if (prefix.asksNamed?.includes(option.slice(2))) return -1;
-        if (prefix.named?.includes(option.slice(2))) index++;
-        continue;
+        const equals = option.indexOf("=");
+        const name = option.slice(2, equals < 0 ? undefined : equals);
+        if (name && prefix.split?.named.startsWith(name)) {
+          line = equals < 0 ? words[index] : option.slice(equals + 1);
+          spliced = equals < 0 ? 2 : 1;
+        } else {
+          if (prefix.named?.includes(option.slice(2))) index++;
+          // A shortened long name (`sudo --us root`): GNU takes any start
+          // that fits one option, so the next word may be its value or the
+          // command. It is read as the command, and never called clear.
+          else if (name && equals < 0 && prefix.named?.some((known) => known.startsWith(name))) unread();
+          continue;
+        }
+      } else {
+        // In a cluster the first letter that takes a value ends the options:
+        // the value is the rest of the word (-uroot), or the next word when
+        // nothing is left (-u root, -nu root).
+        const letters = option.slice(1).split("");
+        const value = letters.findIndex((letter) => prefix.values?.includes(letter));
+        if (letters.slice(0, value < 0 ? undefined : value).some((letter) => prefix.asks?.includes(letter))) return -1;
+        if (value >= 0 && letters[value] === prefix.split?.letter) {
+          const rest = option.slice(value + 2);
+          line = rest || words[index];
+          spliced = rest ? 1 : 2;
+        } else {
+          if (value === letters.length - 1) index++;
+          continue;
+        }
       }
-      // In a cluster the first letter that takes a value ends the options:
-      // the value is the rest of the word (-uroot), or the next word when
-      // nothing is left (-u root, -nu root).
-      const letters = option.slice(1).split("");
-      const value = letters.findIndex((letter) => prefix.values?.includes(letter));
-      if (letters.slice(0, value < 0 ? undefined : value).some((letter) => prefix.asks?.includes(letter))) return -1;
-      if (value === letters.length - 1) index++;
+      const parts = splitWords(line);
+      if (!parts) {
+        unread();
+        return -1;
+      }
+      words.splice(--index, spliced, ...parts);
     }
     index += prefix.operands ?? 0;
   }
@@ -635,10 +695,13 @@ interface Pass {
 function judge(command: Command, source: string, pass: Pass, mode: Mode, depth: number): FloorVerdict | null {
   const { host } = pass;
   if (mode === "posix" && command.writes.some(diskDevice)) return OVERWRITE_DISK;
-  const index = commandIndex(command.words);
+  const words = [...command.words];
+  const index = commandIndex(words, () => {
+    pass.synced = false;
+  });
   if (index < 0) return null;
-  const program = programName(command.words[index]);
-  const args = command.words.slice(index + 1);
+  const program = programName(words[index]);
+  const args = words.slice(index + 1);
   const run = (line: string | null | undefined, as: Mode): FloorVerdict | null => {
     if (!line) return null;
     if (depth >= MAX_DEPTH) {

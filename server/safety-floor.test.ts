@@ -109,6 +109,19 @@ const BLOCKED: Case[] = [
   ["FORCE=1 rm -rf /", "delete-root"],
   ['A=1 B="two words" rm -rf /usr', "delete-system-directory"],
   ["env FOO=bar rm -rf /", "delete-root"],
+  // `env -S LINE` / `--split-string=LINE`: env runs what it splits LINE into
+  ["env -S 'rm -rf /'", "delete-root"],
+  ['env -S"rm -rf /"', "delete-root"],
+  ["env -iS 'rm -rf /'", "delete-root"],
+  ["env --split-string='rm -rf /'", "delete-root"],
+  ["env --split-string 'rm -rf /'", "delete-root"],
+  ["env --split='rm -rf /'", "delete-root"],
+  ["/usr/bin/env -S 'rm -rf' /", "delete-root"],
+  ["env -S '-i FOO=1 rm -rf /'", "delete-root"],
+  ["env -S '-S \"rm -rf /\"'", "delete-root"],
+  ["env -S 'sh -c \"rm -rf /\"'", "delete-root"],
+  ["sudo env -S 'rm -rf /etc'", "delete-system-directory"],
+  ['env -S "rm -rf $HOME"', "delete-home"],
   ["nohup rm -rf / &", "delete-root"],
   ["command rm -rf /", "delete-root"],
   ["exec rm -rf /", "delete-root"],
@@ -343,6 +356,10 @@ const ALLOWED: Array<[command: string, on?: Platform | "posix"]> = [
   ["git commit -m 'never run: rm -rf ~'"],
   ['echo "rm -rf ~"'],
   ["echo rm -rf /"],
+  ["env -S 'echo rm -rf /'"],
+  ["env -S 'node --no-warnings' script.js"],
+  // env hands rm a directory named "~": nothing expands it without a shell
+  ["env -S 'rm -rf ~'"],
   ["printf '%s\\n' 'rm -rf /' > notes.txt"],
   ["grep -r 'mkfs' ."],
   ['rg "dd if=/dev/zero of=/dev/sda" docs'],
@@ -583,6 +600,20 @@ const NOT_CLEAR: Array<[command: string, on: Platform | "posix" | "all", outcome
   ["(( x << 1 ))\nrm -rf /", "all", "unreadable"],
   ["echo $[1<<2]\nrm -rf /", "all", "unreadable"],
   ["echo $((1 << 2))\nrm -rf /", "all", "unreadable"],
+  // `env -S` expands `$NAME`, reads backslashes and drops `#` comments by
+  // rules of its own, and a value the shell computed is not known
+  ["env -S 'rm -rf ${TARGET}'", "all", "unreadable"],
+  ['env -S "$CMD"', "all", "unreadable"],
+  ['env -S "$(cat cmd.txt)"', "all", "unreadable"],
+  ["env -S 'rm -rf \\/'", "all", "unreadable"],
+  ["env -S 'rm -rf / # tidy'", "all", "unreadable"],
+  ["env -S 'rm -rf \"/'", "all", "unreadable"],
+  // a shortened long option may take the next word as its value: the word
+  // after it is read as the command, and the line is never called clear
+  ["sudo --us root rm -rf /", "all", "unreadable"],
+  ["timeout --sig KILL 5 rm -rf /", "all", "unreadable"],
+  ["env --uns FOO rm -rf /", "all", "unreadable"],
+  ["sudo --us rm -rf /", "all", "delete-root"],
   // a wrapper nested deeper than is followed was not read
   ["eval eval eval eval eval rm -rf /", "all", "unreadable"],
 ];
