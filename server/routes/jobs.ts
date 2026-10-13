@@ -9,6 +9,7 @@
 //
 // Built by routes/threads.ts with the conversation reads it belongs to.
 import type { RequestAuth } from "../request-auth.ts";
+import type { SessionRegistry } from "../sessions.ts";
 import type { Viewer, VisibleSet } from "../bot-visibility.ts";
 import { queuedChannelSends } from "../channel-queue.ts";
 import type { Coordinator } from "../coordinator.ts";
@@ -29,6 +30,8 @@ export interface JobRouteDeps {
   groupThreadIsWorking(groupId: string, threadId: string): boolean;
   viewerFor(auth: RequestAuth): Viewer;
   visibleTo(viewer: Viewer): VisibleSet;
+  /** A held read outlives its start: the session is asked again before it answers. */
+  sessions: Pick<SessionRegistry, "isLive">;
   now?: () => number;
   /** How often a held read looks again without a change (tests shorten it). */
   recheckMs?: number;
@@ -134,6 +137,14 @@ export function createJobRoutes(deps: JobRouteDeps): RouteHandler {
     if (res.writableEnded || res.destroyed) return;
     if ("error" in held) throw held.error;
     if (!held.view) return json(res, 404, { error: "no such conversation" });
-    return json(res, 200, held.view);
+    // The hold may have outlived a sign-out or an audience change: authorize
+    // again, and read the job with what this person may see now.
+    if (auth.kind === "session" && !deps.sessions.isLive(auth.session.id)) {
+      return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
+    }
+    const visibleNow = deps.visibleTo(deps.viewerFor(auth));
+    const fresh = visibleNow.thread(threadId) ? read(threadId, scope, since, full, visibleNow) : null;
+    if (!fresh) return json(res, 404, { error: "no such conversation" });
+    return json(res, 200, fresh);
   };
 }

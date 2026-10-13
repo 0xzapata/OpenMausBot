@@ -122,4 +122,28 @@ describe("the job of a conversation", () => {
     // a running row's half-written result is not shown
     expect(view([root({ result: "half" })]).nodes[0]).not.toHaveProperty("result");
   });
+
+  it("lists the newest 500 rows of a long conversation, so its latest job shows whole", () => {
+    // 600 earlier requests, then the latest one with its teammate
+    const earlier = Array.from({ length: 600 }, (_, i) => root({ id: `old-${i}`, rootId: `old-${i}`, status: "completed", createdAt: 100 + i }));
+    const latest = [root({ id: "root", status: "completed", createdAt: 5_000 }), child("a1", "priya", { status: "completed", createdAt: 5_001 })];
+    const job = view([...earlier, ...latest], { since: 0 });
+    expect(job.nodes).toHaveLength(500);
+    expect(job.nodes.map((node) => node.id)).toEqual(expect.arrayContaining(["root", "a1"]));
+    expect(job.nodes.map((node) => node.id)).not.toContain("old-0");
+    // starting rows first, each group in the order it began
+    expect(job.nodes.at(-1)!.id).toBe("a1");
+    expect(job.counts.completed).toBe(602);
+  });
+
+  it("never names or quotes, in its reason, work in a conversation the reader may not open", () => {
+    const hidden = { visible: (threadId: string) => threadId !== "priya-work" };
+    const parked = view([root({ status: "waiting" }), child("a1", "priya", { status: "needs_input", question: "Use the card ending 4242?" })], hidden);
+    expect(parked).toMatchObject({ state: "needs-input", reason: "A teammate needs an answer in a conversation you cannot open", needsInput: [] });
+    expect(JSON.stringify(parked)).not.toMatch(/Priya|4242/);
+    const waiting = view([root({ status: "waiting" }), child("a1", "priya", { status: "running" }), child("a2", "marcus", { status: "running" })], hidden);
+    expect(waiting.reason).toBe("Waiting on 2 teammate tasks: a teammate, Marcus");
+    const failed = view([root({ status: "completed" }), child("a1", "priya", { status: "failed" })], hidden);
+    expect(failed.reason).toBe("Room Lead finished; 1 teammate task did not complete (a teammate)");
+  });
 });

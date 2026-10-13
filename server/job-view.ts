@@ -79,6 +79,7 @@ export interface JobInput {
   since: number;
   now: number;
   scopes: readonly string[];
+  /** Oldest first. */
   rows: readonly Assignment[];
   conversation: ConversationState;
   /** The activity of the thread a running row works in (its bot's own, in a room). */
@@ -95,13 +96,17 @@ const NODES_SHOWN = 500;
 const ended = (a: Assignment) => a.status === "completed" || a.status === "failed" || a.status === "cancelled";
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-const names = (rows: readonly Assignment[], nameOf: (botId: string) => string) => {
-  const unique = [...new Set(rows.map((row) => nameOf(row.assignee.botId)))];
+const names = (rows: readonly Assignment[], label: (row: Assignment) => string) => {
+  const unique = [...new Set(rows.map(label))];
   return unique.length > 3 ? `${unique.slice(0, 3).join(", ")} and ${unique.length - 3} more` : unique.join(", ");
 };
 
 export function jobView(input: JobInput): JobView {
   const nameOf = (botId: string) => input.nameOf(botId) ?? botId;
+  // The reason never names, or quotes, work in a conversation the reader may
+  // not open: it still counts, as "a teammate".
+  const shows = (row: Assignment) => input.visible(row.assignee.destination.threadId);
+  const label = (row: Assignment) => shows(row) ? nameOf(row.assignee.botId) : "a teammate";
   const byId = new Map(input.rows.map((row) => [row.id, row]));
   const starts = new Set(input.scopes);
   // A row counts while the conversation still waits on it: a starting row
@@ -133,9 +138,9 @@ export function jobView(input: JobInput): JobView {
   if (conversation.activity === "waiting-on-you" || parked.length || asking.length) {
     state = "needs-input";
     const first = parked[0] ?? asking[0];
-    reason = first
-      ? `${nameOf(first.assignee.botId)} needs you: ${first.question ?? "an approval is waiting in its conversation"}`
-      : `${leadName} is waiting for your answer in this conversation`;
+    reason = !first ? `${leadName} is waiting for your answer in this conversation`
+      : shows(first) ? `${nameOf(first.assignee.botId)} needs you: ${first.question ?? "an approval is waiting in its conversation"}`
+      : "A teammate needs an answer in a conversation you cannot open";
   } else if (conversation.activity === "dead") {
     state = "failed";
     reason = `${leadName}'s engine stopped unexpectedly`;
@@ -146,7 +151,7 @@ export function jobView(input: JobInput): JobView {
     state = "running";
     const teammates = live.filter((row) => !starts.has(row.id));
     reason = conversation.busy ? `${leadName} is working`
-      : teammates.length ? `Waiting on ${plural(teammates.length, "teammate task", "teammate tasks")}: ${names(teammates, nameOf)}`
+      : teammates.length ? `Waiting on ${plural(teammates.length, "teammate task", "teammate tasks")}: ${names(teammates, label)}`
       : conversation.queued > 0 ? "A message is waiting its turn"
       : `${leadName} is about to continue`;
   } else if (!lead) {
@@ -155,14 +160,18 @@ export function jobView(input: JobInput): JobView {
   } else if (lead.status === "completed" || lead.status === "waiting") {
     state = "completed";
     const failed = input.rows.filter((row) => row.id !== lead.id && (row.status === "failed" || row.status === "cancelled"));
-    reason = `${leadName} finished${failed.length ? `; ${plural(failed.length, "teammate task", "teammate tasks")} did not complete (${names(failed, nameOf)})` : ""}`;
+    reason = `${leadName} finished${failed.length ? `; ${plural(failed.length, "teammate task", "teammate tasks")} did not complete (${names(failed, label)})` : ""}`;
   } else {
     state = lead.outcome === "stalled" ? "stalled" : "failed";
     reason = `${leadName}'s work ended ${lead.status === "cancelled" || lead.outcome === "stopped" ? "because it was stopped" : `as ${lead.outcome ?? lead.status}`}${lead.outcomeDetail ? `: ${lead.outcomeDetail}` : ""}`;
   }
 
-  const shown = input.rows.filter((row) => input.visible(row.assignee.destination.threadId));
-  const ordered = [...shown.filter((row) => starts.has(row.id)), ...shown.filter((row) => !starts.has(row.id))].slice(0, NODES_SHOWN);
+  const shown = input.rows.filter(shows);
+  // Past the cap the newest rows are listed (rows come oldest first): a long
+  // conversation read from its start shows its latest job whole, teammates
+  // included, rather than its first requests alone.
+  const listed = shown.slice(-NODES_SHOWN);
+  const ordered = [...listed.filter((row) => starts.has(row.id)), ...listed.filter((row) => !starts.has(row.id))];
   const tally = { queued: 0, running: 0, waiting: 0, needsInput: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const row of input.rows) {
     if (row.status === "needs_input") tally.needsInput += 1;

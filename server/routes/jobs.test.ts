@@ -24,7 +24,11 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise((done) => server.close(done))));
 });
 
-interface Fixture { store: Store; rows: Assignment[]; reads: number; hidden: Set<string>; subscribers: () => number; failing?: boolean }
+interface Fixture {
+  store: Store; rows: Assignment[]; reads: number; hidden: Set<string>; subscribers: () => number; failing?: boolean;
+  /** A paired session asks instead of this computer; `live` is whether it is still signed in. */
+  session?: { live: boolean };
+}
 
 async function serve(f: Fixture, recheckMs = 60_000): Promise<string> {
   let listeners = 0;
@@ -47,13 +51,16 @@ async function serve(f: Fixture, recheckMs = 60_000): Promise<string> {
     groupThreadIsWorking: () => false,
     viewerFor: () => ({ kind: "all" }),
     visibleTo: () => ({ thread: (threadId: string) => !f.hidden.has(threadId) }) as VisibleSet,
+    sessions: { isLive: (id: string) => id === "phone" && f.session?.live === true },
     now: () => 5_000,
     recheckMs,
   })];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
-      const auth: RequestAuth = { kind: "loopback", scopes: ["admin", "client"] } as RequestAuth;
+      const auth: RequestAuth = f.session
+        ? { kind: "session", session: { id: "phone" }, via: "bearer", scopes: ["client"] } as unknown as RequestAuth
+        : { kind: "loopback", scopes: ["admin", "client"] } as RequestAuth;
       const handled = await dispatchRoutes(routes, { req, res, url, path: url.pathname, method: req.method ?? "GET", auth, json, readBody });
       if (!handled) json(res, 404, { from: "inline routes" });
     } catch (error) {
@@ -152,6 +159,33 @@ describe("GET /api/threads/:id/job", () => {
     f.failing = true;
     expect(await held).toEqual({ status: 500, body: { error: "Error: runtime.db is not readable" } });
     expect(f.subscribers()).toBe(0);
+  });
+
+  it("asks again who is reading before a held read answers: signed out meanwhile is 401, no longer allowed to see it is 404", async () => {
+    const f = fixture();
+    f.rows = [f.root()];
+    f.store.setTaskActivity(f.botId, f.threadId, "working");
+    f.session = { live: true };
+    const base = await serve(f);
+    const first = (await get(base, `/api/threads/${f.threadId}/job?since=0`)).body;
+    expect(first).toMatchObject({ state: "running" });
+    const signedOut = get(base, `/api/threads/${f.threadId}/job?since=0&wait=20000&version=${first.version}`);
+    await expect.poll(() => f.subscribers()).toBe(1);
+    f.session.live = false;
+    f.rows = [f.root({ status: "completed" })];
+    f.store.setTaskActivity(f.botId, f.threadId, "idle");
+    expect(await signedOut).toEqual({ status: 401, body: { error: "unauthorized: this session has expired or was revoked" } });
+
+    f.session.live = true;
+    f.rows = [f.root()];
+    f.store.setTaskActivity(f.botId, f.threadId, "working");
+    const again = (await get(base, `/api/threads/${f.threadId}/job?since=0`)).body;
+    const hidden = get(base, `/api/threads/${f.threadId}/job?since=0&wait=20000&version=${again.version}`);
+    await expect.poll(() => f.subscribers()).toBe(1);
+    f.hidden.add(f.threadId);
+    f.rows = [f.root({ status: "completed" })];
+    f.store.setTaskActivity(f.botId, f.threadId, "idle");
+    expect(await hidden).toEqual({ status: 404, body: { error: "no such conversation" } });
   });
 
   it("lets go of a held read whose client went away", async () => {

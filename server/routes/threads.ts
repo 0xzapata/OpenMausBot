@@ -75,7 +75,7 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
     pageSize, messagePage, messageWindow, publicBotQueuedMessages, publicGroupState, wireBot, wireTask,
     botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo,
   } = deps;
-  const jobs = createJobRoutes({ store, coordinator: deps.coordinator, groupThreadIsWorking: deps.groupThreadIsWorking, viewerFor, visibleTo });
+  const jobs = createJobRoutes({ store, coordinator: deps.coordinator, groupThreadIsWorking: deps.groupThreadIsWorking, viewerFor, visibleTo, sessions });
   // The image, file and export routes answer with `return res.end(…)`, so the
   // body's result is whatever Node hands back; the table only asks whether
   // it was PASS.
