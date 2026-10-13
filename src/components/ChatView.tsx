@@ -1667,18 +1667,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
       <TranscriptAnnouncer threadKey={transcriptKey} snapshot={announcement} />
 
-      {/* Reading scrollback — one tap back to the end, streaming or not */}
-      {!following && (
-        <button
-          onClick={jumpToLatest}
-          aria-label={t("chat.jumpToLatestAria")}
-          className="animate-pop-in absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
-          style={{ bottom: composerDock.height }}
-        >
-          <ArrowDown size={13} /> {t("chat.jumpToLatest")}
-        </button>
-      )}
-
       {/* Keyed by task: each conversation keeps its own draft and a failed
           request can restore the old task without spilling into the newly
           selected one. ArrowUp-to-edit stays gated on busy because editing
@@ -1704,6 +1692,18 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               composerDockRef.current?.querySelector("textarea")?.focus();
             }}
           />
+        </div>
+      )}
+      {/* Reading scrollback — one tap back to the end, streaming or not */}
+      {!following && (
+        <div className="relative">
+          <button
+            onClick={jumpToLatest}
+            aria-label={t("chat.jumpToLatestAria")}
+            className="animate-pop-in pointer-events-auto absolute bottom-2 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+          >
+            <ArrowDown size={13} /> {t("chat.jumpToLatest")}
+          </button>
         </div>
       )}
       {/* A Live call on this chat: its controls and captions sit above the
