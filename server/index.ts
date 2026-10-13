@@ -21,6 +21,7 @@ import { draftSummary, foldPoint } from "./compaction-summary.ts";
 import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker } from "./room-context.ts";
+import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -249,7 +250,7 @@ const SESSION_READ_MAX_CHARS = 8_000;
 import { promptWithReply, transcriptText } from "./replies.ts";
 import type { DataContext } from "./data-context.ts";
 import { promptWithDataContext } from "../shared/data-context.ts";
-import { admit, DRAIN_COALESCE_MAX_ITEMS } from "./admission.ts";
+import { admit } from "./admission.ts";
 import {
   drainSteeredMessages,
   hasQueuedSteeredMessages,
@@ -13642,10 +13643,6 @@ roomHandoffTimer.unref();
 function reconcileParkedRoots(): void {
   for (const node of coordinator.all()) reconcileParkedNode(node);
 }
-// The room-context window IS the drain's coalescing cap: a burst longer
-// than the window would append transcript lines the responder never reads,
-// so both bounds come from one constant (admission.ts).
-const GROUP_CONTEXT_MESSAGES = DRAIN_COALESCE_MAX_ITEMS;
 const MAX_GROUP_HOPS = 1;
 
 type GroupMemberTurnOutcome =
@@ -13697,50 +13694,7 @@ function teammateReportContext(requestId: string, readerBotId?: string): string 
   return `${reportNote(bot ?? "Teammate")}\n${JSON.stringify({ bot, task: escapeNotes(node.text), status: node.status, result: escapeNotes(node.result) })}`;
 }
 
-function serializeRoomContext(
-  threadId: string,
-  userName: string,
-  textOverrides?: ReadonlyArray<{ messageId: string; text: string }>,
-  readerBotId?: string,
-): string {
-  const messages = store.messagesFor(threadId);
-  const messagesById = new Map(messages.map((message) => [message.id, message]));
-  const overrides = new Map(textOverrides?.map((override) => [override.messageId, override.text]));
-  // A settled member turn speaks to the room through its final message;
-  // its working notes are not its answer (room-reply.ts).
-  const narration = roomTurnNarrationIds(messages);
-  return messages
-    .filter((m) => !narration.has(m.id))
-    .filter((m) => (m.kind === "text" && m.text) || (m.kind === "digest" && m.digest) || m.roomRequest?.phase === "result")
-    .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => {
-      if (m.kind === "digest" && m.digest) {
-        return digestPromptLine(m.digest, m.from ? peerName(m.from.name) : "a bot");
-      }
-      if (m.roomRequest?.phase === "result") {
-        // Keep the chat receipt small without erasing the report from later
-        // turns. Resolve from the existing bounded store and recheck access.
-        return teammateReportContext(m.roomRequest.id, readerBotId);
-      }
-      const overridden = overrides.get(m.id);
-      const rendered = overridden !== undefined ? { ...m, text: overridden } : m;
-      // a bot's name is quoted on the speaker line, so it gets one line; a
-      // user line that came through the API says so, since the reader would
-      // otherwise take it for the person typing
-      const person = m.sender?.name ?? userName;
-      const speaker = m.role === "user"
-        ? m.via === "api" ? `${person} (sent through the local API, not typed)` : person
-        : m.from ? peerName(m.from.name) : "Bot";
-      const line = `${speaker}: ${escapeNotes(transcriptText(rendered, messagesById, userName))}`;
-      // A room reply is the room talking. A post_to_room message is another
-      // bot's text carried in from somewhere else, so it says so — the
-      // reader's own posts excepted, which would only be telling it about
-      // itself.
-      if (!m.peerPost || !m.from || m.from.botId === readerBotId) return line;
-      return `${peerProvenanceNote({ botName: m.from.name, delivery: "post_to_room", unattended: m.peerPost.unattended })}\n${line}`;
-    })
-    .join("\n");
-}
+const { serializeRoomContext } = createRoomTranscript({ store, teammateReportContext });
 
 
 /** The decision model's view of a room message: the room, its people, the
