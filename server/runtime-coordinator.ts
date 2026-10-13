@@ -41,6 +41,12 @@ const NEEDS_INPUT = /^needs input:/i;
  * window is set out of the way, not off. */
 const TURN_STALL_MS = 24 * 60 * 60_000;
 
+/** What one root may hand out, and run, before anything settles: enough for
+ * a Chief to brief a room of 25 visitors (Launch Room) and have each take a
+ * turn, with room for their own hand-offs. Any settlement renews both. */
+const REQUESTS_PER_ROOT = 64;
+const EXECUTIONS_PER_ROOT = 96;
+
 /** Terminal trees older than this are pruned from runtime.db, once a day
  * (first at the first tick after the store opens). */
 const PRUNE_AFTER_MS = 30 * 24 * 60 * 60_000;
@@ -147,7 +153,7 @@ export class RuntimeCoordinator implements Coordinator {
     this.store = openRuntimeStore(options.dataDir === ":memory:" ? ":memory:" : join(options.dataDir, "runtime.db"));
     this.runtime = new Runtime(this.store, this.runner(), {
       clock: { now: () => this.now(), monotonic: () => performance.now() },
-      limits: { depth: 4, requests: 24, executions: 48, turnStallMs: TURN_STALL_MS, ...options.runtimeLimits },
+      limits: { depth: 4, requests: REQUESTS_PER_ROOT, executions: EXECUTIONS_PER_ROOT, turnStallMs: TURN_STALL_MS, ...options.runtimeLimits },
       ...(options.log ? { log: options.log } : {}),
     });
   }

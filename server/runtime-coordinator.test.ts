@@ -371,6 +371,21 @@ describe("RuntimeCoordinator: refusals in the legacy words", () => {
     expect(() => send(tight, chief, "gen-1", undefined, tester, "Test it")).toThrow("Room handoff budget exhausted");
   });
 
+  it("lets one Chief turn brief a room of 25 visitors and starts every one of them", async () => {
+    // Launch Room: a Room Lead hands the site to up to 25 persona bots before
+    // any of them reports back; the 25th hand-off used to hit the budget.
+    const w = world((node) => node.botId.startsWith("visitor-") ? "hold" : undefined);
+    const visitors = Array.from({ length: 25 }, (_, i) => ({ botId: `visitor-${i + 1}`, threadId: `visitor-${i + 1}-work` }));
+    const nodes = visitors.map((visitor) => send(w, chief, "gen-1", undefined, visitor, "Visit the site and report").node);
+    expect(nodes.every((node) => node.status === "queued")).toBe(true);
+    ended(w, "gen-1");
+    w.coordinator.tick();
+    await flush();
+    expect(nodes.map((node) => w.coordinator.node(node.id)?.status)).toEqual(nodes.map(() => "running"));
+    for (const node of nodes) await w.host.release(node.id, { ok: true, text: "visited" });
+    expect(nodes.every((node) => w.coordinator.node(node.id)?.status === "completed")).toBe(true);
+  });
+
   it("refuses when the originating task is not running or belongs to another speaker, and passes the host's refusal through", async () => {
     const w = world();
     expect(() => send(w, chief, "gen-1", "nope", builder, "Build it")).toThrow("The originating room task is no longer running");
