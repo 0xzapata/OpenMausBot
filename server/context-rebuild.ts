@@ -27,8 +27,10 @@ export interface ReplayEntry {
 export interface ReplayToolCall {
   /** The context message it ran after (a ReplayEntry id). */
   afterId: string;
-  /** The finished line; see toolReplayLine. */
-  text: string;
+  /** The finished line; see toolReplayLine. replayToolCalls builds it when
+   * it is read, and a replay reads it only for the calls it places: a long
+   * branch has thousands of calls, and at most REPLAY_TOOL_LINE_CAP lines. */
+  readonly text: string;
 }
 
 /** Tool lines one replay may carry. They are counted apart from messages,
@@ -166,7 +168,8 @@ export function toolReplayLine(tool: NonNullable<Message["tool"]>): string {
  * rows a work digest counts (server/digest.ts); the harness's own chips (a
  * retry notice, "Stopped here") are not. A row that is itself context (a
  * teammate's returned report is an activity row with a chip) stays the
- * message it is and is never also a tool line. */
+ * message it is and is never also a tool line. No line is built here: each
+ * call's `text` is built when read (see ReplayToolCall). */
 export function replayToolCalls(
   messages: readonly Message[],
   settings: { replayToolHistory?: boolean } | undefined,
@@ -178,7 +181,10 @@ export function replayToolCalls(
   for (const m of messages) {
     if (isContextMessage(m)) afterId = m.id;
     // before anything was said there is nothing to put a call between
-    else if (afterId !== undefined && m.kind === "activity" && m.tool?.itemId) calls.push({ afterId, text: toolReplayLine(m.tool) });
+    else if (afterId !== undefined && m.kind === "activity" && m.tool?.itemId) {
+      const tool = m.tool;
+      calls.push({ afterId, get text() { return toolReplayLine(tool); } });
+    }
   }
   return calls;
 }
@@ -205,9 +211,11 @@ function withToolLines(
   const first = position.get(kept[0]!.id)!;
   const last = position.get(kept.at(-1)!.id)!;
   const inside = tools
-    .map((tool) => ({ text: tool.text, after: position.get(tool.afterId) ?? -1 }))
-    .filter((tool) => tool.after >= first && tool.after < last)
-    .slice(-REPLAY_TOOL_LINE_CAP);
+    .map((tool) => ({ tool, after: position.get(tool.afterId) ?? -1 }))
+    .filter(({ after }) => after >= first && after < last)
+    .slice(-REPLAY_TOOL_LINE_CAP)
+    // the only place a line is read, so the only calls a line is built for
+    .map(({ tool, after }) => ({ text: tool.text, after }));
   let from = inside.length;
   for (let available = spare; from > 0; from--) {
     const size = Buffer.byteLength(inside[from - 1]!.text) + 16;

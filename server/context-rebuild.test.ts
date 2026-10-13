@@ -435,6 +435,23 @@ describe("tool history in a rebuilt session", () => {
       expect(replayToolCalls([said("u1", "user", "ask Clive"), report, ran("t1", "Read")], ON, NO_ENV))
         .toEqual([{ afterId: "r1", text: "[ran: Read — ok]" }]);
     });
+
+    it("builds a line only when it is read: a long branch costs nothing for the calls a replay leaves out", () => {
+      let read = 0;
+      const counted = (id: string): Message => ({
+        id, role: "bot", kind: "activity", at: 1,
+        tool: { get name() { read += 1; return "Read"; }, ok: true, itemId: `item-${id}` },
+      });
+      const history = entries(["start", "done"]);
+      const branch = [said("0", "user", "start"), ...Array.from({ length: 500 }, (_, i) => counted(`t${i}`)), said("1", "bot", "done")];
+      const calls = replayToolCalls(branch, ON, NO_ENV);
+      expect(calls).toHaveLength(500);
+      expect(read).toBe(0);
+      const result = selectReplay(history, { tools: calls });
+      expect(result.inline.filter(toolLine)).toHaveLength(REPLAY_TOOL_LINE_CAP);
+      // one line each for the calls that were placed, none for the other 480
+      expect(read).toBe(REPLAY_TOOL_LINE_CAP);
+    });
   });
 
   describe("selectReplay", () => {
