@@ -38,6 +38,7 @@ import {
 } from "../../shared/skill-request";
 import type { Routine, RoutineInput, RoutineRun, RoutineRunStatusFilter } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
+import { restrictedCopyRequest } from "@/lib/bot-duplicate";
 import { botShowsUnread } from "@/lib/bot-unread";
 import { firstUnreadMessageId, threadOpensUnread, threadReadCursor } from "@/lib/unread-divider";
 import type { ComputerStart } from "@/lib/computer-start";
@@ -543,6 +544,8 @@ export interface Bot {
   /** Prompt-cache keep-warm for this bot's Claude threads: true/false
    * overrides the workspace setting, absent follows it (null clears over PATCH). */
   cacheKeepWarm?: boolean | null;
+  /** false: the helper model never writes for this bot (docs/memory.md). */
+  helperModel?: boolean;
   /** Which app-wide MCP servers (Plugins → MCP servers) this bot mounts, by
    * name. Absent = every enabled server; [] = none (null clears over PATCH). */
   mcpServers?: string[] | null;
@@ -3732,10 +3735,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // A copy of a restricted bot is restricted from its first moment.
           api("/api/bots", {
             method: "POST",
-            body: JSON.stringify({
-              ...(source.visibility && source.visibility !== "everyone" ? { visibility: source.visibility } : {}),
-              ...(Object.hasOwn(source, "toolScope") ? { settings: { toolScope: source.toolScope } } : {}),
-            }),
+            body: JSON.stringify(restrictedCopyRequest(source)),
           })
             .then(({ bot }) =>
               api(`/api/bots/${bot.id}`, {

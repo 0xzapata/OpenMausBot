@@ -43,6 +43,10 @@ export const botDefaultsProfileSchema = profilePatchSchema.extend({
   toolScope: z.custom<ToolScope>((value) => value !== undefined && parseToolScope(value).ok, "Invalid tool selection")
     .transform((value) => { const parsed = parseToolScope(value); return parsed.ok ? parsed.scope! : value; }).nullable().optional(),
   parkDirectMessages: z.boolean().optional(),
+  /** false: the helper model never writes for the new bot (WireBot.helperModel).
+   * Part of creation so that a copy of a bot kept off the helper is off it
+   * from its first moment (src/lib/bot-duplicate.ts). */
+  helperModel: z.boolean().optional(),
 }).strict();
 
 const scheduleSchema = z.discriminatedUnion("type", [

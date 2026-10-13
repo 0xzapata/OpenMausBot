@@ -226,6 +226,22 @@ posixOnly("the helper model, through the real server", () => {
     expect(await upkeep()).toMatchObject({ modelSteps: true });
   }, 300_000);
 
+  it("creates a bot already kept off the helper when the creation request says so, which is how a duplicate keeps its source's switch", async () => {
+    const { api, getBot, dataDir } = server;
+    // the body src/lib/bot-duplicate.ts builds for a source with helperModel: false
+    const created = await api("POST", "/api/bots", { settings: { helperModel: false } });
+    expect(created.status).toBe(201);
+    expect(created.body.bot).toMatchObject({ helperModel: false });
+    const id = created.body.bot.id as string;
+    // before any later request: on the wire and in the saved record
+    expect(await getBot(id)).toMatchObject({ helperModel: false });
+    expect((JSON.parse(readFileSync(join(dataDir, "bots.json"), "utf8")) as Array<{ id: string }>).find((record) => record.id === id)).toMatchObject({ helperModel: false });
+    // the copy then takes its source's engine, and still has no model steps from the helper
+    expect((await api("PATCH", `/api/bots/${id}`, { name: "Private copy", modelSelection: { instanceId: "pi", model: "fake-model" } })).status).toBe(200);
+    expect((await api("GET", `/api/bots/${id}/memory/upkeep`)).body).toMatchObject({ modelSteps: false });
+    expect((await api("POST", "/api/bots", { settings: { helperModel: "false" } })).status).toBe(400);
+  }, 120_000);
+
   it("writes a Codex bot's summary with the helper, while its memory upkeep stays on Codex's own background call", async () => {
     const { api, waitFor, newBot, turn, ledger } = server;
     const bot = await newBot("codex");
