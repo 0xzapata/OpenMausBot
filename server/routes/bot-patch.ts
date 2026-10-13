@@ -336,6 +336,12 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
         patch.browser = body.browser;
       }
+      // Record browser steps (server/browser-steps.ts): read on every browser
+      // call, so it applies from the next one, with no turn to stop first.
+      if (body.recordBrowserSteps !== undefined) {
+        if (typeof body.recordBrowserSteps !== "boolean") return json(res, 400, { error: "recordBrowserSteps must be true or false" });
+        patch.recordBrowserSteps = body.recordBrowserSteps;
+      }
       // which named browser session this bot uses; null/"" = its own
       if (body.browserProfile !== undefined) {
         const requestedProfile = body.browserProfile === null || body.browserProfile === ""

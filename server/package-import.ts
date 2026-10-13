@@ -393,6 +393,8 @@ function runImport(source: ImportSource, options: PackageImportOptions, deps: Pa
       store.patchBot(created.id, {
         composio: false,
         connectorTools: {},
+        // The publisher's choice, with no card: recording only keeps evidence in this workspace.
+        ...(agent?.recordBrowserSteps === true ? { recordBrowserSteps: true } : {}),
         ...(playbooks.length ? { playbooks } : {}),
         ...(installed ? { installedPackage: installed } : {}),
         ...(agent?.connections ? { mcpServers: agent.connections.flatMap((key) => serverForKey.has(key) ? [serverForKey.get(key)!] : []) } : {}),

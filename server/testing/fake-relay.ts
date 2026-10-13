@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 export interface FakeGeometry {
   url: string; title: string; vw: number; vh: number; dpr: number; sx: number; sy: number;
-  focus: null | { role: string; name: string; editable: boolean; valueLength: number; secret: boolean; rect: { x: number; y: number; w: number; h: number } };
+  focus: null | { role: string; name: string; editable: boolean; valueLength: number; secret: boolean; rect: { x: number; y: number; w: number; h: number }; frame?: "same" | "cross" | null };
   unmasked: number;
 }
 
