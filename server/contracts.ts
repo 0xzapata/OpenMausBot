@@ -565,6 +565,11 @@ export interface TextGenerationUsage {
 export interface TextGenerationOptions {
   signal?: AbortSignal;
   onUsage?: (usage: TextGenerationUsage) => void;
+  /** How long the caller will wait. A driver with its own process timer
+   * (Claude, Codex, the ACP family) uses this instead of its default, so a
+   * longer job such as the skill review is not cut off before the caller's
+   * own deadline. */
+  timeoutMs?: number;
 }
 
 export interface ProviderInstance {
