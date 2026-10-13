@@ -5,7 +5,8 @@
 // booked as a helper call for that bot. A Codex bot keeps its own background
 // call for memory upkeep and gets only the summary from the helper; a Claude
 // bot keeps writing everything with its own engine and quick model. A second
-// server without the setting shows the Pi bot keeping today's fallbacks.
+// server without the setting shows the Pi bot keeping today's fallbacks, and
+// the setting followed from config.json as the file changes.
 //
 // POSIX-gated like the other CLI e2es (the fakes are shebang scripts).
 import { spawn, type ChildProcess } from "node:child_process";
@@ -128,7 +129,7 @@ async function boot(extraConfig: Record<string, unknown>) {
     return readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Row).filter((row) => row.botId === botId);
   };
   const memory = async (botId: string) => ((await api("GET", `/api/bots/${botId}/memory/file?path=MEMORY.md`)).body?.text ?? "") as string;
-  return { api, waitFor, getBot, newBot, turn, ledger, memory, close, log: () => stdout };
+  return { api, waitFor, getBot, newBot, turn, ledger, memory, close, log: () => stdout, dataDir: join(home, ".openmausbot") };
 }
 
 posixOnly("the helper model, through the real server", () => {
@@ -229,4 +230,27 @@ posixOnly("without a helper model, through the real server", () => {
     expect(ledger(bot.id).some((row) => row.trigger.kind === "helper")).toBe(false);
     expect(server.log()).not.toContain("helper model:");
   }, 180_000);
+
+  it("follows the setting in config.json as the file changes, on and off, without a restart", async () => {
+    const { api, waitFor, newBot, dataDir } = server;
+    const bot = await newBot("pi");
+    const modelSteps = async () => (await api("GET", `/api/bots/${bot.id}/memory/upkeep`)).body.modelSteps as boolean;
+    expect(await modelSteps()).toBe(false);
+    const file = join(dataDir, "config.json");
+    const write = (change: (config: Record<string, unknown>) => void) => {
+      const config = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      change(config);
+      writeFileSync(file, JSON.stringify(config));
+    };
+    write((config) => { config.helper = { instanceId: "claude" }; });
+    await waitFor(modelSteps, "the helper named in the file to be used");
+    // a settings request cannot name or clear a helper: alone it is nothing
+    // to save, and beside a real setting it is dropped while the file keeps its helper
+    expect(await api("PATCH", "/api/config", { helper: { instanceId: "" } })).toMatchObject({ status: 400, body: { error: "nothing to save" } });
+    expect((await api("PATCH", "/api/config", { helper: { instanceId: "" }, language: "en" })).status).toBe(200);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ helper: { instanceId: "claude" }, language: "en" });
+    expect(await modelSteps()).toBe(true);
+    write((config) => { delete config.helper; });
+    await waitFor(async () => !(await modelSteps()), "the helper taken out of the file to stop being used");
+  }, 120_000);
 });

@@ -1018,8 +1018,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       },
     },
     generateText: async (prompt, { signal, onUsage, model: named } = {}) => {
-      // `named` is the helper setting's model; otherwise the driver's quick one.
-      const model = named ?? options.generateModel?.() ?? options.models().default;
+      const model = named ?? options.generateModel?.() ?? options.models().default; // `named`: the helper setting's model
       const { text, reasoning, toolCalls } = await complete([{ role: "user", content: prompt }], model, false, signal, undefined, [], onUsage);
       if (toolCalls.length) throw new ChatProtocolError("provider returned tool calls to a text-only helper");
       return text.trim() ? text : reasoning;

@@ -12,10 +12,10 @@ import { writeFileAtomic } from "./atomic.ts";
 import { withoutComputerEngine } from "./computer-engine-removal.ts";
 import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
 import { EFFORT_LEVELS, type EffortLevel, type LiveSettings } from "../shared/wire.ts";
-import { isModelVariant, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
+import { isModelVariant, type InstanceConfigMap, type McpServerSpec, type ModelSelection } from "./contracts.ts";
 import { DEFAULT_WINDOW_MINUTES, MAX_WINDOW_MINUTES } from "./cache-keepwarm.ts";
 import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-icon.ts";
-import type { McpServerSpec } from "./contracts.ts";
+import { helperStoredShape, type HelperConfig } from "./side-jobs.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 
@@ -393,17 +393,6 @@ const cacheKeepWarmSchema = z.object({
   enabled: z.boolean(),
   windowMinutes: z.number().int().min(15).max(MAX_WINDOW_MINUTES).optional(),
 }).strict();
-/** The helper model (server/side-jobs.ts): which connected provider instance,
- * and optionally which of its models, writes the small background texts (the
- * compaction summary, memory upkeep, the skill review) for a bot whose own
- * engine cannot make a one-off text call. Unset by default, because setting
- * it sends those bots' conversation text to a second provider. Read from
- * config.json and the environment (OMB_HELPER_INSTANCE, OMB_HELPER_MODEL)
- * only: a settings request cannot switch it on. */
-const helperConfigSchema = z.object({
-  instanceId: z.string().trim().max(200).optional(),
-  model: z.string().trim().max(500).optional(),
-});
 const threadsConfigSchema = z.object({
   maxConcurrentPerBot: z.number().int().min(1).max(MAX_CONCURRENT_BOT_THREADS),
   /** Cap each per-thread events/ and native/ NDJSON log at this many
@@ -591,7 +580,6 @@ const appConfigSchema = z.object({
     /** Local hour (0-23) after which the nightly tidy-up runs. */
     tidyHour: z.number().int().min(0).max(23).optional(),
   }).strict().optional(),
-  helper: helperConfigSchema.optional(),
   threads: threadsConfigSchema.optional(),
   /** The authorization decision log (server/decision-log.ts): days of month
    * files kept, at least; OMB_DECISION_RETENTION_DAYS wins when set. */
@@ -609,7 +597,7 @@ const appConfigSchema = z.object({
    * skipped entry (customMcpServers), never to a vanished config. */
   mcpServers: z.record(z.string(), z.unknown()).optional(),
 });
-const storedAppConfigSchema = appConfigSchema.extend({
+const storedAppConfigSchema = appConfigSchema.extend(helperStoredShape).extend({
   browserProfiles: storedBrowserProfilesSchema.optional(),
   /** Read loosely, like mcpServers: a hand-edited provider key that isn't
    * text is dropped here, and a bad name or key later
@@ -620,15 +608,12 @@ const storedAppConfigSchema = appConfigSchema.extend({
       .transform((keys) => Object.fromEntries(Object.entries(keys).filter((entry): entry is [string, string] => typeof entry[1] === "string")))
       .optional(),
   }).optional(),
-  /** Written by hand, so a mistyped entry reads as no helper rather than
-   * costing the whole file. */
-  helper: helperConfigSchema.optional().catch(undefined),
 });
-const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, cliStartup: true, customDomain: true, helper: true })
+const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, cliStartup: true, customDomain: true })
   .extend({ threads: threadsPatchSchema.optional(), newBots: newBotsPatchSchema.optional() });
 const jsonObjectSchema = z.record(z.string(), z.json());
 
-export interface AppConfig {
+export interface AppConfig extends HelperConfig {
   customDomain?: string;
   signIn?: { admins?: string[]; members?: string[] };
   /** Preferred selection for newly created bots; existing bots keep theirs. */
@@ -680,9 +665,6 @@ export interface AppConfig {
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
   context?: { rebuildBytes?: number; compactAt?: number; autoCompact?: boolean; roomCompactAt?: number };
   memory?: { captureQuietMs?: number; tidyHour?: number };
-  /** The helper model for small writing jobs; unset by default. See
-   * helperConfigSchema and helperSelection. */
-  helper?: { instanceId?: string; model?: string };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. Pool runs N
    * seats shared by all conversations, with per-thread affinity (#1654). */
@@ -886,10 +868,9 @@ export const MIN_SKILL_REVIEW_STEPS = 3;
 export const MAX_SKILL_REVIEW_STEPS = 100;
 
 /** Learn skills automatically (server/skill-review.ts). Off unless switched
- * on: each review sends the conversation to the bot's engine again (or to
- * the helper model, when one is set and the engine has no one-off text
- * call), and it changes the bot's skills without being asked. Never on
- * while skill authoring itself is off. */
+ * on: each review sends the conversation to the bot's engine again (or to a
+ * helper model, server/side-jobs.ts), and it changes the bot's skills without
+ * being asked. Never on while skill authoring itself is off. */
 export function skillReviewEnabled(cfg: AppConfig): boolean {
   return skillAuthoringEnabled(cfg) && cfg.features?.skillReview === true;
 }
@@ -925,24 +906,6 @@ export function captureQuietMs(cfg: AppConfig): number {
 
 export function tidyHour(cfg: AppConfig): number {
   return cfg.memory?.tidyHour ?? DEFAULT_TIDY_HOUR;
-}
-
-/** A model id as a CLI's argument list can carry it: it starts with a letter
- * or a digit, never a dash, and holds no space or control character. */
-const HELPER_MODEL_ID = /^[A-Za-z0-9][\x21-\x7e]*$/;
-
-/** The helper model, or null while none is set (the default; see
- * helperConfigSchema). An instance is required; a model is optional and the
- * instance's own choice for quick calls is used without one. A model that
- * could not be a model id switches the helper off altogether: the person
- * named a model, and quietly writing with another is not theirs to find out
- * from a bill. */
-export function helperSelection(cfg: Pick<AppConfig, "helper">): { instanceId: string; model?: string } | null {
-  const instanceId = cfg.helper?.instanceId?.trim();
-  if (!instanceId) return null;
-  const model = cfg.helper?.model?.trim();
-  if (!model) return { instanceId };
-  return HELPER_MODEL_ID.test(model) ? { instanceId, model } : null;
 }
 
 export function showToolCallsEnabled(cfg: AppConfig): boolean {
@@ -1174,12 +1137,6 @@ export function loadConfig(): AppConfig {
   cfg.imageGen = { ...cfg.imageGen };
   if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;
   if (process.env.OMB_CUSTOM_IMAGE_KEY !== undefined) cfg.imageGen.customApiKey = process.env.OMB_CUSTOM_IMAGE_KEY;
-  // The helper model has no Settings screen: the file or the environment
-  // names it. Env wins, and an empty value switches a saved helper off.
-  // Always set, so reading the file again drops a helper removed from it.
-  cfg.helper = { ...cfg.helper };
-  if (process.env.OMB_HELPER_INSTANCE !== undefined) cfg.helper.instanceId = process.env.OMB_HELPER_INSTANCE;
-  if (process.env.OMB_HELPER_MODEL !== undefined) cfg.helper.model = process.env.OMB_HELPER_MODEL;
   // The sign-in allow-list: env is how a headless box or a container is
   // bootstrapped before anyone can reach Settings.
   const splitEmails = (value: string) => value.split(/[,\s]+/).map((entry) => entry.trim().toLowerCase()).filter(Boolean);

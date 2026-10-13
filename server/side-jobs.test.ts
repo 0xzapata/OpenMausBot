@@ -10,11 +10,11 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DATA_DIR, helperSelection, loadConfig, parseConfigPatch, parseStoredConfig } from "./config.ts";
+import { DATA_DIR, loadConfig, parseConfigPatch, parseStoredConfig } from "./config.ts";
 import type { TextGenerationOptions } from "./contracts.ts";
 import { createMemoryUpkeep, NO_TEXT_ENGINE, type UpkeepBot } from "./memory-upkeep.ts";
 import { closeMessageDb } from "./message-db.ts";
-import { createSideJobs, type SideJobBot, type SideJobInstance, type SideJobsDeps } from "./side-jobs.ts";
+import { createSideJobs, helperSelection, type SideJobBot, type SideJobInstance, type SideJobsDeps } from "./side-jobs.ts";
 import { ensureWorkspace, workspaceDir, WORKSPACES_DIR } from "./workspace.ts";
 
 type Booked = { row: Parameters<SideJobsDeps["book"]>[0]; tokensReported: boolean; notificationThreadId: string };
@@ -141,6 +141,10 @@ describe("the helper setting", () => {
   it("can be set from the environment alone", () => {
     vi.stubEnv("OMB_HELPER_INSTANCE", "claude");
     expect(helperSelection(loadConfig())).toEqual({ instanceId: "claude" });
+    expect(helperSelection({}, { OMB_HELPER_INSTANCE: "openrouter", OMB_HELPER_MODEL: "openai/gpt-5.4-mini" })).toEqual({ instanceId: "openrouter", model: "openai/gpt-5.4-mini" });
+    // a model alone names no helper, and a model that could not be a model id switches it off, from the environment too
+    expect(helperSelection({}, { OMB_HELPER_MODEL: "claude-haiku-4-5" })).toBeNull();
+    expect(helperSelection({ helper: { instanceId: "claude" } }, { OMB_HELPER_MODEL: "--print" })).toBeNull();
   });
 
   it("is not something a settings request can switch on, and a mistyped entry never costs the rest of the file", () => {

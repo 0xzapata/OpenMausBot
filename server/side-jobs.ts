@@ -34,9 +34,45 @@
 // instance and model, and the trigger `helper` (server/usage-ledger.ts), so
 // what the helper costs is read apart from the bot's own turns.
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 
 import type { ProviderAdapter, ProviderInstance, TextGenerationOptions } from "./contracts.ts";
 import type { UsageRow, UsageTrigger } from "./usage-ledger.ts";
+
+/** The `helper` section of config.json: which connected provider instance,
+ * and optionally which of its models, is the helper model. Unset by default.
+ * server/config.ts adds it to the stored config only, so the file and the
+ * environment can name a helper and a settings request cannot. The file is
+ * written by hand: a mistyped entry reads as no helper rather than costing
+ * the whole config. */
+export const helperStoredShape = {
+  helper: z.object({
+    instanceId: z.string().trim().max(200).optional(),
+    model: z.string().trim().max(500).optional(),
+  }).optional().catch(undefined),
+};
+export interface HelperConfig {
+  helper?: { instanceId?: string; model?: string };
+}
+
+/** A model id as a CLI's argument list can carry it: it starts with a letter
+ * or a digit, never a dash, and holds no space or control character. */
+const HELPER_MODEL_ID = /^[A-Za-z0-9][\x21-\x7e]*$/;
+
+/** The helper model, or null while none is set (the default).
+ * OMB_HELPER_INSTANCE and OMB_HELPER_MODEL win over the file, and an empty
+ * OMB_HELPER_INSTANCE switches a saved helper off. An instance is required;
+ * a model is optional and the instance's own choice for quick calls is used
+ * without one. A model that could not be a model id switches the helper off
+ * altogether: the person named a model, and quietly writing with another is
+ * not theirs to find out from a bill. */
+export function helperSelection(cfg: HelperConfig, env: Record<string, string | undefined> = process.env): { instanceId: string; model?: string } | null {
+  const instanceId = (env.OMB_HELPER_INSTANCE ?? cfg.helper?.instanceId)?.trim();
+  if (!instanceId) return null;
+  const model = (env.OMB_HELPER_MODEL ?? cfg.helper?.model)?.trim();
+  if (!model) return { instanceId };
+  return HELPER_MODEL_ID.test(model) ? { instanceId, model } : null;
+}
 
 export type SideJob = "compaction" | "memory" | "skill-review";
 

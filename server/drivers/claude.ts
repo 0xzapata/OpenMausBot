@@ -2748,9 +2748,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           reject(new Error(NO_ANTHROPIC_KEY));
           return;
         }
-        // `named` is the helper setting's model (generateText only); permission
-        // review and a bot's own background calls keep the quick model.
-        const model = named ?? config.managedModels?.[0] ?? "claude-haiku-4-5";
+        const model = named ?? config.managedModels?.[0] ?? "claude-haiku-4-5"; // `named`: the helper setting's model, generateText only
         const child = spawnCli(
           config.cli,
           ["-p", "--model", model, "--output-format", onUsage ? "json" : "text"],
