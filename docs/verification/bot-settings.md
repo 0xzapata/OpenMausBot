@@ -143,6 +143,52 @@ a newer dialog. A rejected profile save must roll back the partial bot, retain
 the draft, and permit one successful retry. The launcher uses a test-only IPC
 stop request so Windows executes the same orderly cleanup as other platforms.
 
+## The Simple panel
+
+The steps above cover the full fold-out view. A fresh install opens the short
+tabbed panel instead, and that one is driven through
+[Chat UI, driven headlessly](chat-ui.md):
+
+```sh
+node --experimental-strip-types scripts/control-omb.ts ui launch
+H=/tmp/openmausbot-verify-data-XXXXXX/ui.json
+# The preview reads as an existing install, so it starts in Advanced mode.
+pnpm control:omb ui eval --ui $H --js "localStorage.setItem('omb-advanced-mode','0'); location.reload(); 'simple'"
+pnpm control:omb ui click --ui $H --name "Open Pepper's profile"
+pnpm control:omb ui snapshot --ui $H --interactive
+```
+
+Expected: six tabs (Details, Memory, Library, Skills, Routines, Vault), and on
+Details one row each for Name and job, Instructions, Default model, Thinking,
+Before Pepper acts, Where Pepper works, Uses, Phone and Email. Each row's
+button says what it acts on (`Edit: Instructions`, `Open: Vault`), so every
+name in the snapshot is unique.
+
+Check these user paths:
+
+1. `ui click --name "Edit: Instructions"` opens the box in place; Done closes
+   it. Name and job opens its two fields the same way, and opening one row
+   closes the other.
+2. Pick a Thinking step, then `GET /api/bots` on the printed fixture URL: the
+   bot's `modelSelection.effort` is that step. Expand Default model: the
+   picker shows no second copy of the steps.
+3. Choose another place under Where Pepper works and read the bot back:
+   `computer` is that place, and Browser also sets `browser: true`. A place
+   that cannot be used is listed with its reason and cannot be picked.
+4. Create a routine for the bot (`POST /api/routines`), then click its
+   `Run … on its schedule` switch on Details. `GET /api/routines` reports
+   `enabled: false`, the row reads Paused, and a second click resumes it. The
+   Routines tab and the Routines page list carry the same switch.
+5. `ui click --name "Open: Vault"`. With no apps connected it offers
+   `Let Pepper use apps`, Add app and Add login, and says no app is connected.
+   With apps connected, switching one off writes the bot's `connectorScopes`
+   with every other connected app still on.
+
+Not proven by this run: real connected apps and real signed-in sites need a
+Composio account and a signed-in browser, which the fixture does not have.
+Their rows are covered by `BotSettingsDialog.simple.test.ts` and
+`bot-app-access.test.ts`.
+
 ## Earlier settings verification
 
 The isolated browser run on 2026-09-06 confirmed immediate Identity/Soul

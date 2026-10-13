@@ -63,12 +63,12 @@ export function BotSettingsDialog({ bot, overlay = false }: {
   // this panel is already mounted, including after collapsing the same row.
   const collapsed = !state.botSettingsExpandAccordion;
   const q = query.trim().toLowerCase();
-  // Simple mode opens on the short Details/Library panel; "All settings"
+  // Simple mode opens on the short tabbed panel; "All settings"
   // (or a deep link to a section it does not cover) switches to the full
   // fold-out view for this opening only — App remounts the panel per open.
   const advanced = useAdvancedMode();
   // A remembered opening expands its row but never forces the full view:
-  // non-advanced profiles keep opening the Details/Library panel.
+  // non-advanced profiles keep opening the short tabbed panel.
   const wantsFullView = !collapsed && !SIMPLE_PANEL_SECTIONS.has(section) && !state.botSettingsExpandRemembered;
   const [showAll, setShowAll] = useState(wantsFullView);
   useEffect(() => {
@@ -367,6 +367,7 @@ export function BotSettingsDialog({ bot, overlay = false }: {
             bot={bot}
             derived={derived}
             headerClassName={padClass}
+            slackUrl={slackUrl}
             onClose={() => dispatch({ type: "toggleSettings", open: false })}
             onAllSettings={() => setShowAll(true)}
             onAddSkill={() => {
