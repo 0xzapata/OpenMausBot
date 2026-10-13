@@ -1,13 +1,13 @@
 // The `openmausbot service` command, kept separate from cli.ts so it can be
 // tested with explicit inputs: it renders the unit for this platform, writes
 // it next to the data, and prints the commands that install it.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
   currentUser, launchdPlist, sentinelCommand, sentinelLaunchdPlist, sentinelServicePlan, sentinelSystemdService, sentinelSystemdTimer,
-  servicePlan, systemdUnit, unstableInstallWarning,
+  servicePlan, shippedSentinelCli, systemdUnit, unstableInstallWarning,
 } from "./service-unit.ts";
 import { defaultSentinelOut } from "./sentinel/paths.ts";
 
@@ -24,6 +24,10 @@ export interface ServiceInstallInput {
   /** Sentinel's folder; defaults to the platform's (server/sentinel/paths.ts). */
   sentinelOut?: string;
   env?: NodeJS.ProcessEnv;
+  /** For tests: whether a path exists, and whether a bundled CLI knows the
+   * sentinel command (finding the installed app's CLI). */
+  exists?: (path: string) => boolean;
+  hasSentinel?: (script: string) => boolean;
   /** This CLI's own entry, as node saw it (process.argv[1]) and node itself (process.execPath). */
   script: string;
   node: string;
@@ -90,6 +94,16 @@ export function runServiceCommand(input: ServiceInstallInput, io: ServiceIo): nu
   return 0;
 }
 
+/** An app released before Sentinel bundles a CLI without it; its usage text
+ * names --check-install from the first release that has it. */
+function bundleHasSentinel(script: string): boolean {
+  try {
+    return readFileSync(script, "utf8").includes("--check-install");
+  } catch {
+    return false;
+  }
+}
+
 function runSentinelService(input: ServiceInstallInput, platform: NodeJS.Platform, home: string, io: ServiceIo): number {
   const out = input.sentinelOut ?? defaultSentinelOut(input.dataDir, platform, home, input.env ?? process.env);
   const plan = sentinelServicePlan(platform, out, home);
@@ -106,12 +120,20 @@ function runSentinelService(input: ServiceInstallInput, platform: NodeJS.Platfor
     for (const line of plan.deactivate) io.log(`  ${line}`);
     return 0;
   }
-  const warning = unstableInstallWarning(input.script);
-  if (warning) {
-    io.error(warning);
-    return 1;
+  // the installed app's own CLI survives app updates and Node upgrades;
+  // this process's node and script may be a checkout or an nvm install
+  const shipped = shippedSentinelCli(platform, home, input.exists ?? existsSync, input.hasSentinel ?? bundleHasSentinel);
+  if (!shipped) {
+    const warning = unstableInstallWarning(input.script);
+    if (warning) {
+      io.error(warning);
+      return 1;
+    }
   }
-  const spec = { node: input.node, script: input.script, dataDir: input.dataDir, home, out };
+  const spec = shipped
+    ? { ...shipped, electronRunAsNode: true, dataDir: input.dataDir, home, out }
+    : { node: input.node, script: input.script, dataDir: input.dataDir, home, out };
+  io.log(shipped ? `runs the desktop app's own CLI: ${shipped.script}` : `runs ${input.script} with ${input.node}; if either moves (a new checkout, a Node upgrade), run this again`);
   const rendered: Record<string, string> = platform === "darwin"
     ? { [plan.files[0]!.name]: sentinelLaunchdPlist(spec) }
     : { [plan.files[0]!.name]: sentinelSystemdService(spec), [plan.files[1]!.name]: sentinelSystemdTimer() };
@@ -128,5 +150,6 @@ function runSentinelService(input: ServiceInstallInput, platform: NodeJS.Platfor
   io.log("");
   io.log(`issues: ${join(out, "issues.jsonl")}`);
   io.log(`logs: ${platform === "darwin" ? join(out, "sentinel.log") : "journalctl --user -u openmausbot-sentinel"}`);
+  io.log("after an app update or a Node upgrade, check the schedule still points at both: openmausbot sentinel --check-install");
   return 0;
 }

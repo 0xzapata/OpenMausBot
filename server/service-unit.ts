@@ -158,7 +158,27 @@ export type SentinelServiceSpec = Pick<ServiceSpec, "node" | "script" | "dataDir
   /** Sentinel's own folder, outside the data dir: issues, state, its log
    * and these rendered files (server/sentinel/paths.ts). */
   out: string;
+  /** `node` is the desktop app's own executable, run as Node. */
+  electronRunAsNode?: boolean;
 };
+
+/** The CLI the installed desktop app ships: its executable run as Node
+ * (ELECTRON_RUN_AS_NODE, as docs/mcp-server.md does for mcp-server.js) and
+ * the bundled resources/server/openmausbot.js. An app update replaces both
+ * in place, so a schedule pointing here survives updates and Node upgrades;
+ * a checkout or an nvm Node does not. Null when no installed app is found,
+ * or when the installed one predates Sentinel (`hasSentinel` says no): a
+ * schedule pointing there would fail on an unknown command. */
+export function shippedSentinelCli(
+  platform: NodeJS.Platform, home: string, exists: (path: string) => boolean, hasSentinel: (script: string) => boolean = () => true,
+): { node: string; script: string } | null {
+  const candidates = platform === "darwin"
+    ? ["/Applications/OpenMausBot.app", join(home, "Applications", "OpenMausBot.app")].map((app) => ({
+      node: join(app, "Contents", "MacOS", "OpenMausBot"), script: join(app, "Contents", "Resources", "server", "openmausbot.js"),
+    }))
+    : platform === "linux" ? [{ node: "/opt/OpenMausBot/openmausbot", script: "/opt/OpenMausBot/resources/server/openmausbot.js" }] : [];
+  return candidates.find((cli) => exists(cli.node) && exists(cli.script) && hasSentinel(cli.script)) ?? null;
+}
 
 export function sentinelCommand(spec: Pick<SentinelServiceSpec, "node" | "script" | "dataDir" | "out">): string[] {
   return [spec.node, ...(needsStripTypes(spec.script) ? ["--experimental-strip-types"] : []), spec.script, "sentinel", "--once", "--data-dir", spec.dataDir, "--out", spec.out];
@@ -188,6 +208,7 @@ export function sentinelLaunchdPlist(spec: SentinelServiceSpec): string {
     "\t<dict>",
     "\t\t<key>HOME</key>",
     `\t\t<string>${xml(spec.home)}</string>`,
+    ...(spec.electronRunAsNode ? ["\t\t<key>ELECTRON_RUN_AS_NODE</key>", "\t\t<string>1</string>"] : []),
     "\t</dict>",
     "\t<key>StartInterval</key>",
     `\t<integer>${SENTINEL_INTERVAL_SECONDS}</integer>`,
@@ -216,6 +237,7 @@ export function sentinelSystemdService(spec: SentinelServiceSpec): string {
     "[Service]",
     "Type=oneshot",
     `Environment=HOME=${spec.home}`,
+    ...(spec.electronRunAsNode ? ["Environment=ELECTRON_RUN_AS_NODE=1"] : []),
     `ExecStart=${sentinelCommand(spec).map(quoteSystemd).join(" ")}`,
     "Nice=10",
     "IOSchedulingClass=idle",
@@ -261,6 +283,47 @@ export function sentinelServicePlan(platform: NodeJS.Platform, out: string, home
     };
   }
   return null;
+}
+
+/** The node and script an installed Sentinel unit runs, read back from the
+ * plist's ProgramArguments or the unit's ExecStart. */
+export function sentinelUnitCommand(text: string): { node: string; script: string } | null {
+  let args: string[];
+  const plist = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text);
+  if (plist) {
+    args = [...plist[1]!.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) => m[1]!.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+  } else {
+    const exec = /^ExecStart=(.*)$/m.exec(text);
+    if (!exec) return null;
+    args = [...exec[1]!.matchAll(/"((?:[^"\\]|\\.)*)"|(\S+)/g)].map((m) => (m[1] !== undefined ? m[1].replace(/\\(.)/g, "$1") : m[2]!));
+  }
+  const at = args.indexOf("sentinel");
+  return at >= 2 ? { node: args[0]!, script: args[at - 1]! } : null;
+}
+
+export type SentinelInstallCheck =
+  | { status: "ok"; unit: string; node: string; script: string }
+  | { status: "stale"; unit: string; node: string; script: string; missing: string[] }
+  | { status: "not_installed" | "unreadable"; unit: string }
+  | { status: "unsupported" };
+
+/** Whether the installed schedule still points at a node and a script that
+ * exist. An app update or a Node upgrade can move either, and launchd or
+ * systemd then fail on every run without a word in Sentinel's own log. */
+export function checkSentinelInstall(platform: NodeJS.Platform, home: string, fs: { exists(path: string): boolean; read(path: string): string }): SentinelInstallCheck {
+  const plan = sentinelServicePlan(platform, "", home);
+  if (!plan) return { status: "unsupported" };
+  const unit = plan.files[0]!.installed;
+  if (!fs.exists(unit)) return { status: "not_installed", unit };
+  let command: { node: string; script: string } | null;
+  try {
+    command = sentinelUnitCommand(fs.read(unit));
+  } catch {
+    command = null;
+  }
+  if (!command) return { status: "unreadable", unit };
+  const missing = [command.node, command.script].filter((path) => !fs.exists(path));
+  return missing.length ? { status: "stale", unit, ...command, missing } : { status: "ok", unit, ...command };
 }
 
 export function currentUser(): string {

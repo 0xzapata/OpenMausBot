@@ -59,9 +59,12 @@ export function runScan(options: ScanOptions): ScanSummary {
   const turns = readTurnRecords(options.dataDir, state.logs, who);
   const queue = readQueueRecords(options.dataDir, sinceAt, now, who);
   const records: SentinelRecord[] = [...tools, ...turns.records, ...queue];
-  const observations: Observation[] = DETECTORS.flatMap((detector) => detector.detect(records, config));
-
   const issues = readIssues(options.out);
+  // A fresh state beside existing issues (a state version bump, a deleted
+  // state.json): its cursors start over, so only what happened after the
+  // newest counted occurrence is new.
+  const counted = state.lastScanAt === null && issues.size ? Math.max(...[...issues.values()].map((issue) => issue.lastAt)) : -Infinity;
+  const observations: Observation[] = DETECTORS.flatMap((detector) => detector.detect(records, config)).filter((o) => o.at > counted);
   const { touched, added } = upsertIssues(issues, state, observations);
   state.logs = turns.offsets;
   state.lastScanAt = now;

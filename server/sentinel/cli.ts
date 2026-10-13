@@ -2,10 +2,11 @@
 // short summary. Meant to be run every couple of minutes by launchd or
 // systemd (`openmausbot service install --sentinel`); a run that finds the
 // sources unchanged since the last one exits at once.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import { checkSentinelInstall, type SentinelInstallCheck } from "../service-unit.ts";
 import { defaultSentinelOut, isInside } from "./paths.ts";
 import { runScan, type ScanSummary } from "./scan.ts";
 
@@ -16,10 +17,12 @@ export interface SentinelArgs {
   queueWaitMs?: number;
   costUsd?: number;
   help?: boolean;
+  checkInstall?: boolean;
 }
 
 export const SENTINEL_USAGE = `openmausbot sentinel [--data-dir DIR] [--out DIR] [--once] [--json]
                      [--queue-wait SECONDS] [--cost USD]
+openmausbot sentinel --check-install [--json]
 
 Scans an OpenMausBot data dir, read-only, for failed tool calls, stopped or
 timed-out turns, long queue waits, expensive turns and retry loops, and keeps
@@ -33,7 +36,9 @@ copy tool output or message text.
 --once        run one scan and exit (what every run does; for schedulers)
 --json        print the summary as JSON
 --queue-wait  flag delegated work queued longer than this (default 300)
---cost        flag a single turn costing more than this many dollars (default 5)`;
+--cost        flag a single turn costing more than this many dollars (default 5)
+--check-install  check that the installed schedule (service install --sentinel)
+              still points at a node and a script that exist`;
 
 export function parseSentinelArgs(argv: string[], env: NodeJS.ProcessEnv = process.env): SentinelArgs | { error: string; json: boolean } {
   const json = argv.includes("--json");
@@ -53,6 +58,7 @@ export function parseSentinelArgs(argv: string[], env: NodeJS.ProcessEnv = proce
       else if (arg === "--out") out = resolve(value());
       else if (arg === "--once" || arg === "--json") continue;
       else if (arg === "--help" || arg === "-h") args.help = true;
+      else if (arg === "--check-install") args.checkInstall = true;
       else if (arg === "--queue-wait" || arg === "--cost") {
         const number = Number(value());
         if (!Number.isFinite(number) || number < 0) return { error: `${arg} takes a number of 0 or more`, json };
@@ -74,7 +80,27 @@ function enclosingRepo(dir: string): string | null {
   }
 }
 
-export function runSentinelCli(argv: string[], io: { log(line: string): void; error(line: string): void } = console, env: NodeJS.ProcessEnv = process.env): number {
+/** Where --check-install looks; tests substitute it. */
+export interface SentinelHost {
+  platform: NodeJS.Platform;
+  home: string;
+  exists(path: string): boolean;
+  read(path: string): string;
+}
+
+const HOST: SentinelHost = { platform: process.platform, home: homedir(), exists: existsSync, read: (path) => readFileSync(path, "utf8") };
+
+export function describeInstallCheck(check: SentinelInstallCheck): string {
+  switch (check.status) {
+    case "ok": return `sentinel schedule ok: ${check.unit} runs ${check.script} with ${check.node}`;
+    case "stale": return `stale install: ${check.unit} points at ${check.missing.join(" and ")}, which no longer exists; rerun openmausbot service install --sentinel`;
+    case "not_installed": return `no Sentinel schedule at ${check.unit}; install one with openmausbot service install --sentinel`;
+    case "unreadable": return `could not read the command in ${check.unit}; rerun openmausbot service install --sentinel`;
+    default: return "no Sentinel schedule to check on this platform; openmausbot service install --sentinel prints the Task Scheduler command for Windows";
+  }
+}
+
+export function runSentinelCli(argv: string[], io: { log(line: string): void; error(line: string): void } = console, env: NodeJS.ProcessEnv = process.env, host: SentinelHost = HOST): number {
   const args = parseSentinelArgs(argv, env);
   const fail = (message: string, json: boolean, code = 1) => {
     if (json) io.log(JSON.stringify({ ok: false, error: message }));
@@ -85,6 +111,14 @@ export function runSentinelCli(argv: string[], io: { log(line: string): void; er
   if (args.help) {
     io.log(SENTINEL_USAGE);
     return 0;
+  }
+  if (args.checkInstall) {
+    const check = checkSentinelInstall(host.platform, host.home, host);
+    const ok = check.status === "ok";
+    if (args.json) io.log(JSON.stringify({ ok, ...check }));
+    else if (ok) io.log(describeInstallCheck(check));
+    else io.error(`sentinel: ${describeInstallCheck(check)}`);
+    return ok ? 0 : 1;
   }
   let isDir = false;
   try {

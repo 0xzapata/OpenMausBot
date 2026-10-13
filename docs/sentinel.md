@@ -10,6 +10,7 @@ input is explicit, so the same scan could later run inside the server.
 ```sh
 openmausbot sentinel [--data-dir DIR] [--out DIR] [--once] [--json]
                      [--queue-wait SECONDS] [--cost USD]
+openmausbot sentinel --check-install [--json]
 ```
 
 Each run does one scan, prints a short summary (or JSON with `--json`) and
@@ -141,6 +142,49 @@ explicitly, so the paths it prints are the ones the scan uses.
   minutes.
 
 `openmausbot service uninstall --sentinel` prints the commands that remove it.
+
+### Which CLI the schedule runs
+
+A schedule stores an absolute Node path and an absolute script path. When the
+desktop app is installed, `service install --sentinel` uses the CLI the app
+ships, whichever command you ran it from:
+
+| Platform | Node | Script |
+|---|---|---|
+| macOS | `/Applications/OpenMausBot.app/Contents/MacOS/OpenMausBot` (or under `~/Applications`) | `…/Contents/Resources/server/openmausbot.js` |
+| Ubuntu `.deb` | `/opt/OpenMausBot/openmausbot` | `/opt/OpenMausBot/resources/server/openmausbot.js` |
+
+The app's own executable runs as Node with `ELECTRON_RUN_AS_NODE=1`, just as
+the [MCP server](mcp-server.md#from-the-installed-desktop-app) does. App
+updates replace both files in place, and a Node upgrade on the machine doesn't
+affect them. An installed app from a release before Sentinel is skipped,
+because its bundled CLI doesn't have the `sentinel` command. If no usable
+installed app is found, the schedule uses the Node and
+script that ran the command (a global npm install or a checkout). The command
+then warns that the schedule breaks if either of those moves, for example
+after an nvm upgrade or a fresh checkout.
+
+### After an update
+
+```sh
+openmausbot sentinel --check-install
+```
+
+This reads the installed plist or unit and checks that its Node and script
+paths still exist. It prints `stale install: … rerun openmausbot service
+install --sentinel` if either path is missing. This matters because launchd
+and systemd fail quietly when a path is gone: nothing reaches Sentinel's own
+log, because Sentinel never starts. After moving the app, upgrading Node, or
+changing which install you use, run `service install --sentinel` again and
+reload the schedule with the printed commands.
+
+Upgrading Sentinel itself is safe without a reinstall. `state.json` carries a
+`version`. When a release changes its shape, the old state is dropped and the
+next scan starts again: log offsets reset, and the counted-occurrence keys are
+cleared. Issues stay in `issues.jsonl`, and the restarted scan counts only
+occurrences newer than the newest one already there. So a reset loses at most
+a tool result that landed late, and never counts anything twice. Deleting
+`state.json` by hand does the same thing.
 
 ## Planned stages
 

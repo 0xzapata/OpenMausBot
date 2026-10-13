@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,5 +97,35 @@ describe("openmausbot sentinel", () => {
     // a forced rescan of the same window counts nothing twice
     fixture.activity({ threadId: "t2", id: "m9", at: now - 4_000, name: "Bash", ok: true });
     expect(runScan({ dataDir: fixture.dataDir, out, now: now + 240_000 }).added).toBe(0);
+  });
+
+  it("starts over safely from a dropped state file, counting nothing twice", () => {
+    const out = join(dir, "sentinel");
+    const now = Date.now();
+    fixture.activity({ threadId: "t1", id: "m1", at: now - 60_000, name: "mcp__agents__send", ok: false, output: "no layer 1" });
+    appendFileSync(join(fixture.dataDir, "events", "t1.ndjson"), `${turnCompleted({ eventId: "e1", threadId: "t1", at: now - 50_000, ok: false, stopReason: "error" })}\n`);
+    expect(runScan({ dataDir: fixture.dataDir, out, now }).added).toBe(2);
+    // what a state version bump does: the cursors and counted keys are gone
+    writeFileSync(join(out, "state.json"), JSON.stringify({ version: 0 }));
+    fixture.activity({ threadId: "t1", id: "m2", at: now + 1_000, name: "mcp__agents__send", ok: false, output: "no layer 2" });
+    const again = runScan({ dataDir: fixture.dataDir, out, now: now + 120_000 });
+    expect(again.added).toBe(1);
+    expect(again.touched).toMatchObject([{ kind: "tool_error", count: 2 }]);
+  });
+
+  it("--check-install reports a schedule whose node or script has moved", () => {
+    const lines: string[] = [];
+    const io = { log: (line: string) => lines.push(line), error: (line: string) => lines.push(line) };
+    const unit = "/Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist";
+    const plist = `<key>ProgramArguments</key>\n<array>\n<string>/old/node</string>\n<string>/Applications/OpenMausBot.app/Contents/Resources/server/openmausbot.js</string>\n<string>sentinel</string>\n</array>`;
+    const host = (present: string[]) => ({ platform: "darwin" as const, home: "/Users/maus", exists: (path: string) => path === unit || present.includes(path), read: () => plist });
+    expect(runSentinelCli(["--check-install"], io, {}, host(["/Applications/OpenMausBot.app/Contents/Resources/server/openmausbot.js"]))).toBe(1);
+    expect(lines.join("\n")).toContain("stale install: /Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist points at /old/node, which no longer exists; rerun openmausbot service install --sentinel");
+    lines.length = 0;
+    expect(runSentinelCli(["--check-install", "--json"], io, {}, host(["/old/node", "/Applications/OpenMausBot.app/Contents/Resources/server/openmausbot.js"]))).toBe(0);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ ok: true, status: "ok", node: "/old/node" });
+    lines.length = 0;
+    expect(runSentinelCli(["--check-install"], io, {}, { ...host([]), exists: () => false })).toBe(1);
+    expect(lines.join("\n")).toContain("install one with openmausbot service install --sentinel");
   });
 });

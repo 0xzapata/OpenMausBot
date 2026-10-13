@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  launchdPlist, sentinelCommand, sentinelLaunchdPlist, sentinelServicePlan, sentinelSystemdService, sentinelSystemdTimer, serviceCommand, servicePlan,
-  systemdUnit, unstableInstallWarning, type ServiceSpec,
+  checkSentinelInstall, launchdPlist, sentinelCommand, sentinelLaunchdPlist, sentinelServicePlan, sentinelSystemdService, sentinelSystemdTimer,
+  sentinelUnitCommand, serviceCommand, servicePlan, shippedSentinelCli, systemdUnit, unstableInstallWarning, type ServiceSpec,
 } from "./service-unit.ts";
 
 const spec: ServiceSpec = {
@@ -93,5 +93,40 @@ describe("service units", () => {
     expect(linux?.activate.join("\n")).toContain("systemctl --user enable --now openmausbot-sentinel.timer");
     expect(linux?.activate.join("\n")).not.toContain("sudo");
     expect(sentinelServicePlan("win32", "C:\\x")).toBeNull();
+  });
+
+  it("finds the CLI the installed desktop app ships, and runs it as Node", () => {
+    const app = "/Applications/OpenMausBot.app/Contents";
+    const present = new Set([`${app}/MacOS/OpenMausBot`, `${app}/Resources/server/openmausbot.js`]);
+    expect(shippedSentinelCli("darwin", "/Users/maus", (path) => present.has(path))).toEqual({ node: `${app}/MacOS/OpenMausBot`, script: `${app}/Resources/server/openmausbot.js` });
+    const user = "/Users/maus/Applications/OpenMausBot.app/Contents";
+    expect(shippedSentinelCli("darwin", "/Users/maus", (path) => path.startsWith(user))?.script).toBe(`${user}/Resources/server/openmausbot.js`);
+    expect(shippedSentinelCli("linux", "/home/maus", (path) => path.startsWith("/opt/OpenMausBot/"))).toEqual({ node: "/opt/OpenMausBot/openmausbot", script: "/opt/OpenMausBot/resources/server/openmausbot.js" });
+    // an app with its script missing, or one released before Sentinel, is no CLI for it
+    expect(shippedSentinelCli("darwin", "/Users/maus", (path) => path.endsWith("MacOS/OpenMausBot"))).toBeNull();
+    expect(shippedSentinelCli("darwin", "/Users/maus", (path) => present.has(path), () => false)).toBeNull();
+    expect(shippedSentinelCli("win32", "C:\\Users\\maus", () => true)).toBeNull();
+
+    const spec = { node: `${app}/MacOS/OpenMausBot`, script: `${app}/Resources/server/openmausbot.js`, dataDir: "/Users/maus/.openmausbot", home: "/Users/maus", out: "/tmp/s", electronRunAsNode: true };
+    expect(sentinelLaunchdPlist(spec)).toContain("<key>ELECTRON_RUN_AS_NODE</key>\n\t\t<string>1</string>");
+    expect(sentinelSystemdService(spec)).toContain("Environment=ELECTRON_RUN_AS_NODE=1");
+    expect(sentinelLaunchdPlist({ ...spec, electronRunAsNode: false })).not.toContain("ELECTRON_RUN_AS_NODE");
+  });
+
+  it("reads back what an installed unit runs, and calls it stale when either path is gone", () => {
+    const spec = { node: "/opt/node & co/bin/node", script: "/srv/omb/cli.js", dataDir: "/home/maus/My Data", home: "/home/maus", out: "/home/maus/.local/state/openmausbot-sentinel" };
+    expect(sentinelUnitCommand(sentinelLaunchdPlist(spec))).toEqual({ node: "/opt/node & co/bin/node", script: "/srv/omb/cli.js" });
+    expect(sentinelUnitCommand(sentinelSystemdService(spec))).toEqual({ node: "/opt/node & co/bin/node", script: "/srv/omb/cli.js" });
+    expect(sentinelUnitCommand("[Service]\nType=oneshot\n")).toBeNull();
+
+    const unit = "/home/maus/.config/systemd/user/openmausbot-sentinel.service";
+    const files = new Map([[unit, sentinelSystemdService(spec)]]);
+    const fs = (present: string[]) => ({ exists: (path: string) => files.has(path) || present.includes(path), read: (path: string) => files.get(path)! });
+    expect(checkSentinelInstall("linux", "/home/maus", fs([spec.node, spec.script]))).toMatchObject({ status: "ok", unit });
+    expect(checkSentinelInstall("linux", "/home/maus", fs([spec.node]))).toMatchObject({ status: "stale", missing: ["/srv/omb/cli.js"] });
+    expect(checkSentinelInstall("darwin", "/Users/maus", fs([]))).toEqual({ status: "not_installed", unit: "/Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist" });
+    files.set(unit, "garbage");
+    expect(checkSentinelInstall("linux", "/home/maus", fs([]))).toEqual({ status: "unreadable", unit });
+    expect(checkSentinelInstall("win32", "C:\\Users\\maus", fs([]))).toEqual({ status: "unsupported" });
   });
 });

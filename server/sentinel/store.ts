@@ -13,8 +13,13 @@ import type { Issue, Observation } from "./types.ts";
 export const ISSUES_FILE = "issues.jsonl";
 export const STATE_FILE = "state.json";
 
+/** Bump when state.json changes shape. A state file of another version is
+ * dropped and the next scan starts over, counting nothing already in
+ * issues.jsonl again (scan.ts). */
+export const STATE_VERSION = 1;
+
 export interface SentinelState {
-  version: 1;
+  version: typeof STATE_VERSION;
   lastScanAt: number | null;
   /** What the sources looked like at the last scan; equal means nothing to do. */
   fingerprint: string | null;
@@ -25,13 +30,13 @@ export interface SentinelState {
 }
 
 export function emptyState(): SentinelState {
-  return { version: 1, lastScanAt: null, fingerprint: null, logs: {}, seen: {} };
+  return { version: STATE_VERSION, lastScanAt: null, fingerprint: null, logs: {}, seen: {} };
 }
 
 export function readState(out: string): SentinelState {
   try {
     const parsed = JSON.parse(readFileSync(join(out, STATE_FILE), "utf8")) as Partial<SentinelState>;
-    if (parsed?.version !== 1) return emptyState();
+    if (parsed?.version !== STATE_VERSION) return emptyState();
     return { ...emptyState(), ...parsed };
   } catch {
     return emptyState();
