@@ -110,10 +110,11 @@ const backupSchema = z.object({
     connectorTools: connectorTools.optional(),
     toolScope: z.custom<ToolScope>((value) => value !== undefined && parseToolScope(value).ok, "Invalid tool selection")
       .transform((value) => { const parsed = parseToolScope(value); return parsed.ok ? parsed.scope! : value; }).optional(),
-    /** The bot is switched to never use the helper model (WireBot.helperModel).
-     * Only false travels, so a file can keep a bot off the helper and never
-     * put one on it. Absence is allowed, including backups from before the switch. */
-    helperModel: z.literal(false).optional(),
+    /** The bot's helper-model switch (WireBot.helperModel). Only false is
+     * written and only false is applied, so a file can keep a bot off the
+     * helper and never put one on it; a file that says true imports like one
+     * that says nothing. Absent in backups from before the switch. */
+    helperModel: z.boolean().optional(),
     memory: memory.optional(),
   })).min(1).max(200),
   groups: z.array(z.preprocess(knownRoomResponder, z.object({
