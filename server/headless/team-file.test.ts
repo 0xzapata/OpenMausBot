@@ -9,7 +9,7 @@ import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile.ts";
 import { botSkillTemplateSchema } from "../new-bot-defaults.ts";
 import { SECTION_CONTEXT_MAX_BYTES } from "../section-context.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
-import { loadTeamFile, ROOM_BRIEF_MAX_CHARS, SKILL_MAX_BYTES, TEAM_BRIEF_MAX_BYTES } from "./team-file.ts";
+import { loadTeamFile, ROOM_BRIEF_MAX_CHARS, serverFolder, SKILL_MAX_BYTES, TEAM_BRIEF_MAX_BYTES } from "./team-file.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "omb-team-file-"));
 afterAll(() => removeTempDir(dir));
@@ -79,6 +79,34 @@ rooms:
       { kind: "openai-compatible", key: { file: join(dir, "keys", "compat") }, baseUrl: { env: "COMPAT_URL" } },
     ]);
     expect(team.warnings).toEqual([]);
+  });
+
+  it("reads a working folder by the rules of the system it is written for, never this computer's", () => {
+    // A team file applied from a Windows laptop to a Linux sandbox, or from
+    // Linux CI to a Windows workspace: the folder is the server's.
+    const team = loadTeamFile(file(JSON.stringify({ version: 1, bots: [
+      { name: "A", cwd: "/work/room/" }, { name: "B", cwd: "C:\\work\\room\\" }, { name: "C", cwd: "C:/work/visitors" },
+      { name: "D", cwd: "\\\\nas\\share\\room" }, { name: "E", cwd: "/work//visitors/../room" },
+    ] }), "folders.json"));
+    expect(team.bots.map((bot) => bot.cwd)).toEqual(["/work/room", "C:\\work\\room", "C:\\work\\visitors", "\\\\nas\\share\\room", "/work/room"]);
+    expect(serverFolder("work/room")).toBeUndefined();
+    expect(serverFolder("\\work")).toBeUndefined();
+  });
+
+  it("reads a file checked out on Windows exactly as on Linux: LF line ends, either path separator", () => {
+    // Git on Windows checks text out with CRLF; Linux CI with LF. Read as they
+    // are, each apply from the other machine would rewrite every soul and
+    // replace every skill, and --check would never pass.
+    mkdirSync(join(dir, "crlf", "skills", "report"), { recursive: true });
+    writeFileSync(join(dir, "crlf", "soul.md"), "Lead the rehearsal.\r\nWrite report.md.\r\n");
+    writeFileSync(join(dir, "crlf", "skills", "report", "SKILL.md"), "---\r\nname: report\r\ndescription: Write it.\r\n---\r\nBody.\r\n");
+    const team = loadTeamFile(file(JSON.stringify({ version: 1,
+      teams: [{ name: "T", brief: "Line one.\r\nLine two.\r\n" }],
+      bots: [{ name: "A", team: "T", soul: { file: "soul.md" }, skills: [{ file: "skills\\report\\SKILL.md" }] }],
+    }), join("crlf", "team.json")));
+    expect(team.bots[0]!.soul).toBe("Lead the rehearsal.\nWrite report.md.\n");
+    expect(team.bots[0]!.skills[0]).toMatchObject({ name: "report", text: "---\nname: report\ndescription: Write it.\n---\nBody.\n" });
+    expect(team.teams[0]!.brief).toBe("Line one.\nLine two.\n");
   });
 
   it("reads JSON too, and warns about a bot left on an automatic computer", () => {

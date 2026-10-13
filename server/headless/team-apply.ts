@@ -14,14 +14,14 @@
 // export changes nothing.
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
 
 import { stringify as stringifyYaml } from "yaml";
 
 import { approvalModeFor } from "../../shared/approval-mode.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { lineDiff } from "../../shared/line-diff.ts";
-import { mask } from "../../shared/redact.ts";
+import { mask, redactSecretsInText } from "../../shared/redact.ts";
 import { describeMs, EXIT, flag, HeadlessError, parseDuration, usageError } from "./args.ts";
 import { explain, type HeadlessClient } from "./client.ts";
 import type { VerbContext, VerbOutcome } from "./context.ts";
@@ -40,6 +40,8 @@ export interface ApplyOptions {
   rotateSecrets: boolean;
   waitIdleMs: number;
   env: NodeJS.ProcessEnv;
+  /** Told when a long step starts (an engine install), for a progress line. */
+  progress?(event: Rec): void;
 }
 
 export interface Tally {
@@ -81,9 +83,12 @@ export function botPatch(desired: DesiredBot, echo: Rec, team: string | undefine
     const instanceId = desired.model?.instanceId ?? current.instanceId;
     const model = desired.model?.model ?? current.model;
     if (current.instanceId !== instanceId || current.model !== model || (desired.effort !== undefined && current.effort !== desired.effort)) {
-      patch.modelSelection = { instanceId, model, ...(desired.effort ? { effort: desired.effort } : {}) };
+      // The selection is replaced whole: an effort the file leaves out stays
+      // as it was on the same engine (another engine may not offer it).
+      const effort = desired.effort ?? (instanceId === current.instanceId ? current.effort : undefined);
+      patch.modelSelection = { instanceId, model, ...(effort ? { effort } : {}) };
       patch.requireAvailableModel = true;
-      changes.push(`model ${current.instanceId}/${current.model}${current.effort ? ` (${current.effort})` : ""} → ${instanceId}/${model}${desired.effort ? ` (${desired.effort})` : ""}`);
+      changes.push(`model ${current.instanceId}/${current.model}${current.effort ? ` (${current.effort})` : ""} → ${instanceId}/${model}${effort ? ` (${effort})` : ""}`);
     }
   }
   const approval = approvalModeFor(echo);
@@ -97,8 +102,12 @@ export function botPatch(desired: DesiredBot, echo: Rec, team: string | undefine
     patch.computer = desired.computer === "auto" ? null : desired.computer;
     changes.push(`computer ${computer} → ${desired.computer}`);
   }
-  // The file itself says Auto on this computer: that is the confirmation the server asks for.
-  if ((patch.computer !== undefined || patch.approvalMode !== undefined) && desired.computer === "local" && desired.approval === "auto") patch.acknowledgeLocalAuto = true;
+  // A change that leaves the bot on Auto on this computer: the file is the
+  // confirmation the server asks for, whether it names both or one of them
+  // and the bot already has the other.
+  if ((patch.computer !== undefined || patch.approvalMode !== undefined) && (desired.computer ?? computer) === "local" && (desired.approval ?? approval) === "auto") {
+    patch.acknowledgeLocalAuto = true;
+  }
   if (desired.cwd && echo.cwd !== desired.cwd) { patch.cwd = desired.cwd; changes.push(`folder ${echo.cwd ?? "default"} → ${desired.cwd}`); }
   if (desired.browser) {
     if ((echo.browser !== false) !== desired.browser.enabled) { patch.browser = desired.browser.enabled; changes.push(`browser ${desired.browser.enabled ? "on" : "off"}`); }
@@ -132,7 +141,13 @@ export async function reconcile(client: HeadlessClient, file: TeamFile, options:
   const write = async (path: string, init: RequestInit): Promise<any> => { tally.writes += 1; return client.json(path, init); };
   const tool = async (name: string, args: Rec): Promise<any> => { tally.writes += 1; return client.tool(name, args); };
   const fleet = async () => client.json<Rec>("/api/bots?messages=0");
-  const findBot = (bots: Rec[], name: string) => bots.filter((bot) => key(bot.name) === key(name)).sort((a, b) => Number(Boolean(a.hidden)) - Number(Boolean(b.hidden)))[0];
+  // The bot a name means: of two with that name, the one already in the team
+  // the file puts it in (a bot of the same name in another team is someone
+  // else's), then a visible one before an archived one.
+  const findBot = (bots: Rec[], name: string, team?: string) => {
+    const inTeam = (bot: Rec) => Number(team !== undefined && key(bot.section) === key(team));
+    return bots.filter((bot) => key(bot.name) === key(name)).sort((a, b) => inTeam(b) - inTeam(a) || Number(Boolean(a.hidden)) - Number(Boolean(b.hidden)))[0];
+  };
 
   // 1. engines: a key is written only when none is set, or with --rotate-secrets
   if (file.engines.length) {
@@ -151,9 +166,15 @@ export async function reconcile(client: HeadlessClient, file: TeamFile, options:
       const secretUrl = engine.baseUrl !== undefined && typeof engine.baseUrl !== "string";
       const baseUrl = engine.baseUrl === undefined ? undefined : typeof engine.baseUrl === "string" ? engine.baseUrl
         : needsKey || typeof status.url === "string" ? readSecret(engine.baseUrl, options.env, `engine ${engine.kind} base URL`) : undefined;
-      const request = { kind: engine.kind, key: keyValue, ...(baseUrl ? { baseUrl } : {}), onlyClaudeApi, rotate: options.rotateSecrets, install, dryRun: !options.apply };
+      const request = { kind: engine.kind, key: keyValue, ...(baseUrl ? { baseUrl } : {}), onlyClaudeApi, rotate: options.rotateSecrets, install, dryRun: !options.apply,
+        ...(options.progress ? { progress: options.progress } : {}) };
       const result = await applyEngine(client, request);
       if (options.apply && (result.changed.length || install)) tally.writes += (result.changed.length ? 1 : 0) + (install ? 1 : 0);
+      // The server never shows the address of a key already set, so the
+      // file's cannot be compared: say so rather than nothing.
+      if (!needsKey && engine.baseUrl !== undefined && typeof status.url !== "string") {
+        note(`engine ${engine.kind}: its key is already set and the server does not show its base URL, so the file's was not compared (--rotate-secrets writes both)`, "kept");
+      }
       if (!result.changed.length && !install) { note(`engine ${engine.kind}: already set`, "unchanged"); continue; }
       note(`engine ${engine.kind}: ${[...result.changed.map((field: string) => field === "key" ? `key ${mask(keyValue)}` : field === "everyClaudeBot" ? (onlyClaudeApi ? "only Claude (API key) bots use the key" : "every Claude bot uses the key") : secretUrl ? "base URL set" : `base URL ${baseUrl}`),
         ...(install ? ["install"] : [])].join(" · ")}`, status.configured === true ? "changed" : "created");
@@ -200,7 +221,17 @@ export async function reconcile(client: HeadlessClient, file: TeamFile, options:
   }
   let current = await fleet();
   const existingFor = (desired: DesiredBot): Rec | undefined =>
-    (desired.was ? findBot(current.bots ?? [], desired.was) : undefined) ?? findBot(current.bots ?? [], desired.name);
+    (desired.was ? findBot(current.bots ?? [], desired.was, teamOf(desired)) : undefined) ?? findBot(current.bots ?? [], desired.name, teamOf(desired));
+  // Renaming onto a name another bot already has would leave two bots of one
+  // name, and every later apply (and run NAME) unable to tell them apart.
+  for (const desired of file.bots.filter((bot) => bot.was)) {
+    const old = findBot(current.bots ?? [], desired.was!, teamOf(desired));
+    const taken = findBot(current.bots ?? [], desired.name, teamOf(desired));
+    if (old && taken && old.id !== taken.id) {
+      throw new HeadlessError(`bot "${desired.name}": both "${old.name}" (its was:) and "${taken.name}" exist, so the rename would make two bots of one name`, EXIT.failed,
+        "delete or rename one of them, or take was: out of the file");
+    }
+  }
   // A tool selection the bot's engine cannot hold stops every turn it runs
   // with a setup error: refuse it before anything is written, by the
   // engine's own rule (shared/tool-scope-support.ts).
@@ -245,9 +276,12 @@ export async function reconcile(client: HeadlessClient, file: TeamFile, options:
   }
   if (options.apply) current = await fleet();
   // A bot the file renames (was:) is still under its old name until the rename is made.
-  const renamedFrom = (name: string) => file.bots.find((bot) => key(bot.name) === key(name))?.was;
-  const botId = (name: string) => (findBot(current.bots ?? [], name)
-    ?? (renamedFrom(name) ? findBot(current.bots ?? [], renamedFrom(name)!) : undefined))?.id as string | undefined;
+  const named = (name: string) => file.bots.find((bot) => key(bot.name) === key(name));
+  const botId = (name: string) => {
+    const desired = named(name);
+    const team = desired ? teamOf(desired) : undefined;
+    return (findBot(current.bots ?? [], name, team) ?? (desired?.was ? findBot(current.bots ?? [], desired.was, team) : undefined))?.id as string | undefined;
+  };
 
   // 4. skills: compared by their SKILL.md; one not in the file is kept
   for (const desired of file.bots.filter((bot) => bot.skills.length)) {
@@ -363,7 +397,7 @@ export async function teamApplyVerb(ctx: VerbContext): Promise<VerbOutcome> {
   if (check && dryRun) throw usageError("choose one of --dry-run and --check");
   const file = loadTeamFile(path);
   const options = {
-    prune: ctx.flags.prune === true, rotateSecrets: ctx.flags["rotate-secrets"] === true, env: ctx.env,
+    prune: ctx.flags.prune === true, rotateSecrets: ctx.flags["rotate-secrets"] === true, env: ctx.env, progress: (event: Rec) => ctx.output.progress(event),
     waitIdleMs: flag(ctx.flags, "wait-idle") ? parseDuration(flag(ctx.flags, "wait-idle")!, "--wait-idle", { min: 0 }) : 120_000,
   };
   for (const warning of file.warnings) ctx.output.progress({ event: "warning", warning });
@@ -393,6 +427,11 @@ export async function teamApplyVerb(ctx: VerbContext): Promise<VerbOutcome> {
 
 const countsOf = (tally: Tally) => ({ created: tally.created, changed: tally.changed, unchanged: tally.unchanged, deleted: tally.deleted });
 
+/** Where team export puts a bot's skill, as the team file names it: with /,
+ * which every system reads, so a file exported on Windows applies on Linux. */
+export const skillFilePath = (botName: string, skillName: string): string =>
+  posix.join("skills", botName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "bot", skillName, "SKILL.md");
+
 /** The workspace as a team file apply reads. Skills go beside it as SKILL.md files; keys never leave the server. */
 export async function teamExportVerb(ctx: VerbContext): Promise<VerbOutcome> {
   const out = flag(ctx.flags, "out")?.trim();
@@ -410,19 +449,28 @@ export async function teamExportVerb(ctx: VerbContext): Promise<VerbOutcome> {
     names.add(key(bot.name));
   }
   const dir = dirname(resolve(out));
+  // A team file travels (a repository, a CI secret store, a colleague), so a
+  // key written into a soul, a brief or a skill is taken out, as the app's
+  // own team export takes it out; apply leaves such a field as it is.
+  const redacted: string[] = [];
+  const clean = (text: string, where: string): string => {
+    const cleaned = redactSecretsInText(text);
+    if (cleaned !== text) redacted.push(where);
+    return cleaned;
+  };
   const teams = sections.filter((section) => inScope(section) && (wanted.length || bots.some((bot) => key(bot.section) === key(section))));
   const teamEntries = await Promise.all(teams.map(async (name) => {
     const brief = String((await client.json<Rec>(`/api/section-context?section=${enc(name)}`)).text ?? "");
-    return { name, ...(brief.trim() ? { brief } : {}) };
+    return { name, ...(brief.trim() ? { brief: clean(brief, `team "${name}" brief`) } : {}) };
   }));
   const skipped: string[] = [];
   let skills = 0;
   const botEntries = [];
   for (const bot of bots) {
     const entry: Rec = { name: bot.name, ...(bot.section ? { team: bot.section } : {}), ...(bot.title ? { title: bot.title } : {}),
-      ...(bot.description ? { description: bot.description } : {}) };
+      ...(bot.description ? { description: clean(bot.description, `bot "${bot.name}" description`) } : {}) };
     if (bot.chiefOfStaff) Object.assign(entry, { chief: true, ...(bot.managedSections?.length ? { manages: bot.managedSections } : {}) });
-    if (bot.soul?.trim()) entry.soul = bot.soul;
+    if (bot.soul?.trim()) entry.soul = clean(bot.soul, `bot "${bot.name}" soul`);
     if (bot.modelSelection?.instanceId) {
       entry.model = `${bot.modelSelection.instanceId}/${bot.modelSelection.model}`;
       if (bot.modelSelection.effort) entry.effort = bot.modelSelection.effort;
@@ -437,8 +485,8 @@ export async function teamExportVerb(ctx: VerbContext): Promise<VerbOutcome> {
     const listing: Rec[] = (await client.json<Rec>(`/api/bots/${enc(bot.id)}/skills`)).skills ?? [];
     if (listing.length) entry.skills = [];
     for (const skill of listing) {
-      const text = String((await client.json<Rec>(`/api/bots/${enc(bot.id)}/skills/${enc(skill.name)}`)).text ?? "");
-      const relativePath = join("skills", bot.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "bot", skill.name, "SKILL.md");
+      const text = clean(String((await client.json<Rec>(`/api/bots/${enc(bot.id)}/skills/${enc(skill.name)}`)).text ?? ""), `bot "${bot.name}" skill ${skill.name}`);
+      const relativePath = skillFilePath(bot.name, skill.name);
       mkdirSync(dirname(join(dir, relativePath)), { recursive: true });
       writeFileSync(join(dir, relativePath), text);
       entry.skills.push({ file: relativePath, ...(skill.enabled ? {} : { enabled: false }) });
@@ -451,7 +499,7 @@ export async function teamExportVerb(ctx: VerbContext): Promise<VerbOutcome> {
     const responder: Rec = group.defaultResponder ?? {};
     return {
       name: group.name, ...(group.section ? { team: group.section } : {}), members: (group.memberIds ?? []).map((id: string) => byId.get(id) ?? id),
-      ...(String(group.bulletin ?? "").trim() ? { brief: group.bulletin } : {}),
+      ...(String(group.bulletin ?? "").trim() ? { brief: clean(String(group.bulletin), `room "${group.name}" brief`) } : {}),
       ...(responder.kind === "everyone" || responder.kind === "mentions" ? { responder: responder.kind }
         : responder.kind === "member" && byId.has(responder.botId) ? { responder: byId.get(responder.botId) } : {}),
     };
@@ -469,10 +517,11 @@ export async function teamExportVerb(ctx: VerbContext): Promise<VerbOutcome> {
   if (!botEntries.length) throw new HeadlessError("no bots to export", EXIT.failed);
   writeFileSync(resolve(out), `# Written by openmausbot team export on ${new Date().toISOString().slice(0, 10)}.\n# Engine keys are placeholders (SET_ME): set them before applying this elsewhere.\n${stringifyYaml(document, { lineWidth: 0 })}`);
   return {
-    result: { ok: true, file: resolve(out), teams: teamEntries.length, bots: botEntries.length, rooms: roomEntries.length, skills, engines: Object.keys(engines), skipped },
+    result: { ok: true, file: resolve(out), teams: teamEntries.length, bots: botEntries.length, rooms: roomEntries.length, skills, engines: Object.keys(engines), skipped, redacted },
     exitCode: EXIT.done,
     human: [`Wrote ${out}: ${teamEntries.length} teams, ${botEntries.length} bots, ${roomEntries.length} rooms, ${skills} skills.`,
       ...(Object.keys(engines).length ? ["Engine keys are placeholders (SET_ME): set them before applying it elsewhere."] : []),
+      ...(redacted.length ? [`A secret was taken out of: ${redacted.join(", ")} (apply leaves those as they are).`] : []),
       ...skipped.map((line) => `not exported: ${line}`)],
   };
 }

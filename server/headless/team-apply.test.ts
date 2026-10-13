@@ -5,8 +5,15 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import type { HeadlessClient } from "./client.ts";
-import { botPatch, reconcile, type ApplyOptions } from "./team-apply.ts";
-import type { DesiredBot, TeamFile } from "./team-file.ts";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { removeTempDir } from "../testing/cleanup.ts";
+import type { VerbContext } from "./context.ts";
+import { Output } from "./output.ts";
+import { botPatch, reconcile, skillFilePath, teamExportVerb, type ApplyOptions } from "./team-apply.ts";
+import { loadTeamFile, type DesiredBot, type TeamFile } from "./team-file.ts";
 
 type Rec = Record<string, any>;
 
@@ -197,8 +204,34 @@ describe("team apply", () => {
     const first = await reconcile(client, file({ engines: [engine] }), options({ env }));
     expect(first.lines[0]).toBe("engine claude: key «redacted 32 chars» · base URL set");
     expect(JSON.stringify(first)).not.toContain("team-7f3a9c");
-    // set up already: a run without the gateway's variable has nothing to read
-    expect((await reconcile(client, file({ engines: [engine] }), options({ env: {} }))).lines).toEqual([]);
+    // set up already: a run without the gateway's variable has nothing to read,
+    // and the plan says the address was not compared instead of nothing
+    const again = await reconcile(client, file({ engines: [engine] }), options({ env: {} }));
+    expect(again.lines).toEqual(["engine claude: its key is already set and the server does not show its base URL, so the file's was not compared (--rotate-secrets writes both)"]);
+    expect(again).toMatchObject({ created: 0, changed: 0, writes: 0 });
+  });
+
+  it("of two bots with the file's name, changes the one in the file's team, never the other team's", async () => {
+    // someone else's Priya, in Sales, listed before the team's own
+    const { client, writes, state } = workspace({ sections: ["Sales", "Launch Room"], bots: [
+      { id: "sales-priya", name: "Priya", section: "Sales", title: "Account manager", soul: "Sell." },
+      { id: "room-priya", name: "Priya", section: "Launch Room", title: "Buyer" }] });
+    const applied = await reconcile(client, file(), options());
+    expect(applied.lines).toContain('bot "Priya": update title "Buyer" → "Skeptical buyer"; approval Ask → Full access; computer auto → browser; browser profile its own → guest; tools changed');
+    expect(state.bots.find((bot) => bot.id === "sales-priya")).toEqual({ id: "sales-priya", name: "Priya", section: "Sales", title: "Account manager", soul: "Sell.",
+      busy: false, description: "", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+    expect(state.bots.find((bot) => bot.id === "room-priya")).toMatchObject({ title: "Skeptical buyer", approvalMode: "full" });
+    // and the next apply finds the team's Priya as it left her
+    writes.length = 0;
+    expect(await reconcile(client, file(), options())).toMatchObject({ lines: [], writes: 0 });
+  });
+
+  it("refuses a rename onto a name another bot has, before anything is written", async () => {
+    const { client, writes } = workspace({ sections: ["Launch Room"], bots: [
+      { id: "m1", name: "Marcus", section: "Launch Room" }, { id: "m2", name: "Marcus Lee", section: "Launch Room" }] });
+    const renamed = file({ bots: [lead, priya, { name: "Marcus Lee", was: "Marcus", team: "Launch Room", manages: [], skills: [] }] });
+    await expect(reconcile(client, renamed, options({ apply: false }))).rejects.toThrow('bot "Marcus Lee": both "Marcus" (its was:) and "Marcus Lee" exist');
+    expect(writes).toEqual([]);
   });
 
   it("names a room member that is neither in the workspace nor in the file before anything is written", async () => {
@@ -259,17 +292,66 @@ describe("botPatch", () => {
     expect(botPatch({ ...same, tools: { allow: [] } }, { ...echo, toolScope: undefined }, "Launch Room").patch).toEqual({ toolScope: { allow: [] } });
   });
 
-  it("sends Auto on this computer's confirmation only when the file itself says so", () => {
+  it("sends Auto on this computer's confirmation whenever the change leaves the bot there, and only then", () => {
     expect(botPatch({ ...same, computer: "local", approval: "auto" }, echo, "Launch Room").patch).toMatchObject({
       computer: "local", approvalMode: "auto", applyToAllThreads: true, acknowledgeLocalAuto: true });
     expect(botPatch({ ...same, computer: "local" }, echo, "Launch Room").patch).not.toHaveProperty("acknowledgeLocalAuto");
+    // the file names one, and the bot already has the other: the server asks
+    // for the confirmation all the same, and the file is it
+    expect(botPatch({ ...same, approval: "auto", computer: undefined }, { ...echo, computer: "local" }, "Launch Room").patch)
+      .toEqual({ approvalMode: "auto", applyToAllThreads: true, acknowledgeLocalAuto: true });
+    expect(botPatch({ ...same, approval: undefined, computer: "local" }, { ...echo, approvalMode: "auto" }, "Launch Room").patch)
+      .toEqual({ computer: "local", acknowledgeLocalAuto: true });
+    expect(botPatch({ ...same, approval: "auto" }, echo, "Launch Room").patch).not.toHaveProperty("acknowledgeLocalAuto");
   });
 
   it("changes the model, keeps an effort the file does not name, and moves a bot to Auto computer with null", () => {
+    // the selection is replaced whole, so the effort goes with it on the same engine
     expect(botPatch({ ...same, model: { instanceId: "claude", model: "claude-haiku-5" } }, echo, "Launch Room")).toEqual({
-      patch: { modelSelection: { instanceId: "claude", model: "claude-haiku-5" }, requireAvailableModel: true },
-      changes: ["model claude/claude-sonnet-5 (high) → claude/claude-haiku-5"] });
+      patch: { modelSelection: { instanceId: "claude", model: "claude-haiku-5", effort: "high" }, requireAvailableModel: true },
+      changes: ["model claude/claude-sonnet-5 (high) → claude/claude-haiku-5 (high)"] });
+    // another engine may not offer it
+    expect(botPatch({ ...same, model: { instanceId: "codex", model: "gpt-6" } }, echo, "Launch Room").patch.modelSelection).toEqual({ instanceId: "codex", model: "gpt-6" });
     expect(botPatch({ ...same, effort: "low" }, echo, "Launch Room").patch.modelSelection).toEqual({ instanceId: "claude", model: "claude-sonnet-5", effort: "low" });
     expect(botPatch({ ...same, computer: "auto" }, echo, "Launch Room")).toEqual({ patch: { computer: null }, changes: ["computer browser → auto"] });
+  });
+});
+
+describe("team export", () => {
+  it("names a skill's file with /, so a file exported on Windows applies on Linux", () => {
+    expect(skillFilePath("Room Lead", "launch-report")).toBe("skills/room-lead/launch-report/SKILL.md");
+    expect(skillFilePath("!!!", "notes")).toBe("skills/bot/notes/SKILL.md");
+  });
+
+  it("takes a key written into a soul, a brief or a skill out of the file, and apply leaves those as they are", async () => {
+    const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+    const { client, writes, state } = workspace();
+    await reconcile(client, file(), options());
+    state.bots.find((bot) => bot.name === "Room Lead")!.soul = `Lead the rehearsal. Pay with ${KEY}.`;
+    state.briefs["Launch Room"] = `We rehearse a launch. The staging key is ${KEY}.`;
+    state.skills["bot-1"]!["launch-report"]!.text = `---\nname: launch-report\ndescription: Write it.\n---\nUpload with ${KEY}\n`;
+    const dir = mkdtempSync(join(tmpdir(), "omb-team-export-"));
+    try {
+      const out = join(dir, "team.yaml");
+      const ctx = { verb: "team export", flags: { out }, positionals: [], env: {}, io: { out: () => undefined, err: () => undefined, readStdin: async () => "" },
+        output: new Output({ out: () => undefined, err: () => undefined, readStdin: async () => "" }, {}), client: async () => client,
+        signal: new AbortController().signal, defaultWaitMs: 1_000 } as VerbContext;
+      const exported = await teamExportVerb(ctx);
+      expect((exported.result as Rec).redacted).toEqual(['team "Launch Room" brief', 'bot "Room Lead" soul', 'bot "Room Lead" skill launch-report']);
+      const written = [readFileSync(out, "utf8"), readFileSync(join(dir, "skills/room-lead/launch-report/SKILL.md"), "utf8")].join("\n");
+      expect(written).not.toContain(KEY);
+      expect(written).toContain("«redacted");
+      // applied back: nothing is written over the secrets the server keeps
+      const back = loadTeamFile(out);
+      expect(back.bots.find((bot) => bot.name === "Room Lead")).not.toHaveProperty("soul");
+      expect(back.bots.find((bot) => bot.name === "Room Lead")!.skills).toEqual([]);
+      expect(back.teams[0]).not.toHaveProperty("brief");
+      expect(back.warnings).toEqual(expect.arrayContaining(['bot "Room Lead": its soul has a secret taken out («redacted …»), so it is left as it is']));
+      writes.length = 0;
+      expect(await reconcile(client, back, options())).toMatchObject({ created: 0, changed: 0, deleted: 0, writes: 0 });
+      expect(state.bots.find((bot) => bot.name === "Room Lead")!.soul).toContain(KEY);
+    } finally {
+      await removeTempDir(dir);
+    }
   });
 });

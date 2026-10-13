@@ -8,7 +8,7 @@
 // paths relative to the file. Keys are never written in the file: an engine's
 // key is { env: NAME } or { file: PATH }, read only when it must be written.
 import { readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, posix, resolve, win32 } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -136,6 +136,18 @@ export function everyTool(scope: { allow?: unknown; deny?: unknown } | null | un
   return !scope || (!Array.isArray(scope.allow) && !(Array.isArray(scope.deny) && scope.deny.length > 0));
 }
 
+/** A working folder on the server, whatever system the server runs: a POSIX
+ * path (/work/room) or a Windows one (C:\work\room, \\host\share\room),
+ * tidied by that system's rules as the server tidies it, never by this
+ * computer's (a Windows laptop would turn /work/room into C:\work\room).
+ * undefined: not a full path. */
+export function serverFolder(raw: string): string | undefined {
+  const path = raw.trim();
+  if (path.startsWith("/")) return posix.resolve(path);
+  if (/^[a-z]:[\\/]/i.test(path) || /^\\\\[^\\/]+[\\/][^\\/]/.test(path)) return win32.resolve(path);
+  return undefined;
+}
+
 /** Read and check a team file. Every problem is a usage error (exit 2) that names where it is. */
 export function loadTeamFile(path: string): TeamFile {
   const file = resolve(path);
@@ -162,27 +174,44 @@ export function loadTeamFile(path: string): TeamFile {
   return checkTeamFile(parsed.data, file, dir);
 }
 
+/** The marker secret redaction leaves (shared/redact.ts mask). */
+const REDACTED = /«redacted \d+ chars»/;
+
+/** Text as one system writes it everywhere: a checkout on Windows has CRLF
+ * line ends where Linux CI has LF, and the same file must apply the same
+ * from both, or every apply from the other one rewrites it. */
+const lf = (text: string) => text.replace(/\r\n?/g, "\n");
+
+/** A file the team file names, beside it. Either separator works, so a file
+ * written on Windows applies on Linux and the other way round. */
 const readRelative = (dir: string, path: string, what: string): string => {
   try {
-    return readFileSync(resolve(dir, path), "utf8");
+    return lf(readFileSync(resolve(dir, path.replace(/\\/g, "/")), "utf8"));
   } catch (error) {
     throw usageError(`${what}: ${path} could not be read (${(error as NodeJS.ErrnoException).code ?? "error"})`);
   }
 };
 const text = (dir: string, value: string | { file: string } | undefined, what: string) =>
-  value === undefined ? undefined : typeof value === "string" ? value : readRelative(dir, value.file, what);
+  value === undefined ? undefined : typeof value === "string" ? lf(value) : readRelative(dir, value.file, what);
 
 /** The file's rules beyond its shape, and every file it names read in. */
 export function checkTeamFile(input: TeamFileInput, file: string, dir: string): TeamFile {
   const warnings: string[] = [];
   const key = (name: string) => name.trim().toLowerCase();
+  // Text team export took a secret out of: written back, the marker would
+  // replace the secret, so the field is left as it is on the server.
+  const kept = <T extends string | undefined>(value: T, where: string): T | undefined => {
+    if (value === undefined || !REDACTED.test(value)) return value;
+    warnings.push(`${where} has a secret taken out («redacted …»), so it is left as it is`);
+    return undefined;
+  };
   const seen = new Map<string, string>();
   for (const bot of input.bots) {
     if (seen.has(key(bot.name))) throw usageError(`bots: "${bot.name}" is listed twice (names are compared without case)`);
     seen.set(key(bot.name), bot.name);
   }
   const teams: DesiredTeam[] = (input.teams ?? []).map((team) => {
-    const brief = text(dir, team.brief, `team "${team.name}" brief`);
+    const brief = kept(text(dir, team.brief, `team "${team.name}" brief`), `team "${team.name}": its brief`);
     if (brief !== undefined && Buffer.byteLength(brief.trimEnd(), "utf8") > TEAM_BRIEF_MAX_BYTES) {
       throw usageError(`team "${team.name}": brief is over ${TEAM_BRIEF_MAX_BYTES} bytes`);
     }
@@ -201,10 +230,11 @@ export function checkTeamFile(input: TeamFileInput, file: string, dir: string): 
     let cwd: string | undefined;
     if (bot.cwd !== undefined) {
       if (bot.cwd === "~" || bot.cwd.startsWith("~/")) throw usageError(`${where}: cwd must be a full path (~ is not expanded the same way on the server)`);
-      if (!isAbsolute(bot.cwd)) throw usageError(`${where}: cwd must be an absolute path on the server`);
-      cwd = resolve(bot.cwd);
+      cwd = serverFolder(bot.cwd);
+      if (cwd === undefined) throw usageError(`${where}: cwd must be an absolute path on the server (/work/room, or C:\\work\\room on Windows)`);
     }
-    const soul = text(dir, bot.soul, `${where} soul`);
+    const soul = kept(text(dir, bot.soul, `${where} soul`), `${where}: its soul`);
+    const description = kept(bot.description, `${where}: its description`);
     if (soul !== undefined && Buffer.byteLength(soul.trimEnd(), "utf8") > BOT_PROFILE_LIMITS.soul) throw usageError(`${where}: soul is over ${BOT_PROFILE_LIMITS.soul} bytes`);
     let tools: ToolScope | null | undefined;
     if (bot.tools) {
@@ -215,12 +245,13 @@ export function checkTeamFile(input: TeamFileInput, file: string, dir: string): 
       // tool server behind a gate that filters nothing).
       tools = everyTool(scope.scope) ? null : scope.scope!;
     }
-    const skills = (bot.skills ?? []).map((skill) => {
-      const body = readRelative(dir, skill.file, `${where} skill`);
+    const skills = (bot.skills ?? []).flatMap((skill) => {
+      const body = kept(readRelative(dir, skill.file, `${where} skill`), `${where}: ${skill.file}`);
+      if (body === undefined) return [];
       if (Buffer.byteLength(body, "utf8") > SKILL_MAX_BYTES) throw usageError(`${where}: ${skill.file} is over ${SKILL_MAX_BYTES / 1024} KiB`);
       const parsed = parseSkillMd(body);
       if ("error" in parsed) throw usageError(`${where}: ${skill.file}: ${parsed.error}`);
-      return { name: parsed.name, description: parsed.description, text: body, enabled: skill.enabled !== false, file: skill.file };
+      return [{ name: parsed.name, description: parsed.description, text: body, enabled: skill.enabled !== false, file: skill.file }];
     });
     if (new Set(skills.map((skill) => skill.name)).size !== skills.length) throw usageError(`${where}: two skills share a name`);
     if (bot.computer === undefined) warnings.push(`${where} has no computer set: on auto it may ask which computer to use, and nobody answers a headless run`);
@@ -228,7 +259,7 @@ export function checkTeamFile(input: TeamFileInput, file: string, dir: string): 
     const browser = bot.browser === undefined ? undefined : typeof bot.browser === "boolean" ? { enabled: bot.browser } : bot.browser;
     return {
       name: bot.name, ...(bot.was ? { was: bot.was } : {}), ...(bot.team ? { team: bot.team } : {}),
-      ...(bot.title !== undefined ? { title: bot.title } : {}), ...(bot.description !== undefined ? { description: bot.description } : {}),
+      ...(bot.title !== undefined ? { title: bot.title } : {}), ...(description !== undefined ? { description } : {}),
       ...(bot.chief !== undefined ? { chief: bot.chief } : {}), manages: bot.manages ?? [], ...(soul !== undefined ? { soul } : {}),
       ...(bot.model ? { model: { instanceId: bot.model.slice(0, slash), model: bot.model.slice(slash + 1) } } : {}),
       ...(bot.effort ? { effort: bot.effort } : {}), ...(bot.approval ? { approval: bot.approval } : {}),
@@ -251,7 +282,7 @@ export function checkTeamFile(input: TeamFileInput, file: string, dir: string): 
     if (room.responder && !["everyone", "mentions"].includes(room.responder) && !room.members.some((member) => key(member) === key(room.responder!))) {
       throw usageError(`${where}: responder must be everyone, mentions, or one of its members`);
     }
-    const brief = text(dir, room.brief, `${where} brief`);
+    const brief = kept(text(dir, room.brief, `${where} brief`), `${where}: its brief`);
     if (brief !== undefined && brief.trimEnd().length > ROOM_BRIEF_MAX_CHARS) throw usageError(`${where}: brief is over ${ROOM_BRIEF_MAX_CHARS} characters`);
     return { name: room.name, ...(room.team ? { team: room.team } : {}), members: room.members, ...(brief !== undefined ? { brief } : {}), ...(room.responder ? { responder: room.responder } : {}) };
   });
