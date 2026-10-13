@@ -120,9 +120,9 @@ describe("live call media", () => {
     expect(currentCall()).toBeNull();
   });
 
-  // Live calls need a Pro plan; the harness says so before it would ask for a key.
+  // Live calls from your phone need a Pro plan; the harness says so before it would ask for a key.
   it("shows the Pro prompt, never the key form, and releases the microphone", async () => {
-    request.mockRejectedValueOnce(new ApiError("Live calls need a Pro plan.", 402, { needsPro: true }));
+    request.mockRejectedValueOnce(new ApiError("Live calls from your phone need a Pro plan.", 402, { needsPro: true }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
     expect(liveMedia()).toMatchObject({ phase: "idle", needsPro: true, needsKey: false, botId: "b1", threadId: "t1", notice: null, action: null });
     expect(track.stopped).toBe(true);
@@ -536,7 +536,7 @@ describe("live call media", () => {
   });
 
   it("drops the Pro prompt only for the bot it was left for", async () => {
-    request.mockRejectedValueOnce(new ApiError("Live calls need a Pro plan.", 402, { needsPro: true }));
+    request.mockRejectedValueOnce(new ApiError("Live calls from your phone need a Pro plan.", 402, { needsPro: true }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
     dismissStartPrompt("b2");
     expect(liveMedia()).toMatchObject({ needsPro: true, botId: "b1" });
