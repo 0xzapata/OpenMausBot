@@ -100,9 +100,9 @@ const vpsConfigSchema = z.object({
  * process environment must never redirect a bot's browser
  * (server/browser-live.test.ts pins this guarantee down). */
 const browserEngineConfigSchema = z.object({
-  attachCdpUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidCdpTarget(value), {
-    message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL",
-  }).optional(),
+  attachCdpUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidCdpTarget(value),
+    { message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL" }).optional(),
+  idleTimeoutMinutes: z.number().int().min(1).max(60).optional(), // an unused browser closes after this (browserIdleMs)
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -678,7 +678,7 @@ export interface AppConfig {
   /** CDP target of a Chrome the operator already has running (a bare port,
    * e.g. "9333", or an http(s)/ws(s) URL). Browser profiles set to My Chrome
    * attach to it instead of looking for the person's Chrome (#1396). */
-  browserEngine?: { attachCdpUrl?: string };
+  browserEngine?: { attachCdpUrl?: string; idleTimeoutMinutes?: number };
   instances?: InstanceConfigMap;
 }
 export type BrowserProfile = z.output<typeof browserProfileSchema> & {
