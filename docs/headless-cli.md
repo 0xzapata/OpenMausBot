@@ -112,11 +112,15 @@ conversation and when the job began (`since`), so a later `openmausbot wait
   folder that already has files.
 
 A teammate the bot sent a one-way notice to, or one still working after the
-bot was stopped, does not hold the job open: nobody is waiting on it.
+bot was stopped, does not hold the job open: nobody is waiting on it. A
+message no turn ran for at all (a room set to answer mentions, sent a message
+that names nobody; a queued message removed before its turn) is not a job
+done: `run` ends with `state: "idle"` and exit 1.
 
 With `--json` the result carries the job's `state` (`completed`, `idle`,
 `needs-input`, `failed`, `stalled` or `timed-out`), which the exit code
-follows, the job tree, the final reply and the files it links. Its `status`
+follows (`idle` after `run` is exit 1, as above), the job tree, the final
+reply and the files it links. Its `status`
 keeps the words MCP clients already read: `settled` there only says the
 conversation stopped working, so a lead whose work failed is `settled` with
 `state: "failed"` and exit 1.
@@ -126,6 +130,9 @@ once with exit 0. `--for turn` waits only for the conversation's own turn.
 `--since MS` (the number `run` prints, and puts in its "wait again" line)
 keeps watching the same job: if it ended while nobody was watching, `wait`
 says how it ended instead of "nothing is running". Ctrl-C prints that line too.
+If the server drops for a moment (a restart, a proxy in front of it), `run`
+and `wait` keep asking for the same job until their time runs out; a refusal
+(an expired token) ends them with exit 5 at once.
 
 Stopping a job (`interrupt --tree`, `--on-input stop`, `--on-timeout stop`)
 presses Stop in its conversation, then in each teammate's own conversation
@@ -161,7 +168,8 @@ skipped and listed in `manifest.json`. A reply that links a folder brings the
 files directly in it. Limits: `--max-files 200`, `--max-screens 100`,
 `--max-bytes 500MB` (counted on what is written, so a file that runs past it
 is skipped). A folder with files in it is refused unless `--force`, which
-replaces what an earlier export wrote there.
+replaces what an earlier export wrote there: the files its `manifest.json`
+lists are removed first, and nothing else in the folder is touched.
 
 ## events
 
@@ -170,8 +178,9 @@ openmausbot events --job 3f2a… --until-settled > events.jsonl
 ```
 
 One JSON line per event: messages as they are written and changed, threads,
-bots and rooms. `--kind runtime` adds token-level events; `--screens` adds
-live screen frames. `--thread ID` (repeatable) keeps one conversation's
+bots and rooms. `--kind` names the kinds to print instead of those
+(`--kind message,runtime` is messages and token-level events); `--screens`
+adds live screen frames. `--thread ID` (repeatable) keeps one conversation's
 events; `--job ID` follows every conversation of that job as it grows, and
 `--until-settled` ends when the job does, with its exit code. After a dropped
 connection it resumes from where it was; the server's first line says whether
@@ -191,10 +200,13 @@ KIND is `claude`, `openai`, `openrouter`, `openai-compatible` (needs
 environment variable (`--key-env`) or a file (`--key-file`), is written once
 through the same setting the Settings screen uses, and is never printed or
 read back. An engine that already has a key is left alone unless `--rotate`,
-so a script can run this on every start. For `claude`, the key runs every
+so a script can run this on every start. The server never shows the address
+of a key it has, so on such an engine a different `--base-url` is not written
+either (it says so): `--rotate` writes both. For `claude`, the key runs every
 Claude bot (engine `claude`); `--only-claude-api` keeps it to "Claude (API
 key)" bots (engine `claudeApi`). `--install` installs the engine's command if
-it is missing. Changing keys needs a session with full access.
+it is missing, and waits for the install to finish (minutes on a fresh
+machine). Changing keys needs a session with full access.
 
 ## The team file
 
@@ -222,13 +234,15 @@ Applied: 6 created, 1 changed, 0 deleted.
 
 Run it again and it prints `No changes.` and sends nothing: it compares the
 file with what the server holds, field by field. Bots are matched by name (any
-case), or by `was:` when you rename one. A field the file leaves out is left
-as it is. Teams are never deleted, nor skills the file does not list. Bots and
-rooms a team no longer lists are deleted only with `--prune`, and only in a
-team marked `prune: true`. Apply is not atomic: if a step is refused it stops,
-says what it had already done, and exits 1; applying again carries on. A bot
-that is in the middle of a turn is changed once it is idle, waiting up to
-`--wait-idle` (2 minutes) and then reporting it.
+case), or by `was:` when you rename one; of two bots with one name, the one
+already in the file's team. A rename onto a name another bot has is refused.
+A field the file leaves out is left as it is (a new `model` on the same engine
+keeps the bot's effort). Teams are never deleted, nor skills the file does not
+list. Bots and rooms a team no longer lists are deleted only with `--prune`,
+and only in a team marked `prune: true`. Apply is not atomic: if a step is
+refused it stops, says what it had already done, and exits 1; applying again
+carries on. A bot that is in the middle of a turn is changed once it is idle,
+waiting up to `--wait-idle` (2 minutes) and then reporting it.
 
 Every change goes through the same requests the app makes, with the same
 checks. Apply adds no confirmations of its own: where the server needs one
@@ -278,7 +292,8 @@ rooms:
 Paths are relative to the team file. Apply refuses (exit 2), naming where:
 an unknown field, a duplicate name, two Chiefs in one team, `manages` without
 `chief`, a model not written as `INSTANCE/MODEL`, a `cwd` that is not a full
-path (`~` too: it would not mean the same on the server), a missing file or
+path on the server (`/work/room`, or `C:\work\room` on a Windows server; `~`
+is refused too: it would not mean the same there), a missing file or
 environment variable, a key written into the file, and anything longer than
 the app takes (a name or title on more than one line or over 100 or 200
 characters, a soul or team brief over 24,000 bytes, a room brief over 12,000
@@ -286,7 +301,10 @@ characters, a skill over 256 KiB). It warns about a bot with no `computer`: on
 `auto` it may ask which computer to use, and nobody is there to answer a
 headless run. An engine's key, and a base URL kept as a secret, are read only
 when they have to be written: when the engine has no key yet, or with
-`--rotate-secrets`.
+`--rotate-secrets` (on an engine that has a key, the plan says its base URL
+could not be compared). Souls, briefs and skills are read with LF line ends,
+and paths in the file may use either separator, so the same file applies
+alike from a Windows checkout and from Linux CI.
 
 Before it writes anything, apply also checks the file against the server
 (exit 1): every `model` must be one its engine offers, every room member a bot
@@ -299,7 +317,10 @@ tool: the bot's selection is cleared.
 
 `team export` writes the workspace in this format, skills as `SKILL.md` files
 beside it and engine keys as `{ env: SET_ME }` placeholders, so applying an
-export to the same workspace prints `No changes.`.
+export to the same workspace prints `No changes.`. A key written into a soul,
+a brief or a skill is taken out (`«redacted N chars»`), as the app's own team
+export takes it out, and the export says where; apply leaves a field with that
+mark as it is, so the secret stays only on the server.
 
 ### Example: Launch Room
 
