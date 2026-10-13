@@ -39,7 +39,7 @@ import {
   approvalModeFor,
   modelSwitchNeedsAsk,
   isEmergencyApprovalDowngrade,
-  isApprovalMode,
+  isApprovalMode, setDefaultApprovalMode,
   type ApprovalMode,
 } from "../shared/approval-mode.ts";
 import { createApprovalModeSupport } from "./harness-capabilities.ts";
@@ -769,9 +769,10 @@ const DESKTOP_MANAGED = process.env.OMB_DESKTOP_PARENT === "1";
 const SHARED_WORKSPACE_FULL_ACCESS = sharedWorkspaceFullAccessConfigured();
 const sharedWorkspaceFullAccessEnabled = () => SHARED_WORKSPACE_FULL_ACCESS && Boolean(workspaceAccess) && entitled("admin");
 /** Full access goes over the HTTP API like any other level (owner decision,
- * Oct 12), except on a hosted company workspace: there only the operator's
- * dedicated policy grants it, for new tasks (POST /api/bots/:id/tasks). */
+ * Oct 12) and is every bot's default, except on a hosted company workspace:
+ * there only the operator's dedicated policy grants it (POST /api/bots/:id/tasks). */
 const HOSTED_FULL_ACCESS_REFUSAL = "On a shared company workspace Full access comes only from the operator's dedicated policy";
+if (HOSTED_WORKSPACE) setDefaultApprovalMode("ask");
 // Who a loopback request without a session is (server/request-auth.ts
 // LoopbackTrust): the owner on a desktop or a one-person server; a service on
 // a shared workspace, where every bot's shell is a loopback caller too.
@@ -4224,11 +4225,11 @@ const wireTask = (task: TaskRecord, botModel: ModelSelection): WireTask => {
 const wireBot = (bot: BotRecord): WireBot => {
   const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
   // An elevated selection is inert until the desktop confirms its exact
-  // private reply. Every ordinary client sees the effective Ask state during
-  // that two-phase window, never a grant that may still roll back.
+  // private reply. Every ordinary client sees the level the bot runs at: Ask
+  // during that two-phase window, never a grant that may still roll back.
   const visible = approvalGrant && !approvalGrant.threadOnly
     ? { ...rest, approvalMode: "ask" as const, autoApprove: false }
-    : rest;
+    : { ...rest, approvalMode: approvalModeFor(rest) };
   return { ...visible, waitingForTeammates: activeCoordinationForThread(bot.threadId) && !threadBusy(bot.id, bot.threadId),
     mainThreadId: botMainThread(bot.id),
     avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
@@ -4467,9 +4468,9 @@ function peerReviewRequired(bot: BotRecord, threadId: string): boolean {
 }
 
 /** A Chief of Staff's level flows down its delegation. The person set the
- * Chief's level so its work runs that way; a teammate the Chief brings in
- * starting at "Ask for approval" meant switching every such thread by hand,
- * all day, for the whole team. So a teammate a Chief delegates to starts at
+ * Chief's level so its work runs that way; a teammate someone set lower
+ * would otherwise mean switching every such thread by hand, all day, for the
+ * whole team. So a teammate a Chief delegates to starts at
  * the Chief's level for that work: Auto-accept edits, Approve for me or Full
  * access (delegatedApprovalMode: never lower than the teammate's own level,
  * capped at what its engine implements). Only a Chief passes its level on —
@@ -4908,12 +4909,7 @@ function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
     return true;
   }
   if (!supportsApprovalMode(existing.modelSelection, mode)) {
-    respond({
-      ok: false,
-      error: mode === "full"
-        ? "This provider does not support Full access"
-        : "Custom approval settings are available only for Codex bots",
-    });
+    respond({ ok: false, error: "Custom approval settings are available only for Codex bots" });
     return true;
   }
   if (
@@ -17434,7 +17430,7 @@ ROUTES.push(createBotCreateRoutes({
   store, cfg, presetStore, orgInstallStatuses,
   hostedWorkspace: HOSTED_WORKSPACE, hostedFullAccessRefusal: HOSTED_FULL_ACCESS_REFUSAL, desktopManaged: DESKTOP_MANAGED,
   maxWorkspaceBots: MAX_WORKSPACE_BOTS, cloudOwnerKey: CLOUD_OWNER_KEY,
-  hostedModels, supportsApprovalMode, cloudRoutineAuthors,
+  hostedModels, cloudRoutineAuthors,
   routines: () => routines,
   storedAvatarExists, defaultSelection, checkedModelSelection, cloudOwnerSession, wireBot,
 }));

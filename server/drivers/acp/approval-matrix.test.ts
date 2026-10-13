@@ -72,11 +72,10 @@ describe("remaining ACP approval mappings", () => {
     const recorder = recordEvents(instance.adapter);
     const pidOf = () => JSON.parse(readFileSync(dump, "utf8")).pid as number;
     try {
-      // The residual request reaches the user at every level, including the
-      // ones an engine claims natively. Full is unsupported on most rows here
-      // and must stay interactive even though the instance stored
-      // fullAuto=true; where Full is supported the flag tracks the turn's own
-      // mode, so the legacy instance value still cannot outrank Ask or Auto.
+      // The residual request reaches the harness at every level, including
+      // the ones an engine claims natively: under Full the harness answers it
+      // (not this driver). The fullAuto flag tracks the turn's own mode, so
+      // the legacy instance value fullAuto=true cannot outrank Ask or Auto.
       for (const approvalMode of ["full", "auto", "ask"] as const) {
         const pidBefore = existsSync(dump) ? pidOf() : null;
         const methodsBefore = existsSync(rpcDump) ? (JSON.parse(readFileSync(rpcDump, "utf8")) as string[]).length : 0;
@@ -123,10 +122,11 @@ describe("remaining ACP approval mappings", () => {
           expect(turnMethods).not.toContain("session/load");
         }
         if (driver === DroidAgentDriver) {
+          // Full is Droid's own auto-high mode; Auto (no reviewer) and Ask stay normal.
           const settings = JSON.parse(readFileSync(`${dump}.config.json`, "utf8"));
           expect(settings[0]).toEqual({
             method: "session/set_mode",
-            params: { sessionId: "fake-acp-session", modeId: "normal" },
+            params: { sessionId: "fake-acp-session", modeId: approvalMode === "full" ? "auto-high" : "normal" },
           });
         }
         expect(await instance.adapter.respondToRequest("approval-matrix-thread", opened.requestId!, { behavior: "deny" }))

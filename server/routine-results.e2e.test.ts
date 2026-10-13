@@ -28,6 +28,8 @@ it("reports every run into the bot's main thread while fresh executions, approva
   try {
     expect((await control(["doctor"]) as any).ok).toBe(true);
     const { bot } = await control(["new-bot", "--name", "Results fixture"]) as any;
+    // On Ask, so a run's permission request waits on its card.
+    await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask" });
     const originalThread = (await api("GET", "/api/bots")).bots.find((candidate: any) => candidate.id === bot.id).threadId;
     const { routine } = await api("POST", "/api/routines", {
       name: "Persistent report", prompt: "Report this run's state.", botId: bot.id, enabled: false,

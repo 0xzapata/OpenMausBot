@@ -164,7 +164,7 @@ export function createBotSettingsRoutes(deps: BotSettingsRouteDeps): RouteHandle
       }
       if ([existing, selected].some((owner) => {
         const mode = approvalModeFor(owner);
-        return (mode === "full" || mode === "custom") &&
+        return mode === "custom" &&
           (!supportsApprovalMode(checked.selection, mode) || engineSwitchNeedsAsk(mode, owner.modelSelection, checked.selection));
       })) {
         return json(res, 400, {

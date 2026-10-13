@@ -101,7 +101,12 @@ async function chiefJob(test: (f: any) => Promise<void>) {
       return { status: response.status, body: parsed };
     };
     const cli = (...args: string[]) => runControlOmb([...args, "--url", url]) as Promise<any>;
-    const bot = async (name: string, section: string) => (await cli("new-bot", "--name", name, "--section", section)).bot;
+    // The team works at Ask, as Claude Code does there, so its approvals are cards.
+    const bot = async (name: string, section: string) => {
+      const made = (await cli("new-bot", "--name", name, "--section", section)).bot;
+      expect((await api("PATCH", `/api/bots/${made.id}`, { approvalMode: "ask" })).status).toBe(200);
+      return made;
+    };
     const clive = await bot("Clive", "Leadership");
     const mira = await bot("Mira", "Engineering");
     const eli = await bot("Eli", "Engineering");

@@ -236,7 +236,7 @@ export interface InstalledPackageMetadata {
   agentKey?: string;
   /** Set when the bot was created from a package preset. */
   presetKey?: string;
-  /** What the package suggested. Never applied: imported bots start on Ask. */
+  /** What the package suggested. Never applied: imported bots start at the default level. */
   suggestedApproval?: "ask" | "auto";
   /** org only */
   publisher?: { organizationId: string; slug: string; name: string };

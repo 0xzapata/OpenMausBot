@@ -26,7 +26,8 @@ it("Chief creation uses the workspace default or a validated explicit model with
     await api("PATCH", "/api/config", { defaultModelSelection: defaultModel });
     const chiefModel = { instanceId: "claude", model: claude.models.default };
     const chief = (await api("POST", "/api/bots", { name: "Chief", section: "Design", modelSelection: chiefModel }, 201)).bot;
-    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
+    // On Ask, so each creation waits on its review card.
+    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvalMode: "ask" });
     await api("POST", `/api/bots/${chief.id}/messages`, { text: "Prepare a specialist." }, 202);
     await expect.poll(() => existsSync(fixture.fixtureDumpPath), { timeout: 15_000 }).toBe(true);
     const dump = JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8"));
@@ -69,8 +70,9 @@ it("Chief creation uses the workspace default or a validated explicit model with
     expect(bots.length).toBe(before + 2);
     expect(bots.find((bot: any) => bot.id === chief.id).modelSelection).toEqual(chiefModel);
     for (const [id, modelSelection] of [[first.id, defaultModel], [second.id, explicit]]) {
+      // Not the Chief's Ask: a new specialist starts at the default, Full access.
       expect(bots.find((bot: any) => bot.id === id)).toMatchObject({
-        section: "Design", modelSelection, autoApprove: false, composio: false, approvePeerComms: false,
+        section: "Design", modelSelection, approvalMode: "full", autoApprove: false, composio: false, approvePeerComms: false,
         soul: "Complete assigned work.",
       });
     }

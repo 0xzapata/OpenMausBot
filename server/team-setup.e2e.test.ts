@@ -31,7 +31,8 @@ it("Clive reviews multi-provider teams once, continues after each decision, and 
     expect(codex).toBeDefined();
     const selection = (instance: any) => ({ instanceId: instance.instanceId, model: instance.models.default });
     const chief = (await api("POST", "/api/bots", { name: "Clive", title: "Chief of Staff", section: "Operations", modelSelection: selection(claude) }, 201)).bot;
-    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
+    // On Ask, so each team setup waits on Clive's review card.
+    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvalMode: "ask" });
     const state = async () => (await api("GET", "/api/bots")).bots;
     // The fixture pins its starter's name (control-omb.ts), but identity is
     // still the honest comparison: "Quill" once collided with a randomly
@@ -138,7 +139,8 @@ it("Clive reviews multi-provider teams once, continues after each decision, and 
     const created = saved.filter((bot: any) => !initialBotIds.has(bot.id));
     expect(created.map((bot: any) => bot.name).sort()).toEqual(["Mira", "Patch", "Quill"]);
     const engineer = created.find((bot: any) => bot.name === "Patch");
-    expect(engineer).toMatchObject({ title: "Implementation and verification engineer", section: "Engineering", chiefOfStaff: true, modelSelection: selection(codex), approvalMode: "ask", autoApprove: false, composio: false });
+    // A new teammate starts at the default level, Full access, not its Chief's Ask.
+    expect(engineer).toMatchObject({ title: "Implementation and verification engineer", section: "Engineering", chiefOfStaff: true, modelSelection: selection(codex), approvalMode: "full", autoApprove: false, composio: false });
     expect(engineer.managedSections).toBeUndefined();
     expect(saved.find((bot: any) => bot.id === chief.id).managedSections).toEqual(expect.arrayContaining(plan.newTeams));
     await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" });
