@@ -58,7 +58,7 @@ Evidence covers:
 - A later send keeps that replacement session instead of injecting the summary again.
 - Editing an old message replays its selected branch, not the abandoned summary.
 - Stop aborts a hanging helper without a late record; a new send still works.
-- With the `helper` setting naming an instance, a bot on an engine with no tool-free one-shot for the summary (the fake Pi and the fake Codex) gets a model-written summary from that instance, booked as a helper call; without the setting the Pi bot keeps the excerpt summary.
+- With the `helper` setting naming an instance, a bot on an engine with no tool-free one-shot for the summary (the fake Pi and the fake Codex) gets a model-written summary from that instance, booked as a helper call; without the setting, or with the bot switched to never use the helper, the Pi bot keeps the excerpt summary.
 - Private session bookkeeping stays off the task wire shape; stored summaries redact secrets.
 
 Each API fixture retains exact requests, waits and bounded transcripts in
@@ -90,7 +90,8 @@ none at all, and Codex and the ACP engines, whose one-shot starts a whole agent
 process and is kept for background work) keeps the source-labelled fallback
 unless a helper model is set ([the memory guide](../memory.md), "The helper
 model"). That instance then writes the summary under the same 20-second timeout
-and fallback, and its call is one usage row with the trigger `helper`.
+and fallback, and its call is one usage row with the trigger `helper`. A bot
+switched to never use the helper (`helperModel: false`) keeps the fallback.
 `server/helper-model.e2e.test.ts` boots its own server in a throwaway home with
 the fake Claude, Codex and Pi engines, once with the setting and once without.
 

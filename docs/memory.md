@@ -213,15 +213,16 @@ text a bot's own engine cannot write:
 A bot whose own engine can write a job always writes it itself; the helper
 never takes its place.
 
-It is off unless you set it. Add it to `config.json` and restart the server:
+It is off unless you set it. Add it to `config.json`; the server follows the
+file, so adding the helper or taking it out again applies without a restart:
 
 ```json
 { "helper": { "instanceId": "claude", "model": "claude-haiku-4-5" } }
 ```
 
 or set `OMB_HELPER_INSTANCE` (and, if you want, `OMB_HELPER_MODEL`) in the
-server's environment. The environment wins over the file, and an empty
-`OMB_HELPER_INSTANCE` switches a saved helper off. `instanceId` is the id of
+server's environment before it starts. The environment wins over the file,
+and an empty `OMB_HELPER_INSTANCE` switches a saved helper off. `instanceId` is the id of
 a connected instance as `config.json` and `GET /api/instances` name it, such
 as `claude`, `claudeApi`, `openai` or `openrouter`; it has to be Claude or an
 API model, the engines with a quick text call of their own. `model` is
@@ -236,11 +237,19 @@ read is sent to the helper's provider, which may not be the one the bot runs
 on: the turns being captured and the bot's memory notes, the history being
 summarised, and the conversation and skills under review. That is why it is
 opt-in. It applies to every bot whose engine cannot write the job, including
-one you run on a local model, and there is no per-bot exception yet: leave
-the helper unset, or point it at an instance that runs on your own machine,
-if a bot's text must not go to another provider. An engine your organisation
-does not allow is never used as the helper, and on a hosted workspace only a
-model assigned to it is.
+one you run on a local model, unless you keep that bot off the helper (next
+paragraph). An engine your organisation does not allow is never used as the
+helper, and on a hosted workspace only a model assigned to it is.
+
+**Keeping one bot off the helper.** Any bot can be switched to never use the
+helper model: send `PATCH /api/bots/<bot id>` with `{ "helperModel": false }`
+(there is no Settings switch for it yet), and from its next job on that bot
+gets exactly what it would get with no helper set. Use it for a bot that runs
+on a local model and whose text must not leave the machine. The switch is
+saved with the bot. It travels in a full workspace backup and in a team
+backup, the two exports that hold a bot's notes and chats, so a restored bot
+stays off the helper; a shared team package carries no personal settings and
+does not carry this one, and a bot made with **Duplicate** starts without it.
 
 A helper that is missing, switched off, failing or slow breaks nothing: the
 job falls back exactly as it does with no helper (an excerpt summary, no
