@@ -9,11 +9,11 @@ const EXACT: Record<string, number> = {
   // Internal harness routes have no server/routes module yet; moving them out is the follow-up that lowers this.
   // 160 with /api/internal/request-sign-in (#2707) and /api/internal/fill-login (saved logins),
   // minus the one-release alias routes (ask-bot, delegate-bot, delegations/:id) that went in PR 5.
-  // 156 after GET and PUT/PATCH /api/config moved to server/routes/config.ts.
-  'path === "/': 156,
+  // 148 / 10 / 9 after /api/config (routes/config.ts), the provider instances (routes/instances.ts) and the MCP servers (routes/mcp-servers.ts) moved out.
+  'path === "/': 148,
   "path.match(": 88,
-  "path.startsWith(": 11,
-  ".exec(path)": 18,
+  "path.startsWith(": 10,
+  ".exec(path)": 9,
   ".test(path)": 0,
   ".includes(path)": 2,
 };

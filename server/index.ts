@@ -61,10 +61,7 @@ import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin,
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
 import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
-import { updateClaudeCli } from "./claude-update.ts";
-import { configuredAccountDirectory, assertSeparateClaudeAccount, claudeAccountInfo, createClaudeAccountSchema, instanceSettingsSchema, newClaudeAccount } from "./claude-accounts.ts";
-import { providerIconPatchSchema, withInstanceIcon } from "./provider-icon.ts";
-import { providerIconError } from "../shared/provider-icon.ts";
+import { claudeAccountInfo } from "./claude-accounts.ts";
 import {
   BrowserCleanupCoordinator,
   requireBrowserCleanupAcknowledged,
@@ -203,7 +200,6 @@ import {
   browserProfilePartitionTarget,
   stripWorkspaceCredentialEnv,
   PROVIDER_CREDENTIAL_ENV,
-  withInstanceCli,
   persistableInstanceConfigs,
   type AppConfig,
   vpsSshAlias,
@@ -220,7 +216,7 @@ import {
 } from "./config.ts";
 import { sweepThreadEventLogs, type ThreadLogRetentionCandidate } from "./thread-retention.ts";
 import { ComputerControl } from "./computer-control.ts";
-import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
+import { augmentedPath, resetPathCache } from "./env-path.ts";
 import { registerEnginesBinDir } from "./engine-install.ts";
 import { appendUsage, parseUsageRange, flushUsageLedger, type UsageRow, type UsageTrigger } from "./usage-ledger.ts";
 import { loadPlanUsage, planAccountsFromInstances } from "./plan-usage.ts";
@@ -255,12 +251,9 @@ import {
   isRemoteMcpServer,
   listMcpServers,
   mcpServerNameError,
-  parseMcpServerMutation,
-  parseMcpServersImport,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
-import { MCP_OAUTH_CALLBACK_PATH, McpOAuthError, McpSignInError, McpOAuthManager, mcpCallbackOrigin, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
-import { probeMcpServer } from "./mcp-probe.ts";
+import { MCP_OAUTH_CALLBACK_PATH, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
   groupGoalAssignmentKey,
@@ -327,7 +320,7 @@ import { ProviderRegistry } from "./harness/registry.ts";
 import { ManagedDesktopProviders } from "./managed-desktop.ts";
 import { mainThread, wasOldestThread } from "./main-thread.ts";
 import { computerKindForResource, ManagedDesktopPolicy, type ComputerKind } from "./managed-policy.ts";
-import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER, HOSTED_PROVIDER_SETTINGS_ERROR } from "./hosted-models.ts";
+import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER } from "./hosted-models.ts";
 import {
   CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_PATH, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal,
   createCloudPairing, firstCloudTurnPatch, readSignedBody,
@@ -591,7 +584,6 @@ import {
   isLoopbackHost,
   isProxied,
   labelFromUserAgent,
-  provesSameOrigin,
   requestOrigin,
   requestSource,
   requiredScope,
@@ -670,6 +662,8 @@ import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./deskt
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
 import { createAntigravityAccountRoutes } from "./routes/antigravity-accounts.ts";
 import { createConfigRoutes } from "./routes/config.ts";
+import { createInstanceRoutes } from "./routes/instances.ts";
+import { createMcpServerRoutes } from "./routes/mcp-servers.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
 import { createUsageRoutes } from "./routes/usage.ts";
@@ -17364,11 +17358,6 @@ async function reloadProviders(before: Record<string, unknown>) {
 let providerConfigBusy = false;
 const providerInstancesChanging = new Set<string>();
 let mcpConfigBusy = false;
-const MAX_CONCURRENT_MCP_PROBES = 2;
-let mcpProbesInFlight = 0;
-// One updater per executable: multiple Claude instances can point at the same
-// install, and running two self-updates against it would race its files.
-const claudeUpdatesInFlight = new Set<string>();
 
 // ── HTTP plumbing ─────────────────────────────────────────────────────
 /** The web UI's pages: never framed by another page (a hidden frame could
@@ -17624,6 +17613,20 @@ ROUTES.push(createConfigRoutes({
   computerProviderConfigTransitions, managedBoatOwners, providerOperationConflict, perBotLocalVmCountForModeChange,
   checkedModelSelection, policyModelRefusal, browserSessionSpec, configStatus, configForAccess,
   resyncOpenCodeProviderKeys, revokeEngineCapabilities, reloadProviders, broadcast, drainQueuedSends,
+}));
+ROUTES.push(createInstanceRoutes({
+  store, cfg, registry, sessions, providerAuthSessions,
+  hostedModels: Boolean(hostedModels),
+  providerConfigBusy: { get: () => providerConfigBusy, set: (busy) => { providerConfigBusy = busy; } },
+  providerInstancesChanging, describeInstances, persistProviderInstance, configStatus, broadcast, testCliBinary,
+  cliProbeEnvironment, threadBusy, botForThread, activeGroupTurnForBot,
+}));
+ROUTES.push(createMcpServerRoutes({
+  cfg, sessions, mcpOAuth,
+  cloudHome: CLOUD_HOME,
+  fallbackPublicUrl: FALLBACK_PUBLIC_URL,
+  mcpConfigBusy: { get: () => mcpConfigBusy, set: (busy) => { mcpConfigBusy = busy; } },
+  mcpServerResponse, mcpServerBody, mcpPolicyRefusal, persistMcpServers, savedCustomDomain,
 }));
 
 ROUTES.push(desktopViewer.route);
@@ -25411,504 +25414,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       return json(res, 200, { policy: bot.outbound ?? DEFAULT_OUTBOUND_POLICY, today: outboundCounts.today(bot.id) });
-    }
-
-    // ── provider instances (model picker) ──
-    if (method === "GET" && path === "/api/instances") {
-      // Rescan PATH first: this endpoint is how the app answers "what can I
-      // run?", and the interesting case is a CLI installed since launch.
-      // Windows never pushes PATH changes into a live process, so without
-      // this the answer is frozen at boot and "check again" is a no-op.
-      resetPathCache();
-      return json(res, 200, { instances: await describeInstances() });
-    }
-    const companyMutation = /^\/api\/instances\/(company\.[\w.-]+)(?:\/|$)/.exec(path);
-    if (hostedModels && path.startsWith("/api/instances/") && method !== "GET") return json(res, 403, { error: HOSTED_PROVIDER_SETTINGS_ERROR });
-    if (companyMutation && method !== "GET") return json(res, 403, { error: "Company accounts are read-only here. Manage this connection in desktop Settings." });
-
-    const instanceIconPatch = /^\/api\/instances\/([\w.-]+)\/icon$/.exec(path);
-    if (method === "PATCH" && instanceIconPatch) {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const parsed = providerIconPatchSchema.safeParse(await readBody(req, 192 * 1024));
-      if (!parsed.success) {
-        const detail = parsed.error.issues[0]?.message;
-        return json(res, 400, { error: detail && detail !== "Invalid input" ? detail : "Choose a built-in icon or upload a PNG, JPEG, or WebP image up to 128 KB." });
-      }
-      if (parsed.data.icon) {
-        const invalid = providerIconError(parsed.data.icon);
-        if (invalid) return json(res, 400, { error: invalid });
-      }
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      providerConfigBusy = true;
-      try {
-        const changed = withInstanceIcon(cfg, instanceIconPatch[1], parsed.data.icon);
-        if (!changed.ok) return json(res, 404, { error: `unknown instance "${instanceIconPatch[1]}"` });
-        saveConfig({ instances: changed.instances }, { replaceInstances: true });
-        cfg.instances = changed.instances;
-        broadcast({ kind: "config", ...configStatus() });
-        return json(res, 200, { instances: await describeInstances() });
-      } finally { providerConfigBusy = false; }
-    }
-
-    if (method === "POST" && path === "/api/instances/chatgpt-accounts") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) return json(res, 415, { error: "content-type must be application/json" });
-      const parsed = createClaudeAccountSchema.pick({ displayName: true }).safeParse(await readBody(req, 8192));
-      if (!parsed.success) return json(res, 400, { error: "Enter an account name (up to 80 characters)." });
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      providerConfigBusy = true;
-      try {
-        const instances = persistableInstanceConfigs(cfg);
-        const instanceId = `chatgpt-${randomUUID()}`;
-        // Reuse the selected executable, never another account's environment.
-        const cli = (instances.chatgpt?.config as { cli?: unknown } | undefined)?.cli
-          ?? (instances.codex?.config as { cli?: unknown } | undefined)?.cli;
-        instances[instanceId] = { driver: "codex", displayName: parsed.data.displayName,
-          config: { authMode: "chatgpt-plan", ...(typeof cli === "string" && cli ? { cli } : {}) } };
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 201, { instanceId, instances: await describeInstances() });
-      } finally { providerConfigBusy = false; }
-    }
-
-    if (method === "POST" && path === "/api/instances/claude-accounts") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const parsed = createClaudeAccountSchema.safeParse(await readBody(req, 8192));
-      if (!parsed.success) return json(res, 400, { error: "Enter an account name (up to 80 characters) and an optional configuration directory." });
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      providerConfigBusy = true;
-      try {
-        const { instanceId, instances } = newClaudeAccount(cfg, parsed.data);
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 201, { instanceId, instances: await describeInstances() });
-      } finally { providerConfigBusy = false; }
-    }
-
-    const authStatus = /^\/api\/instances\/([\w.-]+)\/auth\/status$/.exec(path);
-    if (method === "GET" && authStatus) {
-      res.setHeader("cache-control", "no-store");
-      const state = await providerAuthSessions.status(authStatus[1], auth.kind === "session" ? auth.session.id : "loopback", url.searchParams.get("flowId") ?? "");
-      return json(res, 200, { auth: state });
-    }
-    const instanceAction = /^\/api\/instances\/([\w.-]+)\/(refresh-models|install|auth\/start|auth\/complete|auth\/cancel|auth\/sign-out)$/.exec(path);
-    if (method === "POST" && instanceAction) {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const instanceId = instanceAction[1];
-      const action = instanceAction[2];
-      const owner = auth.kind === "session" ? auth.session.id : "loopback";
-      if (action.startsWith("auth/")) res.setHeader("cache-control", "no-store");
-      try {
-        if (action === "refresh-models") {
-          if (!(await registry.refreshModels(instanceId))) return json(res, 404, { error: "unknown instance" });
-          return json(res, 200, { instances: await describeInstances() });
-        }
-        if (action === "install") {
-          if (!(await registry.installRuntime(instanceId))) return json(res, 404, { error: "Installing this engine from Settings is not available on this server. Use the install command on the machine running OpenMausBot." });
-          return json(res, 200, { instances: await describeInstances() });
-        }
-        if (action === "auth/start") {
-          const instance = registry.get(instanceId);
-          if (!instance) return json(res, 404, { error: "unknown instance" });
-          // The official local OAuth callback terminates on this machine,
-          // not a phone or the browser visiting a remotely hosted workspace.
-          if (instance.authenticationMethod === "browser-pkce" && (isProxied(req) || !isLoopbackHost(req.socket.remoteAddress))) {
-            return json(res, 403, { error: "Continue with ChatGPT on the computer running OpenMausBot. Hosted Pro sign-in requires OpenAI's hosted-app approval." });
-          }
-          const started = await providerAuthSessions.start(instance, owner);
-          // Revocation can arrive while the CLI is obtaining a device code.
-          if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-            providerAuthSessions.revokeOwner(owner);
-            return json(res, 401, { error: "Your session ended. Start a new sign-in." });
-          }
-          return json(res, 200, { auth: started });
-        }
-        if (action === "auth/sign-out") {
-          const instance = registry.get(instanceId);
-          if (!instance) return json(res, 404, { error: "unknown instance" });
-          await providerAuthSessions.signOut(instance, owner);
-          return json(res, 200, { instances: await describeInstances() });
-        }
-        if (action === "auth/complete") {
-          const body = await readBody(req);
-          const flowId = typeof body?.flowId === "string" ? body.flowId : "";
-          // `code` for a pasted sign-in code (Claude), `callbackUrl` for a browser callback
-          const callbackUrl = typeof body?.callbackUrl === "string" ? body.callbackUrl : typeof body?.code === "string" ? body.code : "";
-          if (!flowId || !callbackUrl) return json(res, 400, { error: "flowId and a code or callbackUrl are required" });
-          await providerAuthSessions.complete(instanceId, owner, flowId, callbackUrl);
-          return json(res, 200, { ok: true });
-        }
-        const body = await readBody(req, 4096);
-        await providerAuthSessions.cancel(instanceId, owner, typeof body?.flowId === "string" ? body.flowId : "");
-        return json(res, 200, { ok: true });
-      } catch (error) {
-        const requestedStatus = error && typeof error === "object" ? (error as { status?: unknown }).status : undefined;
-        const status = typeof requestedStatus === "number" && [400, 401, 404, 409, 413, 415].includes(requestedStatus) ? requestedStatus : 500;
-        return json(res, status, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-
-    // ── CLI binary discovery for the Engines "detected" dropdown ──
-    // ?name=claude → absolute paths of every `claude` on the augmented PATH,
-    // in PATH order (first = what a bare name runs). Polled when the user
-    // opens the Custom picker so a just-installed CLI appears without a restart.
-    if (method === "GET" && path === "/api/cli-candidates") {
-      const name = url.searchParams.get("name") ?? "";
-      resetPathCache();
-      return json(res, 200, { candidates: findCliCandidates(name) });
-    }
-
-    // ── pre-save CLI probe: does this path actually run? ──
-    // POST {cli, driver} → spawn `<cli> --version` with the same PATH the
-    // turn itself would use. A miss here (typo, missing exec bit, a binary
-    // the GUI app can't see) means every turn would fail, so the UI asks
-    // before saving rather than registering a dead engine.
-    if (method === "POST" && path === "/api/cli-test") {
-      // same gate as the local-VM lifecycle routes: this executes a local
-      // binary, so a hostile page must not be able to submit it as a simple
-      // text/plain cross-origin request
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const body = await readBody(req);
-      const cli = typeof body?.cli === "string" ? body.cli.trim() : "";
-      if (!cli || /[\n\r]/.test(cli)) return json(res, 400, { error: "cli must be a non-empty path" });
-      const driver = typeof body?.driver === "string" ? BUILT_IN_DRIVERS.find((d) => d.driverKind === body.driver) : undefined;
-      // Probe the exact configured wrapper plus --version. testCliBinary uses
-      // a credential-redacted environment, so fixed wrapper arguments cannot
-      // turn this endpoint into an inherited-secret reader.
-      const probe = await testCliBinary(cli, driver);
-      return json(res, 200, probe);
-    }
-
-    // ── instance-scoped Claude Code update ──
-    // No command or path comes from the request: the registry supplies the
-    // executable already configured for this Claude instance. The JSON gate
-    // keeps a hostile page from triggering a local process with a simple
-    // cross-origin form request.
-    const busyProviderSelections = () => store.bots.flatMap((bot) => {
-      const busyTasks = store.tasks(bot.id).filter((task) => threadBusy(bot.id, task.threadId));
-      const selections = busyTasks.map((task) => botForThread(bot.id, task.threadId)!.modelSelection);
-      // Rooms still run from the profile default; a direct thread does not.
-      if (activeGroupTurnForBot(bot.id) || (bot.busy && busyTasks.length === 0)) selections.push(bot.modelSelection);
-      return selections;
-    });
-    const claudeUpdate = /^\/api\/instances\/([\w.-]+)\/claude-update$/.exec(path);
-    if (method === "POST" && claudeUpdate) {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      await readBody(req);
-      const target = registry.cliTarget(claudeUpdate[1]);
-      if (!target) return json(res, 404, { error: "no such provider instance" });
-      if (target.driverKind !== "claudeAgent") {
-        return json(res, 400, { error: "only Claude Code instances can be updated here" });
-      }
-      if (!target.cli) return json(res, 409, { error: "this Claude instance has no configured executable" });
-      if (claudeUpdatesInFlight.has(target.cli)) {
-        return json(res, 409, { error: "this Claude installation is already updating" });
-      }
-      const active = busyProviderSelections().some((selection) => registry.cliTarget(selection.instanceId)?.cli === target.cli);
-      if (active) {
-        return json(res, 409, { error: "wait for running Claude tasks to finish before updating" });
-      }
-
-      claudeUpdatesInFlight.add(target.cli);
-      try {
-        const result = await updateClaudeCli(target.cli, cliProbeEnvironment());
-        resetPathCache();
-        return json(res, 200, { ok: true, version: result.version });
-      } catch (error) {
-        return json(res, 500, { error: error instanceof Error ? error.message : String(error) });
-      } finally {
-        claudeUpdatesInFlight.delete(target.cli);
-      }
-    }
-
-    // ── per-instance settings (CLI/account or API tool support) ──
-    // PATCH /api/instances/:id {cli: "/path/to/cli" | ""} — "" reverts to the
-    // driver default. Only this idle instance is replaced; siblings keep running.
-    const instancePatch = /^\/api\/instances\/([\w.-]+)$/.exec(path);
-    if (method === "PATCH" && instancePatch) {
-      // same non-simple-request gate as the local-VM lifecycle routes
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const parsed = instanceSettingsSchema.safeParse(await readBody(req, 16384));
-      if (!parsed.success) return json(res, 400, { error: "Supply a valid CLI path, account name, configuration directory or boolean tools setting." });
-      const body = parsed.data;
-      const instanceId = instancePatch[1];
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      if (busyProviderSelections().some((selection) => selection.instanceId === instanceId)) {
-        return json(res, 409, { error: "Wait for bots using this account to finish before changing its settings." });
-      }
-      providerConfigBusy = true;
-      providerInstancesChanging.add(instanceId);
-      try {
-        const result = body.cli === undefined ? { ok: true, config: cfg } : withInstanceCli(cfg, instanceId, body.cli);
-        const instances = persistableInstanceConfigs(result.config);
-        if (!result.ok || !Object.hasOwn(instances, instanceId)) return json(res, 404, { error: `unknown instance "${instanceId}"` });
-        const entry = instances[instanceId];
-        if ((body.displayName !== undefined || body.configDir !== undefined) && entry.driver !== "claudeAgent") {
-          return json(res, 400, { error: "Account settings are currently available for Claude only." });
-        }
-        if (body.tools !== undefined) {
-          if (!["openai-compat", "grok", "minimax", "mistral", "cerebras", "groq", "meta"].includes(entry.driver)) {
-            return json(res, 400, { error: "The tools setting is available for OpenAI-compatible, Grok API, MiniMax API, Mistral API, Cerebras API, Groq API and Meta API instances only." });
-          }
-          entry.config = { ...entry.config as Record<string, unknown>, tools: body.tools };
-        }
-        if (body.displayName !== undefined) entry.displayName = body.displayName;
-        if (body.configDir !== undefined) {
-          let previousDir: string | undefined;
-          try { previousDir = configuredAccountDirectory(entry); } catch { /* Allow repairing an unused malformed account. */ }
-          entry.config = { ...entry.config as Record<string, unknown>, configDir: body.configDir };
-          if (previousDir !== configuredAccountDirectory(entry)) {
-            const used = store.bots.some((bot) => bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) =>
-              task.modelSelection?.instanceId === instanceId || task.resumeCursors[instanceId] || task.lastInstanceId === instanceId));
-            if (used) return json(res, 409, { error: "This account is used by bots or conversation history. Add another account and select it for the bot instead." });
-            assertSeparateClaudeAccount(instances, instanceId, entry);
-          }
-        }
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 200, { instances: await describeInstances() });
-      } finally {
-        providerInstancesChanging.delete(instanceId);
-        providerConfigBusy = false;
-      }
-    }
-
-    if (method === "DELETE" && instancePatch) {
-      const instanceId = instancePatch[1];
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      const instances = persistableInstanceConfigs(cfg);
-      if (!Object.hasOwn(instances, instanceId)) return json(res, 404, { error: "unknown instance" });
-      if (instances[instanceId].driver !== "claudeAgent" || instanceId === "claude") {
-        return json(res, 400, { error: "Only added Claude accounts can be removed here." });
-      }
-      if (cfg.defaultModelSelection?.instanceId === instanceId || store.bots.some((bot) =>
-        bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) => task.modelSelection?.instanceId === instanceId)) ||
-        busyProviderSelections().some((selection) => selection.instanceId === instanceId)) {
-        return json(res, 409, { error: "Choose another account for the bots and default model using this account before removing it." });
-      }
-      providerConfigBusy = true;
-      providerInstancesChanging.add(instanceId);
-      try {
-        delete instances[instanceId];
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 200, { instances: await describeInstances() });
-      } finally {
-        providerInstancesChanging.delete(instanceId);
-        providerConfigBusy = false;
-      }
-    }
-
-    // ── custom MCP servers (a local command or a URL; secrets write-only) ──
-    if (method === "GET" && path === "/api/mcp/servers") {
-      return json(res, 200, mcpServerResponse());
-    }
-
-    const mcpTest = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})\/test$/.exec(path);
-    if (method === "POST" && mcpTest) {
-      const raw = cfg.mcpServers?.[mcpTest[1]];
-      if (raw === undefined) return json(res, 404, { error: "MCP server not found." });
-      const parsed = parseStoredMcpServer(mcpTest[1], raw);
-      if (!parsed.ok) return json(res, 400, { error: parsed.error });
-      if (mcpProbesInFlight >= MAX_CONCURRENT_MCP_PROBES) {
-        return json(res, 429, { error: "Two MCP connection tests are already running." });
-      }
-      const controller = new AbortController();
-      const disconnect = () => {
-        if (!res.writableEnded) controller.abort();
-      };
-      res.once("close", disconnect);
-      mcpProbesInFlight += 1;
-      try {
-        const name = mcpTest[1];
-        let target = parsed.server;
-        if (isRemoteMcpServer(target) && mcpOAuth.authState(name, target.url) === "signed-in") {
-          const signedIn = (await withMcpSignIn({ [name]: target }, mcpOAuth))[name];
-          if (signedIn) target = { ...signedIn, enabled: target.enabled } as typeof target;
-        }
-        const result = await probeMcpServer(target, undefined, controller.signal);
-        if (!result.ok && result.auth === "required" && isRemoteMcpServer(target)) mcpOAuth.markNeedsSignIn(name, target.url);
-        return json(res, 200, result);
-      } finally {
-        res.off("close", disconnect);
-        mcpProbesInFlight -= 1;
-      }
-    }
-
-    // The loopback listener, the public callback and authenticated paste-back complete the same flow.
-    const mcpSignIn = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})\/(sign-in|sign-out)(?:\/([0-9a-f-]{36}))?$/.exec(path);
-    if (mcpSignIn) {
-      const [, name, action, flowId] = mcpSignIn;
-      const raw = cfg.mcpServers?.[name!];
-      const parsed = raw === undefined ? null : parseStoredMcpServer(name!, raw);
-      if (!parsed?.ok) return json(res, 404, { error: "MCP server not found." });
-      if (!isRemoteMcpServer(parsed.server)) return json(res, 400, { error: "Only servers reached by URL can be signed in to." });
-      const url = parsed.server.url;
-      if (action === "sign-out" && method === "POST" && !flowId) {
-        await mcpOAuth.signOut(name!, url);
-        return json(res, 200, mcpServerResponse());
-      }
-      const owner = auth.kind === "session" ? auth.session.id : "loopback";
-      res.setHeader("Cache-Control", "no-store");
-      try {
-        if (action === "sign-in" && method === "GET" && flowId) {
-          const status = mcpOAuth.status(name!, flowId, owner);
-          return status ? json(res, 200, { auth: status }) : json(res, 404, { error: "This sign-in is no longer available in this browser. Start again." });
-        }
-        if (action === "sign-in" && method === "DELETE") {
-          mcpOAuth.cancelFlow(name!, owner, flowId);
-          return json(res, 200, { ok: true });
-        }
-        if (action === "sign-in" && method === "POST" && flowId) {
-          if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-            return json(res, 415, { error: "content-type must be application/json" });
-          }
-          const body = await readBody(req, 20_480);
-          if (typeof body?.callbackUrl !== "string") return json(res, 400, { error: "A complete callbackUrl is required." });
-          return json(res, 200, { auth: await mcpOAuth.completeCallback(name!, flowId, body.callbackUrl, owner) });
-        }
-        if (action === "sign-in" && method === "POST" && !flowId) {
-          // A browser on another computer cannot reach this machine's
-          // loopback: it comes back to the https address it is using now,
-          // when that is one this server vouches for (mcpCallbackOrigin).
-          const remote = auth.kind === "session" && (isProxied(req) || !isLoopbackHost(req.headers.host));
-          const origin = remote
-            ? mcpCallbackOrigin(provesSameOrigin(req) ? requestOrigin(req) : null,
-              [CLOUD_HOME?.publicOrigin, hostedWorkspaceConfiguration()?.tenant.origin, savedCustomDomain(), FALLBACK_PUBLIC_URL])
-            : null;
-          const started = await mcpOAuth.start(name!, url, undefined, owner, { remote, origin });
-          if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-            mcpOAuth.revokeOwner(owner);
-            return json(res, 401, { error: "Your session ended. Start a new sign-in." });
-          }
-          return json(res, 200, { auth: started });
-        }
-      } catch (error) {
-        if (error instanceof McpSignInError) return json(res, error.status, { error: error.message });
-        if (error instanceof McpOAuthError) return json(res, 400, { error: error.message, code: error.code });
-        if (method === "POST" && !flowId) return json(res, 502, { error: error instanceof Error ? error.message : "Sign-in could not start." });
-        throw error;
-      }
-      return json(res, 405, { error: "method not allowed" });
-    }
-
-    if (method === "POST" && path === "/api/mcp/servers") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      if (mcpConfigBusy) return json(res, 409, { error: "MCP servers are already being updated." });
-      mcpConfigBusy = true;
-      try {
-        const body = await readBody(req);
-        const name = typeof body?.name === "string" ? body.name : "";
-        const current = cfg.mcpServers ?? {};
-        if (Object.hasOwn(current, name)) return json(res, 409, { error: "An MCP server with that name already exists." });
-        if (Object.keys(current).length >= MAX_MCP_SERVERS) {
-          return json(res, 400, { error: `You can add at most ${MAX_MCP_SERVERS} MCP servers.` });
-        }
-        const parsed = parseMcpServerMutation(name, mcpServerBody(body));
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        const refusal = mcpPolicyRefusal(name, parsed.server);
-        if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
-        persistMcpServers({ ...current, [name]: parsed.server });
-        return json(res, 201, mcpServerResponse());
-      } finally {
-        mcpConfigBusy = false;
-      }
-    }
-
-    // Paste-to-add: the {"mcpServers": {...}} block every other agent tool
-    // writes. Same rules as POST: disabled until explicitly enabled.
-    if (method === "POST" && path === "/api/mcp/servers/import") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      if (mcpConfigBusy) return json(res, 409, { error: "MCP servers are already being updated." });
-      mcpConfigBusy = true;
-      try {
-        const body = await readBody(req);
-        const text = typeof body?.json === "string" ? body.json : "";
-        if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-          return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
-        }
-        if (!text.trim()) return json(res, 400, { error: "Paste the JSON block first." });
-        const parsed = parseMcpServersImport(text);
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        const current = cfg.mcpServers ?? {};
-        const names = Object.keys(parsed.servers);
-        const taken = names.filter((name) => Object.hasOwn(current, name));
-        if (taken.length) {
-          return json(res, 409, { error: `Already added: ${taken.join(", ")}. Remove or rename ${taken.length === 1 ? "it" : "them"} first.` });
-        }
-        if (Object.keys(current).length + names.length > MAX_MCP_SERVERS) {
-          return json(res, 400, { error: `You can add at most ${MAX_MCP_SERVERS} MCP servers.` });
-        }
-        const refused = names.filter(name => mcpPolicyRefusal(name, parsed.servers[name] as object));
-        if (refused.length) return json(res, 403, { error: `${mcpPolicyRefusal(refused[0]!, parsed.servers[refused[0]!] as object)} Not approved: ${refused.join(", ")}.`, code: "managed_policy" });
-        persistMcpServers({ ...current, ...parsed.servers });
-        return json(res, 201, { ...mcpServerResponse(), added: names });
-      } finally {
-        mcpConfigBusy = false;
-      }
-    }
-
-    const mcpServerRoute = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})$/.exec(path);
-    if (mcpServerRoute && ["PUT", "PATCH", "DELETE"].includes(method)) {
-      if (method !== "DELETE" && !String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      if (mcpConfigBusy) return json(res, 409, { error: "MCP servers are already being updated." });
-      mcpConfigBusy = true;
-      try {
-        const name = mcpServerRoute[1];
-        const current = cfg.mcpServers ?? {};
-        if (!Object.hasOwn(current, name)) return json(res, 404, { error: "MCP server not found." });
-        if (method === "DELETE") {
-          const next = { ...current };
-          delete next[name];
-          persistMcpServers(next);
-          mcpOAuth.forget(name);
-          return json(res, 200, mcpServerResponse());
-        }
-
-        const existing = parseStoredMcpServer(name, current[name]);
-        if (!existing.ok) return json(res, 400, { error: existing.error });
-        const body = await readBody(req);
-        if (method === "PATCH") {
-          if (!body || typeof body !== "object" || Array.isArray(body)
-            || Object.keys(body).length !== 1 || typeof body.enabled !== "boolean") {
-            return json(res, 400, { error: "Only an enabled boolean can be changed here." });
-          }
-          persistMcpServers({ ...current, [name]: { ...existing.server, enabled: body.enabled } });
-          return json(res, 200, mcpServerResponse());
-        }
-
-        const parsed = parseMcpServerMutation(name, body, existing.server);
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        const refusal = mcpPolicyRefusal(name, parsed.server);
-        if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
-        persistMcpServers({ ...current, [name]: parsed.server });
-        // a sign-in belongs to one address; a token never follows the entry elsewhere
-        const before = isRemoteMcpServer(existing.server) ? existing.server.url : null;
-        const after = isRemoteMcpServer(parsed.server) ? parsed.server.url : null;
-        // ...and to one sign-in app with its scopes; a new secret for the same app keeps it
-        const app = (server: typeof existing.server) => isRemoteMcpServer(server) && server.oauth
-          ? JSON.stringify([server.oauth.clientId, server.oauth.scopes ?? []]) : null;
-        // Any other edit (a new header, say) drops a sign-in request that has
-        // no tokens behind it; the next Test asks again if it still applies.
-        if (before !== after || app(existing.server) !== app(parsed.server)
-          || (after && mcpOAuth.authState(name, after) === "needs-sign-in")) mcpOAuth.forget(name);
-        return json(res, 200, mcpServerResponse());
-      } finally {
-        mcpConfigBusy = false;
-      }
     }
 
     // ── voice ─────────────────────────────────────────────────────────
