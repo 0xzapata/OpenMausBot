@@ -775,11 +775,11 @@ export function attachmentImageUrl(path: string): string | null {
   return `/api/attachments/${encodeURIComponent(name)}`;
 }
 
-/** Voice notes park as bare generated .mp3 filenames; anything else stays
- * out of an <audio> src rather than 404ing on a private path. */
+/** Voice notes park as bare generated .mp3 or .wav filenames; anything else
+ * stays out of an <audio> src rather than 404ing on a private path. */
 export function attachmentAudioUrl(path: string): string | null {
   const name = attachmentBasename(path);
-  if (!/^[A-Za-z0-9-]+\.mp3$/.test(name)) return null;
+  if (!/^[A-Za-z0-9-]+\.(?:mp3|wav)$/.test(name)) return null;
   return `/api/attachments/${encodeURIComponent(name)}`;
 }
 

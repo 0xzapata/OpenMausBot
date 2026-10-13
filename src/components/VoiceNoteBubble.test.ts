@@ -34,9 +34,16 @@ describe("VoiceNoteBubble", () => {
     expect(markup).toContain('preload="metadata"');
   });
 
-  it("renders no player for a path that is not a parked generated mp3", () => {
+  it("plays a WAV note from the built-in Mac voices", () => {
     const markup = renderToStaticMarkup(
-      createElement(VoiceNoteBubble, { attachment: { ...note, path: "/attachments/note.wav" } }),
+      createElement(VoiceNoteBubble, { attachment: { ...note, path: "/attachments/note.wav", mime: "audio/wav" } }),
+    );
+    expect(markup).toContain('src="/api/attachments/note.wav"');
+  });
+
+  it("renders no player for a path that is not a parked generated mp3 or wav", () => {
+    const markup = renderToStaticMarkup(
+      createElement(VoiceNoteBubble, { attachment: { ...note, path: "/attachments/note.ogg" } }),
     );
     expect(markup).toBe("");
   });
