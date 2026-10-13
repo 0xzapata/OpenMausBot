@@ -73,6 +73,26 @@ describe("additive portable team backups", () => {
     expect(() => parseTeamBackup(invalid)).toThrow();
   });
 
+  it("carries a bot's never-use-the-helper switch through backup and import, so its restored notes and chats stay off the helper", () => {
+    const { store, routines, chief, scout } = fixture();
+    store.patchBot(chief.id, { helperModel: false });
+    store.patchBot(scout.id, { helperModel: true });
+    // part of the bot's saved record: a restart reads it back
+    expect(new Store(selection).bot(chief.id)).toHaveProperty("helperModel", false);
+    const backup = createTeamBackup(store, routines.listRoutines(), "Private bots");
+    // only "never" travels: allowed is what a bot without the field already is
+    expect(backup.bots.find((bot) => bot.key === chief.id)).toHaveProperty("helperModel", false);
+    expect(backup.bots.find((bot) => bot.key === scout.id)).not.toHaveProperty("helperModel");
+    // through the file, as an import reads it
+    const restored = importTeamBackup(store, routines, parseTeamBackup(JSON.parse(JSON.stringify(backup))), selection());
+    expect(restored.bots.find((bot) => bot.name === "Mira 2")).toHaveProperty("helperModel", false);
+    expect(restored.bots.find((bot) => bot.name === "Scout 2")).not.toHaveProperty("helperModel");
+    // a file cannot switch the helper on for a bot, only off
+    const forged = structuredClone(backup) as unknown as { bots: Array<{ helperModel?: unknown }> };
+    forged.bots[0]!.helperModel = true;
+    expect(() => parseTeamBackup(forged)).toThrow();
+  });
+
   it("carries each bot's memory, topic notes and daily logs, scrubbed on the way out and private on the way in", () => {
     const { store, routines, chief, scout } = fixture();
     const now = new Date(2026, 8, 10, 12);
