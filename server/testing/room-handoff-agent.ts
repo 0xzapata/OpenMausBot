@@ -2,6 +2,7 @@
 // The plan and evidence are confined to the isolated launcher's temporary home.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { waitForExit } from "./cleanup.ts";
 
@@ -212,6 +213,9 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
         screen = await screenCalls(mounted.computer, plan.screenCalls);
       }
       if (typeof plan.progress === "string") progress?.(plan.progress);
+      // `writeFiles`: files the turn writes in its working folder, as a bot
+      // saves its report or screenshots ({ name: content }, names relative).
+      for (const [name, content] of Object.entries((plan.writeFiles ?? {}) as Record<string, string>)) writeFileSync(join(process.cwd(), name), content);
       if (plan.readyFile) writeFileSync(plan.readyFile, "ready");
       if (plan.gateFile && !existsSync(plan.gateFile)) await new Promise<void>(resolve => {
         gateTimer = setInterval(() => {
