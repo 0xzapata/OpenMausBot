@@ -298,6 +298,20 @@ It does **not** expose approval grants, deletion, arbitrary settings, credential
 
 See [MCP server setup and tool reference](docs/mcp-server.md).
 
+### Run it from scripts and CI
+
+The `openmausbot` command drives a running workspace without a screen: set a
+team up from a file, give a bot one job, wait until it and every teammate it
+asked are done, and export what they made. One JSON document with `--json`,
+and exit codes a script can branch on.
+
+```sh
+openmausbot team apply team.yaml
+openmausbot run "Room Lead" "Rehearse the launch of https://example.com" --export ./out
+```
+
+See [Run OpenMausBot from scripts and CI](docs/headless-cli.md).
+
 ## Quick start
 
 **Released builds ([latest release](https://github.com/milind-soni/OpenMausBot/releases/latest)):** the harness server is embedded, so no separate server setup is required.
