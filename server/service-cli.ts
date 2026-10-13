@@ -9,7 +9,7 @@ import {
   currentUser, launchdPlist, sentinelCommand, sentinelLaunchdPlist, sentinelServicePlan, sentinelSystemdService, sentinelSystemdTimer,
   servicePlan, shippedSentinelCli, systemdUnit, unstableInstallWarning,
 } from "./service-unit.ts";
-import { defaultSentinelOut } from "./sentinel/paths.ts";
+import { defaultSentinelOut, outRefusal } from "./sentinel/paths.ts";
 
 export interface ServiceInstallInput {
   action: "install" | "uninstall";
@@ -120,6 +120,13 @@ function runSentinelService(input: ServiceInstallInput, platform: NodeJS.Platfor
     for (const line of plan.deactivate) io.log(`  ${line}`);
     return 0;
   }
+  // the scan would refuse this folder on every run (XDG_STATE_HOME inside
+  // the data dir, a link into a repository); say so now, before writing
+  const refusal = outRefusal(out, input.dataDir);
+  if (refusal) {
+    io.error(refusal);
+    return 1;
+  }
   // the installed app's own CLI survives app updates and Node upgrades;
   // this process's node and script may be a checkout or an nvm install
   const shipped = shippedSentinelCli(platform, home, input.exists ?? existsSync, input.hasSentinel ?? bundleHasSentinel);
@@ -134,9 +141,16 @@ function runSentinelService(input: ServiceInstallInput, platform: NodeJS.Platfor
     ? { ...shipped, electronRunAsNode: true, dataDir: input.dataDir, home, out }
     : { node: input.node, script: input.script, dataDir: input.dataDir, home, out };
   io.log(shipped ? `runs the desktop app's own CLI: ${shipped.script}` : `runs ${input.script} with ${input.node}; if either moves (a new checkout, a Node upgrade), run this again`);
-  const rendered: Record<string, string> = platform === "darwin"
-    ? { [plan.files[0]!.name]: sentinelLaunchdPlist(spec) }
-    : { [plan.files[0]!.name]: sentinelSystemdService(spec), [plan.files[1]!.name]: sentinelSystemdTimer() };
+  let rendered: Record<string, string>;
+  try {
+    rendered = platform === "darwin"
+      ? { [plan.files[0]!.name]: sentinelLaunchdPlist(spec) }
+      : { [plan.files[0]!.name]: sentinelSystemdService(spec), [plan.files[1]!.name]: sentinelSystemdTimer() };
+  } catch (error) {
+    // a path no service file can hold: nothing is written
+    io.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
   // Sentinel's folder, outside the data dir; launchd opens the log in it
   // itself and will not create the folder
   mkdirSync(out, { recursive: true, mode: 0o700 });

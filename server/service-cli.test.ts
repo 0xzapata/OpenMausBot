@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -79,6 +79,21 @@ describe("openmausbot service", () => {
     expect(runServiceCommand({ ...base, sentinelOut: undefined, platform: "win32", dataDir: "C:\\Users\\maus\\.openmausbot", home: "C:\\Users\\maus", env: {} }, io)).toBe(1);
     expect(err.join("\n")).toContain('schtasks /Create /SC MINUTE /MO 2 /TN "OpenMausBot Sentinel" /TR "\\"/usr/bin/node\\" \\"/usr/lib/node_modules/openmausbot/cli.js\\" \\"sentinel\\"');
     expect(err.join("\n")).toContain("\\\"--out\\\" \\\"C:\\Users\\maus\\AppData\\Local\\openmausbot-sentinel\\\"");
+  });
+
+  it("--sentinel refuses an output folder the scan itself would refuse, before writing anything", () => {
+    const dataDir = join(dir, "data");
+    mkdirSync(dataDir);
+    const base = { action: "install" as const, dataDir, port: 8799, sentinel: true, script: "/usr/lib/node_modules/openmausbot/cli.js", node: "/usr/bin/node", exists: () => false };
+    // XDG_STATE_HOME pointing into the data dir makes the default land there
+    expect(runServiceCommand({ ...base, platform: "linux", home: join(dir, "home"), env: { XDG_STATE_HOME: join(dataDir, "state") } }, io)).toBe(1);
+    expect(err.join("\n")).toContain("refusing to write issues inside the data dir");
+    expect(existsSync(join(dataDir, "state"))).toBe(false);
+    // a path no unit file can hold
+    err.length = 0;
+    expect(runServiceCommand({ ...base, platform: "linux", home: join(dir, "home"), sentinelOut: join(dir, "out"), dataDir: `${dataDir}\nExecStartPre=/bin/true` }, io)).toBe(1);
+    expect(err.join("\n")).toContain("line break or NUL");
+    expect(existsSync(join(dir, "out"))).toBe(false);
   });
 
   it("--sentinel prefers the installed app's own CLI over a checkout, which an update or Node upgrade would strand", () => {

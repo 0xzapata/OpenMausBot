@@ -1,8 +1,10 @@
 # Sentinel
 
 Sentinel is an opt-in health scanner for an OpenMausBot data dir. It reads the
-data dir, groups failures into issues, and writes those issues to its own
-folder. It never writes to the data dir. It is plain code with no model calls,
+data dir's databases and logs without modifying them, groups failures into
+issues, and writes those issues to its own folder outside the data dir (see
+[Privacy model](#privacy-model)). An `--out` inside the data dir is refused.
+It is plain code with no model calls,
 and it runs out of process on a schedule, so it keeps working after the app
 crashes. The code lives in [`server/sentinel/`](../server/sentinel/). Every
 input is explicit, so the same scan could later run inside the server.

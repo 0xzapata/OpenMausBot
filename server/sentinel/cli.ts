@@ -4,10 +4,10 @@
 // sources unchanged since the last one exits at once.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { checkSentinelInstall, type SentinelInstallCheck } from "../service-unit.ts";
-import { defaultSentinelOut, isInside } from "./paths.ts";
+import { defaultSentinelOut, outRefusal } from "./paths.ts";
 import { runScan, type ScanSummary } from "./scan.ts";
 
 export interface SentinelArgs {
@@ -60,24 +60,19 @@ export function parseSentinelArgs(argv: string[], env: NodeJS.ProcessEnv = proce
       else if (arg === "--help" || arg === "-h") args.help = true;
       else if (arg === "--check-install") args.checkInstall = true;
       else if (arg === "--queue-wait" || arg === "--cost") {
-        const number = Number(value());
-        if (!Number.isFinite(number) || number < 0) return { error: `${arg} takes a number of 0 or more`, json };
-        if (arg === "--queue-wait") args.queueWaitMs = number * 1000;
-        else args.costUsd = number;
+        // an unset shell variable is "", which Number() would read as 0
+        const operand = value();
+        const number = operand.trim() ? Number(operand) : NaN;
+        const scaled = arg === "--queue-wait" ? number * 1000 : number;
+        if (!Number.isFinite(scaled) || number < 0) return { error: `${arg} takes a number of 0 or more`, json };
+        if (arg === "--queue-wait") args.queueWaitMs = scaled;
+        else args.costUsd = scaled;
       } else return { error: `unknown argument "${arg}"; see openmausbot sentinel --help`, json };
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error), json };
     }
   }
   return { ...args, dataDir, out: out ?? defaultSentinelOut(dataDir, process.platform, homedir(), env) };
-}
-
-/** The nearest folder at or above `dir` holding a .git, if any. */
-function enclosingRepo(dir: string): string | null {
-  for (let current = dir; ; current = dirname(current)) {
-    if (existsSync(join(current, ".git"))) return current;
-    if (dirname(current) === current) return null;
-  }
 }
 
 /** Where --check-install looks; tests substitute it. */
@@ -93,7 +88,7 @@ const HOST: SentinelHost = { platform: process.platform, home: homedir(), exists
 export function describeInstallCheck(check: SentinelInstallCheck): string {
   switch (check.status) {
     case "ok": return `sentinel schedule ok: ${check.unit} runs ${check.script} with ${check.node}`;
-    case "stale": return `stale install: ${check.unit} points at ${check.missing.join(" and ")}, which no longer exists; rerun openmausbot service install --sentinel`;
+    case "stale": return `stale install: ${check.unit} needs ${check.missing.join(" and ")}, which no longer exists; rerun openmausbot service install --sentinel`;
     case "not_installed": return `no Sentinel schedule at ${check.unit}; install one with openmausbot service install --sentinel`;
     case "unreadable": return `could not read the command in ${check.unit}; rerun openmausbot service install --sentinel`;
     default: return "no Sentinel schedule to check on this platform; openmausbot service install --sentinel prints the Task Scheduler command for Windows";
@@ -125,11 +120,8 @@ export function runSentinelCli(argv: string[], io: { log(line: string): void; er
     isDir = statSync(args.dataDir).isDirectory();
   } catch {}
   if (!isDir) return fail(`no OpenMausBot data dir at ${args.dataDir}; pass --data-dir with the folder that holds messages.db`, args.json);
-  // issues name bots and threads; they must never end up committed
-  const repo = enclosingRepo(args.out);
-  if (repo) return fail(`refusing to write issues inside the git repository at ${repo}; pass --out with a folder outside it`, args.json);
-  // Sentinel only reads the data dir; its own files live elsewhere
-  if (isInside(args.out, args.dataDir)) return fail(`refusing to write issues inside the data dir ${args.dataDir}; leave out --out for the default, or pass a folder outside it`, args.json);
+  const refusal = outRefusal(args.out, args.dataDir);
+  if (refusal) return fail(refusal, args.json);
   let summary: ScanSummary;
   try {
     summary = runScan({ dataDir: args.dataDir, out: args.out, queueWaitMs: args.queueWaitMs, costUsd: args.costUsd });

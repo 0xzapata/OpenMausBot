@@ -32,6 +32,11 @@ export function normalizeSignatureText(text: string): string {
 
 const MAX_TITLE = 160;
 
+/** A title as kept: never longer than MAX_TITLE, whatever was put in front. */
+export function capTitle(title: string): string {
+  return title.slice(0, MAX_TITLE);
+}
+
 // What a failed shell command amounts to, whatever it printed. Its output
 // names the files and commands of the work in hand, so two runs of the same
 // mistake rarely print the same text; the class and exit code still match.
@@ -62,7 +67,7 @@ export function failureKey(tool: string, text: string): { key: string; title: st
     return { key: `${code ?? ""}\n${errorClass ?? ""}`, title };
   }
   const normalized = normalizeSignatureText(text);
-  return { key: normalized, title: normalized.slice(0, MAX_TITLE) || "failed" };
+  return { key: normalized, title: capTitle(normalized) || "failed" };
 }
 
 export function signatureOf(kind: string, ...parts: Array<string | undefined>): string {

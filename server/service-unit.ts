@@ -191,6 +191,7 @@ function shellArg(value: string): string {
 }
 
 export function sentinelLaunchdPlist(spec: SentinelServiceSpec): string {
+  for (const [label, value] of [["home", spec.home], ["node", spec.node], ["script", spec.script], ["data dir", spec.dataDir], ["output", spec.out]] as const) assertUnitValue(label, value);
   const args = sentinelCommand(spec).map((arg) => `\t\t<string>${xml(arg)}</string>`).join("\n");
   const log = xml(join(spec.out, "sentinel.log"));
   return [
@@ -228,7 +229,22 @@ export function sentinelLaunchdPlist(spec: SentinelServiceSpec): string {
   ].join("\n");
 }
 
+/** Refuse a path no unit file can carry: a line break or NUL would end the
+ * line it sits on and start another one of its own. */
+function assertUnitValue(label: string, value: string): void {
+  if (/[\r\n\0]/.test(value)) throw new Error(`the ${label} path contains a line break or NUL, which a service file cannot hold; choose a path without one`);
+}
+
+/** One systemd value, quoted: backslashes and quotes escaped (so a trailing
+ * backslash is no line continuation) and % doubled so it is no specifier.
+ * ExecStart also expands $VARIABLES, so a command line doubles $ too. */
+function systemdQuoted(value: string, command = false): string {
+  const escaped = value.replace(/[\\"]/g, "\\$&").replace(/%/g, "%%");
+  return `"${command ? escaped.replace(/\$/g, "$$$$") : escaped}"`;
+}
+
 export function sentinelSystemdService(spec: SentinelServiceSpec): string {
+  for (const [label, value] of [["home", spec.home], ["node", spec.node], ["script", spec.script], ["data dir", spec.dataDir], ["output", spec.out]] as const) assertUnitValue(label, value);
   return [
     "# Written by `openmausbot service install --sentinel`. Started by its timer.",
     "[Unit]",
@@ -236,9 +252,9 @@ export function sentinelSystemdService(spec: SentinelServiceSpec): string {
     "",
     "[Service]",
     "Type=oneshot",
-    `Environment=HOME=${spec.home}`,
+    `Environment=${systemdQuoted(`HOME=${spec.home}`)}`,
     ...(spec.electronRunAsNode ? ["Environment=ELECTRON_RUN_AS_NODE=1"] : []),
-    `ExecStart=${sentinelCommand(spec).map(quoteSystemd).join(" ")}`,
+    `ExecStart=${sentinelCommand(spec).map((arg) => (/^[\w@+=:,./-]+$/.test(arg) ? arg : systemdQuoted(arg, true))).join(" ")}`,
     "Nice=10",
     "IOSchedulingClass=idle",
     "",
@@ -295,7 +311,9 @@ export function sentinelUnitCommand(text: string): { node: string; script: strin
   } else {
     const exec = /^ExecStart=(.*)$/m.exec(text);
     if (!exec) return null;
-    args = [...exec[1]!.matchAll(/"((?:[^"\\]|\\.)*)"|(\S+)/g)].map((m) => (m[1] !== undefined ? m[1].replace(/\\(.)/g, "$1") : m[2]!));
+    // undo systemdQuoted: escapes, then the doubled % and $
+    args = [...exec[1]!.matchAll(/"((?:[^"\\]|\\.)*)"|(\S+)/g)]
+      .map((m) => (m[1] !== undefined ? m[1].replace(/\\(.)/g, "$1").replace(/%%/g, "%").replace(/\$\$/g, "$") : m[2]!));
   }
   const at = args.indexOf("sentinel");
   return at >= 2 ? { node: args[0]!, script: args[at - 1]! } : null;
@@ -322,7 +340,8 @@ export function checkSentinelInstall(platform: NodeJS.Platform, home: string, fs
     command = null;
   }
   if (!command) return { status: "unreadable", unit };
-  const missing = [command.node, command.script].filter((path) => !fs.exists(path));
+  // on Linux the timer is what runs the service: without it, nothing does
+  const missing = [command.node, command.script, ...plan.files.slice(1).map((file) => file.installed)].filter((path) => !fs.exists(path));
   return missing.length ? { status: "stale", unit, ...command, missing } : { status: "ok", unit, ...command };
 }
 

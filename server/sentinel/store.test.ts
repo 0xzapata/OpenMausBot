@@ -68,5 +68,16 @@ describe("sentinel issue store", () => {
     writeFileSync(join(dir, ISSUES_FILE), `{broken\n${JSON.stringify({ sig: "cost:1", kind: "cost", count: 1 })}\n`);
     expect(readState(dir)).toEqual(emptyState());
     expect([...readIssues(dir).keys()]).toEqual(["cost:1"]);
+    // the right version with a field of the wrong shape would fail every scan
+    for (const damaged of [{ seen: null }, { logs: [] }, { seen: [] }, { lastScanAt: "x" }, { fingerprint: 1 }]) {
+      writeFileSync(join(dir, STATE_FILE), JSON.stringify({ ...emptyState(), lastScanAt: 5, ...damaged }));
+      expect(readState(dir)).toEqual(emptyState());
+    }
+    for (const damaged of ["null", "[]", "1"]) {
+      writeFileSync(join(dir, STATE_FILE), damaged);
+      expect(readState(dir)).toEqual(emptyState());
+    }
+    writeFileSync(join(dir, STATE_FILE), JSON.stringify({ ...emptyState(), lastScanAt: 5 }));
+    expect(readState(dir).lastScanAt).toBe(5);
   });
 });

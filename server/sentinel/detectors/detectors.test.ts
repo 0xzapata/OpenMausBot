@@ -106,6 +106,15 @@ describe("sentinel detectors", () => {
     expect(retryLoop.detect([...records, tool("m7", "mcp__agents__send", "no layer 7", { turnId: "x" })], config)[0]!.occurrence).toBe(observations[0]!.occurrence);
   });
 
+  it("keeps every title within 160 characters, prefix included", () => {
+    const long = "x".repeat(400);
+    const loop = retryLoop.detect([1, 2, 3].map((n) => tool(`m${n}`, "mcp__agents__send", long, { turnId: "x" })), config);
+    expect(loop[0]!.title).toMatch(/^repeated in one turn: x+$/);
+    expect(loop[0]!.title.length).toBe(160);
+    const [stop] = turnStop.detect([turn("e1", { ok: false, stopReason: long })], config);
+    expect(stop!.title.length).toBe(160);
+  });
+
   it("runs every detector", () => {
     expect(DETECTORS.map((d) => d.name)).toEqual(["tool_error", "turn_stop", "queue_wait", "cost", "retry_loop"]);
   });

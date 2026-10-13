@@ -33,10 +33,18 @@ export function emptyState(): SentinelState {
   return { version: STATE_VERSION, lastScanAt: null, fingerprint: null, logs: {}, seen: {} };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function readState(out: string): SentinelState {
   try {
     const parsed = JSON.parse(readFileSync(join(out, STATE_FILE), "utf8")) as Partial<SentinelState>;
-    if (parsed?.version !== STATE_VERSION) return emptyState();
+    if (!isRecord(parsed) || parsed.version !== STATE_VERSION) return emptyState();
+    // a damaged field starts the whole state over rather than failing every scan
+    if (!isRecord(parsed.logs) || !isRecord(parsed.seen)) return emptyState();
+    if (typeof parsed.lastScanAt !== "number" && parsed.lastScanAt !== null) return emptyState();
+    if (typeof parsed.fingerprint !== "string" && parsed.fingerprint !== null) return emptyState();
     return { ...emptyState(), ...parsed };
   } catch {
     return emptyState();

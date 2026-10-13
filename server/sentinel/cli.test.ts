@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,6 +75,13 @@ describe("openmausbot sentinel", () => {
     expect(runSentinelCli(["--data-dir", fixture.dataDir, "--out", join(fixture.dataDir, "sentinel")], io)).toBe(1);
     expect(lines.join("\n")).toContain("refusing to write issues inside the data dir");
     expect(runSentinelCli(["--bogus"], io)).toBe(2);
+    // a link into a repository is judged by where it leads ("junction" makes
+    // a directory link without privileges on Windows)
+    const link = join(dir, "link-to-repo");
+    symlinkSync(dirname(fileURLToPath(import.meta.url)), link, "junction");
+    lines.length = 0;
+    expect(runSentinelCli(["--data-dir", fixture.dataDir, "--out", join(link, "out")], io)).toBe(1);
+    expect(lines.join("\n")).toContain("refusing to write issues inside the git repository");
   });
 
   it("parses its options and defaults the output to a folder of its own, outside the data", () => {
@@ -83,6 +90,11 @@ describe("openmausbot sentinel", () => {
     expect("out" in parsed && parsed.out.includes(join("data", "omb"))).toBe(false);
     expect(parseSentinelArgs(["--queue-wait", "600", "--cost", "2.5", "--json"], { OMB_DATA_DIR: "/d" })).toMatchObject({ queueWaitMs: 600_000, costUsd: 2.5, json: true });
     expect(parseSentinelArgs(["--cost", "-1"], {})).toEqual({ error: expect.stringContaining("--cost"), json: false });
+    // an unset variable in a script is an error, not a threshold of 0
+    expect(parseSentinelArgs(["--cost", ""], {})).toEqual({ error: expect.stringContaining("--cost"), json: false });
+    expect(parseSentinelArgs(["--queue-wait", "  "], {})).toEqual({ error: expect.stringContaining("--queue-wait"), json: false });
+    // finite seconds whose milliseconds are not
+    expect(parseSentinelArgs(["--queue-wait", "1e308"], {})).toEqual({ error: expect.stringContaining("--queue-wait"), json: false });
     expect(parseSentinelArgs(["--out"], {})).toEqual({ error: "--out needs a value", json: false });
   });
 
@@ -120,7 +132,7 @@ describe("openmausbot sentinel", () => {
     const plist = `<key>ProgramArguments</key>\n<array>\n<string>/old/node</string>\n<string>/Applications/OpenMausBot.app/Contents/Resources/server/openmausbot.js</string>\n<string>sentinel</string>\n</array>`;
     const host = (present: string[]) => ({ platform: "darwin" as const, home: "/Users/maus", exists: (path: string) => path === unit || present.includes(path), read: () => plist });
     expect(runSentinelCli(["--check-install"], io, {}, host(["/Applications/OpenMausBot.app/Contents/Resources/server/openmausbot.js"]))).toBe(1);
-    expect(lines.join("\n")).toContain("stale install: /Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist points at /old/node, which no longer exists; rerun openmausbot service install --sentinel");
+    expect(lines.join("\n")).toContain("stale install: /Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist needs /old/node, which no longer exists; rerun openmausbot service install --sentinel");
     lines.length = 0;
     expect(runSentinelCli(["--check-install", "--json"], io, {}, host(["/old/node", "/Applications/OpenMausBot.app/Contents/Resources/server/openmausbot.js"]))).toBe(0);
     expect(JSON.parse(lines[0]!)).toMatchObject({ ok: true, status: "ok", node: "/old/node" });

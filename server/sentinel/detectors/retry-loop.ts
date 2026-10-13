@@ -1,7 +1,7 @@
 // retry_loop: the same tool failing the same way again and again inside one
 // turn — the bot retrying something that will not start working. Counted
 // over the whole scan window, so a loop that spans two scans still adds up.
-import { failureKey, signatureOf, toolOrigin } from "../normalize.ts";
+import { capTitle, failureKey, signatureOf, toolOrigin } from "../normalize.ts";
 import type { Detector, Observation, SentinelRecord } from "../types.ts";
 
 type ToolRecord = Extract<SentinelRecord, { type: "tool" }>;
@@ -27,7 +27,7 @@ export const retryLoop: Detector = {
       observations.push({
         kind: "retry_loop",
         signature,
-        title: `repeated in one turn: ${title}`,
+        title: capTitle(`repeated in one turn: ${title}`),
         origin,
         severity: origin === "harness" ? "high" : "medium",
         tool: last.tool,

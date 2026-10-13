@@ -113,6 +113,20 @@ describe("service units", () => {
     expect(sentinelLaunchdPlist({ ...spec, electronRunAsNode: false })).not.toContain("ELECTRON_RUN_AS_NODE");
   });
 
+  it("keeps every path one quoted value in the systemd unit, and refuses one no unit can hold", () => {
+    const spec = { node: "/usr/bin/node", script: "/srv/omb/cli.js", dataDir: "/home/maus/100% $HOME\\", home: "/home/my maus", out: "/home/my maus/.local/state/openmausbot-sentinel" };
+    const unit = sentinelSystemdService(spec);
+    expect(unit).toContain('Environment="HOME=/home/my maus"');
+    // % is no specifier, $ no variable, and the trailing backslash no continuation
+    expect(unit).toContain('"/home/maus/100%% $$HOME\\\\"');
+    expect(sentinelUnitCommand(unit)).toEqual({ node: "/usr/bin/node", script: "/srv/omb/cli.js" });
+    expect(sentinelUnitCommand(sentinelSystemdService({ ...spec, script: "/srv/100% $x/cli.js" }))?.script).toBe("/srv/100% $x/cli.js");
+    for (const bad of ["/home/maus\n[Service]\nExecStartPre=/bin/true", "/home/maus\r", "/home/\0maus"]) {
+      expect(() => sentinelSystemdService({ ...spec, home: bad })).toThrow(/line break or NUL/);
+      expect(() => sentinelLaunchdPlist({ ...spec, dataDir: bad })).toThrow(/line break or NUL/);
+    }
+  });
+
   it("reads back what an installed unit runs, and calls it stale when either path is gone", () => {
     const spec = { node: "/opt/node & co/bin/node", script: "/srv/omb/cli.js", dataDir: "/home/maus/My Data", home: "/home/maus", out: "/home/maus/.local/state/openmausbot-sentinel" };
     expect(sentinelUnitCommand(sentinelLaunchdPlist(spec))).toEqual({ node: "/opt/node & co/bin/node", script: "/srv/omb/cli.js" });
@@ -120,10 +134,13 @@ describe("service units", () => {
     expect(sentinelUnitCommand("[Service]\nType=oneshot\n")).toBeNull();
 
     const unit = "/home/maus/.config/systemd/user/openmausbot-sentinel.service";
+    const timer = "/home/maus/.config/systemd/user/openmausbot-sentinel.timer";
     const files = new Map([[unit, sentinelSystemdService(spec)]]);
     const fs = (present: string[]) => ({ exists: (path: string) => files.has(path) || present.includes(path), read: (path: string) => files.get(path)! });
-    expect(checkSentinelInstall("linux", "/home/maus", fs([spec.node, spec.script]))).toMatchObject({ status: "ok", unit });
-    expect(checkSentinelInstall("linux", "/home/maus", fs([spec.node]))).toMatchObject({ status: "stale", missing: ["/srv/omb/cli.js"] });
+    expect(checkSentinelInstall("linux", "/home/maus", fs([spec.node, spec.script, timer]))).toMatchObject({ status: "ok", unit });
+    expect(checkSentinelInstall("linux", "/home/maus", fs([spec.node, timer]))).toMatchObject({ status: "stale", missing: ["/srv/omb/cli.js"] });
+    // the service without its timer never runs
+    expect(checkSentinelInstall("linux", "/home/maus", fs([spec.node, spec.script]))).toMatchObject({ status: "stale", missing: [timer] });
     expect(checkSentinelInstall("darwin", "/Users/maus", fs([]))).toEqual({ status: "not_installed", unit: "/Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist" });
     files.set(unit, "garbage");
     expect(checkSentinelInstall("linux", "/home/maus", fs([]))).toEqual({ status: "unreadable", unit });

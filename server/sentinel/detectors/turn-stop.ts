@@ -3,7 +3,7 @@
 // budget), and the notice the harness writes when it stops a room turn that
 // ran past its limit ("… exceeded 20 minutes and was stopped"). Stops the
 // person asked for are not failures.
-import { HARNESS_NOTICE, normalizeSignatureText, signatureOf } from "../normalize.ts";
+import { capTitle, HARNESS_NOTICE, normalizeSignatureText, signatureOf } from "../normalize.ts";
 import type { Detector, Observation, Origin } from "../types.ts";
 
 export const TURN_TIMEOUT_NOTICE = /\bexceeded \d+ minutes?\b/i;
@@ -24,7 +24,7 @@ export const turnStop: Detector = {
         observations.push({
           kind: "turn_timeout",
           signature: signatureOf("turn_timeout", text),
-          title: text.slice(0, 160),
+          title: capTitle(text),
           origin: "harness",
           severity: "medium",
           threadId: record.threadId,
@@ -45,7 +45,7 @@ export const turnStop: Detector = {
       observations.push({
         kind,
         signature: signatureOf(kind, reason),
-        title: record.ok ? `turn stopped on its budget: ${reason}` : `turn failed: ${reason}`,
+        title: capTitle(record.ok ? `turn stopped on its budget: ${reason}` : `turn failed: ${reason}`),
         origin,
         severity: origin === "harness" && !record.ok ? "high" : "medium",
         threadId: record.threadId,
