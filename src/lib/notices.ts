@@ -21,11 +21,16 @@ export const CLOUD_TRIAL_NOTICE = "cloud-trial-notice";
 export const CLOUD_NOTICE = "cloud-notice";
 /** "Star us on GitHub", asked once. */
 export const STAR_NOTICE = "github-star-dismissed";
+/** MausBot's Product Hunt launch (October 2026), asked once and only while
+ * the launch is news: after PRODUCT_HUNT_UNTIL nobody sees it. */
+export const PRODUCT_HUNT_NOTICE = "product-hunt-launch-2026-10";
+export const PRODUCT_HUNT_URL = "https://www.producthunt.com/products/mausbot";
+export const PRODUCT_HUNT_UNTIL = Date.UTC(2026, 10, 1);
 
-export type NoticeId = typeof CLOUD_INTRO | typeof CLOUD_TRIAL_NOTICE | typeof CLOUD_NOTICE | typeof STAR_NOTICE;
+export type NoticeId = typeof PRODUCT_HUNT_NOTICE | typeof CLOUD_INTRO | typeof CLOUD_TRIAL_NOTICE | typeof CLOUD_NOTICE | typeof STAR_NOTICE;
 
-/** The order they are asked in. */
-export const NOTICES: readonly NoticeId[] = [CLOUD_INTRO, CLOUD_TRIAL_NOTICE, CLOUD_NOTICE, STAR_NOTICE];
+/** The order they are asked in: the launch first, while it lasts. */
+export const NOTICES: readonly NoticeId[] = [PRODUCT_HUNT_NOTICE, CLOUD_INTRO, CLOUD_TRIAL_NOTICE, CLOUD_NOTICE, STAR_NOTICE];
 
 /** Whether each notice is due now: null while that is not known yet. */
 export type NoticeFacts = Record<NoticeId, boolean | null>;
