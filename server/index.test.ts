@@ -12785,7 +12785,26 @@ describe("bot memory API", () => {
         { headers: { authorization: `Bearer ${await mintTestCapability(BASE, bot.id, privateThreadId)}` } },
       );
       expect(roomRead.status).toBe(200);
-      expect(await roomRead.json()).toMatchObject({ text: "The deploy checklist was signed off" });
+      expect(await roomRead.json()).toMatchObject({ text: "The deploy checklist was signed off", crossed: false });
+
+      // one room's hit read from another room is not a private-chat disclosure
+      const otherRoom = (await api("POST", "/api/groups", { name: "Launch", memberIds: [bot.id] })).body.group;
+      try {
+        const otherThreadId = otherRoom.threadId as string;
+        const fromOther = ((await (await searchFrom(otherThreadId, "deploy checklist signed")).json()) as { hits: Array<Record<string, unknown>> }).hits;
+        expect(fromOther[0]).toMatchObject({ threadId: roomThreadId, crossed: false });
+        const across = await fetch(
+          `${BASE}/api/internal/session-read?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(otherThreadId)}&threadId=${encodeURIComponent(roomThreadId)}&messageId=${encodeURIComponent(String(fromOther[0]!.messageId))}`,
+          { headers: { authorization: `Bearer ${await mintTestCapability(BASE, bot.id, otherThreadId)}` } },
+        );
+        expect(across.status).toBe(200);
+        expect(await across.json()).toMatchObject({ crossed: false });
+        const otherDump = await api("GET", `/api/threads/${otherThreadId}/export?format=json`);
+        expect(((otherDump.body.messages ?? []) as Array<{ kind?: string; tool?: { name?: string } }>)
+          .filter((message) => message.kind === "activity" && /recalled/.test(message.tool?.name ?? ""))).toEqual([]);
+      } finally {
+        await api("DELETE", `/api/groups/${otherRoom.id}`);
+      }
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`);
       await api("DELETE", `/api/groups/${room.id}`);

@@ -19330,11 +19330,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!threadId || !messageId) return json(res, 400, { error: "threadId and messageId are required" });
         // Exactly the threads session_search reads, rooms included: a hit
         // it returned is always one this can open.
-        const own = recallThreads(from, internalCapability).ownThreads.includes(threadId);
+        const recall = recallThreads(from, internalCapability);
+        const own = recall.ownThreads.includes(threadId);
         const message = own ? readMessageText(threadId, messageId) : null;
         if (!message) return json(res, 404, { error: "no such message in your conversations" });
         const readInRoom = Boolean(store.groupByThread(fromThreadId));
-        const readCrossed = readInRoom && threadId !== fromThreadId;
+        // Same rule as session_search: only a private chat or task read into
+        // a room is a disclosure; another room's lines were said in the open.
+        const readCrossed = readInRoom && threadId !== fromThreadId && !recall.roomByThread.has(threadId);
         if (readCrossed) discloseRecall(from, fromThreadId, [threadId]);
         return json(res, 200, {
           ...message,
