@@ -23,7 +23,6 @@ import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker } from "./room-context.ts";
 import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
 import { createRoomSessions } from "./host/room-sessions.ts";
-import { roomSessionsEnabled } from "./room-context-settings.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -7771,6 +7770,7 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
   // happens to the model: a chip before, and after it the latest digests go
   // back in as plain-text context so the compacted session still knows what
   // its earlier turns DID (the CLI's own summary keeps what was said).
+  if (name === "PreCompact" || (name === "SessionStart" && payload.source === "compact")) roomSessions.distrust(threadId, capability.botId);
   if (name === "PreCompact") {
     const trigger = payload.trigger === "manual" ? "manual" : "auto";
     chip(`context compaction started (${trigger})`);
@@ -10074,7 +10074,7 @@ const handoffs = new Handoffs({
   replies: (threadId, turnId) => store.activePath(threadId)
     .filter((m) => m.role === "bot" && m.kind === "text" && !m.from && m.turnId === turnId).map((m) => m.id),
 });
-const roomSessions = createRoomSessions({ enabled: () => roomSessionsEnabled(cfg.context), messagesFor: (threadId) => store.messagesFor(threadId) });
+const roomSessions = createRoomSessions({ settings: () => cfg.context, messagesFor: (threadId) => store.messagesFor(threadId) });
 
 
 // A bot going in circles — the same call with the same arguments, over and
@@ -14640,13 +14640,13 @@ async function runClaimedGroupMemberTurn(
       });
       broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
     }
-    // Today's call, unless this member's own session is known to hold the
-    // room already: then that session, and only the lines it has not been
-    // handed (host/room-sessions.ts; `context.roomSessions`, off by default).
+    // Today's call, unless this member's own session is known to hold the room: then that session and only the lines it lacks (host/room-sessions.ts).
     const clock = turnClockLine(Date.now(), hostTimeZone());
+    const roomToolScope = toolScopeForTurn(readyBot.id);
     const roomSession = roomSessions.dispatch({
-      threadId, botId: readyBot.id, claimId: internalGeneration, instance, guestConfined: roomGuestConfined, reset: Boolean(roomReset),
-      config: [roomSystem.stable, cwd, readyBot.modelSelection, turnApprovalMode, readyBot.toolScope, integrations],
+      threadId, botId: readyBot.id, claimId: internalGeneration, instance, guestConfined: roomGuestConfined, reset: Boolean(roomReset), hooks: Boolean(integrations.hooks),
+      context: () => ({ ...roomMemberContexts.forThread(threadId)?.[readyBot.id], compactAt: instance.driverKind === "claudeAgent" ? Number(autoCompactWindow({ ...process.env, ...cfg.instances?.[instance.instanceId]?.environment })) : undefined }),
+      config: [roomSystem.stable, cwd, readyBot.modelSelection, turnApprovalMode, roomToolScope, claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp(), integrations],
       window: roomWindow, tail: roomTail, wrap: (body) => withTurnClock(clock, withRecalled(roomRecalled, body)),
     });
     guardTurnDispatch(instance.adapter.sendTurn({
@@ -14657,7 +14657,7 @@ async function runClaimedGroupMemberTurn(
         ...(roomRecalled ? { recalled: roomRecalled } : {}),
         images: turnImages,
         approvalMode: turnApprovalMode,
-        toolScope: toolScopeForTurn(readyBot.id),
+        toolScope: roomToolScope,
         ...(roomGuestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
         system: roomSystem.text,
         systemStable: roomSystem.stable,

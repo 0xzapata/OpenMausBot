@@ -16,7 +16,9 @@ export const roomContextSettings = {
   /** A room member whose provider session is known to hold the room's
    * earlier lines is sent only the lines it has not been handed, instead of
    * the room's recent transcript again. Off unless true; see
-   * roomSessionsEnabled for the environment override. Claude Code only. */
+   * roomSessionsEnabled for the environment override. Claude Code only, on
+   * turns that mount the engine-hook channel (server/host/room-sessions.ts
+   * says when a turn is covered and when a session is no longer trusted). */
   roomSessions: z.boolean().optional(),
 };
 

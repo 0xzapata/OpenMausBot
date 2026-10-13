@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { RuntimeEvent } from "../contracts.ts";
 import { sessionIdlePolicy } from "../drivers/session-idle.ts";
@@ -32,11 +32,16 @@ function room(options: { threadId?: string; shared?: { messages: Map<string, Mes
   const threads = options.shared?.messages ?? new Map<string, Message[]>();
   if (!threads.has(threadId)) threads.set(threadId, []);
   const messages = threads.get(threadId)!;
+  /** How a teammate's report reads now, when it no longer reads as it did. */
+  const reports = new Map<string, string>();
   const transcript = createRoomTranscript({
     store: { messagesFor: (id) => threads.get(id) ?? [] },
-    teammateReportContext: (requestId) => `[report ${requestId}]`,
+    teammateReportContext: (requestId) => reports.get(requestId) ?? `[report ${requestId}]`,
   });
-  const create = () => createRoomSessions({ enabled: () => state.enabled, messagesFor: (id) => threads.get(id) ?? [], now: () => state.now });
+  // `env: {}`: the developer's own OMB_ROOM_SESSIONS must not decide a test.
+  const create = () => createRoomSessions({
+    settings: () => ({ roomSessions: state.enabled }), env: {}, messagesFor: (id) => threads.get(id) ?? [], now: () => state.now,
+  });
   let sessions = options.shared?.sessions ?? create();
   const claude = engine("claude");
   let serial = 0;
@@ -55,7 +60,7 @@ function room(options: { threadId?: string; shared?: { messages: Map<string, Mes
   const dispatch = (botId: string, overrides: Partial<RoomDispatchInput> = {}): Turn => {
     serial += 1;
     const input: RoomDispatchInput = {
-      threadId, botId, claimId: `claim-${serial}`, instance: claude, guestConfined: false, reset: false,
+      threadId, botId, claimId: `claim-${serial}`, instance: claude, guestConfined: false, reset: false, hooks: true,
       config: ["You are a bot in the room.", "/work", { instanceId: "claude", model: "opus" }],
       window: transcript.window(threadId, "Omkar", undefined, botId), tail: tailFor(botId), wrap: wrapWith(),
       ...overrides,
@@ -71,11 +76,19 @@ function room(options: { threadId?: string; shared?: { messages: Map<string, Mes
   /** The provider runs the turn in `session`, says `reply` (after any working
    * `notes`), and completes. The store marks the final message afterwards, as
    * the fold does. */
-  const finish = (turn: Turn, session: string, play: { reply?: string; notes?: string[]; ok?: boolean; rebuilt?: boolean; during?: () => void } = {}) => {
+  const finish = (turn: Turn, session: string, play: {
+    reply?: string; notes?: string[]; ok?: boolean; rebuilt?: boolean; during?: () => void;
+    /** something that happens once the session is announced, before the provider's first output */
+    before?: () => void;
+    /** the driver announces another session after the provider already acted on the prompt */
+    switchTo?: string;
+  } = {}) => {
     bind(turn);
     emit(turn, { type: "turn.started" });
     emit(turn, { type: "session.started", sessionId: session, ...(play.rebuilt ? { rebuilt: true } : {}) });
+    play.before?.();
     emit(turn, output);
+    if (play.switchTo) emit(turn, { type: "session.started", sessionId: play.switchTo });
     play.during?.();
     for (const note of play.notes ?? []) botSays(turn.botId, note, { turnId: turn.turnId });
     const reply = play.reply === undefined ? undefined : botSays(turn.botId, play.reply, { turnId: turn.turnId });
@@ -99,7 +112,7 @@ function room(options: { threadId?: string; shared?: { messages: Map<string, Mes
     return text.slice(CLOCK.length + 2, text.length - turn.input.tail.length);
   };
   return {
-    threadId, state, messages, threads, transcript, claude, add, say, botSays, dispatch, emit, bind, finish, run, full, body, output,
+    threadId, state, messages, threads, transcript, reports, claude, add, say, botSays, dispatch, emit, bind, finish, run, full, body, output,
     get sessions() { return sessions; },
     /** The server restarted: a new tracker over the same stored thread. */
     restart() { sessions = create(); },
@@ -117,6 +130,28 @@ describe("renderRoomDelta", () => {
       .toBe(`${NOTE}\n(The first message is older than messages you have already seen.)\nWriter: mid-turn\nOmkar: next`);
     expect(renderRoomDelta([{ id: "a", text: "A: 1", earlier: true }, { id: "b", text: "B: 2", earlier: true }, { id: "c", text: "C: 3" }]))
       .toContain("\n(The first 2 messages are older than messages you have already seen.)\nA: 1\nB: 2\nC: 3");
+  });
+
+  it("puts lines that changed since they were shown first, and says they replace what was shown", () => {
+    expect(renderRoomDelta([{ id: "a", text: "[What Editor did: files]", updated: true }, { id: "b", text: "Omkar: next" }]))
+      .toBe(`${NOTE}\n(The first message was shown to you before and has changed since: this copy replaces what you were shown.)\n[What Editor did: files]\nOmkar: next`);
+    // window order in, grouped out: changed, then older unseen, then new
+    expect(renderRoomDelta([
+      { id: "a", text: "Writer: mid-turn", earlier: true },
+      { id: "b", text: "[digest one]", updated: true },
+      { id: "c", text: "[digest two]", updated: true },
+      { id: "d", text: "Omkar: next" },
+    ])).toBe([
+      NOTE,
+      "(The first 2 messages were shown to you before and have changed since: these copies replace what you were shown.)",
+      "[digest one]",
+      "[digest two]",
+      "(The next message is older than messages you have already seen.)",
+      "Writer: mid-turn",
+      "Omkar: next",
+    ].join("\n"));
+    expect(renderRoomDelta([{ id: "a", text: "A: 1", updated: true }, { id: "b", text: "B: 2", earlier: true }, { id: "c", text: "C: 3", earlier: true }]))
+      .toContain("\n(The next 2 messages are older than messages you have already seen.)\nB: 2\nC: 3");
   });
 
   it("says so when nothing is new", () => {
@@ -174,6 +209,7 @@ describe("room sessions: turns that are not managed", () => {
       { name: "an engine that does not promise strict resume", mode: "legacy", input: { instance: engine("claude", "claudeAgent", false) } },
       { name: "a strict-resume engine that is not covered", mode: "legacy", input: { instance: engine("codex", "codex", true) } },
       { name: "a guest-confined turn", mode: "legacy", input: { guestConfined: true } },
+      { name: "a turn without the engine-hook channel", mode: "legacy", input: { hooks: false } },
       { name: "a member's first managed turn", mode: "start" },
     ];
     for (const scenario of cases) {
@@ -553,8 +589,11 @@ describe("room sessions: when a record is not trusted", () => {
     const r = ready();
     const cyclic: unknown[] = ["persona"];
     cyclic.push(cyclic);
-    const turn = r.dispatch("editor", { config: cyclic });
-    expect(turn.result).toStrictEqual({ mode: "legacy", text: r.full(turn), send: {} });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const turn = r.dispatch("editor", { config: cyclic });
+      expect(turn.result).toStrictEqual({ mode: "legacy", text: r.full(turn), send: {} });
+    } finally { warn.mockRestore(); }
   });
 
   it("starts again on another instance, and on a reloaded instance of the same name", () => {
@@ -756,13 +795,442 @@ describe("room sessions: the session a turn really ran in", () => {
   });
 });
 
+describe("room sessions: a native compaction", () => {
+  const ready = () => {
+    const r = room();
+    r.say("Cut the intro.");
+    r.run("editor", "S1");
+    r.say("Trim the middle.");
+    return r;
+  };
+
+  it("is not managed without the engine-hook channel, which is how a compaction is heard of", () => {
+    const r = ready();
+    const turn = r.dispatch("editor", { hooks: false });
+    expect(turn.result).toStrictEqual({ mode: "legacy", text: r.full(turn), send: {} });
+    r.finish(turn, "S1", { reply: "Trimmed." });
+    r.say("Tighten the outro.");
+    // and the record it had is gone: nothing said whether that turn compacted
+    expect(r.dispatch("editor").result.mode).toBe("start");
+  });
+
+  it("drops the record of a member whose session the engine compacted between its turns", () => {
+    const r = ready();
+    r.sessions.distrust("room", "editor");
+    const turn = r.dispatch("editor");
+    expect(turn.result).toStrictEqual({ mode: "start", text: r.full(turn), send: {} });
+  });
+
+  it("does not trust a turn again that compacted while it ran, though it completed ok", () => {
+    const r = ready();
+    const turn = r.dispatch("editor");
+    expect(turn.result.mode).toBe("resume");
+    // PreCompact and SessionStart(compact) arrive mid-turn; the session now
+    // holds the CLI's summary in place of the room's lines.
+    r.finish(turn, "S1", { reply: "Trimmed.", during: () => { r.sessions.distrust("room", "editor"); r.sessions.distrust("room", "editor"); } });
+    r.say("Tighten the outro.");
+    const next = r.dispatch("editor");
+    expect(next.result).toStrictEqual({ mode: "start", text: r.full(next), send: {} });
+    expect(next.result.text).toContain("Omkar: Cut the intro.");
+    // The start is recorded like any other: the turn after it is a delta again.
+    r.finish(next, "S1", { reply: "Tightened." });
+    r.say("Export it.");
+    expect(r.body(r.dispatch("editor"))).toBe(`${NOTE}\nOmkar: Export it.`);
+  });
+
+  it("does not trust a start that compacted while it ran", () => {
+    const r = room();
+    r.say("Cut the intro.");
+    const turn = r.dispatch("editor");
+    r.finish(turn, "S1", { reply: "Done.", during: () => { r.sessions.distrust("room", "editor"); } });
+    r.say("Trim the middle.");
+    expect(r.dispatch("editor").result.mode).toBe("start");
+  });
+
+  it("does not trust a turn whose session compacted before its first output either", () => {
+    // The CLI compacts as the turn begins, before the model says anything:
+    // nothing the turn goes on to do may put a record back.
+    const start = room();
+    start.say("Cut the intro.");
+    start.finish(start.dispatch("editor"), "S1", { reply: "Done.", before: () => { start.sessions.distrust("room", "editor"); } });
+    expect(start.sessions.tracked()).toMatchObject({ records: 0, flights: 0 });
+    start.say("Trim the middle.");
+    const afterStart = start.dispatch("editor");
+    expect(afterStart.result).toStrictEqual({ mode: "start", text: start.full(afterStart), send: {} });
+
+    const resumed = ready();
+    const turn = resumed.dispatch("editor");
+    expect(turn.result.mode).toBe("resume");
+    resumed.finish(turn, "S1", { reply: "Trimmed.", before: () => { resumed.sessions.distrust("room", "editor"); } });
+    expect(resumed.sessions.tracked()).toMatchObject({ records: 0, flights: 0 });
+    resumed.say("Tighten the outro.");
+    expect(resumed.dispatch("editor").result.mode).toBe("start");
+
+    // a session the driver rebuilt from the whole turn, and that then compacted
+    const rebuilt = ready();
+    rebuilt.finish(rebuilt.dispatch("editor"), "S2", { rebuilt: true, reply: "Trimmed.", before: () => { rebuilt.sessions.distrust("room", "editor"); } });
+    rebuilt.say("Tighten the outro.");
+    expect(rebuilt.dispatch("editor").result.mode).toBe("start");
+  });
+
+  it("leaves another member's record, and another thread's, alone", () => {
+    const r = ready();
+    r.sessions.distrust("room", "writer");
+    r.sessions.distrust("another-thread", "editor");
+    expect(r.dispatch("editor").result.mode).toBe("resume");
+  });
+
+  it("starts instead of resuming a session that is close to the engine's own compaction", () => {
+    // 80% of the threshold the engine compacts at (Claude's --autocompact window).
+    const near = ready();
+    expect(near.dispatch("editor", { context: () => ({ tokens: 160_000, window: 1_000_000, compactAt: 200_000 }) }).result.mode).toBe("start");
+    const below = ready();
+    expect(below.dispatch("editor", { context: () => ({ tokens: 159_999, window: 1_000_000, compactAt: 200_000 }) }).result.mode).toBe("resume");
+    // "auto" and "off" give no number: the model's window is the only bound known.
+    for (const compactAt of [Number.NaN, 0, undefined]) {
+      const auto = ready();
+      expect(auto.dispatch("editor", { context: () => ({ tokens: 160_000, window: 200_000, compactAt }) }).result.mode, String(compactAt)).toBe("start");
+      const under = ready();
+      expect(under.dispatch("editor", { context: () => ({ tokens: 159_999, window: 200_000, compactAt }) }).result.mode, String(compactAt)).toBe("resume");
+    }
+    // No reading at all (the turn reported no usage): nothing to compare.
+    expect(ready().dispatch("editor", { context: () => ({ compactAt: 200_000 }) }).result.mode).toBe("resume");
+    expect(ready().dispatch("editor", { context: () => undefined }).result.mode).toBe("resume");
+    expect(ready().dispatch("editor", { context: undefined }).result.mode).toBe("resume");
+    // The reading is not even asked for unless a resume is otherwise possible.
+    const asked = vi.fn(() => ({ tokens: 1, window: 200_000 }));
+    const first = room();
+    first.say("Cut the intro.");
+    first.dispatch("editor", { context: asked });
+    ready().dispatch("editor", { context: asked, hooks: false });
+    ready().dispatch("editor", { context: asked, reset: true });
+    expect(asked).not.toHaveBeenCalled();
+    ready().dispatch("editor", { context: asked });
+    expect(asked).toHaveBeenCalledOnce();
+  });
+});
+
+describe("room sessions: a line that changed after it was shown", () => {
+  const digestOf = (reply: string, files?: string[]) => ({
+    turnId: "t", botId: "writer", threadId: "room", at: 1, durationMs: 100, tools: [], memory: [], reply, hookCoverage: "none" as const,
+    ...(files ? { files: { changed: files, added: [], deleted: [] } } : {}),
+  });
+
+  it("sends a digest row again once it gained its file list, marked as replacing what was shown", () => {
+    const r = room();
+    r.say("Cut the intro.");
+    const digest = r.add({ role: "bot", kind: "digest", text: "[digest]", from: { botId: "writer", name: "Writer", color: "blue" }, digest: digestOf("Cut.") });
+    r.say("Editor, check it.");
+    const first = r.run("editor", "S1");
+    expect(first.result.text).toContain("[What Writer did in an earlier turn: · no tool activity observed in this turn · reply: Cut.]");
+    // The folder diff lands up to three seconds after the row was appended.
+    r.messages.find((m) => m.id === digest)!.digest = digestOf("Cut.", ["intro.mov"]);
+    r.say("And now?");
+    const second = r.dispatch("editor");
+    expect(second.result.mode).toBe("resume");
+    expect(r.body(second)).toBe([
+      NOTE,
+      "(The first message was shown to you before and has changed since: this copy replaces what you were shown.)",
+      "[What Writer did in an earlier turn: · no tool activity observed in this turn · files: changed intro.mov · reply: Cut.]",
+      "Omkar: And now?",
+    ].join("\n"));
+    // Once: the session holds the row as it reads now.
+    r.finish(second, "S1", { reply: "Checked." });
+    r.say("Again?");
+    expect(r.body(r.dispatch("editor"))).toBe(`${NOTE}\nOmkar: Again?`);
+  });
+
+  it("sends a teammate's report again when it no longer reads as it did", () => {
+    const r = room();
+    r.say("Writer, name the film.");
+    r.add({ role: "bot", kind: "activity", roomRequest: { id: "request-1", phase: "result" } });
+    r.say("Editor, use it.");
+    const first = r.run("editor", "S1");
+    expect(first.result.text).toContain("[report request-1]");
+    // The row holds no text of its own: it is rendered from the request's
+    // state, and that state moved (settled again, renamed, withheld).
+    r.reports.set("request-1", "[Teammate result withheld or no longer retained]");
+    r.say("And now?");
+    const second = r.dispatch("editor");
+    expect(r.body(second)).toBe([
+      NOTE,
+      "(The first message was shown to you before and has changed since: this copy replaces what you were shown.)",
+      "[Teammate result withheld or no longer retained]",
+      "Omkar: And now?",
+    ].join("\n"));
+    r.finish(second, "S1", { reply: "Noted." });
+    r.say("Again?");
+    expect(r.body(r.dispatch("editor"))).toBe(`${NOTE}\nOmkar: Again?`);
+  });
+
+  it("does not send an unchanged row again, however often the window is read", () => {
+    const r = room();
+    r.say("Writer, name the film.");
+    r.add({ role: "bot", kind: "activity", roomRequest: { id: "request-1", phase: "result" } });
+    r.add({ role: "bot", kind: "digest", text: "[digest]", from: { botId: "writer", name: "Writer", color: "blue" }, digest: digestOf("Named.") });
+    r.say("Editor, use it.");
+    r.run("editor", "S1");
+    for (let n = 0; n < 5; n++) {
+      r.say(`Step ${n}.`);
+      const turn = r.dispatch("editor");
+      expect(r.body(turn), `step ${n}`).toBe(`${NOTE}\nOmkar: Step ${n}.`);
+      r.finish(turn, "S1", { reply: `Did ${n}.` });
+    }
+  });
+
+  it("sends a changed line a delta showed, not only one a start showed", () => {
+    const r = room();
+    r.say("Start.");
+    r.run("editor", "S1");
+    const said = r.say("Use the blue grade.");
+    const delta = r.run("editor", "S1");
+    expect(r.body(delta)).toBe(`${NOTE}\nOmkar: Use the blue grade.`);
+    r.messages.find((m) => m.id === said)!.text = "Use the teal grade.";
+    r.say("Go.");
+    expect(r.body(r.dispatch("editor"))).toBe(
+      `${NOTE}\n(The first message was shown to you before and has changed since: this copy replaces what you were shown.)\nOmkar: Use the teal grade.\nOmkar: Go.`);
+  });
+
+  it("sends a changed line together with one that arrived while its turn ran, each under its own sentence", () => {
+    const r = room();
+    const first = r.say("Use the blue grade.");
+    r.run("editor", "S1");
+    r.say("Go.");
+    r.run("editor", "S1", { reply: "Graded.", during: () => { r.botSays("writer", "Deploy is green.", { peerPost: {} }); } });
+    r.messages.find((m) => m.id === first)!.text = "Use the teal grade.";
+    r.say("Next.");
+    const lines = r.body(r.dispatch("editor")).split("\n");
+    expect(lines.slice(0, 4)).toEqual([
+      NOTE,
+      "(The first message was shown to you before and has changed since: this copy replaces what you were shown.)",
+      "Omkar: Use the teal grade.",
+      "(The next message is older than messages you have already seen.)",
+    ]);
+    expect(lines[4]).toMatch(/^\[Posted by @Writer/);
+    expect(lines.slice(5)).toEqual(["Writer: Deploy is green.", "Omkar: Next."]);
+  });
+
+  it("takes a member's own reply as it reads when it first appears, and sends it if it changes after that", () => {
+    const r = room();
+    r.say("Say it out loud.");
+    const first = r.dispatch("editor");
+    const reply = r.finish(first, "S1", { reply: "Here is the note." })!;
+    // the voice note's transcript is added to the reply as the turn settles
+    r.messages.find((m) => m.id === reply)!.text = "Here is the note.\n\nGood morning, team.";
+    r.say("Thanks.");
+    const second = r.dispatch("editor");
+    // its own words are not offered back
+    expect(r.body(second)).toBe(`${NOTE}\nOmkar: Thanks.`);
+    r.finish(second, "S1", { reply: "Welcome." });
+    // edited later, by something other than the session
+    r.messages.find((m) => m.id === reply)!.text = "Here is the note.\n\n[transcript removed]";
+    r.say("And now?");
+    expect(r.body(r.dispatch("editor"))).toBe([
+      NOTE,
+      "(The first message was shown to you before and has changed since: this copy replaces what you were shown.)",
+      "Editor: Here is the note.\n\n[transcript removed]",
+      "Omkar: And now?",
+    ].join("\n"));
+  });
+
+  it("sends the latest line again once it reads with its attachment tag, as the window shows it from then on", () => {
+    const r = room();
+    const latest = r.say('Use this frame <attached-image path="/tmp/frame.png" />');
+    // the turn that carries the image natively reads the line without the tag
+    const window = r.transcript.window("room", "Omkar", [{ messageId: latest, text: "Use this frame" }], "editor");
+    const first = r.dispatch("editor", { window });
+    expect(first.result.text).toContain("Omkar: Use this frame\n");
+    r.finish(first, "S1", { reply: "Used." });
+    r.say("And the next one?");
+    expect(r.body(r.dispatch("editor"))).toBe([
+      NOTE,
+      "(The first message was shown to you before and has changed since: this copy replaces what you were shown.)",
+      'Omkar: Use this frame <attached-image path="/tmp/frame.png" />',
+      "Omkar: And the next one?",
+    ].join("\n"));
+  });
+
+  it("re-reads nothing of a line that changed after it scrolled out of the window", () => {
+    const r = room();
+    const old = r.say("Use the blue grade.");
+    r.run("editor", "S1");
+    for (let n = 0; n < GROUP_CONTEXT_MESSAGES - 1; n++) r.say(`Line ${n}.`);
+    r.messages.find((m) => m.id === old)!.text = "Use the teal grade.";
+    const turn = r.dispatch("editor");
+    expect(turn.result.mode).toBe("resume");
+    // not in today's window, so not part of what a turn carries, here or on main
+    expect(turn.result.text).not.toContain("grade");
+  });
+});
+
+describe("room sessions: the session a turn ended in", () => {
+  it("does not trust a record when the driver announced another session after the provider had acted", () => {
+    const r = room();
+    r.say("Cut the intro.");
+    r.run("editor", "S1");
+    r.say("Trim the middle.");
+    const turn = r.dispatch("editor");
+    expect(turn.result.send.resumeCursor).toBe("S1");
+    // accepted in S1, then relaunched into S2: what S2 holds is unknown, and
+    // the replies that follow were written there, not in S1
+    r.finish(turn, "S1", { reply: "Trimmed.", switchTo: "S2" });
+    r.say("Tighten the outro.");
+    const next = r.dispatch("editor");
+    expect(next.result).toStrictEqual({ mode: "start", text: r.full(next), send: {} });
+  });
+
+  it("does not trust a start that ended in another session than the one it was accepted in", () => {
+    const r = room();
+    r.say("Cut the intro.");
+    r.finish(r.dispatch("editor"), "S1", { reply: "Done.", switchTo: "S2" });
+    r.say("Trim the middle.");
+    expect(r.dispatch("editor").result.mode).toBe("start");
+  });
+
+  it("does not trust a resumed turn whose session was never announced", () => {
+    const r = room();
+    r.say("Cut the intro.");
+    r.run("editor", "S1");
+    r.say("Trim the middle.");
+    const turn = r.dispatch("editor");
+    expect(turn.result.mode).toBe("resume");
+    r.bind(turn);
+    r.emit(turn, r.output);
+    r.botSays("editor", "Trimmed.", { turnId: turn.turnId, turnTerminal: true });
+    r.emit(turn, { type: "turn.completed", ok: true });
+    r.say("Tighten the outro.");
+    expect(r.dispatch("editor").result.mode).toBe("start");
+  });
+
+  it("still trusts a turn that re-announced its own session", () => {
+    const r = room();
+    r.say("Cut the intro.");
+    r.run("editor", "S1");
+    r.say("Trim the middle.");
+    r.finish(r.dispatch("editor"), "S1", { reply: "Trimmed.", switchTo: "S1" });
+    r.say("Tighten the outro.");
+    expect(r.dispatch("editor").result.send.resumeCursor).toBe("S1");
+  });
+});
+
+describe("room sessions: what it keeps, and that it cannot fail a turn", () => {
+  it("keeps nothing while the setting is off, and drops what it held when it is switched off", () => {
+    const first = room({ threadId: "thread-1" });
+    const second = room({ threadId: "thread-2", shared: { messages: first.threads, sessions: first.sessions } });
+    first.say("One.");
+    first.run("editor", "T1");
+    second.say("Two.");
+    second.run("writer", "T2");
+    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 0, speakers: 2 });
+    expect(first.sessions.tracked().lines).toBeGreaterThan(0);
+    first.state.enabled = false;
+    // one turn anywhere sees the setting off, and everything is let go
+    second.say("More.");
+    const off = second.dispatch("writer");
+    expect(off.result.mode).toBe("legacy");
+    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 0, speakers: 0, lines: 0 });
+    second.finish(off, "T2", { reply: "Ok." });
+    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 0, speakers: 0, lines: 0 });
+    first.state.enabled = true;
+    first.say("More for one.");
+    expect(first.dispatch("editor").result.mode).toBe("start");
+  });
+
+  it("fingerprints nothing while the setting is off", () => {
+    const r = room();
+    r.state.enabled = false;
+    r.say("Cut the intro.");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // A structure JSON cannot take would throw if it were read.
+      const cyclic: unknown[] = [];
+      cyclic.push(cyclic);
+      const turn = r.dispatch("editor", { config: cyclic });
+      expect(turn.result).toStrictEqual({ mode: "legacy", text: r.full(turn), send: {} });
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it("lets go of records, speakers and abandoned turns once they are older than a session lives", () => {
+    const first = room({ threadId: "thread-1" });
+    const second = room({ threadId: "thread-2", shared: { messages: first.threads, sessions: first.sessions } });
+    const third = room({ threadId: "thread-3", shared: { messages: first.threads, sessions: first.sessions } });
+    first.say("One.");
+    first.run("editor", "T1");
+    // a turn on another thread that is never seen to end, in a room nobody returns to
+    second.say("Two.");
+    const abandoned = second.dispatch("writer");
+    second.bind(abandoned);
+    second.emit(abandoned, { type: "session.started", sessionId: "T2" });
+    second.emit(abandoned, second.output);
+    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 1, speakers: 2 });
+
+    // Ten quiet minutes later, a turn somewhere else: the settled record and
+    // both speakers are past their life. The turn still running is not.
+    first.state.now += IDLE_MS + 1;
+    third.say("Three.");
+    third.run("scout", "T3");
+    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 1, speakers: 1 });
+
+    // A day on, the turn that never ended is given up with its record.
+    first.state.now += 24 * 60 * 60_000 + 1;
+    third.say("Three again.");
+    const later = third.dispatch("scout");
+    expect(later.result.mode).toBe("start");
+    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 1, speakers: 1, lines: 0 });
+  });
+
+  it("remembers how no more lines read than a window holds, however long the room runs", () => {
+    const r = room();
+    r.say("Start.");
+    r.run("editor", "S1", { notes: ["Looking.", "Still looking."] });
+    let most = 0;
+    for (let turn = 0; turn < 100; turn++) {
+      for (let n = 0; n < 4; n++) r.say(`Line ${turn}.${n}.`);
+      const next = r.dispatch("editor");
+      expect(next.result.mode).toBe("resume");
+      r.finish(next, "S1", { notes: ["Looking.", "Still looking."], reply: `Did ${turn}.` });
+      most = Math.max(most, r.sessions.tracked().lines);
+    }
+    // the window's lines, and the three the last turn wrote itself
+    expect(most).toBeLessThanOrEqual(GROUP_CONTEXT_MESSAGES + 3);
+    expect(most).toBeGreaterThan(GROUP_CONTEXT_MESSAGES / 2);
+  });
+
+  it("answers with today's call if anything in it throws, and drops the member's record", () => {
+    const r = room();
+    r.say("Cut the intro.");
+    r.run("editor", "S1");
+    r.say("Trim the middle.");
+    const window = r.transcript.window("room", "Omkar", undefined, "editor");
+    const broken = { ...window, get order(): string[] { throw new Error("a bug in the module's own bookkeeping"); } };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const turn = r.dispatch("editor", { window: broken });
+      expect(turn.result).toStrictEqual({ mode: "legacy", text: r.full(turn), send: {} });
+      expect(warn).toHaveBeenCalledOnce();
+      // the room's own reset still goes out with the fallback
+      const withReset = r.dispatch("editor", { window: broken, reset: true });
+      expect(withReset.result).toStrictEqual({ mode: "legacy", text: r.full(withReset), send: { sessionReset: true } });
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
+    expect(r.sessions.tracked()).toMatchObject({ records: 0, flights: 0 });
+    // and the next turn is an ordinary start
+    expect(r.dispatch("editor").result.mode).toBe("start");
+  });
+});
+
 // A seeded model of a room on one Claude instance and one other: members
-// speak in any order, lines arrive between and during turns, turns end well,
-// badly or not at all, and the driver refuses a resume now and then. The
-// model keeps, per native session, every line that session was shown. Whatever
-// the interleaving: every line of the window a turn was built from is in the
-// text sent or already in the session that runs the turn (the invariant in
-// the module header), and no accepted turn shows a session a line twice.
+// speak in any order, lines arrive and are edited between and during turns,
+// turns end well, badly or not at all, the driver refuses a resume now and
+// then, a warm process ends without the harness seeing it, a turn ends in
+// another session than the one that accepted it, and the engine compacts a
+// session mid-turn. The model keeps, per native session, every line that
+// session was shown, by a tag that changes when the line's text does.
+// Whatever the interleaving: every line of the window a turn was built from,
+// as it reads now, is in the text sent or already in the session that runs
+// the turn (the invariant in the module header), and no accepted turn shows
+// a session a line twice.
 describe("room sessions: randomized rooms", () => {
   function prng(seed: number) {
     let state = seed >>> 0;
@@ -792,20 +1260,32 @@ describe("room sessions: randomized rooms", () => {
         else if (kind < 0.8) r.botSays(pick(members), `posts ${tag}`, { peerPost: {} });
         else r.add({ role: "bot", kind: "activity", roomRequest: { id: tag, phase: "result" } });
       };
+      /** A recent line of the person's reads differently from now on: a new tag. */
+      const edit = () => {
+        const recent = r.messages.slice(-12).filter((m) => m.role === "user" && m.kind === "text");
+        if (recent.length) pick(recent).text = `says <L${line++}> (edited)`;
+      };
       /** what each native session has been shown */
       const held = new Map<string, Set<string>>();
       /** the driver's one warm process per thread and instance: whose, and which session */
       const warm = new Map<string, { botId: string; session: string }>();
+      /** instances whose warm process ended without the harness being told */
+      const endedUnseen = new Set<string>();
       let sessionSerial = 0;
       let deltas = 0;
       let starts = 0;
+      let fromDisk = 0;
+      let updates = 0;
 
       for (let step = 0; step < 400; step++) {
         for (let n = Math.floor(random() * 4); n > 0; n--) append();
+        if (random() < 0.15) edit();
         // Ten quiet minutes: the drivers close their warm processes.
         if (random() < 0.03) { r.state.now += IDLE_MS + 1; warm.clear(); }
         const botId = pick(members);
         const instance = instanceOf[botId]!;
+        // A warm process crashes between turns; nothing tells the harness.
+        if (random() < 0.05 && warm.delete(instance.instanceId)) endedUnseen.add(instance.instanceId);
         const reset = random() < 0.05;
         const turn = r.dispatch(botId, { instance, reset });
         expect(turn.result.mode).not.toBe("legacy");
@@ -823,8 +1303,12 @@ describe("room sessions: randomized rooms", () => {
           session = `N${sessionSerial++}`;
         } else if (cursor !== undefined) {
           deltas += 1;
-          // Resume only where main would have gone on in this very process.
-          expect(slot, `step ${step}: a resume needs the member's own warm process`).toEqual({ botId, session: cursor });
+          // Resume only where main would have gone on in this very process,
+          // or where that process ended unseen: then the driver reopens the
+          // same session from disk, and it holds what it held.
+          if (slot) expect(slot, `step ${step}: a resume needs the member's own warm process`).toEqual({ botId, session: cursor });
+          else { expect(endedUnseen.has(instance.instanceId), `step ${step}: a resume with no process to go on in`).toBe(true); fromDisk += 1; }
+          if (turn.result.text.includes("changed since")) updates += 1;
           if (random() < 0.1) {
             // refused before the prompt: a new session from recoveryText
             session = `N${sessionSerial++}`;
@@ -854,23 +1338,42 @@ describe("room sessions: randomized rooms", () => {
           continue;
         }
         const ok = outcome >= 0.2;
+        // After the provider acted, the driver relaunches into another session
+        // and the turn ends there.
+        const switchTo = random() < 0.05 ? `N${sessionSerial++}` : undefined;
+        // The engine compacts the session while the turn runs, and says so.
+        const compacts = random() < 0.05;
         r.finish(turn, session, {
           ok, rebuilt, reply: `answers <L${line++}>`,
           notes: random() < 0.4 ? [`note <L${line++}>`] : [],
-          during: () => { for (let n = Math.floor(random() * 3); n > 0; n--) append(); },
+          ...(switchTo ? { switchTo } : {}),
+          during: () => {
+            for (let n = Math.floor(random() * 3); n > 0; n--) append();
+            if (random() < 0.1) edit();
+            if (compacts) r.sessions.distrust(r.threadId, botId);
+          },
         });
-        // The provider acted on the prompt either way: the session holds it,
-        // and what the member said itself.
-        const now = held.get(session) ?? new Set<string>();
-        for (const tag of shown) now.add(tag);
-        for (const m of r.messages) if (m.turnId === turn.turnId) for (const tag of sentinels(m.text ?? "")) now.add(tag);
-        held.set(session, now);
-        if (ok) warm.set(instance.instanceId, { botId, session });
+        // The provider acted on the prompt either way: the session that took
+        // it holds it, and the session the turn ended in holds what the
+        // member said itself.
+        const ended = switchTo ?? session;
+        const took = held.get(session) ?? new Set<string>();
+        for (const tag of shown) took.add(tag);
+        held.set(session, took);
+        const wrote = held.get(ended) ?? new Set<string>();
+        for (const m of r.messages) if (m.turnId === turn.turnId) for (const tag of sentinels(m.text ?? "")) wrote.add(tag);
+        held.set(ended, wrote);
+        // A compacted session holds a summary, none of the lines as they read.
+        if (compacts) held.set(ended, new Set());
+        endedUnseen.delete(instance.instanceId);
+        if (ok) warm.set(instance.instanceId, { botId, session: ended });
         else warm.delete(instance.instanceId);
       }
-      // the model exercised both shapes
+      // the model exercised every shape
       expect(deltas).toBeGreaterThan(20);
       expect(starts).toBeGreaterThan(20);
+      expect(fromDisk).toBeGreaterThan(0);
+      expect(updates).toBeGreaterThan(0);
     });
   }
 });
