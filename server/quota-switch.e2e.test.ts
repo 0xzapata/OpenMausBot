@@ -26,7 +26,7 @@ const jsonLines = (path: string): any[] => existsSync(path)
  * verification launcher's (scripts/control-omb.ts), the config is this
  * suite's. */
 async function withQuotaFixture(
-  options: { env?: Record<string, string> },
+  options: { env?: Record<string, string>; config?: Record<string, unknown> },
   check: (fixture: {
     api: (method: string, path: string, body?: unknown) => Promise<any>;
     control: (...args: string[]) => Promise<any>;
@@ -46,6 +46,7 @@ async function withQuotaFixture(
   const engine = (displayName: string, environment: Record<string, string>) =>
     ({ driver: "claudeAgent", displayName, config: { cli: FAKE_CLI }, environment });
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({
+    ...options.config,
     instances: {
       claude: engine(LIMITED, { FAKE_CLAUDE_MODE: "usage-limit" }),
       backup: engine(BACKUP, { FAKE_CLAUDE_MODE: "happy", FAKE_CLAUDE_PROMPTS: backupFile, FAKE_CLAUDE_TOOL_CALLS: "[]" }),
@@ -138,6 +139,8 @@ it("offers the working engine once, and on the person's answer switches this con
     expect(backupPrompts()).toHaveLength(0);
     const rootsBefore = readHandoffs(dataDir).filter((node) => node.threadId === threadId);
     expect(rootsBefore.map((node) => [node.status, node.outcome, node.executions])).toEqual([["failed", "provider_error", 1]]);
+    // The card names that root: the answer asks the runtime about the request that ran out, not about the thread.
+    expect(offer.card.quotaSwitch.rootId).toBe(rootsBefore[0]!.id);
 
     expect(await respond(threadId, { requestId: offer.card.requestId, behavior: "answer", message: BACKUP }))
       .toEqual({ status: 200, body: { ok: true, outcome: "answered" } });
@@ -151,7 +154,8 @@ it("offers the working engine once, and on the person's answer switches this con
     expect(JSON.stringify(backupPrompts()[0])).toContain(text);
     expect(after.findLast((message) => message.role === "bot" && message.kind === "text")).toMatchObject({ text: "hello from fake claude", turnSucceeded: true });
     expect(after.filter((message) => message.tool?.name === `notice: continuing on ${BACKUP} after hitting quota`)).toHaveLength(1);
-    expect(after.find((message) => message.id === offer.id).card).toMatchObject({ answered: "answer", answeredText: BACKUP });
+    // Settled only once the switch went through, inside the answer's own request: so who answered is on the card.
+    expect(after.find((message) => message.id === offer.id).card).toMatchObject({ answered: "answer", answeredText: BACKUP, answeredBy: { kind: "loopback" } });
     expect(after.filter((message) => message.card?.quotaSwitch)).toHaveLength(1);
     expect(after.filter((message) => message.tool?.name?.startsWith("error:"))).toHaveLength(1);
 
@@ -180,17 +184,22 @@ it("offers the working engine once, and on the person's answer switches this con
 }, 240_000);
 
 it.each([
-  { name: "Not now", message: "Not now" },
-  { name: "typed words that name no offered engine", message: "use whichever is fastest" },
-])("changes nothing on $name", async ({ message }) => {
+  { name: "Not now", behavior: "answer", message: "Not now", outcome: "answered" },
+  { name: "typed words that name no offered engine", behavior: "answer", message: "use whichever is fastest", outcome: "answered" },
+  // Where local services may only decline a card (hosted workspaces, a Cloud
+  // home, OMB_LOOPBACK_TRUST=service), a bot's own shell can read this card
+  // and post a decline: the engine's label on it must choose nothing.
+  { name: "a decline that carries the offered engine's label", behavior: "deny", message: BACKUP, outcome: "rejected" },
+  { name: "an allow that carries the offered engine's label", behavior: "allow", message: BACKUP, outcome: "rejected" },
+])("changes nothing on $name", async ({ behavior, message, outcome }) => {
   await withQuotaFixture({}, async ({ api, control, respond, backupPrompts, dataDir }) => {
     const text = "LEAVE_THIS_WHERE_IT_IS_7M";
     const { threadId, messages, state } = await meetTheLimit(api, control, text);
     await expect.poll(async () => (await messages()).filter((entry) => entry.card?.quotaSwitch).length, { timeout: 20_000 }).toBe(1);
     const offer = (await messages()).find((entry) => entry.card?.quotaSwitch);
 
-    expect(await respond(threadId, { requestId: offer.card.requestId, behavior: "answer", message }))
-      .toEqual({ status: 200, body: { ok: true, outcome: "answered" } });
+    expect(await respond(threadId, { requestId: offer.card.requestId, behavior, message }))
+      .toEqual({ status: 200, body: { ok: true, outcome } });
 
     const after = await messages();
     expect(after.find((entry) => entry.id === offer.id).card).toMatchObject({ answered: "answer", answeredText: "Not now" });
@@ -198,13 +207,21 @@ it.each([
     expect(after.some((entry) => entry.tool?.name?.startsWith("notice:"))).toBe(false);
     expect((await state()).tasks.find((task: any) => task.threadId === threadId)).toMatchObject({ busy: false });
     expect((await state()).modelSelection.instanceId).toBe("claude");
+    // Nothing was switched and nothing was sent again: asked once more, the settled
+    // card is refused, and the working engine was never run.
+    expect(await respond(threadId, { requestId: offer.card.requestId, behavior: "answer", message: BACKUP }))
+      .toEqual({ status: 409, body: { error: "this question has already been answered" } });
+    expect((await state()).tasks.find((task: any) => task.threadId === threadId).modelSelection?.instanceId ?? "claude").toBe("claude");
     expect(backupPrompts()).toHaveLength(0);
     expect(readHandoffs(dataDir).filter((node) => node.threadId === threadId).map((node) => node.status)).toEqual(["failed"]);
   });
 }, 240_000);
 
-it("raises no card when OMB_QUOTA_SWITCH=0 switches it off", async () => {
-  await withQuotaFixture({ env: { OMB_QUOTA_SWITCH: "0" } }, async ({ api, control, backupPrompts }) => {
+it.each([
+  { name: "OMB_QUOTA_SWITCH=0", options: { env: { OMB_QUOTA_SWITCH: "0" } } },
+  { name: "quotaSwitch.enabled false in config.json", options: { config: { quotaSwitch: { enabled: false } } } },
+])("raises no card when $name switches it off", async ({ options }) => {
+  await withQuotaFixture(options, async ({ api, control, backupPrompts }) => {
     const { bot, threadId, messages } = await meetTheLimit(api, control, "NO_OFFER_WHEN_OFF_2B");
     // A second failed turn is the event that proves the first one's offer was never coming.
     await control("send", "--bot", bot.id, "--task", threadId, "--text", "STILL_NO_OFFER_3C");

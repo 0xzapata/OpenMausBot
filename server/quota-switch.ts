@@ -11,34 +11,43 @@
 // back as the message. It sets `fixedOptions`, so the desktop draws no
 // free-text box beside the buttons; a client that still draws one (the
 // phones) cannot switch anything with it, because an answer that names none
-// of the offered engines is read as "Not now".
+// of the offered engines is read as "Not now". So is every decline, whatever
+// words it carries: only an answer may name an engine.
 //
 // Unlike a peer approval, the offer is kept on the card itself
-// (card.quotaSwitch) and nothing about it lives in memory. A tool-less card
-// is a question to the rest of the server, and a question whose asker is
-// gone takes a late answer as a new message to the bot (index.ts's
+// (card.quotaSwitch): nothing an answer needs lives in memory. A tool-less
+// card is a question to the rest of the server, and a question whose asker
+// is gone takes a late answer as a new message to the bot (index.ts's
 // deliverLateQuestionAnswer): an offer remembered only in memory would, after
 // a restart, send the bot the word "Codex" on the engine that just ran out.
-// A card that names its own engines is always answered here instead.
+// A card that names its own engines is always answered here instead, and it
+// stays open until a choice took effect: a refusal never spends it.
 //
 // What it must never do is start a request twice. Every turn is a root of
 // the job runtime (docs/runtime-contract.md): a failed turn's root is
 // settled once, by that turn. When the root ended there, the answer sends
 // the person's message again, which is a new root like any message they
-// type. When the runtime still holds the request (the failed turn had handed
-// work to teammates, or left a card it parks on), the runtime runs that root
+// type. When the runtime still holds that request (the failed turn had handed
+// work to teammates, or left a card it parks on), the runtime runs its root
 // again itself, on whatever engine the thread has by then: the answer only
-// switches the engine and sends nothing.
+// switches the engine and sends nothing. The card names that root, so the
+// question is asked of the request that ran out and never of the thread: an
+// older request parked on a card nobody answered holds nothing here.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { approvalModeFor, modelSwitchNeedsAsk } from "../shared/approval-mode.ts";
 import type { QuotaSwitchCardData } from "../shared/wire.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
-import type { AppConfig } from "./config.ts";
+import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { EngineAccess, ModelCatalog, ModelSelection, ProviderAdapter, ProviderSnapshot } from "./contracts.ts";
+import type { Coordinator } from "./coordinator.ts";
 import { readyToRun, selectDefaultModelSelection, type SelectableInstance } from "./default-model-selection.ts";
 import { classifyError } from "./drivers/retry.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
 import type { BotRecord, Message, Store, TaskRecord } from "./store.ts";
+import type { TurnStops } from "./turn-outcome.ts";
 
 /** An engine as the card needs it: a structural slice of ProviderInstance,
  * so tests hand in plain fakes instead of standing up the registry. */
@@ -52,14 +61,31 @@ export interface QuotaSwitchEngine {
   snapshot: () => Promise<ProviderSnapshot>;
 }
 
-/** What the card needs from the server. Everything else is store reads and
- * writes. */
+/** A thread's request record as the harness holds it (index.ts's
+ * directRequestOwners): the message the request began with, where its work
+ * started, the provider turn that runs it and every turn generation it has
+ * had, its roots in the job runtime among them. */
+export interface QuotaRequest {
+  generations: ReadonlySet<string>;
+  messageId?: string;
+  turnId: string | null;
+  stopped?: boolean;
+  origin?: WorkOrigin;
+}
+
+/** A direct turn that ended, as its turn.completed event names it. */
+export type SettledTurn = Parameters<TurnStops["failureCause"]>[0];
+
+/** What the card needs from the server: its singletons, and the three
+ * things only index.ts can do. Everything else is store reads and writes. */
 export interface QuotaSwitchDeps {
   store: Store;
-  /** The kill switch (quotaSwitchEnabled, below). */
-  enabled: () => boolean;
+  /** The job runtime, read only: is the request that ran out still held. */
+  coordinator: Pick<Coordinator, "all" | "node">;
   /** Every live engine of this workspace. */
-  engines: () => QuotaSwitchEngine[];
+  registry: { instances(): QuotaSwitchEngine[] };
+  /** Why a settled turn failed, in the runtime's words. */
+  turnStops: Pick<TurnStops, "failureCause">;
   /** How an engine is paid for: a custom endpoint brings its own credential,
    * so its sign-in state does not count (default-model-selection.ts). */
   access?: (instanceId: string) => EngineAccess | undefined;
@@ -73,68 +99,66 @@ export interface QuotaSwitchDeps {
   /** What a changed model resets on the thread (a hosted workspace's fresh
    * session), as every other model switch passes it. */
   reset?: (from: ModelSelection, to: ModelSelection) => Partial<TaskRecord> | undefined;
-  /** The thread is working, or the job runtime still owes its request
-   * something (a root waiting on teammates, due a resume, parked on the
-   * person's cards, queued to continue): that request goes on by itself, so
-   * nothing may be sent again for it. */
-  held: (botId: string, threadId: string) => boolean;
+  /** The thread's request record, read while its turn's end is folded. */
+  request: (threadId: string) => QuotaRequest | undefined;
   /** Send `message` again as the person's own message, through the same
    * admission a typed message gets (it may queue), under the line it
    * replied to. Rejects when it could not be sent. */
   resend: (botId: string, threadId: string, message: Message, replyTo: Message | undefined) => Promise<unknown>;
-}
-
-/** A direct turn that ended, as the fold in index.ts read it. */
-export interface QuotaTurn {
-  /** The bot as this thread's turn ran it: its engine and approval level. */
-  bot: BotRecord;
-  threadId: string;
-}
-
-export interface FailedQuotaTurn extends QuotaTurn {
-  /** Why the turn failed, in the runtime's words (TurnStops.failureCause). */
-  cause: string | undefined;
-  /** A teammate's or a peer's turn: its failure reaches whoever asked for
-   * it, through the job runtime, and is theirs to act on. */
-  internal: boolean;
-  /** The thread's request record as the harness holds it (index.ts's
-   * directRequestOwners): which message the request began with and where
-   * its work started. It is this turn's only while its generation is the
-   * turn's and nobody stopped it. */
-  request?: { generation: string; messageId?: string; stopped?: boolean; origin?: WorkOrigin };
-  /** The generation of the turn that just ended. */
-  generation?: string;
+  /** The kill switch; quotaSwitchEnabled (below) unless a test says otherwise. */
+  enabled?: () => boolean;
 }
 
 export interface QuotaSwitch {
-  /** A turn broke. Raises the card when its engine ran out, the turn was the
-   * person's and another engine can take over; resolves with the card, or
-   * null. Never rejects. */
-  turnFailed(turn: FailedQuotaTurn): Promise<Message | null>;
-  /** A turn completed: its engine works, and an offer still open in its
-   * thread is spent, because the conversation went on without it. */
-  turnSucceeded(turn: QuotaTurn): void;
+  /** A direct turn of `bot` broke (`internal`: a teammate's or a peer's turn,
+   * whose failure reaches whoever asked for it). Raises the card when its
+   * engine ran out, the request was the person's own and another engine can
+   * take over; resolves with the card, or null. Never rejects. */
+  turnFailed(bot: BotRecord, event: SettledTurn, internal: boolean): Promise<Message | null>;
+  /** A turn of `bot` completed in this thread: its engine works, and an
+   * offer still open there is spent, because the conversation went on
+   * without it. Never throws. */
+  turnSucceeded(bot: BotRecord, threadId: string): void;
   /** The respond endpoints call this before anything else looks for the
-   * request. Null when `requestId` is not a pending quota card of this
-   * thread, and the endpoint keeps looking. Otherwise the card is settled
-   * before this returns, and `done` resolves once the switch and the resend
-   * that follow have been handed over. `done` never rejects. */
-  answer(threadId: string, requestId: string, message: string | undefined): { done: Promise<void> } | null;
+   * request. Null when `requestId` is not an open quota card of this thread,
+   * and the endpoint keeps looking. Otherwise the card is this module's, and
+   * the promise resolves with what the endpoint answers once the choice was
+   * decided: "answered" (an engine was switched to, or "Not now" was the
+   * answer), "rejected" (a decline: only an "answer" may name an engine) or
+   * "unavailable" (the choice was refused and the offer is still open).
+   * The endpoint awaits it, so whoever answered is recorded on the card it
+   * settled. Never rejects. */
+  answer(threadId: string, requestId: string, behavior: "allow" | "deny" | "answer", message: unknown): Promise<QuotaAnswer> | null;
 }
+
+export type QuotaAnswer = "answered" | "rejected" | "unavailable";
 
 const MAX_ENGINES = 3;
 export const NOT_NOW = "Not now";
 
+/** A node of the job runtime that has ended, in the words the server reads it by. */
+const ENDED: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
+
 /** The kill switch. On unless switched off, because the card is only an
  * offer: nothing changes until the person answers it. Switch it off with
- * `{"quotaSwitch": {"enabled": false}}` in config.json (or through
- * PUT /api/config), or with OMB_QUOTA_SWITCH=0; the environment wins when it
- * says 0 or 1, like the other settings an environment can override
- * (decision-log.ts's decisionRetentionDays). */
-export function quotaSwitchEnabled(cfg: Pick<AppConfig, "quotaSwitch">, env: NodeJS.ProcessEnv = process.env): boolean {
+ * `{"quotaSwitch": {"enabled": false}}` in config.json or with
+ * OMB_QUOTA_SWITCH=0; the environment wins when it says 0 or 1, like the
+ * other settings an environment can override (decision-log.ts's
+ * decisionRetentionDays). The section is this module's own, read from the
+ * file as it stands when an offer is about to be made or taken, so a hand
+ * edit needs no restart and a settings save (which keeps every key it does
+ * not know) leaves it alone. A file that is missing or cannot be read says
+ * nothing: on. */
+export function quotaSwitchEnabled(env: NodeJS.ProcessEnv = process.env, file = join(DATA_DIR, "config.json")): boolean {
   const fromEnv = env.OMB_QUOTA_SWITCH?.trim();
   if (fromEnv === "0" || fromEnv === "1") return fromEnv === "1";
-  return cfg.quotaSwitch?.enabled !== false;
+  try {
+    const stored: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const section = typeof stored === "object" && stored !== null ? (stored as { quotaSwitch?: unknown }).quotaSwitch : undefined;
+    return !(typeof section === "object" && section !== null && (section as { enabled?: unknown }).enabled === false);
+  } catch {
+    return true;
+  }
 }
 
 const nameOf = (engine: QuotaSwitchEngine): string => engine.displayName || engine.driverKind;
@@ -149,11 +173,19 @@ function resendable(store: Store, threadId: string, messageId: string | undefine
 }
 
 export function createQuotaSwitch(deps: QuotaSwitchDeps): QuotaSwitch {
-  const { store } = deps;
+  const { store, coordinator } = deps;
+  const enabled = deps.enabled ?? (() => quotaSwitchEnabled());
   /** Engines whose last turn here ended on their own limit, until one of
    * their turns completes. In memory only, and never a clock: when a limit
    * reopens is the provider's to say, so the next turn that works says it. */
   const limited = new Set<string>();
+  /** Cards being built: the engines are read between a turn's failure and
+   * the write, and a turn of the thread that works meanwhile makes the
+   * offer stale before it exists. */
+  const building = new Set<{ threadId: string; stale: boolean }>();
+  /** Choices being decided, by request: a second press on the card while
+   * its engine is read is the same answer, never another. */
+  const answering = new Map<string, Promise<QuotaAnswer>>();
 
   const notice = (threadId: string, text: string, ok: boolean): void => {
     // `notice:` keeps the line a status row every client always shows
@@ -189,12 +221,14 @@ export function createQuotaSwitch(deps: QuotaSwitchDeps): QuotaSwitch {
    * thread's approval level without a reset (the rule every model switch
    * applies). Its model comes from the picker a new bot's comes from. */
   const takeover = async (engine: QuotaSwitchEngine, bot: BotRecord, current: QuotaSwitchEngine | undefined): Promise<ModelSelection | null> => {
-    if (limited.has(engine.instanceId)) return null;
-    if (current && recoveryCapabilityError(
+    // Without the engine the thread runs on there is nothing to check a
+    // backup against: no engine passes a check that could not be made.
+    if (!current || limited.has(engine.instanceId)) return null;
+    if (recoveryCapabilityError(
       { driverKind: current.driverKind, capabilities: current.adapter.capabilities },
       { driverKind: engine.driverKind, capabilities: engine.adapter.capabilities },
     )) return null;
-    if (modelSwitchNeedsAsk(approvalModeFor(bot), current?.driverKind, engine.driverKind)) return null;
+    if (modelSwitchNeedsAsk(approvalModeFor(bot), current.driverKind, engine.driverKind)) return null;
     const context = { refusal: () => deps.refusal?.(engine) };
     const instance = await described(engine);
     if (!readyToRun(instance, context)) return null;
@@ -202,24 +236,42 @@ export function createQuotaSwitch(deps: QuotaSwitchDeps): QuotaSwitch {
     return selection.instanceId && selection.model ? selection : null;
   };
 
-  const turnFailed = async ({ bot, threadId, cause, internal, request, generation }: FailedQuotaTurn): Promise<Message | null> => {
+  /** The root of the job runtime this request runs as: the newest of its
+   * roots in the thread, as the host reads it (index.ts's
+   * settleTrackedRequest). A backup engine's retry or a change of computer
+   * begins another root for the same request. */
+  const rootOf = (threadId: string, request: QuotaRequest): string | undefined => coordinator.all()
+    .filter((node) => !node.parentId && node.threadId === threadId && request.generations.has(node.id))
+    .sort((a, b) => a.createdAt - b.createdAt).at(-1)?.id;
+
+  const turnFailed = async (bot: BotRecord, event: SettledTurn, internal: boolean): Promise<Message | null> => {
+    const { threadId } = event;
     try {
-      if (classifyError({ text: cause ?? "" }).reason !== "quota") return null;
+      // Read before anything is awaited: the record is this turn's only now.
+      const request = deps.request(threadId);
+      if (classifyError({ text: deps.turnStops.failureCause(event) ?? "" }).reason !== "quota") return null;
       const currentId = bot.modelSelection.instanceId;
       limited.add(currentId);
-      // Only the person's own request is offered a way on: one the record
-      // proves is this turn's and began with their line (peer-provenance.ts's
-      // origin: never a routine's, a webhook's, a relayed or a guest's).
-      const own = !internal && request && !request.stopped && request.generation === generation && request.origin?.kind === "user";
-      if (!own || !deps.enabled() || openCard(threadId)) return null;
+      // Only the person's own request is offered a way on: one that began
+      // with their line (peer-provenance.ts's origin: never a routine's, a
+      // webhook's, a relayed or a guest's), that nobody stopped, and whose
+      // record names this provider turn when it names one.
+      const own = !internal && request && !request.stopped && request.origin?.kind === "user"
+        && (!request.turnId || !event.turnId || request.turnId === event.turnId);
+      if (!own || !enabled() || openCard(threadId)) return null;
       const messageId = request.messageId;
       // A thread a bot opened on itself answers that bot's line, not the person's.
       if (messageId && store.messagesFor(threadId).find((message) => message.id === messageId)?.peerAsk) return null;
-      const engines = deps.engines();
+      const engines = deps.registry.instances();
       const current = engines.find((engine) => engine.instanceId === currentId);
+      // The engine the thread runs on is gone from here: no backup can be
+      // checked against it (takeover), so there is nothing to offer.
+      if (!current) return null;
       const others = engines.filter((engine) => engine.instanceId !== currentId);
+      const build = { threadId, stale: false };
+      building.add(build);
       // Read together: each probe may ask a CLI, and the card waits on all.
-      const able = await Promise.all(others.map((engine) => takeover(engine, bot, current)));
+      const able = await Promise.all(others.map((engine) => takeover(engine, bot, current))).finally(() => building.delete(build));
       const offered: QuotaSwitchCardData["engines"] = [];
       for (const engine of others.filter((_, index) => able[index]).slice(0, MAX_ENGINES)) {
         // The label is the answer, so two engines of one name are told apart.
@@ -227,22 +279,25 @@ export function createQuotaSwitch(deps: QuotaSwitchDeps): QuotaSwitch {
         const taken = name === NOT_NOW || offered.some((other) => other.name === name);
         offered.push({ instanceId: engine.instanceId, name: taken ? `${name} (${engine.instanceId})` : name });
       }
-      // The probes took a while: the thread may be gone, or another failure
-      // of it may have raised the card meanwhile. Nothing awaits between
-      // this check and the write, so a thread never holds two open offers.
-      if (!offered.length || !store.taskByThread(bot.id, threadId) || openCard(threadId)) return null;
+      // The probes took a while: the thread may be gone, a turn of it may
+      // have worked since (the conversation went on, and the offer would be
+      // stale the moment it appeared), or another failure of it may have
+      // raised the card. Nothing awaits between this check and the write, so
+      // a thread never holds two open offers.
+      if (!offered.length || build.stale || !store.taskByThread(bot.id, threadId) || openCard(threadId)) return null;
       const original = resendable(store, threadId, messageId);
+      const rootId = rootOf(threadId, request);
       return store.appendMessage(threadId, {
         role: "bot",
         kind: "options",
         card: {
-          title: `${current ? nameOf(current) : "This engine"} is out of quota`,
+          title: `${nameOf(current)} is out of quota`,
           subtitle: original ? "Continue this conversation on another engine?"
             : "Switch this conversation to another engine? Send your message again afterwards.",
           options: [...offered.map((engine) => engine.name), NOT_NOW],
           requestId: newId(),
           fixedOptions: true,
-          quotaSwitch: { engines: offered, ...(original ? { messageId: original.id } : {}) },
+          quotaSwitch: { engines: offered, ...(original ? { messageId: original.id } : {}), ...(rootId ? { rootId } : {}) },
         },
       });
     } catch (error) {
@@ -252,79 +307,144 @@ export function createQuotaSwitch(deps: QuotaSwitchDeps): QuotaSwitch {
     }
   };
 
-  const turnSucceeded = ({ bot, threadId }: QuotaTurn): void => {
+  const turnSucceeded = (bot: BotRecord, threadId: string): void => {
     limited.delete(bot.modelSelection.instanceId);
-    const open = openCard(threadId);
-    // Closed the way an ask nobody can answer any more is closed
-    // (index.ts's answerRequest), so every client stops offering it.
-    if (open?.card) store.patchMessage(threadId, open.id, { card: { ...open.card, answered: "unavailable", dismissed: true } });
+    for (const build of building) if (build.threadId === threadId) build.stale = true;
+    try {
+      const open = openCard(threadId);
+      // Closed the way an ask nobody can answer any more is closed
+      // (index.ts's answerRequest), so every client stops offering it.
+      if (open?.card) store.patchMessage(threadId, open.id, { card: { ...open.card, answered: "unavailable", dismissed: true } });
+    } catch (error) {
+      // A card that could not be closed is no failure of the turn that worked.
+      console.warn(`quota switch: stale card left open in ${threadId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
-  /** Runs after the card is settled, so a slow probe never leaves it looking
-   * open. Every way out but one says what happened in the conversation; a
-   * conversation that is gone gets no line nobody would read. */
-  const switchAndContinue = async (botId: string, threadId: string, chosen: QuotaSwitchCardData["engines"][number], messageId: string | undefined): Promise<void> => {
-    if (!deps.enabled()) return notice(threadId, "continuing on another engine is switched off — nothing switched.", false);
-    const engines = deps.engines();
+  /** What keeps the message from being sent again once the switch went
+   * through, or null when it may be. The request that ran out is asked about
+   * by its own root: while that is live the runtime runs it again itself,
+   * after the card it parked on ("card") or on its own ("runtime"). The
+   * thread is asked one thing only, the rule a person's line meets in
+   * startTurn (coordinator.answer): a teammate's turn here that ended on a
+   * question takes their next line as its answer, and a resend would be that
+   * line ("question"). A root parked on its cards takes no typed line, so
+   * another request's unanswered card holds nothing. */
+  const heldBy = (threadId: string, rootId: string | undefined): "card" | "runtime" | "question" | null => {
+    const root = rootId ? coordinator.node(rootId) : undefined;
+    if (root && !ENDED.has(root.status)) return root.cards?.length ? "card" : "runtime";
+    const asked = coordinator.all().some((node) => node.parentId !== undefined && node.threadId === threadId
+      && node.status === "waiting" && node.question !== undefined && !node.cards?.length);
+    return asked ? "question" : null;
+  };
+
+  /** Decides one choice of an engine; true once the thread runs on it. The
+   * offer is spent only then: a refusal says why in the conversation and
+   * leaves the card open, so a thread that was busy for a moment, an account
+   * being updated or an engine that dropped out does not cost the person
+   * the offer. A conversation that is gone gets no line nobody would read. */
+  const decide = async (botId: string, threadId: string, cardId: string, chosen: QuotaSwitchCardData["engines"][number]): Promise<boolean> => {
+    /** The offer as it stands: undefined once it was settled meanwhile (a
+     * "Not now", a turn that worked) or its conversation is gone. */
+    const offer = () => {
+      const card = store.messagesFor(threadId).find((message) => message.id === cardId)?.card;
+      return card?.quotaSwitch && !card.answered && !card.dismissed ? card : undefined;
+    };
+    const refuse = (why: string): false => {
+      const card = offer();
+      if (!card) return false;
+      notice(threadId, why, false);
+      // A client folds the card the moment it is pressed. Sent again as it
+      // stands, it shows open everywhere.
+      store.patchMessage(threadId, cardId, { card: { ...card } });
+      return false;
+    };
+    if (!enabled()) {
+      const card = offer();
+      if (!card) return false;
+      notice(threadId, "continuing on another engine is switched off — nothing switched.", false);
+      store.patchMessage(threadId, cardId, { card: { ...card, answered: "unavailable", dismissed: true } });
+      return false;
+    }
+    const engines = deps.registry.instances();
     const engine = engines.find((candidate) => candidate.instanceId === chosen.instanceId);
-    if (!engine) return notice(threadId, `${chosen.name} is no longer configured — nothing switched.`, false);
+    if (!engine) return refuse(`${chosen.name} is no longer configured — nothing switched.`);
     const before = store.projectBotForTask(botId, threadId);
-    if (!before) return;
+    if (!before) return false;
     // The card was built a while ago: read the engine again before trusting it.
     const selection = await takeover(engine, before, engines.find((candidate) => candidate.instanceId === before.modelSelection.instanceId));
     // No await from here on: the gate's verdict, the switch and the resend
     // must see one state, or a turn started in between could lose to them.
+    const card = offer();
     const bot = store.projectBotForTask(botId, threadId);
-    if (!bot) return;
-    if (!selection) return notice(threadId, `${chosen.name} is no longer available — nothing switched.`, false);
+    if (!card || !bot) return false;
+    if (!selection) return refuse(`${chosen.name} is no longer available — nothing switched.`);
     // Already there (the person changed the model by hand): nothing to gate.
     if (bot.modelSelection.instanceId !== selection.instanceId) {
       const checked = deps.gate(bot, selection);
-      if (!checked.ok) return notice(threadId, `could not switch to ${chosen.name} — ${checked.error}`, false);
+      if (!checked.ok) return refuse(`could not switch to ${chosen.name} — ${checked.error}`);
       // This conversation only: the bot's own model and its other
       // conversations stay where they are, as with automatic recovery.
       try {
         store.switchTaskModel(botId, threadId, checked.selection, false, false, deps.reset?.(bot.modelSelection, checked.selection));
       } catch {
-        return notice(threadId, `could not switch to ${chosen.name} — the model switch could not be saved.`, false);
+        return refuse(`could not switch to ${chosen.name} — the model switch could not be saved.`);
       }
     }
-    if (deps.held(botId, threadId)) {
-      return notice(threadId, `switched to ${chosen.name}. The work already under way in this conversation continues there.`, true);
-    }
-    const original = resendable(store, threadId, messageId);
-    if (!original) {
-      return notice(threadId, `switched to ${chosen.name}, but the message that hit quota could not be found to resend — send it again.`, false);
-    }
-    notice(threadId, `continuing on ${chosen.name} after hitting quota`, true);
-    try {
-      await deps.resend(botId, threadId, original, original.replyToId ? store.messagesFor(threadId).find((message) => message.id === original.replyToId) : undefined);
-    } catch (error) {
-      if (store.taskByThread(botId, threadId)) {
-        notice(threadId, `could not continue on ${chosen.name} — ${(error instanceof Error ? error.message : String(error)).slice(0, 200)}`, false);
+    // "answer" with the words beside it, as every question-shaped card
+    // remembers its reply (index.ts's answerRequest).
+    store.patchMessage(threadId, cardId, { card: { ...card, answered: "answer", answeredText: chosen.name } });
+    const held = heldBy(threadId, card.quotaSwitch!.rootId);
+    const original = held ? undefined : resendable(store, threadId, card.quotaSwitch!.messageId);
+    if (held === "card") notice(threadId, `switched to ${chosen.name}. Your request waits on a card above and continues on ${chosen.name} once you act on it.`, true);
+    else if (held === "runtime") notice(threadId, `switched to ${chosen.name}. Your request is still under way here and continues on ${chosen.name}.`, true);
+    else if (held === "question") {
+      notice(threadId, `switched to ${chosen.name}. A teammate's question is waiting for your answer in this conversation, so your message was not sent again — answer it, then send your message again.`, false);
+    } else if (!original) {
+      notice(threadId, `switched to ${chosen.name}, but the message that hit quota could not be found to resend — send it again.`, false);
+    } else {
+      notice(threadId, `continuing on ${chosen.name} after hitting quota`, true);
+      try {
+        await deps.resend(botId, threadId, original, original.replyToId ? store.messagesFor(threadId).find((message) => message.id === original.replyToId) : undefined);
+      } catch (error) {
+        if (store.taskByThread(botId, threadId)) {
+          notice(threadId, `could not continue on ${chosen.name} — ${(error instanceof Error ? error.message : String(error)).slice(0, 200)}`, false);
+        }
       }
     }
+    return true;
   };
 
-  const answer = (threadId: string, requestId: string, message: string | undefined): { done: Promise<void> } | null => {
+  const answer: QuotaSwitch["answer"] = (threadId, requestId, behavior, message) => {
     const cardMessage = store.messagesFor(threadId).find((candidate) => candidate.card?.requestId === requestId);
     const card = cardMessage?.card;
     const offer = card?.quotaSwitch;
     if (!cardMessage || !card || !offer || card.answered || card.dismissed) return null;
-    // The label is matched in the card's own order; anything else, typed
-    // words included, is "Not now".
-    const index = message === undefined ? -1 : card.options.indexOf(message);
+    // Only an answer may name an engine. A decline is "Not now" whatever
+    // words it carries: where local services may only decline a card
+    // (request-auth.ts's service trust), a bot's own shell can read this
+    // card's request and labels and post to it, and its decline must never
+    // switch the engine or send the person's message again. The label is
+    // matched in the card's own order; anything else, typed words included,
+    // is "Not now" too.
+    const index = behavior === "answer" && typeof message === "string" ? card.options.indexOf(message) : -1;
     const chosen = index >= 0 ? offer.engines[index] : undefined;
-    // "answer" with the words beside it, as every question-shaped card
-    // remembers its reply (index.ts's answerRequest).
-    store.patchMessage(threadId, cardMessage.id, { card: { ...card, answered: "answer", answeredText: chosen ? chosen.name : NOT_NOW } });
     const bot = store.botByThread(threadId);
-    if (!chosen || !bot) return { done: Promise.resolve() };
-    return {
-      done: switchAndContinue(bot.id, threadId, chosen, offer.messageId).catch((error) => {
-        console.warn(`quota switch: answer for ${threadId} failed: ${error instanceof Error ? error.message : String(error)}`);
-      }),
-    };
+    if (!chosen || !bot) {
+      store.patchMessage(threadId, cardMessage.id, { card: { ...card, answered: "answer", answeredText: NOT_NOW } });
+      return Promise.resolve(behavior === "answer" ? "answered" : "rejected");
+    }
+    let deciding = answering.get(requestId);
+    if (!deciding) {
+      deciding = decide(bot.id, threadId, cardMessage.id, chosen)
+        .then((switched): QuotaAnswer => switched ? "answered" : "unavailable", (error): QuotaAnswer => {
+          console.warn(`quota switch: answer for ${threadId} failed: ${error instanceof Error ? error.message : String(error)}`);
+          return "unavailable";
+        })
+        .finally(() => answering.delete(requestId));
+      answering.set(requestId, deciding);
+    }
+    return deciding;
   };
 
   return { turnFailed, turnSucceeded, answer };

@@ -625,11 +625,13 @@ export interface OptionCardData {
 
 /** What a quota-switch card offers, kept on the card itself so the offer can
  * still be answered after a restart: the engines, in the order of the card's
- * options, and the person's message whose turn ran into the limit (absent
- * when there is none to send again). */
+ * options; the person's message whose turn ran into the limit (absent when
+ * there is none to send again); and that request's root in the job runtime
+ * (docs/runtime-contract.md), which says whether the runtime still holds it. */
 export interface QuotaSwitchCardData {
   engines: Array<{ instanceId: string; name: string }>;
   messageId?: string;
+  rootId?: string;
 }
 
 /** Which app holds the microphone of a Live call: the desktop app (its own

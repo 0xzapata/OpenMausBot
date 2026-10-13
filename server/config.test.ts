@@ -619,14 +619,6 @@ describe("configuration boundaries", () => {
     expect(routinesInConversationEnabled({ features: { routinesInConversation: true } })).toBe(true);
   });
 
-  it("accepts the quota-switch kill switch and nothing else in its section", () => {
-    expect(parseStoredConfig({}).quotaSwitch).toBeUndefined();
-    expect(parseStoredConfig({ quotaSwitch: { enabled: false } }).quotaSwitch).toEqual({ enabled: false });
-    expect(parseConfigPatch({ quotaSwitch: { enabled: false } })).toEqual({ quotaSwitch: { enabled: false } });
-    expect(() => parseConfigPatch({ quotaSwitch: { enabled: "no" } })).toThrow("quotaSwitch");
-    expect(() => parseConfigPatch({ quotaSwitch: { enabled: false, engines: ["codex"] } })).toThrow("quotaSwitch");
-  });
-
   it("keeps tool-call chips off by default and accepts an explicit opt-in", () => {
     expect(showToolCallsEnabled({})).toBe(false);
     expect(parseConfigPatch({ features: { showToolCalls: true } })).toEqual({
@@ -1545,16 +1537,6 @@ describe("credential env preference", () => {
     saveConfig({ automaticRecovery: { enabled: false } });
     expect(loadConfig().automaticRecovery).toEqual({ enabled: false });
     expect(loadConfig().profile).toEqual({ name: "Recovery fixture" });
-  });
-
-  it("saves the quota-switch kill switch and keeps unrelated settings", () => {
-    saveConfig({ quotaSwitch: { enabled: false }, profile: { name: "Quota fixture" } });
-    expect(loadConfig().quotaSwitch).toEqual({ enabled: false });
-    saveConfig({ profile: { name: "Renamed" } });
-    expect(loadConfig().quotaSwitch).toEqual({ enabled: false });
-    saveConfig({ quotaSwitch: { enabled: true } });
-    expect(loadConfig().quotaSwitch).toEqual({ enabled: true });
-    expect(loadConfig().profile).toEqual({ name: "Renamed" });
   });
 
   it("persists a context change without losing the other context preferences", () => {
