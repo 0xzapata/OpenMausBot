@@ -100,9 +100,9 @@ const vpsConfigSchema = z.object({
  * process environment must never redirect a bot's browser
  * (server/browser-live.test.ts pins this guarantee down). */
 const browserEngineConfigSchema = z.object({
-  attachCdpUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidCdpTarget(value), {
-    message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL",
-  }).optional(),
+  attachCdpUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidCdpTarget(value),
+    { message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL" }).optional(),
+  idleTimeoutMinutes: z.number().int().min(1).max(60).optional(), // an unused browser closes after this (browserIdleMs)
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -649,7 +649,7 @@ export interface AppConfig {
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };
   composio?: { apiKey?: string; userId?: string; sessionId?: string };
-  /** Persisted under the historical config key "box" (ascii.dev renamed Box to Boat). */
+  /** Persisted under the historical config key "box", env BOX_TOKEN (ascii.dev renamed Box to Boat). */
   box?: { token?: string };
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string };
@@ -678,7 +678,7 @@ export interface AppConfig {
   /** CDP target of a Chrome the operator already has running (a bare port,
    * e.g. "9333", or an http(s)/ws(s) URL). Browser profiles set to My Chrome
    * attach to it instead of looking for the person's Chrome (#1396). */
-  browserEngine?: { attachCdpUrl?: string };
+  browserEngine?: { attachCdpUrl?: string; idleTimeoutMinutes?: number };
   instances?: InstanceConfigMap;
 }
 export type BrowserProfile = z.output<typeof browserProfileSchema> & {
@@ -1118,7 +1118,6 @@ export function loadConfig(): AppConfig {
   if (process.env.OPENAI_COMPAT_PROVIDER !== undefined) cfg.openaiCompat.provider = process.env.OPENAI_COMPAT_PROVIDER;
   cfg.composio = { ...cfg.composio };
   if (process.env.COMPOSIO_API_KEY !== undefined) cfg.composio.apiKey = process.env.COMPOSIO_API_KEY;
-  // BOX_TOKEN keeps its historical name; the provider is Boat.
   cfg.box = { ...cfg.box };
   if (process.env.BOX_TOKEN !== undefined) cfg.box.token = process.env.BOX_TOKEN;
   cfg.opencodeGo = { ...cfg.opencodeGo };
@@ -1259,11 +1258,12 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_CLOUD_VOICE_TOKEN",
   "OMB_CLOUD_DECIDER_TOKEN",
   "OMB_CLOUD_AI_TOKEN",
-  // Harness-private filesystem hints are not credentials themselves, but
-  // exposing them to a shell-capable agent points straight at app-owned
-  // state. The built-in browser master is delivered privately in memory.
+  // Harness-private hints are not credentials, but exposing them to a shell-capable
+  // agent points straight at app-owned state (the browser master is delivered in
+  // memory; OMB_BOAT_API is where this server's own Boat client sends an own key).
   "OMB_BROWSER_CONNECTION",
   "OMB_USER_DATA",
+  "OMB_BOAT_API",
 ] as const;
 
 /** Secrets of whoever operates this server, not of the workspace: the license

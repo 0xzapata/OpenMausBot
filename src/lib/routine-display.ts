@@ -27,9 +27,14 @@ export function routineDateTime(at: number): string {
   return new Date(at).toLocaleString(activeLocale(), { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+/** A consumed one-shot has no next date. It is not a paused recurring
+ * schedule, and switching it back on would run nothing. */
+export function routineFinished(routine: Routine): boolean {
+  return routine.schedule.type === "once" && routine.nextRunAt == null && routine.schedule.at <= Date.now();
+}
+
 export function routineScheduleState(routine: Routine): string {
-  // A consumed one-shot has no next date. It is not a paused recurring schedule.
-  if (routine.schedule.type === "once" && routine.nextRunAt == null && routine.schedule.at <= Date.now()) return t("routines.finishedSchedule");
+  if (routineFinished(routine)) return t("routines.finishedSchedule");
   return routine.enabled ? t("routines.activeSchedule") : t("routines.pausedSchedule");
 }
 

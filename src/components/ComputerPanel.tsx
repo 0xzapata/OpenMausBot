@@ -1405,7 +1405,7 @@ export function ComputerPanel({
     && liveTask.surface !== profileBot.computer ? liveTask.surface : undefined;
 
   const tabClass = (active: boolean) => cn(
-    "flex items-center gap-1.5 rounded-full px-3 py-1 text-[12.5px] transition-colors",
+    "flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-[12.5px] transition-colors @max-[28rem]/paneltabs:[&>svg]:hidden @max-[22rem]/paneltabs:px-2",
     active ? "bg-raised text-ink shadow-sm" : "text-ink-secondary hover:text-ink",
   );
 
@@ -1464,7 +1464,7 @@ export function ComputerPanel({
       {/* Header: tabs centred as a segmented pill; gear and close pinned to the edges. */}
       {/* ml-1.5 keeps the header's drag region clear of the resize handle,
           which comes first in the DOM (a later drag region wins). */}
-      <div {...dragProps} className={cn("ml-1.5 py-3 pl-2.5 pr-4", padClass)}>
+      <div {...dragProps} className={cn("@container/paneltabs ml-1.5 py-3 pl-2.5 pr-4", padClass)}>
         <div className="relative flex min-h-7 items-center justify-center">
           {advanced && (
             <button
@@ -1482,7 +1482,7 @@ export function ComputerPanel({
               <Settings size={18} />
             </button>
           )}
-          <div className="mx-9 flex min-w-0 flex-wrap justify-center gap-0.5 rounded-full bg-inset p-0.5" data-tour="computer-tabs" data-testid="computer-tabs" aria-label="Bot panel view">
+          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-0.5 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" aria-label="Bot panel view">
             <button
               onClick={() => selectPanelView("computer")}
               aria-pressed={panelView === "computer"}

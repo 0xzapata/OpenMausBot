@@ -53,13 +53,16 @@ beforeAll(async () => {
       };
       const expected = side === "relay" ? `Bearer ${INCLUDED}` : side === "boat" ? `Bearer ${OWN}` : "";
       if (!side || req.headers.authorization !== expected) return send(401, { ok: false, code: "unauthorized", message: "Unauthorized" });
-      const path = url.pathname.replace(/^\/(boat|relay)\/api\/box\/v1/, "");
+      // Boat speaks its public API v1; the Admin relay still speaks the old box dialect.
+      const legacy = side === "relay";
+      const path = url.pathname.replace(legacy ? /^\/relay\/api\/box\/v1/ : /^\/boat\/api\/v1/, "");
+      const [root, one, many] = legacy ? ["/boxes", "box", "boxes"] : ["/sandboxes", "sandbox", "sandboxes"];
       const rows = accounts[side]!;
-      if (path === "/boxes" && req.method === "GET") return send(200, { ok: true, boxes: rows, pageInfo: { nextCursor: null } });
-      const box = /^\/boxes\/([^/]+)$/.exec(path);
+      if (path === root && req.method === "GET") return send(200, { ok: true, [many]: rows, pageInfo: { nextCursor: null } });
+      const box = new RegExp(`^${root}/([^/]+)$`).exec(path);
       if (box && req.method === "GET") {
         const row = rows.find((candidate) => candidate.id === box[1]);
-        return row ? send(200, { ok: true, box: row }) : send(404, { ok: false, code: "not_found", message: "Not found" });
+        return row ? send(200, { ok: true, [one]: row }) : send(404, { ok: false, code: "not_found", message: "Not found" });
       }
       send(404, { ok: false, code: "not_found", message: "Not found" });
     });
@@ -89,7 +92,7 @@ beforeAll(async () => {
       ...(process.env.PATHEXT ? { PATHEXT: process.env.PATHEXT } : {}),
       ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
       HOME: home, USERPROFILE: home, OMB_DATA_DIR: dataDir, OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1),
-      OMB_BOX_API: `${stubBase}/boat/api/box/v1`,
+      OMB_BOAT_API: `${stubBase}/boat/api/v1`,
       OMB_CLOUD_BOAT_URL: `${stubBase}/relay/api/box/v1`,
       OMB_CLOUD_BOAT_TOKEN: INCLUDED,
     },

@@ -170,6 +170,9 @@ export interface Coordinator {
   node(id: string): HandoffView | undefined;
   has(id: string): boolean;
   all(): HandoffView[];
+  /** all() without the ended nodes. Ended rows only grow, so a caller that
+   * asks about live work (most do, on every broadcast) reads these. */
+  active(): HandoffView[];
   children(id: string): HandoffView[];
   /** Hand work on from a running node: the requester's own root (its turn's
    * generation, begun by beginTurn) or a teammate's node (`parentId`). Every

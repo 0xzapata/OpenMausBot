@@ -81,17 +81,17 @@ beforeAll(async () => {
     res.setHeader("content-type", "application/json");
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {};
-    if (path === "/boxes" && req.method === "POST") {
+    if (path === "/sandboxes" && req.method === "POST") {
       if (!allowBoatCreation) { res.statusCode = 409; return res.end(JSON.stringify({ error: "Unexpected Boat creation in routing fixture" })); }
       boatRow = { id: "bx_23456789", name: body.name ?? "fixture-new-box", state: "idle" };
-      return res.end(JSON.stringify({ box: boatRow }));
+      return res.end(JSON.stringify({ sandbox: boatRow }));
     }
-    if (path === "/boxes") return res.end(JSON.stringify({ boxes: boatRow ? [boatRow] : [] }));
-    if (/^\/boxes\/bx_[^/]+$/.test(path)) {
+    if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: boatRow ? [boatRow] : [] }));
+    if (/^\/sandboxes\/bx_[^/]+$/.test(path)) {
       if (req.method === "DELETE") { boatRow = null; return res.end("{}"); }
       if (!boatRow) res.statusCode = 404;
       else if (req.method === "PATCH" && body.name) boatRow.name = body.name;
-      return res.end(JSON.stringify(boatRow ? { box: boatRow } : { error: "missing" }));
+      return res.end(JSON.stringify(boatRow ? { sandbox: boatRow } : { error: "missing" }));
     }
     if (path.endsWith("/desktop")) return res.end(JSON.stringify({ desktopUrl: "https://desktop.fixture.invalid/" }));
     if (path.endsWith("/resume") && boatRow) { boatRow.state = "idle"; return res.end("{}"); }
@@ -120,7 +120,7 @@ beforeAll(async () => {
         APPDATA: join(fixtureHome, "appdata"), LOCALAPPDATA: join(fixtureHome, "localappdata"),
         TEMP: fixtureHome, TMP: fixtureHome, TMPDIR: fixtureHome,
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: ui, OMB_TEST_VM_STATE: stateFile,
-        OMB_BOX_API: `http://127.0.0.1:${boatPort}`,
+        OMB_BOAT_API: `http://127.0.0.1:${boatPort}`,
         ...(computerWaitMaxMs ? { OMB_COMPUTER_WAIT_MAX_MS: String(computerWaitMaxMs) } : {}),
         OMB_COMPUTER_CALL_WAIT_MS: String(CALL_WAIT_MS),
         OMB_USER_DATA: join(fixtureHome, "user-data"),
@@ -545,14 +545,14 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect(continued.argv[continued.argv.indexOf("--model") + 1]).toBe(before.argv[before.argv.indexOf("--model") + 1]);
       await idle(bot.id);
       expect(boatPrompts).toHaveLength(0);
-      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/boxes")).toHaveLength(state === "wake" ? 0 : 1);
+      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(state === "wake" ? 0 : 1);
       expect(boatCalls.some(call => call.path.endsWith("/resume"))).toBe(state === "wake");
       rmSync(dumpFile, { force: true });
       await api("POST", `/api/bots/${bot.id}/messages`, { text: "Inspect the current page on the same cloud VM" });
       expect(harnessComputer(await dump())).toBe(true);
       await idle(bot.id);
       expect(boatPrompts).toHaveLength(0);
-      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/boxes")).toHaveLength(state === "wake" ? 0 : 1);
+      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(state === "wake" ? 0 : 1);
     } finally {
       writeFileSync(finishFile, "finish");
       await api("POST", `/api/bots/${bot.id}/interrupt`, {}); await idle(bot.id);
@@ -828,7 +828,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect(onBoat(await dump())).toBe(true);
       await idle(bots[0].id);
       expect(boatCalls.some(call => call.path.endsWith("/resume"))).toBe(true);
-      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/boxes")).toHaveLength(0);
+      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(0);
       expect(JSON.stringify(await api("GET", "/api/bots?messages=30"))).not.toContain("not available in channels yet");
       // The Boat is given back: the same speaker can take the room again.
       rmSync(dumpFile, { force: true });

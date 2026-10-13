@@ -1,5 +1,5 @@
 // The Computer engine is gone (decision D5). It ran a whole turn on Boat's own
-// agent through /boxes/{id}/prompt, and that agent has no AI sign-in on a
+// agent through /sandboxes/{id}/prompt, and that agent has no AI sign-in on a
 // Cloud: the hosted-desktop bug. Settings saved on it move, once, to the
 // engine a new bot gets, and every conversation keeps working where it did:
 // on Auto the removed engine always ran on the bot's own cloud computer.
@@ -94,7 +94,7 @@ function install(home: string, boatPort: () => number) {
         APPDATA: join(home, "appdata"), LOCALAPPDATA: join(home, "localappdata"),
         TEMP: home, TMP: home, TMPDIR: home,
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: join(home, "static"),
-        OMB_BOX_API: `http://127.0.0.1:${boatPort()}`,
+        OMB_BOAT_API: `http://127.0.0.1:${boatPort()}`,
         OMB_USER_DATA: join(home, "user-data"),
       }, stdio: ["ignore", "pipe", "pipe"],
     });
@@ -157,19 +157,19 @@ describe("removing the Computer engine", () => {
         res.statusCode = 409;
         return res.end(JSON.stringify({ ok: false, code: "provider_not_configured", message: "Claude login required" }));
       }
-      if (path === "/boxes" && req.method === "POST") {
+      if (path === "/sandboxes" && req.method === "POST") {
         boxesCreated++;
         const row = { id: `bx_2345678${"abcdefgh"[rows.length]}`, name: body.name, state: "idle" }; rows.push(row);
-        return res.end(JSON.stringify({ box: row }));
+        return res.end(JSON.stringify({ sandbox: row }));
       }
-      if (path === "/boxes") return res.end(JSON.stringify({ boxes: rows }));
+      if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: rows }));
       if (path.endsWith("/commands")) return res.end(JSON.stringify({ exitCode: 0, stdout: "captured", stderr: "" }));
       if (path.endsWith("/artifacts")) { res.setHeader("content-type", "image/jpeg"); return res.end(JPEG); }
       if (path.endsWith("/desktop")) return res.end(JSON.stringify({ desktopUrl: "https://desktop.fixture.invalid" }));
-      const row = rows.find(entry => path === "/boxes/" + entry.id);
+      const row = rows.find(entry => path === "/sandboxes/" + entry.id);
       if (row) {
         if (req.method === "PATCH" && typeof body.name === "string") row.name = body.name;
-        return res.end(JSON.stringify({ box: row }));
+        return res.end(JSON.stringify({ sandbox: row }));
       }
       res.end("{}");
     });

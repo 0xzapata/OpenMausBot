@@ -366,7 +366,7 @@ let companyBackupClientStateRequest = null;
 let companyRestoreCommitting = false;
 let companyBackupConfigurationRevision = 0;
 const managedDesktopRelay = createManagedDesktopRelay();
-// Whether the person counts as Pro, which starting a Live call needs
+// Whether the person counts as Pro, which starting a Live call from a phone needs
 // (pro-plan.mjs): kept here, where the Cloud sign-in lives, and handed to the
 // local server as the answer alone (syncProPlan).
 const proPlanRelay = createProPlanRelay();

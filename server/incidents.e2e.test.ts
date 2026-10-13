@@ -280,23 +280,23 @@ it("keeps the team computer for a report turn, and answers without it once it is
     let raw = ""; for await (const part of req) raw += part;
     const body = raw ? JSON.parse(raw) : {};
     res.setHeader("content-type", "application/json");
-    if (path === "/boxes" && req.method === "GET" && hold?.release) {
+    if (path === "/sandboxes" && req.method === "GET" && hold?.release) {
       const { held, release } = hold;
       hold = null;
       held?.();
       await release;
     }
-    if (path === "/boxes" && req.method === "POST") {
+    if (path === "/sandboxes" && req.method === "POST") {
       const box = { id: `bx_${boxes.length + 23456789}`, name: body.name, state: "idle" };
       boxes.push(box);
-      return res.end(JSON.stringify({ box }));
+      return res.end(JSON.stringify({ sandbox: box }));
     }
-    if (path === "/boxes") return res.end(JSON.stringify({ boxes: gone ? [] : boxes }));
+    if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: gone ? [] : boxes }));
     if (path.endsWith("/desktop")) return res.end(JSON.stringify({ desktopUrl: "https://desktop.fixture.invalid" }));
-    const box = gone ? undefined : boxes.find((row) => path === `/boxes/${row.id}`);
+    const box = gone ? undefined : boxes.find((row) => path === `/sandboxes/${row.id}`);
     if (box) {
       if (req.method === "PATCH" && typeof body.name === "string") box.name = body.name;
-      return res.end(JSON.stringify({ box }));
+      return res.end(JSON.stringify({ sandbox: box }));
     }
     res.statusCode = 404;
     res.end("{}");
