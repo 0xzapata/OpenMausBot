@@ -4,7 +4,8 @@
 // document or a thing lives), decisions (dated, with where they were made),
 // and terms (what an abbreviation or a nickname means). A bot proposes an
 // entry from its conversation; every kind waits for admin review before
-// entering shared prompts. The person can edit or delete any of it.
+// entering shared prompts. The person can edit or delete any of it. Like
+// every other bot-written memory, secrets are masked before it is stored.
 //
 // Distinct from section-context.ts, which is the user's brief and is never
 // written by a bot, and from a bot's private MEMORY.md. This is the layer
@@ -14,6 +15,7 @@ import { z } from "zod";
 
 import { writeFileAtomic } from "./atomic.ts";
 import { newId } from "./contracts.ts";
+import { redactSecretsInText } from "./redact.ts";
 import { sectionContextKey, sectionContextLabel } from "./section-context.ts";
 
 export const TEAM_MEMORY_KINDS = ["person", "place", "decision", "term"] as const;
@@ -64,7 +66,7 @@ const fileSchema = z.object({ version: z.literal(1), sections: z.record(z.string
 type TeamMemoryFile = z.infer<typeof fileSchema>;
 const emptyFile = (): TeamMemoryFile => ({ version: 1, sections: Object.create(null) });
 
-const clean = (value: unknown, max: number): string => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max + 1) : "");
+const clean = (value: unknown, max: number): string => (typeof value === "string" ? redactSecretsInText(value).replace(/\s+/g, " ").trim().slice(0, max + 1) : "");
 const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export type TeamMemoryResolution =

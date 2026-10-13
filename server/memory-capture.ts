@@ -20,8 +20,9 @@ export interface Candidate {
   kind: CandidateKind;
   /** YYYY-MM-DD, the last day a temporary fact holds. */
   until?: string;
-  /** About the person themselves, useful to any of their bots: a
-   * candidate for the shared About me, which only the person can approve. */
+  /** About the person themselves, useful to any of their bots: added to
+   * the shared About me straight away and listed in Settings, where the
+   * person can remove it for good (server/profile-learned.ts). */
   aboutUser: boolean;
   /** Already in the notebook, listed again only as an About me candidate:
    * never appended. */

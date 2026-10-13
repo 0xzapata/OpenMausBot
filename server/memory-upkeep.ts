@@ -230,8 +230,10 @@ export interface MemoryUpkeep {
   noteTurn(botId: string, threadId: string, turn: CaptureTurn): void;
   /** Capture a thread's waiting turns now, without waiting for the quiet spell. */
   flushThread(threadId: string): void;
-  /** Forget a bot's waiting turns (switch turned off, bot deleted). */
+  /** Forget a bot's waiting turns (its upkeep or memory switched off). */
   dropBot(botId: string): void;
+  /** The bot was deleted: forget its waiting turns and its upkeep status. */
+  forgetBot(botId: string): void;
   /** Run one capture batch; resolves when written. Exposed for tests. */
   capture(batch: CaptureBatch): Promise<CaptureReport>;
   tidy(botId: string): Promise<TidyReport>;
@@ -262,6 +264,8 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
   const deferred: CaptureBatch[] = [];
 
   const record = (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport }) => {
+    // a capture or tidy that was out when its bot was deleted leaves nothing behind
+    if (!deps.bot(botId)) return;
     const state = loadState();
     state.bots[botId] = { ...state.bots[botId], ...patch };
     saveState(state);
@@ -568,6 +572,14 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     },
     flushThread: (threadId) => buffer.flush(threadId),
     dropBot: (botId) => buffer.dropBot(botId),
+    forgetBot(botId) {
+      buffer.dropBot(botId);
+      for (let i = deferred.length - 1; i >= 0; i--) if (deferred[i]!.botId === botId) deferred.splice(i, 1);
+      const state = loadState();
+      if (!state.bots[botId]) return;
+      delete state.bots[botId];
+      saveState(state);
+    },
     capture: (batch) => track(capture(batch)),
     tidy,
     status(botId) {
