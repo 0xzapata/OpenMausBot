@@ -5,7 +5,7 @@
 // inside that boundary, and any page on the internet can aim a form at it.
 // These tests pin the rule that keeps that from mattering.
 import { type Server } from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { createControlServer, hostCandidates, originIsLoopback } from "../src/control.ts";
 import { DeviceRegistry } from "../src/devices.ts";
@@ -226,6 +226,16 @@ describe("hostCandidates", () => {
     expect(body.hosts.at(-1)).toMatch(/^openmausbot-[0-9a-f]{8}\.local$/);
     expect(body.endpoints.at(-1)).toMatchObject({ kind: "bonjour", priority: 300 });
     expect(body.endpoints.at(-1).url).toMatch(/^http:\/\/openmausbot-[0-9a-f]{8}\.local:8810$/);
+  });
+
+  it("says when its device list is only an unreadable file", async () => {
+    expect((await ask("GET", "/state")).body).not.toHaveProperty("devicesUnreadable");
+    const unreadable = vi.spyOn(devices, "devicesUnreadable").mockReturnValue(true);
+    try {
+      expect((await ask("GET", "/state")).body.devicesUnreadable).toBe(true);
+    } finally {
+      unreadable.mockRestore();
+    }
   });
 
   it("reports only the device ids backed by live authenticated streams", async () => {

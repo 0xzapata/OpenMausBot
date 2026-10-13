@@ -226,6 +226,9 @@ export function companionState(options: ControlOptions) {
     ...(secretPublicKey ? { secretPublicKey } : {}),
     pairing: pairing ? { code: pairing.code, token: pairing.token, expiresAt: pairing.expiresAt } : null,
     devices: options.devices.list(),
+    // The desktop gives its secure address back when nothing is paired; an
+    // empty list read from an unreadable file must not count as that.
+    ...(options.devices.devicesUnreadable() ? { devicesUnreadable: true } : {}),
     connectedDeviceIds: options.connectedDeviceIds?.() ?? [],
     discovery: options.discovery(),
   };
