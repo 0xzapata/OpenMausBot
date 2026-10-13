@@ -101,8 +101,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     # scripts/testing/duration-sequencer.ts splits the files by their recorded
     # CI seconds, not by count, so the heavy e2e files no longer share one
-    # shard. The cap catches a hang, not normal suite growth.
-    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 20 || 35 }}
+    # shard. The cap catches a hang, not normal suite growth: Linux shards
+    # took 15-20 minutes by Oct 13 (the runtime and room suites), so Linux
+    # gets 30 like the slower platforms' headroom; Windows runs up to 30.
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 30 || 35 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10

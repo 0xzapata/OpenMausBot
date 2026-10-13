@@ -7,16 +7,11 @@ const INDEX = readFileSync(new URL("../../server/index.ts", import.meta.url), "u
 
 const EXACT: Record<string, number> = {
   // Internal harness routes have no server/routes module yet; moving them out is the follow-up that lowers this.
-  // 160 with /api/internal/request-sign-in (#2707) and /api/internal/fill-login (saved logins),
-  // minus the one-release alias routes (ask-bot, delegate-bot, delegations/:id) that went in PR 5;
-  // 157 once POST /api/bots moved to server/routes/bots-create.ts; path.match( 88 -> 81 once the
-  // bot settings routes and PATCH /api/bots/:id moved to bot-settings.ts and bot-patch.ts; 157 -> 154
-  // and 81 -> 73 once local-computer interrupt, DELETE /api/bots/:id, skills, the skills library,
-  // team memory and section context moved to bot-lifecycle.ts, bot-skills.ts and team-context.ts.
-  'path === "/': 154,
-  "path.match(": 73,
-  "path.startsWith(": 11,
-  ".exec(path)": 18,
+  // Every PR that moves routes into server/routes lowers these to the counts this test prints.
+  'path === "/': 128,
+  "path.match(": 62,
+  "path.startsWith(": 10,
+  ".exec(path)": 8,
   ".test(path)": 0,
   ".includes(path)": 2,
 };
