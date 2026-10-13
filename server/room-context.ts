@@ -19,6 +19,8 @@
 // own compaction: when Claude Code compacts a member's session, what the
 // session was handed is no longer what it holds, and the member's next turn
 // carries the whole transcript again, as every turn does without the setting.
+// A hook that never arrives is caught by the reading kept here: one that is
+// lower than after the member's turn before means its session was compacted.
 //
 // Measurements live in memory on purpose. They describe a warm process, and
 // warm processes do not outlive this server either.

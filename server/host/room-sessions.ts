@@ -46,6 +46,11 @@
 //                        trusted when it settles, though it completes ok
 //   close to compaction  the member's last measured context here is at 80% or
 //                        more of what the engine compacts at
+//   a context that fell  the member's measured context here is lower than
+//                        after its turn before, in the same native session.
+//                        Within one session it only grows, so it was
+//                        compacted, trimmed or replaced, whatever the hooks
+//                        said: the second signal, for a hook that never came
 //   how the turn ended   not ok, never seen to end, or in another session
 //                        than the one the record names
 //   who spoke last       another member's turn on this thread and instance:
@@ -134,7 +139,8 @@ export interface RoomDispatchInput {
   hooks: boolean;
   /** The member's last measured context in this room, and the token count
    * its engine compacts a session at when that is a known number. Asked for
-   * only when a resume is otherwise possible. */
+   * at most once a turn, and not on a member's first turn here or on a turn
+   * that is not managed. */
   context?(): { tokens?: number; window?: number; compactAt?: number } | undefined;
   /** Everything standing the driver is handed with the turn. A session is
    * resumed only while all of it is unchanged: what main's warm process is
@@ -169,8 +175,9 @@ export interface RoomSessions {
   /** The thread is gone. */
   forget(threadId: string): void;
   /** How much is held, for tests and diagnostics: records, turns in flight,
-   * last speakers, and remembered line hashes across all records. */
-  tracked(): { records: number; flights: number; speakers: number; lines: number };
+   * last speakers, remembered line hashes across all records, and members
+   * whose last reading is remembered. */
+  tracked(): { records: number; flights: number; speakers: number; lines: number; readings: number };
 }
 
 /** How a line the session wrote itself is marked until it first appears in a
@@ -190,6 +197,20 @@ interface MemberRecord {
   /** When its last managed turn was seen to complete ok. Absent until then:
    * a record is trusted for the next turn only after that. */
   settledAt?: number;
+}
+
+/** What is known of a member's context on a thread from one turn to the
+ * next, whether or not a record survives between them. */
+interface Trace {
+  /** The session its last turn here was seen to end in: the one its next
+   * reading measures. Absent when that turn named no session or was not a
+   * managed one, so that its reading cannot be placed. */
+  ended?: string;
+  /** The member's measured context as the dispatch after that turn saw it,
+   * and the session it measures: the one that turn ended in. */
+  tokens?: number;
+  session?: string;
+  at: number;
 }
 
 interface Flight {
@@ -248,6 +269,8 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
    * managed or not: a driver keeps one process per thread, and it belongs to
    * whoever spoke last on that instance */
   const lastSpeakers = new Map<string, Map<string, { botId: string; at: number }>>();
+  /** thread → member → its context from turn to turn */
+  const traces = new Map<string, Map<string, Trace>>();
 
   const drop = (threadId: string, botId: string) => {
     const members = records.get(threadId);
@@ -305,6 +328,7 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     records.clear();
     inFlight.clear();
     lastSpeakers.clear();
+    traces.clear();
   }
 
   /** Let go of what can no longer matter: a record or a last speaker older
@@ -328,23 +352,46 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
       for (const [instanceId, last] of speakers) if (at - last.at > life) speakers.delete(instanceId);
       if (!speakers.size) lastSpeakers.delete(threadId);
     }
+    for (const [threadId, members] of traces) {
+      for (const [botId, trace] of members) if (at - trace.at > life) members.delete(botId);
+      if (!members.size) traces.delete(threadId);
+    }
   }
+
+  type Reading = ReturnType<NonNullable<RoomDispatchInput["context"]>>;
+  const usable = (value: number | undefined) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
 
   /** Whether the member's session is close to where its engine compacts it.
    * "auto" and "off" give the engine's threshold no number; the model's
    * window is then the only bound known. No reading, nothing to compare. */
-  function nearCompaction(context: ReturnType<NonNullable<RoomDispatchInput["context"]>>): boolean {
-    const tokens = context?.tokens;
-    if (typeof tokens !== "number" || !(tokens > 0)) return false;
-    const usable = (value: number | undefined) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+  function nearCompaction(context: Reading): boolean {
+    const tokens = usable(context?.tokens);
     const threshold = usable(context?.compactAt) ?? usable(context?.window);
-    return threshold !== undefined && tokens >= NEAR_COMPACTION * threshold;
+    return tokens !== undefined && threshold !== undefined && tokens >= NEAR_COMPACTION * threshold;
+  }
+
+  /** Whether the member's measured context fell since its turn before, in
+   * the same native session, and what this turn saw is kept for the next.
+   * A session's context only grows from one turn's end to the next, so a
+   * fall means it was compacted, trimmed or replaced, whether or not a hook
+   * said so. The reading describes the session the member's last turn here
+   * ended in; one from another session is not comparable (a new session
+   * starts small), and a missing one, now or before, is no signal and
+   * leaves what was kept as it is. */
+  function contextFell(trace: Trace | undefined, context: () => Reading): boolean {
+    if (trace?.ended === undefined) return false;
+    const tokens = usable(context()?.tokens);
+    if (tokens === undefined) return false;
+    const fell = trace.session === trace.ended && trace.tokens !== undefined && tokens < trace.tokens;
+    trace.tokens = tokens;
+    trace.session = trace.ended;
+    return fell;
   }
 
   /** The window's lines the member's session must be sent, when every
    * condition for sending only those holds. Undefined: start instead. */
   function unseenLines(
-    record: MemberRecord | undefined, input: RoomDispatchInput, config: string, idleMs: number,
+    record: MemberRecord | undefined, input: RoomDispatchInput, config: string, idleMs: number, context: () => Reading,
   ): { session: string; lines: DeltaLine[]; shown: Map<string, string> } | undefined {
     if (!record || input.reset) return undefined;
     const { handed, texts } = record;
@@ -353,7 +400,7 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     if (handed.config !== config) return undefined;
     if (record.settledAt === undefined || now() - record.settledAt > idleMs) return undefined;
     if (handed.session === undefined || !handedStateUsable(handed, handed.session, order)) return undefined;
-    if (nearCompaction(input.context?.())) return undefined;
+    if (nearCompaction(context())) return undefined;
     // The window must not reach behind the line the session's start left
     // out: such a line is in the window, was never shown, and is not offered.
     if (handed.omitted !== undefined && window.length && order.indexOf(window[0]!.id) <= order.indexOf(handed.omitted)) return undefined;
@@ -413,8 +460,19 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     const idleMs = roomSessionIdleMs(instance.driverKind);
     if (idleMs === undefined || instance.adapter.capabilities.strictResume !== true || !input.hooks || input.guestConfined) {
       drop(threadId, botId);
+      // This turn leaves a reading of whatever session it runs in, which is
+      // not followed here: the next reading measures nothing that is known.
+      // What an earlier one said of its session stays true.
+      const untracked = traces.get(threadId)?.get(botId);
+      if (untracked) untracked.ended = undefined;
       return legacy();
     }
+    // The member's reading, asked for once at most.
+    let asked: { reading: Reading } | undefined;
+    const context = () => (asked ??= { reading: input.context?.() }).reading;
+    // Read before anything else decides, so that every turn's reading is
+    // kept for the next. A context that fell is a compaction nobody reported.
+    if (contextFell(traces.get(threadId)?.get(botId), context)) drop(threadId, botId);
 
     const config = createHash("sha256").update(JSON.stringify(input.config)).digest("hex");
     const { order } = window;
@@ -436,7 +494,7 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
 
     // Another member's turn on this instance took the driver's one process
     // for the thread: main starts a new session here, and so does this.
-    const delta = spokeLast ? unseenLines(records.get(threadId)?.get(botId), input, config, idleMs) : undefined;
+    const delta = spokeLast ? unseenLines(records.get(threadId)?.get(botId), input, config, idleMs, context) : undefined;
     if (!delta) {
       drop(threadId, botId);
       handoffs.begin(threadId, input.claimId, { ...handoff, resumeCursor: undefined, placed: [] });
@@ -492,6 +550,10 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
         return;
       }
       inFlight.delete(event.threadId);
+      // Where the member is now: the next turn's reading measures this session.
+      const members = traces.get(event.threadId) ?? new Map<string, Trace>();
+      traces.set(event.threadId, members);
+      members.set(flight.botId, { ...members.get(flight.botId), ended: flight.session, at: now() });
       // Trusted for the member's next turn only when this one was seen to
       // complete ok, in the session the record names, with no compaction
       // reported meanwhile. A stop, a provider error, a hold or a parked
@@ -513,12 +575,13 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     forget(threadId) {
       records.delete(threadId);
       lastSpeakers.delete(threadId);
+      traces.delete(threadId);
       land(threadId);
     },
     tracked() {
       const count = (map: Map<string, Map<string, unknown>>) => [...map.values()].reduce((n, inner) => n + inner.size, 0);
       const lines = [...records.values()].flatMap((members) => [...members.values()]).reduce((n, record) => n + record.texts.size, 0);
-      return { records: count(records), flights: inFlight.size, speakers: count(lastSpeakers), lines };
+      return { records: count(records), flights: inFlight.size, speakers: count(lastSpeakers), lines, readings: count(traces) };
     },
   };
 }

@@ -897,16 +897,162 @@ describe("room sessions: a native compaction", () => {
     expect(ready().dispatch("editor", { context: () => ({ compactAt: 200_000 }) }).result.mode).toBe("resume");
     expect(ready().dispatch("editor", { context: () => undefined }).result.mode).toBe("resume");
     expect(ready().dispatch("editor", { context: undefined }).result.mode).toBe("resume");
-    // The reading is not even asked for unless a resume is otherwise possible.
+    // The reading is not asked for where it could not matter: a member's
+    // first turn here, and a turn that is not managed.
     const asked = vi.fn(() => ({ tokens: 1, window: 200_000 }));
     const first = room();
     first.say("Cut the intro.");
     first.dispatch("editor", { context: asked });
     ready().dispatch("editor", { context: asked, hooks: false });
-    ready().dispatch("editor", { context: asked, reset: true });
     expect(asked).not.toHaveBeenCalled();
+    // Once per turn after that, for both rules that read it.
     ready().dispatch("editor", { context: asked });
     expect(asked).toHaveBeenCalledOnce();
+  });
+});
+
+// The second signal for a compaction, for when the engine's hook never
+// arrives: within one native session a member's measured context only grows
+// from one turn's end to the next.
+describe("room sessions: a measured context that went down", () => {
+  const reading = (tokens?: number) => ({ context: () => (tokens === undefined ? undefined : { tokens, window: 1_000_000 }) });
+  /** Editor's first turn (S1), then a second that saw `tokens` after the first. */
+  const two = (tokens?: number) => {
+    const r = room();
+    r.say("Cut the intro.");
+    r.run("editor", "S1");
+    r.say("Trim the middle.");
+    const second = r.dispatch("editor", reading(tokens));
+    expect(second.result.mode).toBe("resume");
+    r.finish(second, "S1", { reply: "Trimmed." });
+    r.say("Tighten the outro.");
+    return r;
+  };
+
+  it("starts when the reading is lower than at the member's previous turn in the same session", () => {
+    const r = two(90_000);
+    const turn = r.dispatch("editor", reading(30_000));
+    expect(turn.result).toStrictEqual({ mode: "start", text: r.full(turn), send: {} });
+    // the record went with it, as for any distrust
+    expect(r.sessions.tracked()).toMatchObject({ records: 0 });
+  });
+
+  it("leaves the other rules to decide when the reading is equal or grew", () => {
+    expect(two(90_000).dispatch("editor", reading(90_000)).result.mode).toBe("resume");
+    expect(two(90_000).dispatch("editor", reading(90_001)).result.mode).toBe("resume");
+    // and they still decide: a reset is a start whatever the reading says
+    expect(two(90_000).dispatch("editor", { ...reading(120_000), reset: true }).result.mode).toBe("start");
+  });
+
+  it("takes a reading that is missing on either side for no signal", () => {
+    // none now
+    expect(two(90_000).dispatch("editor", reading(undefined)).result.mode).toBe("resume");
+    expect(two(90_000).dispatch("editor").result.mode).toBe("resume");
+    // none before
+    expect(two(undefined).dispatch("editor", reading(30_000)).result.mode).toBe("resume");
+    // and a missing one in between does not hide a fall across it
+    const r = two(90_000);
+    const third = r.dispatch("editor", reading(undefined));
+    expect(third.result.mode).toBe("resume");
+    r.finish(third, "S1", { reply: "Tightened." });
+    r.say("Export it.");
+    expect(r.dispatch("editor", reading(30_000)).result.mode).toBe("start");
+  });
+
+  it("catches a compaction whose hook never arrived: the turn after it is a start", () => {
+    const r = room();
+    r.say("Cut the intro. ALPHA");
+    r.run("editor", "S1", { reply: "Intro cut." });
+    // turns 2..n resume S1 with deltas while its context grows
+    for (const [n, tokens] of [40_000, 90_000, 150_000].entries()) {
+      r.say(`Step ${n}.`);
+      const turn = r.dispatch("editor", reading(tokens));
+      expect(r.body(turn), `step ${n}`).toBe(`${NOTE}\nOmkar: Step ${n}.`);
+      r.finish(turn, "S1", { reply: `Did ${n}.` });
+    }
+    // During that last turn the CLI compacted S1. No PreCompact, no
+    // SessionStart(compact) reached the harness: distrust was never called.
+    // The turn completed ok; its reading is what the summary weighs.
+    r.say("And now?");
+    const after = r.dispatch("editor", reading(25_000));
+    expect(after.result).toStrictEqual({ mode: "start", text: r.full(after), send: {} });
+    expect(after.result.text).toContain("Omkar: Cut the intro. ALPHA\nEditor: Intro cut.");
+    // The warm session goes on (no reset) and is recorded with the window:
+    // from here its context grows again, and so do the deltas.
+    r.finish(after, "S1", { reply: "Here." });
+    r.say("Next.");
+    const next = r.dispatch("editor", reading(40_000));
+    expect(next.result.send.resumeCursor).toBe("S1");
+    expect(r.body(next)).toBe(`${NOTE}\nOmkar: Next.`);
+  });
+
+  it("catches one that happened on a start which went on in the same warm session", () => {
+    const r = two(90_000);
+    // the turn fails, so the next is a start; the driver's process survived
+    const failed = r.dispatch("editor", reading(120_000));
+    r.finish(failed, "S1", { ok: false });
+    r.say("Try again.");
+    const start = r.dispatch("editor", reading(130_000));
+    expect(start.result.mode).toBe("start");
+    // it runs in S1 again, and S1 compacts while it does, unseen
+    r.finish(start, "S1", { reply: "Tightened." });
+    r.say("Export it.");
+    expect(r.dispatch("editor", reading(20_000)).result.mode).toBe("start");
+  });
+
+  it("does not take a new session's smaller context for a fall", () => {
+    // Another member's turn takes the process: the editor's next turn starts
+    // a new session, whose context is of course smaller than the old one's.
+    const r = two(90_000);
+    r.run("writer", "W1");
+    r.say("Editor, again.");
+    const back = r.dispatch("editor", reading(120_000));
+    expect(back.result.mode).toBe("start");
+    r.finish(back, "S2", { reply: "Back." });
+    r.say("Editor, once more.");
+    const next = r.dispatch("editor", reading(15_000));
+    expect(next.result.send.resumeCursor).toBe("S2");
+    // and from there the comparison is within S2
+    r.finish(next, "S2", { reply: "Again." });
+    r.say("Editor, last one.");
+    expect(r.dispatch("editor", reading(9_000)).result.mode).toBe("start");
+  });
+
+  it("does not compare against a turn that was never seen to end, or was not managed", () => {
+    const lost = two(90_000);
+    const abandoned = lost.dispatch("editor", reading(100_000));
+    lost.bind(abandoned);
+    lost.say("Anyone?");
+    // a start anyway (the record went with the abandoned turn); what matters
+    // is that the reading it sees is not held against a later session
+    lost.finish(lost.dispatch("editor", reading(100_000)), "S9", { reply: "Here." });
+    lost.say("Still there?");
+    expect(lost.dispatch("editor", reading(10_000)).result.send.resumeCursor).toBe("S9");
+
+    const confined = two(90_000);
+    confined.finish(confined.dispatch("editor", { ...reading(100_000), guestConfined: true }), "S-guest", { reply: "Confined." });
+    confined.say("Back to normal.");
+    confined.finish(confined.dispatch("editor", reading(100_000)), "S1", { reply: "Here." });
+    confined.say("And again.");
+    expect(confined.dispatch("editor", reading(100_000)).result.send.resumeCursor).toBe("S1");
+  });
+
+  it("keeps what it knew of a session across a turn it did not manage, without trusting that turn's reading", () => {
+    // S1 was last seen at 90,000. A guest's turn then runs somewhere the
+    // module does not follow and leaves its own small reading behind.
+    const r = two(90_000);
+    r.finish(r.dispatch("editor", { ...reading(90_000), guestConfined: true }), "S-guest", { reply: "Confined." });
+    r.say("Back to normal.");
+    // That reading is the guest session's: it says nothing about S1, and is
+    // not taken for S1's new size either.
+    const back = r.dispatch("editor", reading(5_000));
+    expect(back.result.mode).toBe("start");
+    // The start goes on in S1, which compacts while it runs, unseen.
+    r.finish(back, "S1", { reply: "Here." });
+    r.say("And again.");
+    // 40,000 is lower than the 90,000 S1 was last seen at: a start.
+    const next = r.dispatch("editor", reading(40_000));
+    expect(next.result).toStrictEqual({ mode: "start", text: r.full(next), send: {} });
   });
 });
 
@@ -1121,16 +1267,16 @@ describe("room sessions: what it keeps, and that it cannot fail a turn", () => {
     first.run("editor", "T1");
     second.say("Two.");
     second.run("writer", "T2");
-    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 0, speakers: 2 });
+    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 0, speakers: 2, readings: 2 });
     expect(first.sessions.tracked().lines).toBeGreaterThan(0);
     first.state.enabled = false;
     // one turn anywhere sees the setting off, and everything is let go
     second.say("More.");
     const off = second.dispatch("writer");
     expect(off.result.mode).toBe("legacy");
-    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 0, speakers: 0, lines: 0 });
+    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 0, speakers: 0, lines: 0, readings: 0 });
     second.finish(off, "T2", { reply: "Ok." });
-    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 0, speakers: 0, lines: 0 });
+    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 0, speakers: 0, lines: 0, readings: 0 });
     first.state.enabled = true;
     first.say("More for one.");
     expect(first.dispatch("editor").result.mode).toBe("start");
@@ -1170,14 +1316,15 @@ describe("room sessions: what it keeps, and that it cannot fail a turn", () => {
     first.state.now += IDLE_MS + 1;
     third.say("Three.");
     third.run("scout", "T3");
-    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 1, speakers: 1 });
+    // (the settled turn's last reading went with its record; scout's is new)
+    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 1, speakers: 1, readings: 1 });
 
     // A day on, the turn that never ended is given up with its record.
     first.state.now += 24 * 60 * 60_000 + 1;
     third.say("Three again.");
     const later = third.dispatch("scout");
     expect(later.result.mode).toBe("start");
-    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 1, speakers: 1, lines: 0 });
+    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 1, speakers: 1, lines: 0, readings: 0 });
   });
 
   it("remembers how no more lines read than a window holds, however long the room runs", () => {
@@ -1225,8 +1372,10 @@ describe("room sessions: what it keeps, and that it cannot fail a turn", () => {
 // turns end well, badly or not at all, the driver refuses a resume now and
 // then, a warm process ends without the harness seeing it, a turn ends in
 // another session than the one that accepted it, and the engine compacts a
-// session mid-turn. The model keeps, per native session, every line that
-// session was shown, by a tag that changes when the line's text does.
+// session mid-turn, with its hook delivered or lost. The model keeps, per
+// native session, every line that session was shown, by a tag that changes
+// when the line's text does, and how large the session's context is: the
+// reading the next turn is given.
 // Whatever the interleaving: every line of the window a turn was built from,
 // as it reads now, is in the text sent or already in the session that runs
 // the turn (the invariant in the module header), and no accepted turn shows
@@ -1271,6 +1420,10 @@ describe("room sessions: randomized rooms", () => {
       const warm = new Map<string, { botId: string; session: string }>();
       /** instances whose warm process ended without the harness being told */
       const endedUnseen = new Set<string>();
+      /** each session's context, and each member's last reading in this room with the session it measured */
+      const size = new Map<string, number>();
+      const reading = new Map<string, { tokens: number; session: string }>();
+      let lostHooks = 0;
       let sessionSerial = 0;
       let deltas = 0;
       let starts = 0;
@@ -1287,7 +1440,7 @@ describe("room sessions: randomized rooms", () => {
         // A warm process crashes between turns; nothing tells the harness.
         if (random() < 0.05 && warm.delete(instance.instanceId)) endedUnseen.add(instance.instanceId);
         const reset = random() < 0.05;
-        const turn = r.dispatch(botId, { instance, reset });
+        const turn = r.dispatch(botId, { instance, reset, context: () => (reading.has(botId) ? { tokens: reading.get(botId)!.tokens, window: 1_000_000 } : undefined) });
         expect(turn.result.mode).not.toBe("legacy");
         const windowTags = sentinels(turn.input.window.text);
         const sentTags = sentinels(turn.result.text);
@@ -1341,8 +1494,16 @@ describe("room sessions: randomized rooms", () => {
         // After the provider acted, the driver relaunches into another session
         // and the turn ends there.
         const switchTo = random() < 0.05 ? `N${sessionSerial++}` : undefined;
-        // The engine compacts the session while the turn runs, and says so.
-        const compacts = random() < 0.05;
+        // The engine compacts the session while the turn runs (one with
+        // enough in it to compact). Its hook says so, or never arrives. The
+        // module is only promised to see a lost hook through the reading, so
+        // the model loses one only where the reading can show it: the turn
+        // before reported this session's size, and this turn reports its own.
+        const before = size.get(session) ?? 0;
+        const compacts = !switchTo && before >= 12 && random() < 0.2;
+        const known = reading.get(botId);
+        const hookLost = compacts && known?.session === session && known.tokens === before && random() < 0.6;
+        if (hookLost) lostHooks += 1;
         r.finish(turn, session, {
           ok, rebuilt, reply: `answers <L${line++}>`,
           notes: random() < 0.4 ? [`note <L${line++}>`] : [],
@@ -1350,7 +1511,7 @@ describe("room sessions: randomized rooms", () => {
           during: () => {
             for (let n = Math.floor(random() * 3); n > 0; n--) append();
             if (random() < 0.1) edit();
-            if (compacts) r.sessions.distrust(r.threadId, botId);
+            if (compacts && !hookLost) r.sessions.distrust(r.threadId, botId);
           },
         });
         // The provider acted on the prompt either way: the session that took
@@ -1365,6 +1526,14 @@ describe("room sessions: randomized rooms", () => {
         held.set(ended, wrote);
         // A compacted session holds a summary, none of the lines as they read.
         if (compacts) held.set(ended, new Set());
+        // A session's context grows with every turn it takes; compacted, it
+        // is a fraction of what it was; a new session starts small.
+        size.set(session, before + 5 + Math.floor(random() * 20));
+        if (switchTo) size.set(ended, 3 + Math.floor(random() * 5));
+        if (compacts) size.set(ended, 1 + Math.floor(random() * 3));
+        // The turn's last measurement becomes the member's reading here. Now
+        // and then a turn reports none and the old one stands.
+        if (hookLost || random() >= 0.1) reading.set(botId, { tokens: size.get(ended)!, session: ended });
         endedUnseen.delete(instance.instanceId);
         if (ok) warm.set(instance.instanceId, { botId, session: ended });
         else warm.delete(instance.instanceId);
@@ -1374,6 +1543,7 @@ describe("room sessions: randomized rooms", () => {
       expect(starts).toBeGreaterThan(20);
       expect(fromDisk).toBeGreaterThan(0);
       expect(updates).toBeGreaterThan(0);
+      expect(lostHooks).toBeGreaterThan(0);
     });
   }
 });
