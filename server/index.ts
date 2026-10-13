@@ -2261,14 +2261,13 @@ function externalRuntimeCapability(header: string | string[] | undefined): Inter
   };
 }
 
-/** Roots begun for a test capability minted while no turn ran in its
- * thread (the testing route below): they stand in for a turn, so the next
- * real turn there ends them, or the runtime would never overlap the two. */
+/** Roots begun for a test capability minted while no turn ran in its thread
+ * (the testing route below): they stand in for a turn, so they end with their
+ * generation (the next real turn there revokes it), as a turn's root would. */
 const standInRoots = new Set<string>();
 function beginInternalCapabilityGeneration(threadId: string, generation = randomUUID()): string {
   const previous = activeInternalGenerationByThread.get(threadId);
   if (previous) revokeInternalCapabilityGeneration(threadId, previous);
-  if (previous && standInRoots.delete(previous)) coordinator.endTurn(previous, { ok: true, text: "" });
   activeInternalGenerationByThread.set(threadId, generation);
   return generation;
 }
@@ -2339,6 +2338,7 @@ function endForeignTurns(threadId: string, generation?: string): void {
 }
 
 function revokeInternalCapabilityGeneration(threadId: string, generation: string): void {
+  if (standInRoots.delete(generation)) coordinator.endTurn(generation, { ok: true, text: "" });
   endForeignTurns(threadId, generation);
   if (guestDrivenTurns.get(threadId) === generation) guestDrivenTurns.delete(threadId);
   for (const [token, capability] of internalCapabilities) {
@@ -17416,8 +17416,8 @@ ROUTES.push(createBotMessageRoutes({
   cancelGroupTurnOperations, closeOpenApprovals,
 }));
 // Conversation reads and uploads: the /api/bots snapshot, message pages, a
-// message's image or file, uploads, attachments, search and the export. The
-// `let` slots are read per request; visibility is computed as the preamble does.
+// message's image or file, uploads, attachments, search, the export and a
+// conversation's job. `let` slots are read per request, visibility as the preamble does.
 ROUTES.push(createThreadRoutes({
   store, cfg, sessions, groupUsageReader, lendingEnabled,
   hostedWorkspace: HOSTED_WORKSPACE, sessionCookie: SESSION_COOKIE, loopback: LOOPBACK, defaultPage: DEFAULT_PAGE,
@@ -17426,7 +17426,7 @@ ROUTES.push(createThreadRoutes({
   companionMutationToken: () => companionMutationToken,
   cliOwnerToken: () => cliOwnerToken,
   pageSize, messagePage, messageWindow, publicBotQueuedMessages, publicGroupState, wireBot, wireTask,
-  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo,
+  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo, coordinator, groupThreadIsWorking,
 }));
 // Creating a bot (POST /api/bots): the saved New bot defaults and a preset
 // are applied around the store's own creation.

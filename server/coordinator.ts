@@ -7,7 +7,7 @@
 import { RuntimeCoordinator } from "./runtime-coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
 import type { LegacyThreadResolver } from "./runtime/import-legacy.ts";
-import type { EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView, TurnEvidence } from "./runtime/types.ts";
+import type { Assignment, EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView, TurnEvidence } from "./runtime/types.ts";
 
 export type { LegacyThreadResolver };
 
@@ -183,6 +183,13 @@ export interface Coordinator {
     options?: HandoffOptions): { node: HandoffView; duplicate: boolean };
   /** One assignment with its children and inbox (assignment_status). */
   status(id: string): StatusView | undefined;
+  /** The work a conversation holds, as a person reads it (GET
+   * /api/threads/:id/job): every assignment this conversation was given (its
+   * own turns' roots, or a teammate's assignment running in it) that was
+   * still open at `since` or began after it, each with everything handed out
+   * under it. `scopes` are those starting rows; rows are oldest first.
+   * `botId` names the conversation's own bot, for a bot's thread. */
+  job(threadId: string, since: number, botId?: string): { scopes: string[]; rows: Assignment[] };
   /** Undelivered inbox items for a polling requester, marked delivered. */
   poll(owner: Owner): { items: StatusView["inbox"]; assignments: HandoffView[] };
   /** Non-terminal work the conversation in this thread is waiting on, rooms included. */
