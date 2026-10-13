@@ -13,11 +13,19 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
+import { BOT_PROFILE_LIMITS, fitsOnOneLine } from "../../shared/bot-profile.ts";
 import { parseSkillMd } from "../../shared/skill-md.ts";
 import { parseToolScope, type ToolScope } from "../../shared/tool-scope.ts";
 import { usageError } from "./args.ts";
 
-const SOUL_MAX_BYTES = 24_000;
+// The limits the server holds a write to, checked here so a file that breaks
+// one stops before the first write (team-file.test.ts pins them to the server's).
+/** A team's brief: server/section-context.ts SECTION_CONTEXT_MAX_BYTES. */
+export const TEAM_BRIEF_MAX_BYTES = 24_000;
+/** A room's brief (its bulletin): server/routes/groups.ts. */
+export const ROOM_BRIEF_MAX_CHARS = 12_000;
+/** One SKILL.md: server/new-bot-defaults.ts botSkillTemplateSchema. */
+export const SKILL_MAX_BYTES = 262_144;
 
 const secret = z.union([
   z.object({ env: z.string().trim().min(1) }).strict(),
@@ -38,10 +46,13 @@ const enginesSchema = z.object({
   openaiCompatible: z.object({ key: secret, baseUrl: z.union([url, secret]) }).strict().optional(),
 }).strict();
 
+const oneLine = (what: string, max: number) => z.string().max(max, `must be at most ${max} characters`)
+  .refine(fitsOnOneLine, `${what} must fit on one line`);
+
 const botFields = {
   team: z.string().trim().min(1).max(60).optional(),
-  title: z.string().max(200).optional(),
-  description: z.string().max(4_000).optional(),
+  title: oneLine("a title", BOT_PROFILE_LIMITS.title).optional(),
+  description: z.string().max(BOT_PROFILE_LIMITS.description, `must be at most ${BOT_PROFILE_LIMITS.description} characters`).optional(),
   soul: textOrFile.optional(),
   model: z.string().regex(/^[\w.-]+\/\S.*$/, "must be INSTANCE/MODEL, such as claude/claude-sonnet-5-5").optional(),
   effort: z.enum(["none", "low", "medium", "high", "xhigh", "max"]).optional(),
@@ -63,8 +74,8 @@ const teamFileSchema = z.object({
     prune: z.boolean().optional(),
   }).strict()).optional(),
   bots: z.array(z.object({
-    name: z.string().trim().min(1).max(100),
-    was: z.string().trim().min(1).max(100).optional(),
+    name: oneLine("a name", BOT_PROFILE_LIMITS.name).pipe(z.string().trim().min(1, "must not be empty")),
+    was: z.string().trim().min(1).max(BOT_PROFILE_LIMITS.name).optional(),
     chief: z.boolean().optional(),
     manages: z.array(z.string().trim().min(1).max(60)).optional(),
     ...botFields,
@@ -98,7 +109,8 @@ export interface DesiredBot {
   computer?: "auto" | "off" | "browser" | "local" | "vm" | "cloud";
   cwd?: string;
   browser?: { enabled: boolean; profile?: string };
-  tools?: ToolScope;
+  /** null: no selection, so every tool (a file's `tools: {}` or `{ deny: [] }`). */
+  tools?: ToolScope | null;
   skills: DesiredSkill[];
 }
 export interface DesiredRoom { name: string; team?: string; members: string[]; brief?: string; responder?: string }
@@ -118,6 +130,11 @@ const ENGINE_KIND: Record<string, string> = {
   claude: "claude", openai: "openai", openrouter: "openrouter", xai: "xai", groq: "groq", mistral: "mistral", cerebras: "cerebras",
   openaiCompatible: "openai-compatible",
 };
+
+/** A tool selection that leaves every tool in: none, or one with no allow list and nothing denied. */
+export function everyTool(scope: { allow?: unknown; deny?: unknown } | null | undefined): boolean {
+  return !scope || (!Array.isArray(scope.allow) && !(Array.isArray(scope.deny) && scope.deny.length > 0));
+}
 
 /** Read and check a team file. Every problem is a usage error (exit 2) that names where it is. */
 export function loadTeamFile(path: string): TeamFile {
@@ -166,6 +183,9 @@ export function checkTeamFile(input: TeamFileInput, file: string, dir: string): 
   }
   const teams: DesiredTeam[] = (input.teams ?? []).map((team) => {
     const brief = text(dir, team.brief, `team "${team.name}" brief`);
+    if (brief !== undefined && Buffer.byteLength(brief.trimEnd(), "utf8") > TEAM_BRIEF_MAX_BYTES) {
+      throw usageError(`team "${team.name}": brief is over ${TEAM_BRIEF_MAX_BYTES} bytes`);
+    }
     return { name: team.name, ...(brief !== undefined ? { brief } : {}), prune: team.prune === true };
   });
   const teamSeen = new Set<string>();
@@ -185,15 +205,19 @@ export function checkTeamFile(input: TeamFileInput, file: string, dir: string): 
       cwd = resolve(bot.cwd);
     }
     const soul = text(dir, bot.soul, `${where} soul`);
-    if (soul !== undefined && Buffer.byteLength(soul, "utf8") > SOUL_MAX_BYTES) throw usageError(`${where}: soul is over ${SOUL_MAX_BYTES} bytes`);
-    let tools: ToolScope | undefined;
+    if (soul !== undefined && Buffer.byteLength(soul.trimEnd(), "utf8") > BOT_PROFILE_LIMITS.soul) throw usageError(`${where}: soul is over ${BOT_PROFILE_LIMITS.soul} bytes`);
+    let tools: ToolScope | null | undefined;
     if (bot.tools) {
       const scope = parseToolScope(bot.tools);
       if (!scope.ok) throw usageError(`${where}: tools: ${scope.error} (selectors look like native:Bash or mcp:server:tool; docs/tool-selection.md)`);
-      tools = scope.scope ?? {};
+      // Nothing allowed-only and nothing denied is no selection at all: the
+      // scope is cleared rather than stored empty (which would mount every
+      // tool server behind a gate that filters nothing).
+      tools = everyTool(scope.scope) ? null : scope.scope!;
     }
     const skills = (bot.skills ?? []).map((skill) => {
       const body = readRelative(dir, skill.file, `${where} skill`);
+      if (Buffer.byteLength(body, "utf8") > SKILL_MAX_BYTES) throw usageError(`${where}: ${skill.file} is over ${SKILL_MAX_BYTES / 1024} KiB`);
       const parsed = parseSkillMd(body);
       if ("error" in parsed) throw usageError(`${where}: ${skill.file}: ${parsed.error}`);
       return { name: parsed.name, description: parsed.description, text: body, enabled: skill.enabled !== false, file: skill.file };
@@ -209,7 +233,7 @@ export function checkTeamFile(input: TeamFileInput, file: string, dir: string): 
       ...(bot.model ? { model: { instanceId: bot.model.slice(0, slash), model: bot.model.slice(slash + 1) } } : {}),
       ...(bot.effort ? { effort: bot.effort } : {}), ...(bot.approval ? { approval: bot.approval } : {}),
       ...(bot.computer ? { computer: bot.computer } : {}), ...(cwd ? { cwd } : {}), ...(browser ? { browser } : {}),
-      ...(tools ? { tools } : {}), skills,
+      ...(tools !== undefined ? { tools } : {}), skills,
     };
   });
   const chiefs = new Map<string, string>();
@@ -228,6 +252,7 @@ export function checkTeamFile(input: TeamFileInput, file: string, dir: string): 
       throw usageError(`${where}: responder must be everyone, mentions, or one of its members`);
     }
     const brief = text(dir, room.brief, `${where} brief`);
+    if (brief !== undefined && brief.trimEnd().length > ROOM_BRIEF_MAX_CHARS) throw usageError(`${where}: brief is over ${ROOM_BRIEF_MAX_CHARS} characters`);
     return { name: room.name, ...(room.team ? { team: room.team } : {}), members: room.members, ...(brief !== undefined ? { brief } : {}), ...(room.responder ? { responder: room.responder } : {}) };
   });
   const engines: DesiredEngine[] = Object.entries(input.engines ?? {}).flatMap(([name, value]) => {

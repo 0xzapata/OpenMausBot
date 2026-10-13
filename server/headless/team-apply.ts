@@ -19,13 +19,14 @@ import { basename, dirname, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 
 import { approvalModeFor } from "../../shared/approval-mode.ts";
+import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { lineDiff } from "../../shared/line-diff.ts";
 import { mask } from "../../shared/redact.ts";
 import { describeMs, EXIT, flag, HeadlessError, parseDuration, usageError } from "./args.ts";
 import { explain, type HeadlessClient } from "./client.ts";
 import type { VerbContext, VerbOutcome } from "./context.ts";
 import { applyEngine, ENGINE_KINDS, readSecret } from "./engine.ts";
-import { loadTeamFile, type DesiredBot, type TeamFile } from "./team-file.ts";
+import { everyTool, loadTeamFile, type DesiredBot, type TeamFile } from "./team-file.ts";
 
 type Rec = Record<string, any>;
 const enc = encodeURIComponent;
@@ -52,8 +53,9 @@ export interface Tally {
 }
 
 const sameSet = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((item) => b.includes(item));
-const canonicalScope = (scope: Rec | undefined) => JSON.stringify(scope === undefined ? null
-  : Object.fromEntries(["allow", "deny"].filter((field) => Array.isArray(scope[field])).map((field) => [field, [...new Set(scope[field] as string[])].sort()])));
+/** A tool selection in one comparable form; every way of selecting every tool reads the same. */
+const canonicalScope = (scope: Rec | null | undefined) => everyTool(scope) ? "every tool"
+  : JSON.stringify(Object.fromEntries(["allow", "deny"].filter((field) => Array.isArray(scope![field])).map((field) => [field, [...new Set(scope![field] as string[])].sort()])));
 
 const lines = (n: number) => `${n} line${n === 1 ? "" : "s"}`;
 
@@ -105,7 +107,11 @@ export function botPatch(desired: DesiredBot, echo: Rec, team: string | undefine
       changes.push(`browser profile ${echo.browserProfile ?? "its own"} → ${desired.browser.profile}`);
     }
   }
-  if (desired.tools && canonicalScope(echo.toolScope) !== canonicalScope(desired.tools)) { patch.toolScope = desired.tools; changes.push("tools changed"); }
+  if (desired.tools !== undefined && canonicalScope(echo.toolScope) !== canonicalScope(desired.tools)) {
+    // null clears the selection on the server: every tool
+    patch.toolScope = desired.tools;
+    changes.push(desired.tools === null ? "tools: every tool" : "tools changed");
+  }
   return { patch, changes };
 }
 
@@ -140,12 +146,16 @@ export async function reconcile(client: HeadlessClient, file: TeamFile, options:
       const instanceId = onlyClaudeApi ? spec.apiInstance! : spec.instance;
       const install = engine.install === true && instances.find((instance) => instance.instanceId === instanceId)?.snapshot?.state !== "available";
       const keyValue = needsKey ? readSecret(engine.key, options.env, `engine ${engine.kind} key`) : "";
-      const baseUrl = engine.baseUrl === undefined ? undefined : typeof engine.baseUrl === "string" ? engine.baseUrl : readSecret(engine.baseUrl, options.env, `engine ${engine.kind} base URL`);
+      // A base URL kept as a secret is read, like the key, only when it is written
+      // (or compared, for an engine whose address the server echoes), and never shown.
+      const secretUrl = engine.baseUrl !== undefined && typeof engine.baseUrl !== "string";
+      const baseUrl = engine.baseUrl === undefined ? undefined : typeof engine.baseUrl === "string" ? engine.baseUrl
+        : needsKey || typeof status.url === "string" ? readSecret(engine.baseUrl, options.env, `engine ${engine.kind} base URL`) : undefined;
       const request = { kind: engine.kind, key: keyValue, ...(baseUrl ? { baseUrl } : {}), onlyClaudeApi, rotate: options.rotateSecrets, install, dryRun: !options.apply };
       const result = await applyEngine(client, request);
       if (options.apply && (result.changed.length || install)) tally.writes += (result.changed.length ? 1 : 0) + (install ? 1 : 0);
       if (!result.changed.length && !install) { note(`engine ${engine.kind}: already set`, "unchanged"); continue; }
-      note(`engine ${engine.kind}: ${[...result.changed.map((field: string) => field === "key" ? `key ${mask(keyValue)}` : field === "everyClaudeBot" ? (onlyClaudeApi ? "only Claude (API key) bots use the key" : "every Claude bot uses the key") : `base URL ${baseUrl}`),
+      note(`engine ${engine.kind}: ${[...result.changed.map((field: string) => field === "key" ? `key ${mask(keyValue)}` : field === "everyClaudeBot" ? (onlyClaudeApi ? "only Claude (API key) bots use the key" : "every Claude bot uses the key") : secretUrl ? "base URL set" : `base URL ${baseUrl}`),
         ...(install ? ["install"] : [])].join(" · ")}`, status.configured === true ? "changed" : "created");
     }
   }
@@ -189,9 +199,30 @@ export async function reconcile(client: HeadlessClient, file: TeamFile, options:
     }
   }
   let current = await fleet();
+  const existingFor = (desired: DesiredBot): Rec | undefined =>
+    (desired.was ? findBot(current.bots ?? [], desired.was) : undefined) ?? findBot(current.bots ?? [], desired.name);
+  // A tool selection the bot's engine cannot hold stops every turn it runs
+  // with a setup error: refuse it before anything is written, by the
+  // engine's own rule (shared/tool-scope-support.ts).
+  let workspaceDefault: string | undefined;
+  for (const desired of file.bots) {
+    if (!desired.tools) continue;
+    const existing = existingFor(desired);
+    // a new bot with no model of its own runs on the workspace's default
+    if (!desired.model && !existing) workspaceDefault ??= (await client.json<Rec>("/api/bot-defaults")).modelSelection?.instanceId;
+    const instanceId = desired.model?.instanceId ?? existing?.modelSelection?.instanceId ?? workspaceDefault;
+    const driverKind = instances.find((instance) => instance.instanceId === instanceId)?.driverKind;
+    if (typeof driverKind !== "string") continue;
+    try {
+      assertToolScopeSupported(driverKind, desired.tools);
+    } catch (error) {
+      throw new HeadlessError(`bot "${desired.name}": ${error instanceof Error ? error.message : String(error)}`, EXIT.failed,
+        "this engine limits only MCP tools (mcp:SERVER:TOOL): leave native tools out of its selection, or give the bot an engine that can limit them (docs/tool-selection.md)");
+    }
+  }
   const created = new Set<string>();
   for (const desired of file.bots) {
-    const existing = (desired.was ? findBot(current.bots ?? [], desired.was) : undefined) ?? findBot(current.bots ?? [], desired.name);
+    const existing = existingFor(desired);
     if (!existing) {
       note(`bot "${desired.name}": create${describeNew(desired) ? ` (${describeNew(desired)})` : ""}`, "created");
       created.add(key(desired.name));
@@ -258,10 +289,10 @@ export async function reconcile(client: HeadlessClient, file: TeamFile, options:
     if (options.apply) await write(`/api/bots/${enc(bot!.id)}`, { method: "PATCH", body: JSON.stringify({ chiefOfStaff: true, managedSections: managed, acknowledgePeerScope: true }) });
   }
 
-  // 6. rooms
+  // 6. rooms; a member the file itself makes has no id until it is applied
   const rooms: Rec[] = (current.groups ?? []).filter((group: Rec) => !group.dm);
   for (const room of file.rooms) {
-    const memberIds = room.members.map((name) => botId(name) ?? (options.apply ? undefined : `new:${name}`));
+    const memberIds = room.members.map((name) => botId(name) ?? (!options.apply && created.has(key(name)) ? `new:${name}` : undefined));
     const missing = room.members.filter((_name, index) => !memberIds[index]);
     if (missing.length) throw new HeadlessError(`room "${room.name}": no bot named ${missing.map((name) => `"${name}"`).join(", ")}`, EXIT.failed);
     const ids = memberIds as string[];
@@ -402,7 +433,7 @@ export async function teamExportVerb(ctx: VerbContext): Promise<VerbOutcome> {
     if (bot.computer) entry.computer = bot.computer;
     if (bot.cwd) entry.cwd = bot.cwd;
     if (bot.browser === false || bot.browserProfile) entry.browser = { enabled: bot.browser !== false, ...(bot.browserProfile ? { profile: bot.browserProfile } : {}) };
-    if (bot.toolScope) entry.tools = bot.toolScope;
+    if (!everyTool(bot.toolScope)) entry.tools = bot.toolScope;
     const listing: Rec[] = (await client.json<Rec>(`/api/bots/${enc(bot.id)}/skills`)).skills ?? [];
     if (listing.length) entry.skills = [];
     for (const skill of listing) {

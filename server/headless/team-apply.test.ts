@@ -33,7 +33,8 @@ function workspace(seed: { bots?: Rec[]; groups?: Rec[]; sections?: string[]; co
       if (method === "PUT") for (const [name, value] of Object.entries(body as Rec)) state.config[name] = { ...state.config[name], configured: true, ...(value.everyClaudeBot !== undefined ? { everyClaudeBot: value.everyClaudeBot } : {}) };
       return state.config;
     }
-    if (url.pathname === "/api/instances") return { instances: [{ instanceId: "claude", snapshot: { state: "available" }, models: { default: "claude-sonnet-5", options: [{ id: "claude-sonnet-5" }, { id: "claude-haiku-5" }] } }] };
+    if (url.pathname === "/api/bot-defaults") return { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } };
+    if (url.pathname === "/api/instances") return { instances: [{ instanceId: "claude", driverKind: "claudeAgent", snapshot: { state: "available" }, models: { default: "claude-sonnet-5", options: [{ id: "claude-sonnet-5" }, { id: "claude-haiku-5" }] } }] };
     if (url.pathname === "/api/sidebar-sections") {
       if (method === "POST") state.sections.push(body.name);
       return { sections: state.sections };
@@ -91,7 +92,7 @@ const lead: DesiredBot = {
   skills: [{ name: "launch-report", description: "Write it.", text: "---\nname: launch-report\ndescription: Write it.\n---\nBody\n", enabled: true, file: "skills/launch-report/SKILL.md" }],
 };
 const priya: DesiredBot = { name: "Priya", team: "Launch Room", manages: [], title: "Skeptical buyer", approval: "full", computer: "browser",
-  browser: { enabled: true, profile: "guest" }, tools: { deny: ["native:Bash"] }, skills: [] };
+  browser: { enabled: true, profile: "guest" }, tools: { deny: ["mcp:mail:*"] }, skills: [] };
 const file = (patch: Partial<TeamFile> = {}): TeamFile => ({
   path: "/files/launch-room.yaml", engines: [], warnings: [],
   teams: [{ name: "Launch Room", brief: "We rehearse a launch.", prune: true }],
@@ -121,7 +122,7 @@ describe("team apply", () => {
       "POST /api/bots/bot-1/skill-template", "PATCH /api/bots/bot-1", "tool create_channel",
     ]);
     expect(state.bots.find((bot) => bot.name === "Priya")).toMatchObject({ section: "Launch Room", approvalMode: "full", computer: "browser",
-      browserProfile: "guest", toolScope: { deny: ["native:Bash"] } });
+      browserProfile: "guest", toolScope: { deny: ["mcp:mail:*"] } });
     expect(state.bots.find((bot) => bot.name === "Room Lead")).toMatchObject({ chiefOfStaff: true, managedSections: [], soul: "Lead the rehearsal.", cwd: "/work/room" });
 
     writes.length = 0;
@@ -189,12 +190,42 @@ describe("team apply", () => {
     await expect(reconcile(client, file({ engines: [engine] }), options({ env: {}, rotateSecrets: true }))).rejects.toThrow("ANTHROPIC_API_KEY is not set");
   });
 
+  it("keeps a base URL given as a secret out of the plan, and reads it only when the key is written", async () => {
+    const engine = { kind: "claude", key: { env: "ANTHROPIC_API_KEY" }, baseUrl: { env: "ANTHROPIC_BASE_URL" } };
+    const env = { ANTHROPIC_API_KEY: "sk-ant-test-0123456789abcdefghij", ANTHROPIC_BASE_URL: "https://gw.example.com/v1/team-7f3a9c" };
+    const { client } = workspace();
+    const first = await reconcile(client, file({ engines: [engine] }), options({ env }));
+    expect(first.lines[0]).toBe("engine claude: key «redacted 32 chars» · base URL set");
+    expect(JSON.stringify(first)).not.toContain("team-7f3a9c");
+    // set up already: a run without the gateway's variable has nothing to read
+    expect((await reconcile(client, file({ engines: [engine] }), options({ env: {} }))).lines).toEqual([]);
+  });
+
+  it("names a room member that is neither in the workspace nor in the file before anything is written", async () => {
+    const { client, writes } = workspace();
+    const stray = file({ rooms: [{ name: "Rehearsal", members: ["Room Lead", "Nobody"] }] });
+    await expect(reconcile(client, stray, options({ apply: false }))).rejects.toThrow('room "Rehearsal": no bot named "Nobody"');
+    expect(writes).toEqual([]);
+  });
+
   it("waits for a busy bot, then reports it unchanged", async () => {
     const { client, state } = workspace();
     await reconcile(client, file(), options());
     state.bots.find((bot) => bot.name === "Priya")!.busy = true;
     await expect(reconcile(client, file({ bots: [lead, { ...priya, title: "Changed" }] }), options({ waitIdleMs: 0 })))
       .rejects.toThrow('"Priya" is still working after 0s, so it was not changed');
+  });
+
+  it("refuses a tool selection the bot's engine cannot hold, before anything is written", async () => {
+    const { client, writes } = workspace();
+    // Claude limits MCP tools only: a built-in one in the selection would stop every turn it runs
+    for (const visitor of [{ ...priya, tools: { deny: ["native:Bash"] } }, { ...priya, model: { instanceId: "claude", model: "claude-haiku-5" }, tools: { deny: ["native:Bash"] } }]) {
+      // on the workspace's default engine, or on one the file names
+      await expect(reconcile(client, file({ bots: [lead, visitor] }), options({ apply: false })))
+        .rejects.toThrow('bot "Priya": claudeAgent: native tool selection is not supported by this engine');
+    }
+    expect(writes).toEqual([]);
+    expect((await reconcile(client, file(), options({ apply: false }))).created).toBe(4);
   });
 
   it("refuses an engine or model the server does not have", async () => {
@@ -215,7 +246,17 @@ describe("botPatch", () => {
 
   it("finds nothing to change when the echo already matches, whatever the order of tool selectors", () => {
     expect(botPatch({ ...same, model: { instanceId: "claude", model: "claude-sonnet-5" } }, echo, "Launch Room")).toEqual({ patch: {}, changes: [] });
-    expect(botPatch(priya, echo, "Launch Room")).toEqual({ patch: { toolScope: { deny: ["native:Bash"] } }, changes: ["tools changed"] });
+    expect(botPatch(priya, echo, "Launch Room")).toEqual({ patch: { toolScope: { deny: ["mcp:mail:*"] } }, changes: ["tools changed"] });
+  });
+
+  it("reads every way of selecting every tool as the same, and clears a selection to get there", () => {
+    const everything: DesiredBot = { ...same, tools: null };
+    // a bot with no selection, or an empty one stored by an earlier client, is already there
+    expect(botPatch(everything, { ...echo, toolScope: undefined }, "Launch Room")).toEqual({ patch: {}, changes: [] });
+    expect(botPatch(everything, { ...echo, toolScope: { deny: [] } }, "Launch Room")).toEqual({ patch: {}, changes: [] });
+    expect(botPatch(everything, echo, "Launch Room")).toEqual({ patch: { toolScope: null }, changes: ["tools: every tool"] });
+    // allowing nothing is a selection, not every tool
+    expect(botPatch({ ...same, tools: { allow: [] } }, { ...echo, toolScope: undefined }, "Launch Room").patch).toEqual({ toolScope: { allow: [] } });
   });
 
   it("sends Auto on this computer's confirmation only when the file itself says so", () => {

@@ -5,8 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile.ts";
+import { botSkillTemplateSchema } from "../new-bot-defaults.ts";
+import { SECTION_CONTEXT_MAX_BYTES } from "../section-context.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
-import { loadTeamFile } from "./team-file.ts";
+import { loadTeamFile, ROOM_BRIEF_MAX_CHARS, SKILL_MAX_BYTES, TEAM_BRIEF_MAX_BYTES } from "./team-file.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "omb-team-file-"));
 afterAll(() => removeTempDir(dir));
@@ -25,6 +28,8 @@ mkdirSync(join(dir, "souls"), { recursive: true });
 mkdirSync(join(dir, "skills", "launch-report"), { recursive: true });
 writeFileSync(join(dir, "souls", "lead.md"), "Lead the rehearsal.\n");
 writeFileSync(join(dir, "skills", "launch-report", "SKILL.md"), "---\nname: launch-report\ndescription: Write the report.\n---\nBody.\n");
+mkdirSync(join(dir, "skills", "huge"), { recursive: true });
+writeFileSync(join(dir, "skills", "huge", "SKILL.md"), `---\nname: huge\ndescription: Too big.\n---\n${"x".repeat(SKILL_MAX_BYTES)}\n`);
 
 describe("loadTeamFile", () => {
   it("puts defaults under every bot, reads souls and skills from beside the file, and keeps keys as references", () => {
@@ -61,7 +66,7 @@ rooms:
     expect(team.bots[0]).toEqual({
       name: "Room Lead", team: "Launch Room", chief: true, manages: ["Support"], soul: "Lead the rehearsal.\n",
       model: { instanceId: "claude", model: "claude-sonnet-5-5" }, effort: "medium", approval: "full", computer: "local",
-      cwd: "/work/visitors", browser: { enabled: false }, tools: { deny: [] },
+      cwd: "/work/visitors", browser: { enabled: false }, tools: null,
       skills: [{ name: "launch-report", description: "Write the report.", text: expect.stringContaining("Body."), enabled: true, file: "skills/launch-report/SKILL.md" }],
     });
     expect(team.bots[1]).toMatchObject({ name: "Priya", team: "Launch Room", model: { instanceId: "claude", model: "claude-haiku-5-5" },
@@ -97,8 +102,27 @@ rooms:
     ["a bad tool selector", 'bots: [{ name: A, tools: { deny: ["Bash"] } }]', "selectors look like native:Bash"],
     ["a room member listed twice", "bots: [{ name: A }]\nrooms: [{ name: R, members: [A, a] }]", "a member is listed twice"],
     ["a responder from outside the room", "bots: [{ name: A }]\nrooms: [{ name: R, members: [A], responder: B }]", "responder must be everyone, mentions, or one of its members"],
+    // what the server would refuse part way through an apply, refused before the first write
+    ["a title on two lines", 'bots: [{ name: A, title: "Buyer\\nand critic" }]', "bots[0].title: a title must fit on one line"],
+    ["a name too long", `bots: [{ name: ${"n".repeat(BOT_PROFILE_LIMITS.name + 1)} }]`, `bots[0].name: must be at most ${BOT_PROFILE_LIMITS.name} characters`],
+    ["a soul too long", `bots: [{ name: A, soul: ${"s".repeat(BOT_PROFILE_LIMITS.soul + 1)} }]`, `soul is over ${BOT_PROFILE_LIMITS.soul} bytes`],
+    ["a team brief too long", `teams: [{ name: T, brief: ${"b".repeat(TEAM_BRIEF_MAX_BYTES + 1)} }]\nbots: [{ name: A }]`, `brief is over ${TEAM_BRIEF_MAX_BYTES} bytes`],
+    ["a room brief too long", `bots: [{ name: A }]\nrooms: [{ name: R, members: [A], brief: ${"b".repeat(ROOM_BRIEF_MAX_CHARS + 1)} }]`, `brief is over ${ROOM_BRIEF_MAX_CHARS} characters`],
+    ["a skill too big", "bots: [{ name: A, skills: [{ file: skills/huge/SKILL.md }] }]", "skills/huge/SKILL.md is over 256 KiB"],
   ])("refuses %s (exit 2)", (_what, body, message) => {
     expect(refused(`version: 1\n${body}\n`)).toEqual({ message: expect.stringContaining(message), exitCode: 2 });
+  });
+
+  it("holds a file to the limits the server holds each write to", async () => {
+    expect(TEAM_BRIEF_MAX_BYTES).toBe(SECTION_CONTEXT_MAX_BYTES);
+    // a room's brief goes through MCP's create_channel, which holds it to the same length
+    const { handleToolCall } = await import("../../scripts/mcp-server.ts");
+    const fetcher = async () => ({ group: { id: "g1", name: "R", memberIds: ["a"] } });
+    await expect(handleToolCall("create_channel", { name: "R", member_ids: ["a"], bulletin: "b".repeat(ROOM_BRIEF_MAX_CHARS) }, fetcher)).resolves.toMatchObject({ success: true });
+    await expect(handleToolCall("create_channel", { name: "R", member_ids: ["a"], bulletin: "b".repeat(ROOM_BRIEF_MAX_CHARS + 1) }, fetcher)).rejects.toThrow();
+    const skill = { name: "big", description: "", source: "x", enabled: true };
+    expect(botSkillTemplateSchema.safeParse({ ...skill, text: "x".repeat(SKILL_MAX_BYTES) }).success).toBe(true);
+    expect(botSkillTemplateSchema.safeParse({ ...skill, text: "x".repeat(SKILL_MAX_BYTES + 1) }).success).toBe(false);
   });
 
   it("refuses a file without its version, or one that is not YAML", () => {
