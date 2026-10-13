@@ -70,7 +70,7 @@ import {
 import * as checkpoints from "./checkpoints.ts";
 import { commandReceipt } from "./commands.ts";
 import { buildTurnDigest, coverageForDriver, digestPromptLine, renderDigest, toolEvidence } from "./digest.ts";
-import { appendDecision, bindDecisionRetention, boundRetentionDays, decisionRetentionDays, decisionsCsv, flushDecisionLog, pruneDecisions, readDecisionRange, readDecisions, withDecisionActor, type DecisionActor } from "./decision-log.ts";
+import { appendDecision, bindDecisionRetention, decisionRetentionDays, flushDecisionLog, pruneDecisions, withDecisionActor, type DecisionActor } from "./decision-log.ts";
 import { validateBotCwd } from "./bot-cwd.ts";
 import {
   ATTACHMENTS_DIR,
@@ -204,8 +204,6 @@ import {
   browserEngineAttachCdpUrl,
   DATA_DIR,
   skillsLibraryEnabled,
-  EVENTS_DIR,
-  NATIVE_DIR,
   customMcpServers,
   onConfigSaved,
   CLAUDE_API_INSTANCE,
@@ -216,16 +214,14 @@ import { sweepThreadEventLogs, type ThreadLogRetentionCandidate } from "./thread
 import { ComputerControl } from "./computer-control.ts";
 import { augmentedPath, resetPathCache } from "./env-path.ts";
 import { registerEnginesBinDir } from "./engine-install.ts";
-import { appendUsage, parseUsageRange, flushUsageLedger, type UsageRow, type UsageTrigger } from "./usage-ledger.ts";
-import { loadPlanUsage, planAccountsFromInstances } from "./plan-usage.ts";
+import { appendUsage, flushUsageLedger, type UsageRow, type UsageTrigger } from "./usage-ledger.ts";
 import { GroupUsageReader } from "./group-thread-usage.ts";
 import { ledgerCost } from "./model-prices.ts";
 import type { PriceList } from "./prices.ts";
 import type { RequestAuth } from "./request-auth.ts";
-import { checkProviderKey, PROVIDER_KEY_KINDS, providerBaseUrl, type ProviderKeyKind } from "./provider-key-check.ts";
-import { noteKeyAccepted, noteKeyRejected, onKeyRejectionChange } from "./key-rejections.ts";
+import { onKeyRejectionChange } from "./key-rejections.ts";
 import { assertWithinBudget, noteSpend, spendAlertText, spendState, takeSpendAlert } from "./spend.ts";
-import { fleetAvailable, fleetRequest, fleetSocketPath } from "./fleet-client.ts";
+import { fleetAvailable, fleetSocketPath } from "./fleet-client.ts";
 import { entitled } from "./enterprise.ts";
 import { HOSTED_CONTRACT_HEADER, HOSTED_CONTRACT_METADATA, HOSTED_CONTRACT_VERSION } from "./hosted-contract.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
@@ -485,9 +481,6 @@ import {
   prepareBrowserSessionState,
   clearBrowserSessionState,
   closeBrowserSession,
-  ensureChrome,
-  installAgentBrowserBinary,
-  resolveAgentBrowserBinary,
   browserEngineStatus,
   browserSessionId,
   describeBrowserEngine,
@@ -511,9 +504,8 @@ import { scoutProject, suggestTeam } from "./project-scout.ts";
 import { fetchGithubTeam, fetchLibraryTeam, fetchTeamCatalog } from "./team-library.ts";
 import { BOT_PACKAGE_MAX_SKILLS, isBotPackage, packageSummary, parsePackageDocument, renderBotPackageMarkdown, type PackageDocument } from "./bot-package.ts";
 import { createTeamManifest, parseTeamManifest } from "./team-manifest.ts";
-import { readThreadEvents } from "./thread-events.ts";
 import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
-import { describeTool, readBotActivity } from "./activity.ts";
+import { describeTool } from "./activity.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
 import { OutboundRequestService } from "./outbound-requests.ts";
 import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, normalizeOutboundPolicy, outboundCallsIn } from "../shared/outbound.ts";
@@ -567,7 +559,7 @@ import {
 } from "./turn-dispatch-guard.ts";
 import { createGracefulShutdown } from "./graceful-shutdown.ts";
 import { acquireDataDirLeaseForProcess } from "./data-dir-lease.ts";
-import { createWorkspaceAccess, describeEdition, editionStatus, hostedWorkspaceConfiguration, hostedWorkspaceConfigured, editionForMembers, LICENSE_WARN_DAYS, licenseWarning, sharedWorkspaceFullAccessConfigured, loadEnterpriseLayer, workspaceMembership, type EditionStatus, type WorkspaceAccess } from "./enterprise.ts";
+import { createWorkspaceAccess, describeEdition, editionStatus, hostedWorkspaceConfiguration, hostedWorkspaceConfigured, LICENSE_WARN_DAYS, licenseWarning, sharedWorkspaceFullAccessConfigured, loadEnterpriseLayer, workspaceMembership, type EditionStatus, type WorkspaceAccess } from "./enterprise.ts";
 import { environmentDescriptor, loadEnvironmentId, serverVersion } from "./environment.ts";
 import { WorkspaceBackupMaintenance } from "./workspace-backup-maintenance.ts";
 import { createWorkspaceBackupRoutes, isWorkspaceBackupSessionControl } from "./workspace-backup-http.ts";
@@ -594,16 +586,12 @@ import {
 import { cookieMaxAgeSeconds, formatPairingCode, SessionRegistry, type Scope, type SessionRecord } from "./sessions.ts";
 import { ThreadStarters } from "./thread-starters.ts";
 import {
-  activityCsv,
-  activityEntries,
   appendAdminAction,
   botAuditSnapshot,
   botChangeRows,
   configChangeRows,
-  parseActivityWhat,
   flushAdminActivity,
   pruneAdminActivity,
-  readAdminActivityRange,
   sharedSignIn,
   signInListsOf,
   type AdminActionRow,
@@ -663,6 +651,7 @@ import { createConfigRoutes } from "./routes/config.ts";
 import { createInstanceRoutes } from "./routes/instances.ts";
 import { createMcpServerRoutes } from "./routes/mcp-servers.ts";
 import { createComputerRoutes } from "./routes/computers.ts";
+import { createStatusRoutes } from "./routes/status.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
 import { createUsageRoutes } from "./routes/usage.ts";
@@ -17641,6 +17630,13 @@ ROUTES.push(createComputerRoutes({
   computerPreviewBot, computerPreviewSurface, claimTeamComputerLifecycle, claimBotComputerLifecycle,
   claimBoatInventoryRequest, claimManagedBoatMutation, claimManagedVpsMutation,
 }));
+ROUTES.push(createStatusRoutes({
+  store, cfg, outboundCounts,
+  staticDir: STATIC_DIR,
+  sharedWorkspaceFullAccessEnabled, adminActivityRecording, configStatus, broadcast,
+  browserEngineInstall: { get: () => browserEngineInstall, set: (install) => { browserEngineInstall = install; } },
+  browserEngineInstallError: { set: (error) => { browserEngineInstallError = error; } },
+}));
 
 ROUTES.push(desktopViewer.route);
 
@@ -24832,228 +24828,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       } finally {
         titleRegenerations.delete(m[2]);
       }
-    }
-
-    // identity handshake for the packaged app's port fallback: the forked
-    // child proves it is OURS by echoing its pid (a stray dev server has
-    // the same API shape but a different pid)
-    if (method === "GET" && path === "/api/health") {
-      return json(res, 200, { app: "openmausbot", pid: process.pid, static: Boolean(STATIC_DIR), capabilities: {
-        guardedMessages: 1, guardedRequests: 1, guardedFullAccess: 1, guardedOnBehalfOf: 1,
-        ...(sharedWorkspaceFullAccessEnabled() ? { sharedWorkspaceFullAccess: 1 } : {}),
-      } });
-    }
-    // The bots' browser engine: install it on this machine (agent-browser +
-    // a Chrome for Testing, a one-time download), or ask how that is going.
-    // One install at a time; the config frame's browserEngine tells the rest.
-    // JSON only, so a form posted from another local page cannot start it.
-    if (method === "POST" && path === "/api/browser-engine/install") {
-      const mediaType = String(req.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
-      if (mediaType !== "application/json") {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      if (!browserEngineInstall) {
-        const status = browserEngineStatus();
-        if (status.kind === "unavailable" && !status.installable) return json(res, 409, { error: status.reason });
-        browserEngineInstallError = null;
-        browserEngineInstall = (async () => {
-          const binary = resolveAgentBrowserBinary() ?? await installAgentBrowserBinary({ log: (line) => console.log(line) });
-          await ensureChrome(binary, { log: (line) => console.log(line) });
-        })().then(
-          () => { browserEngineInstallError = null; },
-          (error: unknown) => { browserEngineInstallError = error instanceof Error ? error.message : String(error); },
-        ).finally(() => {
-          browserEngineInstall = null;
-          broadcast({ kind: "config", ...configStatus() });
-        });
-        broadcast({ kind: "config", ...configStatus() });
-      }
-      return json(res, 202, { installing: true });
-    }
-    // ── the fleet: client workspaces on this server, through the root agent ──
-    // Admin scope by default plus the `admin` entitlement; the socket's own
-    // permissions decide whether this workspace may drive the agent at all.
-    const fleetRoute = /^\/api\/fleet(?:\/(workspaces(?:\/([a-z0-9-]+)(?:\/(users|suspend|resume))?)?|upgrade))?$/.exec(path);
-    if (fleetRoute) {
-      if (!entitled("admin")) return json(res, 403, { error: "Workspaces need an enterprise licence with the admin feature." });
-      const socket = fleetSocketPath();
-      if (!fleetAvailable(socket)) return json(res, 404, { error: "No fleet agent on this server. Run `openmausbot fleet init --domain … --operator <this user>` as root." });
-      const [, resource, slug, sub] = fleetRoute;
-      let forward: { method: string; path: string; body?: unknown } | null = null;
-      if (method === "GET" && !resource) forward = { method: "GET", path: "/workspaces" };
-      else if (method === "POST" && resource === "workspaces") forward = { method: "POST", path: "/workspaces", body: await readBody(req, 256 * 1024) };
-      else if (method === "POST" && resource === "upgrade") forward = { method: "POST", path: "/upgrade" };
-      else if (slug && method === "POST" && (sub === "users" || sub === "suspend" || sub === "resume")) forward = { method: "POST", path: `/workspaces/${slug}/${sub}`, ...(sub === "users" ? { body: await readBody(req, 8192) } : {}) };
-      else if (slug && method === "DELETE" && !sub) forward = { method: "DELETE", path: `/workspaces/${slug}`, body: await readBody(req, 8192) };
-      if (!forward) return json(res, 405, { error: "no such fleet operation" });
-      res.setHeader("cache-control", "no-store");
-      try {
-        const reply = await fleetRequest(socket, forward.method, forward.path, forward.body);
-        return json(res, reply.status, reply.body ?? {});
-      } catch (error) {
-        return json(res, 502, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-
-    // Which edition this server runs and why (see server/enterprise.ts). Read-only.
-    if (method === "GET" && path === "/api/edition") {
-      // A member learns what is entitled; when the key lapses is for admins.
-      const status = editionStatus();
-      return json(res, 200, auth.scopes.includes("admin") ? status : editionForMembers(status));
-    }
-    // The brand for this deployment (server/brand.ts): read per request so edits show on reload.
-    if (method === "GET" && path === "/api/brand") {
-      return json(res, 200, loadBrand());
-    }
-
-    // ── inspector: a thread's runtime events + native protocol tee ──
-    // Both logs already exist on disk; this only reads them back. Threads
-    // belong to bots or rooms — anything else is not a thread we know.
-    m = path.match(/^\/api\/threads\/([\w-]+)\/events$/);
-    if (m && method === "GET") {
-      const threadId = m[1];
-      const known =
-        store.bots.some((b) => store.tasks(b.id).some((t) => t.threadId === threadId)) ||
-        Boolean(store.groupByThread(threadId));
-      if (!known) return json(res, 404, { error: "no such thread" });
-      const rawLimit = url.searchParams.get("limit");
-      const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
-      if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
-        return json(res, 400, { error: "limit must be a positive whole number" });
-      }
-      const limit = parsedLimit;
-      return json(res, 200, readThreadEvents({ eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR, threadId, limit }));
-    }
-
-    // ── the fleet-wide authorization decision log ──
-    // Read-only like the inspector above: the rows were written at the
-    // request.opened fold and in answerRequest; this only reads them back,
-    // newest last, same order as thread events.
-
-    // Subscription windows (5-hour and weekly), not the token ledger above.
-    // Same admin gate as /api/usage: this route is unlisted, so it stays admin.
-    if (method === "GET" && path === "/api/plan-usage") {
-      res.setHeader("cache-control", "no-store");
-      const report = await loadPlanUsage({
-        accounts: planAccountsFromInstances(instanceConfigs(cfg)),
-        refresh: url.searchParams.get("refresh") === "1",
-      });
-      return json(res, 200, report);
-    }
-
-    // ── provider key check: does a pasted or saved key open the provider's door ──
-    // One read-only request from this server; the verdict never carries the
-    // key. Admin scope by default, like every route not opened to clients.
-    if (method === "POST" && path === "/api/keys/test") {
-      const body = await readBody(req, 8192);
-      const provider = body?.provider;
-      if (!PROVIDER_KEY_KINDS.includes(provider as ProviderKeyKind)) {
-        return json(res, 400, { error: `provider must be one of ${PROVIDER_KEY_KINDS.join(", ")}` });
-      }
-      const kind = provider as ProviderKeyKind;
-      const saved = { anthropic: cfg.anthropic, openai: cfg.openai, openrouter: cfg.openrouter, openaiCompat: cfg.openaiCompat, mistral: cfg.mistral, cerebras: cfg.cerebras, groq: cfg.groq, meta: cfg.meta, xai: cfg.xai }[kind];
-      if (body?.key !== undefined && typeof body.key !== "string") {
-        return json(res, 400, { error: "key must be a string" });
-      }
-      const key = typeof body?.key === "string" ? body.key.trim() : saved?.key?.trim() || "";
-      if (!key) return json(res, 400, { error: "No key to test. Paste one or save one first." });
-      if (key.length > 512) return json(res, 400, { error: "That does not look like an API key." });
-      const url = typeof body?.url === "string" && body.url.trim() ? body.url.trim() : (saved && "url" in saved ? saved.url : undefined);
-      res.setHeader("cache-control", "no-store");
-      const verdict = await checkProviderKey({ provider: kind, key, url });
-      // A Test is a real use the person chose: the engines on this key agree
-      // with its verdict. Claude runs its key through its CLI, not here.
-      if (kind !== "anthropic") {
-        const base = providerBaseUrl(kind, url);
-        if (verdict.ok) noteKeyAccepted(base, key);
-        else if (verdict.reason === "rejected") noteKeyRejected(base, key);
-      }
-      return json(res, 200, verdict);
-    }
-
-    if (method === "GET" && path === "/api/decisions") {
-      const rawLimit = url.searchParams.get("limit");
-      const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
-      if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
-        return json(res, 400, { error: "limit must be a positive whole number" });
-      }
-      return json(res, 200, { decisions: readDecisions(DATA_DIR, parsedLimit ?? 200) });
-    }
-    // Settings → Activity: admin actions and approvals together, filtered by
-    // who, what and when; the same list as CSV. Admin scope by default.
-    if (method === "GET" && (path === "/api/admin-activity" || path === "/api/admin-activity.csv")) {
-      const fromParam = url.searchParams.get("from") || new Date(Date.now() - 29 * 24 * 60 * 60_000).toISOString().slice(0, 10);
-      const range = parseUsageRange(fromParam, url.searchParams.get("to"));
-      if (!range) return json(res, 400, { error: "from and to must be dates (YYYY-MM-DD), from no later than to, at most a year apart" });
-      const what = parseActivityWhat(url.searchParams.get("what"));
-      if (!what) return json(res, 400, { error: "what must be all, approvals, decisions, config, people, session, webhook, mcp, engine, bot, budget or visibility" });
-      const entries = activityEntries(readDecisionRange(DATA_DIR, range), readAdminActivityRange(DATA_DIR, range), {
-        what,
-        who: (url.searchParams.get("who") ?? "").slice(0, 200),
-      });
-      if (path.endsWith(".csv")) {
-        const stamp = (date: Date) => date.toISOString().slice(0, 10);
-        res.writeHead(200, {
-          "content-type": "text/csv; charset=utf-8",
-          "content-disposition": `attachment; filename="activity-${stamp(range.from)}-${stamp(range.to)}.csv"`,
-          "cache-control": "no-store",
-        });
-        res.end(activityCsv(entries));
-        return;
-      }
-      const rawLimit = Number(url.searchParams.get("limit") ?? 500);
-      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 5_000) : 500;
-      res.setHeader("cache-control", "no-store");
-      return json(res, 200, {
-        entries: entries.slice(0, limit),
-        total: entries.length,
-        from: range.from.toISOString(),
-        to: range.to.toISOString(),
-        retentionDays: boundRetentionDays(),
-        recording: adminActivityRecording(),
-      });
-    }
-    // The same rows for an auditor's spreadsheet, over a date range. Admin
-    // scope by default (not in CLIENT_ALLOW, not a service route).
-    if (method === "GET" && path === "/api/decisions.csv") {
-      const range = parseUsageRange(url.searchParams.get("from"), url.searchParams.get("to"));
-      if (!range) return json(res, 400, { error: "from and to must be YYYY-MM-DD, from no later than to, at most a year apart" });
-      const stamp = (date: Date) => date.toISOString().slice(0, 10);
-      res.writeHead(200, {
-        "content-type": "text/csv; charset=utf-8",
-        "content-disposition": `attachment; filename="decisions-${stamp(range.from)}-${stamp(range.to)}.csv"`,
-        "cache-control": "no-store",
-      });
-      res.end(decisionsCsv(readDecisionRange(DATA_DIR, range)));
-      return;
-    }
-
-    // ── a bot's activity: what it did, with the outcome ──
-    // Read-only over the same two logs as the inspector and the decision
-    // route above. The bot's own threads (its DM and every task) carry the
-    // tool runs; the decision log carries the bot's requests wherever they
-    // happened, since those rows name the bot.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/activity$/);
-    if (m && method === "GET") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      const rawLimit = url.searchParams.get("limit");
-      const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
-      if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
-        return json(res, 400, { error: "limit must be a positive whole number" });
-      }
-      const threadIds = [...new Set([bot.threadId, ...store.tasks(bot.id).map((task) => task.threadId)])];
-      return json(res, 200, {
-        rows: readBotActivity({ dataDir: DATA_DIR, eventsDir: EVENTS_DIR, botId: bot.id, threadIds, limit: parsedLimit ?? 300 }),
-      });
-    }
-
-    // ── a bot's outbound allowance: the policy, and how much of it is spent ──
-    m = path.match(/^\/api\/bots\/([\w-]+)\/outbound$/);
-    if (m && method === "GET") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      return json(res, 200, { policy: bot.outbound ?? DEFAULT_OUTBOUND_POLICY, today: outboundCounts.today(bot.id) });
     }
 
     // ── voice ─────────────────────────────────────────────────────────
