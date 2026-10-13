@@ -22,6 +22,9 @@ import { createChatToolApproval } from "./chat-tool-approval.ts";
 import { OpenAICompatDriver } from "./openai-compat.ts";
 
 const WIPE = "rm -rf /";
+/** The server's platform, given wherever the floor is expected to act, so
+ * the suite says the same thing on a Windows runner. */
+const HOST = "linux" as const;
 const BLOCKED = "Blocked by the safety floor: recursive delete of the filesystem root";
 
 const MCP_SCRIPT = `
@@ -133,8 +136,24 @@ describe("the safety floor in the chat runtime", () => {
     expect(await f.decisions()).toEqual([]);
   });
 
+  it("is not applied on a Windows server: Full access answers every call, as with the setting off", async () => {
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), undefined, "win32");
+      const f = await fixture([WIPE]);
+      await f.start({ approvalMode: "full" });
+      expect(await f.completed()).toMatchObject({ ok: true });
+      expect(f.handed()).toEqual([WIPE]);
+      expect(f.cards()).toEqual([]);
+      expect(f.notices()).toEqual([]);
+      expect(await f.decisions()).toEqual([]);
+    } finally {
+      warnings.mockRestore();
+    }
+  });
+
   it("refuses a never-list command at Full access, and still runs everything else", async () => {
-    bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }));
+    bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), undefined, HOST);
     const f = await fixture(["ls -la", WIPE, "git commit -m 'rm -rf /'"]);
     await f.start({ approvalMode: "full" });
     const done = await f.completed();
@@ -156,7 +175,7 @@ describe("the safety floor in the chat runtime", () => {
   it("refuses a command the floor cannot read, because this gate has no card to show at Full access", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), () => ({ read: false }));
+      bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), () => ({ read: false }), HOST);
       const f = await fixture(["npm test"]);
       await f.start({ approvalMode: "full" });
       expect(await f.completed()).toMatchObject({ ok: false, denials: ["shell_exec"] });
@@ -170,7 +189,7 @@ describe("the safety floor in the chat runtime", () => {
   });
 
   it("does not override a card a person answers", async () => {
-    bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }));
+    bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), undefined, HOST);
     const f = await fixture([WIPE]);
     await f.start({ approvalMode: "ask" });
     const card = await f.recorder.until((event) => event.type === "request.opened");
@@ -184,7 +203,7 @@ describe("the safety floor in the chat runtime", () => {
   });
 
   it("refuses it under \"Always allow this session\" too, where the grant would have answered", async () => {
-    bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }));
+    bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), undefined, HOST);
     const f = await fixture(["ls", WIPE, "pwd"]);
     await f.start({ approvalMode: "ask" });
     const card = await f.recorder.until((event) => event.type === "request.opened");

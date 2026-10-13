@@ -27,6 +27,14 @@
 // into a card for the person (heldAtSafetyFloor), and a runtime with no card
 // to show refuses the call.
 //
+// NOT ON A WINDOWS SERVER YET. There every line would have to be read as two
+// shells (cmd and PowerShell beside Git Bash), and too many ordinary commands
+// come back unread, which at Full access stalls unattended work. Until a
+// request says which shell it is for, the gate is inert on Windows: whatever
+// the setting says, nothing is classified, denied, held or logged there, and
+// the server says so once at startup. The classifier's Windows reading stays
+// in server/safety-floor.ts, tested through its platform argument.
+//
 // A card a PERSON answers is never overridden here: at Ask the request still
 // reaches them, and their Allow stands. The floor is one more necessary
 // condition before an AUTOMATIC allow, and nothing else.
@@ -58,19 +66,33 @@ export function safetyFloorEnabled(cfg: AppConfig, env: NodeJS.ProcessEnv = proc
  * server binds its config, only OMB_SAFETY_FLOOR can switch the floor on. */
 let config: () => AppConfig = () => ({});
 let read: typeof floorReading = floorReading;
+/** The platform this server runs on. */
+let host: NodeJS.Platform = process.platform;
+let windowsNoticeGiven = false;
 
-/** The server binds its live config once (server/index.ts). `reader` is the
- * classifier; tests pass one that fails, to stand for a command it cannot
- * read. */
-export function bindSafetyFloor(provider: () => AppConfig, reader: typeof floorReading = floorReading): void {
+/** The server binds its live config once, at startup (server/index.ts).
+ * `reader` is the classifier and `platform` the server's own; tests pass a
+ * reader that fails, to stand for a command it cannot read, and a platform,
+ * to stand for a server somewhere else.
+ *
+ * On a Windows server the floor is not applied yet (see the top of this
+ * file). A setting that is on and does nothing must not be a silent trap, so
+ * it is said here, once per process. */
+export function bindSafetyFloor(provider: () => AppConfig, reader: typeof floorReading = floorReading, platform: NodeJS.Platform = process.platform): void {
   config = provider;
   read = reader;
+  host = platform;
+  if (host === "win32" && !windowsNoticeGiven && safetyFloorEnabled(config())) {
+    windowsNoticeGiven = true;
+    console.warn("[safety-floor] the safety floor is switched on, but it is not applied on a Windows server yet: no command is checked here");
+  }
 }
 
-/** Whether the floor is on right now, after the environment: what
- * GET /api/config reports, so an operator can see that a switch took. */
+/** Whether the floor is in force right now: switched on, after the
+ * environment, on a server it is applied on. What GET /api/config reports,
+ * so an operator can see whether a switch took. Always false on Windows. */
 export function safetyFloorOn(): boolean {
-  return safetyFloorEnabled(config());
+  return host !== "win32" && safetyFloorEnabled(config());
 }
 
 export interface FloorBlock {
@@ -101,7 +123,7 @@ function finding(command: string | undefined): { state: "clear" } | { state: "bl
   if (!command || !safetyFloorOn()) return { state: "clear" };
   let reading: ReturnType<typeof floorReading>;
   try {
-    reading = read(command, process.platform, homedir());
+    reading = read(command, host, homedir());
   } catch {
     reading = { read: false };
   }
