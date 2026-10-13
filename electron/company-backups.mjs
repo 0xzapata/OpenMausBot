@@ -183,6 +183,7 @@ export function createCompanyBackups({ localRequest, portalRequest, tempRoot, fe
                 new Headers(signed.headers).get("content-length") !== String(sizeBytes)) fail("invalid_response", "The backup service returned invalid upload instructions.");
             liveExpiry(signed.expiresAt);
             const url = signedUrl(signed.url, allowLoopbackForTests), stream = createReadStream(file, { start, end: start + sizeBytes - 1, highWaterMark: 256 * 1024 });
+            stream.on("error", () => {}); // A late open after temp cleanup must not be uncaught; the request outcome decides.
             let uploaded;
             try { uploaded = await storageRequest(url, { method: "PUT", headers: { "content-length": String(sizeBytes) }, body: stream, duplex: "half", signal: operationSignal }); }
             finally { stream.destroy(); }
@@ -226,6 +227,7 @@ export function createCompanyBackups({ localRequest, portalRequest, tempRoot, fe
         await checkSpace(directory, backup.sizeBytes * 3); operationSignal.throwIfAborted();
         report("preparing", 0, backup.sizeBytes);
         const stream = createReadStream(file, { highWaterMark: 256 * 1024 });
+        stream.on("error", () => {}); // See upload: a late open after cleanup must not be uncaught.
         let response;
         try { response = await localRequest(`${LOCAL}/upload`, { method: "POST", headers: { "content-type": "application/octet-stream", "content-length": String(backup.sizeBytes) }, body: stream, duplex: "half", signal: operationSignal, redirect: "error" }); }
         finally { stream.destroy(); }

@@ -415,6 +415,19 @@ for (const operation of ["backup", "restore"]) {
   });
 }
 
+test("a storage answer that ignores the body leaves no uncaught stream error after cleanup", async t => {
+  const f = await fixture(t, { storage: () => new Response(null, { status: 500 }) });
+  const uncaught = [];
+  const record = error => uncaught.push(error);
+  process.on("uncaughtException", record);
+  try {
+    await assert.rejects(f.backup());
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } finally { process.off("uncaughtException", record); }
+  assert.deepEqual(uncaught, []);
+  await f.clean();
+});
+
 test("cancelled upload attempts a fresh-signal best-effort abort even if portal cleanup fails", async t => {
   const controller = new AbortController();
   const f = await fixture(t, {
