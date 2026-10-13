@@ -62,7 +62,7 @@ export function createRoomAccess({ store }: RoomAccessDeps) {
   function laneRoomThread(n: Pick<HandoffView, "botId" | "threadId" | "groupId">): string | undefined {
     if (n.groupId) return undefined;
     const opener = store.taskByThread(n.botId, n.threadId)?.openedBy;
-    return opener?.kind === "work" && opener.threadId && store.groupByThread(opener.threadId) ? opener.threadId : undefined;
+    return opener?.kind === "work" && opener.roomLane && opener.threadId && store.groupByThread(opener.threadId) ? opener.threadId : undefined;
   }
 
   function roomSetupPending(group: GroupRecord): boolean {

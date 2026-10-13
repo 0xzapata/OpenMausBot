@@ -63,6 +63,33 @@ it("tells the requester and the room that three same-room jobs run in turn", asy
   }
 }, 90_000);
 
+it("shows a round of @mentioned members waiting on the one replying", async () => {
+  const session = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, { scripted: true });
+  const env = { OPENMAUSBOT_URL: session.info.url };
+  const cli = (...args: string[]) => runControlOmb(args, { env }) as Promise<any>;
+  const tool = (name: string, args: Record<string, unknown>) => handleToolCall(name, args, (path, options) => request(path, options, session.info.url)) as Promise<any>;
+  const events = await openSse(`${session.info.url}/api/events`, { Origin: session.info.url });
+  try {
+    const first = (await cli("new-bot", "--name", "First", "--section", "A")).bot;
+    const second = (await cli("new-bot", "--name", "Second", "--section", "A")).bot;
+    const room = (await tool("create_channel", { name: "Studio", member_ids: [first.id, second.id] })).channel;
+    const planPath = join(session.info.dataDir, "room-plan.json");
+    const gate = join(session.info.dataDir, "first.gate");
+    writeFileSync(planPath, JSON.stringify({ [first.id]: { reply: "First here", gateFile: gate }, [second.id]: { reply: "Second here" } }));
+    await cli("send-channel", "--channel", room.id, "--text", "@First @Second say hello");
+    const frame = await events.until(f => f.kind === "group" && f.group?.id === room.id &&
+      (f.group.queue ?? []).some((e: any) => e.botId === first.id && e.state === "running"), 20_000);
+    expect(frame.group.queue.map((e: any) => [e.botId, e.state, e.position, e.of, e.waitingForBotId ?? null]))
+      .toEqual([[first.id, "running", 1, 2, null], [second.id, "queued", 2, 2, first.id]]);
+    writeFileSync(gate, "release");
+    expect((await cli("wait", "--channel", room.id, "--timeout", "45")).status).toBe("settled");
+    await events.until(f => f.kind === "group" && f.group?.id === room.id && Array.isArray(f.group.queue) && f.group.queue.length === 0, 15_000);
+  } finally {
+    events.close();
+    await session.close();
+  }
+}, 90_000);
+
 it("with parallel room jobs on, runs each member's job in its own thread at once and posts the results back into the room", async () => {
   const session = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, { scripted: true });
   const env = { OPENMAUSBOT_URL: session.info.url };

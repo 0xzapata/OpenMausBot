@@ -31,7 +31,8 @@ describe("room queue", () => {
       job("e2", "queued", "a"), job("e3", "running", "b"),
     ]);
     expect(line.map(e => [e.threadId, e.botId, e.position, e.of])).toEqual([["a", "e1", 1, 2], ["a", "e2", 2, 2]]);
-    expect(line[1]!.assignmentId).toBeUndefined();
+    // The job's assignment id survives the merge with the same member's mention.
+    expect(line[1]!.assignmentId).toBe("a-e2");
   });
 
   it("tells the requester its room jobs run in turn, not in parallel", () => {
@@ -44,5 +45,20 @@ describe("room queue", () => {
     expect(sequentialRoomNotice(line, new Set(["a-scout"]), nameOf)).toBeUndefined();
     // One job queued behind the requester's own turn is the ordinary case.
     expect(sequentialRoomNotice(roomQueue([job("e1", "queued")], new Map([["room", "lead"]])), new Set(["a-e1"]), nameOf)).toBeUndefined();
+  });
+});
+
+describe("room queue merging", () => {
+  it("keeps a job's assignment id when the same member is also in the round, so its receipt still finds it", () => {
+    const line = roomQueue([
+      { botId: "e1", threadId: "room", state: "queued" },
+      job("e1", "queued"),
+      job("scout", "running"),
+    ]);
+    expect(line.map(e => [e.botId, e.state, e.assignmentId])).toEqual([["scout", "running", "a-scout"], ["e1", "queued", "a-e1"]]);
+    expect(sequentialRoomNotice(line, new Set(["a-e1"]), nameOf)).toContain("Editor 1 (2 of 2)");
+    // Running in either place is running.
+    expect(roomQueue([{ botId: "e1", threadId: "room", state: "queued" }, job("e1", "running"), job("e2", "queued")])[0])
+      .toMatchObject({ botId: "e1", state: "running", assignmentId: "a-e1" });
   });
 });

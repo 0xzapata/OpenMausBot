@@ -86,6 +86,9 @@ export interface TaskOpenedBy {
   /** The opener's own conversation this "work" thread was opened from.
    * Everything that conversation later sends this bot continues here. */
   threadId?: string;
+  /** A parallel room job's thread: `threadId` is the room thread it was
+   * sent from, and the member must stay in that room (server/host/room-jobs.ts). */
+  roomLane?: true;
   at: number;
 }
 

@@ -85,10 +85,10 @@ export function createRoomJobs({ store, coordinator, cfg, operations, speakerOf,
    * requester, so a member's jobs run there in turn and never two at once.
    * Opened by the requester from the room, in the room's working folder. */
   function openLane(room: GroupRecord, roomThreadId: string, botId: string, sender: { id: string; name: string }, brief: string) {
-    const existing = store.workThread(botId, sender.id, roomThreadId);
+    const existing = store.workThread(botId, sender.id, roomThreadId, true);
     const snippet = brief.replace(/\s+/g, " ").trim().slice(0, 48);
     const task = existing ?? store.createTask(botId, `${room.name} · ${snippet || "room job"}`, false, undefined,
-      { botId: sender.id, name: sender.name, threadId: roomThreadId, kind: "work", at: Date.now() },
+      { botId: sender.id, name: sender.name, threadId: roomThreadId, kind: "work", roomLane: true, at: Date.now() },
       undefined, undefined, store.pinGroupCwd(room.id, roomThreadId) ?? undefined);
     if (!task) throw new Error("The recipient no longer exists");
     return { threadId: task.threadId, title: task.title, created: !existing };

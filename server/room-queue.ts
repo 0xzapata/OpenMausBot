@@ -30,8 +30,14 @@ export function roomQueue(items: readonly RoomLineItem[], speakers: ReadonlyMap<
   for (const item of items) {
     const line = lines.get(item.threadId) ?? [];
     // One place per member per thread: a member already in the line keeps
-    // its first place (a job and a mention for one member are one wait).
-    if (!line.some(other => other.botId === item.botId)) line.push(item);
+    // its first place (a job and a mention for one member are one wait),
+    // running if either is, and the job's assignment id, which receipts and
+    // the requester's notice look it up by.
+    const index = line.findIndex(other => other.botId === item.botId);
+    const placed = line[index];
+    if (!placed) line.push(item);
+    else line[index] = { ...placed, ...(item.state === "running" ? { state: "running" as const } : {}),
+      ...(!placed.assignmentId && item.assignmentId ? { assignmentId: item.assignmentId } : {}) };
     lines.set(item.threadId, line);
   }
   const entries: RoomQueueEntry[] = [];

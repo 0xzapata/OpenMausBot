@@ -15621,6 +15621,7 @@ function startGroupTurn(
         const room = roomJobs.advanceRound(operation, current, spoken) ? store.group(groupId) : undefined;
         if (room) broadcast({ kind: "group", group: publicGroupState(room) });
       };
+      advanceLine(undefined);
       for (const responder of round) {
         if (operation.cancelled) break;
         if (spoken.has(responder.id)) continue;
@@ -15630,10 +15631,8 @@ function startGroupTurn(
         // that vanished meanwhile, is passed over for this round only.
         const verdict = await waitForChatRoomMember(operation, threadId, responder);
         if (verdict === "stop") break;
-        if (verdict === "skip") {
-          spoken.add(responder.id);
-          continue;
-        }
+        // A member passed over leaves the line too.
+        if (verdict === "skip") { spoken.add(responder.id); advanceLine(undefined); continue; }
         // This speaker's first reply line says the decision model chose it.
         const stamp = routedBy ? { botId: responder.id, routedBy } : undefined;
         if (stamp) routedRoomReplies.set(threadId, stamp);
