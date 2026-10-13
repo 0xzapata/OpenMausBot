@@ -2442,6 +2442,7 @@ export function reducer(state: AppState, action: Action): AppState {
         acknowledgeLocalAuto: _localAck,
         applyToAllThreads: _allThreads,
         keepThreadModels: _keepThreadModels,
+        threadId: _threadId,
         computer,
         connectorTools,
         connectorScopes,
@@ -3871,7 +3872,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (botBeforeUpdate) {
             botPatchQueue.enqueue(
               action.botId,
-              { modelSelection: action.selection },
+              { modelSelection: action.selection, threadId: botBeforeUpdate.threadId },
               botBeforeUpdate,
             );
           }

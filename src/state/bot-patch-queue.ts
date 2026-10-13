@@ -61,12 +61,17 @@ export type BotUpdatePatch = Partial<
    * own keeps it, the selected one included; only followers move. Rides the
    * PATCH body, never a bot field. */
   keepThreadModels?: boolean;
+  /** With modelSelection: the thread this client shows, which moves with
+   * the bot. A paired client must name it once the bot has more than one
+   * thread. Rides the PATCH body, never a bot field (Bot.threadId is the
+   * server's own selection). */
+  threadId?: string;
 };
 
 /** A wire patch after clear-only values have been normalized for Bot state. */
 export type BotStatePatch = Omit<
   BotUpdatePatch,
-  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "applyToAllThreads" | "keepThreadModels"
+  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "applyToAllThreads" | "keepThreadModels" | "threadId"
 > & {
   computer?: Bot["computer"];
   connectorTools?: Bot["connectorTools"];
@@ -126,6 +131,7 @@ const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
     acknowledgeLocalAuto: _localAck,
     applyToAllThreads: _allThreads,
     keepThreadModels: _keepThreadModels,
+    threadId: _threadId,
     computer,
     connectorTools,
     connectorScopes,

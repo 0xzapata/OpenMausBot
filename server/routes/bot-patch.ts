@@ -109,7 +109,15 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         if (field) return json(res, 403, { error: `forbidden: this session may change how a bot looks, not "${field}" (needs the admin scope)` });
       }
       const existingBot = store.bot(m[1]);
-      const selectedTask = existingBot ? requestedTaskBot(existingBot.id, undefined) : null;
+      const rawSelection = (body as Record<string, unknown>).modelSelection;
+      // With modelSelection: the thread the client shows, which moves with
+      // the bot. Without it a paired client is refused once the bot has more
+      // than one thread, because the server cannot know which one it shows.
+      if (body.threadId !== undefined && rawSelection === undefined) {
+        return json(res, 400, { error: "threadId goes with modelSelection" });
+      }
+      if (rawSelection !== undefined) requirePinnedClientThread(m[1], body.threadId);
+      const selectedTask = existingBot ? requestedTaskBot(existingBot.id, body.threadId) : null;
       const beforeProfile = existingBot ? profileSnapshot(existingBot) : undefined;
       const beforeVisibility = existingBot?.visibility;
       if (body.requireAvailableModel !== undefined && typeof body.requireAvailableModel !== "boolean") {
@@ -128,8 +136,6 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       // be offline would cost the copy all of them. Letting it through is
       // safe — startTurn refuses to run a turn on an unavailable instance
       // anyway, so an unverifiable level never reaches a CLI.
-      const rawSelection = (body as Record<string, unknown>).modelSelection;
-      if (rawSelection !== undefined) requirePinnedClientThread(m[1], undefined);
       if (body.keepThreadModels !== undefined) {
         if (typeof body.keepThreadModels !== "boolean") return json(res, 400, { error: "keepThreadModels must be true or false" });
         if (body.keepThreadModels && rawSelection === undefined) return json(res, 400, { error: "keepThreadModels goes with modelSelection" });
