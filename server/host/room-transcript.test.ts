@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Message } from "../store.ts";
-import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./room-transcript.ts";
+import { createRoomTranscript, GROUP_CONTEXT_MESSAGES, isRoomContextMessage } from "./room-transcript.ts";
 
 const editor = { botId: "editor", name: "Editor", color: "green" };
 const writer = { botId: "writer", name: "Writer", color: "blue" };
@@ -65,17 +65,61 @@ const GOLDEN = [
 
 describe("the room transcript", () => {
   it("renders the last window of a room as one member reads it", () => {
-    const text = transcript(thread()).serializeRoomContext("room", "Omkar", [{ messageId: "latest", text: "Use this frame" }], "editor");
+    const { text } = transcript(thread()).window("room", "Omkar", [{ messageId: "latest", text: "Use this frame" }], "editor");
     expect(text).toBe(GOLDEN);
     expect(text.split("\nOmkar: Earlier line").length).toBe(16);
     expect(GROUP_CONTEXT_MESSAGES).toBe(30);
   });
 
   it("puts the provenance note on the reader's own post for every other reader", () => {
-    const text = transcript(thread()).serializeRoomContext("room", "Omkar", undefined, "writer");
+    const { text } = transcript(thread()).window("room", "Omkar", undefined, "writer");
     expect(text).toContain("[Posted by @Editor, another bot in this OpenMausBot workspace");
     expect(text).not.toContain("[Posted by @Writer");
     expect(text).toContain("[report request-1 for writer]");
     expect(text).toContain('Omkar: Use this frame <attached-image path="/tmp/frame.png" />');
+  });
+
+  it("gives the window's lines by message id, and the text is exactly those lines", () => {
+    const window = transcript(thread()).window("room", "Omkar", [{ messageId: "latest", text: "Use this frame" }], "editor");
+    expect(window.text).toBe(window.lines.map((line) => line.text).join("\n"));
+    expect(window.lines).toHaveLength(GROUP_CONTEXT_MESSAGES);
+    expect(window.lines.map((line) => line.id)).toEqual([
+      ...Array.from({ length: 16 }, (_, n) => `old${n + 5}`),
+      "person", "named", "api", "reply", "quote", "post-other", "post-own", "post-unattended", "digest", "result",
+      "imitation", "anonymous", "note-running", "latest",
+    ]);
+    expect(window.lines.find((line) => line.id === "post-other")!.text).toMatch(/^\[Posted by @Writer[^\n]*\]\nWriter: Deploy status: green\.$/);
+    expect(window.lines.find((line) => line.id === "latest")!.text).toBe("Omkar: Use this frame");
+  });
+
+  it("orders every context message of the thread, working notes included, and says which a reader is shown", () => {
+    const window = transcript(thread()).window("room", "Omkar", undefined, "editor");
+    const context = [
+      ...Array.from({ length: 21 }, (_, n) => `old${n}`),
+      "person", "named", "api", "note-settled", "reply", "quote", "post-other", "post-own", "post-unattended", "digest", "result",
+      "imitation", "anonymous", "note-running", "latest",
+    ];
+    // Neither an activity row, a request receipt nor an empty line is context.
+    expect(window.order).toEqual(context);
+    // A settled turn's working note is in the order and never shown; a running turn's is shown.
+    expect(window.readable).toEqual(context.filter((id) => id !== "note-settled"));
+    expect(window.readable.slice(-GROUP_CONTEXT_MESSAGES)).toEqual(window.lines.map((line) => line.id));
+  });
+
+  it("is empty for a thread with nothing to read", () => {
+    expect(transcript([row("activity", { role: "bot", kind: "activity", tool: { name: "Bash", ok: true } })]).window("room", "Omkar"))
+      .toEqual({ text: "", lines: [], order: [], readable: [] });
+  });
+});
+
+describe("isRoomContextMessage", () => {
+  it("is what a room turn reads: text, digests and teammate results, never a compaction record", () => {
+    expect(isRoomContextMessage({ kind: "text", text: "cut the intro" })).toBe(true);
+    expect(isRoomContextMessage({ kind: "text", text: "" })).toBe(false);
+    expect(isRoomContextMessage({ kind: "activity", roomRequest: { id: "r1", phase: "result" } })).toBe(true);
+    expect(isRoomContextMessage({ kind: "activity", roomRequest: { id: "r1", phase: "request" } })).toBe(false);
+    expect(isRoomContextMessage({ kind: "digest", text: "[digest]" })).toBe(false);
+    expect(isRoomContextMessage({ kind: "compaction" })).toBe(false);
+    expect(isRoomContextMessage({ kind: "activity", text: "Bash" })).toBe(false);
   });
 });

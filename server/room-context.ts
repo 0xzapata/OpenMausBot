@@ -2,7 +2,7 @@
 // should start from a fresh provider session instead.
 //
 // A room turn never resumes a stored session: every turn re-sends the room's
-// bounded recent transcript (serializeRoomContext). What grows is a warm
+// bounded recent transcript (host/room-transcript.ts). What grows is a warm
 // provider process the driver keeps between one bot's consecutive turns in
 // the same room (Claude's idle session reuse), which re-reads that transcript
 // on top of everything it already holds. Starting the turn with the existing

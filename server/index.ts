@@ -13694,7 +13694,7 @@ function teammateReportContext(requestId: string, readerBotId?: string): string 
   return `${reportNote(bot ?? "Teammate")}\n${JSON.stringify({ bot, task: escapeNotes(node.text), status: node.status, result: escapeNotes(node.result) })}`;
 }
 
-const { serializeRoomContext } = createRoomTranscript({ store, teammateReportContext });
+const roomTranscript = createRoomTranscript({ store, teammateReportContext });
 
 
 /** The decision model's view of a room message: the room, its people, the
@@ -13971,7 +13971,7 @@ async function runClaimedGroupMemberTurn(
   const resolvedLatestImages = latestUser?.text && !cardContinuation && !latestInBurst
     ? extractTurnImages(latestUser.text)
     : { text: latestUser?.text ?? "", images: [] };
-  const roomContext = serializeRoomContext(
+  const roomWindow = roomTranscript.window(
     threadId,
     userName,
     usesNativeImageInput && latestUser
@@ -13982,6 +13982,7 @@ async function runClaimedGroupMemberTurn(
       : undefined,
     bot.id,
   );
+  const roomContext = roomWindow.text;
   const turnImages = usesNativeImageInput ? [...burstImages, ...resolvedLatestImages.images] : [];
   const skills = availableSkills();
   const selectedSkills = mergeSkills(
