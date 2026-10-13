@@ -31,7 +31,12 @@ pnpm exec vitest run server/auto-approve.test.ts server/command-allowlist.e2e.te
   the setting is off by default and the environment can only add it; a
   never-list command is denied with a reason, one status line and one
   `auto-denied` decision row; anything else is left to the grant; a denial
-  that cannot be delivered stops the turn instead of leaving it waiting.
+  that cannot be delivered stops the turn instead of leaving it waiting. A
+  request with no known working directory is still denied, from the command
+  line it carries. A command the reader cannot read (forced with a reader
+  that fails) is neither denied nor allowed: the grant's verdict becomes a
+  card, the log says so once without the command, and a runtime with no card
+  to show refuses the call.
 - `server/drivers/openai-chat-safety-floor.test.ts` drives the chat runtime
   against a local fake provider and a fixture MCP tool that records the
   command it is handed and runs nothing. At Full access and under "Always
@@ -45,7 +50,10 @@ pnpm exec vitest run server/auto-approve.test.ts server/command-allowlist.e2e.te
   instead, carrying the exact command, and goes on accepting every other one.
   An ACP agent's kept "Always allow this session" repeats for an ordinary
   command and asks again for a never-list one, and a legacy full-auto
-  instance does not answer one by itself.
+  instance does not answer one by itself. Two cases join the driver to the
+  fold's own check: a Codex request with no working directory and an ACP
+  request not typed as a shell command both reach it with their command
+  line, and it denies them.
 - `server/safety-floor.e2e.test.ts` launches the real server in an isolated
   home with the fake Claude CLI parked, and raises Bash requests through its
   actual permission socket. A saved command answers `rm -rf /` while the
@@ -69,9 +77,9 @@ request, so the floor never sees it.
 The Muse Code driver has the same guard as Codex (at Full access it no
 longer answers a never-list command inside the driver), but the repository
 has no fake Muse host, so that one line is checked by typecheck and reading
-only. A request whose driver could not attach the exact command (no known
-working directory) is not classified; its display summary is cut at 200
-characters and is never read as a command.
+only. A request's display summary is cut at 200 characters and is never read
+as a command; the floor reads the engine's own command line, which every
+driver that has one puts on the request.
 
 Read the Full access leg of `server/safety-floor.e2e.test.ts` for what it is.
 The test itself writes the Bash request to the broker's socket. It proves

@@ -871,9 +871,9 @@ Full access answers every permission request for a bot, and a saved command
 answers one. The safety floor is a short never-list that neither can answer:
 a recursive delete of the filesystem root, of the home directory or of a
 top-level system directory (`rm -rf /`, `rm -rf ~`, `rd /s /q C:\Windows`);
-formatting or overwriting a disk (`mkfs` on a disk, `diskutil eraseDisk`,
+formatting or overwriting a disk (`mkfs` on a device, `diskutil eraseDisk`,
 `format C:`, `dd of=/dev/sda`, a redirection into a disk device); and a fork
-bomb. It is off unless you switch it on: set `safetyFloor.enabled` to `true`
+bomb. Making a filesystem in an image file or on a loop device is not on it. It is off unless you switch it on: set `safetyFloor.enabled` to `true`
 in `config.json` (or through `PUT /api/config`), or start the server with
 `OMB_SAFETY_FLOOR=1`, which turns it on whatever the file says.
 `GET /api/config` reports the result as `safetyFloor.enabled`.
@@ -884,11 +884,18 @@ floor: …`, and the decision log gets an `auto-denied` row with source
 `safety-floor`. A card you answer yourself is not overridden: at "Ask for
 approval" the request still reaches you, and your Allow stands.
 
+A command the floor cannot read is not approved automatically either. The
+request comes to you as a card instead, and the server log says so once,
+without the command. An API-key bot at Full access has no card to show, so
+there the call is refused.
+
 It holds wherever the engine asks the server, and only there. API-key models
 (the chat runtime) are covered in full, at Full access and under "Always
 allow this session". So is any shell request Claude Code, Codex, Muse Code or
 an ACP agent sends, whether a saved command, a kept session allow or Full
-access would have answered it. An engine running its own no-ask mode never
+access would have answered it: the engine's command line travels with the
+request, so it is read even when its working directory is not known. An
+engine running its own no-ask mode never
 sends a request, so the floor does not see the command: at Full access that
 is Claude Code (`bypassPermissions`), Codex (approvals off) and the ACP
 agents started in their own yolo mode. Treat it as a net under saved commands
