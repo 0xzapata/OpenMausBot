@@ -372,6 +372,9 @@ test("on demand, an address nothing needs is given back and comes back the same 
         assert.equal(installationCreated, true);
         return reply(response, 200, { installation, credentialExpiresAt });
       case "POST /v1/installations/self/endpoint":
+        // The release rides along here too, including when an address that
+        // was given back is asked for again.
+        assert.deepEqual(body, { appVersion: identity.appVersion });
         tunnels += 1;
         row = { url: ENDPOINT, status: "ready" };
         return reply(response, 200, {
@@ -537,9 +540,14 @@ test("on demand, a give-back the control plane left pending is finished before t
   const route = async (request, response) => {
     const key = `${request.method} ${request.url}`;
     calls.push(key);
-    for await (const _chunk of request) {
-      // Drain the body.
-    }
+    let rawBody = "";
+    for await (const chunk of request) rawBody += chunk;
+    // Only the endpoint request carries a body: the app's release.
+    assert.deepEqual(
+      rawBody ? JSON.parse(rawBody) : null,
+      key === "POST /v1/installations/self/endpoint" ? { appVersion: identity.appVersion } : null,
+      `unexpected body for ${key}`,
+    );
     if (request.url.startsWith("/v1/installations/self")) {
       assert.equal(request.headers.authorization, `Bearer ${INSTALLATION_CREDENTIAL}`);
     }
