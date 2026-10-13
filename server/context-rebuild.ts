@@ -1,4 +1,5 @@
 import { isContextMessage } from "./delta-context.ts";
+import { escapeNotes } from "./peer-provenance.ts";
 import { redactSecretsInText } from "./redact.ts";
 import type { Message } from "./store.ts";
 
@@ -59,25 +60,58 @@ const PATH_KEYS: ReadonlySet<string> = new Set(["file_path", "notebook_path", "p
  * rather than parsed, because a long preview is cut off mid-document (a
  * Write's content) while the line naming the file is still whole. */
 const TARGET_LINE = new RegExp(`^ {2}"(${TARGET_KEYS.join("|")})": ("(?:[^"\\\\]|\\\\.)*"),?$`, "gm");
+/** Whitespace as one line reads it: \s, and the line separator \s leaves
+ * out (U+0085). */
+const WHITESPACE = /[\s\u0085]+/g;
+const LINE_BREAK = /[\n\r\v\f\u0085\u2028\u2029]/;
+/** The longest plain-text input still taken as a target. */
+const PLAIN_TARGET_MAX_CHARS = 200;
+
+/** A target as a line may show it, or undefined when it may show none.
+ * A web address keeps its scheme and host and nothing else: the path and
+ * the query are where a signed link or a webhook carries its secret, in a
+ * shape no redaction rule knows, and a password sits before the host. That
+ * holds for a `url`, and for an address given under another name or as the
+ * whole plain-text input; one that does not parse is not shown at all. A
+ * command is left as it ran. */
+function shownTarget(key: string, raw: string): { value: string; path: boolean } | undefined {
+  const value = raw.trim();
+  if (!value) return undefined;
+  const address = key === "url" || (key !== "command" && /^https?:\/\//i.test(value));
+  if (!address) return { value, path: PATH_KEYS.has(key) };
+  try {
+    const { protocol, host } = new URL(value);
+    return host ? { value: `${protocol}//${host}`, path: false } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** What a call acted on, read from its input preview: the file, the search
  * pattern, the command. Only a target argument's own value; never the rest
  * of the preview (a Write's content, an Edit's old and new text). Undefined
  * when the preview names none. */
-function inputTarget(preview: string | undefined): { key: string; value: string } | undefined {
+function inputTarget(preview: string | undefined): { value: string; path: boolean } | undefined {
   if (!preview) return undefined;
-  // Not a document of arguments: the call took one plain string, and that
-  // is what it acted on (Codex previews a web search as the query itself).
-  // The previews that stand in for content ("[large content omitted]") and
-  // arguments that never parsed open with a bracket, and are no target.
-  if (!/^\s*[[{]/.test(preview)) return { key: "text", value: preview };
+  // Not a document of arguments: the call took one plain string (Codex
+  // previews a web search as the query itself). It is a target only while
+  // it reads like one, a single short line; anything longer, or on several
+  // lines, is a body (a message, a patch) and stays out. The previews that
+  // stand in for content ("[large content omitted]") and arguments that
+  // never parsed open with a bracket, and are no target either.
+  if (!/^\s*[[{]/.test(preview)) {
+    return preview.length <= PLAIN_TARGET_MAX_CHARS && !LINE_BREAK.test(preview) ? shownTarget("text", preview) : undefined;
+  }
   const found = new Map<string, string>();
   for (const [, key, literal] of preview.matchAll(TARGET_LINE)) {
     if (found.has(key!)) continue;
     try { found.set(key!, String(JSON.parse(literal!))); } catch { /* not a complete value: no target */ }
   }
-  const key = TARGET_KEYS.find((candidate) => found.get(candidate)?.trim());
-  return key ? { key, value: found.get(key)! } : undefined;
+  for (const key of TARGET_KEYS) {
+    const target = found.has(key) ? shownTarget(key, found.get(key)!) : undefined;
+    if (target) return target;
+  }
+  return undefined;
 }
 
 /** One tool call on one line: the tool, what it acted on, and how it ended.
@@ -86,13 +120,20 @@ function inputTarget(preview: string | undefined): { key: string; value: string 
  * already is the command (Codex, ACP). A call whose chip shows no target (a
  * Read, a search) gets it from the input preview behind the chip, unless
  * its title already carries it. Never the call's result, and of the preview
- * only that one value. Titles are redacted when stored and previews when
- * built; this redacts again, because the line leaves for another provider,
- * and BEFORE it clips: a key cut in half is no longer a shape redaction
- * knows. A call with no recorded result (its turn was stopped mid-call)
- * says so rather than claim it worked. */
+ * only that one value.
+ *
+ * The line is the harness speaking, in words a model chose (a title, a
+ * command, a path), which a page it read may have chosen for it, and it
+ * leaves for another provider. So every part is put on one line, redacted
+ * again (titles are redacted when stored and previews when built, but this
+ * does not rely on it), and stripped of anything that would open a harness
+ * note (escapeNotes; a bracket that opens none, as in app/[id]/page.tsx,
+ * is left alone). All of that BEFORE it is clipped: a key cut in half is no
+ * longer a shape redaction knows, nor a note cut after its first word one
+ * escapeNotes does. A call with no recorded result (its turn was stopped
+ * mid-call) says so rather than claim it worked. */
 export function toolReplayLine(tool: NonNullable<Message["tool"]>): string {
-  const oneLine = (text: string) => redactSecretsInText(text.replace(/\s+/g, " ").trim());
+  const oneLine = (text: string) => escapeNotes(redactSecretsInText(text.replace(WHITESPACE, " ").trim()));
   // by character, not UTF-16 unit: a cut must not leave half of one behind
   const clip = (text: string, room: number, keepEnd = false) => {
     const characters = [...text];
@@ -107,14 +148,16 @@ export function toolReplayLine(tool: NonNullable<Message["tool"]>): string {
   // characters), or a phrase naming the file, already has the target.
   const titled = nameIsCommand(name) && (name.includes(targeted) || targeted.startsWith(name));
   const detail = summary && summary !== name && !nameIsCommand(name) ? { text: summary, path: false }
-    : targeted && !titled ? { text: targeted, path: PATH_KEYS.has(target!.key) }
+    : targeted && !titled ? { text: targeted, path: target!.path }
       : undefined;
   const tail = ` — ${tool.ok === true ? "ok" : tool.ok === false ? "failed" : "no result recorded"}]`;
   const room = TOOL_LINE_MAX_CHARS - "[ran: ".length - tail.length;
   // What is left for the detail after "name: ". A path is cut at its start:
   // its end is the file. A title too long to leave any is shown alone.
   const left = detail ? room - [...name].length - 2 : 0;
-  return `[ran: ${left > 1 ? `${name}: ${clip(detail!.text, left, detail!.path)}` : clip(name, room)}${tail}`;
+  const shown = left > 1 ? `${name}: ${clip(detail!.text, left, detail!.path)}` : clip(name, room);
+  // once more over the whole: a title and a detail can open a note between them
+  return `[ran: ${escapeNotes(shown)}${tail}`;
 }
 
 /** Every tool call on the active branch (`messages`, oldest first), each

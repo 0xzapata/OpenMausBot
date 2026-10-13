@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { replayToolCalls, selectReplay, type ReplayEntry } from "./context-rebuild.ts";
 import { isContextMessage } from "./delta-context.ts";
 import type { Message } from "./store.ts";
+import { toolDetailPreview } from "./tool-summary.ts";
 
 import { buildTurnContext, engineIsFresh, buildRecoveryText } from "./turn-context.ts";
 
@@ -147,7 +148,8 @@ describe("tool history in an inline replay", () => {
   const thread: Message[] = [
     said("u1", "user", "run the tests"),
     ran("t1", "Bash", { summary: "pnpm test", ok: false, output: "RESULT_BODY 3 failed" }),
-    ran("t2", "Read"),
+    // a Read's chip shows no file: it is in the input preview behind the chip
+    ran("t2", "Read", { input: toolDetailPreview({ file_path: "server/config.test.ts", limit: 80 }), output: "RESULT_BODY the file" }),
     said("a1", "bot", "They fail in config.test.ts."),
     said("u2", "user", "fix it"),
     ran("t3", "git diff --stat", { summary: "git diff --stat" }),
@@ -163,7 +165,7 @@ describe("tool history in an inline replay", () => {
   const conversation = [
     "User: run the tests",
     "Assistant: [ran: Bash: pnpm test — failed]",
-    "Assistant: [ran: Read — ok]",
+    "Assistant: [ran: Read: server/config.test.ts — ok]",
     "Assistant: They fail in config.test.ts.",
     "User: fix it",
     "Assistant: [ran: git diff --stat — ok]",

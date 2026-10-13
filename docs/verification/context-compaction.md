@@ -89,16 +89,22 @@ sent: the lines for each of Claude's turns. Its evidence is
 A line shows the tool, what it acted on and `ok`, `failed` or `no result
 recorded`. What it acted on is the command beside the chip in the chat, or, for
 a call whose chip shows none (a `Read`, a search), one argument from the input
-preview behind the chip: the command, file, search pattern, query or URL, or the
-whole input when it is one plain string (a Codex web search's query). Never a
-tool result, and nothing else of the preview (a `Write`'s content, an `Edit`'s
-old and new text). It is redacted, then clipped to 120 characters; a long path
-keeps its end. At most 20 lines are sent, the most recent, only for calls
-between the first and last replayed message, and only from the bytes of
-`rebuildBytes` that messages left unused: the messages selected are the same
-with the setting on or off. Engines that replay natively (API models sent the
-transcript itself) and room turns are unchanged. A call is still named without a
-target when its preview is arguments that hold none of those at the top level.
+preview behind the chip: the command, file, search pattern or query. A web
+address is cut to its scheme and host (`https://hooks.example.com`), wherever it
+is the whole target, so no path, query string or password in it is sent. An
+input that is one plain string (a Codex web search's query) is used only when it
+is a single line of at most 200 characters. Never a tool result, and nothing
+else of the preview (a `Write`'s content, an `Edit`'s old and new text).
+
+Each line is put on one line, redacted, cleared of anything that would open a
+harness note (`escapeNotes` in `server/peer-provenance.ts`), then clipped to 120
+characters; a long path keeps its end. At most 20 lines are sent, the most
+recent, only for calls between the first and last replayed message, and only
+from the bytes of `rebuildBytes` that messages left unused: the messages
+selected are the same with the setting on or off. Engines that replay natively
+(API models sent the transcript itself) and room turns are unchanged. A call is
+still named without a target when its preview is arguments that hold none of
+those at the top level. A URL inside a command is left as the command ran.
 
 ## Bounds and limitations
 
