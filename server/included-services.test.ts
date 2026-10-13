@@ -26,15 +26,16 @@ describe("Boat credential", () => {
   });
 
   it("uses the person's own key, sent only to Boat, whenever there is one", () => {
-    expect(boatCredential("box_own", cloud)).toEqual({ token: "box_own", api: "https://ascii.dev/api/box/v1", included: false });
-    // OMB_BOX_API keeps pointing own keys at a stub for dev and tests.
-    expect(boatCredential("box_own", { ...cloud, OMB_BOX_API: "http://127.0.0.1:9/api/box/v1" }))
-      .toEqual({ token: "box_own", api: "http://127.0.0.1:9/api/box/v1", included: false });
+    // Boat's public API v1.
+    expect(boatCredential("box_own", cloud)).toEqual({ token: "box_own", api: "https://boat.dev/api/v1", included: false });
+    // OMB_BOAT_API points own keys at a stub for dev and tests.
+    expect(boatCredential("box_own", { ...cloud, OMB_BOAT_API: "http://127.0.0.1:9/api/v1" }))
+      .toEqual({ token: "box_own", api: "http://127.0.0.1:9/api/v1", included: false });
   });
 
   it("sends the included token only to the relay even when it comes back as a plain token", () => {
     // A leased computer descriptor carries the token in use back to boat.ts.
-    expect(boatCredential("box_omb_included", { ...cloud, OMB_BOX_API: "http://127.0.0.1:9/api/box/v1" }))
+    expect(boatCredential("box_omb_included", { ...cloud, OMB_BOAT_API: "http://127.0.0.1:9/api/v1" }))
       .toEqual({ token: "box_omb_included", api: RELAY_BOAT, included: true });
   });
 

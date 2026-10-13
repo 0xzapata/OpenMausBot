@@ -5,8 +5,8 @@ import {
   companionStateRefreshIsCurrent,
   mutateCompanionBridgeState,
   phonePairingManualCodeMode,
-  type CompanionState,
-} from "./PhoneSetupFlow";
+} from "../lib/companion-state";
+import type { CompanionState } from "./PhoneSetupFlow";
 import {
   companionAccountActionError,
   companionPairingMode,
