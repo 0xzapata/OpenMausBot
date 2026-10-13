@@ -11,12 +11,14 @@ import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { openSse, type SseRecorder } from "./testing/sse.ts";
 
 it("denies a never-list command a grant would have allowed, at a saved command and at Full access, and leaves a person's card alone", async () => {
   const fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "hang" });
   const { url, dataDir, logPath } = fixture.info;
   const sockets: Socket[] = [];
   let restarted: ChildProcess | undefined;
+  let stream: SseRecorder | undefined;
   const api = async (method: string, path: string, body?: unknown, status = 200) => {
     const response = await fetch(url + path, { method, headers: { origin: url, "content-type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10_000) });
@@ -75,6 +77,7 @@ it("denies a never-list command a grant would have allowed, at a saved command a
   try {
     const bot = (await api("POST", "/api/bots", { name: "Safety floor fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }, 201)).bot;
     await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { approvalMode: "ask" });
+    stream = await openSse(`${url}/api/events`);
     const socket = await start(bot);
     const wipe = "rm -rf /";
 
@@ -82,6 +85,12 @@ it("denies a never-list command a grant would have allowed, at a saved command a
     // saved command then answers the next request, exactly as before.
     const first = await ask(socket, wipe);
     await expect.poll(async () => Boolean((await card(bot.threadId, first.id))?.commandAllowlist)).toBe(true);
+    // The request reaches every connected client without its exact command:
+    // neither the grant descriptor nor the line the safety floor reads.
+    const broadcast = await stream.until((frame) => frame.kind === "runtime" && frame.event?.type === "request.opened" && frame.event.requestId === first.id);
+    expect(broadcast.event).toMatchObject({ tool: "Bash", requestType: "permission" });
+    expect(broadcast.event).not.toHaveProperty("command");
+    expect(broadcast.event).not.toHaveProperty("commandLine");
     expect((await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: first.id, behavior: "allow", rememberCommand: true })).outcome).toBe("allowed-once");
     expect(await first.reply).toMatchObject({ id: first.id, behavior: "allow" });
     const unguarded = await ask(socket, wipe);
@@ -144,6 +153,7 @@ it("denies a never-list command a grant would have allowed, at a saved command a
     await stop(bot);
     console.info(`Safety floor real-server verification passed; isolated log: ${logPath}`);
   } finally {
+    stream?.close();
     for (const socket of sockets) socket.destroy();
     await waitForExit(restarted, { signal: "SIGTERM" });
     await fixture.close();
