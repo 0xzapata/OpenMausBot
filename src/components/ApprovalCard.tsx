@@ -17,6 +17,7 @@ import { niceDate, niceTime, scheduleLabel } from "@/lib/schedule-label";
 import { cronScheduleLabel } from "../../shared/cron-label";
 import { PROFILE_REQUEST_FIELDS, type ProfileRequestField } from "../../shared/profile-request";
 import type { RoutineRequestSchedule } from "../../shared/routine-request";
+import type { SkillShareRecord } from "../../shared/skill-request";
 
 interface ToolLabels {
   [tool: string]: LocaleKey;
@@ -201,19 +202,24 @@ function AppliedChangeLine({
   const [undoing, setUndoing] = useState(false);
   const [error, setError] = useState<string>();
   const [sharing, setSharing] = useState(false);
+  // The share response, kept until the card's own patch arrives so the
+  // Share button cannot come back in between.
+  const [sharedNow, setSharedNow] = useState<{ requestId: string; shared: SkillShareRecord }>();
   const config = useContext(StoreContext)?.state.config ?? null; // null where no store is mounted (previews)
   const undone = card.undone === true;
   const skill = card.skillRequest;
-  const shared = skill?.shared;
+  const shared = skill?.shared ?? (sharedNow && sharedNow.requestId === card.requestId ? sharedNow.shared : undefined);
   // features.shareLearnedSkills "ask": the person shares a learned skill
   // with the author's team from its receipt, once.
   const canShare = Boolean(skill && !shared && !undone && threadId && card.requestId)
     && shareLearnedSkillsMode(config) === "ask";
   const share = () => {
-    if (!threadId || !card.requestId || sharing) return;
+    const requestId = card.requestId;
+    if (!threadId || !requestId || sharing) return;
     setSharing(true);
     setError(undefined);
-    api(`/api/threads/${threadId}/share-skill`, { method: "POST", body: JSON.stringify({ requestId: card.requestId }) })
+    api<{ shared: SkillShareRecord }>(`/api/threads/${threadId}/share-skill`, { method: "POST", body: JSON.stringify({ requestId }) })
+      .then((response) => setSharedNow({ requestId, shared: response.shared }))
       .catch((failure: unknown) => {
         setError(t("approval.applied.shareFailed", { error: failure instanceof Error ? failure.message : String(failure) }));
       })
