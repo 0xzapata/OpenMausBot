@@ -190,8 +190,8 @@ Check these user paths:
 
 Not proven by this run: real connected apps and real signed-in sites need a
 Composio account and a signed-in browser, which the fixture does not have.
-Their rows are covered by `BotSettingsDialog.simple.test.ts` and
-`bot-app-access.test.ts`.
+Their rows are covered by `src/components/BotSettingsDialog.simple.test.ts` and
+`src/lib/bot-app-access.test.ts`.
 
 ## Earlier settings verification
 
