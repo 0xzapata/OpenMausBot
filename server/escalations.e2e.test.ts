@@ -5,11 +5,13 @@
 // fence: the person reads one place, and the notice never pretends to be
 // the person. Pinned against the real server with the fake CLI parking a
 // bot exactly the way each test names.
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
+import { openSse } from "./testing/sse.ts";
 
 /** The same fixture the incidents suite rides, plus a per-thread script
  * plan: each thread's fake CLI gets its own replies and tool calls, and a
@@ -181,6 +183,40 @@ it("carries the provenance fence header on a bot-raised escalation", async () =>
     // the flag reached the harness through the real agents proxy — the
     // Chief's notice above is its observable effect
     await turnEnded(chief.id, escalations.threadId);
+  } finally {
+    await close();
+  }
+}, 150_000);
+
+it("routes a Chief's own gate to the person, never a dead end", async () => {
+  const { url, api, control, botsNow, plan, useCli, turnEnded, close } = await launch();
+  try {
+    const clive = (await control(["new-bot", "--name", "Clive", "--section", "Ops"])).bot;
+    await api("PATCH", `/api/bots/${clive.id}`, { chiefOfStaff: true });
+    await useCli();
+    plan(clive.activeTaskId, {
+      tools: [{ name: "raise_escalation", server: "agents", input: { reason: "The production key needs the person's unlock." } }],
+      replies: ["I flagged the gate and stopped."],
+    });
+    // Every push the person would get, from before the turn starts.
+    const stream = await openSse(`${url}/api/events`, { origin: url });
+    try {
+      await control(["send", "--bot", clive.id, "--text", "Ship the deploy."]);
+      await turnEnded(clive.id, clive.activeTaskId);
+      // a unique bot patch is an ordering barrier: by the time it is seen,
+      // every earlier push has been too
+      const name = `Barrier ${randomUUID().slice(0, 8)}`;
+      await api("PATCH", `/api/bots/${clive.id}`, { name });
+      await stream.until((frame) => frame.kind === "bot" && frame.bot?.name === name, 10_000);
+      const notified = stream.frames.filter((frame) => frame.kind === "notify").map((frame) => frame.notification);
+      // the person hears the gate as an incident-shaped push naming Clive
+      expect(notified.some((n: any) => n?.kind === "incident" && n.botId === clive.id
+        && /Escalation: Clive's work .*it raised this flag itself/.test(n.body ?? ""))).toBe(true);
+    } finally {
+      stream.close();
+    }
+    // a Chief has no Chief: its own gate never opens a Team escalations thread
+    expect((await botsNow()).find((b) => b.id === clive.id)?.tasks?.some((t: any) => t.title === "Team escalations")).toBeFalsy();
   } finally {
     await close();
   }
