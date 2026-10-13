@@ -2,7 +2,7 @@
 // floorVerdict with a command line. Nothing in this file runs a command.
 import { describe, expect, it } from "vitest";
 
-import { floorVerdict } from "./safety-floor.ts";
+import { floorReading, floorVerdict } from "./safety-floor.ts";
 
 type Case = [command: string, rule: string, platform?: NodeJS.Platform];
 
@@ -64,7 +64,8 @@ const BLOCKED: Case[] = [
   ["rm -rf /lib", "delete-system-directory"],
   ["rm -rf /lib64", "delete-system-directory"],
   ["rm -rf /lib*", "delete-system-directory"],
-  ["rm -rf /private/var", "delete-system-directory"],
+  ["rm -rf /private/var", "delete-system-directory", "darwin"],
+  ["rm -rf /private", "delete-system-directory", "darwin"],
   ["rm -rf /tmp/../etc", "delete-system-directory"],
   ["rm -rf /usr/local/..", "delete-system-directory"],
   ["rm -rf /users", "delete-system-directory", "darwin"],
@@ -168,8 +169,36 @@ const BLOCKED: Case[] = [
   // Windows: Git Bash and WSL spellings of a drive
   ["rm -rf /c", "delete-root", "win32"],
   ["rm -rf /c/Users", "delete-system-directory", "win32"],
-  ["rm -rf /mnt/c", "delete-root", "linux"],
-  ["rm -rf '/mnt/c/Program Files'", "delete-system-directory", "linux"],
+  // review round 1: an option's value written against its letter
+  ["sudo -uroot rm -rf /", "delete-root"],
+  ["sudo -uubuntu rm -rf /", "delete-root"],
+  ["sudo -uroot bash -c 'rm -rf /'", "delete-root"],
+  ["sudo -nu root rm -rf /", "delete-root"],
+  ["sudo -Eu root rm -rf /etc", "delete-system-directory"],
+  // review round 1: mkfs on any device that is not scratch
+  ["mkfs.ext4 /dev/md0", "format-disk"],
+  ["mkfs.xfs -f /dev/mapper/rhel-root", "format-disk"],
+  ["mkfs.ext4 /dev/ubuntu-vg/ubuntu-lv", "format-disk"],
+  ["mkfs.ext4 /dev/dm-0", "format-disk"],
+  ["mkfs.btrfs -f /dev/md/root", "format-disk"],
+  ["dd if=image.img of=/dev/md0", "overwrite-disk"],
+  ["dd if=image.img of=/dev/mapper/rhel-root", "overwrite-disk"],
+  // review round 1: cmd and PowerShell chains, where a backslash ends a path
+  ["cd C:\\; Remove-Item -Recurse -Force C:\\Windows", "delete-system-directory"],
+  ['cd "C:\\Users\\me\\" && rd /s /q C:\\', "delete-root"],
+  ['cd "C:\\Users\\me\\"\nrd /s /q C:\\', "delete-root"],
+  ['Copy-Item "C:\\a\\" D:\\b -Recurse; Remove-Item -Recurse -Force $HOME', "delete-home"],
+  ['cd "C:\\proj\\"; rd /s /q C:\\Users', "delete-system-directory"],
+  ['cd "C:\\Program Files\\" & rd /s /q C:\\Windows', "delete-system-directory"],
+  ['Set-Location "C:\\x\\"; ri -r C:\\Windows', "delete-system-directory"],
+  ['cd "C:\\x\\"; cmd /c rd /s /q C:\\Users', "delete-system-directory"],
+  ['rd /s /q "C:\\Windows\\"', "delete-system-directory"],
+  // review round 1: small spellings that were two lines each
+  ['rm -rf "${HOME:?}"', "delete-home"],
+  ["rm -rf ${HOME:?no home}/", "delete-home"],
+  ["bash -c -- 'rm -rf /'", "delete-root"],
+  ["function wipe { rm -rf /; }; wipe", "delete-root"],
+  ["echo $((1 << 2))\nrm -rf /", "delete-root"],
   // spellings found by probing, kept so they stay blocked
   ["RM -rf /", "delete-root"],
   ["rm -rf / >/dev/null 2>&1 &", "delete-root"],
@@ -319,6 +348,51 @@ const ALLOWED: Array<[command: string, platform?: NodeJS.Platform]> = [
   ["rm -rf /c/Users/omkar/project/node_modules", "win32"],
   ["rm -rf C:\\Users\\omkar\\project\\dist", "win32"],
   ["rm -rf /tmp/build", "win32"],
+  // review round 1: text a cmd or PowerShell line only prints
+  ['cd "C:\\proj\\"; echo "cleaning; rd /s /q C:\\ skipped"'],
+  ['cd "C:\\proj\\"; echo "cleaning; rm -rf / skipped"'],
+  ['Write-Host "C:\\logs\\"; Write-Host "next: Remove-Item -Recurse C:\\Users"'],
+  // review round 1: escaped quotes in a POSIX line are not the end of a string
+  ['curl -d "{\\"note\\": \\"then; rd /s /q C:\\\\ \\"}" https://example.test'],
+  ['echo "say \\"hi\\"; rd /s /q C:\\"'],
+  ['git commit -m "fix: handle \\"C:\\\\\\" paths; rd /s /q C:\\\\ no longer runs"'],
+  ['ls "C:\\Users\\me\\"'],
+  ['rd /s /q "C:\\proj\\node_modules\\"'],
+  ['Remove-Item -Recurse -Force "C:\\proj\\build\\"'],
+  // review round 1: a line that continues, or feeds a heredoc, is a POSIX line
+  ["rm -rf node_modules && \\\n  npm ci", "win32"],
+  ["rm -rf \\\n  /tmp/build", "win32"],
+  ["cat > clean.bat <<'EOF'\nrd /s /q C:\\\nEOF"],
+  ["cat <<EOF\nrm -rf /\nEOF", "win32"],
+  // review round 1: a group in a path is a path nobody can know from the text
+  ["rm -rf ~/(foo|bar)"],
+  ["rm -rf /var/(log|tmp)/old"],
+  ["rm -rf /(tmp|opt)/x"],
+  ["rm -rf /tmp/!(keep)"],
+  // review round 1: /mnt/<letter> is a mount on Linux, /private a directory off macOS
+  ["rm -rf /mnt/x", "linux"],
+  ["rm -rf /mnt/c", "linux"],
+  ["rm -rf /private", "linux"],
+  ["rm -rf /private/var", "linux"],
+  ["sudo -udeploy rm -rf /srv/app/releases/old"],
+  ['rm -rf "${HOME:?}/.cache/app"'],
+  ["x=$((2 << 3)); echo $x"],
+  ["function clean { rm -rf ./build; }; clean"],
+  ["bash -c -- 'rm -rf ./build'"],
+  // review round 1: sudo -l lists what may be run and runs nothing
+  ["sudo -l rm -rf /"],
+  ["sudo --list rm -rf /"],
+  ["sudo -nl rm -rf /"],
+  // review round 1: the devices a disk image is built on, and a name only a variable knows
+  ["mkfs.ext4 /dev/loop0"],
+  ["mkfs.ext4 /dev/ram0"],
+  ["mkfs.ext4 /dev/nbd0p1"],
+  ["mkfs.ext4 /dev/zram0"],
+  ["mkfs.ext4 /dev/mapper/loop0p1"],
+  ['mkfs.ext4 "/dev/$DISK"'],
+  ["mkfs.ext4 -J device=/dev/sdb1 rootfs.img"],
+  ["dd if=image.img of=/dev/mapper/loop0p1"],
+  ["dd if=/dev/zero of=/dev/ttyUSB0"],
 ];
 
 describe("floorVerdict", () => {
@@ -372,6 +446,30 @@ describe("floorVerdict", () => {
     expect(floorVerdict("rd /s /q C:\\Users\\Omkar", "win32", "C:\\Users\\omkar")?.rule).toBe("delete-home");
     expect(floorVerdict("rm -rf /c/Users/omkar", "win32", "C:\\Users\\omkar")?.rule).toBe("delete-home");
     expect(floorVerdict("rd /s /q C:\\Users\\omkar\\project", "win32", "C:\\Users\\omkar")).toBeNull();
+  });
+
+  it("does not take a scratch directory for the home directory, wherever HOME points", () => {
+    // HOME=/tmp in a container, a fixture's throwaway home: deleting it is cleanup
+    expect(floorVerdict("rm -rf /tmp", "linux", "/tmp")).toBeNull();
+    expect(floorVerdict("rm -rf /tmp/sandbox-home", "linux", "/tmp/sandbox-home")).toBeNull();
+    expect(floorVerdict("rm -rf /private/tmp", "darwin", "/private/tmp")).toBeNull();
+    expect(floorVerdict("rm -rf /var/folders/ab/cd/T/omb-home", "darwin", "/var/folders/ab/cd/T/omb-home")).toBeNull();
+    expect(floorVerdict("rd /s /q C:\\Users\\ci\\AppData\\Local\\Temp\\home", "win32", "C:\\Users\\ci\\AppData\\Local\\Temp\\home")).toBeNull();
+    // the command that says "home" still means it
+    expect(floorVerdict("rm -rf ~", "linux", "/tmp")?.rule).toBe("delete-home");
+    expect(floorVerdict('rm -rf "$HOME"', "linux", "/tmp")?.rule).toBe("delete-home");
+  });
+
+  it("tells a command it read from one it could not read", () => {
+    expect(floorReading("npm test")).toEqual({ read: true, verdict: null });
+    expect(floorReading("rm -rf /")).toEqual({ read: true, verdict: { rule: "delete-root", label: "recursive delete of the filesystem root" } });
+    expect(floorReading("")).toEqual({ read: true, verdict: null });
+    // A reader that breaks part-way has not read the command. Forced here by
+    // a home that cannot be read as text; nothing in the command is special.
+    const broken = { replace() { throw new Error("unreadable home"); } } as unknown as string;
+    expect(floorReading("rm -rf /srv/app/build", "linux", broken)).toEqual({ read: false });
+    // floorVerdict keeps its plain shape: it has nothing to report for it
+    expect(floorVerdict("rm -rf /srv/app/build", "linux", broken)).toBeNull();
   });
 
   it("never throws and never blocks text it cannot read", () => {
