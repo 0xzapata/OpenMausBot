@@ -729,6 +729,11 @@ export const STEERED_CONTINUATION_GRACE_MS = 2_000;
  * stall watchdog. */
 export const STEERED_CONTINUATION_SILENCE_MS = 30_000;
 
+/** The longest a single Bash call may ask for (BASH_MAX_TIMEOUT_MS). Ten
+ * minutes stays well inside the harness's 20-minute stall watchdog, which
+ * sees nothing while a command runs. */
+export const CLAUDE_BASH_MAX_TIMEOUT_MS = 10 * 60_000;
+
 /** Tests scale each steer timer on its own, the way FAKE_CLAUDE_RETRY_SCALE
  * scales the retry backoff — a test that shortens the silence bound must not
  * also shorten the grace `init` has to arrive in. Production runs at 1. */
@@ -755,7 +760,7 @@ export function claudeHookSettings(helperPath: string): Record<string, unknown> 
     ? '"%OMB_HOOK_NODE%" "%OMB_HOOK_HELPER%"'
     : [process.execPath, helperPath].map(path => `'${path.replace(/'/g, "'\\''")}'`).join(" ");
   const entry = [{ matcher: "", hooks: [{ type: "command", command, timeout: 5 }] }];
-  return { PostToolUse: entry, PreCompact: entry, SessionStart: entry, Stop: entry };
+  return { PostToolUse: entry, PostToolUseFailure: entry, PreCompact: entry, SessionStart: entry, Stop: entry };
 }
 
 export function permissionSocketPath(threadId: string, botId?: string) {
@@ -1817,6 +1822,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // boundary. Native background workers cannot outlive that boundary;
       // parallel bot work must use the harness's durable coordinate_bots path.
       env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
+      // With no background shell, a long media job's way past the 2-minute
+      // default is a per-call `timeout`; the prompt promises up to this cap.
+      // A cap the person set themselves wins.
+      env.BASH_MAX_TIMEOUT_MS ||= String(CLAUDE_BASH_MAX_TIMEOUT_MS);
       const cwd = turn.cwd ?? homedir();
       const commandCwd = permissionLaunchCwd(cwd);
       // Everything that shapes the process, minus session/turn-specific temp

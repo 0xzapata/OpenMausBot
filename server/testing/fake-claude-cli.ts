@@ -98,9 +98,12 @@
 //                      card; reported like any tool call before the reply.
 //   FAKE_CLAUDE_HOOKS  1: honour the `hooks` block of the --settings file the
 //                      way the real CLI does — after each tool_result run
-//                      every PostToolUse command with the event JSON on
+//                      every PostToolUse command (PostToolUseFailure for a
+//                      call scripted ok:false) with the event JSON on
 //                      stdin (synchronously, inheriting this env), and once
-//                      at the end run the Stop commands.
+//                      at the end run the Stop commands. A failure hook's
+//                      additionalContext is echoed into the reply, which is
+//                      how a test sees what the model was told.
 //   FAKE_CLAUDE_COMPACT 1: on this process's second and later turns, play a
 //                      compaction the way the CLI does — run the PreCompact
 //                      hooks (trigger auto), then the SessionStart hooks with
@@ -903,12 +906,25 @@ const playTurn = (prompt: JsonValue, late = false) => {
   const usage = { input_tokens: 10, cache_read_input_tokens: Number.isSafeInteger(cacheRead) && cacheRead > 0 ? cacheRead : 2, output_tokens: 5 };
   if (scriptedToolCalls) {
     // scripted calls come first, each settled before the reply text
+    const failureContext: string[] = [];
     for (const call of scriptedToolCalls) {
       const id = call.id ?? `tu-${process.pid}-${++toolUseCount}`;
       out({ type: "assistant", message: { content: [{ type: "tool_use", id, name: call.name, input: call.input }], usage } });
       out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: !call.ok, content: call.output }] } });
-      runHooks("PostToolUse", { tool_name: call.name, tool_input: call.input, tool_response: call.output, tool_use_id: id });
+      if (!call.ok) {
+        // the real CLI (2.1.296) sends a failed call to PostToolUseFailure
+        // only, with the result text as `error`, and hands the model any
+        // additionalContext the hook prints
+        const printed = runHooks("PostToolUseFailure", { tool_name: call.name, tool_input: call.input, error: call.output, tool_use_id: id });
+        try {
+          const context = JSON.parse(printed)?.hookSpecificOutput?.additionalContext;
+          if (typeof context === "string" && context) failureContext.push(context);
+        } catch {}
+      } else {
+        runHooks("PostToolUse", { tool_name: call.name, tool_input: call.input, tool_response: call.output, tool_use_id: id });
+      }
     }
+    if (failureContext.length) replyParts = [`${failureContext.join("\n")}\n\n${replyParts[0] ?? ""}`, ...replyParts.slice(1)];
     for (const text of replyParts) out({ type: "assistant", message: { content: [{ type: "text", text }], usage } });
   } else {
     replyParts.forEach((text, index) => {
