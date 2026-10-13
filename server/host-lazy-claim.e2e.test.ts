@@ -18,7 +18,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 /** One computer call's wait, shortened — but past the 2 s after which the
  * bridges' old control client gave up and told the model a person had
  * taken control. */
-const CALL_WAIT_MS = 3_000;
+const CALL_WAIT_MS = 5_000;
 /** How soon a call must get its computer to act, shortened likewise. */
 const ACT_WITHIN_MS = 1_000;
 
