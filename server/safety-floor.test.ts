@@ -1,10 +1,28 @@
 // The never-list is a string classifier: every case here only calls
-// floorVerdict with a command line. Nothing in this file runs a command.
+// floorVerdict or floorReading with a command line. Nothing in this file runs
+// a command.
+//
+// HOW TO READ THE TABLES. The platform picks the reading, and nothing else:
+//
+//   - macOS and Linux read a line as a POSIX shell line, against the POSIX
+//     rules only. A cmd or PowerShell command is NOT evaluated there: that
+//     host cannot run it.
+//   - Windows reads a line twice, as POSIX (Git Bash, WSL) and as cmd and
+//     PowerShell, each against its own rules. A hit in either blocks.
+//
+// A row with no platform is asserted on all three. In BLOCKED, a row tagged
+// "win32" is a cmd, PowerShell or Git Bash spelling: it must block on Windows
+// and must NOT be blocked on macOS or Linux. In ALLOWED, "posix" means macOS
+// and Linux only; what Windows makes of those rows is pinned in NOT_CLEAR,
+// which lists what reading every line twice costs there.
 import { describe, expect, it } from "vitest";
 
-import { floorReading, floorVerdict } from "./safety-floor.ts";
+import { floorReading, floorVerdict, MAX_COMMAND_LENGTH } from "./safety-floor.ts";
 
-type Case = [command: string, rule: string, platform?: NodeJS.Platform];
+type Platform = "darwin" | "linux" | "win32";
+const PLATFORMS: Platform[] = ["darwin", "linux", "win32"];
+const POSIX: Platform[] = ["darwin", "linux"];
+type Case = [command: string, rule: string, platform?: Platform];
 
 const BLOCKED: Case[] = [
   // the filesystem root, in every flag spelling
@@ -131,39 +149,39 @@ const BLOCKED: Case[] = [
   ["function f { f | f & }; f", "fork-bomb"],
   ["bash -c ':(){ :|:& };:'", "fork-bomb"],
   // Windows: cmd
-  ["rd /s /q C:\\", "delete-root"],
-  ["rmdir /s /q C:\\", "delete-root"],
-  ["RD /S /Q D:\\", "delete-root"],
-  ["rd /s/q C:", "delete-root"],
-  ['rd /s /q "C:\\"', "delete-root"],
-  ["rd /s /q %USERPROFILE%", "delete-home"],
-  ['rmdir /s /q "%USERPROFILE%"', "delete-home"],
-  ["rd /s /q C:\\Windows", "delete-system-directory"],
-  ["rmdir /S /Q C:\\Users", "delete-system-directory"],
-  ['rd /s /q "C:\\Program Files"', "delete-system-directory"],
-  ["rd /s /q C:\\Windows\\", "delete-system-directory"],
-  ["rd /s /q %SystemRoot%", "delete-system-directory"],
-  ["del /s /q C:\\*", "delete-root"],
-  ["del /f /s /q C:\\Users", "delete-system-directory"],
-  ["del /s /q C:\\Windows\\*.*", "delete-system-directory"],
-  ["echo cleaning & rd /s /q C:\\", "delete-root"],
-  ["cmd /c rd /s /q C:\\", "delete-root"],
-  ['cmd.exe /c "rd /s /q C:\\Users"', "delete-system-directory"],
-  ["format C:", "format-disk"],
-  ["format D: /FS:NTFS /Q", "format-disk"],
+  ["rd /s /q C:\\", "delete-root", "win32"],
+  ["rmdir /s /q C:\\", "delete-root", "win32"],
+  ["RD /S /Q D:\\", "delete-root", "win32"],
+  ["rd /s/q C:", "delete-root", "win32"],
+  ['rd /s /q "C:\\"', "delete-root", "win32"],
+  ["rd /s /q %USERPROFILE%", "delete-home", "win32"],
+  ['rmdir /s /q "%USERPROFILE%"', "delete-home", "win32"],
+  ["rd /s /q C:\\Windows", "delete-system-directory", "win32"],
+  ["rmdir /S /Q C:\\Users", "delete-system-directory", "win32"],
+  ['rd /s /q "C:\\Program Files"', "delete-system-directory", "win32"],
+  ["rd /s /q C:\\Windows\\", "delete-system-directory", "win32"],
+  ["rd /s /q %SystemRoot%", "delete-system-directory", "win32"],
+  ["del /s /q C:\\*", "delete-root", "win32"],
+  ["del /f /s /q C:\\Users", "delete-system-directory", "win32"],
+  ["del /s /q C:\\Windows\\*.*", "delete-system-directory", "win32"],
+  ["echo cleaning & rd /s /q C:\\", "delete-root", "win32"],
+  ["cmd /c rd /s /q C:\\", "delete-root", "win32"],
+  ['cmd.exe /c "rd /s /q C:\\Users"', "delete-system-directory", "win32"],
+  ["format C:", "format-disk", "win32"],
+  ["format D: /FS:NTFS /Q", "format-disk", "win32"],
   // Windows: PowerShell
-  ["Remove-Item -Recurse -Force C:\\", "delete-root"],
-  ["Remove-Item C:\\Users -Recurse", "delete-system-directory"],
-  ['Remove-Item -Recurse -Force "C:\\Program Files"', "delete-system-directory"],
-  ["Remove-Item -Path C:\\Windows -Recurse -Force", "delete-system-directory"],
-  ["Remove-Item -Recurse $env:USERPROFILE", "delete-home"],
-  ['Remove-Item -Recurse -Force "$env:USERPROFILE"', "delete-home"],
-  ["Remove-Item -Recurse -Force $HOME", "delete-home"],
-  ["ri -r C:\\Windows", "delete-system-directory"],
-  ["remove-item -rec c:\\", "delete-root"],
-  ['powershell -Command "Remove-Item -Recurse -Force C:\\"', "delete-root"],
-  ["pwsh -c 'Remove-Item -Recurse $HOME'", "delete-home"],
-  ["powershell.exe -NoProfile -Command Remove-Item -Recurse C:\\Users", "delete-system-directory"],
+  ["Remove-Item -Recurse -Force C:\\", "delete-root", "win32"],
+  ["Remove-Item C:\\Users -Recurse", "delete-system-directory", "win32"],
+  ['Remove-Item -Recurse -Force "C:\\Program Files"', "delete-system-directory", "win32"],
+  ["Remove-Item -Path C:\\Windows -Recurse -Force", "delete-system-directory", "win32"],
+  ["Remove-Item -Recurse $env:USERPROFILE", "delete-home", "win32"],
+  ['Remove-Item -Recurse -Force "$env:USERPROFILE"', "delete-home", "win32"],
+  ["Remove-Item -Recurse -Force $HOME", "delete-home", "win32"],
+  ["ri -r C:\\Windows", "delete-system-directory", "win32"],
+  ["remove-item -rec c:\\", "delete-root", "win32"],
+  ['powershell -Command "Remove-Item -Recurse -Force C:\\"', "delete-root", "win32"],
+  ["pwsh -c 'Remove-Item -Recurse $HOME'", "delete-home", "win32"],
+  ["powershell.exe -NoProfile -Command Remove-Item -Recurse C:\\Users", "delete-system-directory", "win32"],
   ["rm -r -fo C:\\", "delete-root", "win32"],
   ["rm -Recurse -Force C:\\Windows", "delete-system-directory", "win32"],
   // Windows: Git Bash and WSL spellings of a drive
@@ -184,21 +202,70 @@ const BLOCKED: Case[] = [
   ["dd if=image.img of=/dev/md0", "overwrite-disk"],
   ["dd if=image.img of=/dev/mapper/rhel-root", "overwrite-disk"],
   // review round 1: cmd and PowerShell chains, where a backslash ends a path
-  ["cd C:\\; Remove-Item -Recurse -Force C:\\Windows", "delete-system-directory"],
-  ['cd "C:\\Users\\me\\" && rd /s /q C:\\', "delete-root"],
-  ['cd "C:\\Users\\me\\"\nrd /s /q C:\\', "delete-root"],
-  ['Copy-Item "C:\\a\\" D:\\b -Recurse; Remove-Item -Recurse -Force $HOME', "delete-home"],
-  ['cd "C:\\proj\\"; rd /s /q C:\\Users', "delete-system-directory"],
-  ['cd "C:\\Program Files\\" & rd /s /q C:\\Windows', "delete-system-directory"],
-  ['Set-Location "C:\\x\\"; ri -r C:\\Windows', "delete-system-directory"],
-  ['cd "C:\\x\\"; cmd /c rd /s /q C:\\Users', "delete-system-directory"],
-  ['rd /s /q "C:\\Windows\\"', "delete-system-directory"],
+  ["cd C:\\; Remove-Item -Recurse -Force C:\\Windows", "delete-system-directory", "win32"],
+  ['cd "C:\\Users\\me\\" && rd /s /q C:\\', "delete-root", "win32"],
+  ['cd "C:\\Users\\me\\"\nrd /s /q C:\\', "delete-root", "win32"],
+  ['Copy-Item "C:\\a\\" D:\\b -Recurse; Remove-Item -Recurse -Force $HOME', "delete-home", "win32"],
+  ['cd "C:\\proj\\"; rd /s /q C:\\Users', "delete-system-directory", "win32"],
+  ['cd "C:\\Program Files\\" & rd /s /q C:\\Windows', "delete-system-directory", "win32"],
+  ['Set-Location "C:\\x\\"; ri -r C:\\Windows', "delete-system-directory", "win32"],
+  ['cd "C:\\x\\"; cmd /c rd /s /q C:\\Users', "delete-system-directory", "win32"],
+  ['rd /s /q "C:\\Windows\\"', "delete-system-directory", "win32"],
   // review round 1: small spellings that were two lines each
   ['rm -rf "${HOME:?}"', "delete-home"],
   ["rm -rf ${HOME:?no home}/", "delete-home"],
   ["bash -c -- 'rm -rf /'", "delete-root"],
   ["function wipe { rm -rf /; }; wipe", "delete-root"],
   ["echo $((1 << 2))\nrm -rf /", "delete-root"],
+  // review round 2: a later line that cannot be read does not undo an earlier block
+  ['rm -rf /\necho "C:\\"', "delete-root"],
+  ['rm -rf ~\ncd "C:\\Users\\me\\"', "delete-home"],
+  ['mkfs.ext4 /dev/sda1\necho "C:\\x\\"', "format-disk"],
+  ['dd if=/dev/zero of=/dev/sda\necho "C:\\x\\"', "overwrite-disk"],
+  ['cat image > /dev/sda\necho "C:\\x\\"', "overwrite-disk"],
+  [':(){ :|:& };:\necho "C:\\x\\"', "fork-bomb"],
+  ['sudo rm -rf /etc\necho "done\\n\\"', "delete-system-directory"],
+  ['rm -rf /\necho "done', "delete-root"],
+  // review round 2: a keyword written against a subshell
+  ["if true; then(rm -rf /); fi", "delete-root"],
+  ["if(rm -rf /); then :; fi", "delete-root"],
+  ["while true; do(rm -rf /); done", "delete-root"],
+  ["!(rm -rf /)", "delete-root"],
+  ["time(rm -rf /)", "delete-root"],
+  ["{(rm -rf /)}", "delete-root"],
+  ["true &&(rm -rf /)", "delete-root"],
+  ["echo x;(rm -rf /)", "delete-root"],
+  // review round 2: more of the re-review's inputs
+  ["eval eval eval eval rm -rf /", "delete-root"],
+  ["mkfs.ext4 //dev//md0", "format-disk"],
+  ["sudo -Hu root rm -rf ~", "delete-home"],
+  ["doas -uroot rm -rf /", "delete-root"],
+  ["sudo -n -uroot -- rm -rf /", "delete-root"],
+  // review round 2, Windows: a backslash before a newline, a quote or a
+  // separator is a path's last character, and the next line is still read
+  ["rd /s /q C:\\\n", "delete-root", "win32"],
+  ["rd /s /q C:\\\necho done", "delete-root", "win32"],
+  ["rd /s /q C:\\\r\necho done", "delete-root", "win32"],
+  ["rd /s /q C:\\  \n", "delete-root", "win32"],
+  ['rd /s /q "C:\\"\necho done', "delete-root", "win32"],
+  ["rd /s /q D:\\\npause", "delete-root", "win32"],
+  ["rd /s /q %USERPROFILE%\\\necho done", "delete-home", "win32"],
+  ["Remove-Item -Recurse -Force C:\\\nWrite-Host done", "delete-root", "win32"],
+  ["format D: /q\ndir D:\\", "format-disk", "win32"],
+  ["rd /s /q C:\\Windows\ndir C:\\\necho done", "delete-system-directory", "win32"],
+  ["del /s /q %USERPROFILE%\ndir D:\\\n", "delete-home", "win32"],
+  ["dir C:\\\nrd /s /q C:\\Windows", "delete-system-directory", "win32"],
+  ["cd C:\\Users\\me\\\nrd /s /q C:\\", "delete-root", "win32"],
+  ["cd C:\\Users\\me\\ & rd /s /q C:\\Windows", "delete-system-directory", "win32"],
+  ["rm -r -fo C:\\\nWrite-Host done", "delete-root", "win32"],
+  ['cmd /c "rd /s /q C:\\\necho done"', "delete-root", "win32"],
+  ['powershell -Command "Remove-Item -Recurse -Force C:\\\nWrite-Host done"', "delete-root", "win32"],
+  ["if exist C:\\x (rd /s /q C:\\Windows)", "delete-system-directory", "win32"],
+  ["if ($true) { Remove-Item -Recurse -Force C:\\ }", "delete-root", "win32"],
+  // Git Bash on Windows takes a drive path
+  ["rm -rf C:", "delete-root", "win32"],
+  ["rm -rf C:/Users", "delete-system-directory", "win32"],
+  ['rm -rf /c/Users\ncd "C:\\proj\\"', "delete-system-directory", "win32"],
   // spellings found by probing, kept so they stay blocked
   ["RM -rf /", "delete-root"],
   ["rm -rf / >/dev/null 2>&1 &", "delete-root"],
@@ -212,17 +279,18 @@ const BLOCKED: Case[] = [
   ["dd if=x of=/dev/vda", "overwrite-disk"],
   ["cat x &> /dev/sdb", "overwrite-disk"],
   ["diskutil apfs eraseVolume disk1s2 -name X", "format-disk"],
-  ["Remove-Item -Recurse -Force C:\\\\", "delete-root"],
-  ["Remove-Item -Recurse -Force C:/", "delete-root"],
-  ["Remove-Item -Recurse C:\\; echo done", "delete-root"],
-  ["rd /s /q C:\\Users\\..", "delete-root"],
-  ["rd /s /q %SystemDrive%\\", "delete-root"],
-  ['rd /s /q "C:\\Program Files (x86)"', "delete-system-directory"],
-  ['pwsh -NoProfile -Command "& { Remove-Item -Recurse -Force C:\\Users }"', "delete-system-directory"],
-  ['powershell -c "rm -r -fo C:\\"', "delete-root"],
+  ["Remove-Item -Recurse -Force C:\\\\", "delete-root", "win32"],
+  ["Remove-Item -Recurse -Force C:/", "delete-root", "win32"],
+  ["Remove-Item -Recurse C:\\; echo done", "delete-root", "win32"],
+  ["rd /s /q C:\\Users\\..", "delete-root", "win32"],
+  ["rd /s /q %SystemDrive%\\", "delete-root", "win32"],
+  ['rd /s /q "C:\\Program Files (x86)"', "delete-system-directory", "win32"],
+  ['pwsh -NoProfile -Command "& { Remove-Item -Recurse -Force C:\\Users }"', "delete-system-directory", "win32"],
+  ['powershell -c "rm -r -fo C:\\"', "delete-root", "win32"],
 ];
 
-const ALLOWED: Array<[command: string, platform?: NodeJS.Platform]> = [
+/** Read to the end with nothing found: `{ read: true, verdict: null }`. */
+const ALLOWED: Array<[command: string, on?: Platform | "posix"]> = [
   // the same text as data
   ['git commit -m "rm -rf /"'],
   ["git commit -m 'never run: rm -rf ~'"],
@@ -234,15 +302,14 @@ const ALLOWED: Array<[command: string, platform?: NodeJS.Platform]> = [
   ['git log --grep="rm -rf /"'],
   ["echo ':(){ :|:& };:'"],
   ['echo "format C:"'],
-  ['Write-Output "rd /s /q C:\\"'],
   ["# rm -rf /"],
   ["ls -la # then rm -rf /"],
   ["cat <<'EOF' > cleanup-notes.md\nNever run:\nrm -rf /\nEOF"],
   ["cat <<EOF\nrm -rf ~\nmkfs.ext4 /dev/sda1\nEOF\necho written"],
-  ["git commit -m \"$(cat <<'EOF'\nfix: don't run rm -rf / in the installer\n\nIt was wrong; dd of=/dev/sda was worse.\nEOF\n)\""],
+  ["git commit -m \"$(cat <<'EOF'\nfix: don't run rm -rf / in the installer\n\nIt was wrong; dd of=/dev/sda was worse.\nEOF\n)\"", "posix"],
   ['echo "a \\" ; rm -rf / ; \\" b"'],
   ['echo "${X:-"}"}; rm -rf /"'],
-  ['git commit -m "docs: warn that \\"; rd /s /q C:\\\\ \\" is dangerous"'],
+  ['git commit -m "docs: warn that \\"; rd /s /q C:\\\\ \\" is dangerous"', "posix"],
   ["cat <<< 'rm -rf /'"],
   ["cat <<-EOF\n\trm -rf /\n\tEOF"],
   ['cmd=(rm -rf /tmp/x); "${cmd[@]}"'],
@@ -293,7 +360,7 @@ const ALLOWED: Array<[command: string, platform?: NodeJS.Platform]> = [
   ["rm -rf ./~"],
   ["rm -rf \\~"],
   ["rm -rf '$HOME'"],
-  ["rm -rf C:", "darwin"],
+  ["rm -rf C:", "posix"],
   ['rm -rf "%USERPROFILE%"', "darwin"],
   ['rm -rf "%USERPROFILE%"', "win32"],
   // a path nobody can know from the text
@@ -349,20 +416,13 @@ const ALLOWED: Array<[command: string, platform?: NodeJS.Platform]> = [
   ["rm -rf C:\\Users\\omkar\\project\\dist", "win32"],
   ["rm -rf /tmp/build", "win32"],
   // review round 1: text a cmd or PowerShell line only prints
-  ['cd "C:\\proj\\"; echo "cleaning; rd /s /q C:\\ skipped"'],
-  ['cd "C:\\proj\\"; echo "cleaning; rm -rf / skipped"'],
-  ['Write-Host "C:\\logs\\"; Write-Host "next: Remove-Item -Recurse C:\\Users"'],
   // review round 1: escaped quotes in a POSIX line are not the end of a string
-  ['curl -d "{\\"note\\": \\"then; rd /s /q C:\\\\ \\"}" https://example.test'],
-  ['echo "say \\"hi\\"; rd /s /q C:\\"'],
+  ['curl -d "{\\"note\\": \\"then; rd /s /q C:\\\\ \\"}" https://example.test', "posix"],
   ['git commit -m "fix: handle \\"C:\\\\\\" paths; rd /s /q C:\\\\ no longer runs"'],
-  ['ls "C:\\Users\\me\\"'],
-  ['rd /s /q "C:\\proj\\node_modules\\"'],
-  ['Remove-Item -Recurse -Force "C:\\proj\\build\\"'],
   // review round 1: a line that continues, or feeds a heredoc, is a POSIX line
   ["rm -rf node_modules && \\\n  npm ci", "win32"],
   ["rm -rf \\\n  /tmp/build", "win32"],
-  ["cat > clean.bat <<'EOF'\nrd /s /q C:\\\nEOF"],
+  ["cat > clean.bat <<'EOF'\nrd /s /q C:\\\nEOF", "posix"],
   ["cat <<EOF\nrm -rf /\nEOF", "win32"],
   // review round 1: a group in a path is a path nobody can know from the text
   ["rm -rf ~/(foo|bar)"],
@@ -393,41 +453,144 @@ const ALLOWED: Array<[command: string, platform?: NodeJS.Platform]> = [
   ["mkfs.ext4 -J device=/dev/sdb1 rootfs.img"],
   ["dd if=image.img of=/dev/mapper/loop0p1"],
   ["dd if=/dev/zero of=/dev/ttyUSB0"],
+  // review round 2: the '\'' idiom is one string to a POSIX shell
+  ["git commit -m 'don'\\''t allow cd C:\\; rd /s /q C:\\ when it'\\''s chained'", "posix"],
+  ["echo 'it'\\''s documented; del /s /q C:\\Users isn'\\''t allowed'", "posix"],
+  ["git commit -m 'fix: don'\\''t split Windows chains\n\n- cd C:\\; Remove-Item -Recurse -Force C:\\Windows\n- it'\\''s now blocked'", "posix"],
+  ["gh pr create --title 'safety floor' --body 'It doesn'\\''t allow:\n\nrd /s /q C:\\Windows\n\nand that'\\''s all'", "posix"],
+  ["git commit -m 'don'\\''t run; rm -rf / because it'\\''s fatal'"],
+  ["git commit -m 'don'\\''t worry; it'\\''s fine'"],
+  // review round 2: text about Windows commands, in a POSIX line
+  ['grep -r "rd /s" docs/'],
+  ["echo 'del /s /q C:\\'"],
+  ['git commit -m "remove-item -recurse C:\\Windows"'],
+  ["grep -rn 'Remove-Item -Recurse -Force C:\\\\Windows' ."],
+  ['echo "cd C:\\; Remove-Item -Recurse -Force C:\\Windows"'],
+  ['echo "note; rd /s /q C:\\\\Windows is blocked" >> NOTES.md'],
+  ["curl -d '{\"cmd\": \"rd /s /q C:\\\\\", \"next\": \"Remove-Item -Recurse C:\\\\Windows\"}' https://example.test"],
+  ["jq -n --arg c 'rd /s /q C:\\' '{cmd: $c}'"],
+  ["find /tmp/x -type d -empty -exec rmdir {} \\;"],
+  ["sed -i 's/\\\\/\\//g' paths.txt"],
+  ['docker run --rm \\\n  -v "$PWD":/w \\\n  img sh -c \'rm -rf /w/dist\''],
+  ["rm -r \\\n  /tmp/build"],
+  ["mkfs.ext4 /tmp/dev/sda.img"],
+  // review round 2: ordinary cmd and PowerShell lines, clear on Windows too
+  ["cd C:\\proj\\ ; npm test"],
+  ["dir C:\\Users\\me\\ "],
+  ["Get-ChildItem C:\\ | Remove-Item -Recurse -Force"],
+  ['cd "C:\\proj\\" && rd /s /q "C:\\proj\\node_modules\\"'],
+];
+
+/** What the design does NOT call clear, pinned so the cost stays visible.
+ * "unreadable" is `{ read: false }`: nothing was found, and one reading lost
+ * its place, so nothing answers for the command automatically and a person
+ * is asked. A rule name is a block.
+ *
+ * On Windows every line is read as POSIX and as cmd/PowerShell. A POSIX line
+ * that quotes a Windows command can read as that command in the second
+ * reading, and a Windows path quoted with a trailing backslash ("C:\dir\")
+ * leaves the POSIX reading with an open quote. Neither is caught on macOS or
+ * Linux, where only the POSIX reading runs. */
+const NOT_CLEAR: Array<[command: string, on: Platform | "all", outcome: string]> = [
+  // POSIX text the cmd/PowerShell reading takes for a command
+  ["git commit -m 'don'\\''t allow cd C:\\; rd /s /q C:\\ when it'\\''s chained'", "win32", "delete-root"],
+  ["echo 'it'\\''s documented; del /s /q C:\\Users isn'\\''t allowed'", "win32", "delete-system-directory"],
+  ["gh pr create --title 'safety floor' --body 'It doesn'\\''t allow:\n\nrd /s /q C:\\Windows\n\nand that'\\''s all'", "win32", "delete-system-directory"],
+  ['git commit -m "docs: warn that \\"; rd /s /q C:\\\\ \\" is dangerous"', "win32", "delete-root"],
+  ['curl -d "{\\"note\\": \\"then; rd /s /q C:\\\\ \\"}" https://example.test', "win32", "delete-root"],
+  ["cat > clean.bat <<'EOF'\nrd /s /q C:\\\nEOF", "win32", "delete-root"],
+  // a heredoc body with an apostrophe leaves the cmd/PowerShell reading inside a quote
+  ["git commit -m \"$(cat <<'EOF'\nfix: don't run rm -rf / in the installer\n\nIt was wrong; dd of=/dev/sda was worse.\nEOF\n)\"", "win32", "unreadable"],
+  // a quoted Windows path ending in a backslash leaves the POSIX reading inside a quote
+  ['ls "C:\\Users\\me\\"', "all", "unreadable"],
+  ['rd /s /q "C:\\proj\\node_modules\\"', "all", "unreadable"],
+  ['Remove-Item -Recurse -Force "C:\\proj\\build\\"', "all", "unreadable"],
+  ['cd "C:\\Program Files\\App\\" && del /q *.log', "all", "unreadable"],
+  ['Write-Output "rd /s /q C:\\"', "all", "unreadable"],
+  ['Write-Host "C:\\logs\\"; Write-Host "next: Remove-Item -Recurse C:\\Users"', "all", "unreadable"],
+  ['cd "C:\\proj\\"; echo "cleaning; rd /s /q C:\\ skipped"', "all", "unreadable"],
+  ['echo "say \\"hi\\"; rd /s /q C:\\"', "all", "unreadable"],
+  // the same shape with a POSIX command in the text is a command to the POSIX reading
+  ['cd "C:\\proj\\"; echo "cleaning; rm -rf / skipped"', "all", "delete-root"],
+  // a wrapper nested deeper than is followed was not read
+  ["eval eval eval eval eval rm -rf /", "all", "unreadable"],
 ];
 
 describe("floorVerdict", () => {
-  it("covers at least forty spellings each way", () => {
-    expect(BLOCKED.length).toBeGreaterThanOrEqual(40);
-    expect(ALLOWED.length).toBeGreaterThanOrEqual(40);
+  it("covers at least forty spellings each way, on every platform", () => {
+    for (const host of PLATFORMS) {
+      expect(BLOCKED.filter(([, , platform]) => !platform || platform === host).length, host).toBeGreaterThanOrEqual(40);
+      expect(ALLOWED.filter(([, on]) => !on || on === host || (on === "posix" && host !== "win32")).length, host).toBeGreaterThanOrEqual(40);
+    }
+    expect(BLOCKED.filter(([, , platform]) => platform === "win32").length).toBeGreaterThanOrEqual(40);
   });
 
   it.each(BLOCKED)("blocks %j as %s", (command, rule, platform) => {
-    const verdict = floorVerdict(command, platform ?? "linux");
-    expect(verdict, command).not.toBeNull();
-    expect(verdict!.rule).toBe(rule);
-    expect(verdict!.label).toMatch(/\S/);
+    for (const host of platform ? [platform] : PLATFORMS) {
+      const verdict = floorVerdict(command, host);
+      expect(verdict?.rule, host).toBe(rule);
+      expect(verdict!.label).toMatch(/\S/);
+    }
   });
 
-  it.each(ALLOWED)("allows %j", (command, platform) => {
-    expect(floorVerdict(command, platform ?? "linux"), command).toBeNull();
+  it("does not evaluate a cmd, PowerShell or Git Bash spelling on macOS or Linux", () => {
+    const windowsOnly = BLOCKED.filter(([, , platform]) => platform === "win32");
+    expect(windowsOnly.length).toBeGreaterThan(0);
+    for (const [command] of windowsOnly) for (const host of POSIX) expect(floorVerdict(command, host), `${host}: ${command}`).toBeNull();
   });
 
-  it("reads every spelling the same on each platform unless the platform decides it", () => {
-    for (const [command, rule, platform] of BLOCKED) {
-      if (platform) continue;
-      for (const host of ["darwin", "linux", "win32"] as const) expect(floorVerdict(command, host)?.rule, `${host}: ${command}`).toBe(rule);
+  it.each(ALLOWED)("reads %j to the end and finds nothing", (command, on) => {
+    for (const host of !on ? PLATFORMS : on === "posix" ? POSIX : [on]) {
+      expect(floorReading(command, host), host).toEqual({ read: true, verdict: null });
     }
-    for (const [command, platform] of ALLOWED) {
-      if (platform) continue;
-      for (const host of ["darwin", "linux", "win32"] as const) expect(floorVerdict(command, host), `${host}: ${command}`).toBeNull();
+  });
+
+  it.each(NOT_CLEAR)("%j on %s: %s", (command, on, outcome) => {
+    for (const host of on === "all" ? PLATFORMS : [on]) {
+      const reading = floorReading(command, host);
+      expect(reading.read ? reading.verdict?.rule ?? "clear" : "unreadable", host).toBe(outcome);
     }
+  });
+
+  it("does not call a line clear when a reading loses its place", () => {
+    // nothing was found, and the rest could not be read: not "clear"
+    expect(floorReading('npm test\necho "C:\\"', "linux")).toEqual({ read: false });
+    expect(floorReading("echo 'unfinished", "darwin")).toEqual({ read: false });
+    expect(floorReading("cat <<EOF\nno closing line", "linux")).toEqual({ read: false });
+    expect(floorReading("cat <<EOF", "linux")).toEqual({ read: false });
+    expect(floorReading("echo $(date", "linux")).toEqual({ read: false });
+    expect(floorReading("(cd /tmp && ls", "linux")).toEqual({ read: false });
+    expect(floorReading("$(".repeat(100), "linux")).toEqual({ read: false });
+    // what was read before the break still counts
+    expect(floorReading('rm -rf /\necho "C:\\"', "linux")).toEqual({ read: true, verdict: { rule: "delete-root", label: "recursive delete of the filesystem root" } });
+    // on Windows either reading losing its place is enough
+    expect(floorReading('dir "C:\\Users\\me\\"', "win32")).toEqual({ read: false });
+    expect(floorReading("dir C:\\Users\\me\\", "win32")).toEqual({ read: true, verdict: null });
+  });
+
+  it("does not scan a command over the size cap, and reads a long one under it", () => {
+    expect(MAX_COMMAND_LENGTH).toBe(32_768);
+    const pairs = Array.from({ length: 1_100 }, (_unused, index) => `\\"k${index}\\": \\"v${index}\\"`).join(", ");
+    const body = `curl -s -X POST -d "{${pairs}}" https://example.test`;
+    expect(body.length).toBeGreaterThan(20_000);
+    expect(body.length).toBeLessThan(MAX_COMMAND_LENGTH);
+    // 2,200 escaped quotes: read to the end, on every platform, with the right answer
+    for (const host of PLATFORMS) expect(floorReading(body, host), host).toEqual({ read: true, verdict: null });
+    for (const host of PLATFORMS) expect(floorReading(`${body}; rm -rf /`, host), host).toMatchObject({ read: true, verdict: { rule: "delete-root" } });
+    // one character over the cap is not scanned at all, whatever it holds
+    const atCap = `echo ${"a".repeat(MAX_COMMAND_LENGTH - 5)}`;
+    expect(atCap.length).toBe(MAX_COMMAND_LENGTH);
+    expect(floorReading(atCap, "linux")).toEqual({ read: true, verdict: null });
+    expect(floorReading(`${atCap}a`, "linux")).toEqual({ read: false });
+    expect(floorReading(`rm -rf / ${"#".repeat(MAX_COMMAND_LENGTH)}`, "linux")).toEqual({ read: false });
+    expect(floorVerdict(`rm -rf / ${"#".repeat(MAX_COMMAND_LENGTH)}`, "linux")).toBeNull();
   });
 
   it("names what it blocked without repeating the command", () => {
     expect(floorVerdict("rm -rf /")).toEqual({ rule: "delete-root", label: "recursive delete of the filesystem root" });
     expect(floorVerdict("rm -rf ~")).toEqual({ rule: "delete-home", label: "recursive delete of the home directory" });
     expect(floorVerdict("sudo rm -rf /etc/")).toEqual({ rule: "delete-system-directory", label: "recursive delete of /etc" });
-    expect(floorVerdict("rd /s /q C:\\Windows")?.label).toBe("recursive delete of a Windows system folder (Windows)");
+    expect(floorVerdict("rd /s /q C:\\Windows", "win32")?.label).toBe("recursive delete of a Windows system folder (Windows)");
     expect(floorVerdict("mkfs.ext4 /dev/sda1")?.label).toBe("formatting a disk");
     expect(floorVerdict("dd if=x of=/dev/sda")?.label).toBe("overwriting a disk device");
     expect(floorVerdict(":(){ :|:& };:")?.label).toBe("a fork bomb");

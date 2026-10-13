@@ -14,23 +14,35 @@
 // The two possible mistakes are not equal. Blocking a command that was fine
 // stops real work and teaches people to switch the floor off, so every rule
 // leans towards letting a command through: a path the text does not spell out
-// (`rm -rf "$DIR"`), a relative path, and any spelling the reader below does
-// not understand are all allowed. The same words as DATA are never a command:
-// a commit message, an echo, a heredoc body, a comment.
+// (`rm -rf "$DIR"`) and a relative path are allowed. The same words as DATA
+// are never a command: a commit message, an echo, a heredoc body, a comment.
 //
 // So the command is read the way a shell reads it, far enough to tell a
 // command from its arguments: quotes, escapes, `;` `&&` `||` `|` and newlines,
 // subshells, `$( … )`, heredocs, redirections, and the wrappers that run
 // another command line (`sudo`, `env`, `sh -c`, `cmd /c`, `powershell -Command`).
 //
-// Nothing says which shell a line is for, and the two families disagree about
-// a backslash: POSIX shells escape with it, cmd and PowerShell end a path with
-// it. So a line is read both ways. The POSIX reading feeds the POSIX rules
-// (`rm`, `dd`, `mkfs`, `diskutil`, redirections); the cmd and PowerShell
-// reading feeds theirs (`rd`, `del`, `Remove-Item`, `format`). A line that is
-// plainly one kind is read only that way: a heredoc or a backslash at the end
-// of a line is POSIX, and quotes that close in one reading and not in the
-// other settle it too.
+// WHICH SHELL. The two families disagree about a backslash: a POSIX shell
+// escapes with it, cmd and PowerShell end a path with it. The platform picks
+// the reading, and nothing else does:
+//
+//   - On macOS and Linux a line is read as a POSIX shell line, against the
+//     POSIX rules (`rm`, `dd`, `mkfs`, `diskutil`, redirections, the fork
+//     bomb). cmd and PowerShell commands are not evaluated at all: that host
+//     cannot run `rd /s /q C:\`.
+//   - On Windows a line is read twice, because Git Bash and WSL run there
+//     beside cmd and PowerShell: once as POSIX against the POSIX rules, once
+//     as cmd and PowerShell against theirs (`rd`, `del`, `Remove-Item`,
+//     `format`). A hit in either blocks.
+//
+// The two readings never look at each other. Neither one's quotes switch the
+// other on or off: a line both would misread differently is read twice, and
+// that is all.
+//
+// WHAT COULD NOT BE READ. A reading that loses its place (a quote or heredoc
+// that never closes, nesting past what is followed) has not read the command.
+// A block it found before that stands. Otherwise the answer is "could not
+// read", never "clear": see floorReading.
 
 export type FloorRule = "delete-root" | "delete-home" | "delete-system-directory" | "format-disk" | "overwrite-disk" | "fork-bomb";
 
@@ -72,6 +84,8 @@ const deleteWindowsSystem = (name: string): FloorVerdict => deleteSystem(`a Wind
 const HOME = "\uE000";
 /** Anything else substituted at run time. A word holding one is unknown. */
 const DYNAMIC = "\uE001";
+/** Either marker, wherever it sits in a command line. */
+const MARKERS = /[\uE000\uE001]/g;
 
 /** What `%NAME%` and `$env:NAME` stand for on Windows, by lowercase name. */
 const WINDOWS_VARIABLES: Record<string, string> = {
@@ -97,7 +111,7 @@ const SCRATCH_DEVICE = /^\/dev\/(?:mapper\/)?(?:loop|ram|nbd|zram)\d/;
  * and a name a variable holds is not known to be one. */
 const formatsDevice = (word: string): boolean => {
   const path = word.replace(/\/{2,}/g, "/");
-  return /^\/dev\/[^\uE000\uE001]+$/.test(path) && !SCRATCH_DEVICE.test(path);
+  return path.startsWith("/dev/") && path.length > 5 && !path.includes(HOME) && !path.includes(DYNAMIC) && !SCRATCH_DEVICE.test(path);
 };
 
 // A function that pipes itself into itself in the background, then runs. The
@@ -122,44 +136,34 @@ interface Command {
   to: number;
 }
 
-/** How deep `$( … )` may nest before the rest is left unread. */
-const MAX_NESTING = 40;
-
 interface Reading {
   commands: Command[];
   /** The text outside every quote, heredoc and comment. */
   bare: string;
-  /** Every quote that opened also closed. */
-  closed: boolean;
-  /** The line used something only a POSIX shell has: a heredoc, or a
-   * backslash carrying it onto the next line. */
-  posixOnly: boolean;
+  /** The reader kept its place to the end: every quote, heredoc, group and
+   * substitution that opened also closed, and nothing nested deeper than is
+   * followed. When false, what comes after the break was not read. */
+  synced: boolean;
 }
 
-/** Whether the text before a `\"` ends in a path, as cmd and PowerShell
- * write one: `"C:\Users\me\"`. There the backslash belongs to the path and
- * the quote closes the string. Anywhere else (`"say \"hi\""`, JSON) the pair
- * is a quote inside the string, which is how programs on Windows read it too. */
-function endsInPath(text: string): boolean {
-  const last = text.slice(text.search(/\S*$/));
-  if (last === "" || last.includes('"')) return false;
-  const startsPath = /^(?:[A-Za-z]:|\\\\|\.{1,2}[\\/]|%[^%\s]+%|[\uE000\uE001])/;
-  // The last word is a path, or the whole string is one with spaces in it
-  // ("C:\Program Files\").
-  return startsPath.test(last) || last.includes("\\") || (startsPath.test(text) && !text.includes('"'));
-}
+/** How deep `$( … )` may nest before the rest is left unread. */
+const MAX_NESTING = 40;
+/** Shell words that sit in front of a command without being one. */
+const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{"]);
 
 /** Reads a command line into its simple commands, every one a shell would
  * run: chained, grouped, or inside `$( … )`. `windows` reads it as cmd and
- * PowerShell do, where a backslash is part of a path and not an escape. */
+ * PowerShell do: a backslash is always an ordinary character there (cmd
+ * escapes with a caret, PowerShell with a backtick), so one at the end of a
+ * path never changes how the rest is split. Every step moves forward through
+ * the source, so reading is linear in its length. */
 function lex(source: string, windows: boolean): Reading {
   const commands: Command[] = [];
   const heredocs: Array<{ end: string; tabs: boolean }> = [];
   let bare = "";
   let at = 0;
   let nesting = 0;
-  let closed = true;
-  let posixOnly = false;
+  let synced = true;
 
   /** What a variable stands for in a word. */
   const variable = (name: string): string => {
@@ -185,6 +189,7 @@ function lex(source: string, windows: boolean): Reading {
       } else if (c === open) depth++;
       else if (c === shut && --depth === 0) return source.slice(from, at++);
     }
+    synced = false;
     return source.slice(from);
   };
   /** The index of the next `mark`, or the end of the source. */
@@ -204,6 +209,7 @@ function lex(source: string, windows: boolean): Reading {
     if (next === "'" && !windows && !inDoubleQuotes) {
       // $'…' decodes escapes such as \x2f, so its text is not read here.
       for (at += 2; at < source.length && source[at] !== "'"; at++) if (source[at] === "\\") at++;
+      if (at >= source.length) synced = false;
       at++;
       return DYNAMIC;
     }
@@ -222,8 +228,10 @@ function lex(source: string, windows: boolean): Reading {
     return "$";
   };
 
-  /** Reads commands until `close` ends this script, or the source ends. */
-  function script(close: string | null): void {
+  /** Reads commands until `close` ends this script, or the source ends.
+   * Returns whether it ended where it should: at `close`, or for the whole
+   * line at the end of the source. */
+  function script(close: string | null): boolean {
     let command: Command = { words: [], starts: [], writes: [], from: at, to: at };
     // Written through the helpers below, so its type is stated rather than
     // narrowed from this first value.
@@ -261,13 +269,14 @@ function lex(source: string, windows: boolean): Reading {
       command = { words: [], starts: [], writes: [], from: at, to: at };
     };
     const nested = (shut: string) => {
-      if (++nesting > MAX_NESTING) at = source.length;
-      else script(shut);
+      if (++nesting > MAX_NESTING) {
+        at = source.length;
+        synced = false;
+      } else if (!script(shut)) synced = false;
       nesting--;
     };
     /** The text between double quotes; the cursor is just past the opening one. */
     const quoted = () => {
-      const from = (word ?? "").length;
       while (at < source.length) {
         const c = source[at];
         const after = source[at + 1];
@@ -281,9 +290,6 @@ function lex(source: string, windows: boolean): Reading {
         } else if (windows && c === "`" && after !== undefined) {
           add(after);
           at += 2;
-        } else if (windows && c === "\\" && after === '"' && !endsInPath((word ?? "").slice(from))) {
-          add('"');
-          at += 2;
         } else if (c === "$") add(dollar(true));
         else if (c === "`" && !windows) {
           at++;
@@ -294,7 +300,7 @@ function lex(source: string, windows: boolean): Reading {
           at++;
         }
       }
-      closed = false;
+      synced = false;
     };
     /** `$( … )` runs what is inside it; every other `$` is a variable. */
     const dollar = (inDoubleQuotes: boolean): string => {
@@ -312,16 +318,15 @@ function lex(source: string, windows: boolean): Reading {
       token = at;
       if (c === close && depth === 0) {
         cut(1);
-        return;
+        return true;
       }
       if (windows ? c === "^" || c === "`" : c === "\\") {
         // An escaped newline continues the line; anything else is itself.
         if (after !== "\n" && after !== undefined) add(after);
-        else if (after === "\n" && !windows) posixOnly = true;
         at += 2;
       } else if (c === "'") {
         const end = endOf("'", at + 1);
-        if (end === source.length) closed = false;
+        if (end === source.length) synced = false;
         add(source.slice(at + 1, end));
         at = end + 1;
       } else if (c === '"') {
@@ -342,24 +347,28 @@ function lex(source: string, windows: boolean): Reading {
         bare += c;
         // A heredoc's body is input, not commands: skip to its closing line.
         for (const heredoc of heredocs.splice(0)) {
-          posixOnly = true;
-          while (at < source.length) {
+          let ended = false;
+          while (at < source.length && !ended) {
             const end = endOf("\n", at);
             const line = source.slice(at, end).replace(/\r$/, "");
             at = Math.min(end + 1, source.length);
-            if ((heredoc.tabs ? line.replace(/^\t+/, "") : line) === heredoc.end) break;
+            ended = (heredoc.tabs ? line.replace(/^\t+/, "") : line) === heredoc.end;
           }
+          if (!ended) synced = false;
         }
         command.from = command.to = at;
       } else if (c === "#" && word === null) at = endOf("\n", at);
       else if (c === ";" || c === "|" || (c === "&" && after !== ">")) {
         bare += c;
         cut(1);
-      } else if (c === "(" && word !== null && !/^\s*\)/.test(source.slice(at + 1, at + 40))) {
+      } else if (c === "(" && word !== null && !/^\s*\)/.test(source.slice(at + 1, at + 40))
+        && !(command.words.length === 0 && (KEYWORDS.has(word) || word === "time"))) {
         // Inside a word, `( … )` is data and not a subshell: the words of an
         // array (name=( … )) or a group in a path (logs/(old|tmp)). Either
-        // way the word is one this text cannot place. `name()` with nothing
-        // inside defines a function, and is read below.
+        // way the word is one this text cannot place. Two things written
+        // the same way are not that, and are read below: `name()` with
+        // nothing inside defines a function, and a keyword that starts a
+        // command (`then(…)`, `do(…)`, `if(…)`) is followed by a subshell.
         at++;
         balanced("(", ")", false);
         add(DYNAMIC);
@@ -409,10 +418,15 @@ function lex(source: string, windows: boolean): Reading {
       }
     }
     cut(0);
+    // A group still open at the end never closed.
+    if (depth > 0) synced = false;
+    return close === null;
   }
 
   script(null);
-  return { commands, bare, closed, posixOnly };
+  // A heredoc announced on the last line has no body to end it.
+  if (heredocs.length) synced = false;
+  return { commands, bare, synced };
 }
 
 /** Commands that run the command line after them. `values`: the one-letter
@@ -430,12 +444,13 @@ const PREFIXES: Record<string, { values?: string; named?: string[]; operands?: n
   command: { asks: "vV" },
   nohup: {}, time: {}, builtin: {}, busybox: {},
 };
-/** Shell words that sit in front of a command without being one. */
-const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{"]);
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "fish"]);
 /** How many command lines deep a wrapper is followed (`sh -c "bash -c …"`). */
 const MAX_DEPTH = 4;
+/** The longest command line that is read. A longer one is reported as not
+ * read, without being scanned: reading is linear, and this bounds it. */
+export const MAX_COMMAND_LENGTH = 32 * 1024;
 
 /** The program a word names: no directory, no `.exe`, lowercase. */
 function programName(word: string): string {
@@ -542,7 +557,7 @@ interface Host {
  * container, a fixture's throwaway home under the temp folder. Deleting one
  * is cleanup, so its path is not taken for the home directory. `~` and
  * `$HOME` in a command still mean home, whatever they point at. */
-const SCRATCH_HOME = /(?:^|[\\/])te?mp(?:[\\/]|$)|^(?:\/private)?\/var\/folders(?:\/|$)|^\/dev\/shm(?:\/|$)/i;
+const SCRATCH_HOME = /^(?:\/private)?\/(?:tmp|var\/tmp|var\/folders)(?:\/|$)|^\/dev\/shm(?:\/|$)|^[A-Za-z]:[\\/](?:te?mp|windows[\\/]temp)(?:[\\/]|$)|[\\/]appdata[\\/]local[\\/]temp(?:[\\/]|$)/i;
 
 /** Why deleting this path recursively is on the never-list, or null. The
  * path is one a POSIX shell would hand to `rm`. */
@@ -596,32 +611,49 @@ function windowsTarget(word: string, percent: boolean, host: Host): FloorVerdict
   return home && drive && home === `${drive}\\${parts.join("\\")}`.toLowerCase() ? DELETE_HOME : null;
 }
 
-/** How a script is being read. `posix`: as a POSIX shell line, for the POSIX
- * rules. `windows-line`: a line of unknown kind read as cmd and PowerShell
- * would, for their rules alone. `windows`: a script known to be theirs (what
- * follows `cmd /c` or `powershell -Command`), where every rule applies and
- * `rm` is PowerShell's Remove-Item. */
-type Mode = "posix" | "windows" | "windows-line";
+/** How a script is read: as a POSIX shell line against the POSIX rules, or
+ * as cmd and PowerShell would read it against theirs. */
+type Mode = "posix" | "windows";
+
+/** One reading of one command line. `synced` goes false, and stays false,
+ * the moment any part of it (the line, or a script a wrapper hands on) could
+ * not be read to its end. */
+interface Pass {
+  host: Host;
+  synced: boolean;
+}
 
 /** The rule one simple command meets, or null. */
-function judge(command: Command, source: string, host: Host, mode: Mode, depth: number): FloorVerdict | null {
-  const posixRules = mode !== "windows-line";
-  const windowsRules = mode !== "posix";
-  if (posixRules && command.writes.some(diskDevice)) return OVERWRITE_DISK;
+function judge(command: Command, source: string, pass: Pass, mode: Mode, depth: number): FloorVerdict | null {
+  const { host } = pass;
+  if (mode === "posix" && command.writes.some(diskDevice)) return OVERWRITE_DISK;
   const index = commandIndex(command.words);
   if (index < 0) return null;
   const program = programName(command.words[index]);
   const args = command.words.slice(index + 1);
-  const run = (line: string | null | undefined, as: Mode) => line && depth < MAX_DEPTH ? scan(line, host, as, depth + 1) : null;
+  const run = (line: string | null | undefined, as: Mode): FloorVerdict | null => {
+    if (!line) return null;
+    if (depth >= MAX_DEPTH) {
+      // Deeper than is followed: what it would run was not read.
+      pass.synced = false;
+      return null;
+    }
+    return scan(line, pass, as, depth + 1);
+  };
 
-  if (program === "cmd" || program === "powershell" || program === "pwsh") {
-    // These take a command line of their own kind, so it is read as they
-    // read it even when the line around it is a POSIX one.
+  // A shell handed a command line runs it as a POSIX line, whoever calls it.
+  if (SHELLS.has(program)) return run(inlineScript(args), "posix");
+  // cmd and PowerShell take a command line of their own kind. They exist
+  // only on Windows, where Git Bash can call them too; there the line is
+  // read as they read it even when the line around it is a POSIX one.
+  if (host.windows && (program === "cmd" || program === "powershell" || program === "pwsh")) {
     let text = source;
     let read: Command | undefined = command;
     if (mode === "posix") {
       text = source.slice(command.from, command.to);
-      read = lex(text, true).commands.find((candidate) => candidate.words.some((word) => programName(word) === program));
+      const reading = lex(text, true);
+      if (!reading.synced) pass.synced = false;
+      read = reading.commands.find((candidate) => candidate.words.some((word) => programName(word) === program));
     }
     if (!read) return null;
     const first = read.words.findIndex((word) => programName(word) === program) + 1;
@@ -633,14 +665,16 @@ function judge(command: Command, source: string, host: Host, mode: Mode, depth: 
     const rest = read.words.slice(flag + 1);
     return run(rest.length === 1 ? rest[0] : text.slice(read.starts[flag + 1] ?? read.to, read.to), "windows");
   }
-  if (posixRules) {
-    if (SHELLS.has(program)) return run(inlineScript(args), "posix");
-    if (program === "eval") return run(args.join(" "), mode);
+
+  if (mode === "posix") {
+    if (program === "eval") return run(args.join(" "), "posix");
     if (program === "rm") {
       for (const target of rmTargets(args) ?? []) {
-        const verdict = posixTarget(target, host);
+        // Git Bash also takes a drive path (C:/Users); nothing else does.
+        const verdict = posixTarget(target, host) ?? (host.windows && /^[A-Za-z]:/.test(target) ? windowsTarget(target, false, host) : null);
         if (verdict) return verdict;
       }
+      return null;
     }
     if (program === "dd") return args.some((arg) => arg.startsWith("of=") && diskDevice(arg.slice(3))) ? OVERWRITE_DISK : null;
     // Making a filesystem inside an image file is ordinary work; on a device
@@ -653,23 +687,27 @@ function judge(command: Command, source: string, host: Host, mode: Mode, depth: 
       // a RAM disk is created) is not one anybody keeps files on.
       return ["erasedisk", "erasevolume", "reformat"].includes(verb) && !args.at(-1)!.includes(DYNAMIC) ? FORMAT_DISK : null;
     }
+    return null;
   }
-  if (!windowsRules) return null;
-  // cmd's and PowerShell's own deletes. `rm` is one of them where the shell
-  // is known to be PowerShell, or on Windows, where it is PowerShell's name
-  // for Remove-Item: elsewhere `rm -rf C:` removes a stray directory that is
-  // merely called `C:`.
+
+  // cmd's and PowerShell's own deletes. `rm` here is PowerShell's name for
+  // Remove-Item, so it is recursive only the way PowerShell writes it
+  // (-Recurse, -r): `rm -rf` is a POSIX spelling PowerShell rejects, and the
+  // POSIX reading judges it.
   const cmdStyle = program === "rd" || program === "rmdir" || program === "del" || program === "erase";
-  if (cmdStyle || program === "ri" || program === "remove-item" || (program === "rm" && (mode === "windows" || host.windows))) {
+  if (cmdStyle || program === "ri" || program === "remove-item" || program === "rm") {
     // cmd writes its switches /s /q (or /s/q); PowerShell writes -Recurse,
     // or any unambiguous start of it.
     const isSwitch = (arg: string) => /^-./.test(arg) || (cmdStyle && /^\/[A-Za-z?]/.test(arg));
     const recursive = args.some((arg) => isSwitch(arg) && (arg[0] === "/"
       ? arg.toLowerCase().split("/").includes("s")
-      : "-recurse".startsWith(arg.toLowerCase()))) || (program === "rm" && rmTargets(args) !== null);
+      : "-recurse".startsWith(arg.toLowerCase())));
     if (!recursive) return null;
     for (const target of args) {
-      const verdict = isSwitch(target) ? null : windowsTarget(target, cmdStyle, host);
+      // A lone backslash after `rm` is a POSIX line carried onto the next,
+      // which the POSIX reading follows; after the others it is the drive.
+      if (isSwitch(target) || (program === "rm" && target === "\\")) continue;
+      const verdict = windowsTarget(target, cmdStyle, host);
       if (verdict) return verdict;
     }
     return null;
@@ -678,61 +716,57 @@ function judge(command: Command, source: string, host: Host, mode: Mode, depth: 
   return null;
 }
 
-/** The first rule any command of a reading meets. */
-function judgeAll(reading: Reading, source: string, host: Host, mode: Mode, depth: number): FloorVerdict | null {
-  if (mode !== "windows-line" && FORK_BOMBS.some((bomb) => bomb.test(reading.bare))) return FORK_BOMB;
+/** One script read one way: the first rule any of its commands meets. */
+function scan(source: string, pass: Pass, mode: Mode, depth: number): FloorVerdict | null {
+  const reading = lex(source, mode === "windows");
+  if (!reading.synced) pass.synced = false;
+  if (mode === "posix" && FORK_BOMBS.some((bomb) => bomb.test(reading.bare))) return FORK_BOMB;
   for (const command of reading.commands) {
-    const verdict = judge(command, source, host, mode, depth);
+    const verdict = judge(command, source, pass, mode, depth);
     if (verdict) return verdict;
   }
   return null;
 }
 
-/** A script whose kind is known: what a wrapper hands to another shell. */
-function scan(source: string, host: Host, mode: Mode, depth: number): FloorVerdict | null {
-  return judgeAll(lex(source, mode !== "posix"), source, host, mode, depth);
-}
-
-/** A whole command line, whose shell is not known: read both ways (see the
- * top of this file), each reading for its own rules. */
-function scanLine(line: string, host: Host): FloorVerdict | null {
-  const posix = lex(line, false);
-  const windows = posix.posixOnly ? null : lex(line, true);
-  // Quotes that close in only one reading say which kind of line this is.
-  const asPosix = !windows || posix.closed || !windows.closed;
-  const asWindows = windows !== null && (windows.closed || !posix.closed);
-  return (asPosix ? judgeAll(posix, line, host, "posix", 0) : null)
-    ?? (asWindows ? judgeAll(windows!, line, host, "windows-line", 0) : null);
-}
-
 /** What reading a command line came to: the rule it meets (or none), or
- * that it could not be read at all. The two are different answers: "not on
- * the list" lets an automatic approval go ahead, "could not read" must not. */
+ * that it could not be read. The two are different answers: "not on the
+ * list" lets an automatic approval go ahead, "could not read" must not. */
 export type FloorReading = { read: true; verdict: FloorVerdict | null } | { read: false };
 
-/** Reads a shell command line against the never-list. Never throws: a reader
- * that fails part-way reports `{ read: false }`, so a caller that enforces
- * the floor can refuse to answer for a command nobody understood.
+/** Reads a shell command line against the never-list. Never throws.
  *
- * Every spelling is read from the text alone, cmd's and PowerShell's
- * included, so the answer is the same wherever the server runs. `platform`
- * (default: this machine's) settles only what the text cannot: macOS and
- * Windows find a directory whatever its letter case, `/private` is a system
- * directory only on macOS, and only on Windows is `rm` also PowerShell's
- * Remove-Item and `/c` a drive. `home` is the home directory's absolute
- * path, for a delete that spells it out instead of writing `~`; without it
- * only `~` and `$HOME` are known to be home. */
+ * `{ read: false }` means the command was not read to its end and nothing on
+ * the list was found in the part that was: a quote, heredoc, group or
+ * substitution never closed; a wrapper nested deeper than is followed; the
+ * line is longer than MAX_COMMAND_LENGTH (it is then not scanned at all); or
+ * the reader failed. A caller that enforces the floor must not answer for
+ * such a command. A block found before the reader lost its place stands.
+ *
+ * `platform` (default: this machine's) picks the reading, as the top of this
+ * file describes: POSIX alone on macOS and Linux, POSIX and cmd/PowerShell
+ * on Windows. It also settles what the text cannot: macOS and Windows find a
+ * directory whatever its letter case, `/private` is a system directory only
+ * on macOS, and only on Windows is `/c` a drive. `home` is the home
+ * directory's absolute path, for a delete that spells it out instead of
+ * writing `~`; without it only `~` and `$HOME` are known to be home. */
 export function floorReading(command: string, platform: NodeJS.Platform = process.platform, home?: string): FloorReading {
   if (typeof command !== "string" || !command.trim()) return { read: true, verdict: null };
+  if (command.length > MAX_COMMAND_LENGTH) return { read: false };
   try {
-    const host: Host = {
-      foldCase: platform === "darwin" || platform === "win32",
-      mac: platform === "darwin",
-      windows: platform === "win32",
-      home: home && !SCRATCH_HOME.test(home.replace(/[\\/]+$/, "")) ? home : undefined,
+    const pass: Pass = {
+      host: {
+        foldCase: platform === "darwin" || platform === "win32",
+        mac: platform === "darwin",
+        windows: platform === "win32",
+        home: home && !SCRATCH_HOME.test(home.replace(/[\\/]+$/, "")) ? home : undefined,
+      },
+      synced: true,
     };
     // The two marker characters mean something only when the lexer wrote them.
-    return { read: true, verdict: scanLine(command.replace(/[]/g, "�"), host) };
+    const line = command.replace(MARKERS, "\uFFFD");
+    const verdict = scan(line, pass, "posix", 0) ?? (pass.host.windows ? scan(line, pass, "windows", 0) : null);
+    if (verdict) return { read: true, verdict };
+    return pass.synced ? { read: true, verdict: null } : { read: false };
   } catch {
     return { read: false };
   }
