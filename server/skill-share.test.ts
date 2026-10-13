@@ -231,7 +231,8 @@ describe("prompt-cache safety", () => {
     // the existing conversation hears about it on its next turn, once
     const note = share.prepareShareNote(mate.id, "thread-1", mate.assignedSkills, startedAt, [], root);
     expect(note.text).toContain("New team skill available: rough-cut");
-    expect(note.text).toContain(library.librarySkillFilePath("rough-cut", root));
+    // quoted as the skills index quotes it (backslashes escaped on Windows)
+    expect(note.text).toContain(JSON.stringify(library.librarySkillFilePath("rough-cut", root)));
     // a dispatch that failed before the provider took the turn never
     // committed it, so the next turn carries the note again
     expect(share.prepareShareNote(mate.id, "thread-1", mate.assignedSkills, startedAt, [], root).text).toBe(note.text);
