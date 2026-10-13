@@ -93,7 +93,15 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
   // The agents server, by the token only it carries: a connected-apps bridge
   // mounted beside it names the same bot (OMB_BOT_ID) and relays to Composio.
   const mounted = launch ? [] : Object.values(JSON.parse(readAtLaunch(arg("--mcp-config"))).mcpServers as Record<string, AgentsIntegration>);
-  const integration = launch?.integration ?? mounted.find(s => s.env?.OMB_COMMS_TOKEN) ?? mounted.find(s => s.env?.OMB_BOT_ID);
+  // A turn with a tool selection mounts every server behind the gate
+  // (server/mcp-gate.ts), which names the server it starts in
+  // OMB_GATE_UPSTREAM: the agents server is found through it, and the
+  // fixture talks to the gate, as the engine does.
+  const agentEnv = (server: AgentsIntegration): Record<string, string> => {
+    if (server.env?.OMB_COMMS_TOKEN || server.env?.OMB_BOT_ID) return server.env;
+    try { return (JSON.parse(server.env?.OMB_GATE_UPSTREAM ?? "") as AgentsIntegration).env ?? {}; } catch { return {}; }
+  };
+  const integration = launch?.integration ?? mounted.find(s => agentEnv(s).OMB_COMMS_TOKEN) ?? mounted.find(s => agentEnv(s).OMB_BOT_ID);
   // A depth-capped delegated turn mounts no agents server: answer from the prompt alone.
   if (!integration) {
     // Nothing in such a launch's argv says which bot it is — only the task
@@ -116,7 +124,8 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
     }
     return `Handled without teammate tools: ${taskText}`;
   }
-  const botId = integration.env.OMB_BOT_ID;
+  const agent = agentEnv(integration);
+  const botId = agent.OMB_BOT_ID;
   const system = launch?.system ?? readAtLaunch(arg("--append-system-prompt-file"));
   // Claude snapshots the launch-time system prompt for a session. A retained
   // process or --resume launch receives changed turn-scoped instructions in
@@ -142,7 +151,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
   const matches = (entry: ScriptEntry) => entry.match.every(text => own.includes(text));
   const entry = script && (script.find(e => !e.repeat && !used.has(e.key) && matches(e)) ?? script.find(e => e.repeat && matches(e)));
   if (script && !entry) {
-    appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: integration.env.OMB_THREAD_ID, unplanned: true, resumed, system, prompt }) + "\n");
+    appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: agent.OMB_THREAD_ID, unplanned: true, resumed, system, prompt }) + "\n");
     throw new Error(`Unplanned fixture turn for ${botId}: ${own.slice(0, 300)}`);
   }
   const plan: any = entry ?? (basePlan.turns ? basePlan.turns[turnIndex] : basePlan);
@@ -238,7 +247,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
     await waitForExit(child, { signal: "SIGTERM", graceMs: 500 });
     // pid: which provider process ran the turn, so a fixture can tell a
     // retained session from a fresh one.
-    appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: integration.env.OMB_THREAD_ID, pid: process.pid,
+    appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: agent.OMB_THREAD_ID, pid: process.pid,
       model: argv.includes("--model") ? arg("--model") : undefined,
       permissionMode: argv.includes("--permission-mode") ? arg("--permission-mode") : undefined,
       snapshotMode: argv.includes("--system-prompt-snapshot") ? arg("--system-prompt-snapshot") : undefined,
