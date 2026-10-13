@@ -33,7 +33,7 @@ import { clientBotPatchViolation, requestSource } from "../request-auth.ts";
 import type { RoutineManager } from "../routines.ts";
 import type { SessionRegistry } from "../sessions.ts";
 import { parseConnectorTools, sectionKey, type BotRecord, type GroupRecord, type Store } from "../store.ts";
-import { pinnedClientThreadGuard } from "./bot-settings.ts";
+import { pinnedClientThreadGuard } from "./pinned-client-thread.ts";
 import type { ModelSelectionCheck } from "./bots-create.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 

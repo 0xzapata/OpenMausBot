@@ -76,30 +76,11 @@ import {
   attachmentExists,
   cleanupStaleAttachmentPartials,
   deleteAttachment,
-  extensionForMime,
-  FILE_MAX_BYTES,
-  IMAGE_MAX_BYTES,
-  parseAudioRange,
-  readAttachment,
   saveAudio,
-  saveFile,
   saveImage,
-  saveImageUpload,
-  type SavedAttachment,
-  validateAttachmentUploadId,
 } from "./attachments.ts";
 import {
-  messageFileDisposition,
-  messageFileDownloadName,
-  messageAttachmentName,
   messageFileRoots,
-  messageImageTargetAt,
-  messageReferencesFile,
-  listMessageFolder,
-  messageFolderEntryName,
-  openMessageFile,
-  openMessageFolderEntry,
-  referencedFileName,
 } from "./message-file.ts";
 import {
   avatarGenerationRequestSchema,
@@ -123,7 +104,7 @@ import { DataSheetRegistry } from "./data/sheet.ts";
 import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
-import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
+import { isPersistentQuestionCard, shouldSettleRequestCard } from "../shared/ask-question.ts";
 import { parseToolScope } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot } from "./boat-create-idempotency.ts";
@@ -160,7 +141,7 @@ import {
   type LocalVmTarget,
   type Runtime,
 } from "./container-computer.ts";
-import { attachForTurn, deliveredCopy, saveBotAttachment } from "./bot-attachment.ts";
+import { attachForTurn, saveBotAttachment } from "./bot-attachment.ts";
 import {
   cacheUntilConfigChanges,
   ensureDirs,
@@ -257,7 +238,7 @@ import type { GroupGoalRunCardData, GroupGoalRunStatus } from "../shared/group-g
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
-import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
+import { readMessageText, recallMessages, recentMessages, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
 import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentRequest, incidentText, type Incident, type IncidentKind } from "./incidents.ts";
@@ -266,23 +247,19 @@ import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, inci
  * window; a computer-use turn's output can run to hundreds of KB. */
 const SESSION_READ_MAX_CHARS = 8_000;
 import { promptWithReply, transcriptText } from "./replies.ts";
-import { parseDataContext, type DataContext } from "./data-context.ts";
+import type { DataContext } from "./data-context.ts";
 import { promptWithDataContext } from "../shared/data-context.ts";
 import { admit, DRAIN_COALESCE_MAX_ITEMS } from "./admission.ts";
 import {
-  cancelSteeredMessage,
   drainSteeredMessages,
   hasQueuedSteeredMessages,
-  holdSteeredQueue,
   isSteeredMessageQueued,
   onSteeredQueueChange,
   queuedSteerSnapshot,
   queuedSteeredMessage,
   queuedThreadPosition,
   queueSteeredMessage,
-  restoreHeldSteeredQueue,
   restoreSteeredMessages,
-  settleHeldSteeredQueue,
 } from "./steer-queue.ts";
 import {
   drainChannelMessages,
@@ -293,7 +270,6 @@ import {
 } from "./channel-queue.ts";
 import {
   acceptedSendMatch,
-  parseSendId,
   sendFingerprint,
   SendSequencer,
 } from "./send-idempotency.ts";
@@ -347,7 +323,7 @@ import { turnStartLogLine } from "./turn-log.ts";
 import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./turn-outcome.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
-import { extractSteerImages, extractTurnImages } from "./turn-images.ts";
+import { extractTurnImages } from "./turn-images.ts";
 import { callTitleExcerpt, threadTitlePrompt, type ThreadTitleSource } from "./thread-title.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import { TurnResources, type TurnOwner } from "./turn-resources.ts";
@@ -566,11 +542,9 @@ import {
 import {
   frameForMember,
   memberBody,
-  memberBot,
   noteSeen,
   notFoundFor,
   audienceEquals,
-  memberGroup,
   narrowestAudience,
   pathSubject,
   roomFeeds,
@@ -603,7 +577,7 @@ import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createBotCreateRoutes } from "./routes/bots-create.ts";
-import { createBotSettingsRoutes, pinnedClientThreadGuard } from "./routes/bot-settings.ts";
+import { createBotSettingsRoutes } from "./routes/bot-settings.ts";
 import { createBotPatchRoutes } from "./routes/bot-patch.ts";
 import { createBotLifecycleRoutes } from "./routes/bot-lifecycle.ts";
 import { createBotSkillsRoutes } from "./routes/bot-skills.ts";
@@ -630,6 +604,8 @@ import { createStatusRoutes } from "./routes/status.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
 import { createUsageRoutes } from "./routes/usage.ts";
+import { createBotMessageRoutes } from "./routes/bot-messages.ts";
+import { createThreadRoutes } from "./routes/threads.ts";
 import { withScopeHint } from "./connector-scope-hint.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
@@ -1847,25 +1823,6 @@ function adminAuditRows(
   return rows;
 }
 
-
-/** The guarded send contract external interfaces (the Slack worker) opt into.
- * `onBehalfOf` is additive and advertised by /api/health
- * (capabilities.guardedOnBehalfOf): it names the person a relay acts for, so
- * the turn is booked to them rather than to this machine. Only this
- * admin-scoped route reads it; every other send is booked to its own
- * session. */
-const guardedSendSchema = z.object({
-  threadId: z.string().regex(/^[\w-]+$/),
-  sendId: z.string().regex(/^[A-Za-z0-9_-]{16,80}$/),
-  text: z.string().min(1),
-  expectedActiveLeafId: z.string().regex(/^[\w-]+$/).nullable(),
-  expectedApprovalMode: z.enum(["ask", "full"]).optional(),
-  replyToId: z.string().optional(),
-  onBehalfOf: z.object({
-    email: z.string().trim().toLowerCase().max(254).pipe(z.email()).optional(),
-    name: z.string().trim().min(1).max(120).optional(),
-  }).strict().refine((who) => Boolean(who.email || who.name)).optional(),
-}).strict();
 
 /** Who a request is, for the usage ledger: a paired or signed-in person, or
  * this machine. Captured when the message is accepted and carried with it. */
@@ -17444,6 +17401,34 @@ ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: (
 // its file, so New bot cannot disagree with it. No organization: none.
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));
+// A bot's conversation: messages (plain and guarded), the steer queue,
+// compaction, edits and branches, card answers by bot or by thread, Stop.
+// `routines` is assigned at boot, read per request; the Maps are read here.
+ROUTES.push(createBotMessageRoutes({
+  store, registry, handoffs, approvalBus, phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
+  routines: () => routines,
+  desktopManaged: DESKTOP_MANAGED, cloudHome: Boolean(CLOUD_HOME), DirectSendRefused,
+  acceptDirectSend, directSendRefusal, startTurn, usageTriggerFor, messageSender, cloudGuestSendRefusal, cloudThreadRefusal,
+  cloudOwnerSession, cardAnswerRefusal, commandRememberRefusal, requestBehavior, requestedTaskBot, botForThread, threadBusy,
+  botAtThreadCapacity, parksBehindCoordination, activeGroupTurnForBot, runningTurnInstance, engineSteersImages, resolveReplyTarget,
+  turnSelection, policyModelRefusal, clearUnattended, drainQueuedSends, answeringCardAs, resolveAndSendTrust, resolveAndSendTeamSetup,
+  resolveAndSendRoutine, resolveAndSendProfile, resolveAndSendModel, resolveSkillRequest, sendSkillResolution, answerRequest,
+  deliverLateQuestionAnswer, interruptDirectThread, cancelDirectTurnDispatch, revokeInternalCapabilitiesForThread,
+  cancelGroupTurnOperations, closeOpenApprovals,
+}));
+// Conversation reads and uploads: the /api/bots snapshot, message pages, a
+// message's image or file, uploads, attachments, search and the export. The
+// `let` slots are read per request; visibility is computed as the preamble does.
+ROUTES.push(createThreadRoutes({
+  store, cfg, sessions, groupUsageReader, lendingEnabled,
+  hostedWorkspace: HOSTED_WORKSPACE, sessionCookie: SESSION_COOKIE, loopback: LOOPBACK, defaultPage: DEFAULT_PAGE,
+  workspaceAccess: () => workspaceAccess,
+  desktopMutationToken: () => desktopMutationToken,
+  companionMutationToken: () => companionMutationToken,
+  cliOwnerToken: () => cliOwnerToken,
+  pageSize, messagePage, messageWindow, publicBotQueuedMessages, publicGroupState, wireBot, wireTask,
+  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo,
+}));
 // Creating a bot (POST /api/bots): the saved New bot defaults and a preset
 // are applied around the store's own creation.
 ROUTES.push(createBotCreateRoutes({
@@ -17457,7 +17442,6 @@ ROUTES.push(createBotCreateRoutes({
 // The pinned-thread guard the bot routes below and the inline bot routes
 // build per request: a paired or companion client that names no thread on a
 // bot with several is refused (bot-settings.ts).
-const pinnedClientThread = pinnedClientThreadGuard(store);
 // A bot's settings: avatar, profile, model, read receipt, command allow-list
 // and always-allow (bot-settings.ts), then the broad PATCH (bot-patch.ts).
 ROUTES.push(createBotSettingsRoutes({
@@ -21063,477 +21047,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     // ── bots ──
-    const requirePinnedClientThread = pinnedClientThread(auth, req);
-    if (method === "GET" && path === "/api/bots") {
-      try { groupUsageReader.refresh(); } catch { /* accounting must not block a snapshot */ }
-      const limit = pageSize(url.searchParams.get("messages"));
-      if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
-      // wireBot(), not publicBot(): this snapshot answers with the page it
-      // was asked for, not the default one. tasks stays explicit, as in
-      // publicBot(): wireBot() omits the key entirely for a bot record
-      // carrying no tasks, where clients expect [].
-      // A member on a workspace with a restricted bot gets only what they may
-      // see (bot-visibility.ts); for everyone else these filters keep all.
-      const shownBots = store.bots.filter((bot) => visible.bot(bot.id));
-      const queued = publicBotQueuedMessages();
-      return json(res, 200, {
-        bots: shownBots.map((bot) => memberBot({
-          ...wireBot(bot),
-          tasks: store.tasks(bot.id).map((task) => wireTask(task, bot.modelSelection)),
-          ...messagePage(bot.threadId, limit),
-        }, visible)),
-        botQueuedMessages: visible.everything ? queued : Object.fromEntries(Object.entries(queued).filter(([threadId]) => visible.thread(threadId))),
-        sections: visible.sections(store.sections),
-        groups: store.groups.filter((g) => visible.group(g.id)).map((g) => {
-          const room = { ...publicGroupState(g), ...messagePage(g.threadId, limit) };
-          return visible.everything ? room : memberGroup(room);
-        }),
-        computerControl: Object.fromEntries(
-          shownBots.map((bot) => {
-            const snapshot = botComputerControlSnapshot(bot.id);
-            return [bot.id, { held: snapshot.held, helpReason: snapshot.helpReason, ...(snapshot.help ? { help: snapshot.help } : {}) }];
-          }),
-        ),
-      });
-    }
-
-    // scrollback: the page before a message the client already holds
-    m = path.match(/^\/api\/threads\/([\w-]+)\/messages$/);
-    if (m && method === "GET") {
-      const threadId = m[1];
-      if (!store.botByThread(threadId) && !store.groupByThread(threadId)) {
-        return json(res, 404, { error: "no such conversation" });
-      }
-      const limit = pageSize(url.searchParams.get("limit"));
-      if (limit === null) return json(res, 400, { error: "limit must be a non-negative whole number" });
-      const before = url.searchParams.get("before");
-      const around = url.searchParams.get("around");
-      if (before && around) return json(res, 400, { error: "before and around cannot be combined" });
-      if (around) {
-        const window = messageWindow(threadId, around, limit ?? DEFAULT_PAGE);
-        if (!window) return json(res, 404, { error: "no such message" });
-        return json(res, 200, { ...window, activeLeafId: store.activeLeaf(threadId) });
-      }
-      // An unknown cursor must not silently answer with the newest page —
-      // the client would paginate in a circle and never reach the top.
-      if (before && !store.messagesFor(threadId).some((msg) => msg.id === before)) {
-        return json(res, 404, { error: "no such message" });
-      }
-      return json(res, 200, { ...messagePage(threadId, limit ?? DEFAULT_PAGE, before), activeLeafId: store.activeLeaf(threadId) });
-    }
-
-    // the pixels of one screen message, fetched only when something shows it
-    m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/image$/);
-    if (m && method === "GET") {
-      // Same guard as the page route above, and for the same reason twice
-      // over: an unknown id should 404 deliberately rather than by accident,
-      // and `messagesFor` materialises and caches a ThreadState for whatever
-      // it is handed. Without this, a client asking for images on ids that
-      // do not exist grows the thread map for as long as it keeps asking.
-      if (!store.botByThread(m[1]) && !store.groupByThread(m[1])) {
-        return json(res, 404, { error: "no such conversation" });
-      }
-      const message = store.messagesFor(m[1]).find((msg) => msg.id === m![2]);
-      if (!message?.png) return json(res, 404, { error: "no image on that message" });
-      const bytes = Buffer.from(message.png, "base64");
-      res.writeHead(200, {
-        "content-type": message.mime ?? "image/png",
-        "content-length": String(bytes.byteLength),
-        // a settled message's image never changes
-        "cache-control": "private, max-age=31536000, immutable",
-      });
-      return res.end(bytes);
-    }
-
-    // Download one local file only when this exact stored message grants it:
-    // a bot must render a Markdown link or carry a generated-image attachment,
-    // while a user message must carry the standalone composer tag. The bot
-    // branch derives conversation/workspace roots; the user branch is limited
-    // to OpenMausBot's private attachment directory. This is deliberately not
-    // a general path reader.
-    m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/file$/);
-    const streamsMessageImage = Boolean(
-      m && method === "GET" && url.searchParams.get("preview") === "1",
-    );
-    if (m && (method === "POST" || streamsMessageImage)) {
-      if (method === "POST" && !String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const threadId = m[1]!;
-      const directBot = store.botByThread(threadId);
-      const group = directBot ? undefined : store.groupByThread(threadId);
-      if (!directBot && !group) return json(res, 404, { error: "no such conversation" });
-
-      const message = store.messagesFor(threadId).find((candidate) => candidate.id === m![2]);
-      if (!message) return json(res, 404, { error: "no such message" });
-      if (message.kind !== "text" || (!message.text && !message.attachments?.length)) {
-        return json(res, 403, { error: "that message does not share this file" });
-      }
-      const messageText = message.text ?? "";
-      const body = method === "POST" ? await readBody(req) : null;
-      const rawReference = streamsMessageImage ? url.searchParams.get("ref") : null;
-      if (streamsMessageImage && (!rawReference || !/^\d+$/.test(rawReference))) {
-        return json(res, 400, { error: "ref must identify a rendered image" });
-      }
-      const href = method === "POST"
-        ? (typeof body.path === "string" ? body.path : "")
-        : messageImageTargetAt(messageText, Number(rawReference));
-      if (!href) return json(res, 400, { error: "path is required" });
-
-      let roots: string[];
-      let downloadName: string | undefined;
-      // A file the bot attached with attach_file lives in the private
-      // attachment store; the message itself is the grant, exactly as a
-      // user's attachment tag is for their own uploads.
-      const botAttachment = message.role === "bot"
-        ? message.attachments?.find((attachment) => attachment.path === href)
-        : undefined;
-      if (message.role === "user") {
-        downloadName = messageAttachmentName(messageText, href) ?? undefined;
-        if (!downloadName) {
-          return json(res, 403, { error: "that message does not share this file" });
-        }
-        roots = [ATTACHMENTS_DIR];
-      } else if (botAttachment) {
-        // Files and images alike: the stored message is the grant, so the
-        // mobile clients can fetch an attached image through this route too.
-        downloadName = botAttachment.kind === "file" ? botAttachment.name : undefined;
-        roots = [ATTACHMENTS_DIR];
-      } else {
-        if (!messageReferencesFile(messageText, href)) {
-          return json(res, 403, { error: "that bot message does not link to this file" });
-        }
-        const senderId = directBot?.id ?? message.from?.botId;
-        // The persisted bot-role message is the author record. Membership is
-        // intentionally not consulted: removing a bot must not break files it
-        // already shared in channel history.
-        if (!senderId) {
-          return json(res, 403, { error: "the file's bot author could not be verified" });
-        }
-        roots = messageFileRootsForThread(senderId, threadId);
-      }
-
-      // A link to a folder answers with its files; each one is then fetched
-      // by plain name under the same message grant and file checks.
-      const folderEntry = method === "POST" && body.entry !== undefined
-        ? messageFolderEntryName(body.entry)
-        : undefined;
-      if (folderEntry === null) return json(res, 400, { error: "entry must be one file name" });
-      let file: Awaited<ReturnType<typeof openMessageFile>>;
-      try {
-        file = folderEntry
-          ? await openMessageFolderEntry(href, folderEntry, roots)
-          : await openMessageFile(href, roots);
-      } catch (error) {
-        const code = (error as { code?: unknown } | null)?.code;
-        const status = (error as { status?: unknown } | null)?.status;
-        // A reply's file outside the conversation's folders, or gone, that
-        // its bot delivered with attach_file this turn: the stored copy is
-        // what the reply shows and saves, as a chat link's would be.
-        const name = message.role === "bot" && !botAttachment && !folderEntry && (code === "outside_workspace" || status === 404)
-          ? referencedFileName(href)
-          : null;
-        const copy = name ? deliveredCopy(store.messagesFor(threadId), message, name) : null;
-        if (copy) {
-          file = await openMessageFile(copy.path, [ATTACHMENTS_DIR]);
-          downloadName = copy.name;
-        } else {
-          // Only a client that asks for listings gets one; older clients keep the 400.
-          if (body?.listFolder !== true || folderEntry || code !== "directory") throw error;
-          const listing = await listMessageFolder(href, roots);
-          res.setHeader("x-openmausbot-folder", "1");
-          res.setHeader("cache-control", "private, no-store");
-          return json(res, 200, listing);
-        }
-      }
-      if ((streamsMessageImage || botAttachment?.kind === "image") && !file.mime.startsWith("image/")) {
-        await file.handle.close();
-        return json(res, 415, { error: "only images can be previewed here" });
-      }
-      res.writeHead(200, {
-        "content-type": file.mime,
-        "content-length": String(file.bytes),
-        ...(streamsMessageImage
-          ? { "content-disposition": "inline" }
-          : { "content-disposition": messageFileDisposition(messageFileDownloadName(downloadName, file.name)) }),
-        "cache-control": streamsMessageImage ? "private, max-age=3600" : "private, no-store",
-        "cdn-cache-control": "no-store",
-        "cloudflare-cdn-cache-control": "no-store",
-        pragma: "no-cache",
-        vary: "Authorization",
-        "x-content-type-options": "nosniff",
-        ...(streamsMessageImage
-          ? {
-              "cross-origin-resource-policy": "same-origin",
-              "referrer-policy": "no-referrer",
-            }
-          : {}),
-      });
-      if (file.bytes === 0) {
-        await file.handle.close();
-        return res.end();
-      }
-      const stream = file.handle.createReadStream({ start: 0, end: file.bytes - 1, autoClose: true });
-      stream.on("error", () => res.destroy());
-      res.on("close", () => stream.destroy());
-      stream.pipe(res);
-      return;
-    }
-
-    // ── image attachments ────────────────────────────────────────────────
-    // Pasted/dropped images are stored as files and referenced by path in
-    // the prompt (<attached-image path="…"/>); this pair of routes is the
-    // save + serve. The POST takes raw bytes (base64 JSON would double the
-    // payload), so it needs its own reader rather than readBody. A share
-    // extension can add a UUID uploadId; retrying that UUID returns the same
-    // committed path instead of creating an orphan duplicate.
-    if (method === "POST" && path === "/api/attachments") {
-      let uploadId: string | undefined;
-      try {
-        uploadId = validateAttachmentUploadId(url.searchParams.get("uploadId") ?? undefined);
-      } catch (error) {
-        req.resume();
-        throw error;
-      }
-      const rawType = Array.isArray(req.headers["content-type"]) ? req.headers["content-type"][0] : req.headers["content-type"];
-      const mime = rawType?.split(";")[0]?.trim().toLowerCase();
-      if (!mime || !extensionForMime(mime)) {
-        return json(res, 400, { error: "content-type must be an image type" });
-      }
-      const rawLength = Array.isArray(req.headers["content-length"])
-        ? req.headers["content-length"][0]
-        : req.headers["content-length"];
-      const declaredLength = rawLength === undefined ? undefined : Number(rawLength);
-      if (declaredLength !== undefined && (!Number.isSafeInteger(declaredLength) || declaredLength < 0)) {
-        req.resume();
-        return json(res, 400, { error: "content-length must be a non-negative integer" });
-      }
-      if (declaredLength !== undefined && declaredLength > IMAGE_MAX_BYTES) {
-        req.resume();
-        return json(res, 413, { error: `image exceeds ${IMAGE_MAX_BYTES} bytes` });
-      }
-      const saved = await new Promise<SavedAttachment>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        let received = 0;
-        let settled = false;
-        const fail = (status: number, msg: string) => {
-          if (settled) return;
-          settled = true;
-          reject(Object.assign(new Error(msg), { status }));
-        };
-        req.on("data", (chunk: Buffer) => {
-          if (settled) return;
-          received += chunk.byteLength;
-          if (received > IMAGE_MAX_BYTES) return fail(413, `image exceeds ${IMAGE_MAX_BYTES} bytes`);
-          chunks.push(chunk);
-        });
-        req.on("end", async () => {
-          if (settled) return;
-          settled = true;
-          try {
-            resolve(await saveImageUpload(Buffer.concat(chunks), mime, uploadId));
-          } catch (e) {
-            reject(e instanceof Error ? e : new Error(String(e)));
-          }
-        });
-        req.on("error", (e) => fail(400, e instanceof Error ? e.message : String(e)));
-      });
-      return json(res, 201, saved);
-    }
-
-    // ── shared files ────────────────────────────────────────────────────
-    // Companion apps and the desktop composer send documents as raw bytes
-    // over the same authenticated connection as messages. saveFile writes each
-    // incoming chunk directly to disk, atomically commits it, and removes
-    // partial uploads on error. Its optional UUID uploadId is stable across
-    // route retries, while the aggregate store quota rejects rather than
-    // silently deleting files that old prompts may still reference.
-    if (method === "POST" && path === "/api/files") {
-      let uploadId: string | undefined;
-      try {
-        uploadId = validateAttachmentUploadId(url.searchParams.get("uploadId") ?? undefined);
-      } catch (error) {
-        req.resume();
-        throw error;
-      }
-      const name = url.searchParams.get("name");
-      if (!name) {
-        req.resume();
-        return json(res, 400, { error: "name is required" });
-      }
-      const rawType = Array.isArray(req.headers["content-type"])
-        ? req.headers["content-type"][0]
-        : req.headers["content-type"];
-      const rawLength = Array.isArray(req.headers["content-length"])
-        ? req.headers["content-length"][0]
-        : req.headers["content-length"];
-      const declaredLength = rawLength === undefined ? undefined : Number(rawLength);
-      if (declaredLength !== undefined && (!Number.isSafeInteger(declaredLength) || declaredLength < 0)) {
-        req.resume();
-        return json(res, 400, { error: "content-length must be a non-negative integer" });
-      }
-      if (declaredLength !== undefined && declaredLength > FILE_MAX_BYTES) {
-        req.resume();
-        return json(res, 413, { error: `file exceeds ${FILE_MAX_BYTES} bytes` });
-      }
-      try {
-        // Returning from this iterator must not destroy the request socket:
-        // the caller still needs to receive the useful 4xx response when the
-        // streamed byte count crosses the limit.
-        const chunks = req.iterator({ destroyOnReturn: false }) as AsyncIterable<Buffer>;
-        const saved = await saveFile(chunks, name, rawType ?? "", { uploadId, expectedBytes: declaredLength });
-        return json(res, 201, saved);
-      } catch (error) {
-        req.resume();
-        throw error;
-      }
-    }
-
-    // serving is name-locked to the attachments dir — readAttachment
-    // refuses anything that is not a bare generated filename
-    m = path.match(/^\/api\/attachments\/([\w.-]+)$/);
-    if (m && method === "GET") {
-      const attachment = readAttachment(m[1]!);
-      if (!attachment) return json(res, 404, { error: "no such attachment" });
-      const size = attachment.bytes.byteLength;
-      // Who may see an attachment is decided per request — the dispatcher
-      // 404s hidden ones above — so the browser must never reuse one
-      // member's copy after a switch to another identity in the same profile.
-      const headers = {
-        "content-type": attachment.mime,
-        "cache-control": "private, no-store",
-        "x-content-type-options": "nosniff",
-      };
-      // Range serving is audio-only (#1745): a player scrubbing a voice note
-      // asks for byte windows, and images/documents keep the full response
-      // the app has always relied on. A header we do not understand reads
-      // as absent — the full 200 is always a correct answer to a GET.
-      if (attachment.mime.startsWith("audio/")) {
-        const rawRange = Array.isArray(req.headers.range) ? req.headers.range[0] : req.headers.range;
-        const range = parseAudioRange(rawRange, size);
-        if (range.kind === "unsatisfiable") {
-          res.writeHead(416, { ...headers, "content-range": `bytes */${size}` });
-          return res.end();
-        }
-        if (range.kind === "range") {
-          res.writeHead(206, {
-            ...headers,
-            "content-length": String(range.end - range.start + 1),
-            "content-range": `bytes ${range.start}-${range.end}/${size}`,
-          });
-          return res.end(attachment.bytes.subarray(range.start, range.end + 1));
-        }
-      }
-      res.writeHead(200, { ...headers, "content-length": String(size) });
-      return res.end(attachment.bytes);
-    }
-
-    // ── search across every transcript ──────────────────────────────────
-    // Literal substring scans run in a bounded read-only worker so a large
-    // history cannot stall unrelated turns. Hits resolve to the owning bot/room;
-    // rows belonging to deleted conversations resolve to nothing and drop.
-    if (method === "GET" && path === "/api/search") {
-      const q = url.searchParams.get("q") ?? "";
-      const rawLimit = url.searchParams.get("limit");
-      const limit = rawLimit ? Math.min(Math.max(Number(rawLimit) || 0, 1), 100) : 40;
-      const threadId = url.searchParams.get("threadId")?.trim() || undefined;
-      if (threadId && ((!store.botByThread(threadId) && !store.groupByThread(threadId)) || !visible.thread(threadId))) {
-        return json(res, 404, { error: "no such conversation" });
-      }
-      // whether each hit sits on its thread's visible branch — a click on
-      // one that does not has to switch versions first (and only then)
-      const activePaths = new Map<string, Set<string>>();
-      const onActivePath = (threadId: string, messageId: string) => {
-        let ids = activePaths.get(threadId);
-        if (!ids) activePaths.set(threadId, (ids = new Set(store.activePath(threadId).map((m) => m.id))));
-        return ids.has(messageId);
-      };
-      // A member who may not see every bot: look further, then keep only
-      // hits in conversations they can open.
-      const found = await searchMessagesAsync(q, visible.everything ? limit : Math.min(limit * 10, 1_000), threadId);
-      // A scan may outlive a revocation or audience edit. Authorize again
-      // after the await, and resolve visibility from current store state.
-      if (HOSTED_WORKSPACE && auth.kind === "session") {
-        const failure = workspaceAccess ? await workspaceAccess.authorize(req, auth)
-          : { status: 503, error: "Workspace sign-in is unavailable." };
-        if (failure) return json(res, failure.status, { error: failure.error });
-      }
-      const current = resolveRequestAuth(req, {
-        sessions, cookieName: SESSION_COOKIE, streamPath: "/api/events", url,
-        loopbackMutationToken: desktopMutationToken, companionMutationToken,
-        features: { sharedComputers: lendingEnabled() }, loopbackTrust: LOOPBACK.trust, cliOwnerToken,
-      });
-      if (!current.auth) return json(res, current.status, { error: current.error });
-      const currentVisible = visibleTo(viewerFor(current.auth));
-      if (threadId && !currentVisible.thread(threadId)) return json(res, 404, { error: "no such conversation" });
-      const hits = found
-        .filter((hit) => currentVisible.thread(hit.threadId))
-        .slice(0, limit)
-        .map((hit) => {
-          const bot = store.botByThread(hit.threadId);
-          const group = bot ? undefined : store.groupByThread(hit.threadId);
-          if (!bot && !group) return null;
-          const active = onActivePath(hit.threadId, hit.messageId);
-          if (bot) {
-            const task = store.taskByThread(bot.id, hit.threadId);
-            return { ...hit, botId: bot.id, name: bot.name, task: task?.title, onActivePath: active };
-          }
-          if (group) {
-            const task = store.groupTaskByThread(group.id, hit.threadId);
-            return { ...hit, groupId: group.id, name: group.name, task: task?.title, onActivePath: active };
-          }
-          return null;
-        })
-        .filter((hit): hit is NonNullable<typeof hit> => hit !== null);
-      return json(res, 200, { hits });
-    }
-
-    // ── transcript export (the visible branch, human-readable) ──────────
-    m = path.match(/^\/api\/threads\/([\w-]+)\/export$/);
-    if (m && method === "GET") {
-      const threadId = m[1];
-      const bot = store.botByThread(threadId);
-      const group = bot ? undefined : store.groupByThread(threadId);
-      if (!bot && !group) return json(res, 404, { error: "no such conversation" });
-      const format = url.searchParams.get("format") ?? "markdown";
-      if (format !== "markdown" && format !== "json") {
-        return json(res, 400, { error: "format must be markdown or json" });
-      }
-      const title = bot
-        ? (store.taskByThread(bot.id, threadId)?.title || bot.name)
-        : (store.groupTaskByThread(group!.id, threadId)?.title || group!.name);
-      const filename = (title.replace(/[^\w\- ]+/g, "").trim() || "conversation").slice(0, 60);
-      const messages = store.activePath(threadId);
-      if (format === "json") {
-        // pixels stripped — an export is for reading and archiving, and a
-        // base64 desktop frame is neither
-        const slim = messages.map(({ png: _png, mime: _mime, ...rest }) => rest);
-        res.writeHead(200, {
-          "content-type": "application/json",
-          "content-disposition": `attachment; filename="${filename}.json"`,
-        });
-        return res.end(JSON.stringify({ name: title, threadId, messages: slim }, null, 2));
-      }
-      const userName = cfg.profile?.name?.trim() || "User";
-      const lines: string[] = [`# ${title}`, ""];
-      for (const msg of messages) {
-        const sentBy = msg.sender?.name ?? userName;
-        const who = msg.role === "user"
-          ? msg.via === "api" ? `${sentBy} (via the local API)` : sentBy
-          : (msg.from?.name ?? bot?.name ?? "Bot");
-        if (msg.kind === "text" && msg.text) lines.push(`**${who}:**`, "", msg.text, "");
-        else if (msg.kind === "activity" && msg.tool) lines.push(`> ${msg.tool.name}`, "");
-        else if (msg.kind === "screen") lines.push("> [screen capture]", "");
-        else if (msg.kind === "options" && msg.card) {
-          lines.push(`> ${msg.card.title}${msg.card.answered ? ` — answered: ${msg.card.answered}` : ""}`, "");
-        }
-      }
-      res.writeHead(200, {
-        "content-type": "text/markdown; charset=utf-8",
-        "content-disposition": `attachment; filename="${filename}.md"`,
-      });
-      return res.end(lines.join("\n"));
-    }
 
     // emoji reactions — works on any thread (1:1 or room)
     m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/reactions$/);
@@ -21842,592 +21355,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       handoffs.stoppedByPerson(threadId);
       await interruptDirectThread(m[1], threadId);
       return json(res, 200, { ok: true, outcome: "stopped" });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/messages(?:\/(guarded))?$/);
-    if (m && method === "POST") {
-      const guarded = m[2] === "guarded";
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || Array.isArray(body)) {
-        return json(res, 400, { error: "body must be a JSON object" });
-      }
-      // External interfaces must opt into a distinct route: an older server
-      // returns 404 rather than silently ignoring safety preconditions.
-      const guardedBody = guarded ? guardedSendSchema.safeParse(body) : null;
-      if (guardedBody && !guardedBody.success) {
-        const onBehalfOfInvalid = guardedBody.error.issues.some((issue) => issue.path[0] === "onBehalfOf");
-        return json(res, 400, { error: onBehalfOfInvalid
-          ? "onBehalfOf must name the person with an email address, a name, or both"
-          : "guarded sends require threadId, sendId, text and expectedActiveLeafId" });
-      }
-      const text = String(body.text ?? "").trim();
-      if (!text) return json(res, 400, { error: "text required" });
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      requirePinnedClientThread(bot.id, body.threadId);
-      if (body.threadId !== undefined && (typeof body.threadId !== "string" || !/^[\w-]+$/.test(body.threadId))) {
-        return json(res, 400, { error: "threadId must be a task id" });
-      }
-      // A retry carries its original task. That lets us return the canonical
-      // receipt after a task switch, while a genuinely new send still has to
-      // target the task that is active now.
-      const threadId = body.threadId ?? bot.threadId;
-      const notYours = cloudGuestSendRefusal(auth, threadId);
-      if (notYours) return json(res, 403, { error: notYours });
-      // Who this message is from, for the ledger. It is captured here and
-      // travels with the message: into the turn it starts, or into the queue
-      // until it drains. A message steered into someone else's running turn
-      // books nothing — that turn stays with whoever started it. A guarded
-      // relay (the Slack worker, which already holds admin scope to reach
-      // this route) names the person it acts for.
-      const onBehalfOf = guardedBody?.data?.onBehalfOf;
-      const trigger: UsageTrigger = onBehalfOf
-        ? { kind: "user", ...(onBehalfOf.email ? { email: onBehalfOf.email } : {}), ...(onBehalfOf.name ? { label: onBehalfOf.name } : {}) }
-        : usageTriggerFor(auth);
-      // The spend cap and a task that is gone answer before a malformed
-      // sendId or reply target does. acceptDirectSend checks both again for
-      // callers that do not come through this route; nothing awaits between.
-      const refused = directSendRefusal(bot.id, threadId);
-      if (refused) return json(res, refused.status, refused.body);
-      const sendId = parseSendId(body.sendId);
-      const replyTo = resolveReplyTarget(threadId, body.replyToId);
-      const dataContext = parseDataContext(body.dataContext);
-      const sender = messageSender(auth);
-      const guardedStart = guarded
-        ? async (currentAtStart: BotRecord): Promise<DirectSendReceipt> => {
-            // There is no await between these checks and startTurn's
-            // synchronous transcript append / runtime reservation. In
-            // particular, never steer or enqueue under stale permissions.
-            const expectedMode = body.expectedApprovalMode ?? "ask";
-            if (approvalModeFor(currentAtStart) !== expectedMode ||
-                (expectedMode === "ask" && (currentAtStart.autoApprove === true || currentAtStart.alwaysAllow?.length))) {
-              throw Object.assign(new Error("guarded sends require the exact expected approval mode; Ask cannot have remembered permissions"), { status: 409, code: "guarded_permissions" });
-            }
-            if (store.activeLeaf(threadId) !== body.expectedActiveLeafId) {
-              throw Object.assign(new Error("the conversation changed before this message could start"), { status: 409, code: "guarded_branch" });
-            }
-            const guardedAdmission = admit("guarded", {}, {
-              botBusy: currentAtStart.busy,
-              threadBusy: threadBusy(bot.id, threadId),
-              atCapacity: botAtThreadCapacity(bot.id),
-              parksBehindCoordination: parksBehindCoordination(bot.id, threadId),
-              groupTurn: Boolean(activeGroupTurnForBot(bot.id)),
-            });
-            if (guardedAdmission.action === "refuse") {
-              throw Object.assign(new Error("wait for a free thread slot before retrying this message"), { status: 409, code: "guarded_busy" });
-            }
-            // Stored as relayed: a worker's line for someone else, which a
-            // Live call on this thread must not read back as typed there.
-            const message = await startTurn(bot.id, text, { threadId, replyTo, sendId, sender, trigger, relayed: true, dataContext });
-            return { ok: true as const, threadId, message };
-          }
-        : undefined;
-      try {
-        const receipt = await acceptDirectSend({
-          botId: bot.id, threadId, text, sendId, replyTo, sender, trigger, dataContext,
-          // A person steering a webhook turn is present, and auto mode may
-          // follow them again. But this route is also reachable from the
-          // bot's own shell on a headless server (loopback is the owner
-          // there), and "continue" typed by the turn itself must not be the
-          // thing that lifts the block written against it — so only a
-          // request that proves a person (a paired session, or the desktop's
-          // owner capability, which every mutation there has already shown)
-          // clears the mark.
-          personPresent: auth.kind === "session" || DESKTOP_MANAGED,
-        }, guardedStart);
-        return json(res, 202, receipt);
-      } catch (error) {
-        if (error instanceof DirectSendRefused) return json(res, error.status, error.body);
-        throw error;
-      }
-    }
-
-    m = path.match(/^\/api\/bots\/([\w-]+)\/queue\/([\w-]+)$/);
-    if (m && method === "DELETE") {
-      const body = await readBody(req);
-      requirePinnedClientThread(m[1], body?.threadId);
-      const bot = requestedTaskBot(m[1], body?.threadId);
-      const queueId = m[2];
-      if (!cancelSteeredMessage(bot.id, queueId, bot.threadId)) {
-        return json(res, 404, { error: "no such queued message" });
-      }
-      return json(res, 200, { ok: true });
-    }
-
-    // Steer a queued message into the RUNNING turn (no interrupt). Engines
-    // without a live steer keep the queue; this never ends the current turn.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/queue\/([\w-]+)\/steer$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      requirePinnedClientThread(m[1], body?.threadId);
-      const bot = requestedTaskBot(m[1], body?.threadId);
-      // Pressing Steer folds the queued words into the running turn. It does
-      // not re-book that turn to whoever pressed it, and the words keep the
-      // sender they were queued with.
-      // Lift the whole queue atomically: a settle racing this request can
-      // drain it as a follow-up, or this request can steer it into the live
-      // turn — never both for the same words.
-      const held = holdSteeredQueue(bot.id, bot.threadId, m[2]);
-      if (!held) return json(res, 404, { error: "no such queued message" });
-      const currentAtStart = store.projectBotForTask(bot.id, bot.threadId);
-      const instance = currentAtStart?.busy ? runningTurnInstance(currentAtStart, bot.threadId) : undefined;
-      const engineCanSteer = Boolean(currentAtStart?.busy && instance?.adapter.capabilities.queueing && instance.adapter.steer);
-      // Attachments steer only into an engine that takes images mid-turn
-      // (steerImages), resolved from each prompt exactly as the drained
-      // follow-up would. Elsewhere attachment words wait for a real turn
-      // where central admission can hand the images to the engine.
-      const steerInput = extractSteerImages(held.items.map((item) => item.prompt));
-      const steerAdmission = admit("direct-busy", {
-        carriesImages: !steerInput || steerInput.images.length > 0,
-        engineCanSteerImages: Boolean(steerInput) && engineSteersImages(instance),
-        engineCanSteer,
-      });
-      if (steerAdmission.action === "queue" && steerAdmission.blockedBy) {
-        restoreHeldSteeredQueue(held);
-        return json(res, 200, { ok: true, queued: true, threadId: bot.threadId, blockedBy: steerAdmission.blockedBy });
-      }
-      const prompt = (steerInput?.texts ?? held.items.map((item) => item.prompt)).join("\n\n");
-      const images = steerInput?.images ?? [];
-      const steerTarget = handoffs.current(bot.threadId);
-      let steered: SteerOutcome = "refused";
-      if (steerAdmission.action === "steer" && instance?.adapter.steer) {
-        steered = await (images.length > 0
-          ? instance.adapter.steer(bot.threadId, prompt, images)
-          : instance.adapter.steer(bot.threadId, prompt))
-          .catch((): SteerOutcome => "indeterminate");
-      }
-      // The steer was awaited adapter work: re-read every ownership
-      // invariant before writing anything, exactly like the live-send path.
-      const current = store.projectBotForTask(bot.id, bot.threadId);
-      // "indeterminate" never restores: the words may already be folded into
-      // the turn that was live when they were sent, and replaying them into
-      // a fresh follow-up turn would run them twice. Record them whenever
-      // the destination still exists, busy or not.
-      if (
-        (steered === "steered" && current?.busy ||
-          steered === "indeterminate" && current) &&
-        store.taskByThread(bot.id, bot.threadId)
-      ) {
-        if (auth.kind === "session" || DESKTOP_MANAGED) clearUnattended(bot.threadId);
-        const messages = held.items.map((item) => store.appendMessage(bot.threadId, {
-          role: "user",
-          kind: "text",
-          text: item.text,
-          replyToId: item.replyToId,
-          sendId: item.sendId,
-          ...(item.dataContext ? { dataContext: item.dataContext } : {}),
-          queueId: item.messageId,
-          peerAsk: item.peerAsk,
-          steered: true,
-          sender: item.sender,
-          ...spokenLineFields(item.via, item.callId),
-        }));
-        // Words a person queued are written here once steered in, as once a
-        // drained turn starts with them (startTurn); a bot's own never are.
-        const asked = messages.filter((_, index) => !held.items[index]?.unattended && !held.items[index]?.peerAsk).at(-1);
-        if (asked) store.setTaskAskedAt(bot.id, bot.threadId, asked.at);
-        // Offered to the next turn again unless the person stops this one.
-        for (const message of messages) handoffs.steered(bot.threadId, steerTarget, instance?.instanceId, message.id);
-        const queueIds = held.items.map((item) => item.messageId);
-        settleHeldSteeredQueue(held);
-        return json(res, 200, { ok: true, steered: true, threadId: bot.threadId, messages, queueIds });
-      }
-      if (steered === "indeterminate") {
-        // No destination is left: settle so a restart cannot replay words a
-        // dead turn may already have run.
-        settleHeldSteeredQueue(held);
-        if (!store.taskByThread(bot.id, bot.threadId)) {
-          throw Object.assign(new Error("the target task no longer exists"), { status: 409 });
-        }
-        throw Object.assign(new Error("no such bot"), { status: 404 });
-      }
-      restoreHeldSteeredQueue(held);
-      // The turn may have settled while the steer was refused; a queue that
-      // is now drainable must not strand behind a missed settle.
-      if (current && !current.busy) drainQueuedSends();
-      return json(res, 200, { ok: true, queued: true, threadId: bot.threadId });
-    }
-
-    // Compaction shares normal turn admission and Stop, but never executes
-    // an agent turn or provisions a computer. It preserves the full history.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/compact$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      requirePinnedClientThread(m[1], body?.threadId);
-      const bot = requestedTaskBot(m[1], body?.threadId);
-      const notYours = cloudThreadRefusal(auth, bot.threadId);
-      if (notYours) return json(res, 403, { error: notYours });
-      await startTurn(bot.id, "Summarize conversation context", {
-        threadId: bot.threadId, compactOnly: true, cardContinuation: true, trigger: usageTriggerFor(auth),
-      });
-      return json(res, 202, { ok: true, threadId: bot.threadId });
-    }
-
-    // edit a user message → fork the conversation there and rerun the turn.
-    // Rewinding a live thread is refused, exactly like switching versions
-    // below: interrupting mid-flight and branching under the dying turn is
-    // how a conversation ends up with two tails. Stop, then edit.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/messages\/([\w-]+)\/edit$/);
-    if (m && method === "POST") {
-      const messageId = m[2];
-      const body = await readBody(req);
-      requirePinnedClientThread(m[1], body?.threadId);
-      const bot = requestedTaskBot(m[1], body.threadId);
-      const notYours = cloudThreadRefusal(auth, bot.threadId);
-      if (notYours) return json(res, 403, { error: notYours });
-      const text = String(body.text ?? "").trim();
-      if (!text) return json(res, 400, { error: "text required" });
-      const threadMessages = store.messagesFor(bot.threadId);
-      const source = threadMessages.find((msg) => msg.id === messageId);
-      if (!source || source.role !== "user" || source.kind !== "text") {
-        return json(res, 404, { error: "only user messages can be edited" });
-      }
-      // The client's id for this edit. A retry of an edit the server already
-      // forked answers with that fork instead of forking (and rerunning) again.
-      // Checked before the busy guard: that fork's own turn is what is busy.
-      const sendId = parseSendId(body.sendId);
-      if (sendId) {
-        const accepted = acceptedSendMatch(threadMessages, sendId, text, source.replyToId);
-        if (accepted.kind === "conflict" || (accepted.kind === "match" && (accepted.message.parentId ?? null) !== (source.parentId ?? null))) {
-          return json(res, 409, { error: "sendId already belongs to another message" });
-        }
-        if (accepted.kind === "match") return json(res, 202, { ok: true, message: accepted.message });
-      }
-      // everything from here down is synchronous, so two racing edits can
-      // never both get past this check: startTurn flips busy before the
-      // next request is handled
-      if (threadBusy(bot.id, bot.threadId)) return json(res, 409, { error: "the thread is working — stop it before editing" });
-      if (phoneSecretSubmissions.hasThread(bot.threadId)) {
-        return json(res, 409, { error: "this task is securely saving a credential — try again when it finishes" });
-      }
-      // A thread's own model that can't run gives way to the bot's when the
-      // rerun starts (healThreadModel), so check the model it will run on.
-      const rerunSelection = turnSelection(bot.id, bot.threadId) ?? bot.modelSelection;
-      if (!registry.get(rerunSelection.instanceId)) {
-        return json(res, 409, {
-          error: `provider instance "${rerunSelection.instanceId}" is unavailable — pick another model in settings`,
-        });
-      }
-      const rerunInstance = registry.get(rerunSelection.instanceId)!;
-      const rerunRefusal = policyModelRefusal(rerunInstance);
-      if (rerunRefusal) return json(res, 409, { error: rerunRefusal });
-      // startTurn admits the rerun before branching. A shared-resource or
-      // concurrency-limit refusal must leave the original transcript intact.
-      const replyTo = source.replyToId ? resolveReplyTarget(bot.threadId, source.replyToId) : undefined;
-      // Regenerate resends the same words: the rerun gets the Data context
-      // the message was sent with, so the model sees what it saw. Changed
-      // words take the context the client sends now, if any.
-      const dataContext = parseDataContext(body.dataContext) ?? (text === source.text ? source.dataContext : undefined);
-      // On a Cloud home an edit is its author's line, so the owner's own edit
-      // keeps their conversation theirs for lending (server/cloud-lending.ts).
-      const message = await startTurn(bot.id, text, { threadId: bot.threadId, editedMessageId: messageId, replyTo, sendId, trigger: usageTriggerFor(auth), dataContext,
-        ...(CLOUD_HOME ? { sender: messageSender(auth) } : {}) });
-      return json(res, 202, { ok: true, message });
-    }
-
-    // switch which fork of the conversation is visible (no new turn)
-    m = path.match(/^\/api\/bots\/([\w-]+)\/active-branch$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      requirePinnedClientThread(m[1], body?.threadId);
-      const bot = requestedTaskBot(m[1], body.threadId);
-      const notYours = cloudThreadRefusal(auth, bot.threadId);
-      if (notYours) return json(res, 403, { error: notYours });
-      if (threadBusy(bot.id, bot.threadId)) return json(res, 409, { error: "the thread is working — stop it before switching versions" });
-      if (phoneSecretSubmissions.hasThread(bot.threadId)) {
-        return json(res, 409, { error: "this task is securely saving a credential — try again when it finishes" });
-      }
-      const leaf = store.setActiveLeaf(bot.threadId, String(body.messageId ?? ""));
-      if (!leaf) return json(res, 404, { error: "no such message" });
-      // provider sessions still hold the other branch — next turn replays
-      store.patchTask(bot.id, bot.threadId, { rewound: true });
-      return json(res, 200, { activeLeafId: leaf });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/respond$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      const selected = requestedTaskBot(m[1], body.threadId);
-      const bot = botForThread(selected.id, selected.threadId)!;
-      const behavior = requestBehavior(body.behavior);
-      const reviewedSha256 = typeof body.reviewedSha256 === "string" ? body.reviewedSha256 : undefined;
-      if (!behavior) return json(res, 400, { error: "behavior must be allow, deny, or answer" });
-      const refusal = cardAnswerRefusal(auth, bot.threadId, String(body.requestId), behavior);
-      if (refusal) return json(res, 403, { error: refusal });
-      if (body.rememberCommand === true) {
-        const refusal = commandRememberRefusal(auth, bot.threadId, String(body.requestId), behavior);
-        if (refusal) return json(res, 403, { error: refusal });
-      }
-      return await answeringCardAs(auth, bot.threadId, String(body.requestId), async () => {
-        if (resolveAndSendTrust(res, bot.threadId, String(body.requestId), behavior)) return;
-        if (await resolveAndSendTeamSetup(res, {
-          botId: bot.id, threadId: bot.threadId, requestId: String(body.requestId), behavior,
-        }, auth.kind === "loopback" ? DESKTOP_MANAGED || Boolean(req.headers.origin) && !store.bots.some((bot) => bot.busy || activeGroupTurnForBot(bot.id)) : auth.scopes.includes("admin"))) return;
-        if (resolveAndSendRoutine(res, {
-          botId: bot.id,
-          botName: bot.name,
-          threadId: bot.threadId,
-          requestId: String(body.requestId),
-          behavior,
-        }, auth.kind === "session" && cloudOwnerSession(auth))) return;
-        if (resolveAndSendProfile(res, {
-          botId: bot.id,
-          botName: bot.name,
-          threadId: bot.threadId,
-          requestId: String(body.requestId),
-          behavior,
-        })) return;
-        if (resolveAndSendModel(res, {
-          botId: bot.id,
-          botName: bot.name,
-          threadId: bot.threadId,
-          requestId: String(body.requestId),
-          behavior,
-        })) return;
-        if (sendSkillResolution(res, resolveSkillRequest({
-          botId: bot.id,
-          botName: bot.name,
-          threadId: bot.threadId,
-          requestId: String(body.requestId),
-          behavior,
-          reviewedSha256,
-        }))) return;
-        // peer-approval intercept: harness-native cards carry a requestId
-        // that lives in peer-approval's pending map. Resolve them here so
-        // the provider adapter never sees a request it didn't raise.
-        if (store.messagesFor(bot.threadId).some((message) => message.card?.requestId === String(body.requestId)) &&
-          resolvePeerComms(approvalBus, String(body.requestId), behavior)) {
-          return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
-        }
-        const requestId = String(body.requestId);
-        const pending = store.messagesFor(bot.threadId).find((message) => message.card?.requestId === requestId);
-        if (isPersistentQuestionCard(pending?.card) && (body.dismiss === true || body.message === QUESTION_DISMISS_MESSAGE)) {
-          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
-          if (pending.card.answered !== "answer" || pending.card.dismissed) {
-            return json(res, 409, { error: "answer this question before dismissing it" });
-          }
-          store.patchMessage(bot.threadId, pending.id, { card: { ...pending.card, dismissed: true } });
-          return json(res, 200, { ok: true, dismissed: true });
-        }
-        const outcome = await answerRequest(bot.threadId, bot.modelSelection.instanceId, requestId, behavior, body.message, { id: bot.id, name: bot.name }, body.always === true, body.rememberCommand === true);
-        if (outcome === "unavailable" && isPersistentQuestionCard(pending?.card) && behavior === "answer") {
-          if (!pending) return json(res, 404, { error: "this question is no longer available" });
-          const answer = typeof body.message === "string" ? body.message.trim() : "";
-          if (!answer) return json(res, 400, { error: "a question answer is required" });
-          try {
-            const reply = await deliverLateQuestionAnswer(auth, bot.threadId, requestId, answer, pending, bot);
-            return json(res, 200, { ok: true, outcome: "answered", late: true, ...(reply.queued ? { queued: true } : {}) });
-          } catch (error) {
-            return json(res, 409, { error: error instanceof Error ? error.message : "the late answer could not be queued" });
-          }
-        }
-        return json(res, 200, { ok: true, outcome });
-      });
-    }
-    // Answer by THREAD, so a request raised inside a room can be answered
-    // too: a member's turn runs on the room's thread, and the bot that
-    // owns the pending request is the one currently speaking there.
-    m = path.match(/^\/api\/threads\/([\w-]+)\/respond$/);
-    if (m && method === "POST") {
-      const threadId = m[1];
-      const body = await readBody(req);
-      const behavior = requestBehavior(body.behavior);
-      const reviewedSha256 = typeof body.reviewedSha256 === "string" ? body.reviewedSha256 : undefined;
-      if (!behavior) return json(res, 400, { error: "behavior must be allow, deny, or answer" });
-      const requestId = String(body.requestId);
-      const refusal = cardAnswerRefusal(auth, threadId, requestId, behavior);
-      if (refusal) return json(res, 403, { error: refusal });
-      if (body.rememberCommand === true) {
-        const refusal = commandRememberRefusal(auth, threadId, requestId, behavior);
-        if (refusal) return json(res, 403, { error: refusal });
-      }
-      return await answeringCardAs(auth, threadId, requestId, async () => {
-        if (resolveAndSendTrust(res, threadId, requestId, behavior)) return;
-        const skillCard = store.messagesFor(threadId).find(
-          (message) => message.card?.requestId === requestId && message.card.skillRequest,
-        );
-        if (skillCard?.card?.skillRequest) {
-          const skillBotId = skillCard.from?.botId ?? store.botByThread(threadId)?.id;
-          if (!skillBotId) return json(res, 400, { error: "this skill request has no valid owner" });
-          const skillOwner = store.bot(skillBotId);
-          if (sendSkillResolution(res, resolveSkillRequest({
-            botId: skillBotId,
-            botName: skillOwner?.name,
-            threadId,
-            requestId,
-            behavior,
-            reviewedSha256,
-          }))) return;
-        }
-        const routineCard = store.messagesFor(threadId).find(
-          (message) => message.card?.requestId === requestId && message.card.routineRequest,
-        );
-        if (routineCard?.card?.routineRequest) {
-          // Derive the owner from the conversation, not from the executable
-          // payload being authorized. Room cards carry their trusted sender;
-          // one-to-one tasks resolve through the store's thread ownership.
-          const routineBotId = routineCard.from?.botId ?? store.botByThread(threadId)?.id;
-          if (!routineBotId) return json(res, 400, { error: "this routine request has no valid owner" });
-          const routineOwner = store.bot(routineBotId);
-          if (resolveAndSendRoutine(res, {
-            botId: routineBotId,
-            botName: routineOwner?.name,
-            threadId,
-            requestId,
-            behavior,
-          }, auth.kind === "session" && cloudOwnerSession(auth))) return;
-        }
-        const setupCard = store.messagesFor(threadId).find((message) => message.card?.requestId === requestId && message.card.teamSetupRequest);
-        if (setupCard) {
-          const setupBotId = setupCard.from?.botId ?? store.botByThread(threadId)?.id;
-          if (!setupBotId) return json(res, 400, { error: "This team setup has no valid owner" });
-          if (await resolveAndSendTeamSetup(res, { botId: setupBotId, threadId, requestId, behavior },
-            auth.kind === "loopback" ? DESKTOP_MANAGED || Boolean(req.headers.origin) && !store.bots.some((bot) => bot.busy || activeGroupTurnForBot(bot.id)) : auth.scopes.includes("admin"))) return;
-        }
-        const profileCard = store.messagesFor(threadId).find(
-          (message) => message.card?.requestId === requestId && message.card.profileRequest,
-        );
-        if (profileCard?.card?.profileRequest) {
-          const profileBotId = profileCard.from?.botId ?? store.botByThread(threadId)?.id;
-          if (!profileBotId) return json(res, 400, { error: "this profile request has no valid owner" });
-          const profileOwner = store.bot(profileBotId);
-          if (resolveAndSendProfile(res, {
-            botId: profileBotId,
-            botName: profileOwner?.name,
-            threadId,
-            requestId,
-            behavior,
-          })) return;
-        }
-        const modelCard = store.messagesFor(threadId).find(
-          (message) => message.card?.requestId === requestId && message.card.modelRequest,
-        );
-        if (modelCard?.card?.modelRequest) {
-          const modelBotId = modelCard.from?.botId ?? store.botByThread(threadId)?.id;
-          if (!modelBotId) return json(res, 400, { error: "this model request has no valid owner" });
-          const modelOwner = store.bot(modelBotId);
-          if (resolveAndSendModel(res, {
-            botId: modelBotId,
-            botName: modelOwner?.name,
-            threadId,
-            requestId,
-            behavior,
-          })) return;
-        }
-        // peer-approval intercept (see /api/bots/:id/respond above). A peer card
-        // belongs to the bus rather than to a speaker, so resolve it before we go
-        // looking for one — a room between turns has no speaker to find.
-        if (store.messagesFor(threadId).some((message) => message.card?.requestId === requestId) &&
-          resolvePeerComms(approvalBus, requestId, behavior)) {
-          return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
-        }
-        const group = store.groupByThread(threadId);
-        // busyBotId is in-memory only, so an approval that outlives its turn — or
-        // the process — leaves a durable card with no speaker behind it. Fall back
-        // to the member that raised it, and answer even when that member is gone:
-        // answerRequest closes an unreachable card, and a pending approval owns
-        // the composer, so a dead end here locks the room for good.
-        const pending = store.messagesFor(threadId).find((message) => message.card?.requestId === requestId);
-        if (isPersistentQuestionCard(pending?.card) && (body.dismiss === true || body.message === QUESTION_DISMISS_MESSAGE)) {
-          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
-          if (pending.card.answered !== "answer" || pending.card.dismissed) {
-            return json(res, 409, { error: "answer this question before dismissing it" });
-          }
-          store.patchMessage(threadId, pending.id, { card: { ...pending.card, dismissed: true } });
-          return json(res, 200, { ok: true, dismissed: true });
-        }
-        const persistentQuestion = isPersistentQuestionCard(pending?.card);
-        const owner = group
-          ? persistentQuestion
-            ? (pending?.from ? store.bot(pending.from.botId) : undefined)
-            // This thread's speaker: another thread's member may be the
-            // room's newest speaker while this card waits.
-            : (groupSpeakers.get(threadId) ? store.bot(groupSpeakers.get(threadId)!.botId) : undefined) ??
-              (pending?.from ? store.bot(pending.from.botId) : undefined)
-          : store.botByThread(threadId);
-        // A surviving question belongs to its original asker, never a later speaker.
-        if (group && persistentQuestion && !owner) {
-          return json(res, 409, { error: "the bot that asked this question is no longer available" });
-        }
-        if (!owner && !pending) return json(res, 404, { error: "nothing is waiting on an answer in this conversation" });
-        const requestOwner = owner ? botForThread(owner.id, threadId) : null;
-        const outcome = await answerRequest(threadId, requestOwner?.modelSelection.instanceId ?? "", requestId, behavior, body.message, owner ? { id: owner.id, name: owner.name } : undefined, body.always === true, body.rememberCommand === true);
-        if (outcome === "unavailable" && isPersistentQuestionCard(pending?.card) && behavior === "answer") {
-          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
-          const answer = typeof body.message === "string" ? body.message.trim() : "";
-          if (!answer) return json(res, 400, { error: "a question answer is required" });
-          if (!owner) return json(res, 409, { error: "the bot that asked this question is no longer available" });
-          try {
-            const reply = await deliverLateQuestionAnswer(auth, threadId, requestId, answer, pending, owner);
-            return json(res, 200, { ok: true, outcome: "answered", late: true, ...(reply.queued ? { queued: true } : {}) });
-          } catch (error) {
-            return json(res, 409, { error: error instanceof Error ? error.message : "the late answer could not be queued" });
-          }
-        }
-        return json(res, 200, { ok: true, outcome });
-      });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/interrupt$/);
-    if (m && method === "POST") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      const rawBody = await readBody(req);
-      if (rawBody !== null && (typeof rawBody !== "object" || Array.isArray(rawBody))) {
-        return json(res, 400, { error: "body must be a JSON object" });
-      }
-      const body = rawBody ?? {};
-      requirePinnedClientThread(bot.id, body.threadId);
-      const expectedThreadId = body.threadId;
-      if (expectedThreadId !== undefined && (typeof expectedThreadId !== "string" || !/^[\w-]+$/.test(expectedThreadId))) {
-        return json(res, 400, { error: "threadId must be a task id" });
-      }
-      // Explicit thread targets never fall through to another routine or
-      // channel just because it belongs to the same bot.
-      if (typeof expectedThreadId === "string" && store.taskByThread(bot.id, expectedThreadId)) {
-        const routine = routines!.activeBotRunForBot(bot.id);
-        if (routine?.threadId === expectedThreadId) await routines!.cancelRun(routine.id);
-        else {
-          handoffs.stoppedByPerson(expectedThreadId);
-          await interruptDirectThread(bot.id, expectedThreadId);
-        }
-        return json(res, 200, { ok: true });
-      }
-      const directClaim = directTurnDispatchClaims.get(bot.threadId);
-      const routineRun = routines!.activeBotRunForBot(bot.id);
-      if (routineRun) {
-        if (expectedThreadId !== undefined && routineRun.threadId !== expectedThreadId) {
-          return json(res, 409, { error: "this bot is running a routine in another conversation" });
-        }
-        cancelDirectTurnDispatch(bot.id, routineRun.threadId ?? expectedThreadId);
-        if (routineRun.threadId) {
-          revokeInternalCapabilitiesForThread(routineRun.threadId);
-        }
-        await routines!.cancelRun(routineRun.id);
-        return json(res, 200, { ok: true });
-      }
-      const instance = registry.get((botForThread(bot.id, expectedThreadId ?? bot.threadId) ?? bot).modelSelection.instanceId);
-      // a bot busy in a ROOM is running on the room's thread — stopping it
-      // from its own chat must reach that turn, not just the 1:1 thread
-      const busyGroup = activeGroupTurnForBot(bot.id);
-      if (busyGroup) {
-        if (expectedThreadId !== undefined && busyGroup.threadId !== expectedThreadId) {
-          return json(res, 409, { error: `this bot is working in channel ${busyGroup.group.name}` });
-        }
-        cancelGroupTurnOperations(busyGroup.group.id, busyGroup.threadId);
-        revokeInternalCapabilitiesForThread(busyGroup.threadId);
-        await instance?.adapter.interruptTurn(busyGroup.threadId).catch(() => {});
-        closeOpenApprovals(busyGroup.threadId);
-        return json(res, 200, { ok: true });
-      }
-      if (
-        expectedThreadId !== undefined &&
-        !busyGroup &&
-        bot.threadId !== expectedThreadId &&
-        directClaim?.threadId !== expectedThreadId
-      ) {
-        return json(res, 409, { error: "the bot switched tasks before it could be interrupted" });
-      }
-      handoffs.stoppedByPerson(expectedThreadId ?? bot.threadId);
-      await interruptDirectThread(bot.id, expectedThreadId ?? bot.threadId);
-      return json(res, 200, { ok: true });
     }
 
     // ── voice ─────────────────────────────────────────────────────────

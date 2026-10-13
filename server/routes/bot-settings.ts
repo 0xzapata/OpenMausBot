@@ -4,7 +4,6 @@
 // edit, the bot's model, the read receipt, the command allow-list and a
 // standing always-allow grant. The table runs after the auth gate; scope
 // rules stay keyed by path in server/request-auth.ts.
-import type { IncomingMessage } from "node:http";
 
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode.ts";
 import { botAvatarUrlFromStoredPath } from "../../shared/bot-avatar.ts";
@@ -25,25 +24,7 @@ import type { RequestAuth } from "../request-auth.ts";
 import type { BotRecord, GroupRecord, Store } from "../store.ts";
 import type { ModelSelectionCheck } from "./bots-create.ts";
 import { PASS, type RouteHandler } from "./table.ts";
-
-/** The guard index.ts built once per request for these routes and the
- * PATCH in bot-patch.ts: the store once, then who is asking and the
- * request's headers per request. */
-export function pinnedClientThreadGuard(store: Pick<Store, "tasks">) {
-  return (auth: RequestAuth, req: IncomingMessage) => {
-    // Paired sessions are authenticated above. The companion marker may
-    // only narrow behavior (including its capability-free local dev proxy);
-    // it never grants authority or replaces the existing request gate.
-    const requirePinnedClientThread = (botId: string, threadId: unknown): void => {
-      if (threadId === undefined &&
-        (auth.kind === "session" || req.headers["x-openmausbot-companion"] === "1") &&
-        store.tasks(botId).length > 1) {
-        throw Object.assign(new Error("This bot has more than one thread. Update the OpenMausBot app on this device, then choose a thread and try again."), { status: 409 });
-      }
-    };
-    return requirePinnedClientThread;
-  };
-}
+import { pinnedClientThreadGuard } from "./pinned-client-thread.ts";
 
 export interface BotSettingsRouteDeps {
   store: Store;
