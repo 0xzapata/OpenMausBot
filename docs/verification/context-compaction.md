@@ -55,10 +55,13 @@ member whose own provider session is known to hold the room is sent only the
 lines that session has not been handed, under one note, instead of the
 bounded transcript again. The room remembers, in memory, which native session
 ran each member's last turn in a thread, which lines it was handed and how
-each read. A line that reads differently now than when it was shown (a digest
-that gained its file list, a teammate's report, which is rendered from the
-request's state at that moment) is sent again, marked as replacing the
-earlier copy. With the setting off nothing is remembered or computed.
+each read. A line that reads differently now than when it was shown is sent
+again, marked as replacing the earlier copy: a teammate's report, whose row
+is rendered from the request's state at that moment, and a line with an
+attachment, which reads without its tag on the turn that carries the image
+and with it afterwards. (A digest row is only given a file list where a
+turn took a checkpoint, which room turns do not; it would be sent again
+too.) With the setting off nothing is remembered or computed.
 
 Only Claude Code is covered, and only when all of these hold: the CLI is new
 enough to declare strict resume (2.1.267), and the turn mounts the

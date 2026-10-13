@@ -26,10 +26,14 @@
 // session's own reply). A start sends the window. A resume is refused unless
 // every line the record does not cover is in the window and the window does
 // not reach behind the line the session's start left out, and it sends again
-// any line whose text changed since it was shown: a digest that gained its
-// file list, a teammate's report rendered from the request's state as it is
-// now. Everything that reads the transcript to decide what else the turn
-// says ("in the conversation above") therefore stays true.
+// any line whose text changed since it was shown. A teammate's report is the
+// case that happens: its row stores no text and is rendered from the
+// request's state as it is now. So is the latest line, which reads without
+// its attachment tag on the turn that carries the image and with it
+// afterwards. (A digest row gains its file list only where a turn took a
+// checkpoint, which a room turn does not; it would be sent again too.)
+// Everything that reads the transcript to decide what else the turn says
+// ("in the conversation above") therefore stays true.
 //
 // When a record is not trusted, and the next turn is a start:
 //
