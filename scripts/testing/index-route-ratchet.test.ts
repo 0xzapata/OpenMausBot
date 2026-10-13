@@ -10,7 +10,8 @@ const EXACT: Record<string, number> = {
   // 160 with /api/internal/request-sign-in (#2707) and /api/internal/fill-login (saved logins),
   // minus the one-release alias routes (ask-bot, delegate-bot, delegations/:id) that went in PR 5.
   'path === "/': 158,
-  "path.match(": 88,
+  // 88 before the bot message routes moved to server/routes/bot-messages.ts.
+  "path.match(": 79,
   "path.startsWith(": 11,
   ".exec(path)": 18,
   ".test(path)": 0,
