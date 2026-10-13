@@ -5,8 +5,9 @@
 // companion allows the first four for the phone apps (companion/src/routes.ts).
 // The fifth, device-revoked, is the companion's own notice that it unpaired a
 // phone; a phone can never send it (companion/src/routes.ts COMPANION_NOTICES).
-// Starting a call needs an active Pro plan (402 `needsPro`, before the key's
-// 409 `needsKey`), for every client: the phones' starts come through here too.
+// A call from the desktop app is free; one from a phone needs an active Pro
+// plan (402 `needsPro`, before the key's 409 `needsKey`). The phones' starts
+// come through here too, with the device the companion vouched for.
 import type { IncomingMessage } from "node:http";
 import { z } from "zod";
 import type { LiveSettings } from "../../shared/wire.ts";

@@ -155,7 +155,7 @@ export function CallTargetButton({
   // here. A Live call always asks for the microphone first, so a page that
   // can't have one says so before anyone pastes a key it can't use.
   const keyPopover = canLive && !active && media.needsKey && media.botId === targetId;
-  // The harness answered that Live calls need a Pro plan (it asks for a key
+  // The harness answered that this Live call needs a Pro plan (a phone's call; the desktop app's own are free) (it asks for a key
   // only after that): the Pro card here, where the key form would be.
   const proPopover = canLive && !active && media.needsPro && media.botId === targetId;
   const startPrompt = keyPopover || proPopover;

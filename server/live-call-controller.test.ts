@@ -103,15 +103,16 @@ describe("LiveCallController lifecycle", () => {
     expect(t.deps.createSession).not.toHaveBeenCalled();
   });
 
-  // Live calls need an active Pro plan (electron/pro-plan.mjs). The plan is
-  // asked when a call starts and never after, so a running call is never cut
-  // off by a plan change.
-  it("refuses a start without Pro, before the key and before OpenAI", async () => {
+  // Live calls from a phone need an active Pro plan (electron/pro-plan.mjs);
+  // the desktop app's own calls are free. The plan is asked when a phone's
+  // call starts and never after, so a running call is never cut off by a
+  // plan change.
+  it("refuses a phone's start without Pro, before the key and before OpenAI", async () => {
     const t = setup({ pro: () => false });
     t.settings.key = "";
     const refused = t.controller.start({ auth: owner, ...BOT, client: "ios", sdp: "a" });
     await expect(refused).rejects.toBeInstanceOf(LiveCallNeedsProError);
-    await expect(refused).rejects.toMatchObject({ status: 402, message: "Live calls need a Pro plan." });
+    await expect(refused).rejects.toMatchObject({ status: 402, message: "Live calls from your phone need a Pro plan." });
     expect(t.deps.createSession).not.toHaveBeenCalled();
     expect(t.controller.current()).toBeNull();
     expect(t.frames).toEqual([]);
@@ -119,6 +120,24 @@ describe("LiveCallController lifecycle", () => {
     t.settings.key = "sk-test";
     t.deps.pro = () => true;
     await expect(t.controller.start({ auth: owner, ...BOT, client: "ios", sdp: "a" })).resolves.toMatchObject({ sdp: "answer-sdp" });
+  });
+
+  it("starts a call from the desktop app, or a browser on this computer, without Pro and without asking the plan", async () => {
+    for (const client of ["desktop", "web"] as const) {
+      const asked = vi.fn(() => false);
+      const t = setup({ pro: asked });
+      await expect(t.controller.start({ auth: owner, ...BOT, client, sdp: "a" })).resolves.toMatchObject({ sdp: "answer-sdp" });
+      expect(asked).not.toHaveBeenCalled();
+      expect(t.deps.createSession).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("counts a call through the companion as a phone's, whatever client it names", async () => {
+    for (const client of ["desktop", "web", "android"] as const) {
+      const t = setup({ pro: () => false });
+      await expect(t.controller.start({ auth: owner, ...BOT, device: "phone-1", client, sdp: "a" })).rejects.toBeInstanceOf(LiveCallNeedsProError);
+      expect(t.deps.createSession).not.toHaveBeenCalled();
+    }
   });
 
   it("asks for the key only once the plan allows the call", async () => {
@@ -129,11 +148,12 @@ describe("LiveCallController lifecycle", () => {
     await expect(refused).rejects.not.toBeInstanceOf(LiveCallNeedsProError);
   });
 
-  it("never ends a running call when the plan changes; the next start is refused", async () => {
+  it("never ends a phone's running call when the plan changes; the phone's next start is refused", async () => {
     let pro = true;
     const asked = vi.fn(() => pro);
     const t = setup({ pro: asked });
-    const { call } = await t.start();
+    const { call } = await t.controller.start({ auth: owner, ...BOT, client: "ios", sdp: "offer-sdp" });
+    t.socket().open();
     pro = false;
     await vi.advanceTimersByTimeAsync(IDLE_CHECK_MS * 4);
     expect(t.controller.current()).toMatchObject({ callId: call.callId, status: "live" });
@@ -143,7 +163,7 @@ describe("LiveCallController lifecycle", () => {
     const ending = t.controller.end(call.callId);
     t.socket().receive({ type: "session.closed", reason: "close_requested" });
     await expect(ending).resolves.toMatchObject({ status: "ended", endReason: "hung-up" });
-    await expect(t.controller.start({ auth: owner, ...BOT, client: "desktop", sdp: "b" })).rejects.toBeInstanceOf(LiveCallNeedsProError);
+    await expect(t.controller.start({ auth: owner, ...BOT, client: "ios", sdp: "b" })).rejects.toBeInstanceOf(LiveCallNeedsProError);
     expect(t.deps.createSession).toHaveBeenCalledTimes(1);
   });
 

@@ -126,7 +126,7 @@ describe("call modes", () => {
     expect(render(createElement(CallButton, { bot }))).not.toContain("OpenAI API key");
   });
 
-  // Live calls need a Pro plan. The harness says so before it would ask for
+  // Live calls from your phone need a Pro plan. The harness says so before it would ask for
   // a key, and the call button shows the Pro card where the key form would be.
   it("shows the Pro card under the call button, never the key form, when Live calls need Pro", async () => {
     vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
@@ -143,14 +143,14 @@ describe("call modes", () => {
         close() {},
       }) as unknown as RTCPeerConnection,
       request: async () => {
-        throw new ApiError("Live calls need a Pro plan.", 402, { needsPro: true });
+        throw new ApiError("Live calls from your phone need a Pro plan.", 402, { needsPro: true });
       },
       stopRemote: () => {},
     });
     setCallMode("live");
     await startLiveCall({ botId: bot.id, threadId: bot.threadId });
     const header = render(createElement(CallButton, { bot }));
-    expect(header).toContain("Live calls need a Pro plan");
+    expect(header).toContain("Live calls from your phone need a Pro plan");
     // no key form: its field is the one password input
     expect(header).not.toContain('aria-label="OpenAI API key for Live calls"');
     expect(header).not.toContain('type="password"');
@@ -166,12 +166,12 @@ describe("call modes", () => {
     // what Live calls need and offers nothing to buy.
     expect(header).not.toContain("Get Pro");
     const composer = render(createElement(CallButton, { bot, placement: "composer" }));
-    expect(composer).toContain("Live calls need a Pro plan");
+    expect(composer).toContain("Live calls from your phone need a Pro plan");
     expect(composer).toContain("bottom-full");
     expect(render(createElement(CallButton, { bot: { ...bot, id: "juniper" } }))).not.toContain("Pro plan");
     // Leaving the chat (or closing the prompt) drops it, as it drops the key form.
     dismissStartPrompt("juniper");
-    expect(render(createElement(CallButton, { bot }))).toContain("Live calls need a Pro plan");
+    expect(render(createElement(CallButton, { bot }))).toContain("Live calls from your phone need a Pro plan");
     dismissStartPrompt(bot.id);
     expect(render(createElement(CallButton, { bot }))).not.toContain("Pro plan");
   });

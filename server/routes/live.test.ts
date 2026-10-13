@@ -121,11 +121,11 @@ describe("live routes", () => {
   });
   // Checked before the key (the controller's order), so a person without Pro
   // is never asked for one; the phones read the same body through the companion.
-  it("says when Live calls need a Pro plan, and nothing about a key", async () => {
+  it("says when a phone's Live call needs a Pro plan, and nothing about a key", async () => {
     for (const headers of [{}, fromPhone()]) {
       const noPro = deps({ calls: { ...deps().calls, start: vi.fn(async () => { throw new LiveCallNeedsProError(); }) } });
       const refused = await request(noPro, "POST", "/api/live/session", { botId: "bot1", sdp: "v=0", client: "android" }, headers);
-      expect(refused).toEqual({ status: 402, body: { error: "Live calls need a Pro plan.", needsPro: true } });
+      expect(refused).toEqual({ status: 402, body: { error: "Live calls from your phone need a Pro plan.", needsPro: true } });
     }
   });
   it("passes OpenAI's refusals through with their status and message", async () => {
