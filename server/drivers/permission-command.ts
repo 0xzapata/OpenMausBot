@@ -50,7 +50,8 @@ export function acpPermissionCommand(rawInput: unknown, launchCwd: string | unde
 
 /** shellRequest for an ACP tool call. Only a call typed as a shell command
  * gets the exact-command descriptor; any call that names a command line
- * carries it for the safety floor. */
+ * carries it for the safety floor. A question is not a request to run
+ * anything: the driver passes no input for one, so it carries neither. */
 export function acpShellRequest(isShellCommand: boolean, rawInput: unknown, launchCwd: string | undefined): ReturnType<typeof shellRequest> {
   const command = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? (rawInput as Record<string, unknown>).command : undefined;
   return { command: isShellCommand ? acpPermissionCommand(rawInput, launchCwd) : undefined, commandLine: shellRequest(command, undefined).commandLine };

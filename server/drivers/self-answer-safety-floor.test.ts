@@ -36,7 +36,9 @@ const TESTING = join(dirname(fileURLToPath(import.meta.url)), "..", "testing");
 const FAKE_CODEX = join(TESTING, "fake-codex-app-server.ts");
 const FAKE_ACP = join(TESTING, "fake-acp-cli.ts");
 const WIPE = "rm -rf /";
-const floorOn = () => bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }));
+/** The server's platform is given explicitly, so the suite says the same
+ * thing on a Windows runner, where the gate is inert. */
+const floorOn = (host: NodeJS.Platform = "linux") => bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), undefined, host);
 
 let instance: ProviderInstance | undefined;
 let recorder: EventRecorder | undefined;
@@ -132,7 +134,7 @@ describe("Codex at Full access", () => {
   it("raises a command the floor cannot read, and the harness leaves it for a card", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), () => ({ read: false }));
+      bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), () => ({ read: false }), "linux");
       const turn = await ask("t-codex-unreadable", "npm test");
       const request = await nextRequest();
       expect(foldAtFullAccess(request)).toBe("card");
@@ -142,6 +144,19 @@ describe("Codex at Full access", () => {
       expect(turn.decision()).toEqual({ decision: "accept" });
     } finally {
       errors.mockRestore();
+    }
+  });
+
+  it("is not held back on a Windows server, where the floor is not applied", async () => {
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      floorOn("win32");
+      const turn = await ask("t-codex-windows", WIPE);
+      await recorder!.until((event) => event.type === "turn.completed");
+      expect(opened()).toEqual([]);
+      expect(turn.decision()).toEqual({ decision: "accept" });
+    } finally {
+      warnings.mockRestore();
     }
   });
 
@@ -184,6 +199,40 @@ describe("an ACP agent", () => {
     await recorder!.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     expect(opened()).toHaveLength(1);
     expect(answer()).toBe("allow-once");
+  });
+
+  it("repeats a kept allow even for a never-list command on a Windows server, where the floor is not applied", async () => {
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      floorOn("win32");
+      await create({ fullAuto: false }, WIPE);
+      const turnId = await askTwice("t-acp-windows");
+      await recorder!.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+      expect(opened()).toHaveLength(1);
+    } finally {
+      warnings.mockRestore();
+    }
+  });
+
+  it("does not put a command line on a question, whatever its input holds", async () => {
+    floorOn();
+    // A question is told from a permission by its id. Its input is the
+    // agent's own, and a `command` in it is not a command anybody runs.
+    process.env.FAKE_ACP_MODE = "permission";
+    process.env.FAKE_ACP_PERMISSION_TOOL_CALL = JSON.stringify({ toolCallId: "interaction_pick", kind: "other", title: "Which cleanup?", rawInput: { command: WIPE } });
+    process.env.FAKE_ACP_PERMISSION_ANSWER = join(scratch, "answer.txt");
+    instance = await GrokAgentDriver.create({
+      instanceId: "acp-floor-question", displayName: "ACP floor fixture", environment: {}, enabled: true,
+      config: { cli: FAKE_ACP, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-acp-question", text: "go", approvalMode: "ask" });
+    const question = await nextRequest(turnId);
+    expect(question.requestType).toBe("question");
+    expect(question.command).toBeUndefined();
+    expect(question.commandLine).toBeUndefined();
+    await instance.adapter.respondToRequest("t-acp-question", question.requestId!, { behavior: "deny" });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
   });
 
   it("asks again for a never-list command, however it was kept", async () => {
