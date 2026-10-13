@@ -2,8 +2,9 @@
 // can keep. Everything is read through the routes the app itself uses, each
 // under its own grant: the job tree (GET /api/threads/:id/job), every
 // transcript of the job (the transcript export), the files its bots' replies
-// link to (the message-scoped file route: a reply is the grant), and screen
-// captures the server kept. Bounded by file count, screen count and bytes;
+// link to (the message-scoped file route: a reply is the grant; a linked
+// folder brings the files directly in it), and screen captures the server
+// kept. Bounded by file count, screen count and bytes actually written;
 // transcripts and the job tree pass through secret redaction.
 //
 //   DIR/manifest.json   what was written, and what was skipped and why
@@ -11,10 +12,11 @@
 //   DIR/transcripts/    each conversation of the job, .json and .md
 //   DIR/files/          files the replies link to, per conversation
 //   DIR/screens/        screen captures, per conversation
-import { createWriteStream, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, extname, join, resolve } from "node:path";
-import { Readable } from "node:stream";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, extname, join, relative, resolve } from "node:path";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
 import { redactSecretsInText } from "../../shared/redact.ts";
 import { messageFileTargets } from "../message-file.ts";
@@ -35,7 +37,7 @@ export interface ExportOptions {
   maxFiles?: number;
   maxScreens?: number;
   maxBytes?: number;
-  /** Write into a folder that already has files in it. */
+  /** Write into a folder that already has files in it (an earlier export's files are replaced). */
   force?: boolean;
 }
 
@@ -46,32 +48,79 @@ const enc = encodeURIComponent;
 
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "conversation";
 
-/** A file name from the server's content-disposition, else the link's own, made safe to write. */
+/** A name made safe to write: one path segment, no control or reserved characters. */
+function safeName(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  const name = basename(raw.replace(/[\\/]/g, "_")).replace(/[\x00-\x1f<>:"|?*]/g, "_").trim();
+  return !name || name === "." || name === ".." ? "file" : name.slice(0, 120);
+}
+
+/** A file name from the server's content-disposition, else the link's own. */
 function fileName(disposition: string | null, link: string): string {
   const star = disposition?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
   const plain = disposition?.match(/filename="([^"]+)"/i)?.[1];
   let name = "";
   try { name = star ? decodeURIComponent(star) : plain ?? decodeURIComponent(basename(link.split(/[?#]/)[0]!)); } catch { name = plain ?? ""; }
-  // eslint-disable-next-line no-control-regex
-  name = basename(name.replace(/[\\/]/g, "_")).replace(/[\x00-\x1f<>:"|?*]/g, "_").trim();
-  return !name || name === "." || name === ".." ? "file" : name.slice(0, 120);
+  return safeName(name);
 }
 
-/** A name not yet used in a folder: report.md, report (2).md, … */
+/** A name this export has not used yet in a folder: report.md, report (2).md, …
+ * (a file an earlier export left there is replaced, under --force). */
 function unused(dir: string, name: string, taken: Set<string>): string {
   const ext = extname(name);
   const stem = name.slice(0, name.length - ext.length);
   let candidate = name;
-  for (let n = 2; taken.has(join(dir, candidate)) || existsSync(join(dir, candidate)); n++) candidate = `${stem} (${n})${ext}`;
+  for (let n = 2; taken.has(join(dir, candidate)); n++) candidate = `${stem} (${n})${ext}`;
   taken.add(join(dir, candidate));
   return candidate;
 }
 
-export async function exportJob(client: HeadlessClient, options: ExportOptions, output: Output): Promise<Rec> {
-  const out = resolve(options.out);
-  if (existsSync(out) && readdirSync(out).length && !options.force) {
-    throw usageError(`${out} already has files in it`, "choose an empty folder, or pass --force to write into it");
+/** The folder an export writes: new, or empty unless `force`. Checked before
+ * anything is read or sent (run --export checks it before the job starts). */
+export function exportFolder(dir: string, force: boolean): string {
+  const out = resolve(dir);
+  if (!existsSync(out) || force) return out;
+  let entries: string[];
+  try {
+    entries = readdirSync(out);
+  } catch (error) {
+    throw usageError(`${out} cannot be written into (${(error as NodeJS.ErrnoException).code ?? "error"})`, "choose a folder");
   }
+  if (entries.length) throw usageError(`${out} already has files in it`, "choose an empty folder, or pass --force to write into it");
+  return out;
+}
+
+const OVER_LIMIT = Symbol("over the byte limit");
+
+/** A response body into a new file, counting as it goes: past `limit` bytes it
+ * stops, removes what it wrote, and says so. A length header is not trusted:
+ * a proxy in front of the server may send the body without one. */
+async function writeCapped(response: Response, file: string, limit: number): Promise<number | typeof OVER_LIMIT> {
+  let written = 0;
+  const count = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      written += chunk.length;
+      if (written > limit) done(new Error("over the byte limit"));
+      else done(null, chunk);
+    },
+  });
+  const body = response.body ? Readable.fromWeb(response.body as WebReadableStream<Uint8Array>) : Readable.from([]);
+  try {
+    await pipeline(body, count, createWriteStream(file, { mode: 0o600 }));
+    return written;
+  } catch (error) {
+    rmSync(file, { force: true });
+    if (written > limit) return OVER_LIMIT;
+    throw error;
+  }
+}
+
+/** Why the server would not hand a file over, in its own words. */
+const refusal = async (response: Response | null): Promise<string> =>
+  response ? String(((await response.json().catch(() => ({}))) as Rec).error ?? `HTTP ${response.status}`) : "the server did not answer";
+
+export async function exportJob(client: HeadlessClient, options: ExportOptions, output: Output): Promise<Rec> {
+  const out = exportFolder(options.out, options.force === true);
   const maxFiles = options.maxFiles ?? 200;
   const maxScreens = options.maxScreens ?? 100;
   const maxBytes = options.maxBytes ?? 500_000_000;
@@ -90,11 +139,51 @@ export async function exportJob(client: HeadlessClient, options: ExportOptions, 
   const skipped: Rec[] = [];
   const taken = new Set<string>();
   let bytes = 0;
-  const save = async (response: Response, dir: string, name: string) => {
+
+  /** One answered file into `dir` under what is left of the byte budget, or the reason it is not. */
+  const keep = async (response: Response, dir: string, wanted: string, about: Rec, into: Rec[]) => {
+    const left = maxBytes - bytes;
+    const declared = Number(response.headers.get("content-length") ?? Number.NaN);
+    if (Number.isFinite(declared) && declared > left) {
+      await response.body?.cancel();
+      skipped.push({ ...about, reason: `more than --max-bytes ${maxBytes}` });
+      return;
+    }
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, unused(dir, name, taken));
-    await pipeline(Readable.fromWeb(response.body as import("node:stream/web").ReadableStream), createWriteStream(file, { mode: 0o600 }));
-    return file;
+    const file = join(dir, unused(dir, wanted, taken));
+    const written = await writeCapped(response, file, left);
+    if (written === OVER_LIMIT) {
+      skipped.push({ ...about, reason: `more than --max-bytes ${maxBytes}` });
+      return;
+    }
+    bytes += written;
+    into.push({ ...about, file: relative(out, file), bytes: written });
+  };
+  const fileRoute = (threadId: string, messageId: string, body: Rec) =>
+    client.raw(`/api/threads/${enc(threadId)}/messages/${enc(messageId)}/file`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }).catch(() => null);
+
+  /** A linked file, or each file directly in a linked folder, under the reply's own grant. */
+  const saveLinked = async (threadId: string, folder: string, messageId: string, link: string) => {
+    const about = { threadId, messageId, link };
+    if (files.length >= maxFiles) return void skipped.push({ ...about, reason: `more than --max-files ${maxFiles}` });
+    const response = await fileRoute(threadId, messageId, { path: link, listFolder: true });
+    if (!response?.ok) return void skipped.push({ ...about, reason: await refusal(response) });
+    if (response.headers.get("x-openmausbot-folder") !== "1") {
+      return keep(response, join(out, "files", folder), fileName(response.headers.get("content-disposition"), link), about, files);
+    }
+    const listing = await response.json() as Rec;
+    const dir = join(out, "files", folder, safeName(String(listing.name ?? "folder")));
+    for (const entry of Array.isArray(listing.entries) ? listing.entries as Rec[] : []) {
+      const name = String(entry.name);
+      const one = { ...about, entry: name };
+      if (files.length >= maxFiles) { skipped.push({ ...one, reason: `more than --max-files ${maxFiles}` }); continue; }
+      const answered = await fileRoute(threadId, messageId, { path: link, entry: name });
+      if (!answered?.ok) { skipped.push({ ...one, reason: await refusal(answered) }); continue; }
+      await keep(answered, dir, safeName(name), one, files);
+    }
+    if (listing.truncated === true) skipped.push({ ...about, reason: "the folder has more files than the server lists" });
   };
 
   for (const [threadId, label] of threads) {
@@ -123,36 +212,22 @@ export async function exportJob(client: HeadlessClient, options: ExportOptions, 
       for (const link of links) {
         if (seen.has(link)) continue;
         seen.add(link);
-        if (files.length >= maxFiles) { skipped.push({ threadId, messageId: message.id, link, reason: `more than --max-files ${maxFiles}` }); continue; }
-        const response = await client.raw(`/api/threads/${enc(threadId)}/messages/${enc(message.id)}/file`, {
-          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: link }),
-        }).catch(() => null);
-        if (!response?.ok) {
-          const why = response ? String(((await response.json().catch(() => ({}))) as Rec).error ?? response.status) : "not reachable";
-          skipped.push({ threadId, messageId: message.id, link, reason: why });
-          continue;
-        }
-        const size = Number(response.headers.get("content-length") ?? 0);
-        if (bytes + size > maxBytes) { await response.body?.cancel(); skipped.push({ threadId, messageId: message.id, link, reason: `more than --max-bytes ${maxBytes}` }); continue; }
-        const file = await save(response, join(out, "files", name), fileName(response.headers.get("content-disposition"), link));
-        bytes += size;
-        files.push({ threadId, messageId: message.id, link, file: file.slice(out.length + 1), bytes: size });
+        await saveLinked(threadId, name, message.id, link);
       }
     }
 
     // screen captures the server kept (their pixels are never in the transcript)
     for (const message of kept) {
       if (message.kind !== "screen") continue;
-      if (screens.length >= maxScreens) { skipped.push({ threadId, messageId: message.id, reason: `more than --max-screens ${maxScreens}` }); continue; }
+      const about = { threadId, messageId: message.id };
+      if (screens.length >= maxScreens) { skipped.push({ ...about, reason: `more than --max-screens ${maxScreens}` }); continue; }
       const response = await client.raw(`/api/threads/${enc(threadId)}/messages/${enc(message.id)}/image`).catch(() => null);
-      if (!response?.ok) { await response?.body?.cancel(); continue; }
-      const size = Number(response.headers.get("content-length") ?? 0);
-      if (bytes + size > maxBytes) { await response.body?.cancel(); skipped.push({ threadId, messageId: message.id, reason: `more than --max-bytes ${maxBytes}` }); continue; }
+      // a capture whose pixels the server no longer keeps is not a failure
+      if (response?.status === 404) { await response.body?.cancel(); continue; }
+      if (!response?.ok) { skipped.push({ ...about, reason: await refusal(response) }); continue; }
       const type = response.headers.get("content-type") ?? "image/png";
       const ext = type.includes("jpeg") ? ".jpg" : type.includes("webp") ? ".webp" : ".png";
-      const file = await save(response, join(out, "screens", name), `${String(screens.length + 1).padStart(3, "0")}-${message.id}${ext}`);
-      bytes += size;
-      screens.push({ threadId, messageId: message.id, file: file.slice(out.length + 1), bytes: size });
+      await keep(response, join(out, "screens", name), `${String(screens.length + 1).padStart(3, "0")}-${message.id}${ext}`, about, screens);
     }
   }
 
@@ -180,6 +255,7 @@ export async function exportVerb(ctx: VerbContext): Promise<VerbOutcome> {
     maxBytes: flag(ctx.flags, "max-bytes") ? parseSize(flag(ctx.flags, "max-bytes")!, "--max-bytes") : 500_000_000,
     force: ctx.flags.force === true,
   };
+  exportFolder(out, options.force);
   const target = await resolveTarget(ctx, ctx.positionals[0]);
   const client = await ctx.client();
   let threadId = target.taskId;
