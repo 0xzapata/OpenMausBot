@@ -23,9 +23,10 @@
 // lower than after the member's turn before, in the same session, means the
 // session was compacted. Not when that turn reported none; when no earlier
 // reading of the session is held (it began on that turn, no turn in it
-// reported a reading before, or the member's earlier turns in it ran while
-// the setting was off or were not managed); or when the turn regrew the
-// session past its earlier reading. The doc
+// reported a reading before, the member's earlier turns in it ran while the
+// setting was off or were not managed, its turn before waited more than a
+// day on a person and was given up, or the module forgot the thread after a
+// fault); or when the turn regrew the session past its earlier reading. The doc
 // (docs/verification/context-compaction.md) lists exactly these, and what a
 // process kept warm past the idle time changes.
 //

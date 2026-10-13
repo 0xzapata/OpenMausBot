@@ -90,11 +90,11 @@ A compaction is therefore noticed in two ways: the engine's hook says so
 while the turn runs, and, should the hook never arrive, the member's next
 reading is lower than the last one kept for that session. A member's last
 reading, its record and its place as last speaker are kept for as long as
-its turn runs, whatever is dispatched in other rooms meanwhile; the record
-and the last speaker are kept for the idle time after the member's last
-turn ended, the reading for longer than anything it may be compared against
-(the longer of a day, which is how long a turn never seen to end is kept,
-and keep-warm's longest window, plus two idle times). With the hook
+its turn runs, up to a day (a turn never seen to end is given up after
+that), whatever is dispatched in other rooms meanwhile; the record and the
+last speaker are kept for the idle time after the member's last turn was
+seen to end, the reading for the longer of a day and keep-warm's longest
+window, plus two idle times, counted from the same moment. With the hook
 delivered, no case is known that leaves a member without a line. What is
 still not caught is a compaction on a turn whose hook was lost and whose
 reading cannot show it, which is one of these:
@@ -106,7 +106,11 @@ reading cannot show it, which is one of these:
   turn or a failed one, a refused resume), no turn in it reported a reading
   before, or the member's earlier turns in it ran while the setting was off
   or were not managed (the first room turn after the server starts can go
-  out before the CLI's version is confirmed). The setting case is by design:
+  out before the CLI's version is confirmed), the member's turn before
+  waited more than a day on a person (an open card holds a room turn past
+  every timeout; the turn is given up after a day, so its end is not seen
+  and it leaves no reading), or the module forgot the thread after a fault
+  of its own (it logs one line with the thread's id). The setting case is by design:
   switching it off forgets every reading, so when it is switched on again
   while a session is warm, the first turn back is a start that goes on in
   that session, and a compaction on it has nothing to fall from;
@@ -132,8 +136,8 @@ process did. It changes which session that start goes on in: the kept
 process takes it, so the session holds more than the record says (safe: a
 line sent twice at worst, as on main), and a compaction on that start with
 its hook lost is seen only by a reading that outlived the process, which is
-why a reading is kept longer than keep-warm's longest window plus two idle
-times.
+why a reading is kept for keep-warm's longest window plus two idle times,
+one idle time longer than the process can live after a turn seen to end.
 
 If Claude Code cannot reopen the session, the driver starts a new one from
 the whole turn and says so in the room, as it does in a 1:1 chat. Two things

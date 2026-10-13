@@ -73,9 +73,11 @@
 // keep-warm, server/cache-keepwarm.ts, holds one for hours): a start after
 // ten quiet minutes then goes on in the recorded session, which holds more
 // than the record says, a line sent twice at worst, as on main. A reading is
-// therefore kept longer than any process the driver can still be holding and
-// longer than its record (see prune), so that a compaction on such a start
-// still shows as a fall. Any doubt the harness
+// therefore kept longer than its record, and longer than a process can live
+// after the member's last turn seen to end (see prune), so that a compaction
+// on such a start still shows as a fall. The one turn whose end is not seen
+// is one given up after a day of waiting on a person; the doc lists it among
+// what is not caught. Any doubt the harness
 // can see gives a start, which is what the room does today. Nothing is
 // persisted: a record describes a warm process, and warm processes do not
 // outlive this server either.
