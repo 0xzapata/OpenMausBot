@@ -168,6 +168,22 @@ export interface SkillLibraryEntry {
    * library, mapped from the per-bot manifest on migration. Never exposed
    * to agents or clients. */
   package?: SkillPackageStamp;
+  /** Descriptions this skill had before, oldest first, each with the time
+   * (ms) an update replaced it. A running conversation keeps the description
+   * it started with (libraryDescriptionAt), so a shared update never changes
+   * its system prompt. */
+  descriptionHistory?: Array<{ description: string; until: number }>;
+}
+
+/** Old descriptions kept per library skill; older conversations than the
+ * oldest kept change see the oldest kept description. */
+const DESCRIPTION_HISTORY_MAX = 20;
+
+/** The description a conversation started at `startedAt` lists: the one in
+ * effect then, or the current one when nothing changed since. */
+export function libraryDescriptionAt(entry: Pick<SkillLibraryEntry, "description" | "descriptionHistory">, startedAt: number | undefined): string {
+  if (startedAt === undefined) return entry.description;
+  return entry.descriptionHistory?.find((change) => change.until > startedAt)?.description ?? entry.description;
 }
 
 /** A library skill projected the way per-bot `SkillListing` reads, so
@@ -207,6 +223,7 @@ const skillLibraryEntrySchema = z.object({
     w: z.string().regex(/^[a-f0-9]{64}$/),
     via: z.literal("preset").optional(),
   }).optional(),
+  descriptionHistory: z.array(z.object({ description: z.string(), until: z.number() })).optional(),
 });
 const skillLibraryIndexSchema = z.record(z.string(), skillLibraryEntrySchema);
 
@@ -424,11 +441,16 @@ export function updateLibrarySkill(input: {
   const entry = index[input.name];
   if (!entry || entry.sha256 !== input.expectSha256 || !libraryContentMatches(root, entry)) return { stale: true };
   const sha256 = sha256Hex(input.instructions);
+  const now = Date.now();
+  const descriptionHistory = parsed.description === entry.description
+    ? entry.descriptionHistory
+    : [...(entry.descriptionHistory ?? []), { description: entry.description, until: now }].slice(-DESCRIPTION_HISTORY_MAX);
   const next: SkillLibraryEntry = {
     ...entry,
     description: parsed.description,
     sha256,
-    importedAt: new Date().toISOString(),
+    importedAt: new Date(now).toISOString(),
+    ...(descriptionHistory ? { descriptionHistory } : {}),
     ...(input.source ? { source: input.source } : {}),
     ...(parsed.tags?.length ? { tags: parsed.tags } : {}),
   };

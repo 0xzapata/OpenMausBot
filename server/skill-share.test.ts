@@ -208,7 +208,7 @@ describe("prompt-cache safety", () => {
    * conversation: the skills index built from the conversation's assignments. */
   const systemPrompt = (botId: string, startedAt: number | undefined) =>
     buildSystemPrompt("persona", "soul", [
-      { id: "skills", label: "Skills index", text: skills.skillsSystemPrompt(botId, share.conversationAssignedSkills(botId, mate.assignedSkills, startedAt, root)) },
+      { id: "skills", label: "Skills index", text: skills.skillsSystemPrompt(botId, share.conversationAssignedSkills(botId, mate.assignedSkills, startedAt, root), startedAt) },
     ]);
 
   it("keeps an existing conversation's system prompt byte-identical after a share and announces the skill once", () => {
@@ -240,6 +240,25 @@ describe("prompt-cache safety", () => {
     // a new conversation needs no note: the index already lists it
     expect(share.prepareShareNote(mate.id, "thread-2", mate.assignedSkills, 2000, [], root).text).toBe("");
     expect(existsSync(join(root, "share-notes.json"))).toBe(true);
+  });
+
+  it("keeps a running conversation's description when a shared update changes it", () => {
+    learn(author.id, "rough-cut");
+    const shared = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root, now: 1000 });
+    if ("error" in shared) throw new Error(shared.error);
+    const startedAt = 1500;
+    const before = systemPrompt(mate.id, startedAt);
+    expect(before.text).toContain("Cuts a rough edit the way this team does.");
+    const renamed = SKILL("rough-cut", "v2").replace("Cuts a rough edit the way this team does.", "Cuts a rough edit, then a fine cut.");
+    const updated = share.updateSharedLearnedSkill({ bot: mate, bots, name: "rough-cut", skillMd: renamed, expectSha256: shared.sha256, patchAssigned, root });
+    if ("error" in updated) throw new Error(updated.error);
+    // the running conversation: same bytes; a new one lists the new description
+    expect(systemPrompt(mate.id, startedAt).stable).toBe(before.stable);
+    expect(systemPrompt(mate.id, Date.now() + 1).text).toContain("Cuts a rough edit, then a fine cut.");
+    expect(systemPrompt(mate.id, undefined).text).toContain("Cuts a rough edit, then a fine cut.");
+    // an Undo is a change too: the conversation stays where it started
+    expect(share.undoSharedLearnedSkill({ authorId: mate.id, name: "rough-cut", action: "update", share: updated.share, previous: updated.previous, bots, patchAssigned, root })).toEqual({ undone: true });
+    expect(systemPrompt(mate.id, startedAt).stable).toBe(before.stable);
   });
 
   it("changes nothing for a bot no share touched", () => {

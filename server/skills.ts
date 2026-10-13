@@ -51,7 +51,7 @@ import { writeFileAtomic, writeFileAtomicIfChanged } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
-import { librarySkillFilePath, listLibrarySkills, type LibrarySkillListing } from "./skill-library.ts";
+import { libraryDescriptionAt, librarySkillFilePath, listLibrarySkills, readSkillLibraryIndex, type LibrarySkillListing } from "./skill-library.ts";
 import { workspaceDir } from "./workspace.ts";
 import { isSkillName, parseSkillMd, scanSkillText, SKILL_FILE_MAX_BYTES, type ParsedSkill } from "../shared/skill-md.ts";
 import { parseSkillCommand } from "../shared/skill-command.ts";
@@ -1412,11 +1412,14 @@ export function undoSkillWrite(
  * index lines only — the same progressive-disclosure shape the spec asks
  * agents for. Bodies never ride the prompt; the bot reads the file when a
  * task matches. */
-export function skillsSystemPrompt(botId: string, assignedLibrary?: readonly string[]): string {
-  return composeSkillsSystemPrompt(botId, assignedLibrary);
+/** `startedAt`: when the conversation began. A library skill then lists the
+ * description it had at that time, so a later shared update leaves this
+ * conversation's system prompt (and its cached prefix) unchanged. */
+export function skillsSystemPrompt(botId: string, assignedLibrary?: readonly string[], startedAt?: number): string {
+  return composeSkillsSystemPrompt(botId, assignedLibrary, startedAt);
 }
 
-function composeSkillsSystemPrompt(botId: string, assignedLibrary: readonly string[] | undefined): string {
+function composeSkillsSystemPrompt(botId: string, assignedLibrary: readonly string[] | undefined, startedAt: number | undefined): string {
   // Reconcile links on every turn. If the workspace copy changed since its
   // review, integrity filtering below removes it from native discovery too.
   syncSkillLinks(botId);
@@ -1427,6 +1430,7 @@ function composeSkillsSystemPrompt(botId: string, assignedLibrary: readonly stri
   }
   const root = workspaceDir(botId);
   const manifest = readManifest(botId);
+  const library = startedAt === undefined ? {} : readSkillLibraryIndex();
   const lines: string[] = [];
   const intro = "\n\nImported skills:\n";
   const guidance = "Before starting a task one of these covers, read its exact SKILL.md path above with your file tools and follow it. " +
@@ -1440,7 +1444,9 @@ function composeSkillsSystemPrompt(botId: string, assignedLibrary: readonly stri
   for (const skill of enabled.slice(0, INDEX_MAX_SKILLS)) {
     const entry = manifest[skill.name];
     const file = entry ? join(skillTarget(root, skill.name, entry), "SKILL.md") : librarySkillFilePath(skill.name);
-    const line = `- ${skill.name}: ${skill.description} Read ${JSON.stringify(file)}.`;
+    const pinned = !entry && library[skill.name];
+    const description = pinned ? libraryDescriptionAt(pinned, startedAt) : skill.description;
+    const line = `- ${skill.name}: ${description} Read ${JSON.stringify(file)}.`;
     if (Buffer.byteLength(block([...lines, line], enabled.length - lines.length - 1), "utf8") > INDEX_MAX_BYTES) break;
     lines.push(line);
   }

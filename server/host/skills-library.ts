@@ -213,6 +213,10 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
      * so a teammate's share never changes this conversation's system prompt
      * and its cached prefix survives. Flag off: undefined, the per-bot
      * listing exactly as before. */
+    /** When the conversation began, for skillsSystemPrompt: a library skill
+     * keeps the description it had then. */
+    conversationStartedAt,
+
     conversationSkills(bot: BotRecord, threadId: string): string[] | undefined {
       if (!skillsLibraryEnabled(cfg)) return undefined;
       return conversationAssignedSkills(bot.id, liveAssigned(bot), conversationStartedAt(threadId));
