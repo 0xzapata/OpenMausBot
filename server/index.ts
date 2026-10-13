@@ -182,7 +182,6 @@ import {
   DATA_DIR,
   skillsLibraryEnabled,
   customMcpServers,
-  customMcpResultBudgets,
   onConfigSaved,
   CLAUDE_API_INSTANCE,
   liveSettingsFor,
@@ -223,6 +222,7 @@ import {
   listMcpServers,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
+import { attachCustomMcp } from "./mcp-result-budget.ts";
 import { MCP_OAUTH_CALLBACK_PATH, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
@@ -11328,13 +11328,9 @@ async function startTurn(
       // user-configured MCP servers (config.json mcpServers): same rule as
       // composio — only to a driver that can mount them. Their tools are
       // never pre-allowed, so every call rides the normal permission flow.
+      // A server's own result size limit rides along (mcp-result-budget.ts).
       if (instance.adapter.capabilities.customMcp === true) {
-        const custom = await withMcpSignIn(engineMcpServers(bot), mcpOAuth);
-        if (Object.keys(custom).length) {
-          integrations.custom = custom;
-          const budgets = customMcpResultBudgets(cfg, Object.keys(custom));
-          if (Object.keys(budgets).length) integrations.customResultBudgets = budgets;
-        }
+        attachCustomMcp(integrations, await withMcpSignIn(engineMcpServers(bot), mcpOAuth), cfg);
       }
       // CLI engines work inside the bot's own workspace directory rather
       // than the user's home: a bot with file tools and acceptEdits gets a
@@ -14068,12 +14064,7 @@ async function runClaimedGroupMemberTurn(
   }
   // user-configured MCP servers: same gating as the 1:1 site above.
   if (instance.adapter.capabilities.customMcp === true) {
-    const custom = await withMcpSignIn(engineMcpServers(bot), mcpOAuth);
-    if (Object.keys(custom).length) {
-      integrations.custom = custom;
-      const budgets = customMcpResultBudgets(cfg, Object.keys(custom));
-      if (Object.keys(budgets).length) integrations.customResultBudgets = budgets;
-    }
+    attachCustomMcp(integrations, await withMcpSignIn(engineMcpServers(bot), mcpOAuth), cfg);
   }
   // Connected-app discovery is intentionally awaited before a provider owns
   // the bot. An interrupt during that setup window must still stop the queued

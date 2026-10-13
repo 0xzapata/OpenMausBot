@@ -1908,20 +1908,6 @@ function skipMcpEntry(name: string, why: string): void {
 }
 
 /** The validated, normalized custom servers from config — or {}. */
-/** The per-server result budgets set on `names` (config.json
- * `mcpServers.<name>.resultBudget`). A server without one is left out, so
- * the caller falls back to the app default. */
-export function customMcpResultBudgets(cfg: AppConfig, names: readonly string[]): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const name of names) {
-    const raw = cfg.mcpServers?.[name];
-    if (raw === undefined) continue;
-    const parsed = parseStoredMcpServer(name, raw);
-    if (parsed.ok && parsed.server.resultBudget !== undefined) out[name] = parsed.server.resultBudget;
-  }
-  return out;
-}
-
 export function customMcpServers(cfg: AppConfig, only?: string[]): Record<string, CustomMcpServer> {
   const out: Record<string, CustomMcpServer> = {};
   for (const [name, raw] of Object.entries(cfg.mcpServers ?? {})) {

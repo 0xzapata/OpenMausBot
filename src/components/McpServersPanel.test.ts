@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { parseMcpArguments, parseMcpEnvironment, parseMcpHeaders, parseMcpOAuthClient, parseMcpResultBudget } from "./McpServersPanel";
+import { parseMcpArguments, parseMcpEnvironment, parseMcpHeaders, parseMcpOAuthClient } from "./McpServersPanel";
+import { parseMcpResultBudget, withResultBudget } from "./McpResultBudgetField";
 import { setLocale, t } from "@/lib/i18n";
 
 afterEach(() => setLocale("en"));
@@ -21,6 +22,16 @@ describe("MCP server form", () => {
       expect(parseMcpResultBudget(bad)).toEqual({ ok: false, error: { key: "mcp.err.resultBudget" } });
     }
     expect(t("mcp.resultBudgetHint")).toContain("8,000");
+  });
+
+  it("checks the limit before the rest of the form and adds it last, only when set", () => {
+    const body = { ok: true as const, body: { command: "notes-mcp" } };
+    expect(withResultBudget("40,000", () => body)).toEqual({ ok: true, body: { command: "notes-mcp", resultBudget: 40_000 } });
+    expect(withResultBudget("0", () => body)).toEqual({ ok: true, body: { command: "notes-mcp", resultBudget: 0 } });
+    expect(withResultBudget("", () => body)).toEqual(body);
+    const nameMissing = { ok: false as const, error: { key: "mcp.err.nameAndCommand" as const } };
+    expect(withResultBudget("lots", () => nameMissing)).toEqual({ ok: false, error: { key: "mcp.err.resultBudget" } });
+    expect(withResultBudget("40000", () => nameMissing)).toEqual(nameMissing);
   });
 
   it("uses one explicit argument per line", () => {

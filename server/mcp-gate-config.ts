@@ -43,6 +43,23 @@ export function hasOwnResultBudget(name: string, perServer: Readonly<Record<stri
   return typeof own === "number" && Number.isFinite(own) && own >= 1;
 }
 
+/** How a driver gates one MCP server of a turn. A server the person added
+ * (`owned`) gets its own result limit (MCP server editor → Result size
+ * limit), else the app-wide one; a URL server keeps its native connection
+ * (and Claude Code's tool search) unless its own limit was set, which must
+ * then hold, so it is gated even unselected. Anything else is left alone. */
+export function customServerGate(
+  name: string,
+  owned: boolean,
+  perServer: Readonly<Record<string, number>> | undefined,
+  env?: NodeJS.ProcessEnv,
+): { budget: number; gateRemote: boolean } {
+  return {
+    budget: owned ? serverResultBudget(name, perServer, env) : 0,
+    gateRemote: owned && hasOwnResultBudget(name, perServer),
+  };
+}
+
 /** Where a thread's oversized results are kept so the bot can read them back.
  * Under the app's data directory, not the user's project folder: these are
  * the harness's spill, and it sweeps them after a day. */

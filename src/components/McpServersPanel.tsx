@@ -26,26 +26,24 @@ import { api, useStore, type ConfigStatus } from "@/state/store";
 
 import { Switch } from "./SettingsPrimitives";
 import { WhopIcon } from "./WhopIcon";
+import { McpResultBudgetField, resultBudgetDraft, withResultBudget, type McpMessage, type McpResultBudgetDraft, type McpResultBudgetListing } from "./McpResultBudgetField";
 import { WHOP_MCP_URL, isWhopServer, whopServerName } from "@/lib/whop-integration";
 
 /** A server this computer starts (a command) or one reached at a URL —
  * the two shapes the server stores. Secrets arrive as names only. */
-interface StdioMcpListing {
+interface StdioMcpListing extends McpResultBudgetListing {
   name: string;
   command: string;
   args: string[];
   envKeys: string[];
   enabled: boolean;
-  /** characters of one tool result allowed into context; absent = app default */
-  resultBudget?: number;
 }
-interface RemoteMcpListing {
+interface RemoteMcpListing extends McpResultBudgetListing {
   name: string;
   type: "http" | "sse";
   url: string;
   headerKeys: string[];
   enabled: boolean;
-  resultBudget?: number;
   /** present when the server uses OAuth sign-in */
   auth?: "signed-in" | "needs-sign-in";
   /** a sign-in app registered in advance; its secret arrives as a boolean */
@@ -67,7 +65,7 @@ export function isRemoteMcpListing(server: McpServerListing): server is RemoteMc
 
 type McpTransport = "stdio" | "remote";
 
-interface McpDraft {
+interface McpDraft extends McpResultBudgetDraft {
   name: string;
   transport: McpTransport;
   command: string;
@@ -81,8 +79,6 @@ interface McpDraft {
   oauthScopes: string;
   /** drop the saved client secret on save */
   oauthForgetSecret: boolean;
-  /** Result size limit, as typed; blank = the app default */
-  resultBudget: string;
 }
 
 export interface ProbeResult {
@@ -117,32 +113,12 @@ export async function signedInToolsCheck(
   return { ...tested, error: t("whop.testFailed", { reason: reason && !/[.!?]$/.test(reason) ? `${reason}.` : reason }) };
 }
 
-interface McpMessage {
-  key: LocaleKey;
-  params?: Record<string, string | number>;
-}
-
 const EMPTY_DRAFT: McpDraft = {
   name: "", transport: "stdio", command: "", args: "", env: "", type: "http", url: "", headers: "",
   oauthClientId: "", oauthClientSecret: "", oauthScopes: "", oauthForgetSecret: false, resultBudget: "",
 };
-/** The most a server's result size limit may be (server/mcp-registry.ts). */
-export const MAX_MCP_RESULT_BUDGET = 2_000_000;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
-
-/** The Result size limit field: blank = the app default, 0 = never trim.
- * Digit grouping (40,000 · 40.000 · 40 000 · 40_000) is accepted as typed,
- * but only as whole groups of three, so a decimal (12.5, 1,5) is refused
- * rather than read as a number ten times larger. */
-export function parseMcpResultBudget(value: string): { ok: true; value: number | undefined } | { ok: false; error: McpMessage } {
-  const trimmed = value.trim();
-  const grouped = /^\d{1,3}([\s,._\u00a0\u202f'])\d{3}(?:\1\d{3})*$/.test(trimmed);
-  const digits = grouped ? trimmed.replace(/\D/g, "") : trimmed;
-  if (!digits) return { ok: true, value: undefined };
-  if (!/^\d+$/.test(digits) || Number(digits) > MAX_MCP_RESULT_BUDGET) return { ok: false, error: { key: "mcp.err.resultBudget" } };
-  return { ok: true, value: Number(digits) };
-}
 
 export function parseMcpArguments(value: string): string[] {
   return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -231,7 +207,7 @@ function draftFor(server: McpServerListing): McpDraft {
       headers: server.headerKeys.map((key) => `${key}: `).join("\n"),
       oauthClientId: server.oauth?.clientId ?? "",
       oauthScopes: server.oauth?.scopes.join(" ") ?? "",
-      resultBudget: server.resultBudget === undefined ? "" : String(server.resultBudget),
+      resultBudget: resultBudgetDraft(server),
     };
   }
   return {
@@ -240,7 +216,7 @@ function draftFor(server: McpServerListing): McpDraft {
     command: server.command,
     args: server.args.join("\n"),
     env: server.envKeys.map((key) => `${key}=`).join("\n"),
-    resultBudget: server.resultBudget === undefined ? "" : String(server.resultBudget),
+    resultBudget: resultBudgetDraft(server),
   };
 }
 
@@ -337,14 +313,12 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
     setDraft(EMPTY_DRAFT);
   };
 
-  /** The request body for the draft, or the message that stops it. */
+  /** The request body for the draft, or the message that stops it. Its Result
+   * size limit is checked and added by withResultBudget (save, below). */
   const draftBody = (
     existing: McpServerListing | undefined,
   ): { ok: true; body: Record<string, unknown> } | { ok: false; error: McpMessage } => {
     const name = draft.name.trim();
-    const budget = parseMcpResultBudget(draft.resultBudget);
-    if (!budget.ok) return budget;
-    const limit = budget.value === undefined ? {} : { resultBudget: budget.value };
     if (draft.transport === "remote") {
       const url = draft.url.trim();
       if (!name || !/^https?:\/\//i.test(url)) return { ok: false, error: { key: "mcp.err.nameAndUrl" } };
@@ -354,19 +328,19 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
         { clientId: draft.oauthClientId, clientSecret: draft.oauthClientSecret, scopes: draft.oauthScopes, forgetSecret: draft.oauthForgetSecret },
         existing && isRemoteMcpListing(existing) ? existing.oauth : undefined,
       );
-      return { ok: true, body: { type: draft.type, url, headers: parsed.headers, ...(oauth ? { oauth } : {}), ...limit } };
+      return { ok: true, body: { type: draft.type, url, headers: parsed.headers, ...(oauth ? { oauth } : {}) } };
     }
     const command = draft.command.trim();
     if (!name || !command) return { ok: false, error: { key: "mcp.err.nameAndCommand" } };
     const parsed = parseMcpEnvironment(draft.env, existing && !isRemoteMcpListing(existing) ? existing.envKeys : []);
     if (!parsed.ok) return parsed;
-    return { ok: true, body: { command, args: parseMcpArguments(draft.args), env: parsed.env, ...limit } };
+    return { ok: true, body: { command, args: parseMcpArguments(draft.args), env: parsed.env } };
   };
 
   const save = async () => {
     const name = draft.name.trim();
     const existing = editing === "new" ? undefined : servers?.find((server) => server.name === editing);
-    const prepared = draftBody(existing);
+    const prepared = withResultBudget(draft.resultBudget, () => draftBody(existing));
     if (!prepared.ok) {
       setError(prepared.error);
       return;
@@ -928,17 +902,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
               </label>
                 </>
               )}
-              <label className="block">
-                <span className="text-[12px] font-medium text-ink-secondary">{t("mcp.field.resultBudget")}</span>
-                <input
-                  value={draft.resultBudget}
-                  onChange={(event) => setDraft((current) => ({ ...current, resultBudget: event.target.value }))}
-                  inputMode="numeric"
-                  placeholder="8000"
-                  className="mt-1.5 w-full rounded-lg border border-hairline/60 bg-raised px-3 py-2.5 text-[13px] text-ink outline-none focus:border-accent"
-                />
-                <span className="mt-1.5 block text-[11px] text-ink-secondary">{t("mcp.resultBudgetHint")}</span>
-              </label>
+              <McpResultBudgetField value={draft.resultBudget} onChange={(resultBudget) => setDraft((current) => ({ ...current, resultBudget }))} />
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={closeEditor} className="rounded-lg px-3 py-2 text-[12.5px] text-ink-secondary hover:bg-raised">{t("mcp.cancel")}</button>

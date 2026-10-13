@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { gateServer, hasOwnResultBudget, mcpStdioServer, resultBudget, serverResultBudget } from "./mcp-gate-config.ts";
+import { customServerGate, gateServer, hasOwnResultBudget, mcpStdioServer, resultBudget, serverResultBudget } from "./mcp-gate-config.ts";
 import { DEFAULT_RESULT_BUDGET } from "./mcp-trim.ts";
 
 const server = { command: "example-mcp", args: ["--stdio"], env: { TOKEN: "disposable-test-token" } };
@@ -155,5 +155,13 @@ describe("tool directory configuration", () => {
     expect(JSON.parse(gated.env.OMB_GATE_UPSTREAM).args[0]).toContain("mcp-remote-proxy");
     // 0 = never trim: nothing to gate
     expect(gateServer({ name: "whop", server: remote, threadId: "disposable-thread", budget: 0, gateRemote: true })).toBeNull();
+  });
+
+  it("gives a person's own server its limit and leaves an engine's server alone", () => {
+    const env = { OMB_MCP_RESULT_BUDGET: "12000" };
+    expect(customServerGate("whop", true, { whop: 40_000 }, env)).toEqual({ budget: 40_000, gateRemote: true });
+    expect(customServerGate("whop", true, { whop: 0 }, env)).toEqual({ budget: 0, gateRemote: false });
+    expect(customServerGate("notes", true, { whop: 40_000 }, env)).toEqual({ budget: 12_000, gateRemote: false });
+    expect(customServerGate("whop", false, { whop: 40_000 }, env)).toEqual({ budget: 0, gateRemote: false });
   });
 });
