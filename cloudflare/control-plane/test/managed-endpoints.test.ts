@@ -2180,7 +2180,7 @@ function twoAccounts(entry: Record<string, unknown> = {}): AccountsFixture {
     }]),
     [SECOND_TOKEN_SECRET]: SECOND_TOKEN,
   };
-  return { env: { ...env, ...vars } as Env, first, second, vars, violations, worker: createWorker(fetch) };
+  return { env: { ...env, ...vars } as unknown as Env, first, second, vars, violations, worker: createWorker(fetch) };
 }
 
 interface SnapshotFields {
@@ -2935,7 +2935,7 @@ describe("managed endpoints in several Cloudflare accounts", () => {
     }]);
     expect(errors.mock.calls.flat().join(" ")).not.toContain(env.BETTER_AUTH_SECRET);
     expect(cloudflare.calls.every((entry) => entry.authorization === `Bearer ${env.CLOUDFLARE_API_TOKEN}`)).toBe(true);
-    const health = await call(worker, "/healthz", { env: { ...env, ...vars } as Env });
+    const health = await call(worker, "/healthz", { env: { ...env, ...vars } as unknown as Env });
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toMatchObject({ ok: true, capacity: { tunnels: { limit: 1000 } } });
   });
