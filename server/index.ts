@@ -21842,6 +21842,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 const server = createServer(handleRequest);
+server.on("clientError", (error: any, socket) => { console.error(`[diag clientError] ${new Date().toISOString()} ${error?.code} ${error?.message} port=${(socket as any).remotePort} bytes=${(socket as any).bytesRead}`); socket.destroy(); });
+server.on("connection", (socket) => { const port = socket.remotePort; socket.on("error", (error: any) => console.error(`[diag socket error] ${new Date().toISOString()} ${error?.code} port=${port}`)); socket.on("close", (hadError) => { if (hadError) console.error(`[diag socket close] ${new Date().toISOString()} port=${port}`); }); });
+process.on("exit", (code) => console.error(`[diag exit] ${code}`));
 desktopViewer.attach(server, handleRequest);
 
 calendarCalls.start();

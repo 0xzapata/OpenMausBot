@@ -144,12 +144,19 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
     }
   };
   const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
-    const res = await fetch(`${BASE}${path}`, {
-      method,
-      headers: body ? { "content-type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    return { status: res.status, body: await res.json() };
+    const t0 = Date.now();
+    let phase = "fetch";
+    try {
+      const res = await fetch(`${BASE}${path}`, {
+        method,
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      phase = `body status=${res.status} len=${res.headers.get("content-length")}`;
+      return { status: res.status, body: await res.json() };
+    } catch (error: any) {
+      throw new Error(`DIAG ${method} ${path} phase=${phase} after ${Date.now() - t0}ms at ${new Date().toISOString()} exit=${child?.exitCode} cause=${error?.cause?.code ?? error?.cause?.message ?? error?.message}\nstderr: ${stderr.slice(-3000)}`);
+    }
   };
   /** One bot as the fleet read returns it: its active thread's messages, its tasks. */
   const bot = async (botId: string): Promise<any> => (await api("GET", "/api/bots")).body.bots.find((candidate: any) => candidate.id === botId);
