@@ -238,7 +238,7 @@ import { readMessageText, recallMessages, recentMessages, closeMessageSearch, cl
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
 import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentRequest, incidentText, type Incident, type IncidentKind } from "./incidents.ts";
-import { ESCALATIONS_THREAD_TITLE, EscalationLedger, escalationChip, escalationDeliverable, escalationText, NEEDS_INPUT_GATE, peerApprovalGate, type Escalation, type EscalationKind } from "./escalations.ts";
+import { ESCALATIONS_THREAD_TITLE, EscalationLedger, escalationChip, escalationDeliverable, escalationText, NEEDS_INPUT_GATE, peerApprovalGate, RAISED_GATE, type Escalation, type EscalationKind } from "./escalations.ts";
 import { needsInputQuestion } from "./runtime-coordinator.ts";
 
 const SESSION_READ_MAX_CHARS = 8_000;
@@ -16104,7 +16104,52 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
         return json(res, 200, { started: true, message: `${target.name}'s thread #${task.title} is running again. Its result stays in that thread; you are not woken for it — check later with list_threads or session_search if you need to.` });
       }
-      // post_to_room appends role "bot", never "user" (which would start a round of real turns), starts no turn, and takes membership from the record.
+      // raise_escalation: a bot parks itself on a gate only a person can
+      // lift and says so (server/escalations.ts). The flag does not
+      // interrupt the turn — the bot still owns its reply — so the answer
+      // tells it to finish what it can and wait; the Chief's (or the
+      // person's) notice is the deliverable, and a Chief's own flag is the
+      // person's to hear.
+      if (method === "POST" && path === "/api/internal/escalate") {
+        const body = await readInternalBody();
+        const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 500) : "";
+        if (!reason) {
+          return json(res, 400, { error: "raise_escalation needs reason: one line saying what you need from the person and why your work is parked on it" });
+        }
+        requireActiveInternalCapability();
+        const outcome = reportEscalation({
+          kind: "raised",
+          bot: internalSender,
+          threadId: internalCapability.threadId,
+          gate: RAISED_GATE,
+          reason,
+          alreadyNotified: false,
+        });
+        if (outcome === "muted") {
+          return json(res, 429, { error: "this conversation has already raised several escalations in the last hour; the person was told about the first ones. Finish your turn and wait — do not keep flagging the same gate." });
+        }
+        return json(res, 200, {
+          escalated: true,
+          message: outcome === "chief"
+            ? "your Chief of Staff was told in its Team escalations thread. Say plainly that you stopped at this gate and why, then end your turn and wait; do not retry the gated work until the person lifts the gate."
+            : "the person was told directly. Say plainly that you stopped at this gate and why, then end your turn and wait; do not retry the gated work until the person lifts the gate.",
+        });
+      }
+      // post_to_room: a bot puts ONE message into a room it belongs to,
+      // without a turn being started for anyone. Everything about it is a
+      // deliberate non-event:
+      //
+      //   role "bot", never "user". A user-role append is what the composer
+      //   writes, and it re-enters responder selection — one tool call would
+      //   become a round of real turns, which is the notification storm this
+      //   whole surface exists to avoid.
+      //
+      //   no startGroupTurn and no queue kick. The post lands, the room is
+      //   marked unread, the person reads it when they look. A bot wanting a
+      //   reply has coordinate_bots, which is accounted for.
+      //
+      //   membership from the record, never from the argument: the argument
+      //   only says which room to look up.
       if (method === "POST" && path === "/api/internal/post-to-room") {
         const body = await readInternalBody();
         const from = internalSender;

@@ -245,6 +245,13 @@ const TOOL_DEFINITIONS = [
     } },
   },
   {
+    name: "raise_escalation",
+    description: "Flag a gate only the person can lift — a permission, credential or decision your work is parked on and you cannot proceed without. One reason line, the person's own words where possible; the Chief of Staff (or the person directly) is told at once. Then end your turn and wait: the gate lifting resumes nothing on its own, so say plainly that you stopped and why. Not for failures (those report themselves) and not to ask the person a question you could ask by ending your turn on it.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      reason: { type: "string", minLength: 1, maxLength: 500, description: "One line: what you need from the person and why your work is parked on it." },
+    }, required: ["reason"] },
+  },
+  {
     name: "list_bots",
     description:
       "List the other bots (agents) you may contact in your own team and any additional teams the owner has explicitly allowed you to coordinate, with their team, model and current status. Call this to discover exact teammate IDs before assigning work or asking advice with coordinate_bots.",

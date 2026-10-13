@@ -490,9 +490,13 @@ export interface WireMessage {
    * not know it ignore it. */
   routedBy?: { provider: "jev" | "openrouter"; probability: number };
   /** Set on the user-role line another bot delivered into this bot's own
-   * conversation (coordinate_bots, start_thread). `incident`: the line is a
-   * Team incidents report about that bot's broken run in `threadId`, not its
-   * words; `notified`: that failure already buzzed the person. */
+   * conversation (coordinate_bots, start_thread). `incident`: the line is
+   * OpenMausBot's harness report about that bot's thread in `threadId` — a
+   * Team incidents report about a broken run (server/incidents.ts) or a
+   * Team escalations notice about a gate it is parked on
+   * (server/escalations.ts) — not its words; `notified`: the person was
+   * already buzzed about it (a run that could not start, a failed routine,
+   * an approval card's own banner). */
   peerAsk?: { botId: string; name: string; unattended?: boolean; incident?: { threadId: string; notified?: boolean } };
   /** emoji reactions; by = "user" or a member botId. */
   reactions?: Array<{ emoji: string; by: string }>;

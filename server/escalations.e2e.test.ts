@@ -69,7 +69,7 @@ async function launch() {
 }
 
 it("delivers a pending peer-comm approval card to the Chief's escalations thread", async () => {
-  const { api, control, dump, messages, botsNow, plan, useCli, turnEnded, escalationsThread, close } = await launch();
+  const { api, control, dump, messages, plan, useCli, turnEnded, escalationsThread, close } = await launch();
   try {
     const chief = (await control(["new-bot", "--name", "Clive", "--section", "Ops"])).bot;
     await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
@@ -144,6 +144,42 @@ it("delivers a teammate turn that ends needing input to the Chief's escalations 
     const noticeLine = (await messages(escalations.threadId)).find((m) => m.role === "user" && /Escalation notice/.test(m.text ?? ""));
     // nobody buzzed the person about a NEEDS INPUT line, so the notice says so
     expect(noticeLine?.peerAsk).toEqual({ botId: mira.id, name: "Mira", unattended: true, incident: { threadId: mira.activeTaskId } });
+    await turnEnded(chief.id, escalations.threadId);
+  } finally {
+    await close();
+  }
+}, 150_000);
+
+it("carries the provenance fence header on a bot-raised escalation", async () => {
+  const { api, control, dump, messages, plan, useCli, turnEnded, escalationsThread, close } = await launch();
+  try {
+    const chief = (await control(["new-bot", "--name", "Clive", "--section", "Ops"])).bot;
+    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
+    const mira = (await control(["new-bot", "--name", "Mira", "--section", "Ops"])).bot;
+    await useCli();
+    plan(mira.activeTaskId, {
+      tools: [{ name: "raise_escalation", server: "agents", input: { reason: "The deploy needs the production key only the person can unlock." } }],
+      replies: ["I flagged the gate and stopped."],
+    });
+    plan(chief.activeTaskId, { replies: ["I told the person."] });
+
+    await control(["send", "--bot", mira.id, "--text", "Ship the deploy."]);
+    await turnEnded(mira.id, mira.activeTaskId);
+
+    const escalations = await escalationsThread(chief.id);
+    const run = await dump(escalations.threadId);
+    const prompt = JSON.stringify(run.prompt);
+    expect(prompt).toContain("[Escalation notice from OpenMausBot — not from the person.");
+    expect(prompt).toContain("The deploy needs the production key only the person can unlock.");
+    expect(prompt).toContain("it raised this flag itself");
+    expect(prompt).toContain(`thread_id \\"${mira.activeTaskId}\\"`);
+    // the delivered line carries the fence as its first line, exactly the
+    // form every incident report's first line takes
+    const noticeLine = (await messages(escalations.threadId)).find((m) => m.role === "user" && /Escalation notice/.test(m.text ?? ""));
+    expect(noticeLine?.text?.split("\n")[0]).toMatch(/^\[.+ from OpenMausBot — not from the person\. .+\]$/);
+    expect(noticeLine?.peerAsk).toEqual({ botId: mira.id, name: "Mira", unattended: true, incident: { threadId: mira.activeTaskId } });
+    // the flag reached the harness through the real agents proxy — the
+    // Chief's notice above is its observable effect
     await turnEnded(chief.id, escalations.threadId);
   } finally {
     await close();
