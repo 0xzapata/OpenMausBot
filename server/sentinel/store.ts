@@ -1,0 +1,117 @@
+// Sentinel's own files, the only things it writes: issues.jsonl (one issue
+// per line, upserted by signature) and state.json (log offsets, the last
+// scan, and the occurrences already counted). Both are owner-only. Issues
+// hold ids that point back into the data dir, never tool output or message
+// text: the transcripts they come from are private.
+import { chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { writeFileAtomic } from "../atomic.ts";
+import type { LogOffset } from "./sources.ts";
+import type { Issue, Observation } from "./types.ts";
+
+export const ISSUES_FILE = "issues.jsonl";
+export const STATE_FILE = "state.json";
+
+export interface SentinelState {
+  version: 1;
+  lastScanAt: number | null;
+  /** What the sources looked like at the last scan; equal means nothing to do. */
+  fingerprint: string | null;
+  logs: Record<string, LogOffset>;
+  /** Occurrence keys already counted, with when they happened. Kept only
+   * while a later scan could still see the same occurrence again. */
+  seen: Record<string, number>;
+}
+
+export function emptyState(): SentinelState {
+  return { version: 1, lastScanAt: null, fingerprint: null, logs: {}, seen: {} };
+}
+
+export function readState(out: string): SentinelState {
+  try {
+    const parsed = JSON.parse(readFileSync(join(out, STATE_FILE), "utf8")) as Partial<SentinelState>;
+    if (parsed?.version !== 1) return emptyState();
+    return { ...emptyState(), ...parsed };
+  } catch {
+    return emptyState();
+  }
+}
+
+export function readIssues(out: string): Map<string, Issue> {
+  const issues = new Map<string, Issue>();
+  let text: string;
+  try {
+    text = readFileSync(join(out, ISSUES_FILE), "utf8");
+  } catch {
+    return issues;
+  }
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const issue = JSON.parse(line) as Issue;
+      if (typeof issue?.sig === "string") issues.set(issue.sig, issue);
+    } catch {
+      // a damaged line costs that one issue, not the file
+    }
+  }
+  return issues;
+}
+
+/** Count every occurrence not counted before into its issue. Returns the
+ * signatures that changed and how many occurrences were new. Running the
+ * same observations twice changes nothing the second time. */
+export function upsertIssues(issues: Map<string, Issue>, state: SentinelState, observations: readonly Observation[]): { touched: Set<string>; added: number } {
+  const touched = new Set<string>();
+  let added = 0;
+  for (const observation of observations) {
+    const counted = state.seen[observation.occurrence];
+    state.seen[observation.occurrence] = Math.max(counted ?? 0, observation.at);
+    if (counted !== undefined) continue;
+    added += 1;
+    const issue = issues.get(observation.signature) ?? {
+      sig: observation.signature,
+      kind: observation.kind,
+      origin: observation.origin,
+      severity: observation.severity,
+      firstAt: observation.at,
+      lastAt: observation.at,
+      count: 0,
+      wastedTurns: 0,
+      evidenceRef: observation.evidence,
+    };
+    issue.count += 1;
+    issue.firstAt = Math.min(issue.firstAt, observation.at);
+    if (observation.at >= issue.lastAt || issue.count === 1) {
+      issue.lastAt = observation.at;
+      issue.evidenceRef = observation.evidence;
+      for (const field of ["tool", "botId", "threadId", "turnId"] as const) {
+        if (observation[field] !== undefined) issue[field] = observation[field];
+        else delete issue[field];
+      }
+    }
+    if (observation.turnId) {
+      const turnKey = `turn:${observation.signature}:${observation.turnId}`;
+      if (state.seen[turnKey] === undefined) issue.wastedTurns += 1;
+      state.seen[turnKey] = Math.max(state.seen[turnKey] ?? 0, observation.at);
+    }
+    issues.set(issue.sig, issue);
+    touched.add(issue.sig);
+  }
+  return { touched, added };
+}
+
+/** Forget occurrences older than any scan can reread. */
+export function pruneSeen(state: SentinelState, before: number): void {
+  for (const [key, at] of Object.entries(state.seen)) if (at < before) delete state.seen[key];
+}
+
+export function writeSentinelFiles(out: string, issues: Map<string, Issue>, state: SentinelState): void {
+  mkdirSync(out, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(out, 0o700);
+  } catch {}
+  const lines = [...issues.values()].sort((a, b) => b.lastAt - a.lastAt).map((issue) => JSON.stringify(issue));
+  writeFileAtomic(join(out, ISSUES_FILE), lines.length ? `${lines.join("\n")}\n` : "", { mode: 0o600 });
+  writeFileAtomic(join(out, STATE_FILE), `${JSON.stringify(state)}\n`, { mode: 0o600, durable: false });
+}

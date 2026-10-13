@@ -3,8 +3,12 @@
 // it next to the data, and prints the commands that install it.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
-import { currentUser, launchdPlist, servicePlan, systemdUnit, unstableInstallWarning } from "./service-unit.ts";
+import {
+  currentUser, launchdPlist, sentinelCommand, sentinelLaunchdPlist, sentinelServicePlan, sentinelSystemdService, sentinelSystemdTimer,
+  servicePlan, systemdUnit, unstableInstallWarning,
+} from "./service-unit.ts";
 
 export interface ServiceInstallInput {
   action: "install" | "uninstall";
@@ -14,6 +18,8 @@ export interface ServiceInstallInput {
   tunnel?: boolean;
   tailscale?: boolean;
   label?: string;
+  /** --sentinel: the periodic health scan instead of the server. */
+  sentinel?: boolean;
   /** This CLI's own entry, as node saw it (process.argv[1]) and node itself (process.execPath). */
   script: string;
   node: string;
@@ -40,6 +46,7 @@ export function serviceServeArgs(input: Pick<ServiceInstallInput, "port" | "data
 export function runServiceCommand(input: ServiceInstallInput, io: ServiceIo): number {
   const platform = input.platform ?? process.platform;
   const home = input.home ?? homedir();
+  if (input.sentinel) return runSentinelService(input, platform, home, io);
   const plan = servicePlan(platform, input.dataDir, home);
   if (!plan) {
     io.error("services are written for Linux (systemd) and macOS (launchd); on Windows, use Task Scheduler to run `openmausbot serve` at startup");
@@ -76,5 +83,44 @@ export function runServiceCommand(input: ServiceInstallInput, io: ServiceIo): nu
   if (input.domain && platform === "linux") io.log("the unit grants Caddy the capability for ports 80 and 443, so no setcap is needed under the service");
   io.log(`logs: ${platform === "darwin" ? `${input.dataDir}/logs/service.log` : "journalctl -u openmausbot -f"}`);
   io.log(`change options later by running \`openmausbot service install\` again with the new ones, then: ${platform === "darwin" ? plan.activate[1] : "sudo systemctl daemon-reload && sudo systemctl restart openmausbot"}`);
+  return 0;
+}
+
+function runSentinelService(input: ServiceInstallInput, platform: NodeJS.Platform, home: string, io: ServiceIo): number {
+  const plan = sentinelServicePlan(platform, input.dataDir, home);
+  if (!plan) {
+    // printed for the person to run, never executed: /TR takes the whole
+    // command line as one argument, with its own quotes escaped
+    const command = sentinelCommand(input).map((arg) => `\\"${arg}\\"`).join(" ");
+    io.error("services are written for Linux (systemd) and macOS (launchd); on Windows, use Task Scheduler to run Sentinel every two minutes:");
+    io.error(`  schtasks /Create /SC MINUTE /MO 2 /TN "OpenMausBot Sentinel" /TR "${command}"`);
+    return 1;
+  }
+  if (input.action === "uninstall") {
+    io.log("to stop and remove the Sentinel schedule:");
+    for (const line of plan.deactivate) io.log(`  ${line}`);
+    return 0;
+  }
+  const warning = unstableInstallWarning(input.script);
+  if (warning) {
+    io.error(warning);
+    return 1;
+  }
+  const spec = { node: input.node, script: input.script, dataDir: input.dataDir, home };
+  const rendered: Record<string, string> = platform === "darwin"
+    ? { [plan.files[0]!.name]: sentinelLaunchdPlist(spec) }
+    : { [plan.files[0]!.name]: sentinelSystemdService(spec), [plan.files[1]!.name]: sentinelSystemdTimer() };
+  // launchd opens the log itself and will not create its folder
+  mkdirSync(join(input.dataDir, "logs"), { recursive: true, mode: 0o700 });
+  for (const file of plan.files) {
+    writeFileSync(join(input.dataDir, file.name), rendered[file.name]!, { mode: 0o644 });
+    io.log(`wrote ${join(input.dataDir, file.name)}`);
+  }
+  io.log("");
+  io.log("to install it (a read-only health scan every two minutes, at login and after):");
+  for (const line of plan.activate) io.log(`  ${line}`);
+  io.log("");
+  io.log(`issues: ${join(input.dataDir, "sentinel", "issues.jsonl")}`);
+  io.log(`logs: ${platform === "darwin" ? join(input.dataDir, "logs", "sentinel.log") : "journalctl --user -u openmausbot-sentinel"}`);
   return 0;
 }

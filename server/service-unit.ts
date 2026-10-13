@@ -145,6 +145,114 @@ export function servicePlan(platform: NodeJS.Platform, dataDir: string, home = h
   return null;
 }
 
+// `openmausbot service install --sentinel`: Sentinel, the read-only health
+// scanner (server/sentinel/), every two minutes out of process, so it keeps
+// noticing failures after the app itself has crashed. A launchd agent with a
+// StartInterval on macOS, a systemd user timer on Linux: it reads only what
+// its own user can, so it needs no root and no system unit.
+export const SENTINEL_LAUNCHD_LABEL = "com.openmausbot.sentinel";
+export const SENTINEL_SYSTEMD_NAME = "openmausbot-sentinel";
+export const SENTINEL_INTERVAL_SECONDS = 120;
+
+export type SentinelServiceSpec = Pick<ServiceSpec, "node" | "script" | "dataDir" | "home">;
+
+export function sentinelCommand(spec: Pick<SentinelServiceSpec, "node" | "script" | "dataDir">): string[] {
+  return [spec.node, ...(needsStripTypes(spec.script) ? ["--experimental-strip-types"] : []), spec.script, "sentinel", "--once", "--data-dir", spec.dataDir];
+}
+
+export function sentinelLaunchdPlist(spec: SentinelServiceSpec): string {
+  const args = sentinelCommand(spec).map((arg) => `\t\t<string>${xml(arg)}</string>`).join("\n");
+  const log = xml(join(spec.dataDir, "logs", "sentinel.log"));
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    "<dict>",
+    "\t<key>Label</key>",
+    `\t<string>${SENTINEL_LAUNCHD_LABEL}</string>`,
+    "\t<key>ProgramArguments</key>",
+    "\t<array>",
+    args,
+    "\t</array>",
+    "\t<key>EnvironmentVariables</key>",
+    "\t<dict>",
+    "\t\t<key>HOME</key>",
+    `\t\t<string>${xml(spec.home)}</string>`,
+    "\t</dict>",
+    "\t<key>StartInterval</key>",
+    `\t<integer>${SENTINEL_INTERVAL_SECONDS}</integer>`,
+    "\t<key>RunAtLoad</key>",
+    "\t<true/>",
+    "\t<key>ProcessType</key>",
+    "\t<string>Background</string>",
+    "\t<key>LowPriorityIO</key>",
+    "\t<true/>",
+    "\t<key>StandardOutPath</key>",
+    `\t<string>${log}</string>`,
+    "\t<key>StandardErrorPath</key>",
+    `\t<string>${log}</string>`,
+    "</dict>",
+    "</plist>",
+    "",
+  ].join("\n");
+}
+
+export function sentinelSystemdService(spec: SentinelServiceSpec): string {
+  return [
+    "# Written by `openmausbot service install --sentinel`. Started by its timer.",
+    "[Unit]",
+    "Description=OpenMausBot Sentinel health scan",
+    "",
+    "[Service]",
+    "Type=oneshot",
+    `Environment=HOME=${spec.home}`,
+    `ExecStart=${sentinelCommand(spec).map(quoteSystemd).join(" ")}`,
+    "Nice=10",
+    "IOSchedulingClass=idle",
+    "",
+  ].join("\n");
+}
+
+export function sentinelSystemdTimer(): string {
+  return [
+    "# Written by `openmausbot service install --sentinel`.",
+    "[Unit]",
+    "Description=Run the OpenMausBot Sentinel health scan every two minutes",
+    "",
+    "[Timer]",
+    `OnBootSec=${SENTINEL_INTERVAL_SECONDS}s`,
+    `OnUnitActiveSec=${SENTINEL_INTERVAL_SECONDS}s`,
+    "",
+    "[Install]",
+    "WantedBy=timers.target",
+    "",
+  ].join("\n");
+}
+
+/** The files written next to the data, where each one goes, and how to
+ * activate them. Null on a platform without a renderer (Windows). */
+export function sentinelServicePlan(platform: NodeJS.Platform, dataDir: string, home = homedir()): { files: Array<{ name: string; installed: string }>; activate: string[]; deactivate: string[] } | null {
+  if (platform === "linux") {
+    const dir = join(home, ".config", "systemd", "user");
+    const files = [`${SENTINEL_SYSTEMD_NAME}.service`, `${SENTINEL_SYSTEMD_NAME}.timer`].map((name) => ({ name, installed: join(dir, name) }));
+    return {
+      files,
+      activate: [`mkdir -p ${dir} && cp ${files.map((file) => join(dataDir, file.name)).join(" ")} ${dir}/`, "systemctl --user daemon-reload", `systemctl --user enable --now ${SENTINEL_SYSTEMD_NAME}.timer`],
+      deactivate: [`systemctl --user disable --now ${SENTINEL_SYSTEMD_NAME}.timer`, `rm ${files.map((file) => file.installed).join(" ")}`, "systemctl --user daemon-reload"],
+    };
+  }
+  if (platform === "darwin") {
+    const name = `${SENTINEL_LAUNCHD_LABEL}.plist`;
+    const installed = join(home, "Library", "LaunchAgents", name);
+    return {
+      files: [{ name, installed }],
+      activate: [`mkdir -p ${dirname(installed)} && cp ${join(dataDir, name)} ${installed}`, `launchctl bootstrap gui/$(id -u) ${installed}`],
+      deactivate: [`launchctl bootout gui/$(id -u)/${SENTINEL_LAUNCHD_LABEL}`, `rm ${installed}`],
+    };
+  }
+  return null;
+}
+
 export function currentUser(): string {
   try {
     return userInfo().username;

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { launchdPlist, serviceCommand, servicePlan, systemdUnit, unstableInstallWarning, type ServiceSpec } from "./service-unit.ts";
+import {
+  launchdPlist, sentinelCommand, sentinelLaunchdPlist, sentinelServicePlan, sentinelSystemdService, sentinelSystemdTimer, serviceCommand, servicePlan,
+  systemdUnit, unstableInstallWarning, type ServiceSpec,
+} from "./service-unit.ts";
 
 const spec: ServiceSpec = {
   node: "/usr/bin/node",
@@ -55,5 +58,35 @@ describe("service units", () => {
     expect(mac?.installed).toBe("/Users/maus/Library/LaunchAgents/com.openmausbot.serve.plist");
     expect(mac?.activate.join("\n")).toContain("launchctl bootstrap gui/$(id -u)");
     expect(servicePlan("win32", "C:\\x")).toBeNull();
+  });
+
+  it("renders Sentinel as a launchd agent on an interval, under its own label", () => {
+    const sentinel = { node: "/usr/bin/node", script: "/usr/lib/node_modules/openmausbot/cli.js", dataDir: "/Users/maus/.openmausbot", home: "/Users/maus" };
+    expect(sentinelCommand(sentinel)).toEqual(["/usr/bin/node", "/usr/lib/node_modules/openmausbot/cli.js", "sentinel", "--once", "--data-dir", "/Users/maus/.openmausbot"]);
+    expect(sentinelCommand({ ...sentinel, script: "/srv/OpenMausBot/server/openmausbot.ts" })[1]).toBe("--experimental-strip-types");
+    const plist = sentinelLaunchdPlist(sentinel);
+    expect(plist).toContain("<string>com.openmausbot.sentinel</string>");
+    expect(plist).toContain("<key>StartInterval</key>\n\t<integer>120</integer>");
+    expect(plist).toContain("<string>sentinel</string>");
+    expect(plist).not.toContain("KeepAlive");
+    expect(plist).toContain("/Users/maus/.openmausbot/logs/sentinel.log");
+    const mac = sentinelServicePlan("darwin", "/Users/maus/.openmausbot", "/Users/maus");
+    expect(mac?.files).toEqual([{ name: "com.openmausbot.sentinel.plist", installed: "/Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist" }]);
+    expect(mac?.deactivate[0]).toBe("launchctl bootout gui/$(id -u)/com.openmausbot.sentinel");
+  });
+
+  it("renders Sentinel as a systemd user timer, with no root", () => {
+    const sentinel = { node: "/usr/bin/node", script: "/usr/lib/node_modules/openmausbot/cli.js", dataDir: "/home/maus/My Data", home: "/home/maus" };
+    const unit = sentinelSystemdService(sentinel);
+    expect(unit).toContain("Type=oneshot");
+    expect(unit).toContain('ExecStart=/usr/bin/node /usr/lib/node_modules/openmausbot/cli.js sentinel --once --data-dir "/home/maus/My Data"');
+    expect(unit).not.toContain("User=");
+    expect(sentinelSystemdTimer()).toContain("OnUnitActiveSec=120s");
+    expect(sentinelSystemdTimer()).toContain("WantedBy=timers.target");
+    const linux = sentinelServicePlan("linux", "/home/maus/.openmausbot", "/home/maus");
+    expect(linux?.files.map((file) => file.installed)).toEqual(["/home/maus/.config/systemd/user/openmausbot-sentinel.service", "/home/maus/.config/systemd/user/openmausbot-sentinel.timer"]);
+    expect(linux?.activate.join("\n")).toContain("systemctl --user enable --now openmausbot-sentinel.timer");
+    expect(linux?.activate.join("\n")).not.toContain("sudo");
+    expect(sentinelServicePlan("win32", "C:\\x")).toBeNull();
   });
 });
