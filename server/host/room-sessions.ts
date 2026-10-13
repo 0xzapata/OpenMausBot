@@ -73,8 +73,9 @@
 // keep-warm, server/cache-keepwarm.ts, holds one for hours): a start after
 // ten quiet minutes then goes on in the recorded session, which holds more
 // than the record says, a line sent twice at worst, as on main. A reading is
-// therefore kept for a day, as long as a turn never seen to end is, so that
-// a compaction on such a start still shows as a fall. Any doubt the harness
+// therefore kept longer than any process the driver can still be holding and
+// longer than its record (see prune), so that a compaction on such a start
+// still shows as a fall. Any doubt the harness
 // can see gives a start, which is what the room does today. Nothing is
 // persisted: a record describes a warm process, and warm processes do not
 // outlive this server either.
@@ -82,6 +83,7 @@
 // A host module (server/host/README.md): everything it reads is handed in.
 import { createHash } from "node:crypto";
 
+import { MAX_WINDOW_MINUTES } from "../cache-keepwarm.ts";
 import type { RuntimeEvent } from "../contracts.ts";
 import { Handoffs, handedStateUsable, sessionStart, unseenMessages, type HandedState, type HandoffStore, type SessionStart } from "../delta-context.ts";
 import { sessionIdlePolicy } from "../drivers/session-idle.ts";
@@ -352,18 +354,23 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
    * record or a last speaker of a member that has been quiet, since its turn
    * ended, for longer than any session lives. A thread that was deleted or
    * abandoned would otherwise hold its adapter for good. A member's last
-   * reading is kept as long as an abandoned turn is: the driver may keep the
-   * process past its idle time (prompt-cache keep-warm holds one for hours,
-   * a day at most), and a start after ten quiet minutes then goes on in the
-   * same session; the reading is what shows a compaction on that start, and
-   * it is only ever compared within one session, so an old one can cost a
-   * start but never a wrong resume. Nothing of a member is let go while its
+   * reading is kept longer than anything it may be compared against: the
+   * longer of an abandoned turn's life and keep-warm's longest window, plus
+   * two idle lives. The driver may keep the process past its idle time
+   * (prompt-cache keep-warm holds one for its window, and the end of a hold
+   * arms the idle timer once more), and a start after ten quiet minutes then
+   * goes on in the same session; the reading is what shows a compaction on
+   * that start. A record lives an idle life, which a setting may put above a
+   * day, and the reading must outlive that too. It is only ever compared
+   * within one session, so an old one can cost a start but never a wrong
+   * resume. Nothing of a member is let go while its
    * turn is in flight on the thread: the settle of that turn, and the turn
    * after it, need all three, however long the turn runs and whoever
    * dispatches elsewhere meanwhile. Runs before a stale flight is landed, so
    * that the guard still covers that member. */
   function prune(at: number): void {
     const life = Math.max(0, ...Object.keys(ROOM_SESSION_ENGINES).map((kind) => roomSessionIdleMs(kind) ?? 0));
+    const readingLife = Math.max(ABANDONED_TURN_MS, MAX_WINDOW_MINUTES * 60_000) + 2 * life;
     for (const [threadId, flight] of inFlight) {
       if (at - flight.since <= ABANDONED_TURN_MS) continue;
       land(threadId);
@@ -386,7 +393,7 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
       if (!speakers.size) lastSpeakers.delete(threadId);
     }
     for (const [threadId, members] of traces) {
-      for (const [botId, trace] of members) if (!flying(threadId, botId) && at - trace.at > ABANDONED_TURN_MS) members.delete(botId);
+      for (const [botId, trace] of members) if (!flying(threadId, botId) && at - trace.at > readingLife) members.delete(botId);
       if (!members.size) traces.delete(threadId);
     }
   }

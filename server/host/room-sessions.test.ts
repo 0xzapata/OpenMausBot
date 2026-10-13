@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { MAX_WINDOW_MINUTES } from "../cache-keepwarm.ts";
 import type { RuntimeEvent } from "../contracts.ts";
 import { sessionIdlePolicy } from "../drivers/session-idle.ts";
 import { escapeNotes } from "../peer-provenance.ts";
@@ -16,8 +17,11 @@ const NONE = "[Messages this conversation received since your last turn in this 
 const CLOCK = turnClockLine(Date.UTC(2026, 9, 13, 9, 30), "UTC");
 const IDLE_MS = sessionIdlePolicy("CLAUDE").idleMs;
 const MIN = 60_000;
-/** How long a turn never seen to end is kept, and with it a member's last reading (ABANDONED_TURN_MS in the module). */
+/** How long a turn never seen to end is kept (ABANDONED_TURN_MS in the module). */
 const DAY = 24 * 60 * 60_000;
+/** How long a member's last reading is kept: the longer of an abandoned turn's life and keep-warm's longest
+ * window, plus two idle lives, so that it outlives its record and any process the driver can still hold. */
+const READING_LIFE = Math.max(DAY, MAX_WINDOW_MINUTES * MIN) + 2 * IDLE_MS;
 
 const engine = (instanceId: string, driverKind = "claudeAgent", strictResume = true): RoomSessionEngine =>
   ({ instanceId, driverKind, adapter: { capabilities: { strictResume } } });
@@ -1327,11 +1331,18 @@ describe("room sessions: what it keeps, and that it cannot fail a turn", () => {
     expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 1, speakers: 2, readings: 2 });
 
     // A day on, the turn that never ended is given up, and all it held with
-    // it; a reading lives as long as that, and no longer.
+    // it; a reading lives a little longer than that (longer than any process
+    // the driver could still be holding), and no longer.
     first.state.now += DAY + 1;
     third.say("Three again.");
     const later = third.dispatch("scout");
     expect(later.result.mode).toBe("start");
+    // (what is left of the two quiet members: their readings)
+    expect(first.sessions.tracked()).toEqual({ records: 0, flights: 1, speakers: 1, lines: 0, readings: 2 });
+    third.finish(later, "T3", { reply: "Here." });
+    first.state.now += READING_LIFE + 1;
+    third.say("Three once more.");
+    expect(third.dispatch("scout").result.mode).toBe("start");
     expect(first.sessions.tracked()).toEqual({ records: 0, flights: 1, speakers: 1, lines: 0, readings: 0 });
   });
 
@@ -1588,23 +1599,25 @@ describe("room sessions: long turns, and turns in other rooms meanwhile", () => 
     // A member's record, place as last speaker and last reading are guarded
     // against pruning while its turn is in flight, so pruning is judged with
     // the flight in place; the flight is landed only afterwards. The reading
-    // is what tells the two orders apart: it lives as long as an abandoned
-    // turn, counted from the member's last seen settle, while the flight is
-    // given up a day after its dispatch, which came later.
+    // is what tells the two orders apart: its life is counted from the
+    // member's last seen settle, while the flight is given up a day after its
+    // dispatch, which came later (here, after the reading's extra two idle
+    // lives: a start by time that the kept process ran in S1 again).
     const { r } = ready();
     r.finish(r.dispatch("editor", reading(60_000)), "S1", { reply: "Trimmed." });
     const T0 = r.state.now;
-    r.state.now = T0 + MIN;
+    r.state.now = T0 + 2 * IDLE_MS + 5 * MIN;
     r.say("Tighten the outro, slowly.");
     const lost = r.dispatch("editor", reading(90_000));
-    expect(lost.result.send.resumeCursor).toBe("S1");
+    expect(lost.result).toStrictEqual({ mode: "start", text: r.full(lost), send: {} });
     r.bind(lost);
     r.emit(lost, { type: "session.started", sessionId: "S1" });
     r.emit(lost, r.output);
-    // Its completion never reaches the fold. A day after the editor's last
-    // seen settle, but not yet a day after the lost turn's dispatch, the
-    // editor is dispatched again, which lands the lost turn: a start.
-    r.state.now = T0 + DAY + 30_000;
+    // Its completion never reaches the fold. Once the reading's life since
+    // the editor's last seen settle is past, but not yet a day after the lost
+    // turn's dispatch, the editor is dispatched again, which lands the lost
+    // turn: a start.
+    r.state.now = T0 + READING_LIFE + 30_000;
     r.say("Still there?");
     const next = r.dispatch("editor", reading(120_000));
     expect(next.result).toStrictEqual({ mode: "start", text: r.full(next), send: {} });
@@ -1617,6 +1630,46 @@ describe("room sessions: long turns, and turns in other rooms meanwhile", () => 
     r.say("And now?");
     const after = r.dispatch("editor", reading(25_000));
     expect(after.result).toStrictEqual({ mode: "start", text: r.full(after), send: {} });
+  });
+
+  it("keeps a reading past keep-warm's longest window plus the idle time a hold's end re-arms", () => {
+    // Keep-warm may hold a process for its maximum window, and when the hold
+    // ends the driver arms its idle timer for a full idle time, so a process
+    // can take a start that long after the member's last turn. The reading
+    // kept for its session must still be there to show a compaction on it.
+    const { r } = ready();
+    r.finish(r.dispatch("editor", reading(60_000)), "S1", { reply: "Trimmed." });
+    const T0 = r.state.now;
+    r.state.now = T0 + MAX_WINDOW_MINUTES * MIN + IDLE_MS + MIN;
+    r.say("Tighten the outro.");
+    const start = r.dispatch("editor", reading(120_000));
+    expect(start.result).toStrictEqual({ mode: "start", text: r.full(start), send: {} });
+    // the held process takes it: S1 again, which compacts unseen
+    r.finish(start, "S1", { reply: "Tightened." });
+    r.say("Export it.");
+    const next = r.dispatch("editor", reading(25_000));
+    expect(next.result).toStrictEqual({ mode: "start", text: r.full(next), send: {} });
+  });
+
+  it("keeps a reading longer than a record when the idle life is set above a day", () => {
+    // OMB_CLAUDE_SESSION_IDLE_MS may be anything up to 2^31-1 ms, and a
+    // record lives that long; a reading must not go before it.
+    vi.stubEnv("OMB_CLAUDE_SESSION_IDLE_MS", String(30 * 60 * MIN));
+    try {
+      expect(roomSessionIdleMs("claudeAgent")).toBe(30 * 60 * MIN);
+      const { r } = ready();
+      // turn 2 is a delta in S1 with reading 120k; S1 compacts during it, no
+      // hook; it settles ok at T0, and the reading after it is 25k
+      const turn = r.dispatch("editor", reading(120_000));
+      expect(turn.result.send.resumeCursor).toBe("S1");
+      r.finish(turn, "S1", { reply: "Trimmed." });
+      const T0 = r.state.now;
+      // T0 + 30 h: the record is alive, and so must the reading be: a start
+      r.state.now = T0 + 30 * 60 * MIN;
+      r.say("Tighten the outro.");
+      const next = r.dispatch("editor", reading(25_000));
+      expect(next.result).toStrictEqual({ mode: "start", text: r.full(next), send: {} });
+    } finally { vi.unstubAllEnvs(); }
   });
 });
 
