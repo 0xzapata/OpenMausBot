@@ -19,13 +19,19 @@ pnpm exec vitest run server/auto-approve.test.ts server/command-allowlist.e2e.te
 ## What it checks
 
 - `server/safety-floor.test.ts` calls the classifier in `server/safety-floor.ts`
-  with a table of command lines: every spelling that must be blocked (flags in
+  with tables of command lines: every spelling that must be blocked (flags in
   any order, quotes, trailing slashes and dot segments, `sudo`/`doas`/`env`
   prefixes, `sh -c` and `cmd /c` wrappers, chains, cmd and PowerShell forms)
-  and every one that must not be (the same words in a commit message, an echo,
-  a heredoc or a comment; a subdirectory; a path only a variable knows; an
-  image file). The Windows spellings are read from the text, so they run on
-  every platform.
+  and every one that must be read to the end with nothing found (the same
+  words in a commit message, an echo, a heredoc or a comment; a subdirectory;
+  a path only a variable knows; an image file). The platform argument picks
+  the reading, so every platform's rows run on any machine: a POSIX row is
+  asserted on macOS, Linux and Windows; a cmd or PowerShell row must block on
+  Windows and must not be blocked on macOS or Linux, where it is not
+  evaluated. A third table pins what is neither blocked nor clear, and what
+  reading every line twice costs on Windows. Separate cases cover a reading
+  that loses its place (never "clear"), the 32 KB cap, and a 20 KB body full
+  of escaped quotes.
 - `server/safety-floor-gate.test.ts` feeds fake permission requests to
   `server/safety-floor-gate.ts` with an adapter that only records its answer:
   the setting is off by default and the environment can only add it; a
@@ -63,9 +69,16 @@ pnpm exec vitest run server/auto-approve.test.ts server/command-allowlist.e2e.te
   stands. It then restarts that fixture with only `OMB_SAFETY_FLOOR=1`, gives
   the bot Full access, and checks that Full is denied the never-list command
   and still answers an ordinary one. `/api/config` reports the switch at each
-  step.
+  step. The first request is also read off the `/api/events` stream, where it
+  must carry neither `command` nor `commandLine`.
 
 ## Limits
+
+The floor reads a command for the platform the server runs on. On macOS and
+Linux no cmd or PowerShell command is evaluated, so a Mac or Linux server
+driving a Windows machine gets no protection for what runs there. On Windows
+every line is read as POSIX and as cmd/PowerShell; the tables pin the false
+blocks and the "could not read" answers that causes.
 
 These checks prove the places the server answers by itself: the
 `request.opened` fold, the chat runtime's own tool gate, and the Codex and

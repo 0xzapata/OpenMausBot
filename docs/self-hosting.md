@@ -884,10 +884,21 @@ floor: …`, and the decision log gets an `auto-denied` row with source
 `safety-floor`. A card you answer yourself is not overridden: at "Ask for
 approval" the request still reaches you, and your Allow stands.
 
-A command the floor cannot read is not approved automatically either. The
-request comes to you as a card instead, and the server log says so once,
-without the command. An API-key bot at Full access has no card to show, so
-there the call is refused.
+A command the floor cannot read is not approved automatically either: one
+with a quote or heredoc that never closes, or longer than 32 KB. The request
+comes to you as a card instead, and the server log says so once, without the
+command. An API-key bot at Full access has no card to show, so there the call
+is refused.
+
+Which commands it reads depends on the machine the server runs on. On macOS
+and Linux it reads a command as a POSIX shell line and applies the POSIX rules
+only: `rd /s /q C:\Windows`, `Remove-Item -Recurse` and `format C:` are not
+evaluated there, because that machine cannot run them. On Windows it reads
+every command twice, as POSIX (Git Bash, WSL) and as cmd and PowerShell, and
+a match in either reading blocks. That has a cost on Windows: a POSIX line
+that only quotes a Windows command (a commit message, a heredoc writing a
+`.bat` file) can be blocked, and a path quoted with a trailing backslash
+(`cd "C:\proj\"`) is one it cannot read, so it asks instead of approving.
 
 It holds wherever the engine asks the server, and only there. API-key models
 (the chat runtime) are covered in full, at Full access and under "Always
