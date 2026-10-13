@@ -170,20 +170,23 @@ export interface SkillLibraryEntry {
   package?: SkillPackageStamp;
   /** Descriptions this skill had before, oldest first, each with the time
    * (ms) an update replaced it. A running conversation keeps the description
-   * it started with (libraryDescriptionAt), so a shared update never changes
+   * it started with (libraryDescriptionsAt), so a shared update never changes
    * its system prompt. */
   descriptionHistory?: Array<{ description: string; until: number }>;
 }
 
-/** Old descriptions kept per library skill; older conversations than the
- * oldest kept change see the oldest kept description. */
-const DESCRIPTION_HISTORY_MAX = 20;
+/** How long a replaced description is kept. Pruned by age, never by count,
+ * so every conversation that started within this window keeps exactly the
+ * description it began with. An older one may see a later description once;
+ * the provider's prompt cache (an hour at most) is long gone by then. */
+export const DESCRIPTION_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** The description a conversation started at `startedAt` lists: the one in
- * effect then, or the current one when nothing changed since. */
-export function libraryDescriptionAt(entry: Pick<SkillLibraryEntry, "description" | "descriptionHistory">, startedAt: number | undefined): string {
-  if (startedAt === undefined) return entry.description;
-  return entry.descriptionHistory?.find((change) => change.until > startedAt)?.description ?? entry.description;
+/** The descriptions a conversation started at `startedAt` lists, by skill
+ * name: the one in effect then, or `current` when nothing changed since. */
+export function libraryDescriptionsAt(startedAt: number | undefined, root: string = skillsLibraryRoot()): (name: string, current: string) => string {
+  if (startedAt === undefined) return (_name, current) => current;
+  const index = readSkillLibraryIndex(root);
+  return (name, current) => index[name]?.descriptionHistory?.find((change) => change.until > startedAt)?.description ?? current;
 }
 
 /** A library skill projected the way per-bot `SkillListing` reads, so
@@ -444,17 +447,19 @@ export function updateLibrarySkill(input: {
   const now = Date.now();
   const descriptionHistory = parsed.description === entry.description
     ? entry.descriptionHistory
-    : [...(entry.descriptionHistory ?? []), { description: entry.description, until: now }].slice(-DESCRIPTION_HISTORY_MAX);
+    : [...(entry.descriptionHistory ?? []), { description: entry.description, until: now }];
+  const keptHistory = descriptionHistory?.filter((change) => now - change.until < DESCRIPTION_HISTORY_MS);
   const next: SkillLibraryEntry = {
     ...entry,
     description: parsed.description,
     sha256,
     importedAt: new Date(now).toISOString(),
-    ...(descriptionHistory ? { descriptionHistory } : {}),
+    ...(keptHistory?.length ? { descriptionHistory: keptHistory } : {}),
     ...(input.source ? { source: input.source } : {}),
     ...(parsed.tags?.length ? { tags: parsed.tags } : {}),
   };
   if (!parsed.tags?.length) delete next.tags;
+  if (!keptHistory?.length) delete next.descriptionHistory;
   // Bytes, then index. A crash between the two leaves stored bytes the
   // index does not vouch for: the entry reads "changed after review" and
   // stays blocked until a person looks, never silently enabled.

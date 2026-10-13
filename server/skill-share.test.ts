@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -259,6 +259,34 @@ describe("prompt-cache safety", () => {
     // an Undo is a change too: the conversation stays where it started
     expect(share.undoSharedLearnedSkill({ authorId: mate.id, name: "rough-cut", action: "update", share: updated.share, previous: updated.previous, bots, patchAssigned, root })).toEqual({ undone: true });
     expect(systemPrompt(mate.id, startedAt).stable).toBe(before.stable);
+  });
+
+  it("keeps replaced descriptions for 30 days, then prunes them by age", () => {
+    learn(author.id, "trim-pass");
+    const shared = share.shareLearnedSkill({ author, bots, name: "trim-pass", patchAssigned, root, now: 1000 });
+    if ("error" in shared) throw new Error(shared.error);
+    const describe = (n: number) => SKILL("trim-pass", `v${n}`).replace("Cuts a rough edit the way this team does.", `Description ${n}.`);
+    const update = (n: number) => {
+      const sha256 = library.readSkillLibraryIndex(root)["trim-pass"]!.sha256;
+      const updated = share.updateSharedLearnedSkill({ bot: mate, bots, name: "trim-pass", skillMd: describe(n), expectSha256: sha256, patchAssigned, root });
+      if ("error" in updated) throw new Error(updated.error);
+    };
+    const day = 24 * 60 * 60 * 1000;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(100 * day);
+      update(1);
+      // many quick changes never push out the description a conversation began with
+      for (let n = 2; n <= 30; n++) { vi.setSystemTime(100 * day + n); update(n); }
+      expect(library.libraryDescriptionsAt(50 * day, root)("trim-pass", "now")).toBe("Cuts a rough edit the way this team does.");
+      expect(library.libraryDescriptionsAt(100 * day + 5, root)("trim-pass", "now")).toBe("Description 5.");
+      // a month later the old ones are pruned on the next update
+      vi.setSystemTime(131 * day);
+      update(31);
+      expect(library.readSkillLibraryIndex(root)["trim-pass"]!.descriptionHistory).toEqual([{ description: "Description 30.", until: 131 * day }]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("changes nothing for a bot no share touched", () => {
