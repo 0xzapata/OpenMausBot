@@ -83,7 +83,11 @@ export async function applyEngine(client: HeadlessClient, request: EngineRequest
   const result: Rec = { ok: true, kind: request.kind, instanceId, configured: configured || changed.includes("key"), changed, ...(request.dryRun ? { dryRun: true } : {}) };
   if (request.dryRun) return result;
   if (Object.keys(patch).length) await client.json("/api/config", { method: "PUT", body: JSON.stringify({ [kind.config]: patch }) });
-  if (request.install) result.installed = await client.json(`/api/instances/${encodeURIComponent(instanceId)}/install`, { method: "POST", body: "{}" });
+  if (request.install) {
+    // An engine that already runs is left as it is, so a script can ask on every start.
+    const state = ((await client.json<Rec>("/api/instances")).instances as Rec[] | undefined)?.find((instance) => instance.instanceId === instanceId)?.snapshot?.state;
+    result.installed = state === "available" ? "already" : await client.json(`/api/instances/${encodeURIComponent(instanceId)}/install`, { method: "POST", body: "{}" });
+  }
   return result;
 }
 
@@ -115,5 +119,6 @@ export async function engineVerb(ctx: VerbContext): Promise<VerbOutcome> {
   const done = result.changed.length
     ? `${result.dryRun ? "Would set" : "Set"} ${result.changed.join(", ")} for ${kind}`
     : `${kind} was already set up; nothing changed (pass --rotate to replace its key)`;
-  return { result, exitCode: EXIT.done, human: [`${done}. Bots use it as ${result.instanceId}/MODEL (openmausbot models).`] };
+  const installed = result.installed === undefined ? "" : result.installed === "already" ? " Its command was already installed." : " Installed its command.";
+  return { result, exitCode: EXIT.done, human: [`${done}.${installed} Bots use it as ${result.instanceId}/MODEL (openmausbot models).`] };
 }

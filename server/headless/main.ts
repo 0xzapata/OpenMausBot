@@ -26,9 +26,11 @@ export const VERB_HELP: Record<string, string> = {
   bots: "openmausbot bots\n  Your bots and what each is doing.",
   channels: "openmausbot channels\n  Your rooms (group chats) and who is in them.",
   models: "openmausbot models\n  The engines and the models each offers (use them as INSTANCE/MODEL).",
-  messages: `openmausbot messages TARGET [--limit 30]\n  The latest messages of a conversation (at most 200). ${T}`,
+  messages: `openmausbot messages TARGET [--limit 30]\n  The latest messages of a conversation (at most 200).
+  ${T}`,
   send: `openmausbot send TARGET (TEXT | --text TEXT | --message-file FILE | -) [--send-id ID] [--dry-run]
-  Send one message and return at once. The same --send-id never sends twice. ${T}`,
+  Send one message and return at once. The same --send-id never sends twice.
+  ${T}`,
   "send-channel": "openmausbot send-channel --channel ID (TEXT | --text TEXT) [--task ID] [--dry-run]\n  The same as send, for a room named by id.",
   run: `openmausbot run TARGET (TEXT | --message-file FILE | -) [--task new|current|ID] [--title T]
                 [--wait job|turn|none] [--timeout 30m] [--on-input exit|wait|stop] [--on-timeout leave|stop]
@@ -39,19 +41,23 @@ export const VERB_HELP: Record<string, string> = {
   (a new or empty folder, checked before anything is sent; --force writes into a used one).
   --on-input: exit (3) when someone must answer, wait for the answer, or stop the job.
   --on-timeout: leave the work running, or stop it. --strict: a teammate that failed fails the run.
-  Exit 0 done, 1 failed or stopped, 3 needs you, 4 timed out, 130 Ctrl-C (the work keeps running). ${T}`,
+  Exit 0 done, 1 failed or stopped, 3 needs you, 4 timed out, 130 Ctrl-C (the work keeps running).
+  ${T}`,
   wait: `openmausbot wait TARGET [--for job|turn] [--timeout 30m] [--on-input …] [--on-timeout …] [--strict] [--since MS]
   Wait on a conversation already running (after run --wait none, Ctrl-C or a restarted CI step).
   --since MS (which run prints) keeps watching the same job, so one that ended meanwhile reports how.
-  Nothing running: it returns at once (exit 0). Same exit codes as run. ${T}`,
-  interrupt: `openmausbot interrupt TARGET [--tree] [--dry-run]\n  Press Stop on a conversation. --tree also stops every teammate still working on its job. ${T}`,
+  Nothing running: it returns at once (exit 0). Same exit codes as run.
+  ${T}`,
+  interrupt: `openmausbot interrupt TARGET [--tree] [--dry-run]\n  Press Stop on a conversation. --tree also stops every teammate still working on its job.
+  ${T}`,
   "new-bot": "openmausbot new-bot NAME [--title T] [--team T] [--model INSTANCE/MODEL] [--effort E]\n  Make a bot.",
   "new-channel": "openmausbot new-channel NAME --members A,B [--team T]\n  Make a room from bots, by name or id.",
   "set-model": "openmausbot set-model BOT --model INSTANCE/MODEL [--effort E] [--task ID] [--dry-run]\n  Change an idle bot's model (or one idle conversation's, with --task).",
   edit: "openmausbot edit BOT --message ID (TEXT | --text TEXT) [--task ID] [--dry-run]\n  Rewrite an earlier message of yours and have the bot answer again from there.",
   export: `openmausbot export TARGET --out DIR [--root ID] [--since MS] [--max-files 200] [--max-screens 100] [--max-bytes 500MB] [--force]
   Write a conversation's job to DIR: the job tree, every transcript (secrets removed),
-  the files its replies link to, and screen captures. --root keeps one job. ${T}`,
+  the files its replies link to, and screen captures. --root keeps one job.
+  ${T}`,
   events: `openmausbot events [--thread ID]… [--job THREAD_ID [--until-settled]] [--kind K,…] [--since CURSOR] [--screens] [--jsonl]
   The server's live events, one JSON line each (messages, threads, bots, rooms; --kind runtime adds token-level events).
   --job follows the threads of one conversation's job; --until-settled ends with it.`,
@@ -66,7 +72,8 @@ export const VERB_HELP: Record<string, string> = {
   engine: "openmausbot engine set KIND … | engine list   (see help engine set)",
   "engine set": `openmausbot engine set KIND (--key-env VAR | --key-file FILE) [--base-url URL] [--only-claude-api] [--install] [--rotate] [--dry-run]
   Give the workspace an engine key: claude, openai, openrouter, openai-compatible, xai, groq, mistral or cerebras.
-  The key is never printed. One already set is kept unless --rotate. --install installs the engine's CLI.
+  The key is never printed. One already set is kept unless --rotate. --install installs the engine's
+  command if it is not running already, so a script can run this on every start.
   claude: the key runs every Claude bot; --only-claude-api keeps it to "Claude (API key)" bots.`,
   "engine list": "openmausbot engine list\n  The engines, whether each is ready, and which keys are set (never their values).",
   connect: `openmausbot connect [URL] [--code CODE] --out FILE [--label NAME] [--client] [--force]
