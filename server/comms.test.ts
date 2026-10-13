@@ -171,9 +171,10 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
       await api("PATCH", `/api/bots/${existing.id}`, { hidden: true });
     }
   };
-  /** Every bot idle: a section change is refused while any bot runs, and a
+  /** Every bot idle, no hand-off in flight: a section change is refused while any bot runs, and a
    * test that failed mid-flight may have left turns running. */
-  const awaitIdle = () => waitUntil(async () => (await api("GET", "/api/bots?messages=0")).body.bots.every((candidate: any) => !candidate.busy), 30_000, "the fleet never went idle");
+  const awaitIdle = () => waitUntil(async () => !rows().some((node) => ["source", "queued", "running", "resume"].includes(node.status))
+    && (await api("GET", "/api/bots?messages=0")).body.bots.every((candidate: any) => !candidate.busy), 30_000, "the fleet never went idle");
   const named = async (name: string, patch: Record<string, unknown>) => {
     if (patch.section !== undefined) await awaitIdle();
     const created = (await api("POST", "/api/bots")).body.bot;
@@ -554,14 +555,12 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
   it(
     "lets a section Chief create a safe operator and delegate work to it",
     async () => {
-      const chief = (await api("POST", "/api/bots")).body.bot;
-      const defaultSelection = chief.modelSelection;
-      await api("PATCH", `/api/bots/${chief.id}`, {
-        name: "Atlas",
+      const chief = await named("Atlas", {
         section: "Launch",
         chiefOfStaff: true,
         modelSelection: { instanceId: "chiefCreator", model: "fake-model" },
       });
+      const defaultSelection = chief.modelSelection;
 
       const send = await startRoutine(chief.id, "Create the specialist team and start the design review.");
       expect(send.status).toBe(201);
