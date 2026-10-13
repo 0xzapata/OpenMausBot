@@ -359,15 +359,31 @@ describe("quota-switch card", () => {
       expect(thread().modelSelection).toEqual({ instanceId: "codex", model: "codex-default" });
       expect(store.bot(bot.id)!.modelSelection).toEqual({ instanceId: "claude", model: "claude-default" });
       expect(resend).toHaveBeenCalledTimes(1);
-      const [botId, threadId, message, replyTo] = resend.mock.calls[0]!;
+      const [botId, threadId, message, replyTo, spoken] = resend.mock.calls[0]!;
       expect([botId, threadId]).toEqual([bot.id, bot.threadId]);
       expect(message).toMatchObject({ id: messageId, text: "how's the weather", dataContext: { cardId: "sales" } });
       expect(replyTo).toMatchObject({ id: quoted, text: "It will rain on Friday." });
+      // typed, so sent again as typed
+      expect(spoken).toEqual({});
 
       const settled = store.messagesFor(bot.threadId).find((m) => m.id === card.id)!.card!;
       expect(settled).toMatchObject({ answered: "answer", answeredText: "Codex" });
       expect(pending()).toBeUndefined();
       expect(notices()).toContainEqual({ name: "notice: continuing on Codex after hitting quota", ok: true });
+    });
+
+    it("resends a request spoken on a Live call as spoken, on the same call", async () => {
+      // Spoken words never reach the log; the line sent again says it was spoken too.
+      const card = (await failed(QUOTA, { messageId: said("book the usual table", { via: "call", callId: "call-7" }) }))!;
+      await answer(card, "Codex");
+      expect(resend.mock.calls[0]![2].text).toBe("book the usual table");
+      expect(resend.mock.calls[0]![4]).toEqual({ via: "call", callId: "call-7" });
+    });
+
+    it("carries no call id for a line that was not spoken, even one stored with an id", async () => {
+      const card = (await failed(QUOTA, { messageId: said("typed line", { callId: "call-7" }) }))!;
+      await answer(card, "Codex");
+      expect(resend.mock.calls[0]![4]).toEqual({});
     });
 
     it("resends an image-only message, transport tag and all", async () => {

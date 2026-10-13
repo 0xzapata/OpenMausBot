@@ -42,6 +42,7 @@ import type { Coordinator } from "./coordinator.ts";
 import { readyToRun, selectDefaultModelSelection, type SelectableInstance } from "./default-model-selection.ts";
 import { classifyError } from "./drivers/retry.ts";
 import { PROBE_TIMEOUT_MS } from "./engine-install.ts";
+import { spokenLineFields } from "./live-call-record.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
 import type { BotRecord, Message, Store, TaskRecord } from "./store.ts";
 import type { TurnStops } from "./turn-outcome.ts";
@@ -103,8 +104,10 @@ export interface QuotaSwitchDeps {
   request: (threadId: string) => QuotaRequest | undefined;
   /** Send `message` again as the person's own message, through the same
    * admission a typed message gets (it may queue), under the line it
-   * replied to. Rejects when it could not be sent. */
-  resend: (botId: string, threadId: string, message: Message, replyTo: Message | undefined) => Promise<unknown>;
+   * replied to. `spoken` says whether it was spoken on a Live call, and on
+   * which: the line sent again is as spoken as the first, so its words stay
+   * out of the log exactly as they did. Rejects when it could not be sent. */
+  resend: (botId: string, threadId: string, message: Message, replyTo: Message | undefined, spoken: { via?: "call"; callId?: string }) => Promise<unknown>;
   /** The kill switch; quotaSwitchEnabled (below) unless a test says otherwise. */
   enabled?: () => boolean;
   /** The clock a probe's wait runs on; a real timer unless a test says otherwise. */
@@ -425,7 +428,7 @@ export function createQuotaSwitch(deps: QuotaSwitchDeps): QuotaSwitch {
     } else {
       notice(threadId, `continuing on ${chosen.name} after hitting quota`, true);
       try {
-        await deps.resend(botId, threadId, original, original.replyToId ? store.messagesFor(threadId).find((message) => message.id === original.replyToId) : undefined);
+        await deps.resend(botId, threadId, original, original.replyToId ? store.messagesFor(threadId).find((message) => message.id === original.replyToId) : undefined, spokenLineFields(original.via, original.callId));
       } catch (error) {
         if (store.taskByThread(botId, threadId)) {
           notice(threadId, `could not continue on ${chosen.name} — ${(error instanceof Error ? error.message : String(error)).slice(0, 200)}`, false);

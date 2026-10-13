@@ -13883,7 +13883,7 @@ const quotaSwitch = createQuotaSwitch({
   reset: (from, to) => hostedModels?.resetTask(from, to),
   busy: threadBusy,
   request: threadId => directRequestOwners.get(threadId),
-  resend: (botId, threadId, message, replyTo) => startOrQueueDirectMessage(botId, threadId, message.text ?? "", replyTo, undefined, message.sender, undefined, undefined, undefined, message.dataContext),
+  resend: (botId, threadId, message, replyTo, spoken) => startOrQueueDirectMessage(botId, threadId, message.text ?? "", replyTo, undefined, message.sender, undefined, spoken.via, spoken.callId, message.dataContext),
 });
 
 /** A card the harness raised itself, on this thread: a peer approval or a
