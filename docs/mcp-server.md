@@ -126,8 +126,11 @@ described above; it is not a generic reverse-proxy secret.
 | Run work | `send_bot_message`, `send_channel_message`, `wait_for_conversation`, `interrupt_conversation`, `set_bot_model` |
 
 `wait_for_conversation` returns `settled`, `needs-user`, `failed`, `stalled`, or `timed-out`, along with a
-small redacted transcript tail, `state` (`completed`, `idle`, `needs-input`, `failed`, `stalled` or
-`timed-out`) and `job`: the conversation's job as the server computes it (`GET /api/threads/:id/job`), with
+small redacted transcript tail. That `status` keeps its earlier meaning: `settled` says the conversation is
+no longer working (`failed` and `stalled` say its engine died or went silent, or its dispatch failed). The
+result also carries `state`, the job's own verdict (`completed`, `idle`, `needs-input`, `failed`, `stalled`
+or `timed-out`: a lead whose work failed or was stopped is `failed` here even when `status` is `settled`),
+and `job`: the conversation's job as the server computes it (`GET /api/threads/:id/job`), with
 every piece of work it handed to a teammate (`coordinate_bots`, an assignment on the job runtime:
 docs/runtime-contract.md §9), who is doing it, how it ended, and anyone it is waiting on. A conversation is
 not settled while that work is outstanding; it settles once their results have resumed it and that turn has

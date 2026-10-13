@@ -58,12 +58,14 @@ export async function stopConversation(client: HeadlessClient, target: Target, t
   return { result, stopped: await stopTeammates(client, result.taskId, after.nodes ?? []) };
 }
 
+/** The exit code a wait's result earns, from the job's own state (MCP's
+ * `status` keeps older words: a lead whose work failed is "settled" there). */
 const exitFor = (result: Rec, strict: boolean): number => {
-  if (result.status === "settled") {
+  if (result.state === "completed" || result.state === "idle") {
     const failed = (result.job?.nodes ?? []).some((node: Rec) => node.status === "failed" || node.status === "cancelled");
     return strict && failed ? EXIT.failed : EXIT.done;
   }
-  return result.status === "needs-user" ? EXIT.needsInput : result.status === "timed-out" ? EXIT.timeout : EXIT.failed;
+  return result.state === "needs-input" ? EXIT.needsInput : result.state === "timed-out" ? EXIT.timeout : EXIT.failed;
 };
 
 interface Waited { result: Rec; exitCode: number; stopped?: Rec[] }

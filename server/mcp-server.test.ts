@@ -546,11 +546,24 @@ describe("waiting on a conversation's job", () => {
       jobs: [{ state: "needs-input", version: "v1", needsInput: [{ botName: "Priya", question: "Which tier?" }] }] });
     expect(await handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1", timeout_seconds: 1 }, needs.fetcher))
       .toMatchObject({ status: "needs-user", state: "needs-input", messages: [{ text: "Approve?" }], job: { needsInput: [{ question: "Which tier?" }] } });
-    for (const state of ["failed", "stalled"]) {
-      const ended = server({ fleet: bot(), jobs: [{ state, version: "v1" }] });
+    // an engine that died or went silent: the legacy words, as before
+    for (const [activity, state] of [["dead", "failed"], ["no-signal", "stalled"]] as const) {
+      const ended = server({ fleet: bot(), jobs: [{ state, version: "v1", conversation: { kind: "bot", busy: false, activity, queued: 0 } }] });
       expect(await handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1", timeout_seconds: 1 }, ended.fetcher))
         .toMatchObject({ status: state, state });
     }
+    // a lead whose work ended failed or stopped: settled in the legacy words (the conversation
+    // is done), failed in the job's own, which the command line's exit code follows
+    const stopped = server({ fleet: bot(), tail: [{ id: "m1", at: 1, role: "bot", kind: "text", text: "Partial answer" }],
+      jobs: [{ state: "failed", version: "v1", conversation: { kind: "bot", busy: false, activity: "idle", queued: 0 } }] });
+    expect(await handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1", timeout_seconds: 1 }, stopped.fetcher))
+      .toMatchObject({ status: "settled", state: "failed" });
+    // a dispatch that failed after the last message fails a job its record calls completed
+    const undispatched = server({ fleet: bot(), tail: [{ id: "u1", at: 1, role: "user", kind: "text", text: "Go" },
+      { id: "m2", at: 2, role: "bot", kind: "activity", tool: { name: "Error: could not start", ok: false, terminal: true } }],
+    jobs: [{ state: "completed", version: "v1" }] });
+    expect(await handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1", timeout_seconds: 1 }, undispatched.fetcher))
+      .toMatchObject({ status: "failed", state: "failed" });
     const idle = server({ fleet: bot(), jobs: [{ state: "idle", version: "v1" }] });
     expect(await handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1", timeout_seconds: 1 }, idle.fetcher))
       .toMatchObject({ status: "settled", state: "idle" });

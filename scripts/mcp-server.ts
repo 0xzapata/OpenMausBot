@@ -1152,17 +1152,17 @@ export async function handleToolCall(
       });
       const tail = await conversationTail(fetcher, taskId);
       const latest = find(await fleet(fetcher)) ?? target;
-      // The job's state, then what the transcript itself shows: an open card
-      // is the person's to answer, and a dispatch that failed after the last
-      // message failed whatever the record says.
-      const status = job.state === "needs-input" || tail.raw.some(messageNeedsInput) ? "needs-user"
-        : timedOut ? "timed-out"
-        : job.state === "failed" || job.state === "stalled" ? job.state
-        : dispatchFailedAfterLatestUser(tail.raw) ? "failed" : "settled";
+      // `status` keeps the words callers branch on: an ended conversation is
+      // settled unless an open card waits on the person, its engine died or
+      // went silent, or its dispatch failed after the last message. `state`
+      // is the job's own reading (a lead whose work failed is failed there).
+      const activity = job.conversation?.activity;
+      const status = job.state === "needs-input" || tail.raw.some(messageNeedsInput) ? "needs-user" : timedOut ? "timed-out"
+        : activity === "dead" ? "failed" : activity === "no-signal" ? "stalled" : dispatchFailedAfterLatestUser(tail.raw) ? "failed" : "settled";
+      const jobState = status === "needs-user" ? "needs-input" : status === "timed-out" ? "timed-out"
+        : status !== "settled" && (job.state === "completed" || job.state === "idle") ? status : job.state;
       return {
-        status,
-        state: status === "needs-user" ? "needs-input" : status === "settled" ? (job.state === "idle" ? "idle" : "completed") : status,
-        targetType, targetId, taskId,
+        status, state: jobState, targetType, targetId, taskId,
         target: targetType === "bot" ? projectBot(latest) : projectChannel(latest),
         messages: tail.messages, hasMore: tail.hasMore, job,
       };

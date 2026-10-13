@@ -186,6 +186,9 @@ describe("wait", () => {
     expect((await harness([failedTeammate]).run(["wait", "--bot", "lead", "--json"])).code).toBe(0);
     expect((await harness([failedTeammate]).run(["wait", "--bot", "lead", "--strict", "--json"])).code).toBe(1);
     expect((await harness([waited("failed", "failed", job("failed", "v1"))]).run(["wait", "--bot", "lead", "--json"])).code).toBe(1);
+    // the exit code follows the job's own state: a lead whose work failed is
+    // "settled" in MCP's older words, and still fails the run
+    expect((await harness([waited("settled", "failed", job("failed", "v1"))]).run(["wait", "--bot", "lead", "--json"])).code).toBe(1);
   });
 
   it("stops waiting on Ctrl-C (130), leaves the work running, and says how to pick it up again", async () => {
