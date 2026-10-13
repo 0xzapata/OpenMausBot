@@ -1,8 +1,8 @@
 // Every hand-off path on the job runtime (docs/runtime-contract.md §9), end
 // to end: the real server, the scripted fake Claude
 // (server/testing/room-handoff-agent.ts) as every engine. A routine run,
-// the deprecated aliases (delegate_bot, ask_bot, send_to_bot), a standing
-// external runtime and a restart mid-hand-off, graded on runtime state
+// a consultation, a one-way notice in a fresh thread, a standing external
+// runtime and a restart mid-hand-off, graded on runtime state
 // (DATA_DIR/runtime.db), routine receipts, the stored chats and what each
 // fake turn was told, never on model judgment. Each scenario runs on its
 // own isolated server.
@@ -165,7 +165,7 @@ async function scenario(test: (f: any) => Promise<void>) {
 it("R1 a routine run coordinates a teammate, waits, and completes through a routine resume turn", () => scenario(async (f) => {
   const brief = "R1-BRIEF: produce the fixture report and give the row count.";
   f.script(f.owner.id,
-    { key: "O0", match: ["R1-ROUTINE"], steps: [{ arguments: { bot_ids: [f.peer.id], message: brief } }], reply: "O0: handed to Peer." },
+    { key: "O0", match: ["R1-ROUTINE"], steps: [{ arguments: { bot_ids: [f.peer.id], message: brief, reason: "nightly check" } }], reply: "O0: handed to Peer." },
     { key: "O1", match: [SETTLED, REPORT_FROM_PEER], reply: "R1-FINAL: the fixture report has 42 rows." });
   f.script(f.peer.id, { key: "P1", match: ["R1-BRIEF"], gateFile: f.gate("r1-peer"), readyFile: f.ready("r1-peer"), reply: "R1-RESULT: 42 rows." });
   const { routine, run } = await f.startRoutine("R1 report", "R1-ROUTINE: have Peer produce the fixture report, then summarise it.");
@@ -201,56 +201,16 @@ it("R1 a routine run coordinates a teammate, waits, and completes through a rout
   await expect.poll(() => f.roots()[0]?.status, { timeout: 15_000 }).toBe("completed");
   expect(f.children()).toHaveLength(1);
   expect(f.children()[0]).toMatchObject({ status: "completed", mode: "work", reply: "resume", botId: f.peer.id, text: brief });
-  // The run's conversation shows the result once, as the person reads it.
+  // The run's conversation shows the result once, as the person reads it,
+  // and the chip in it carries the reason the hand-off gave.
   expect((await f.messages(run.threadId)).filter((message: any) => message.tool?.name === "Peer replied")).toHaveLength(1);
+  expect((await f.messages(run.threadId)).find((message: any) => message.tool?.name === "Sent to Peer")?.tool?.output).toBe("nightly check");
 }), hostTimeout(120_000));
 
-// R2. The delegate_bot alias from a routine turn is the same hand-off: the
-// receipt carries the deprecation line, the run waits and resumes as a
-// routine turn, and the id handed out this turn may not be polled until
-// the next.
-it("R2 the delegate_bot alias from a routine turn behaves the same and says it is deprecated", () => scenario(async (f) => {
-  const brief = "R2-BRIEF: check the nightly backup and report its size.";
-  f.script(f.owner.id,
-    { key: "O0", match: ["R2-ROUTINE"], gateFile: f.gate("r2-owner"), readyFile: f.ready("r2-owner"), reply: "O0: delegated through the alias." },
-    { key: "O1", match: [SETTLED, REPORT_FROM_PEER], reply: "R2-FINAL: the backup is 3 GB." });
-  f.script(f.peer.id, { key: "P1", match: ["R2-BRIEF"], reply: "R2-RESULT: 3 GB." });
-  const { run } = await f.startRoutine("R2 backup", "R2-ROUTINE: have Peer check the nightly backup.");
-  await f.awaitReady("r2-owner");
-  const token = await f.tokenOf(run.threadId);
-
-  const delegated = await f.api("POST", "/api/internal/delegate-bot", { toBotId: f.peer.id, message: brief, reason: "nightly check" }, token);
-  expect(delegated.status, JSON.stringify(delegated.body)).toBe(200);
-  expect(delegated.body.deprecation).toContain("delegate_bot is replaced by coordinate_bots");
-  expect(delegated.body.receipts).toHaveLength(1);
-  expect(delegated.body.receipts[0]).toMatchObject({ botId: f.peer.id, outcome: "queued" });
-  expect(delegated.body.message).toContain("End your turn");
-  const requestId = delegated.body.receipts[0].requestId;
-  // Handed out this turn: its status waits for the next turn.
-  const early = await f.api("GET", `/api/internal/assignment-status?id=${requestId}`, undefined, token);
-  expect(early.status).toBe(409);
-  // The root is the run's, with routine lineage; the child carries the brief.
-  await expect.poll(() => f.children().length, { timeout: 15_000 }).toBe(1);
-  expect(f.children()[0]).toMatchObject({ id: requestId, mode: "work", reply: "resume", text: brief, botId: f.peer.id });
-  expect(f.roots()[0]).toMatchObject({ threadId: run.threadId, botId: f.owner.id });
-
-  f.open("r2-owner");
-  await expect.poll(async () => (await f.runState(run.id))?.status, { timeout: 45_000 }).toBe("completed");
-  expect((await f.runState(run.id)).output).toContain("R2-FINAL");
-  await expect.poll(() => f.turns(f.owner.id).map((record: any) => [record.planKey, record.resumed]), { timeout: 15_000 }).toEqual([["O0", false], ["O1", true]]);
-  expect(f.told(f.turn("O1"))).toContain(ROUTINE_TURN);
-  expect(f.told(f.turn("O1"))).toContain("R2-RESULT: 3 GB");
-  expect(f.own(f.turn("P1"))).toContain("A routine run started this work");
-  // The chip in the run's conversation carries the reason the alias gave.
-  const sent = (await f.messages(run.threadId)).find((message: any) => message.tool?.name === "Sent to Peer");
-  expect(sent?.tool?.output).toBe("nightly check");
-  await expect.poll(() => f.roots()[0]?.status, { timeout: 15_000 }).toBe("completed");
-}), hostTimeout(120_000));
-
-// R3. The ask_bot alias is a consultation: no inline wait any more. The
-// route answers at once with the deprecation line; the teammate's turn opens
+// R3. A consultation (coordinate_bots with consult: true) has no inline
+// wait: the route answers at once with the receipt; the teammate's turn opens
 // with the consultation envelope; the asker is resumed with the report.
-it("R3 the ask_bot alias consults a teammate without waiting and resumes the asker with the answer", () => scenario(async (f) => {
+it("R3 a consultation reaches a teammate without waiting and resumes the asker with the answer", () => scenario(async (f) => {
   const question = "R3-QUESTION: which port does the fixture listen on?";
   f.script(f.owner.id,
     { key: "O0", match: ["R3-ASK"], gateFile: f.gate("r3-owner"), readyFile: f.ready("r3-owner"), reply: "O0: asked Peer." },
@@ -262,11 +222,11 @@ it("R3 the ask_bot alias consults a teammate without waiting and resumes the ask
   const token = await f.tokenOf(job);
 
   const started = Date.now();
-  const asked = await f.api("POST", "/api/internal/ask-bot", { toBotId: f.peer.id, message: question }, token);
+  const asked = await f.api("POST", "/api/internal/coordinate-bots", { botIds: [f.peer.id], message: question, consult: true }, token);
   expect(asked.status, JSON.stringify(asked.body)).toBe(200);
   // Immediate: nothing waited for the teammate's turn.
   expect(Date.now() - started).toBeLessThan(5_000);
-  expect(asked.body.deprecation).toContain("ask_bot is replaced by coordinate_bots(consult: true)");
+  expect(asked.body.deprecation).toBeUndefined();
   expect(asked.body.text).toBeUndefined();
   expect(asked.body.receipts[0]).toMatchObject({ botId: f.peer.id, outcome: "queued" });
   await expect.poll(() => f.children().length, { timeout: 15_000 }).toBe(1);
@@ -286,10 +246,11 @@ it("R3 the ask_bot alias consults a teammate without waiting and resumes the ask
   expect(f.children()[0]).toMatchObject({ status: "completed", result: "R3-ANSWER: port 4242." });
 }), hostTimeout(120_000));
 
-// R4. The send_to_bot alias is a one-way notice in a fresh thread on the
-// teammate: the child is a notify row nobody awaits, its envelope says the
-// sender is not waiting, and the sender is never resumed.
-it("R4 the send_to_bot alias opens a notify child in a new thread and never resumes the sender", () => scenario(async (f) => {
+// R4. coordinate_bots with thread "new" and reply "none" is a one-way
+// notice in a fresh thread on the teammate: the child is a notify row nobody
+// awaits, its envelope says the sender is not waiting, and the sender is
+// never resumed.
+it("R4 a one-way notice opens a notify child in a new thread and never resumes the sender", () => scenario(async (f) => {
   const notice = "R4-NOTICE: own the release QA from here.";
   f.script(f.owner.id, { key: "O0", match: ["R4-SEND"], gateFile: f.gate("r4-owner"), readyFile: f.ready("r4-owner"), reply: "O0: sent onward." });
   f.script(f.peer.id, { key: "P1", match: ["R4-NOTICE"], reply: "R4-DONE: release QA owned." });
@@ -298,17 +259,17 @@ it("R4 the send_to_bot alias opens a notify child in a new thread and never resu
   await f.awaitReady("r4-owner");
   const token = await f.tokenOf(job);
 
-  const sent = await f.api("POST", "/api/internal/threads", { toBotId: f.peer.id, title: "R4 release QA", message: notice, oneWay: true }, token);
+  const sent = await f.api("POST", "/api/internal/coordinate-bots", { botIds: [f.peer.id], message: notice, thread: "new", reply: "none" }, token);
   expect(sent.status, JSON.stringify(sent.body)).toBe(200);
-  expect(sent.body.deprecation).toContain("send_to_bot is replaced by coordinate_bots(thread: \"new\", reply: \"none\")");
+  expect(sent.body.deprecation).toBeUndefined();
   expect(sent.body.message).toContain("Nothing comes back");
   const receipt = sent.body.receipts[0];
   expect(receipt).toMatchObject({ botId: f.peer.id, outcome: "queued" });
-  // A fresh thread on the teammate, titled by the call.
+  // A fresh thread on the teammate, titled by the message.
   expect(receipt.threadId).toEqual(expect.any(String));
   expect(receipt.threadId).not.toBe(f.peer.activeTaskId);
   const peerTasks = (await f.bot(f.peer.id)).tasks;
-  expect(peerTasks.find((task: any) => task.threadId === receipt.threadId)?.title).toBe("R4 release QA");
+  expect(peerTasks.find((task: any) => task.threadId === receipt.threadId)?.title).toBe(notice);
   await expect.poll(() => f.children().length, { timeout: 15_000 }).toBe(1);
   expect(f.children()[0]).toMatchObject({ id: receipt.requestId, mode: "notify", reply: "none", threadId: receipt.threadId, text: expect.stringContaining(notice) });
 

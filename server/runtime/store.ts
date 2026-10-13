@@ -21,6 +21,9 @@ const evidenceSchema = z.object({
   filesChanged: z.array(z.string()).optional(),
   toolCalls: z.number().int().nonnegative().optional(),
   summary: z.string().optional(),
+  okToolCalls: z.number().int().nonnegative().optional(),
+  errors: z.array(z.string()).optional(),
+  outward: z.array(z.string()).optional(),
 });
 
 const assignmentSchema = z.object({
@@ -57,6 +60,7 @@ const assignmentSchema = z.object({
   reply: z.enum(["resume", "poll", "none"]),
   brief: z.string(),
   doneWhen: z.string().optional(),
+  goalRunId: z.string().optional(),
   status: z.enum(["queued", "running", "needs_input", "waiting", "resume", "completed", "failed", "cancelled"]),
   outcome: z.enum(["done", "needs_input", "cap_continued", "stalled", "interrupted", "budget", "provider_error", "denied",
     "expired", "stopped", "refused", "duplicate"]).optional(),
@@ -77,6 +81,13 @@ const assignmentSchema = z.object({
   question: z.string().optional(),
   answer: z.string().optional(),
   budgets: z.object({ since: z.number(), requests: z.number(), executions: z.number(), wakes: z.number() }).optional(),
+  // A root parked on the person's cards, and a node that continues in place:
+  // both must come back whole, or a park would lose its cards on the next
+  // read (the schema strips what it does not name).
+  cards: z.array(z.string()).optional(),
+  continuation: z.object({ note: z.string(), handoffPath: z.string().optional(), count: z.number().int().nonnegative() }).optional(),
+  // The loop guard's record outlives the continuation the dispatch consumes.
+  guard: z.object({ stale: z.number().int().nonnegative(), errors: z.array(z.string()) }).optional(),
   approved: z.boolean().optional(),
   batchKey: z.string().optional(),
   version: z.literal(1),

@@ -55,8 +55,20 @@
 //                      fresh each run: a one-shot prompt containing a marker
 //                      gets that reply (first match wins), before
 //                      FAKE_CLAUDE_TEXT_FILE is consulted.
+//   FAKE_CLAUDE_CACHE_READ_TOKENS cache_read_input_tokens each ordinary
+//                      turn's model calls report (default 2).
+//   FAKE_CLAUDE_PING_DUMP path: a keep-warm ping (one-shot json run with
+//                      --fork-session) writes {argv, env, prompt, mcpConfig,
+//                      settings, systemPrompt} here, read while its private
+//                      files still exist.
+//   FAKE_CLAUDE_PING_USAGE JSON usage for a keep-warm ping's result
+//                      (default: a warm read of 150000, write of 40).
+//   FAKE_CLAUDE_PING_RESULT raw json result for a keep-warm ping, verbatim.
 //   FAKE_CLAUDE_TEXT_DUMP like FAKE_CLAUDE_DUMP, but for one-shot text runs,
 //                      so they never overwrite a turn's dump mid-test.
+//   FAKE_CLAUDE_TEXT_LOG path of a JSON-lines file every one-shot prompt is
+//                      appended to, for a test that needs one step's prompt
+//                      when later background steps overwrite the dump.
 //   FAKE_CLAUDE_TEXT_HANG when set, the one-shot text mode never replies —
 //                      the caller's abort signal is the only way it ends,
 //                      which is exactly what its tests need to prove.
@@ -78,6 +90,12 @@
 //                      through them, over stdio, the way a model's first
 //                      computer call does; the call and its result are
 //                      reported like any tool call before the reply.
+//   FAKE_CLAUDE_CONNECT_APPS comma-separated toolkits (gmail,slack): a turn
+//                      launched with the connected-apps tools (the `composio`
+//                      server in --mcp-config) first starts a connection to
+//                      them with COMPOSIO_MANAGE_CONNECTIONS through that
+//                      server, over stdio, the way a model asks for a Connect
+//                      card; reported like any tool call before the reply.
 //   FAKE_CLAUDE_HOOKS  1: honour the `hooks` block of the --settings file the
 //                      way the real CLI does — after each tool_result run
 //                      every PostToolUse command with the event JSON on
@@ -355,6 +373,29 @@ if (["text", "json"].includes(argAfter("--output-format") ?? "")) {
     process.stdin.on("data", (chunk) => { input += chunk; });
     process.stdin.on("end", () => resolve(input));
   });
+  // A keep-warm ping: a fork of a live session that is never persisted.
+  if (argv.includes("--fork-session")) {
+    const read = (flag: string) => {
+      const path = argAfter(flag);
+      if (!path) return null;
+      try { return readFileSync(path, "utf8"); } catch { return null; }
+    };
+    if (process.env.FAKE_CLAUDE_PING_DUMP) {
+      writeDumpAtomic(process.env.FAKE_CLAUDE_PING_DUMP, JSON.stringify({
+        pid: process.pid, argv, env: process.env, prompt, cwd: process.cwd(),
+        mcpConfig: JSON.parse(read("--mcp-config") ?? "null"),
+        settings: JSON.parse(read("--settings") ?? "null"),
+        systemPrompt: read("--append-system-prompt-file"),
+      }, null, 2));
+    }
+    const pingModel = argAfter("--model") ?? "claude-fake";
+    const usage = JSON.parse(process.env.FAKE_CLAUDE_PING_USAGE ?? '{"input_tokens":4,"cache_read_input_tokens":150000,"cache_creation_input_tokens":40,"output_tokens":3}');
+    process.stdout.write(process.env.FAKE_CLAUDE_PING_RESULT ?? JSON.stringify({
+      type: "result", is_error: false, result: "warm", session_id: "fake-fork", usage, total_cost_usd: 0.05,
+      modelUsage: { [pingModel]: { costUSD: 0.05 } },
+    }));
+    process.exit(0);
+  }
   // Memory upkeep's background one-shots (on for every bot) and the
   // automatic skill review never overwrite the shared turn dump a test
   // reads; FAKE_CLAUDE_TEXT_DUMP still records them.
@@ -366,6 +407,7 @@ if (["text", "json"].includes(argAfter("--output-format") ?? "")) {
       JSON.stringify({ pid: process.pid, argv, env: process.env, prompt, mcpConfig: null }, null, 2),
     );
   }
+  if (process.env.FAKE_CLAUDE_TEXT_LOG) appendFileSync(process.env.FAKE_CLAUDE_TEXT_LOG, `${JSON.stringify({ prompt })}\n`);
   if (process.env.FAKE_CLAUDE_TEXT_HANG) {
     // a repeating timer keeps the loop alive without settling the
     // top-level await, which Node would otherwise treat as fatal
@@ -491,6 +533,16 @@ const promptText = (prompt: JsonValue): string => {
   const m = prompt && typeof prompt === "object" && !Array.isArray(prompt) ? (prompt as { message?: { content?: unknown } }).message : undefined;
   return typeof m?.content === "string" ? m.content : "";
 };
+/** A steered message as the reply names it: its words, and one `[image]`
+ * per native image block, so a test can see the pictures were folded in. */
+const steeredText = (prompt: JsonValue): string => {
+  const m = prompt && typeof prompt === "object" && !Array.isArray(prompt) ? (prompt as { message?: { content?: unknown } }).message : undefined;
+  if (!Array.isArray(m?.content)) return promptText(prompt);
+  return m.content
+    .map((block: { type?: unknown; text?: unknown }) => block?.type === "image" ? "[image]" : typeof block?.text === "string" ? block.text.trim() : "")
+    .filter(Boolean)
+    .join(" ");
+};
 
 /** A message the finished turn could not fold runs as the next turn — once
  * FAKE_CLAUDE_LATE_STEER_INIT_GATE, if set, lets its `init` out. True while
@@ -577,6 +629,52 @@ const useCloudComputer = () => {
   const ran = spawnSync(server.command, server.args, {
     input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "screenshot", arguments: {} } })}\n`,
     env: { ...process.env, ...server.env }, encoding: "utf8", timeout: 150_000,
+  });
+  let reply: { result?: { isError?: boolean; content?: unknown }; error?: { message?: string } } = {};
+  try { reply = JSON.parse(ran.stdout.trim().split("\n")[0] ?? ""); } catch { reply = { error: { message: ran.stderr || "no answer" } }; }
+  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id,
+    is_error: Boolean(reply.error || reply.result?.isError), content: reply.result?.content ?? reply.error?.message ?? "" }] } });
+};
+
+// Runs in a child of this process: launch the MCP server, send one request,
+// print the reply that answers it, then close. The connected-apps bridge
+// exits as soon as its stdin closes, before an answer that needs a round trip
+// to the harness, so this keeps stdin open until the reply arrives; spawnSync
+// around it keeps the turn loop synchronous.
+const MCP_CALL_PROGRAM = `
+const { spawn } = require("node:child_process");
+const { command, args, env, request } = JSON.parse(process.argv[1]);
+const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "inherit"] });
+let buffer = "";
+child.stdout.on("data", (chunk) => {
+  buffer += chunk;
+  for (const line of buffer.split("\\n").slice(0, -1)) {
+    let reply;
+    try { reply = JSON.parse(line); } catch { continue; }
+    if (reply.id !== request.id) continue;
+    process.stdout.write(JSON.stringify(reply) + "\\n");
+    child.kill();
+    process.exit(0);
+  }
+  buffer = buffer.slice(buffer.lastIndexOf("\\n") + 1);
+});
+child.on("exit", () => process.exit(1));
+child.stdin.write(JSON.stringify(request) + "\\n");
+`;
+
+/** COMPOSIO_MANAGE_CONNECTIONS through the launched connected-apps server, if
+ * this turn has one: the bridge turns it into a Connect card in the chat. */
+const connectApps = (toolkits: string[]) => {
+  launchFiles ??= readLaunchFiles();
+  const server = (launchFiles.mcpConfig as { mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }> } | null)
+    ?.mcpServers?.composio;
+  if (!server?.command) return;
+  const id = `tu-${process.pid}-${++toolUseCount}`;
+  const input = { toolkits };
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "mcp__composio__COMPOSIO_MANAGE_CONNECTIONS", input }] } });
+  const request = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: input } };
+  const ran = spawnSync(process.execPath, ["-e", MCP_CALL_PROGRAM, JSON.stringify({ command: server.command, args: server.args ?? [], env: server.env ?? {}, request })], {
+    encoding: "utf8", timeout: 60_000,
   });
   let reply: { result?: { isError?: boolean; content?: unknown }; error?: { message?: string } } = {};
   try { reply = JSON.parse(ran.stdout.trim().split("\n")[0] ?? ""); } catch { reply = { error: { message: ran.stderr || "no answer" } }; }
@@ -781,6 +879,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
   }
 
   if (process.env.FAKE_CLAUDE_USES_CLOUD_COMPUTER === "1") useCloudComputer();
+  if (process.env.FAKE_CLAUDE_CONNECT_APPS) connectApps(process.env.FAKE_CLAUDE_CONNECT_APPS.split(",").filter(Boolean));
 
   let replyParts = nextScriptedReply();
   const defaultToolId = `tu-${process.pid}-${++toolUseCount}`;
@@ -798,7 +897,10 @@ const playTurn = (prompt: JsonValue, late = false) => {
     const context = runHooks("SessionStart", { source: "compact" });
     if (context.trim()) replyParts = [`${context.trim()}\n\n${replyParts[0] ?? ""}`, ...replyParts.slice(1)];
   }
-  const usage = { input_tokens: 10, cache_read_input_tokens: 2, output_tokens: 5 };
+  // FAKE_CLAUDE_CACHE_READ_TOKENS: a big cached context on each model call
+  // (keep-warm arms only above 50k), default 2.
+  const cacheRead = Number(process.env.FAKE_CLAUDE_CACHE_READ_TOKENS);
+  const usage = { input_tokens: 10, cache_read_input_tokens: Number.isSafeInteger(cacheRead) && cacheRead > 0 ? cacheRead : 2, output_tokens: 5 };
   if (scriptedToolCalls) {
     // scripted calls come first, each settled before the reply text
     for (const call of scriptedToolCalls) {
@@ -926,7 +1028,7 @@ process.stdin.on("data", (c) => {
       // behind any queued message whose turn has not been announced yet
       if (process.env.FAKE_CLAUDE_LATE_STEER_GATE) lateSteers.push(prompt);
       else {
-        steered.push(promptText(prompt));
+        steered.push(steeredText(prompt));
         steeredMessages.push(prompt);
       }
       if (process.env.FAKE_CLAUDE_STEER_RECEIVED) writeFileSync(process.env.FAKE_CLAUDE_STEER_RECEIVED, "received");

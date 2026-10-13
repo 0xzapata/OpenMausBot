@@ -307,6 +307,9 @@ export class ProviderRegistry {
             queueing: inst.adapter.capabilities.queueing === true,
             localComputerMcp: inst.adapter.capabilities.localComputerMcp === true,
             approvalReview: inst.reviewPermission !== undefined,
+            // the background steps' one-shot (memory upkeep, the skill
+            // review): either text call serves them
+            backgroundText: inst.generateText !== undefined || inst.generateMemoryText !== undefined,
           },
           access: driver?.metadata.access ?? "subscription",
           install: withServerInstall(driver?.install, npmPresent),

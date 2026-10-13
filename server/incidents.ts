@@ -5,7 +5,7 @@
 // from a phone, by opening the desktop and reading every thread. The team
 // already has a role for exactly this — the Chief coordinates the section —
 // so an incident is delivered to the Chief as a turn of its own, with a
-// link to the thread and the means to act (retry_thread, delegate_bot), and
+// link to the thread and the means to act (retry_thread, coordinate_bots), and
 // the person reads one place: the Chief's "Team incidents" thread.
 //
 // The policy here is pure so it can be read and tested on its own; the

@@ -148,6 +148,7 @@ const bridge = {
     requestCode: (email) => ipcRenderer.invoke("companion-account:request-code", email),
     verifyCode: (email, code) => ipcRenderer.invoke("companion-account:verify-code", email, code),
     retry: () => ipcRenderer.invoke("companion-account:retry"),
+    prepare: () => ipcRenderer.invoke("companion-account:prepare"),
     signOut: () => ipcRenderer.invoke("companion-account:sign-out"),
   },
   /** Full/Custom and transitions out of Custom are deliberately unavailable

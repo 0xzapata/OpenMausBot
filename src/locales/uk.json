@@ -739,6 +739,7 @@
   "task.switchWithUsage": "Усі гілки · {label} ({input} вхід · {output} вихід)",
   "task.switch": "Усі гілки",
   "task.otherActivity": "Інша активність ({count})",
+  "task.workingElsewhere": "Працює в інших гілках: {count}",
   "task.search": "Пошук гілок",
   "task.renameAria": "Перейменувати гілку",
   "task.renameNamed": "Перейменувати {title}",
@@ -1547,6 +1548,7 @@
   "room.pinHint": "Закріпити це повідомлення вгорі гілки групи",
   "room.fallbackBot": "Бот",
   "room.aBot": "Бот",
+  "room.memberWorkingElsewhere": "{name} працює в іншій гілці",
   "room.responder.everyone": "Звичайні повідомлення йдуть кожному члену групи; @теги це перебивають",
   "room.responder.mentions": "Відповідають лише явно @тегнуті боти",
   "room.responder.lead": "Звичайні повідомлення йдуть до {name}; @теги це перебивають",
@@ -2139,5 +2141,10 @@
   "settings.sendKey.subtitle": "Оберіть Shift+Enter або {key}, щоб Enter починав новий рядок, — зручно, коли метод введення підтверджує текст клавішею Enter, як-от під час введення японською. {key} надсилає за будь-якого вибору. Лише на цьому пристрої.",
   "computer.files.homeFolder": "Домашня папка",
   "computer.files.changeDefaultFolder": "Змінити типову папку",
-  "computer.files.pinnedFolderHint": "Ця розмова зберігає свою поточну папку. Змініть типову папку для нових розмов."
+  "computer.files.pinnedFolderHint": "Ця розмова зберігає свою поточну папку. Змініть типову папку для нових розмов.",
+  "room.holds.banner": "Зупинені вами: {names}. Згадайте бота через @ або напишіть resume, щоб повернути його.",
+  "room.holds.resume": "Відновити {name}",
+  "room.holds.stop": "Зупинити {name}",
+  "room.holds.stopTitle": "Зупинити лише {name}; решта кімнати працює далі",
+  "room.holds.avatarHeld": "{name} — призупинено (зупинено вами)"
 }

@@ -161,6 +161,12 @@ app.whenReady().then(async () => {
   const revoked = await coordinator.request(child, whole.id, "ask", { allThreads: true });
   assert.equal(revoked.approvalMode, "ask");
   assert.ok(revoked.tasks.every(task => task.approvalMode === "ask"));
+  // Auto and Edits reach every thread the same way, in one write with no
+  // grant phases (how a team-wide level leaves Custom).
+  const autoEverywhere = await coordinator.request(child, whole.id, "auto", { allThreads: true });
+  assert.equal(autoEverywhere.approvalMode, "auto");
+  assert.ok(autoEverywhere.tasks.every(task => task.approvalMode === "auto"));
+  assert.ok((await coordinator.request(child, whole.id, "ask", { allThreads: true })).tasks.every(task => task.approvalMode === "ask"));
   console.log(JSON.stringify({ allThreads: true, mixedProviders: true, archivedIncluded: true, futureInherits: true, unrelatedBotUnchanged: true, persisted: true }));
   if (process.argv.includes("--all-threads-only")) { await verifyUi(); return; }
   const created = await api("/api/bots", "POST", { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
@@ -371,7 +377,7 @@ app.whenReady().then(async () => {
   assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvePeerComms: false })).status, 200);
   const capability = await api("/api/testing/internal-capability", "POST", { botId: id, threadId: created.body.bot.threadId }, { "x-openmausbot-test-capability": testCapabilityKey });
   assert.equal(capability.status, 201);
-  const peerResponse = await api("/api/internal/ask-bot", "POST", { toBotId: peerTarget.id, message: "Peer-initiated permission fixture" }, { authorization: `Bearer ${capability.body.token}` });
+  const peerResponse = await api("/api/internal/coordinate-bots", "POST", { botIds: [peerTarget.id], message: "Peer-initiated permission fixture", consult: true }, { authorization: `Bearer ${capability.body.token}` });
   assert.equal(peerResponse.status, 200);
   // Coordination opens its own work thread without selecting it in the UI.
   const peerWorkThreadId = peerResponse.body.receipts[0].threadId;
@@ -396,7 +402,7 @@ app.whenReady().then(async () => {
   const revokedPeer = (await api("/api/bots?messages=0")).body.bots.find((bot) => bot.id === peerTarget.id);
   assert.equal(revokedPeer.tasks.find((task) => task.threadId === peerWorkThreadId).approvalMode, "ask");
   assert.equal(revokedPeer.tasks.find((task) => task.threadId === peerThread.threadId).approvalMode, "full");
-  const askPeerResponse = await api("/api/internal/ask-bot", "POST", { toBotId: peerTarget.id, message: "Ask target must not inherit sender Full" }, { authorization: `Bearer ${capability.body.token}` });
+  const askPeerResponse = await api("/api/internal/coordinate-bots", "POST", { botIds: [peerTarget.id], message: "Ask target must not inherit sender Full", consult: true }, { authorization: `Bearer ${capability.body.token}` });
   assert.equal(askPeerResponse.status, 200);
   assert.equal(askPeerResponse.body.receipts[0].threadId, peerWorkThreadId);
   const peerCard = await until(async () => pendingCard((await api(`/api/threads/${peerWorkThreadId}/messages`)).body));
@@ -413,7 +419,7 @@ app.whenReady().then(async () => {
   // the residual approval fold must use that same effective Auto mode.
   const customTarget = (await api("/api/bots", "POST", { modelSelection: { instanceId: "codex", model: "gpt-fake-default" } })).body.bot;
   await coordinator.request(child, customTarget.id, "custom");
-  const customResponse = await api("/api/internal/ask-bot", "POST", { toBotId: customTarget.id, message: "Delegated Custom uses the native Auto reviewer" }, { authorization: `Bearer ${capability.body.token}` });
+  const customResponse = await api("/api/internal/coordinate-bots", "POST", { botIds: [customTarget.id], message: "Delegated Custom uses the native Auto reviewer", consult: true }, { authorization: `Bearer ${capability.body.token}` });
   assert.equal(customResponse.status, 200);
   const customThreadId = customResponse.body.receipts[0].threadId;
   assert.ok(customThreadId);

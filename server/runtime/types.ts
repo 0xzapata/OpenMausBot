@@ -110,6 +110,10 @@ export interface Assignment {
   brief: string;
   /** The requester's own completion criterion, if it gave one. */
   doneWhen?: string;
+  /** A root that is one step of a room goal run (the run's id): the run
+   * routes its steps, so the step neither parks nor continues in place and
+   * is not run again after a restart. Written at begin, never changed. */
+  goalRunId?: string;
   status: Status;
   outcome?: Outcome;
   outcomeDetail?: string;
@@ -144,6 +148,18 @@ export interface Assignment {
   answer?: string;
   /** On a root only: the budget window since its last durable progress. */
   budgets?: { since: number; requests: number; executions: number; wakes: number };
+  /** While parked on the person's cards (a root): the ids of the cards the
+   * turn left open; the answer arrives when the person acts on them. */
+  cards?: string[];
+  /** The next execution continues the last one in place: after a step cap,
+   * or a wait the host could not hold (a computer seat). Cleared at dispatch. */
+  continuation?: { note: string; handoffPath?: string; count: number };
+  /** While a node continues in place: what its continuing executions showed,
+   * for the loop guard (tree.ts loopStop). `stale` is the run of consecutive
+   * continuations whose evidence showed no successful tool call; `errors`
+   * the last three tool error texts across them. Cleared when a turn ends
+   * any other way. */
+  guard?: { stale: number; errors: string[] };
   /** A peer-review card allowed this before it was sent. */
   approved?: boolean;
   /** A room brief shown once per call: every recipient of that call shares it. */
@@ -157,12 +173,19 @@ export interface TurnEvidence {
   filesChanged?: string[];
   toolCalls?: number;
   summary?: string;
+  /** Tool calls of this execution that returned ok. */
+  okToolCalls?: number;
+  /** The tool error texts of this execution, oldest first, at most 3, each clipped to 200 chars. */
+  errors?: string[];
+  /** Outward actions this execution completed — sends, posts, publishes, commits, pushes, payments —
+   * as short labels ("GMAIL_SEND_EMAIL", "git push", "COMPOSIO_PROXY_EXECUTE"). */
+  outward?: string[];
 }
 
 export type EventKind =
   | "enqueued" | "refused" | "admitted" | "started" | "progress" | "parked" | "answered"
   | "waiting" | "resume_due" | "settled" | "reported" | "woken" | "cancelled"
-  | "restart_reconciled" | "budget" | "stalled";
+  | "restart_reconciled" | "budget" | "stalled" | "continued";
 
 export interface AssignmentEvent {
   id: number;
@@ -223,7 +246,7 @@ export interface RunInput {
   /** Which turn of the node this is: its first; a resume that returns its
    * settled children's results; its own turn run again after a restart cut
    * it; or the turn after the person answered its question. */
-  turn: "first" | "resume" | "rerun" | "answered";
+  turn: "first" | "resume" | "rerun" | "answered" | "continued";
   /** Not the node's first turn (any `turn` but "first"). */
   resumed: boolean;
   /** What the restart did, for the first line of the turn ("" when nothing). */
@@ -234,6 +257,9 @@ export interface RunInput {
   answer?: string;
   /** The settled children whose results this (resume) turn returns. */
   settled?: Assignment[];
+  /** For a continued turn: why it continues and, after a step cap, where
+   * the steps so far are listed. */
+  continuation?: { note: string; handoffPath?: string };
   level: Level;
   mode: Mode;
 }
@@ -241,7 +267,21 @@ export interface RunInput {
 export type RunResult =
   | { kind: "completed"; text: string; evidence?: TurnEvidence }
   | { kind: "failed"; outcome: Exclude<Outcome, "done" | "needs_input">; text: string; evidence?: TurnEvidence }
-  | { kind: "needs_input"; question: string; evidence?: TurnEvidence };
+  | { kind: "needs_input"; question: string; cards?: string[]; evidence?: TurnEvidence }
+  /** The turn stopped short (a step cap, a seat it could not get) and the
+   * same node continues in place with its next execution. */
+  | { kind: "continue"; text: string; note: string; handoffPath?: string; evidence?: TurnEvidence };
+
+/** How a host-run root turn ended (Runtime.end). */
+export interface EndResult {
+  ok: boolean;
+  text: string;
+  evidence?: TurnEvidence;
+  /** The turn left the person something to act on: it parks until they do. */
+  needsInput?: { question: string; cards?: string[] };
+  /** The turn stopped short and continues in place. */
+  continue?: { note: string; handoffPath?: string };
+}
 
 export interface Owner {
   botId?: string;
@@ -283,6 +323,12 @@ export interface TurnRunner {
   changed(assignments: readonly Assignment[]): void;
   /** Display names for the envelope of a turn (ids are the fallback). */
   names(a: Assignment, parent?: Assignment): EnvelopeNames;
+  /** What the cut turn of this node already did outward (sent, posted,
+   * pushed, paid), as short labels. Read at open() only, for a running node
+   * with no children started since its turn began: a turn that acted
+   * outward is not run again (contract §5). Absent or empty: nothing known,
+   * so the turn reruns once. */
+  outward?(a: Assignment): string[];
 }
 
 export interface Clock {

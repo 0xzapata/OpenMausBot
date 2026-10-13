@@ -7,6 +7,7 @@ import {
   skillAuthoringEnabled,
   skillReviewEnabled,
   skillReviewSteps,
+  skillReviewUnavailableEngines,
 } from "@/lib/feature-flags";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { t } from "@/lib/i18n";
@@ -19,6 +20,7 @@ export function SkillReviewSettings() {
   const authoring = skillAuthoringEnabled(state.config);
   const enabled = skillReviewEnabled(state.config);
   const confirmedSteps = skillReviewSteps(state.config);
+  const unavailable = skillReviewUnavailableEngines(state.bots, state.instances);
   const [value, setValue] = useState(String(confirmedSteps));
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -77,6 +79,7 @@ export function SkillReviewSettings() {
           className="disabled:cursor-not-allowed disabled:opacity-50"
         />
       </div>
+      <SkillReviewEngineNote engines={unavailable} />
       {enabled ? (
         <div className="mt-3 flex items-center gap-3">
           <label htmlFor="skill-review-steps" className="text-[13px] text-ink">
@@ -113,5 +116,16 @@ export function SkillReviewSettings() {
       ) : null}
       {error ? <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p> : null}
     </div>
+  );
+}
+
+/** One line under the switch when some bots' engine cannot run the review,
+ * so the switch never promises what will not happen for them. */
+export function SkillReviewEngineNote({ engines }: { engines: readonly string[] }) {
+  if (!engines.length) return null;
+  return (
+    <p className="mt-2 text-[12px] leading-relaxed text-ink-secondary" data-testid="skill-review-engine-note">
+      {t("settings.experimental.skillReviewNoEngine", { engines: engines.join(", ") })}
+    </p>
   );
 }

@@ -273,13 +273,6 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
             environment: { FAKE_ACP_MODE: "ask-peer" },
             config: { cli: FAKE_CLI, fullAuto: true },
           },
-          // the same asker on the deprecated alias (ask_bot), for the one
-          // scenario that is about the alias
-          askerLegacy: {
-            driver: "grokAgent",
-            environment: { FAKE_ACP_MODE: "ask-peer", FAKE_ACP_LEGACY_TOOLS: "1" },
-            config: { cli: FAKE_CLI, fullAuto: true },
-          },
           // Every teammate turn carries the agents server now, so a helper
           // that itself consulted would recurse until the depth limit. The
           // helpers play plain happy text and dump what they were told.
@@ -433,8 +426,6 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
   it("seals the internal comms endpoints behind the boot token", async () => {
     const agents = await api("GET", "/api/internal/agents?self=x");
     expect(agents.status).toBe(401);
-    const ask = await api("POST", "/api/internal/ask-bot", { toBotId: "x", message: "hi" });
-    expect(ask.status).toBe(401);
     const coordinate = await api("POST", "/api/internal/coordinate-bots", { botIds: ["x"], message: "hi" });
     expect(coordinate.status).toBe(401);
     const status = await api("GET", "/api/internal/assignment-status");
@@ -513,43 +504,6 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
       expect(envelope).toContain("ping from fake");
       expect((await bot(helper.id)).busy).toBeFalsy();
       expect(assignments(helper.id, asker.id)[0]).toMatchObject({ status: "completed", result: "hello from fake acp" });
-    },
-    60_000,
-  );
-
-  // The deprecated ask_bot alias from a routine turn: the same consultation,
-  // with the alias's wording and its deprecation line in the tool result.
-  it(
-    "answers the ask_bot alias at once with the deprecation line and resumes the asker with the answer",
-    async () => {
-      await hideAll();
-      const helper = await named("Helper", { modelSelection: HELPER });
-      const asker = await named("Asker", { modelSelection: { instanceId: "askerLegacy", model: "fake-model" } });
-      const { body: { run } } = await startRoutine(asker.id, "ask @Helper through the alias");
-
-      let askerBot: any;
-      await waitUntil(async () => {
-        askerBot = await bot(asker.id);
-        return askerBot.messages.some((m: any) => m.kind === "text" && m.role === "bot" && m.text?.startsWith("peer says:"));
-      }, 25_000, "A never asked through the alias");
-      const asked = askerBot.messages.find((m: any) => m.kind === "text" && m.role === "bot" && m.text?.startsWith("peer says:"));
-      expect(asked.text).toContain("the answer resumes you after this turn ends — there is no inline wait.");
-      expect(asked.text).toContain("Assignment id:");
-      expect(asked.text).toContain("ask_bot is replaced by coordinate_bots(consult: true)");
-      expect(asked.text).not.toContain("hello from fake acp");
-      expect(asked.text).not.toMatch(/busy right now|queued as a delegation|converted to a delegation|wait_delegation/);
-      await waitUntil(async () => {
-        askerBot = await bot(asker.id);
-        return !askerBot.busy && lastText(askerBot.messages)?.text === WOKE_WITH_RESULT;
-      }, 30_000, "the alias's answer did not resume A");
-      expect((await runState(run.id)).status).toBe("completed");
-      expect(assignments(helper.id, asker.id)).toHaveLength(1);
-      expect(assignments(helper.id, asker.id)[0]).toMatchObject({ mode: "consult", status: "completed", result: "hello from fake acp" });
-      expect(chip(askerBot.messages, "Helper replied")?.tool.output).toBe("hello from fake acp");
-      // The alias names the teammate it asked (pr3-tools-notes.md §2); the
-      // proxy currently reads the name from fields the route no longer
-      // returns and says "@that teammate" (pr3-bugs.md).
-      expect(asked.text).toContain("Asked @Helper;");
     },
     60_000,
   );
@@ -903,8 +857,8 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
         expect(found.tool.name).toBe("Waiting on your approval in @Gatekeeper");
         expect(found.threadRef.botId).toBe(helper.id);
 
-        // (a) the assignment reads as running, through the alias route the
-        // Chief's fake remembered the id for, with its deprecation line
+        // (a) the assignment reads as running, by the id the Chief's fake
+        // remembered
         const taskId = readFileSync(join(home, "chief-task-id"), "utf8").trim();
         expect(taskId).toBeTruthy();
         const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
@@ -914,15 +868,13 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
         });
         expect(minted.status).toBe(201);
         const { token } = await minted.json() as { token: string };
-        const status = await fetch(`${BASE}/api/internal/delegations/${taskId}?wait_ms=0`, {
+        const status = await fetch(`${BASE}/api/internal/assignment-status?id=${taskId}`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(status.status).toBe(200);
         const read = await status.json() as any;
         expect(read.assignment).toMatchObject({ id: taskId, botId: helper.id, botName: "Gatekeeper", status: "running", mode: "work" });
-        expect(read.deprecation).toContain("replaced by assignment_status");
-        const same = await fetch(`${BASE}/api/internal/assignment-status?id=${taskId}`, { headers: { authorization: `Bearer ${token}` } });
-        expect((await same.json() as any).assignment).toMatchObject({ id: taskId, status: "running" });
+        expect(read.deprecation).toBeUndefined();
 
         // answering the card settles the chip
         const card = (await api("POST", `/api/bots/${helper.id}/tasks/${waitingThreadId}`)).body.bot.messages
@@ -1140,12 +1092,14 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
     60_000,
   );
 
-  // A delegated teammate that stops at the 64-step cap reports the cap to
-  // the bot that delegated: it decides what to send next. No unattended
-  // `Continue:` task starts on the same work beside it, whose result would
-  // never reach that bot. The chip is the cause on one line.
+  // A delegated teammate that stops at the 64-step cap continues in place:
+  // the same assignment, one more execution, and only while it makes
+  // progress. An engine whose every call fails is stopped after two
+  // executions without a successful tool call (the runtime's loop guard),
+  // and the bot that delegated hears the assignment fail once, the cause on
+  // one line. No unattended `Continue:` task starts on the same work.
   it(
-    "returns a delegated teammate's step cap to its delegator instead of continuing it unattended",
+    "continues a delegated teammate's step cap in place and returns the stall to its delegator",
     async () => {
       compatAnswer = "steps";
       try {
@@ -1159,17 +1113,20 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
           const askerBot = await bot(asker.id);
           failed = askerBot.messages.find((m: any) => m.kind === "activity" && m.tool?.ok === false && m.from?.botId === helper.id);
           return Boolean(failed) && lastText(askerBot.messages)?.text === WOKE_WITH_FAILURE && !askerBot.busy;
-        }, 45_000, "the step cap never reached the delegator");
+        }, 90_000, "the stall never reached the delegator");
         expect(failed.tool.name).toMatch(/^CapHelper — failed: Stopped after 64 steps without a final answer\./);
         expect(failed.tool.name).not.toContain("\n");
         const tasks = (await bot(helper.id)).tasks;
         expect(tasks.map((task: any) => task.title).filter((title: string) => title?.startsWith("Continue:"))).toEqual([]);
-        expect(assignments(helper.id, asker.id)[0]).toMatchObject({ status: "failed" });
+        const handed = assignments(helper.id, asker.id);
+        expect(handed).toHaveLength(1);
+        expect(handed[0]).toMatchObject({ status: "failed", outcome: "stalled", executions: 2 });
+        expect(handed[0]!.outcomeDetail).toMatch(/^Stopped after 2 continuations without progress: Stopped after 64 steps/);
       } finally {
         compatAnswer = "hang";
       }
     },
-    60_000,
+    120_000,
   );
 
   // A teammate's provider refused the turn: the asker hears that, in the
@@ -1363,8 +1320,8 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
     expect(agentsLine, work.result).toBeTruthy();
     const tools = agentsLine!.slice("agents:".length).trim().split(",");
     expect(tools).toEqual(expect.arrayContaining(["list_bots", "coordinate_bots", "assignment_status", "start_thread", "list_threads"]));
-    // the aliases stay for one release, listed last
-    expect(tools.slice(-5)).toEqual(["delegate_bot", "ask_bot", "send_to_bot", "check_delegation", "wait_delegation"]);
+    // the one-release aliases are gone (docs/runtime-contract.md §9)
+    for (const alias of ["delegate_bot", "ask_bot", "send_to_bot", "check_delegation", "wait_delegation"]) expect(tools).not.toContain(alias);
     expect(work.result).not.toContain("failed:");
   }, 45_000);
 });

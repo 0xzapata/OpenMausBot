@@ -1,7 +1,7 @@
 // Companion device registry contract. The three properties that matter:
 // a token is never recoverable from disk, pairing credentials are one-time,
 // a manual code cannot be ground down by guessing, and revocation works.
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -286,6 +286,36 @@ describe("DeviceRegistry", () => {
     pair(new DeviceRegistry());
     writeFileSync(join(DATA_DIR, "devices.json"), "{ not json");
     expect(new DeviceRegistry().count()).toBe(0);
+  });
+
+  // The desktop gives its secure address back when nothing is paired. An
+  // empty list that is only an unreadable file must not read as that.
+  it("says when its empty list is only an unreadable file, until it saves again", () => {
+    const file = join(DATA_DIR, "devices.json");
+    // No file yet: nothing has ever been paired, and that is known.
+    expect(new DeviceRegistry().devicesUnreadable()).toBe(false);
+
+    pair(new DeviceRegistry());
+    expect(new DeviceRegistry().devicesUnreadable()).toBe(false);
+    for (const contents of ["{ not json", "null", '{"devices":"none"}']) {
+      writeFileSync(file, contents);
+      const registry = new DeviceRegistry();
+      expect(registry.count()).toBe(0);
+      expect(registry.devicesUnreadable()).toBe(true);
+    }
+    // A read that fails for another reason than a missing file.
+    rmSync(file);
+    mkdirSync(file);
+    expect(new DeviceRegistry().devicesUnreadable()).toBe(true);
+    rmSync(file, { recursive: true });
+
+    writeFileSync(file, "{ not json");
+    const registry = new DeviceRegistry();
+    expect(registry.devicesUnreadable()).toBe(true);
+    // A pairing saved over it makes the file, and the list, true again.
+    pair(registry);
+    expect(registry.devicesUnreadable()).toBe(false);
+    expect(new DeviceRegistry().devicesUnreadable()).toBe(false);
   });
 });
 
