@@ -62,17 +62,38 @@ export async function stopConversation(client: HeadlessClient, target: Target, t
  * `status` keeps older words: a lead whose work failed is "settled" there). */
 const exitFor = (result: Rec, strict: boolean): number => {
   if (result.state === "completed" || result.state === "idle") {
-    const failed = (result.job?.nodes ?? []).some((node: Rec) => node.status === "failed" || node.status === "cancelled");
+    // The counts cover every part of the job, the ones this session may not
+    // see and those past the first 500 nodes included.
+    const counts: Rec = result.job?.counts ?? {};
+    const failed = Number(counts.failed ?? 0) + Number(counts.cancelled ?? 0) > 0
+      || (result.job?.nodes ?? []).some((node: Rec) => node.status === "failed" || node.status === "cancelled");
     return strict && failed ? EXIT.failed : EXIT.done;
   }
   return result.state === "needs-input" ? EXIT.needsInput : result.state === "timed-out" ? EXIT.timeout : EXIT.failed;
 };
 
-interface Waited { result: Rec; exitCode: number; stopped?: Rec[] }
+interface Waited { result: Rec; exitCode: number; stopped?: Rec[]; /** In place of the job's own reason. */ reason?: string }
 
 /** What a wait knows so far, kept where a Ctrl-C can read it: the
  * conversation and the job's since, for the command that picks it up again. */
 interface Watching { threadId?: string; since?: number }
+
+/** A failure that passes: the server, or a proxy in front of it, dropped
+ * for a moment (a restart, a redeploy, a tunnel hiccup). A refusal does not. */
+function passing(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  if (typeof status === "number") return status === 502 || status === 503 || status === 504;
+  // fetch's own failures ("fetch failed", a body cut off), never a TypeError from a bug
+  const network = error instanceof TypeError && (/fetch failed|terminated/i.test(error.message) || (error as { cause?: unknown }).cause !== undefined);
+  return network || (error as Error | null)?.name === "TimeoutError";
+}
+
+const pause = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal.aborted) return reject(signal.reason);
+  const timer = setTimeout(() => { signal.removeEventListener("abort", stop); resolve(); }, ms);
+  const stop = () => { clearTimeout(timer); reject(signal.reason); };
+  signal.addEventListener("abort", stop, { once: true });
+});
 
 /** Wait on one conversation's job until it ends, needs the person (unless
  * --on-input wait), or the timeout passes; then apply --on-input stop and
@@ -83,20 +104,32 @@ async function waitOnJob(ctx: VerbContext, client: HeadlessClient, target: Targe
   const deadline = Date.now() + policy.timeoutMs;
   let after: string | undefined;
   let result: Rec;
+  let drops = 0;
   for (;;) {
     const seconds = Math.min(MCP_WAIT_MAX_S, Math.max(1, Math.ceil((deadline - Date.now()) / 1_000)));
     const { threadId, since } = watching;
-    result = await client.tool("wait_for_conversation", {
-      target_type: target.type, target_id: target.id, ...(threadId ? { task_id: threadId } : {}), timeout_seconds: seconds, scope: options.scope,
-      ...(since !== undefined ? { since_ms: since } : {}), ...(after !== undefined ? { after_version: after } : {}),
-    }, {
-      onProgress: (job) => {
-        if (typeof job.threadId === "string") watching.threadId ??= job.threadId;
-        if (typeof job.since === "number") watching.since = job.since;
-        ctx.output.progress({ event: "job", threadId: job.threadId, state: job.state, reason: job.reason, counts: job.counts,
-          ...(job.needsInput?.length ? { needsInput: job.needsInput } : {}) });
-      },
-    }, ctx.signal);
+    try {
+      result = await client.tool("wait_for_conversation", {
+        target_type: target.type, target_id: target.id, ...(threadId ? { task_id: threadId } : {}), timeout_seconds: seconds, scope: options.scope,
+        ...(since !== undefined ? { since_ms: since } : {}), ...(after !== undefined ? { after_version: after } : {}),
+      }, {
+        onProgress: (job) => {
+          if (typeof job.threadId === "string") watching.threadId ??= job.threadId;
+          if (typeof job.since === "number") watching.since = job.since;
+          ctx.output.progress({ event: "job", threadId: job.threadId, state: job.state, reason: job.reason, counts: job.counts,
+            ...(job.needsInput?.length ? { needsInput: job.needsInput } : {}) });
+        },
+      }, ctx.signal);
+    } catch (error) {
+      // The work goes on while the server is out of reach: ask again, the
+      // same job from the same moment, until the time runs out.
+      if (ctx.signal.aborted || !passing(error) || Date.now() >= deadline) throw error;
+      const inMs = Math.min(10_000, 1_000 * 2 ** Math.min(drops++, 4), Math.max(0, deadline - Date.now()));
+      ctx.output.progress({ event: "reconnecting", inMs, ...(watching.threadId ? { threadId: watching.threadId } : {}) });
+      await pause(inMs, ctx.signal);
+      continue;
+    }
+    drops = 0;
     watching.threadId ??= result.taskId;
     if (typeof result.job?.since === "number") watching.since = result.job.since;
     const more = Date.now() < deadline && (result.status === "timed-out" || (result.status === "needs-user" && policy.onInput === "wait"));
@@ -130,7 +163,7 @@ function report(waited: Waited, threadId: string, extra: Rec = {}): { result: Re
   const reply = finalReply(result.messages);
   const job = result.job ?? {};
   const human = [
-    `${HEADLINE[exitCode] ?? "Ended"}: ${job.reason ?? result.status}${exitCode === EXIT.timeout ? " (it keeps running)" : ""}`,
+    `${HEADLINE[exitCode] ?? "Ended"}: ${waited.reason ?? job.reason ?? result.status}${exitCode === EXIT.timeout ? " (it keeps running)" : ""}`,
     ...(reply ? ["", reply.text, ""] : []),
     ...(reply?.files.length ? [`Files: ${reply.files.join(", ")}`] : []),
     ...(job.needsInput?.length ? job.needsInput.map((item: Rec) => `${item.botName} asks: ${oneLine(item.question, 300)}`) : []),
@@ -138,7 +171,8 @@ function report(waited: Waited, threadId: string, extra: Rec = {}): { result: Re
     `Thread: ${threadId}${exitCode === EXIT.done ? "" : ` (wait again: ${waitAgain({ threadId, ...(typeof job.since === "number" ? { since: job.since } : {}) })})`}`,
   ];
   return {
-    result: { ...result, ok: exitCode === EXIT.done, exitCode, threadId, ...(reply ? { reply } : {}), ...(waited.stopped ? { stopped: waited.stopped } : {}), ...extra },
+    result: { ...result, ok: exitCode === EXIT.done, exitCode, threadId, ...(waited.reason ? { reason: waited.reason } : {}), ...(reply ? { reply } : {}),
+      ...(waited.stopped ? { stopped: waited.stopped } : {}), ...extra },
     human,
   };
 }
@@ -182,8 +216,7 @@ export async function runVerb(ctx: VerbContext): Promise<VerbOutcome> {
       sent = await client.tool(tool, args);
     } catch (error) {
       // The same send id makes a retry land on the first send, never beside it.
-      const unreachable = error instanceof TypeError || (error as Error)?.name === "TimeoutError";
-      if (!unreachable || attempt >= 3) throw error;
+      if (!passing(error) || attempt >= 3) throw error;
       await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
     }
   }
@@ -203,6 +236,12 @@ export async function runVerb(ctx: VerbContext): Promise<VerbOutcome> {
   } catch (error) {
     if (ctx.signal.aborted) throw interrupted(watching);
     throw error;
+  }
+  // Nothing ran for the message: no job began at or after it was sent (a room
+  // that answers only the bots a message names, a queued message removed
+  // before its turn). That is not a job done.
+  if (waited.result.state === "idle") {
+    waited = { ...waited, exitCode: EXIT.failed, reason: "no turn ran for the message: nobody took it up (a room set to answer mentions answers only the bots a message names)" };
   }
   let exported: Rec | undefined;
   if (out) {

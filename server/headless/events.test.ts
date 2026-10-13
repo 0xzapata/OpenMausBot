@@ -87,6 +87,34 @@ describe("events against a server", () => {
     expect(asked).toHaveLength(1);
   });
 
+  it("ends with the job when its last change brings no frame of its own: a heartbeat reads it again", async () => {
+    asked.length = 0;
+    let reads = 0;
+    const timers: Array<ReturnType<typeof setInterval>> = [];
+    answer = (req, res) => {
+      if (req.url?.startsWith("/api/threads/t1/job")) {
+        reads += 1;
+        res.writeHead(200, { "content-type": "application/json" });
+        // running for the first read and the one after the message frame; done after that
+        return res.end(JSON.stringify({ threadId: "t1", since: 1_000, version: `v${reads}`, state: reads <= 2 ? "running" : "completed",
+          reason: reads <= 2 ? "Room Lead is working" : "Room Lead finished", counts: {}, nodes: [] }));
+      }
+      stream(res, ['id: c1\ndata: {"kind":"hello","resumed":false}\n\n'], false);
+      // then nothing but the server's heartbeat
+      timers.push(setInterval(() => res.write('data: {"kind":"ping"}\n\n'), 100));
+      res.on("close", () => timers.forEach(clearInterval));
+    };
+    const { io, out } = capture();
+    try {
+      const code = await runHeadless(["events", "--job", "t1", "--until-settled"], { io, env: { OPENMAUSBOT_URL: origin } });
+      expect(code).toBe(0);
+      expect(JSON.parse(out.at(-1)!)).toMatchObject({ kind: "job", threadId: "t1", state: "completed" });
+      expect(reads).toBeGreaterThanOrEqual(3);
+    } finally {
+      timers.forEach(clearInterval);
+    }
+  }, 15_000);
+
   it("asks again after a dropped stream or a server error, from where it was, and keeps only the conversations named", async () => {
     asked.length = 0;
     answer = (_req, res, n) => {

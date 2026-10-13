@@ -19,7 +19,7 @@ const waited = (status: string, state: string, jobView: Rec, extra: Rec = {}) =>
   ...extra,
 });
 
-function harness(waits: Rec[], options: { jobRead?: () => unknown; delayMs?: number } = {}) {
+function harness(waits: Rec[], options: { jobRead?: () => unknown; delayMs?: number; drops?: unknown[] } = {}) {
   const calls: Array<{ name: string; args: Rec }> = [];
   const requests: Array<{ path: string; method: string; body?: unknown }> = [];
   let wait = 0;
@@ -29,6 +29,7 @@ function harness(waits: Rec[], options: { jobRead?: () => unknown; delayMs?: num
     if (name === "send_bot_message") return { success: true, botId: "lead", taskId: "t1", messageId: "m1", at: 5 };
     if (name === "interrupt_conversation") return { success: true, targetType: "bot", targetId: "lead", taskId: "t1" };
     if (name === "wait_for_conversation") {
+      if (options.drops?.length) throw options.drops.shift();
       // held like the real tool, which gives up when its signal is aborted
       if (options.delayMs) await new Promise((resolve, reject) => {
         const timer = setTimeout(resolve, options.delayMs);
@@ -72,6 +73,15 @@ describe("run", () => {
       reply: { text: expect.stringContaining("Report:"), files: ["report.md", "shots/1.png"] } });
     expect(progress[0]).toMatchObject({ event: "started", threadId: "t1", messageId: "m1", since: 1_000 });
     expect(progress[1]).toMatchObject({ event: "job", state: "completed" });
+  });
+
+  it("fails (1) when no turn ran for the message, where wait on an idle conversation is done", async () => {
+    // a room set to answer mentions, sent a message that names nobody
+    const nobody = () => harness([waited("settled", "idle", job("idle", "v1", { reason: "Nothing is running in this conversation" }))]);
+    const ran = await nobody().run(["run", "Room Lead", "Hello, anyone?", "--json"]);
+    expect(ran.code).toBe(1);
+    expect(ran.result).toMatchObject({ ok: false, exitCode: 1, state: "idle", reason: expect.stringContaining("no turn ran for the message") });
+    expect((await nobody().run(["wait", "--bot", "lead", "--json"])).code).toBe(0);
   });
 
   it("reads the message from stdin with -, and does not wait with --wait none", async () => {
@@ -185,11 +195,37 @@ describe("wait", () => {
     const failedTeammate = waited("settled", "completed", job("completed", "v1", { nodes: [{ id: "root", status: "completed" }, { id: "a1", status: "failed" }] }));
     expect((await harness([failedTeammate]).run(["wait", "--bot", "lead", "--json"])).code).toBe(0);
     expect((await harness([failedTeammate]).run(["wait", "--bot", "lead", "--strict", "--json"])).code).toBe(1);
+    // a part this session cannot see (or past the nodes shown) is in the counts
+    const hiddenFailure = waited("settled", "completed", job("completed", "v1", { nodes: [{ id: "root", status: "completed" }], hidden: 1,
+      counts: { queued: 0, running: 0, waiting: 0, needsInput: 0, completed: 1, failed: 1, cancelled: 0 } }));
+    expect((await harness([hiddenFailure]).run(["wait", "--bot", "lead", "--json"])).code).toBe(0);
+    expect((await harness([hiddenFailure]).run(["wait", "--bot", "lead", "--strict", "--json"])).code).toBe(1);
     expect((await harness([waited("failed", "failed", job("failed", "v1"))]).run(["wait", "--bot", "lead", "--json"])).code).toBe(1);
     // the exit code follows the job's own state: a lead whose work failed is
     // "settled" in MCP's older words, and still fails the run
     expect((await harness([waited("settled", "failed", job("failed", "v1"))]).run(["wait", "--bot", "lead", "--json"])).code).toBe(1);
   });
+
+  it("keeps waiting on the same job when the server drops for a moment, and gives up on a refusal", async () => {
+    const dropped = Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+    const proxy = Object.assign(new Error("OpenMausBot API error (502): Bad Gateway"), { status: 502 });
+    const h = harness([waited("timed-out", "timed-out", job("running", "v1")), waited("settled", "completed", job("completed", "v2"))], { drops: [dropped] });
+    const first = h.run(["wait", "--thread", "t1", "--since", "1000", "--json"]);
+    const { code, progress } = await first;
+    expect(code).toBe(0);
+    expect(progress.filter((event: Rec) => event.event === "reconnecting")).toEqual([{ event: "reconnecting", inMs: 1_000, threadId: "t1" }]);
+    // asked again for the same job from the same moment
+    expect(h.calls.filter((call) => call.name === "wait_for_conversation").map((call) => call.args.since_ms)).toEqual([1_000, 1_000, 1_000]);
+    expect((await harness([waited("settled", "completed", job("completed", "v1"))], { drops: [proxy] }).run(["wait", "--thread", "t1", "--json"])).code).toBe(0);
+    const refused = Object.assign(new Error("OpenMausBot API error (401): {\"error\":\"unauthorized\"}"), { status: 401 });
+    const gone = harness([waited("settled", "completed", job("completed", "v1"))], { drops: [refused] });
+    expect((await gone.run(["wait", "--thread", "t1", "--json"])).code).toBe(5);
+    expect(gone.calls.filter((call) => call.name === "wait_for_conversation")).toHaveLength(1);
+    // a bug's TypeError is not a dropped connection: it fails at once
+    const bug = harness([waited("settled", "completed", job("completed", "v1"))], { drops: [new TypeError("Cannot read properties of undefined (reading 'job')")] });
+    expect((await bug.run(["wait", "--thread", "t1", "--json"])).code).toBe(1);
+    expect(bug.calls.filter((call) => call.name === "wait_for_conversation")).toHaveLength(1);
+  }, 15_000);
 
   it("stops waiting on Ctrl-C (130), leaves the work running, and says how to pick it up again", async () => {
     const controller = new AbortController();

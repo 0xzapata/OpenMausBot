@@ -72,6 +72,7 @@ export async function eventsVerb(ctx: VerbContext): Promise<VerbOutcome> {
   let since: number | undefined;
   let settled: string | undefined;
   let refreshing: Promise<void> | undefined;
+  let again = false;
   const stop = new AbortController();
   const signal = AbortSignal.any([ctx.signal, stop.signal]);
   const refresh = async () => {
@@ -85,6 +86,16 @@ export async function eventsVerb(ctx: VerbContext): Promise<VerbOutcome> {
     }
   };
   if (job) await refresh();
+  // Read the job again a moment after a frame about a bot, a room, a message,
+  // a (re)connection or a heartbeat: the last change of a job can land
+  // without a frame of its own, or while a read is already under way.
+  const schedule = () => {
+    if (refreshing) { again = true; return; }
+    refreshing = new Promise<void>((done) => setTimeout(done, 300)).then(refresh).catch(() => undefined).finally(() => {
+      refreshing = undefined;
+      if (again && !signal.aborted) { again = false; schedule(); }
+    });
+  };
 
   for (let attempt = 0; !signal.aborted; attempt++) {
     let response: Response;
@@ -103,9 +114,7 @@ export async function eventsVerb(ctx: VerbContext): Promise<VerbOutcome> {
         let frame: Frame;
         try { frame = JSON.parse(data); } catch { continue; }
         if (wantFrame(frame, kinds, threads)) ctx.io.out(JSON.stringify(redactDeep(frame)));
-        if (job && (frame.kind === "bot" || frame.kind === "group" || frame.kind === "message") && !refreshing) {
-          refreshing = new Promise<void>((done) => setTimeout(done, 300)).then(refresh).catch(() => undefined).finally(() => { refreshing = undefined; });
-        }
+        if (job && ["bot", "group", "message", "hello", "ping"].includes(frame.kind)) schedule();
       }
     } catch (error) {
       if (signal.aborted) break;
