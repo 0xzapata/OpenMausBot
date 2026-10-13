@@ -9,6 +9,7 @@ import {
   currentUser, launchdPlist, sentinelCommand, sentinelLaunchdPlist, sentinelServicePlan, sentinelSystemdService, sentinelSystemdTimer,
   servicePlan, systemdUnit, unstableInstallWarning,
 } from "./service-unit.ts";
+import { defaultSentinelOut } from "./sentinel/paths.ts";
 
 export interface ServiceInstallInput {
   action: "install" | "uninstall";
@@ -20,6 +21,9 @@ export interface ServiceInstallInput {
   label?: string;
   /** --sentinel: the periodic health scan instead of the server. */
   sentinel?: boolean;
+  /** Sentinel's folder; defaults to the platform's (server/sentinel/paths.ts). */
+  sentinelOut?: string;
+  env?: NodeJS.ProcessEnv;
   /** This CLI's own entry, as node saw it (process.argv[1]) and node itself (process.execPath). */
   script: string;
   node: string;
@@ -87,11 +91,12 @@ export function runServiceCommand(input: ServiceInstallInput, io: ServiceIo): nu
 }
 
 function runSentinelService(input: ServiceInstallInput, platform: NodeJS.Platform, home: string, io: ServiceIo): number {
-  const plan = sentinelServicePlan(platform, input.dataDir, home);
+  const out = input.sentinelOut ?? defaultSentinelOut(input.dataDir, platform, home, input.env ?? process.env);
+  const plan = sentinelServicePlan(platform, out, home);
   if (!plan) {
     // printed for the person to run, never executed: /TR takes the whole
     // command line as one argument, with its own quotes escaped
-    const command = sentinelCommand(input).map((arg) => `\\"${arg}\\"`).join(" ");
+    const command = sentinelCommand({ ...input, out }).map((arg) => `\\"${arg}\\"`).join(" ");
     io.error("services are written for Linux (systemd) and macOS (launchd); on Windows, use Task Scheduler to run Sentinel every two minutes:");
     io.error(`  schtasks /Create /SC MINUTE /MO 2 /TN "OpenMausBot Sentinel" /TR "${command}"`);
     return 1;
@@ -106,21 +111,22 @@ function runSentinelService(input: ServiceInstallInput, platform: NodeJS.Platfor
     io.error(warning);
     return 1;
   }
-  const spec = { node: input.node, script: input.script, dataDir: input.dataDir, home };
+  const spec = { node: input.node, script: input.script, dataDir: input.dataDir, home, out };
   const rendered: Record<string, string> = platform === "darwin"
     ? { [plan.files[0]!.name]: sentinelLaunchdPlist(spec) }
     : { [plan.files[0]!.name]: sentinelSystemdService(spec), [plan.files[1]!.name]: sentinelSystemdTimer() };
-  // launchd opens the log itself and will not create its folder
-  mkdirSync(join(input.dataDir, "logs"), { recursive: true, mode: 0o700 });
+  // Sentinel's folder, outside the data dir; launchd opens the log in it
+  // itself and will not create the folder
+  mkdirSync(out, { recursive: true, mode: 0o700 });
   for (const file of plan.files) {
-    writeFileSync(join(input.dataDir, file.name), rendered[file.name]!, { mode: 0o644 });
-    io.log(`wrote ${join(input.dataDir, file.name)}`);
+    writeFileSync(join(out, file.name), rendered[file.name]!, { mode: 0o644 });
+    io.log(`wrote ${join(out, file.name)}`);
   }
   io.log("");
   io.log("to install it (a read-only health scan every two minutes, at login and after):");
   for (const line of plan.activate) io.log(`  ${line}`);
   io.log("");
-  io.log(`issues: ${join(input.dataDir, "sentinel", "issues.jsonl")}`);
-  io.log(`logs: ${platform === "darwin" ? join(input.dataDir, "logs", "sentinel.log") : "journalctl --user -u openmausbot-sentinel"}`);
+  io.log(`issues: ${join(out, "issues.jsonl")}`);
+  io.log(`logs: ${platform === "darwin" ? join(out, "sentinel.log") : "journalctl --user -u openmausbot-sentinel"}`);
   return 0;
 }

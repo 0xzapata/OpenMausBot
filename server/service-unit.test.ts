@@ -60,31 +60,36 @@ describe("service units", () => {
     expect(servicePlan("win32", "C:\\x")).toBeNull();
   });
 
-  it("renders Sentinel as a launchd agent on an interval, under its own label", () => {
-    const sentinel = { node: "/usr/bin/node", script: "/usr/lib/node_modules/openmausbot/cli.js", dataDir: "/Users/maus/.openmausbot", home: "/Users/maus" };
-    expect(sentinelCommand(sentinel)).toEqual(["/usr/bin/node", "/usr/lib/node_modules/openmausbot/cli.js", "sentinel", "--once", "--data-dir", "/Users/maus/.openmausbot"]);
+  it("renders Sentinel as a launchd agent on an interval, under its own label, logging outside the data dir", () => {
+    const out = "/Users/maus/Library/Application Support/openmausbot-sentinel";
+    const sentinel = { node: "/usr/bin/node", script: "/usr/lib/node_modules/openmausbot/cli.js", dataDir: "/Users/maus/.openmausbot", home: "/Users/maus", out };
+    expect(sentinelCommand(sentinel)).toEqual(["/usr/bin/node", "/usr/lib/node_modules/openmausbot/cli.js", "sentinel", "--once", "--data-dir", "/Users/maus/.openmausbot", "--out", out]);
     expect(sentinelCommand({ ...sentinel, script: "/srv/OpenMausBot/server/openmausbot.ts" })[1]).toBe("--experimental-strip-types");
     const plist = sentinelLaunchdPlist(sentinel);
     expect(plist).toContain("<string>com.openmausbot.sentinel</string>");
     expect(plist).toContain("<key>StartInterval</key>\n\t<integer>120</integer>");
     expect(plist).toContain("<string>sentinel</string>");
     expect(plist).not.toContain("KeepAlive");
-    expect(plist).toContain("/Users/maus/.openmausbot/logs/sentinel.log");
-    const mac = sentinelServicePlan("darwin", "/Users/maus/.openmausbot", "/Users/maus");
+    expect(plist).toContain(`<string>${out}/sentinel.log</string>`);
+    expect(plist).not.toContain(".openmausbot/logs");
+    const mac = sentinelServicePlan("darwin", out, "/Users/maus");
     expect(mac?.files).toEqual([{ name: "com.openmausbot.sentinel.plist", installed: "/Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist" }]);
+    // a path with a space is one argument in the printed commands
+    expect(mac?.activate[0]).toBe("mkdir -p /Users/maus/Library/LaunchAgents && cp '/Users/maus/Library/Application Support/openmausbot-sentinel/com.openmausbot.sentinel.plist' /Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist");
     expect(mac?.deactivate[0]).toBe("launchctl bootout gui/$(id -u)/com.openmausbot.sentinel");
   });
 
   it("renders Sentinel as a systemd user timer, with no root", () => {
-    const sentinel = { node: "/usr/bin/node", script: "/usr/lib/node_modules/openmausbot/cli.js", dataDir: "/home/maus/My Data", home: "/home/maus" };
+    const sentinel = { node: "/usr/bin/node", script: "/usr/lib/node_modules/openmausbot/cli.js", dataDir: "/home/maus/My Data", home: "/home/maus", out: "/home/maus/.local/state/openmausbot-sentinel" };
     const unit = sentinelSystemdService(sentinel);
     expect(unit).toContain("Type=oneshot");
-    expect(unit).toContain('ExecStart=/usr/bin/node /usr/lib/node_modules/openmausbot/cli.js sentinel --once --data-dir "/home/maus/My Data"');
+    expect(unit).toContain('ExecStart=/usr/bin/node /usr/lib/node_modules/openmausbot/cli.js sentinel --once --data-dir "/home/maus/My Data" --out /home/maus/.local/state/openmausbot-sentinel');
     expect(unit).not.toContain("User=");
     expect(sentinelSystemdTimer()).toContain("OnUnitActiveSec=120s");
     expect(sentinelSystemdTimer()).toContain("WantedBy=timers.target");
-    const linux = sentinelServicePlan("linux", "/home/maus/.openmausbot", "/home/maus");
+    const linux = sentinelServicePlan("linux", sentinel.out, "/home/maus");
     expect(linux?.files.map((file) => file.installed)).toEqual(["/home/maus/.config/systemd/user/openmausbot-sentinel.service", "/home/maus/.config/systemd/user/openmausbot-sentinel.timer"]);
+    expect(linux?.activate[0]).toContain("cp /home/maus/.local/state/openmausbot-sentinel/openmausbot-sentinel.service");
     expect(linux?.activate.join("\n")).toContain("systemctl --user enable --now openmausbot-sentinel.timer");
     expect(linux?.activate.join("\n")).not.toContain("sudo");
     expect(sentinelServicePlan("win32", "C:\\x")).toBeNull();

@@ -37,6 +37,9 @@ export type SentinelRecord =
 export interface Observation {
   kind: string;
   signature: string;
+  /** A readable line for the issue: the normalized error (placeholders for
+   * paths, numbers, ids and quoted values) or what was measured. */
+  title: string;
   origin: Origin;
   severity: Severity;
   tool?: string;
@@ -71,6 +74,10 @@ export interface Detector {
 export interface Issue {
   sig: string;
   kind: string;
+  /** Local only, from the newest occurrence. Anything Sentinel shares later
+   * (community counts) carries sig, kind, origin, tool and count, never
+   * this: normalized text can still hold a name. */
+  title: string;
   origin: Origin;
   severity: Severity;
   tool?: string;

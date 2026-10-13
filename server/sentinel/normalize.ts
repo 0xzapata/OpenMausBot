@@ -1,8 +1,10 @@
 // Signatures: one failure, however many times and wherever it happens, is
 // one issue. "no layer 12" and "no layer 104" differ only in a number, and
 // the same missing file under two projects only in a path — so values are
-// replaced with placeholders before hashing. The hash is what gets stored:
-// the normalized text can still hold a name the person typed.
+// replaced with placeholders before hashing. The hash is the issue's
+// identity and the only form that may ever leave the machine; the
+// normalized text is kept beside it as a local title, because it can still
+// hold a name the person typed.
 import { createHash } from "node:crypto";
 
 import type { Origin } from "./types.ts";
@@ -26,6 +28,41 @@ export function normalizeSignatureText(text: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, MAX_TEXT);
+}
+
+const MAX_TITLE = 160;
+
+// What a failed shell command amounts to, whatever it printed. Its output
+// names the files and commands of the work in hand, so two runs of the same
+// mistake rarely print the same text; the class and exit code still match.
+const SHELL_ERROR_CLASSES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\btimed?[ -]?out\b|\btimeout\b/i, "timed out"],
+  [/command not found|is not recognized as an internal or external command/i, "command not found"],
+  [/syntax error|unexpected token|unexpected EOF|parse error/i, "syntax error"],
+  [/no such file or directory|\bENOENT\b|cannot find the path/i, "no such file"],
+  [/permission denied|\bEACCES\b/i, "permission denied"],
+  [/operation not permitted|\bEPERM\b/i, "operation not permitted"],
+  [/connection refused|could not resolve host|network is unreachable|\bECONNREFUSED\b|\bENOTFOUND\b/i, "network error"],
+  [/out of memory|cannot allocate memory|\bENOMEM\b/i, "out of memory"],
+  [/\bkilled\b|\bSIGKILL\b|\bSIGTERM\b|terminated by signal/i, "killed"],
+  [/user (?:rejected|denied|doesn't want)|was denied|not allowed/i, "denied"],
+];
+const EXIT_CODE = /\bexit(?:ed with)?(?: code| status)?\s*[:=]?\s*(-?\d+)/i;
+
+/** What groups a failure into an issue (`key`, hashed into the signature)
+ * and the readable line kept with the issue (`title`, local only). A shell
+ * command groups by exit code and error class; anything else by its whole
+ * normalized error. */
+export function failureKey(tool: string, text: string): { key: string; title: string } {
+  if (toolOrigin(tool) === "shell") {
+    const errorClass = SHELL_ERROR_CLASSES.find(([pattern]) => pattern.test(text))?.[1];
+    // a timeout's exit code is whichever signal stopped it
+    const code = errorClass === "timed out" ? undefined : EXIT_CODE.exec(text)?.[1];
+    const title = [code !== undefined ? `exit ${code}` : null, errorClass ?? (code === undefined ? "failed" : null)].filter(Boolean).join(": ");
+    return { key: `${code ?? ""}\n${errorClass ?? ""}`, title };
+  }
+  const normalized = normalizeSignatureText(text);
+  return { key: normalized, title: normalized.slice(0, MAX_TITLE) || "failed" };
 }
 
 export function signatureOf(kind: string, ...parts: Array<string | undefined>): string {

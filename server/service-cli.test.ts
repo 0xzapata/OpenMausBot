@@ -49,25 +49,32 @@ describe("openmausbot service", () => {
     expect(runServiceCommand({ action: "install", dataDir: dir, port: 8799, script: "/x", node: "/n", platform: "win32" }, io)).toBe(1);
   });
 
-  it("--sentinel writes the scan's own schedule instead of the server's, and only prints how to install it", () => {
-    const base = { action: "install" as const, dataDir: dir, port: 8799, sentinel: true, script: "/usr/lib/node_modules/openmausbot/cli.js", node: "/usr/bin/node" };
+  it("--sentinel writes the scan's own schedule into its own folder, not the data dir, and only prints how to install it", () => {
+    const sentinelOut = join(dir, "sentinel-state");
+    const dataDir = join(dir, "data");
+    const base = { action: "install" as const, dataDir, port: 8799, sentinel: true, sentinelOut, script: "/usr/lib/node_modules/openmausbot/cli.js", node: "/usr/bin/node" };
     expect(runServiceCommand({ ...base, platform: "darwin", home: "/Users/maus" }, io)).toBe(0);
-    expect(readFileSync(join(dir, "com.openmausbot.sentinel.plist"), "utf8")).toContain("<string>sentinel</string>");
-    expect(existsSync(join(dir, "com.openmausbot.serve.plist"))).toBe(false);
-    expect(existsSync(join(dir, "logs"))).toBe(true);
+    const plist = readFileSync(join(sentinelOut, "com.openmausbot.sentinel.plist"), "utf8");
+    expect(plist).toContain("<string>sentinel</string>");
+    expect(plist).toContain(`<string>${sentinelOut}</string>`);
+    expect(existsSync(dataDir)).toBe(false);
     expect(out.join("\n")).toContain("launchctl bootstrap gui/$(id -u) /Users/maus/Library/LaunchAgents/com.openmausbot.sentinel.plist");
+    expect(out.join("\n")).toContain(`issues: ${join(sentinelOut, "issues.jsonl")}`);
 
     out.length = 0;
     expect(runServiceCommand({ ...base, platform: "linux", home: "/home/maus" }, io)).toBe(0);
-    expect(readFileSync(join(dir, "openmausbot-sentinel.service"), "utf8")).toContain("sentinel --once --data-dir");
-    expect(readFileSync(join(dir, "openmausbot-sentinel.timer"), "utf8")).toContain("OnUnitActiveSec=120s");
+    expect(readFileSync(join(sentinelOut, "openmausbot-sentinel.service"), "utf8")).toContain("sentinel --once --data-dir");
+    expect(readFileSync(join(sentinelOut, "openmausbot-sentinel.timer"), "utf8")).toContain("OnUnitActiveSec=120s");
     expect(out.join("\n")).toContain("systemctl --user enable --now openmausbot-sentinel.timer");
+    expect(existsSync(dataDir)).toBe(false);
 
     out.length = 0;
     expect(runServiceCommand({ ...base, action: "uninstall", platform: "linux", home: "/home/maus" }, io)).toBe(0);
     expect(out.join("\n")).toContain("systemctl --user disable --now openmausbot-sentinel.timer");
 
-    expect(runServiceCommand({ ...base, platform: "win32" }, io)).toBe(1);
+    // Windows gets a schtasks line, with the platform's own folder as --out
+    expect(runServiceCommand({ ...base, sentinelOut: undefined, platform: "win32", dataDir: "C:\\Users\\maus\\.openmausbot", home: "C:\\Users\\maus", env: {} }, io)).toBe(1);
     expect(err.join("\n")).toContain('schtasks /Create /SC MINUTE /MO 2 /TN "OpenMausBot Sentinel" /TR "\\"/usr/bin/node\\" \\"/usr/lib/node_modules/openmausbot/cli.js\\" \\"sentinel\\"');
+    expect(err.join("\n")).toContain("\\\"--out\\\" \\\"C:\\Users\\maus\\AppData\\Local\\openmausbot-sentinel\\\"");
   });
 });

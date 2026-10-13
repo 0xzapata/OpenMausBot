@@ -47,7 +47,8 @@ describe("openmausbot sentinel", () => {
     const written = readFileSync(join(out, "issues.jsonl"), "utf8") + readFileSync(join(out, "state.json"), "utf8");
     expect(written).not.toContain(PRIVATE);
     expect(written).not.toContain("/path/to");
-    expect(written).not.toContain("no layer");
+    // the local title is the normalized line: placeholders where the values were
+    expect(written).toContain('"title":"no layer <n> for <q> in <path>"');
     expect(written).toContain('"evidenceRef":{"source":"messages","id":"m2"}');
 
     const unchanged = sentinel("--data-dir", fixture.dataDir, "--out", out);
@@ -58,10 +59,12 @@ describe("openmausbot sentinel", () => {
     const next = sentinel("--data-dir", fixture.dataDir, "--out", out);
     expect(next.status).toBe(0);
     expect(next.stdout).toMatch(/1 new occurrences in 1 issues \(2 total\)/);
-    expect(next.stdout).toMatch(/high\s+tool_error\s+harness\s+mcp__agents__send ×3, 2 turns/);
+    // the readable title, not only the hash; still no private value in it
+    expect(next.stdout).toMatch(/high\s+tool_error\s+harness\s+mcp__agents__send ×3, 2 turns: no layer <n> for <q> in <path>/);
+    expect(next.stdout).not.toContain(PRIVATE);
   });
 
-  it("fails with a next step for a missing data dir or an output folder inside a repository", () => {
+  it("fails with a next step for a missing data dir or an output folder inside a repository or the data dir", () => {
     const missing = sentinel("--data-dir", join(dir, "nope"), "--json");
     expect(missing.status).toBe(1);
     expect(JSON.parse(missing.stdout)).toEqual({ ok: false, error: expect.stringContaining("pass --data-dir") });
@@ -69,11 +72,15 @@ describe("openmausbot sentinel", () => {
     const io = { log: (line: string) => lines.push(line), error: (line: string) => lines.push(line) };
     expect(runSentinelCli(["--data-dir", fixture.dataDir, "--out", join(fileURLToPath(import.meta.url), "..", "out")], io)).toBe(1);
     expect(lines.join("\n")).toContain("refusing to write issues inside the git repository");
+    expect(runSentinelCli(["--data-dir", fixture.dataDir, "--out", join(fixture.dataDir, "sentinel")], io)).toBe(1);
+    expect(lines.join("\n")).toContain("refusing to write issues inside the data dir");
     expect(runSentinelCli(["--bogus"], io)).toBe(2);
   });
 
-  it("parses its options and defaults the output next to the data", () => {
-    expect(parseSentinelArgs(["--data-dir", "/data/omb"], {})).toMatchObject({ dataDir: expect.stringMatching(/omb$/), out: expect.stringMatching(/omb[\\/]sentinel$/), json: false });
+  it("parses its options and defaults the output to a folder of its own, outside the data", () => {
+    const parsed = parseSentinelArgs(["--data-dir", "/data/omb"], {});
+    expect(parsed).toMatchObject({ dataDir: expect.stringMatching(/omb$/), out: expect.stringMatching(/openmausbot-sentinel[\\/]data-[0-9a-f]{12}$/), json: false });
+    expect("out" in parsed && parsed.out.includes(join("data", "omb"))).toBe(false);
     expect(parseSentinelArgs(["--queue-wait", "600", "--cost", "2.5", "--json"], { OMB_DATA_DIR: "/d" })).toMatchObject({ queueWaitMs: 600_000, costUsd: 2.5, json: true });
     expect(parseSentinelArgs(["--cost", "-1"], {})).toEqual({ error: expect.stringContaining("--cost"), json: false });
     expect(parseSentinelArgs(["--out"], {})).toEqual({ error: "--out needs a value", json: false });

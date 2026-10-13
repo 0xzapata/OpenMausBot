@@ -40,10 +40,6 @@ export interface ScanSummary {
   totalIssues: number;
 }
 
-export function sentinelOut(dataDir: string): string {
-  return join(dataDir, "sentinel");
-}
-
 export function runScan(options: ScanOptions): ScanSummary {
   const now = options.now ?? Date.now();
   const config: DetectorConfig = {

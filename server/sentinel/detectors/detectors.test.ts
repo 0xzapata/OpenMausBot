@@ -36,6 +36,16 @@ describe("sentinel detectors", () => {
     expect(external).toMatchObject({ origin: "external", severity: "medium" });
   });
 
+  it("tool_error merges differently worded shell timeouts into one issue with a readable title", () => {
+    const observations = toolError.detect([
+      tool("m1", "Bash", "Command timed out after 2m 0.0s"),
+      tool("m2", "Bash", "Error: command timed out after 120000ms\n/path/to/project/build.sh"),
+      tool("m3", "Bash", "Exit code 124\ntimeout: sending signal TERM to command 'make'"),
+    ], config);
+    expect(new Set(observations.map((o) => o.signature)).size).toBe(1);
+    expect(observations[0]).toMatchObject({ origin: "shell", severity: "low", title: "timed out" });
+  });
+
   it("turn_stop reports failed and budget-stopped turns, a stopped room turn as a timeout, and never the person's own stop", () => {
     const observations = turnStop.detect([
       turn("e1", { ok: false, stopReason: "exit_before_result" }),

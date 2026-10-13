@@ -46,29 +46,47 @@ while Sentinel reads:
 
 ## Privacy model
 
-Issues hold references, never content. A line in `issues.jsonl` looks like
-this:
+Issues hold references and a normalized title, never raw content. A line in
+`issues.jsonl` looks like this:
 
 ```json
-{"sig":"tool_error:fac3821e82105968","kind":"tool_error","origin":"harness","severity":"high",
+{"sig":"tool_error:fac3821e82105968","kind":"tool_error","title":"no layer <n> in <path>",
+ "origin":"harness","severity":"high",
  "tool":"mcp__agents__send_message","botId":"…","threadId":"…","turnId":"…",
  "firstAt":1791895763128,"lastAt":1791895763131,"count":3,"wastedTurns":1,
  "evidenceRef":{"source":"messages","id":"…"}}
 ```
 
-- The signature is a hash of the tool name and the normalized error. The error
-  text itself is never stored. Paths, numbers, UUIDs, hex ids, URLs, email
-  addresses and quoted values are replaced before hashing, so "no layer 12" and
-  "no layer 104" become one issue.
+- The signature is a hash of the tool name and the normalized error. Paths,
+  numbers, UUIDs, hex ids, URLs, email addresses and quoted values are replaced
+  before hashing, so "no layer 12" and "no layer 104" become one issue.
+- A failed shell command is grouped more coarsely: by its exit code and an
+  error class (`timed out`, `command not found`, `syntax error`,
+  `no such file`, `permission denied`, …) rather than by what it printed,
+  because its output names the files of the work in hand. A timeout ignores the
+  exit code, since that is just the signal that stopped it.
+- `title` is that normalized line, capped at 160 characters (for a shell
+  command, `exit 127: command not found`). It makes the file readable on this
+  machine. The raw error output is never stored. Normalized text can still
+  contain a word someone typed, so the title stays local. Anything Sentinel
+  shares later (see community counts below) carries only `sig`, `kind`,
+  `origin`, `tool` and `count`, never `title`.
 - `tool` is kept only when it is a tool identifier. A sentence the harness
   wrote into the transcript (for example, a stopped room turn) is recorded as
   `harness_notice`, because it can contain a bot's name.
 - `evidenceRef` points back into the data dir (`messages` → message id,
   `events` → event id, `runtime` → assignment id). A later stage can look the
   evidence up there for someone who is allowed to see it.
-- Output goes to `<dataDir>/sentinel/` by default, or to `--out`. The folder
-  is `0700` and its files are `0600`. Sentinel refuses an `--out` inside a git
-  repository.
+- Output goes to a folder outside the data dir: on macOS
+  `~/Library/Application Support/openmausbot-sentinel/`, on Linux
+  `$XDG_STATE_HOME/openmausbot-sentinel/` (by default
+  `~/.local/state/openmausbot-sentinel/`), on Windows
+  `%LOCALAPPDATA%\openmausbot-sentinel\`. You can choose another folder with
+  `--out`. A data dir other than `~/.openmausbot` gets its own `data-<hash>`
+  subfolder. The folder is `0700` and its files are `0600`. Sentinel refuses
+  an `--out` inside a git repository or inside the data dir, so it never
+  writes into the folder it reads, and backups of the data dir never carry its
+  files.
 
 `issues.jsonl` is upserted by signature: `count`, `lastAt` and the latest
 evidence are updated in place. `state.json` stores the log offsets and the
@@ -85,7 +103,7 @@ interface Detector {
   name: string;
   detect(records: readonly SentinelRecord[], config: DetectorConfig): Observation[];
 }
-// Observation: kind, signature, origin, severity, tool?, botId?, threadId?,
+// Observation: kind, signature, title, origin, severity, tool?, botId?, threadId?,
 // turnId?, at, occurrence (stable id, counted once), evidence
 ```
 
@@ -110,11 +128,13 @@ itself.
 openmausbot service install --sentinel [--data-dir DIR]
 ```
 
-This writes the schedule next to the data and prints the commands that
-install it. It doesn't install anything itself.
+This writes the schedule into Sentinel's own folder (above) and prints the
+commands that install it. It doesn't install anything itself, and it writes
+nothing to the data dir. The scheduled command passes `--data-dir` and `--out`
+explicitly, so the paths it prints are the ones the scan uses.
 
 - **macOS:** a launchd agent `com.openmausbot.sentinel` with
-  `StartInterval` 120, logging to `<dataDir>/logs/sentinel.log`.
+  `StartInterval` 120, logging to `sentinel.log` in Sentinel's folder.
 - **Linux:** a systemd user service and timer, `openmausbot-sentinel`, that
   runs every 120 s. It doesn't need root.
 - **Windows:** prints a `schtasks` command that runs the same scan every two
@@ -131,8 +151,9 @@ install it. It doesn't install anything itself.
    daily, plus immediately when an issue crosses a threshold.
 4. **Regression evals.** A fixed issue becomes a replayable case, so it is
    caught if it comes back.
-5. **Opt-in community counts.** Anonymous counts per signature and kind (no
-   ids, no text), so harness bugs that many installs share get fixed first.
+5. **Opt-in community counts.** Only `sig`, `kind`, `origin`, `tool` and
+   `count` are shared. No ids, no `title`, no text. This helps harness bugs that
+   many installs share get fixed first.
 6. **Autonomous fixer.** A triage and fix loop that takes harness issues,
    reproduces them against an isolated fixture, and proposes a change for
    review.

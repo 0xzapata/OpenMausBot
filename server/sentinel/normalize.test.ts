@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { HARNESS_NOTICE, isToolIdentifier, normalizeSignatureText, signatureOf, toolOrigin } from "./normalize.ts";
+import { failureKey, HARNESS_NOTICE, isToolIdentifier, normalizeSignatureText, signatureOf, toolOrigin } from "./normalize.ts";
 
 describe("sentinel signatures", () => {
   it("folds errors that differ only in values into one signature", () => {
@@ -17,6 +17,31 @@ describe("sentinel signatures", () => {
     // an apostrophe is not a quote, and the words around it stay
     expect(normalizeSignatureText("can't reach the room,   it's busy")).toBe("can't reach the room, it's busy");
     expect(normalizeSignatureText("x".repeat(1000)).length).toBe(240);
+  });
+
+  it("groups shell failures by exit code and error class, not by what they printed", () => {
+    const timeouts = [
+      "Command timed out after 2m 0.0s",
+      "Error: command timed out after 120000ms\n/path/to/project/build.sh: still running",
+      "Exit code 124\ntimeout: sending signal TERM to command 'npm test'",
+      "exec_command failed: timed out waiting for process 4821",
+    ].map((text) => failureKey("Bash", text));
+    expect(new Set(timeouts.map((failure) => failure.key)).size).toBe(1);
+    expect(timeouts[0]!.title).toBe("timed out");
+
+    const notFound = failureKey("Bash", "Exit code 127\n/bin/sh: ffprobe: command not found");
+    expect(notFound).toEqual({ key: "127\ncommand not found", title: "exit 127: command not found" });
+    expect(failureKey("Bash", "Exit code 127\nzsh: command not found: jq").key).toBe(notFound.key);
+    expect(failureKey("exec_command", "exit status 2\nls: /path/to/x: No such file or directory").title).toBe("exit 2: no such file");
+    expect(failureKey("Bash", "Exit code 1\nsomething broke in a way nobody predicted").title).toBe("exit 1");
+    expect(failureKey("Bash", "Exit code 1\nsomething else entirely").key).toBe(failureKey("Bash", "Exit code 1\nsomething broke").key);
+    expect(failureKey("Bash", "Exit code 2\nsomething broke").key).not.toBe(failureKey("Bash", "Exit code 1\nsomething broke").key);
+    expect(failureKey("Bash", "").title).toBe("failed");
+  });
+
+  it("keeps the whole normalized error, capped, for every other tool", () => {
+    expect(failureKey("mcp__agents__send", 'no layer 90 for "Example Co" in /path/to/project')).toEqual({ key: "no layer <n> for <q> in <path>", title: "no layer <n> for <q> in <path>" });
+    expect(failureKey("Read", "x ".repeat(200)).title.length).toBeLessThanOrEqual(160);
   });
 
   it("hashes the normalized parts, so the signature never holds the text", () => {

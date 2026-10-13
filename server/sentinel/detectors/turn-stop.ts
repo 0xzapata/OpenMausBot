@@ -20,9 +20,11 @@ export const turnStop: Detector = {
     const observations: Observation[] = [];
     for (const record of records) {
       if (record.type === "tool" && record.tool === HARNESS_NOTICE && TURN_TIMEOUT_NOTICE.test(record.text)) {
+        const text = normalizeSignatureText(record.text);
         observations.push({
           kind: "turn_timeout",
-          signature: signatureOf("turn_timeout", normalizeSignatureText(record.text)),
+          signature: signatureOf("turn_timeout", text),
+          title: text.slice(0, 160),
           origin: "harness",
           severity: "medium",
           threadId: record.threadId,
@@ -43,6 +45,7 @@ export const turnStop: Detector = {
       observations.push({
         kind,
         signature: signatureOf(kind, reason),
+        title: record.ok ? `turn stopped on its budget: ${reason}` : `turn failed: ${reason}`,
         origin,
         severity: origin === "harness" && !record.ok ? "high" : "medium",
         threadId: record.threadId,

@@ -13,6 +13,7 @@ export const queueWait: Detector = {
       observations.push({
         kind: "queue_wait",
         signature: signatureOf("queue_wait", record.botId),
+        title: `delegated work queued over ${Math.round(config.queueWaitMs / 1000)} s`,
         origin: "harness",
         severity: "medium",
         threadId: record.threadId,

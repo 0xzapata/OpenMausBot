@@ -9,7 +9,7 @@ import type { Observation } from "./types.ts";
 
 function observation(occurrence: string, at: number, extra: Partial<Observation> = {}): Observation {
   return {
-    kind: "tool_error", signature: "tool_error:0123456789abcdef", origin: "harness", severity: "high", tool: "mcp__agents__send",
+    kind: "tool_error", signature: "tool_error:0123456789abcdef", title: "no layer <n>", origin: "harness", severity: "high", tool: "mcp__agents__send",
     threadId: "t1", botId: "b1", at, occurrence, evidence: { source: "messages", id: occurrence }, ...extra,
   };
 }
@@ -55,7 +55,7 @@ describe("sentinel issue store", () => {
     upsertIssues(issues, state, [observation("m1", 1_000)]);
     writeSentinelFiles(dir, issues, state);
     const line = readFileSync(join(dir, ISSUES_FILE), "utf8").trim();
-    expect(Object.keys(JSON.parse(line)).sort()).toEqual(["botId", "count", "evidenceRef", "firstAt", "kind", "lastAt", "origin", "severity", "sig", "threadId", "tool", "wastedTurns"]);
+    expect(Object.keys(JSON.parse(line)).sort()).toEqual(["botId", "count", "evidenceRef", "firstAt", "kind", "lastAt", "origin", "severity", "sig", "threadId", "title", "tool", "wastedTurns"]);
     if (process.platform !== "win32") {
       expect(statSync(join(dir, ISSUES_FILE)).mode & 0o777).toBe(0o600);
       expect(statSync(join(dir, STATE_FILE)).mode & 0o777).toBe(0o600);

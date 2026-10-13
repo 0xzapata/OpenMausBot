@@ -154,15 +154,25 @@ export const SENTINEL_LAUNCHD_LABEL = "com.openmausbot.sentinel";
 export const SENTINEL_SYSTEMD_NAME = "openmausbot-sentinel";
 export const SENTINEL_INTERVAL_SECONDS = 120;
 
-export type SentinelServiceSpec = Pick<ServiceSpec, "node" | "script" | "dataDir" | "home">;
+export type SentinelServiceSpec = Pick<ServiceSpec, "node" | "script" | "dataDir" | "home"> & {
+  /** Sentinel's own folder, outside the data dir: issues, state, its log
+   * and these rendered files (server/sentinel/paths.ts). */
+  out: string;
+};
 
-export function sentinelCommand(spec: Pick<SentinelServiceSpec, "node" | "script" | "dataDir">): string[] {
-  return [spec.node, ...(needsStripTypes(spec.script) ? ["--experimental-strip-types"] : []), spec.script, "sentinel", "--once", "--data-dir", spec.dataDir];
+export function sentinelCommand(spec: Pick<SentinelServiceSpec, "node" | "script" | "dataDir" | "out">): string[] {
+  return [spec.node, ...(needsStripTypes(spec.script) ? ["--experimental-strip-types"] : []), spec.script, "sentinel", "--once", "--data-dir", spec.dataDir, "--out", spec.out];
+}
+
+/** One argument of a command printed for the person to paste: "Application
+ * Support" must reach cp as one path. */
+function shellArg(value: string): string {
+  return /^[\w@%+=:,./~-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function sentinelLaunchdPlist(spec: SentinelServiceSpec): string {
   const args = sentinelCommand(spec).map((arg) => `\t\t<string>${xml(arg)}</string>`).join("\n");
-  const log = xml(join(spec.dataDir, "logs", "sentinel.log"));
+  const log = xml(join(spec.out, "sentinel.log"));
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -229,16 +239,16 @@ export function sentinelSystemdTimer(): string {
   ].join("\n");
 }
 
-/** The files written next to the data, where each one goes, and how to
+/** The files written to Sentinel's folder, where each one goes, and how to
  * activate them. Null on a platform without a renderer (Windows). */
-export function sentinelServicePlan(platform: NodeJS.Platform, dataDir: string, home = homedir()): { files: Array<{ name: string; installed: string }>; activate: string[]; deactivate: string[] } | null {
+export function sentinelServicePlan(platform: NodeJS.Platform, out: string, home = homedir()): { files: Array<{ name: string; installed: string }>; activate: string[]; deactivate: string[] } | null {
   if (platform === "linux") {
     const dir = join(home, ".config", "systemd", "user");
     const files = [`${SENTINEL_SYSTEMD_NAME}.service`, `${SENTINEL_SYSTEMD_NAME}.timer`].map((name) => ({ name, installed: join(dir, name) }));
     return {
       files,
-      activate: [`mkdir -p ${dir} && cp ${files.map((file) => join(dataDir, file.name)).join(" ")} ${dir}/`, "systemctl --user daemon-reload", `systemctl --user enable --now ${SENTINEL_SYSTEMD_NAME}.timer`],
-      deactivate: [`systemctl --user disable --now ${SENTINEL_SYSTEMD_NAME}.timer`, `rm ${files.map((file) => file.installed).join(" ")}`, "systemctl --user daemon-reload"],
+      activate: [`mkdir -p ${shellArg(dir)} && cp ${files.map((file) => shellArg(join(out, file.name))).join(" ")} ${shellArg(dir)}/`, "systemctl --user daemon-reload", `systemctl --user enable --now ${SENTINEL_SYSTEMD_NAME}.timer`],
+      deactivate: [`systemctl --user disable --now ${SENTINEL_SYSTEMD_NAME}.timer`, `rm ${files.map((file) => shellArg(file.installed)).join(" ")}`, "systemctl --user daemon-reload"],
     };
   }
   if (platform === "darwin") {
@@ -246,8 +256,8 @@ export function sentinelServicePlan(platform: NodeJS.Platform, dataDir: string, 
     const installed = join(home, "Library", "LaunchAgents", name);
     return {
       files: [{ name, installed }],
-      activate: [`mkdir -p ${dirname(installed)} && cp ${join(dataDir, name)} ${installed}`, `launchctl bootstrap gui/$(id -u) ${installed}`],
-      deactivate: [`launchctl bootout gui/$(id -u)/${SENTINEL_LAUNCHD_LABEL}`, `rm ${installed}`],
+      activate: [`mkdir -p ${shellArg(dirname(installed))} && cp ${shellArg(join(out, name))} ${shellArg(installed)}`, `launchctl bootstrap gui/$(id -u) ${shellArg(installed)}`],
+      deactivate: [`launchctl bootout gui/$(id -u)/${SENTINEL_LAUNCHD_LABEL}`, `rm ${shellArg(installed)}`],
     };
   }
   return null;

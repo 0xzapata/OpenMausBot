@@ -13,6 +13,7 @@ export const cost: Detector = {
       observations.push({
         kind: "cost",
         signature: signatureOf("cost", record.botId),
+        title: `a turn cost over $${config.costUsd}`,
         origin: "harness",
         severity: "medium",
         threadId: record.threadId,

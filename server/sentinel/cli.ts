@@ -6,7 +6,8 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { runScan, sentinelOut, type ScanSummary } from "./scan.ts";
+import { defaultSentinelOut, isInside } from "./paths.ts";
+import { runScan, type ScanSummary } from "./scan.ts";
 
 export interface SentinelArgs {
   dataDir: string;
@@ -22,9 +23,13 @@ export const SENTINEL_USAGE = `openmausbot sentinel [--data-dir DIR] [--out DIR]
 
 Scans an OpenMausBot data dir, read-only, for failed tool calls, stopped or
 timed-out turns, long queue waits, expensive turns and retry loops, and keeps
-them as issues in DIR/sentinel/issues.jsonl (or --out). Issues point at the
-evidence by id; they never copy tool output or message text.
+them as issues in issues.jsonl, outside the data dir: on macOS in
+~/Library/Application Support/openmausbot-sentinel, on Linux in
+$XDG_STATE_HOME/openmausbot-sentinel (~/.local/state/…), or in --out. Issues
+point at the evidence by id and carry a normalized one-line title; they never
+copy tool output or message text.
 
+--out         where issues.jsonl and state.json go (not in the data dir or a repository)
 --once        run one scan and exit (what every run does; for schedulers)
 --json        print the summary as JSON
 --queue-wait  flag delegated work queued longer than this (default 300)
@@ -58,7 +63,7 @@ export function parseSentinelArgs(argv: string[], env: NodeJS.ProcessEnv = proce
       return { error: error instanceof Error ? error.message : String(error), json };
     }
   }
-  return { ...args, dataDir, out: out ?? sentinelOut(dataDir) };
+  return { ...args, dataDir, out: out ?? defaultSentinelOut(dataDir, process.platform, homedir(), env) };
 }
 
 /** The nearest folder at or above `dir` holding a .git, if any. */
@@ -89,6 +94,8 @@ export function runSentinelCli(argv: string[], io: { log(line: string): void; er
   // issues name bots and threads; they must never end up committed
   const repo = enclosingRepo(args.out);
   if (repo) return fail(`refusing to write issues inside the git repository at ${repo}; pass --out with a folder outside it`, args.json);
+  // Sentinel only reads the data dir; its own files live elsewhere
+  if (isInside(args.out, args.dataDir)) return fail(`refusing to write issues inside the data dir ${args.dataDir}; leave out --out for the default, or pass a folder outside it`, args.json);
   let summary: ScanSummary;
   try {
     summary = runScan({ dataDir: args.dataDir, out: args.out, queueWaitMs: args.queueWaitMs, costUsd: args.costUsd });
@@ -109,7 +116,7 @@ export function formatSummary(summary: ScanSummary, out: string): string[] {
   ];
   for (const issue of summary.touched.slice(0, 10)) {
     const turns = issue.wastedTurns ? `, ${issue.wastedTurns} turns` : "";
-    lines.push(`  ${issue.severity.padEnd(6)} ${issue.kind.padEnd(12)} ${issue.origin.padEnd(8)} ${issue.tool ?? "-"} ×${issue.count}${turns}  ${issue.sig}`);
+    lines.push(`  ${issue.severity.padEnd(6)} ${issue.kind.padEnd(12)} ${issue.origin.padEnd(8)} ${issue.tool ?? "-"} ×${issue.count}${turns}: ${issue.title ?? issue.sig}`);
   }
   if (summary.touched.length > 10) lines.push(`  … and ${summary.touched.length - 10} more`);
   lines.push(`issues: ${join(out, "issues.jsonl")}`);

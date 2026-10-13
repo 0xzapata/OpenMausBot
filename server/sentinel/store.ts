@@ -72,6 +72,7 @@ export function upsertIssues(issues: Map<string, Issue>, state: SentinelState, o
     const issue = issues.get(observation.signature) ?? {
       sig: observation.signature,
       kind: observation.kind,
+      title: observation.title,
       origin: observation.origin,
       severity: observation.severity,
       firstAt: observation.at,
@@ -84,6 +85,7 @@ export function upsertIssues(issues: Map<string, Issue>, state: SentinelState, o
     issue.firstAt = Math.min(issue.firstAt, observation.at);
     if (observation.at >= issue.lastAt || issue.count === 1) {
       issue.lastAt = observation.at;
+      issue.title = observation.title;
       issue.evidenceRef = observation.evidence;
       for (const field of ["tool", "botId", "threadId", "turnId"] as const) {
         if (observation[field] !== undefined) issue[field] = observation[field];
