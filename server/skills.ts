@@ -1354,6 +1354,14 @@ export function stageSkillWrite(
   const removals = new Set(
     redactedFiles.filter((file) => file.path !== "SKILL.md" && !file.content.trim()).map((file) => file.path),
   );
+  for (const path of removals) {
+    if (!isSkillReferencePath(path)) {
+      return { error: `learned skill files must be SKILL.md or references/<topic>.md (lowercase letters, digits, and hyphens), not "${path}"` };
+    }
+  }
+  if (removals.size && input.action !== "update") {
+    return { error: `empty reference content removes a file only on update; give ${[...removals][0]} its content` };
+  }
   let prepared = preparedLearnedSkill(redactedFiles.filter((file) => file.path === "SKILL.md" || !removals.has(file.path)));
   if ("error" in prepared) return prepared;
   const { parsed } = prepared;
@@ -1387,7 +1395,10 @@ export function stageSkillWrite(
       return { error: "stored skill references changed after review — restore or remove the skill before proposing an update" };
     }
     const merged = new Map(installed.map((file) => [file.path, file]));
-    for (const path of removals) merged.delete(path);
+    for (const path of removals) {
+      if (!merged.has(path)) return { error: `cannot remove ${path}: the skill has no such reference file` };
+      merged.delete(path);
+    }
     for (const file of prepared.files.slice(1)) merged.set(file.path, file);
     prepared = preparedLearnedSkill([prepared.files[0]!, ...merged.values()]);
     if ("error" in prepared) return prepared;

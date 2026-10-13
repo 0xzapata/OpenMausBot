@@ -1271,6 +1271,24 @@ describe("learned skill references", () => {
     expect(listStagedSkillWrites(bot)).toEqual([]);
   });
 
+  it("rejects removals that are malformed, on create, or of a reference the skill does not have", () => {
+    const removal = (path: string) => ({ path, content: "" });
+    expect(stageSkillWrite(bot, {
+      action: "create",
+      files: [{ path: "SKILL.md", content: SKILL("file-expense") }, removal("references/edge-cases.md")],
+    })).toMatchObject({ error: expect.stringContaining("only on update") });
+    learn("create", [ref("edge-cases")]);
+    const update = (path: string) => stageSkillWrite(bot, {
+      action: "update",
+      targetName: "file-expense",
+      files: [{ path: "SKILL.md", content: SKILL("file-expense", "Changed.") }, removal(path)],
+    });
+    expect(update("scripts/run.sh")).toMatchObject({ error: expect.stringContaining('not "scripts/run.sh"') });
+    expect(update("references/edge-case.md")).toMatchObject({ error: expect.stringContaining("no such reference file") });
+    expect(listStagedSkillWrites(bot)).toEqual([]);
+    expect(readSkillReferences(bot, "file-expense")).toEqual([ref("edge-cases")]);
+  });
+
   it("refuses a staged reference changed after review, or a reviewer who saw different references", () => {
     const staged = stageSkillWrite(bot, {
       action: "create",
