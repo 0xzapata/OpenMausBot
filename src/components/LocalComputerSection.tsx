@@ -184,10 +184,10 @@ export function cloudComputerInventoryStateKind(
 ): ComputerStateKind {
   if (instance.inUse) return "in-use";
   if (instance.state === "removing") return "removing";
-  if (["archived", "stopped"].includes(instance.state)) return "sleeping";
-  if (["archiving", "stopping"].includes(instance.state)) return "going-to-sleep";
+  if (instance.state === "archived") return "sleeping";
+  if (instance.state === "archiving") return "going-to-sleep";
   if (["idle", "ready", "running"].includes(instance.state)) return "running";
-  if (["init", "provisioning", "provisioned", "cloning", "starting"].includes(instance.state)) return "starting";
+  if (["init", "provisioning", "provisioned", "cloning"].includes(instance.state)) return "starting";
   return "attention";
 }
 
@@ -211,7 +211,7 @@ export function reconcileCloudInventorySnapshot(
     if (override === "deleted") return [];
     if (override === "deleting") return [{ ...instance, state: "removing" }];
     if (override !== "sleeping") return [instance];
-    if (["archived", "stopped"].includes(instance.state)) {
+    if (instance.state === "archived") {
       delete nextOverrides[instance.boxId];
       return [instance];
     }

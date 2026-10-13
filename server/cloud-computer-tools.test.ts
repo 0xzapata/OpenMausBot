@@ -30,7 +30,7 @@ beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("fixture did not bind");
-  vi.stubEnv("OMB_BOX_API", `http://127.0.0.1:${address.port}`);
+  vi.stubEnv("OMB_BOAT_API", `http://127.0.0.1:${address.port}`);
   vi.stubEnv("OMB_CLOUD_BOAT_TOKEN", undefined);
   tools = await import("./cloud-computer-tools.ts");
 });
@@ -74,7 +74,7 @@ describe("cloud computer tools", () => {
     if (name === "open_url") expect(result.content[0].text).toContain("Page loading is not confirmed");
     expect(call.gated()).toBe(1);
     expect(call.checks()).toBe(2);
-    expect(calls.map(entry => entry.path)).toEqual(["/boxes/bx_23456789/commands"]);
+    expect(calls.map(entry => entry.path)).toEqual(["/sandboxes/bx_23456789/commands"]);
     expect(calls[0].authorization).toBe("Bearer synthetic-box-key");
     expect(calls[0].body.command).toContain("exec env -i");
     expect(calls[0].body.command).toContain(expected);
@@ -132,7 +132,7 @@ describe("cloud computer tools", () => {
       gate: async () => { started = "bx_3456789a"; return { held: false }; }, assertActive: () => {},
     }) as { isError?: boolean };
     expect(result.isError).not.toBe(true);
-    expect(calls.map(entry => entry.path)).toEqual(["/boxes/bx_3456789a/commands"]);
+    expect(calls.map(entry => entry.path)).toEqual(["/sandboxes/bx_3456789a/commands"]);
   });
 
   it("performs nothing when the gate let a call through and no Boat landed", async () => {
