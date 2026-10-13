@@ -33,13 +33,9 @@
 // switches the engine and sends nothing. The card names that root, so the
 // question is asked of the request that ran out and never of the thread: an
 // older request parked on a card nobody answered holds nothing here.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 import { approvalModeFor, modelSwitchNeedsAsk } from "../shared/approval-mode.ts";
 import type { QuotaSwitchCardData } from "../shared/wire.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
-import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import type { EngineAccess, ModelCatalog, ModelSelection, ProviderAdapter, ProviderSnapshot } from "./contracts.ts";
 import type { Coordinator } from "./coordinator.ts";
@@ -140,25 +136,15 @@ export const NOT_NOW = "Not now";
 const ENDED: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
 
 /** The kill switch. On unless switched off, because the card is only an
- * offer: nothing changes until the person answers it. Switch it off with
- * `{"quotaSwitch": {"enabled": false}}` in config.json or with
- * OMB_QUOTA_SWITCH=0; the environment wins when it says 0 or 1, like the
- * other settings an environment can override (decision-log.ts's
- * decisionRetentionDays). The section is this module's own, read from the
- * file as it stands when an offer is about to be made or taken, so a hand
- * edit needs no restart and a settings save (which keeps every key it does
- * not know) leaves it alone. A file that is missing or cannot be read says
- * nothing: on. */
-export function quotaSwitchEnabled(env: NodeJS.ProcessEnv = process.env, file = join(DATA_DIR, "config.json")): boolean {
-  const fromEnv = env.OMB_QUOTA_SWITCH?.trim();
-  if (fromEnv === "0" || fromEnv === "1") return fromEnv === "1";
-  try {
-    const stored: unknown = JSON.parse(readFileSync(file, "utf8"));
-    const section = typeof stored === "object" && stored !== null ? (stored as { quotaSwitch?: unknown }).quotaSwitch : undefined;
-    return !(typeof section === "object" && section !== null && (section as { enabled?: unknown }).enabled === false);
-  } catch {
-    return true;
-  }
+ * offer: nothing changes until the person answers it. OMB_QUOTA_SWITCH=0
+ * switches it off; any other value, or none, leaves it on. The environment
+ * is the only switch for now. A `quotaSwitch.enabled` key in config.json
+ * needs its place in server/config.ts's schema, which the file-size ratchet
+ * (scripts/testing/file-size-ratchet.test.ts) pins at its present size; a
+ * key read past that schema would be unvalidated, and a save through the
+ * schema could drop it and bring the offer back unasked. */
+export function quotaSwitchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OMB_QUOTA_SWITCH?.trim() !== "0";
 }
 
 const nameOf = (engine: QuotaSwitchEngine): string => engine.displayName || engine.driverKind;

@@ -26,7 +26,7 @@ const jsonLines = (path: string): any[] => existsSync(path)
  * verification launcher's (scripts/control-omb.ts), the config is this
  * suite's. */
 async function withQuotaFixture(
-  options: { env?: Record<string, string>; config?: Record<string, unknown> },
+  options: { env?: Record<string, string> },
   check: (fixture: {
     api: (method: string, path: string, body?: unknown) => Promise<any>;
     control: (...args: string[]) => Promise<any>;
@@ -46,7 +46,6 @@ async function withQuotaFixture(
   const engine = (displayName: string, environment: Record<string, string>) =>
     ({ driver: "claudeAgent", displayName, config: { cli: FAKE_CLI }, environment });
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({
-    ...options.config,
     instances: {
       claude: engine(LIMITED, { FAKE_CLAUDE_MODE: "usage-limit" }),
       backup: engine(BACKUP, { FAKE_CLAUDE_MODE: "happy", FAKE_CLAUDE_PROMPTS: backupFile, FAKE_CLAUDE_TOOL_CALLS: "[]" }),
@@ -217,11 +216,8 @@ it.each([
   });
 }, 240_000);
 
-it.each([
-  { name: "OMB_QUOTA_SWITCH=0", options: { env: { OMB_QUOTA_SWITCH: "0" } } },
-  { name: "quotaSwitch.enabled false in config.json", options: { config: { quotaSwitch: { enabled: false } } } },
-])("raises no card when $name switches it off", async ({ options }) => {
-  await withQuotaFixture(options, async ({ api, control, backupPrompts }) => {
+it("raises no card when OMB_QUOTA_SWITCH=0 switches it off", async () => {
+  await withQuotaFixture({ env: { OMB_QUOTA_SWITCH: "0" } }, async ({ api, control, backupPrompts }) => {
     const { bot, threadId, messages } = await meetTheLimit(api, control, "NO_OFFER_WHEN_OFF_2B");
     // A second failed turn is the event that proves the first one's offer was never coming.
     await control("send", "--bot", bot.id, "--task", threadId, "--text", "STILL_NO_OFFER_3C");

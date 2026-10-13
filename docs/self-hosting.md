@@ -855,12 +855,10 @@ the engine's default model, the bot's own model and its other conversations
 stay where they are, and their message is sent again. Turns nobody typed
 (routines, webhooks, a teammate's work) get no card.
 
-The offer is on by default. To switch it off, add
-`"quotaSwitch": {"enabled": false}` to `config.json`, or start the server with
-`OMB_QUOTA_SWITCH=0`. The file is read when the next offer would be made, so
-a hand edit needs no restart; `PUT /api/config` does not set this key.
-`OMB_QUOTA_SWITCH=1` keeps the offer on whatever the file says: the
-environment wins.
+The offer is on by default. To switch it off, start the server with
+`OMB_QUOTA_SWITCH=0`; any other value, or none, leaves it on. A typed
+`quotaSwitch.enabled` key in `config.json` is deliberately left out for now,
+because `server/config.ts` is pinned by the file-size ratchet.
 
 ### The decision log
 

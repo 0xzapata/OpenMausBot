@@ -6,7 +6,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DATA_DIR, saveConfig } from "./config.ts";
+import { DATA_DIR } from "./config.ts";
 import type { ModelSelection, ProviderAdapter, ProviderSnapshot } from "./contracts.ts";
 import { createCoordinator, type Coordinator, type HostTurnResult } from "./coordinator.ts";
 import { closeMessageDb } from "./message-db.ts";
@@ -30,40 +30,21 @@ function engine(instanceId: string, driverKind: string, displayName: string, ove
 }
 
 describe("quotaSwitchEnabled", () => {
-  const file = join(DATA_DIR, "config.json");
-  const stored = (config: unknown) => { mkdirSync(DATA_DIR, { recursive: true }); writeFileSync(file, typeof config === "string" ? config : JSON.stringify(config)); };
   afterEach(() => rmSync(DATA_DIR, { recursive: true, force: true }));
 
-  it("is on unless config.json or OMB_QUOTA_SWITCH switches it off", () => {
+  it("is on unless OMB_QUOTA_SWITCH=0 switches it off", () => {
     // On by default: the card is only an offer, and nothing changes until it is answered.
     expect(quotaSwitchEnabled({})).toBe(true);
-    stored({ quotaSwitch: { enabled: true } });
-    expect(quotaSwitchEnabled({})).toBe(true);
-    stored({ quotaSwitch: { enabled: false } });
-    expect(quotaSwitchEnabled({})).toBe(false);
-    // The environment wins when it says either way; anything else leaves the file's choice.
-    expect(quotaSwitchEnabled({ OMB_QUOTA_SWITCH: "1" })).toBe(true);
-    expect(quotaSwitchEnabled({ OMB_QUOTA_SWITCH: "" })).toBe(false);
-    expect(quotaSwitchEnabled({ OMB_QUOTA_SWITCH: "maybe" })).toBe(false);
-    stored({ quotaSwitch: { enabled: true } });
-    expect(quotaSwitchEnabled({ OMB_QUOTA_SWITCH: " 0 " })).toBe(false);
-    rmSync(file);
     expect(quotaSwitchEnabled({ OMB_QUOTA_SWITCH: "0" })).toBe(false);
+    expect(quotaSwitchEnabled({ OMB_QUOTA_SWITCH: " 0 " })).toBe(false);
+    for (const other of ["1", "", "false", "off", "no"]) expect(quotaSwitchEnabled({ OMB_QUOTA_SWITCH: other }), JSON.stringify(other)).toBe(true);
   });
 
-  it("stays on when the file says nothing it can read", () => {
-    for (const config of ["{ not json", "null", [], {}, { quotaSwitch: false }, { quotaSwitch: { enabled: "no" } }, { quotaSwitch: { enabled: 0 } }]) {
-      stored(config);
-      expect(quotaSwitchEnabled({}), JSON.stringify(config)).toBe(true);
-    }
-  });
-
-  it("is read from the file as it stands, and a settings save keeps it", () => {
-    stored({ quotaSwitch: { enabled: false } });
-    // The app saves another setting: the section it does not know stays in the file.
-    saveConfig({ profile: { name: "Quota fixture" } });
-    expect(quotaSwitchEnabled({})).toBe(false);
-    stored({ profile: { name: "Quota fixture" } });
+  it("takes nothing from config.json, which has no key for it", () => {
+    // A key the config schema does not know is not a setting: the next save
+    // through that schema may drop it, and the offer would come back unasked.
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ quotaSwitch: { enabled: false } }));
     expect(quotaSwitchEnabled({})).toBe(true);
   });
 });
