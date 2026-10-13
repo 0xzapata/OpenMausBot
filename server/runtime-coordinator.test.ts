@@ -241,6 +241,19 @@ describe("RuntimeCoordinator: the requesting turn and its tree", () => {
     expect(w.host.reports).toHaveLength(1);
   });
 
+  it("active() is all() without the ended nodes, with the same views", async () => {
+    const w = world();
+    const ended_ = new Set(["completed", "failed", "cancelled"]);
+    const same = () => expect(w.coordinator.active()).toEqual(w.coordinator.all().filter(n => !ended_.has(n.status)));
+    const { node } = send(w, chief, "gen-1", undefined, builder, "Build it");
+    same(); expect(w.coordinator.active().map(n => n.id)).toEqual(["gen-1", node.id]);
+    ended(w, "gen-1"); w.coordinator.tick(); await flush();
+    same(); expect(w.coordinator.active().map(n => n.id)).toEqual(["gen-1"]);
+    w.coordinator.tick(); await flush();
+    expect(w.coordinator.all()).toHaveLength(2);
+    expect(w.coordinator.active()).toEqual([]);
+  });
+
   it("a failed requesting turn keeps its accepted work and says so in its result; an unknown or settled id is logged and ignored", async () => {
     const w = world();
     const { node } = send(w, chief, "gen-1", undefined, builder, "Build it");
