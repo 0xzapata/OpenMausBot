@@ -174,9 +174,11 @@ Check these user paths:
 2. Pick a Thinking step, then `GET /api/bots` on the printed fixture URL: the
    bot's `modelSelection.effort` is that step. Expand Default model: the
    picker shows no second copy of the steps.
-3. Choose another place under Where Pepper works and read the bot back:
-   `computer` is that place, and Browser also sets `browser: true`. A place
-   that cannot be used is listed with its reason and cannot be picked.
+3. Where Pepper works offers Auto, this computer and Cloud computer. Pick
+   one and read the bot back: `computer` is that place, and Auto clears it.
+   A place that cannot be used is held, with its reason on hover. Open the
+   Computer panel at its narrowest (360px) and widest: its tabs stay on one
+   row, without their icons while the panel is narrow.
 4. Create a routine for the bot (`POST /api/routines`), then click its
    `Run … on its schedule` switch on Details. `GET /api/routines` reports
    `enabled: false`, the row reads Paused, and a second click resumes it. The

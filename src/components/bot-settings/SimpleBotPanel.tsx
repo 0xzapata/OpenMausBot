@@ -15,7 +15,7 @@ import { writeComputerPanelView } from "@/lib/computer-panel-view";
 import { t } from "@/lib/i18n";
 import { attachmentBasename } from "@/lib/composer-attachments";
 import { friendlyEffort, simpleEffortLevels } from "@/lib/model-friendly";
-import { PLACES, type Place } from "@/lib/place";
+import type { Place } from "@/lib/place";
 import { placeFacts, placeHasIssue, placeViewFor, usePlaceSeat, worksOnSimpleLabel } from "@/lib/place-view";
 import { routineFinished, routineNextLabel } from "@/lib/routine-display";
 import { scheduleLabel } from "@/lib/schedule-label";
@@ -60,6 +60,9 @@ const TABS = [
   ["routines", "botSettings.simple.routines"],
   ["vault", "botSettings.simple.vault"],
 ] as const;
+
+/** The places the Where it works row offers beside Auto, in its order. */
+const SIMPLE_PLACES: readonly Place[] = ["local", "cloud"];
 
 /** How many of a bot's apps the Uses row names before it counts the rest. */
 const USES_SHOWN = 4;
@@ -212,34 +215,32 @@ export function SimpleBotPanel({
     dispatch({ type: "setModel", botId: bot.id, selection: { ...bot.modelSelection, effort: level } });
   };
 
-  // Where it works: the same choices, words and rules as the Computer
-  // panel's grid (shared/place-view.ts and its selectPlace), on one row. A
-  // place this bot cannot use is listed but cannot be picked, with the reason
-  // in its few words.
+  // Where it works, as three plain choices: let it decide, this computer, or
+  // a cloud computer. They carry the Computer panel's words and rules
+  // (shared/place-view.ts and its selectPlace); the rarer places (Local VM,
+  // browser only, off) stay in that panel, and one of those in effect is
+  // named on the row with none of the three pressed.
   const worksOn = placeViewFor(placeFacts({
     bot, place: bot.computer ?? "auto", seat: placeSeat, config: state.config, instances: state.instances,
   }));
   const placeViews = usePlaceViews(bot);
   const currentPlace = bot.computer ?? "auto";
-  const placeChoices = [
+  const placeChoices: { value: "auto" | Place; label: string; disabled: boolean; title?: string }[] = [
     { value: "auto", label: worksOnSimpleLabel(undefined, platform), disabled: false },
-    ...PLACES.filter((place) => placeViews[place].policy || place === currentPlace).map((place) => {
+    ...SIMPLE_PLACES.filter((place) => placeViews[place].policy).map((place) => {
       const { view, reachable } = placeViews[place];
-      const label = worksOnSimpleLabel(place, platform);
-      return { value: place, label: placeHasIssue(view) || !reachable ? `${label} (${view.short})` : label, disabled: !reachable };
+      // A place that cannot be picked, or has a problem, says why on hover.
+      return { value: place, label: worksOnSimpleLabel(place, platform), disabled: !reachable, title: !reachable || placeHasIssue(view) ? view.line : undefined };
     }),
-    { value: "off", label: worksOnSimpleLabel("off", platform), disabled: false },
   ];
-  const choosePlace = (value: string) => {
-    const mode = value === "auto" ? null : value === "off" ? "off" as const : PLACES.find((place) => place === value) as Place | undefined;
-    if (mode === undefined || (mode ?? "auto") === currentPlace) return;
-    if (mode === "local" && approvalMode === "auto") {
+  const placeListed = placeChoices.some((choice) => choice.value === currentPlace);
+  const choosePlace = (value: "auto" | Place) => {
+    if (value === currentPlace) return;
+    if (value === "local" && approvalMode === "auto") {
       setLocalAutoWarning({ botId: bot.id, patch: { computer: "local", acknowledgeLocalAuto: true } });
       return;
     }
-    // A browser-only bot must actually have its browser: the per-bot switch
-    // goes on with the place.
-    patch(mode === "browser" ? { computer: mode, browser: true } : { computer: mode });
+    patch({ computer: value === "auto" ? null : value });
   };
   // Signing in to a site happens in the bot's own browser, in the Computer panel.
   const openBrowser = () => {
@@ -270,7 +271,7 @@ export function SimpleBotPanel({
   };
   const tabCls = (active: boolean) =>
     cn(
-      "min-w-0 flex-1 truncate rounded-full px-1 py-1.5 text-[12.5px] font-medium transition-colors",
+      "min-w-0 flex-1 truncate rounded-full px-0.5 py-1.5 text-[12.5px] font-medium transition-colors @max-[22rem]:text-[11.5px] @max-[19.5rem]:text-[11px]",
       active ? "bg-raised text-ink shadow-sm" : "text-ink-secondary hover:text-ink",
     );
   const soon = (
@@ -292,7 +293,7 @@ export function SimpleBotPanel({
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-6">
+      <div className="@container flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-6">
         <div className="flex flex-col items-center gap-2">
           <button
             type="button"
@@ -520,19 +521,30 @@ export function SimpleBotPanel({
                 </div>
               </Row>
 
-              <Row data-simple-row="computer" title={t("computer.simple.whereWorks", { name: bot.name })} hint={worksOn.line}>
-                <select
-                  data-simple-place
-                  aria-label={t("computer.simple.whereWorks", { name: bot.name })}
-                  value={currentPlace}
-                  onChange={(event) => choosePlace(event.target.value)}
-                  // As wide as the place in effect, not the longest choice in the list.
-                  className="w-32 shrink-0 truncate rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12.5px] font-medium text-ink focus:border-accent-border focus:outline-none"
-                >
+              <Row
+                data-simple-row="computer"
+                title={t("computer.simple.whereWorks", { name: bot.name })}
+                // Auto's full line lists every place it may use; beside three
+                // buttons its short form says enough.
+                hint={currentPlace === "auto" ? t("place.autoDetail")
+                  : placeListed ? worksOn.line : `${worksOnSimpleLabel(bot.computer, platform)}: ${worksOn.line}`}
+              >
+                <div role="group" aria-label={t("computer.simple.whereWorks", { name: bot.name })} className={segmentCls}>
                   {placeChoices.map((choice) => (
-                    <option key={choice.value} value={choice.value} disabled={choice.disabled}>{choice.label}</option>
+                    <button
+                      key={choice.value}
+                      type="button"
+                      data-place-choice={choice.value}
+                      aria-pressed={choice.value === currentPlace}
+                      disabled={choice.disabled}
+                      title={choice.title}
+                      onClick={() => choosePlace(choice.value)}
+                      className={segmentItemCls(choice.value === currentPlace)}
+                    >
+                      {choice.label}
+                    </button>
                   ))}
-                </select>
+                </div>
               </Row>
 
               <Row

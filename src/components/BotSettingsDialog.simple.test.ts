@@ -485,54 +485,58 @@ describe("the bot settings panel in Simple mode", () => {
     expect(effortElsewhere(variants)).toBe(false);
   });
 
-  const place = (rendered: { nodes: Node[] }) => find(rendered, "data-simple-place");
-  const placeOptions = (rendered: { nodes: Node[] }) =>
-    (Children.toArray(place(rendered).props.children) as Node[]).map((option) => [option.props.value, option.props.children, Boolean(option.props.disabled)]);
-  const pickPlace = (rendered: { nodes: Node[] }, value: string) =>
-    (place(rendered).props.onChange as (e: unknown) => void)({ target: { value } });
+  const places = (rendered: { nodes: Node[] }) => rendered.nodes.filter((node) => node.props["data-place-choice"] !== undefined);
+  const placeOf = (rendered: { nodes: Node[] }, value: string) => find(rendered, "data-place-choice", value);
 
-  it("picks where the bot works on its own row, in the Computer panel's words", () => {
+  it("offers three places on the row: Auto, this computer and a cloud computer", () => {
     const rendered = panel(makeBot());
     expect(rendered.html).toContain("Where Scout works");
-    expect(place(rendered).props.value).toBe("auto");
-    expect(placeOptions(rendered).map(([value]) => value)).toEqual(["auto", "cloud", "vm", "local", "browser", "off"]);
-    expect(placeOptions(rendered).map(([, label]) => label)).toEqual(expect.arrayContaining(["Auto", "Cloud computer", "Local VM", "Browser", "Off"]));
+    expect(places(rendered).map((node) => [node.props["data-place-choice"], node.props["aria-pressed"]])).toEqual([
+      ["auto", true], ["local", false], ["cloud", false],
+    ]);
+    expect(rendered.html).toContain("Picks the right place for each task");
+    // The cloud place is always named in full.
+    expect(placeOf(rendered, "cloud").props.children).toBe("Cloud computer");
+    expect(placeOf(rendered, "auto").props.children).toBe("Auto");
 
-    pickPlace(rendered, "cloud");
+    click(placeOf(rendered, "cloud"));
     expect(patch).toHaveBeenLastCalledWith({ computer: "cloud" });
-    // A browser-only bot needs its browser, so the per-bot switch goes on too.
-    pickPlace(rendered, "browser");
-    expect(patch).toHaveBeenLastCalledWith({ computer: "browser", browser: true });
-    pickPlace(rendered, "off");
-    expect(patch).toHaveBeenLastCalledWith({ computer: "off" });
+    click(placeOf(rendered, "local"));
+    expect(patch).toHaveBeenLastCalledWith({ computer: "local" });
     // Auto is the absence of a place.
-    pickPlace(panel(makeBot({ computer: "cloud" })), "auto");
+    click(placeOf(panel(makeBot({ computer: "cloud" })), "auto"));
     expect(patch).toHaveBeenLastCalledWith({ computer: null });
   });
 
-  it("sends nothing for the place already chosen or a value it does not know", () => {
-    pickPlace(panel(makeBot()), "auto");
-    pickPlace(panel(makeBot({ computer: "vm" })), "vm");
-    pickPlace(panel(makeBot()), "mars");
+  it("sends nothing for the place already chosen", () => {
+    click(placeOf(panel(makeBot()), "auto"));
+    click(placeOf(panel(makeBot({ computer: "local" })), "local"));
     expect(patch).not.toHaveBeenCalled();
   });
 
-  it("lists a place the bot cannot use with its reason and does not let it be picked, and hides one never offered here", () => {
+  it("holds a place the bot cannot use with the reason on it, and leaves out one never offered here", () => {
     fixture.places.local = [true, false, "Not ready"];
-    fixture.places.vm = [false, false, "Not offered"];
-    const options = placeOptions(panel(makeBot()));
-    expect(options.map(([value]) => value)).toEqual(["auto", "cloud", "local", "browser", "off"]);
-    expect(options.find(([value]) => value === "local")).toEqual(["local", expect.stringContaining("(Not ready)"), true]);
-    // The place in effect is always shown, even one this installation no longer offers.
-    const stuck = panel(makeBot({ computer: "vm" }));
-    expect(place(stuck).props.value).toBe("vm");
-    expect(placeOptions(stuck).find(([value]) => value === "vm")![2]).toBe(true);
+    const blocked = panel(makeBot());
+    expect(placeOf(blocked, "local").props.disabled).toBe(true);
+    expect(placeOf(blocked, "local").props.title).toBe("Not ready.");
+    expect(placeOf(blocked, "cloud").props.title).toBeUndefined();
+
+    fixture.places.local = [false, false, "Not offered"];
+    expect(places(panel(makeBot())).map((node) => node.props["data-place-choice"])).toEqual(["auto", "cloud"]);
+  });
+
+  it("names a rarer place in effect on the row, with none of the three pressed", () => {
+    const rendered = panel(makeBot({ computer: "browser" }));
+    expect(places(rendered).every((node) => node.props["aria-pressed"] === false)).toBe(true);
+    expect(rendered.html).toContain("Browser: ");
+    // One of the three in effect needs no name: its button is pressed.
+    expect(panel(makeBot({ computer: "cloud" })).html).not.toContain("Cloud computer: ");
   });
 
   it("warns before this computer for a bot that decides alone, as the Computer panel does", () => {
     fixture.derived.approvalMode = "auto";
     const bot = makeBot({ approvalMode: "auto" });
-    pickPlace(panel(bot), "local");
+    click(placeOf(panel(bot), "local"));
     expect(patch).not.toHaveBeenCalled();
     const warning = panel(bot).nodes.find((node) => node.type === LocalComputerAutoWarning)!;
     expect(warning.props.open).toBe(true);
@@ -544,7 +548,7 @@ describe("the bot settings panel in Simple mode", () => {
 
     // A bot that asks first goes straight there.
     fixture.derived.approvalMode = "ask";
-    pickPlace(panel(makeBot()), "local");
+    click(placeOf(panel(makeBot()), "local"));
     expect(patch).toHaveBeenLastCalledWith({ computer: "local" });
   });
 

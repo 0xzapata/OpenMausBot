@@ -195,7 +195,13 @@ describe("Computer panel tabs", () => {
       fixture.values = [];
       const rendered = render(makeBot());
       const bar = rendered.nodes.find((node) => node.props["data-testid"] === "computer-tabs")!;
-      expect(String(bar.props.className).split(" ")).toEqual(expect.arrayContaining(["justify-center", "rounded-full", "mx-9"]));
+      expect(String(bar.props.className).split(" ")).toEqual(expect.arrayContaining(["rounded-full", "mx-9"]));
+      // One row at any panel width: the pill never wraps (its row centres it),
+      // and a narrow panel drops the tab icons before it would have to scroll.
+      expect(String(bar.props.className).split(" ")).not.toContain("flex-wrap");
+      const firstTab = Children.toArray(bar.props.children).find(isValidElement) as Node;
+      expect(String(firstTab.props.className).split(" ")).toEqual(expect.arrayContaining(["shrink-0", "@max-[28rem]/paneltabs:[&>svg]:hidden"]));
+      expect(rendered.nodes.some((node) => String(node.props.className ?? "").split(" ").includes("@container/paneltabs"))).toBe(true);
       const row = rendered.nodes.find((node) => Children.toArray(node.props.children)
         .some((child) => isValidElement(child) && (child as Node).props["data-testid"] === "computer-tabs"))!;
       expect(String(row.props.className).split(" ")).toEqual(expect.arrayContaining(["relative", "flex", "justify-center"]));
