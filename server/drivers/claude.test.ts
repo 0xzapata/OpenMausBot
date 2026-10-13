@@ -628,6 +628,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     // a command this app has no terminal to run. Relaying it as assistant
     // text left the user in a dead end; `setup: true` is what the chat reads
     // to offer the sign-in card instead.
+    const dump = join(scratch, "signed-out-session.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
     await create("not-logged-in");
     await instance.adapter.sendTurn({ threadId: "t-auth", text: "hi" });
     await recorder.until((e) => e.type === "turn.completed");
@@ -640,6 +642,10 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     // the same vocabulary codex and the ACP engines settle an unauthenticated
     // turn with — not the CLI's "stop_sequence", which says nothing
     expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "auth_required" });
+    const pid = dumpedPid(dump);
+    await expect.poll(() => {
+      try { process.kill(pid, 0); return false; } catch { return true; }
+    }, { timeout: 7_000 }).toBe(true);
   });
 
   it("settles an outdated CLI as update_required without emitting an assistant reply", async () => {

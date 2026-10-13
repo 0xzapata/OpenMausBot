@@ -2082,7 +2082,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // Updating the executable cannot update code already loaded by this
         // pooled child. Retire it before announcing completion so an explicit
         // retry resumes on a fresh process; healthy sibling sessions stay warm.
-        if (stopReason === "update_required") closeSession(threadId, "update required");
+        // An authentication failure can leave the CLI alive while it retries
+        // its shared OAuth refresh. Keeping that pooled process around makes a
+        // failed turn block later Claude bots from refreshing their own turn.
+        // Authentication, like an incompatible CLI update, requires a fresh
+        // process on the next attempt.
+        if (stopReason === "update_required" || stopReason === "auth_required") {
+          closeSession(threadId, stopReason === "auth_required" ? "authentication required" : "update required");
+        }
         // `total` is the CLI's running total for this process; the harness
         // books turn.completed.cost as this turn's own spend
         const cost = turnCostFromRunningTotal(total, session.costTotal ?? null);
