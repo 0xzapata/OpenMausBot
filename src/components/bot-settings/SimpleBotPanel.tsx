@@ -1,6 +1,6 @@
 // The bot settings panel in Simple mode: the bot's face, then six tabs.
 // Details is a list of plain rows, one fact about the bot per row with its
-// control on the same line (who it is, its instructions, its model, how hard
+// control on the same line (how it looks, who it is, its instructions, its model, how hard
 // it thinks, how much it decides alone, where it works, what it may use),
 // then its routines with an on/off switch each. Memory, Skills, Routines and
 // Vault each give one of the full view's sections a tab of its own; Library
@@ -27,6 +27,7 @@ import type { EffortLevel } from "../../../shared/wire";
 import { approvalModeOptionsFor } from "../ApprovalModeSelector";
 import { collectMessageFiles, splitMessageAttachments } from "../AttachmentGallery";
 import { BotAvatar } from "../Avatar";
+import { BotProfileAvatarCard } from "../BotProfileAvatarCard";
 import { useCaptionChrome, useDesktopCapabilities } from "../DesktopCapabilities";
 import { LocalComputerAutoWarning } from "../LocalComputerAutoWarning";
 import { ModelPicker } from "../ModelPicker";
@@ -164,7 +165,7 @@ export function SimpleBotPanel({
   const linked = state.botSettingsExpandAccordion && !state.botSettingsExpandRemembered
     && (state.botSettingsSection === "identity" || state.botSettingsSection === "soul") ? state.botSettingsSection : null;
   // One row at a time opens into its fields; the rest stay one line each.
-  const [editing, setEditing] = useState<"identity" | "soul" | null>(linked);
+  const [editing, setEditing] = useState<"look" | "identity" | "soul" | null>(linked);
   // The same link can arrive while the panel is already open.
   useEffect(() => {
     if (!linked) return;
@@ -261,6 +262,12 @@ export function SimpleBotPanel({
     if (next === "memory") setMemoryShown(true);
     setTab(next);
   };
+  // The mascot's own face is the obvious thing to press to change it, from
+  // whichever tab is showing.
+  const changeLook = () => {
+    setTab("details");
+    setEditing("look");
+  };
   const tabCls = (active: boolean) =>
     cn(
       "min-w-0 flex-1 truncate rounded-full px-1 py-1.5 text-[12.5px] font-medium transition-colors",
@@ -287,7 +294,16 @@ export function SimpleBotPanel({
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-6">
         <div className="flex flex-col items-center gap-2">
-          <BotAvatar bot={bot} size={72} state={derived.activeState} />
+          <button
+            type="button"
+            data-simple-avatar
+            onClick={changeLook}
+            aria-label={t("botSettings.simple.changeLook", { name: bot.name })}
+            title={t("botSettings.simple.changeLook", { name: bot.name })}
+            className="rounded-2xl transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-border motion-reduce:transition-none motion-reduce:hover:scale-100"
+          >
+            <BotAvatar bot={bot} size={72} state={derived.activeState} />
+          </button>
           <h2 id="bot-settings-title" className="max-w-full truncate text-[17px] font-semibold text-ink">
             {bot.name}
           </h2>
@@ -312,6 +328,32 @@ export function SimpleBotPanel({
         {tab === "details" && (
           <div role="tabpanel" className="mt-5 flex flex-col gap-6">
             <div className={rowsCls}>
+              {/* The same editor Identity has under All settings: color, body,
+                  expression, or a picture of the person's own. */}
+              {editing === "look" ? (
+                <div className="py-3.5" data-simple-row="look">
+                  <BotProfileAvatarCard bot={bot} activeState={derived.activeState} mascotMotion={derived.mascotMotion ?? null} onPatch={patch} />
+                  <div className="mt-2 flex justify-end">
+                    <button type="button" data-simple-done="look" onClick={() => setEditing(null)} className={linkCls}>
+                      {t("botSettings.simple.done")}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <Row data-simple-row="look" title={t("botSettings.simple.look")} hint={t("botSettings.simple.lookHint")}>
+                  <button
+                    type="button"
+                    data-simple-edit="look"
+                    aria-label={`${t("botSettings.simple.edit")}: ${t("botSettings.simple.look")}`}
+                    onClick={() => setEditing("look")}
+                    className={rowActionCls}
+                  >
+                    {t("botSettings.simple.edit")}
+                    <ChevronRight size={14} className="shrink-0 text-ink-secondary" aria-hidden="true" />
+                  </button>
+                </Row>
+              )}
+
               {editing === "identity" ? (
                 <div className="py-3.5" data-simple-row="identity">
                   <div className="grid grid-cols-2 gap-3">

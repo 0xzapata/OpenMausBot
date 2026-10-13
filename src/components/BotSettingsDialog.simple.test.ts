@@ -94,6 +94,7 @@ const { MemorySection } = await import("./bot-settings/MemorySection");
 const { RoutinesSection } = await import("./bot-settings/RoutinesSection");
 const { VaultTab } = await import("./bot-settings/VaultTab");
 const { PhoneAppDialog } = await import("./PhoneAppDialog");
+const { BotProfileAvatarCard } = await import("./BotProfileAvatarCard");
 const { Switch } = await import("./SettingsPrimitives");
 
 afterAll(() => vi.unstubAllGlobals());
@@ -198,7 +199,42 @@ describe("the bot settings panel in Simple mode", () => {
     expect(html).not.toContain("SOUL.md");
     // The rows read in this order.
     const rows = [...html.matchAll(/data-simple-row="(\w+)"/g)].map((match) => match[1]);
-    expect(rows).toEqual(["identity", "soul", "approval", "computer", "uses", "phone", "email"]);
+    expect(rows).toEqual(["look", "identity", "soul", "approval", "computer", "uses", "phone", "email"]);
+  });
+
+  it("changes the mascot's look in place: color, body, expression or a picture, from its row", () => {
+    const bot = makeBot();
+    const closed = panel(bot);
+    expect(closed.html).toContain("Color, shape, expression or your own picture.");
+    expect(closed.nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(false);
+
+    click(find(closed, "data-simple-edit", "look"));
+    const open = panel(bot);
+    // The editor Identity has under All settings, writing through the same patch.
+    const card = open.nodes.find((node) => node.type === BotProfileAvatarCard)!;
+    expect(card.props.bot).toBe(bot);
+    expect(card.props.activeState).toBe("idle");
+    expect(card.props.onPatch).toBe(patch);
+    expect(open.html).toContain("Use blue mascot color");
+    expect(open.html).toContain("Use the Blob body");
+
+    // One row at a time: opening another closes it, and Done closes it too.
+    click(find(open, "data-simple-edit", "identity"));
+    expect(panel(bot).nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(false);
+    click(find(panel(bot), "data-simple-edit", "look"));
+    click(find(panel(bot), "data-simple-done", "look"));
+    expect(panel(bot).nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(false);
+  });
+
+  it("opens the look editor from the mascot itself, whichever tab is showing", () => {
+    const bot = makeBot();
+    openTab(bot, "vault");
+    const onVault = panel(bot);
+    expect(find(onVault, "data-simple-avatar").props["aria-label"]).toBe("Change how Scout looks");
+    click(find(onVault, "data-simple-avatar"));
+    const back = panel(bot);
+    expect(find(back, "data-simple-tab", "details").props["aria-selected"]).toBe(true);
+    expect(back.nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(true);
   });
 
   it("opens Name and job into its two fields, and Instructions into its box, one at a time", () => {

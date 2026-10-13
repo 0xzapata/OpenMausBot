@@ -159,8 +159,8 @@ pnpm control:omb ui snapshot --ui $H --interactive
 ```
 
 Expected: six tabs (Details, Memory, Library, Skills, Routines, Vault), and on
-Details one row each for Name and job, Instructions, Default model, Thinking,
-Before Pepper acts, Where Pepper works, Uses, Phone and Email. Each row's
+Details one row each for Look, Name and job, Instructions, Default model,
+Thinking, Before Pepper acts, Where Pepper works, Uses, Phone and Email. Each row's
 button says what it acts on (`Edit: Instructions`, `Open: Vault`), so every
 name in the snapshot is unique.
 
@@ -168,7 +168,9 @@ Check these user paths:
 
 1. `ui click --name "Edit: Instructions"` opens the box in place; Done closes
    it. Name and job opens its two fields the same way, and opening one row
-   closes the other.
+   closes the other. `ui click --name "Change how Pepper looks"` (the mascot
+   itself) opens the look editor from any tab: pick a color and a body, then
+   `GET /api/bots` reports that `color` and `mascotBody`.
 2. Pick a Thinking step, then `GET /api/bots` on the printed fixture URL: the
    bot's `modelSelection.effort` is that step. Expand Default model: the
    picker shows no second copy of the steps.
