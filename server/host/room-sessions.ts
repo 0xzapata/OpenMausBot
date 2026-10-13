@@ -69,9 +69,15 @@
 // account's credentials, a base URL, a model alias), nor a warm process that
 // ended by itself. In those cases the driver reopens the recorded session
 // from disk, which holds what the record says, where main would have started
-// a new one. Any doubt the harness can see gives a start, which is what the
-// room does today. Nothing is persisted: a record describes a warm process,
-// and warm processes do not outlive this server either.
+// a new one. Nor does it see a process kept past the idle time (prompt-cache
+// keep-warm, server/cache-keepwarm.ts, holds one for hours): a start after
+// ten quiet minutes then goes on in the recorded session, which holds more
+// than the record says, a line sent twice at worst, as on main. A reading is
+// therefore kept for a day, as long as a turn never seen to end is, so that
+// a compaction on such a start still shows as a fall. Any doubt the harness
+// can see gives a start, which is what the room does today. Nothing is
+// persisted: a record describes a warm process, and warm processes do not
+// outlive this server either.
 //
 // A host module (server/host/README.md): everything it reads is handed in.
 import { createHash } from "node:crypto";
@@ -343,12 +349,19 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
   }
 
   /** Let go of what can no longer matter: a turn nobody saw end, and a
-   * record, a last speaker or a reading of a member that has been quiet,
-   * since its turn ended, for longer than any session lives. A thread that
-   * was deleted or abandoned would otherwise hold its adapter for good.
-   * Nothing of a member is let go while its turn is in flight on the thread:
-   * the settle of that turn, and the turn after it, need all three, however
-   * long the turn runs and whoever dispatches elsewhere meanwhile. */
+   * record or a last speaker of a member that has been quiet, since its turn
+   * ended, for longer than any session lives. A thread that was deleted or
+   * abandoned would otherwise hold its adapter for good. A member's last
+   * reading is kept as long as an abandoned turn is: the driver may keep the
+   * process past its idle time (prompt-cache keep-warm holds one for hours,
+   * a day at most), and a start after ten quiet minutes then goes on in the
+   * same session; the reading is what shows a compaction on that start, and
+   * it is only ever compared within one session, so an old one can cost a
+   * start but never a wrong resume. Nothing of a member is let go while its
+   * turn is in flight on the thread: the settle of that turn, and the turn
+   * after it, need all three, however long the turn runs and whoever
+   * dispatches elsewhere meanwhile. Runs before a stale flight is landed, so
+   * that the guard still covers that member. */
   function prune(at: number): void {
     const life = Math.max(0, ...Object.keys(ROOM_SESSION_ENGINES).map((kind) => roomSessionIdleMs(kind) ?? 0));
     for (const [threadId, flight] of inFlight) {
@@ -373,7 +386,7 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
       if (!speakers.size) lastSpeakers.delete(threadId);
     }
     for (const [threadId, members] of traces) {
-      for (const [botId, trace] of members) if (!flying(threadId, botId) && at - trace.at > life) members.delete(botId);
+      for (const [botId, trace] of members) if (!flying(threadId, botId) && at - trace.at > ABANDONED_TURN_MS) members.delete(botId);
       if (!members.size) traces.delete(threadId);
     }
   }
@@ -457,13 +470,6 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
   function decide(input: RoomDispatchInput, full: string, today: RoomDispatch["send"]): RoomDispatch {
     const { threadId, botId, instance, window } = input;
     const legacy = (): RoomDispatch => ({ mode: "legacy", text: full, send: today });
-    // A managed turn that was never seen to end (timed out, stalled, stopped
-    // in the handshake, rejected at dispatch): its member's record is not
-    // trusted any more. First, so that nothing after it can fail and leave
-    // that record behind a flight that is gone.
-    const stale = inFlight.get(threadId);
-    if (stale) drop(threadId, stale.botId);
-    land(threadId);
     // Off: no fingerprint, no hash, no record. What was held is let go.
     if (!roomSessionsEnabled(deps.settings(), deps.env)) {
       clear();
@@ -471,6 +477,14 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     }
     const at = now();
     prune(at);
+    // A managed turn that was never seen to end (timed out, stalled, stopped
+    // in the handshake, rejected at dispatch): its member's record is not
+    // trusted any more. Landed after pruning, which guards that member while
+    // the flight stands; if anything above threw, dispatch's own fallback
+    // lands it and drops the record all the same.
+    const stale = inFlight.get(threadId);
+    if (stale) drop(threadId, stale.botId);
+    land(threadId);
 
     const speakers = lastSpeakers.get(threadId) ?? new Map<string, { botId: string; at: number }>();
     lastSpeakers.set(threadId, speakers);
@@ -542,13 +556,14 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
   }
 
   /** Runs a piece of the bookkeeping for a thread. A fault forgets the
-   * thread instead of reaching the caller. */
+   * thread instead of reaching the caller. The line names the thread, and
+   * nothing of the room's text, so that a fault that recurs can be found. */
   function guarded(threadId: string, work: () => void): void {
     try {
       work();
     } catch (error) {
       try { forget(threadId); } catch { /* nothing more to let go of */ }
-      console.warn(`room sessions: forgot a thread's sessions (${error instanceof Error ? error.message : String(error)})`);
+      console.warn(`room sessions: forgot the sessions of thread ${threadId} (${error instanceof Error ? error.message : String(error)})`);
     }
   }
 
@@ -599,11 +614,14 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
       } catch (error) {
         // A fault in the bookkeeping must never cost the room its turn: the
         // turn goes out as it does today, and nothing of it is remembered.
+        // A flight the fault left standing goes too, with its record.
         try {
+          const stale = inFlight.get(input.threadId);
+          if (stale) drop(input.threadId, stale.botId);
           land(input.threadId);
           drop(input.threadId, input.botId);
         } catch { /* nothing more to let go of */ }
-        console.warn(`room sessions: sent the whole window instead (${error instanceof Error ? error.message : String(error)})`);
+        console.warn(`room sessions: sent the whole window instead on thread ${input.threadId} (${error instanceof Error ? error.message : String(error)})`);
         return { mode: "legacy", text: full, send: today };
       }
     },
