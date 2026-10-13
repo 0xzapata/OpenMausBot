@@ -4,6 +4,11 @@
 // full-auto. With the safety floor on, none of them answers a never-list
 // command by itself; it is raised as a request like any other.
 //
+// The driver and the fold must read the same text. The request a driver
+// raises carries the engine's exact command line whether or not its working
+// directory is known, and the fold's own check, handed that request, denies
+// it. A command the floor cannot read goes to a card instead.
+//
 // The engines are the repository's scripted fakes. They send a permission
 // REQUEST naming a command and record the answer; neither runs anything.
 import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
@@ -12,9 +17,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { autoVerdict } from "../auto-approve.ts";
 import { ensureDirs } from "../config.ts";
-import type { ProviderInstance } from "../contracts.ts";
-import { bindSafetyFloor } from "../safety-floor-gate.ts";
+import type { ProviderInstance, RuntimeEvent } from "../contracts.ts";
+import { bindSafetyFloor, denyAtSafetyFloor, heldAtSafetyFloor } from "../safety-floor-gate.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { GrokAgentDriver } from "./acp/grok.ts";
@@ -58,12 +64,29 @@ afterEach(async () => {
 });
 
 const opened = () => recorder!.events.filter((event) => event.type === "request.opened");
+type Request = Extract<RuntimeEvent, { type: "request.opened" }>;
+const nextRequest = async (turnId?: string): Promise<Request> => {
+  const event = await recorder!.until((candidate) => candidate.type === "request.opened" && (turnId === undefined || candidate.turnId === turnId));
+  if (event.type !== "request.opened") throw new Error("not a request");
+  return event;
+};
+/** What the request.opened fold does once Full access has said "approve":
+ * its two safety-floor checks, on the request exactly as the driver raised
+ * it. Returns "denied", "card" (left for a person) or "allowed". */
+const foldAtFullAccess = (request: Request): "denied" | "card" | "allowed" => {
+  const verdict = heldAtSafetyFloor(request, autoVerdict("full", request.tool));
+  if (!verdict.approve) return "card";
+  return denyAtSafetyFloor({
+    event: request, requestId: request.requestId!, bot: { id: "bot-floor", name: "Floor fixture" }, adapter: instance!.adapter,
+    isCurrent: () => true, say: () => {}, release: () => {},
+  }) ? "denied" : "allowed";
+};
 
 describe("Codex at Full access", () => {
   /** One Full-access turn in which the fake app-server asks to run `command`. */
-  const ask = async (threadId: string, command: string) => {
+  const ask = async (threadId: string, command: string, where: Record<string, string> = { cwd: scratch }) => {
     process.env.FAKE_CODEX_MODE = "approval";
-    process.env.FAKE_CODEX_APPROVAL_REQUEST = JSON.stringify({ method: "item/commandExecution/requestApproval", params: { command, cwd: scratch } });
+    process.env.FAKE_CODEX_APPROVAL_REQUEST = JSON.stringify({ method: "item/commandExecution/requestApproval", params: { command, ...where } });
     const dump = join(scratch, `${threadId}.json`);
     process.env.FAKE_CODEX_DUMP = dump;
     instance = await CodexDriver.create({
@@ -93,6 +116,35 @@ describe("Codex at Full access", () => {
     expect(turn.decision()).toEqual({ decision: "decline" });
   });
 
+  it("hands the harness the same command line when the working directory is unknown, and the harness denies it", async () => {
+    floorOn();
+    // A helper thread's request names no directory, so no exact-command
+    // descriptor can be made for it. The command line still travels.
+    const turn = await ask("t-codex-no-cwd", WIPE, { threadId: "helper-thread" });
+    const request = await nextRequest();
+    expect(request.command).toBeUndefined();
+    expect(request.commandLine).toBe(WIPE);
+    expect(foldAtFullAccess(request)).toBe("denied");
+    await recorder!.until((event) => event.type === "turn.completed");
+    expect(turn.decision()).toEqual({ decision: "decline" });
+  });
+
+  it("raises a command the floor cannot read, and the harness leaves it for a card", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), () => ({ read: false }));
+      const turn = await ask("t-codex-unreadable", "npm test");
+      const request = await nextRequest();
+      expect(foldAtFullAccess(request)).toBe("card");
+      // the person answers the card
+      await instance!.adapter.respondToRequest("t-codex-unreadable", request.requestId!, { behavior: "allow" });
+      await recorder!.until((event) => event.type === "turn.completed");
+      expect(turn.decision()).toEqual({ decision: "accept" });
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it("goes on answering every other command by itself", async () => {
     floorOn();
     const turn = await ask("t-codex-ordinary", "git commit -m 'never run rm -rf /'");
@@ -103,9 +155,9 @@ describe("Codex at Full access", () => {
 });
 
 describe("an ACP agent", () => {
-  const create = async (config: { fullAuto: boolean }, command: string) => {
+  const create = async (config: { fullAuto: boolean }, command: string, kind = "execute") => {
     process.env.FAKE_ACP_MODE = "permission";
-    process.env.FAKE_ACP_PERMISSION_TOOL_CALL = JSON.stringify({ kind: "execute", rawInput: { command }, title: command });
+    process.env.FAKE_ACP_PERMISSION_TOOL_CALL = JSON.stringify({ kind, rawInput: { command }, title: command });
     process.env.FAKE_ACP_PERMISSION_ANSWER = join(scratch, "answer.txt");
     instance = await GrokAgentDriver.create({
       instanceId: "acp-floor", displayName: "ACP floor fixture", environment: {}, enabled: true,
@@ -144,6 +196,20 @@ describe("an ACP agent", () => {
     await instance!.adapter.respondToRequest("t-acp-floored", again.requestId!, { behavior: "deny" });
     await recorder!.until((event) => event.type === "turn.completed" && event.turnId === turnId);
     expect(opened()).toHaveLength(2);
+  });
+
+  it("hands the harness the command line of a request it cannot type as a shell command, and the harness denies it", async () => {
+    floorOn();
+    // Not `execute`, so the driver attaches no exact-command descriptor; at
+    // Full access the harness would have allowed it unread.
+    await create({ fullAuto: false }, WIPE, "other");
+    const { turnId } = await instance!.adapter.sendTurn({ threadId: "t-acp-untyped", text: "go", approvalMode: "full" });
+    const request = await nextRequest(turnId);
+    expect(request.command).toBeUndefined();
+    expect(request.commandLine).toBe(WIPE);
+    expect(foldAtFullAccess(request)).toBe("denied");
+    await recorder!.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(answer()).toBe("reject");
   });
 
   it("does not let a legacy full-auto instance answer a never-list command by itself", async () => {

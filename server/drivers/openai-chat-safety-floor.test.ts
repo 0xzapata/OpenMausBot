@@ -10,7 +10,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DATA_DIR } from "../config.ts";
 import type { SendTurnInput } from "../contracts.ts";
@@ -151,6 +151,22 @@ describe("the safety floor in the chat runtime", () => {
     expect(await f.decisions()).toEqual([
       expect.objectContaining({ botId: "bot-floor", tool: "shell_exec", decision: "auto-denied", source: "safety-floor", rule: "delete-root" }),
     ]);
+  });
+
+  it("refuses a command the floor cannot read, because this gate has no card to show at Full access", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      bindSafetyFloor(() => ({ safetyFloor: { enabled: true } }), () => ({ read: false }));
+      const f = await fixture(["npm test"]);
+      await f.start({ approvalMode: "full" });
+      expect(await f.completed()).toMatchObject({ ok: false, denials: ["shell_exec"] });
+      expect(f.handed()).toEqual([]);
+      expect(f.notices()).toEqual(["Blocked by the safety floor: a command it could not read"]);
+      expect(f.toolResult("call_1")).toEqual([expect.stringContaining("could not read")]);
+      expect(await f.decisions()).toEqual([expect.objectContaining({ decision: "auto-denied", source: "safety-floor", rule: "unreadable" })]);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it("does not override a card a person answers", async () => {

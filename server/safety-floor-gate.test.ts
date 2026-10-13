@@ -3,14 +3,21 @@
 // it was given.
 import { homedir } from "node:os";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DATA_DIR, ensureDirs, loadConfig, parseConfigPatch, parseStoredConfig, safetyFloorEnabled, saveConfig, type AppConfig } from "./config.ts";
 import type { RequestOutcome } from "./contracts.ts";
 import { flushDecisionLog, readDecisions } from "./decision-log.ts";
-import { bindSafetyFloor, denyAtSafetyFloor, floorBlockForToolCall, safetyFloorBlock, safetyFloorOn, shellCommandOfToolCall } from "./safety-floor-gate.ts";
+import { autoVerdict } from "./auto-approve.ts";
+import { bindSafetyFloor, denyAtSafetyFloor, floorBlockForToolCall, heldAtSafetyFloor, safetyFloorBlock, safetyFloorClears, safetyFloorOn, shellCommandOfToolCall } from "./safety-floor-gate.ts";
+import { floorReading } from "./safety-floor.ts";
 
 const ON: AppConfig = { safetyFloor: { enabled: true } };
+/** A command the reader is made to fail on, to stand for any it cannot read. */
+const GARBLED = "unreadable-fixture --flag";
+/** The floor switched on, with a reader that cannot read GARBLED. */
+const bindWithBrokenReader = () => bindSafetyFloor(() => ON, (command, platform, home) =>
+  command === GARBLED ? { read: false } : floorReading(command, platform, home));
 // A shell that already exports the switch must not turn the floor on here.
 beforeEach(() => { delete process.env.OMB_SAFETY_FLOOR; });
 afterEach(() => bindSafetyFloor(() => ({})));
@@ -36,20 +43,23 @@ function fakeAdapter(respond: (decision: Decision) => RequestOutcome | Promise<R
 }
 
 /** One fake permission request, as a driver would raise it for a shell command. */
-function request(command: string | undefined, overrides: { adapter?: ReturnType<typeof fakeAdapter>; isCurrent?: () => boolean } = {}) {
+function request(command: string | undefined, overrides: { adapter?: ReturnType<typeof fakeAdapter>; isCurrent?: () => boolean; noCwd?: boolean; release?: () => void } = {}) {
   const adapter = overrides.adapter ?? fakeAdapter();
   const said: unknown[] = [];
   let released!: () => void;
   const settled = new Promise<void>((resolve) => { released = resolve; });
   const threadId = `thread-${Math.random().toString(36).slice(2)}`;
   const blocked = denyAtSafetyFloor({
-    event: { threadId, turnId: "turn-1", tool: "Bash", summary: command ?? "mcp tool", ...(command === undefined ? {} : { command: { command, cwd: "/work" } }) },
+    // With no known working directory a driver attaches no `command`
+    // descriptor, only the line the engine asked to run.
+    event: { threadId, turnId: "turn-1", tool: "Bash", summary: command ?? "mcp tool",
+      ...(command === undefined ? {} : overrides.noCwd ? { commandLine: command } : { command: { command, cwd: "/work" }, commandLine: command }) },
     requestId: "request-1",
     bot: { id: "bot-1", name: "Ada" },
     adapter,
     isCurrent: overrides.isCurrent ?? (() => true),
     say: (message) => said.push(message),
-    release: () => released(),
+    release: () => { released(); overrides.release?.(); },
   });
   const rows = async () => {
     await flushDecisionLog(DATA_DIR);
@@ -129,10 +139,24 @@ describe("safetyFloorBlock", () => {
     expect(safetyFloorOn()).toBe(false);
   });
 
-  it("knows this machine's home directory by its own path", () => {
+  it("knows this machine's home directory by its own path, unless that home is a scratch one", () => {
     bindSafetyFloor(() => ON);
-    expect(safetyFloorBlock(`rm -rf "${homedir()}"`)?.rule).toBe("delete-home");
-    expect(safetyFloorBlock(`rm -rf "${homedir()}/project/dist"`)).toBeNull();
+    // This suite's own home is a throwaway under the temp folder: deleting it
+    // is cleanup, not the loss of somebody's home.
+    expect(safetyFloorBlock(`rm -rf "${homedir()}"`)).toBeNull();
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    const home = process.platform === "win32" ? "C:\\Users\\fixture-person" : "/Users/fixture-person";
+    const remove = (path: string) => process.platform === "win32" ? `rd /s /q "${path}"` : `rm -rf "${path}"`;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    try {
+      expect(homedir()).toBe(home);
+      expect(safetyFloorBlock(remove(home))?.rule).toBe("delete-home");
+      expect(safetyFloorBlock(remove(`${home}${process.platform === "win32" ? "\\" : "/"}project`))).toBeNull();
+    } finally {
+      process.env.HOME = saved.HOME;
+      process.env.USERPROFILE = saved.USERPROFILE;
+    }
   });
 });
 
@@ -161,7 +185,7 @@ describe("denyAtSafetyFloor", () => {
     expect(floored.said).toEqual([{
       role: "bot",
       kind: "activity",
-      tool: { name: "notice: Blocked by the safety floor: recursive delete of the filesystem root", ok: false },
+      tool: { name: "notice: Blocked by the safety floor: recursive delete of the filesystem root", ok: true },
     }]);
     expect(await floored.rows()).toEqual([expect.objectContaining({
       threadId: floored.threadId,
@@ -175,6 +199,29 @@ describe("denyAtSafetyFloor", () => {
     })]);
     // neither line carries the command, so a credential typed into it stays out
     expect(JSON.stringify([floored.said, floored.adapter.answers])).not.toContain("sk-live");
+  });
+
+  it("denies a request that carries only the command line, with no working directory", async () => {
+    bindSafetyFloor(() => ON);
+    const floored = request("rm -rf /", { noCwd: true });
+    expect(floored.blocked).toBe(true);
+    await floored.settled;
+    expect(floored.adapter.answers).toEqual([expect.objectContaining({ decision: expect.objectContaining({ behavior: "deny" }) })]);
+    expect(await floored.rows()).toEqual([expect.objectContaining({ decision: "auto-denied", source: "safety-floor", rule: "delete-root" })]);
+  });
+
+  it("survives a failure after the denial without an unhandled rejection", async () => {
+    bindSafetyFloor(() => ON);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failing = request("rm -rf /", { release: () => { throw new Error("watchdog gone"); } });
+      expect(failing.blocked).toBe(true);
+      await failing.settled;
+      await expect.poll(() => errors.mock.calls.length).toBe(1);
+      expect(String(errors.mock.calls[0][0])).toContain("[safety-floor]");
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it("lets everything else through to the grant that was about to answer", async () => {
@@ -226,11 +273,95 @@ describe("denyAtSafetyFloor", () => {
       say: (message) => said.push(message), release: () => released(),
     })).toBe(true);
     await settled;
-    expect(said).toEqual([{ role: "bot", kind: "activity", tool: { name: "notice: Blocked by the safety floor: formatting a disk", ok: false } }]);
+    expect(said).toEqual([{ role: "bot", kind: "activity", tool: { name: "notice: Blocked by the safety floor: formatting a disk", ok: true } }]);
     await flushDecisionLog(DATA_DIR);
     expect(readDecisions(DATA_DIR, 200).filter((row) => row.threadId === "thread-no-adapter")).toEqual([
       expect.objectContaining({ decision: "auto-denied", source: "safety-floor", rule: "format-disk", botName: "Bo" }),
     ]);
+  });
+});
+
+describe("a command the floor cannot read", () => {
+  it("is not answered automatically: the grant's verdict becomes a card for the person", () => {
+    bindWithBrokenReader();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const event = { threadId: "thread-unread", tool: "Bash", summary: "x", commandLine: GARBLED };
+      const full = autoVerdict("full", "Bash");
+      expect(full.approve).toBeTruthy();
+      expect(heldAtSafetyFloor(event, full)).toEqual({ approve: null, source: "safety-floor" });
+      expect(heldAtSafetyFloor(event, autoVerdict("ask", "Bash", { commandAllowed: true }))).toEqual({ approve: null, source: "safety-floor" });
+      // a verdict that already leaves it to a person is left alone
+      const card = autoVerdict("ask", "Bash");
+      expect(heldAtSafetyFloor(event, card)).toBe(card);
+      // and so is everything the floor could read
+      expect(heldAtSafetyFloor({ ...event, commandLine: "npm test" }, full)).toBe(full);
+      expect(heldAtSafetyFloor({ ...event, commandLine: "rm -rf /" }, full)).toBe(full);
+      expect(heldAtSafetyFloor({ ...event, commandLine: undefined }, full)).toBe(full);
+      // no driver answers for it by itself either
+      expect(safetyFloorClears(GARBLED)).toBe(false);
+      expect(safetyFloorClears("npm test")).toBe(true);
+      expect(safetyFloorClears("rm -rf /")).toBe(false);
+      expect(safetyFloorClears(undefined)).toBe(true);
+      // it is not denied either: nothing says it is on the list
+      expect(safetyFloorBlock(GARBLED)).toBeNull();
+      // logged once, and never with the command's text
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(String(errors.mock.calls[0][0])).toContain("[safety-floor]");
+      expect(JSON.stringify(errors.mock.calls)).not.toContain("unreadable-fixture");
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("is not denied by the fold: the request is left for the card", async () => {
+    bindWithBrokenReader();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const unread = request(GARBLED);
+      expect(unread.blocked).toBe(false);
+      expect(unread.adapter.answers).toEqual([]);
+      expect(unread.said).toEqual([]);
+      expect(await unread.rows()).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("is refused where a runtime answers its own gate, because no card will be shown there", async () => {
+    bindWithBrokenReader();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const block = floorBlockForToolCall({ threadId: "thread-unread-chat", botId: "bot-4", tool: "shell_exec", input: { command: GARBLED } });
+      expect(block).toMatchObject({ rule: "unreadable", line: "Blocked by the safety floor: a command it could not read" });
+      expect(block!.reason).toContain("could not read");
+      await flushDecisionLog(DATA_DIR);
+      expect(readDecisions(DATA_DIR, 200).filter((row) => row.threadId === "thread-unread-chat")).toEqual([
+        expect.objectContaining({ decision: "auto-denied", source: "safety-floor", rule: "unreadable" }),
+      ]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("treats a reader that throws the same way", () => {
+    bindSafetyFloor(() => ON, () => { throw new Error("reader crashed"); });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(safetyFloorClears("npm test")).toBe(false);
+      expect(heldAtSafetyFloor({ threadId: "t", tool: "Bash", summary: "x", commandLine: "npm test" }, autoVerdict("full", "Bash")))
+        .toEqual({ approve: null, source: "safety-floor" });
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("leaves everything alone while the floor is off, readable or not", () => {
+    bindSafetyFloor(() => ({}), () => ({ read: false }));
+    const full = autoVerdict("full", "Bash");
+    expect(safetyFloorClears(GARBLED)).toBe(true);
+    expect(heldAtSafetyFloor({ threadId: "t", tool: "Bash", summary: "x", commandLine: GARBLED }, full)).toBe(full);
+    expect(floorBlockForToolCall({ threadId: "t", tool: "shell_exec", input: { command: GARBLED } })).toBeNull();
   });
 });
 

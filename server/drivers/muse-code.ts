@@ -23,7 +23,7 @@ import { newEventId, newId } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
 import { execCli } from "../procs.ts";
 import { redactSecretsInText } from "../redact.ts";
-import { safetyFloorBlock } from "../safety-floor-gate.ts";
+import { safetyFloorClears } from "../safety-floor-gate.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import { parseProtocolAskQuestions, questionAnswersById, type ProtocolAskQuestion } from "../../shared/ask-question.ts";
@@ -450,10 +450,10 @@ export const MuseCodeDriver: ProviderDriver<MuseConfig> = {
         case "approval/requested": {
           const approval = params as unknown as MuseApproval;
           if (!active || !Array.isArray(approval.availableChoices)) return;
-          // Not for a shell command on the safety floor's never-list: that
-          // one is raised as a request below, and the harness denies it
-          // (server/safety-floor-gate.ts).
-          if (state.approvalMode === "allowAll" && !safetyFloorBlock(approval.subject?.command)) {
+          // Not for a shell command the safety floor does not clear: that
+          // one is raised as a request below, carrying the same command
+          // line, and the harness decides (server/safety-floor-gate.ts).
+          if (state.approvalMode === "allowAll" && safetyFloorClears(approval.subject?.command)) {
             // Full access answers what Muse still asks, as Full does everywhere.
             const choice = museChoice(approval.availableChoices, "allow");
             if (choice) void decide(state, approval, choice).catch(() => {});
@@ -466,7 +466,7 @@ export const MuseCodeDriver: ProviderDriver<MuseConfig> = {
             type: "request.opened", threadId, turnId: active.turnId, requestId: approval.approvalId, requestType: "permission",
             tool: approval.toolName || subject.toolName || subject.kind || "tool",
             summary: redactSecretsInText(command ?? subject.path ?? subject.host ?? subject.target ?? approval.toolName ?? "Muse Code asks to continue"),
-            ...(command ? { command: { command, cwd: subject.workspaceRoot ?? "" } } : {}),
+            ...(command ? { command: { command, cwd: subject.workspaceRoot ?? "" }, commandLine: command } : {}),
             allowSession: Boolean(museChoice(approval.availableChoices, "allow", true)?.decision.startsWith("approvedFor")
               || approval.availableChoices.some(choice => choice.scope === "session")),
           });

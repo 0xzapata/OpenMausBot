@@ -1936,6 +1936,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 summary: askSummary(ask),
                 command: ask.kind === "permission" && ask.tool === "Bash"
                   ? permissionCommand(ask.input.command, commandCwd) : undefined,
+                commandLine: ask.kind === "permission" && ask.tool === "Bash" && typeof ask.input.command === "string" ? ask.input.command : undefined,
                 requiresExplicitApproval: ask.kind === "permission" && ask.tool === "Bash" && ask.input.dangerouslyDisableSandbox === true || undefined,
                 nativeReview,
                 // the proxy hands Claude its own suggested rules on `always`;

@@ -59,9 +59,10 @@ export type DecisionKind =
  * auto-review sources the isolated model reviewer. connector-scope rows
  * come from the connected-app grants verdict: the person pre-decided them
  * by editing a bot's connectorTools, so the call itself needed no card.
- * `safety-floor` rows are a shell command on the never-list that a grant
- * was about to allow and the floor denied instead (server/safety-floor-gate.ts);
- * `rule` names which part of the list. */
+ * `safety-floor` rows (an AutoVerdictSource) are a shell command a grant was
+ * about to allow and the floor took out of its hands
+ * (server/safety-floor-gate.ts): `auto-denied` with the never-list `rule`,
+ * or `card-shown` for a command the floor could not read. */
 export type DecisionSource =
   | AutoVerdictSource
   | "self"
@@ -76,8 +77,7 @@ export type DecisionSource =
   | "outbound"
   | "team-memory"
   | "auto-review"
-  | "auto-review-shadow"
-  | "safety-floor";
+  | "auto-review-shadow";
 
 /** Who answered a card, for `source: "user"` rows: a signed-in session (its
  * id, device label, and account email or id when it has one; a portal

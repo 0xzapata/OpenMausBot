@@ -13,8 +13,8 @@
 // One thing sits under every grant here, when it is switched on: the safety
 // floor (server/safety-floor.ts), a short never-list of shell commands. The
 // request.opened fold checks it after a verdict below says "approve" and
-// before that approval is delivered (denyAtSafetyFloor in
-// server/safety-floor-gate.ts), so no grant in this file can allow one.
+// before that approval is delivered (heldAtSafetyFloor and denyAtSafetyFloor
+// in server/safety-floor-gate.ts), so no grant in this file can allow one.
 
 import { supportsApprovalMode, type ApprovalMode } from "../shared/approval-mode.ts";
 import { failedTurnTool, type FailedTurnTool } from "../shared/failed-turn.ts";
@@ -117,7 +117,9 @@ function bareToolName(tool: string): string {
  * `native-approval` is a card the provider's own reviewer (Auto, or Custom's
  * config) left for the person; `explicit-approval-block` is a sandbox
  * widening only Full may answer; `no-grant` is an Ask or Edits card, where
- * asking is the whole point. */
+ * asking is the whole point. `safety-floor` is never returned from here: the
+ * fold sets it where the floor took a request out of a grant's hands
+ * (server/safety-floor-gate.ts). */
 export type AutoVerdictSource =
   | "full-access"
   | "command-allowlist"
@@ -126,6 +128,7 @@ export type AutoVerdictSource =
   | "native-approval"
   | "explicit-approval-block"
   | "outbound-guard"
+  | "safety-floor"
   | "no-grant";
 
 export interface AutoVerdict {
