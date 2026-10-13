@@ -268,8 +268,9 @@ export async function launchVerificationServer(
       throw new ControlOmbError("Local VM verification requires an explicit loopback Podman machine");
     }
   }
-  // OMB_TEST_PORTS=19975-19999 keeps a recipe's fixture in a range of its own.
-  const range = /^(\d+)-(\d+)$/.exec(parentEnv.OMB_TEST_PORTS?.trim() ?? "");
+  // OMB_TEST_PORTS=19975-19999 keeps a recipe's fixture in a range of its own:
+  // from the environment it is given, else this process's (a whole suite).
+  const range = /^(\d+)-(\d+)$/.exec((parentEnv.OMB_TEST_PORTS ?? process.env.OMB_TEST_PORTS)?.trim() ?? "");
   const port = range ? await freePortBlock([0, 1], Number(range[1]), Number(range[2]) - Number(range[1])) : await freePortBlock([0, 1]);
   if (signal?.aborted) throw new ControlOmbError("verification launch cancelled");
   const url = `http://127.0.0.1:${port}`;
