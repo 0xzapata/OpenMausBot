@@ -6,7 +6,7 @@
 // times. With the loop guard switched on, the note steered into the running
 // turn (adapters take a message mid-turn now: ProviderAdapter.steer) and the
 // stop after it follow a narrower thing, repeat-streak.ts: the same command
-// coming back the same, back to back. Cutting off the one call itself is
+// failing the same way, back to back. Cutting off the one call itself is
 // still not the harness's to do: a CLI driver owns its calls.
 
 /** Tool name plus its arguments, whitespace-normalized. A bare tool name

@@ -1,9 +1,13 @@
-// How many times in a row a turn's shell command has come back the same.
+// How many times in a row a turn's shell command has failed the same way.
 // repeat-detector.ts counts a call across the whole turn, which is right for
 // a chip and wrong for acting: a healthy turn runs its tests ten times, and
-// every run comes back different. Stuck is narrower: the same command, the
-// same result as the time before, back to back. This file only tracks that
-// streak, and stays pure; what is done about one is server/loop-guard.ts.
+// every run comes back different. Stuck is narrower: the same command
+// failing the same way as the time before, back to back. Only failing: a
+// command that keeps succeeding with the same output is a poll (`sleep 60 &&
+// gh run view …`, a `tail` of a log that has not moved), which is work, and a
+// success ends the streak like any other command does. This file only
+// tracks that streak, and stays pure; what is done about one is
+// server/loop-guard.ts.
 import { createHash } from "node:crypto";
 
 import { previewIsPartial } from "./tool-summary.ts";
@@ -14,25 +18,27 @@ import { previewIsPartial } from "./tool-summary.ts";
  * longer one, and two that start the same are not the same result. */
 export const OUTCOME_TEXT_MAX = 4_000;
 
-/** What a shell command came back with, as a digest: whether it succeeded,
- * and the output its driver reported. The output is hashed here and never
- * kept or logged anywhere, by this file or its caller. Null when the harness
- * cannot say what came back: the engine reported no output, or reported one
- * that is not all there (shortened, masked, or long enough to have been
- * cut), so a long test log whose failures are past the cut is never taken
- * for the run before it. */
-export function outcomeDigest(ok: boolean, output: string | undefined): string | null {
-  if (output === undefined || !output.trim() || output.length >= OUTCOME_TEXT_MAX || previewIsPartial(output)) return null;
-  return createHash("sha256").update(ok ? "ok\n" : "failed\n").update(output).digest("base64");
+/** What a shell command failed with, as a digest of the output its driver
+ * reported. The output is hashed here and never kept or logged anywhere, by
+ * this file or its caller. Null for anything a streak is not made of: a
+ * command that succeeded, whatever it printed; and a failure the harness
+ * cannot compare, because the engine reported no output or one that is not
+ * all there (shortened, masked, or long enough to have been cut), so a long
+ * test log whose failures are past the cut is never taken for the run
+ * before it. Failed is the engine's own word for it (`ok` on the tool's
+ * completion): the harness does not second-guess an exit code. */
+export function failureDigest(ok: boolean, output: string | undefined): string | null {
+  if (ok || output === undefined || !output.trim() || output.length >= OUTCOME_TEXT_MAX || previewIsPartial(output)) return null;
+  return createHash("sha256").update(output).digest("base64");
 }
 
 interface Turn<C> {
   /** Shell commands that started and have not completed, by item id. Null
    * is one the harness could not see whole. */
   pending: Map<string, C | null>;
-  /** The shell command that completed last, when what it was and what it
-   * came back with are both known. */
-  last?: { key: string; outcome: string; streak: number };
+  /** The shell command that completed last, when it failed and what it was
+   * and what it failed with are both known. */
+  last?: { key: string; failure: string; streak: number };
 }
 
 /** The streak of each thread's turn in flight. `C` is whatever the caller
@@ -64,23 +70,24 @@ export class RepeatStreak<C extends { readonly key: string }> {
     turn.pending.set(itemId, call);
   }
 
-  /** An item completed. For a shell command whose command and outcome are
-   * both known: the call, and how many times in a row, ending now, that
-   * command has come back with that outcome. Null otherwise: an item that
-   * is not a shell command this tracked (a read or an edit between two runs
-   * changes nothing), or a shell command that proves nothing (not seen
-   * whole, or no outcome), which ends the streak in progress. */
-  completed(threadId: string, itemId: string | undefined, outcome: string | null): { call: C; streak: number } | null {
+  /** An item completed; `failure` is its failureDigest. For a shell command
+   * that failed, whose command and failure are both known: the call, and
+   * how many times in a row, ending now, that command has failed that way.
+   * Null otherwise: an item that is not a shell command this tracked (a
+   * read or an edit between two runs changes nothing), or a shell command
+   * that is no part of a streak (it succeeded, it was not seen whole, or
+   * what it failed with is not known), which ends the streak in progress. */
+  completed(threadId: string, itemId: string | undefined, failure: string | null): { call: C; streak: number } | null {
     const turn = this.turns.get(threadId);
     if (!turn || itemId === undefined || !turn.pending.has(itemId)) return null;
     const call = turn.pending.get(itemId) ?? null;
     turn.pending.delete(itemId);
-    if (call === null || outcome === null) {
+    if (call === null || failure === null) {
       delete turn.last;
       return null;
     }
-    const streak = turn.last?.key === call.key && turn.last.outcome === outcome ? turn.last.streak + 1 : 1;
-    turn.last = { key: call.key, outcome, streak };
+    const streak = turn.last?.key === call.key && turn.last.failure === failure ? turn.last.streak + 1 : 1;
+    turn.last = { key: call.key, failure, streak };
     return { call, streak };
   }
 

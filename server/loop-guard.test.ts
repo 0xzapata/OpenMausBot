@@ -1,8 +1,8 @@
 // The loop guard's contract. The notice is what it always was, whatever the
-// setting. With the setting on, a turn whose shell command keeps coming back
-// with the same result, back to back, is told once per command and then
-// stopped; a turn that is working (the same command, a different result) or
-// only waiting is never touched.
+// setting. With the setting on, a turn whose shell command keeps failing the
+// same way, back to back, is told once per command and then stopped. A turn
+// that is working (the same command, a different failure), polling (the same
+// command, succeeding with the same output) or only waiting is never touched.
 import { describe, expect, it, vi } from "vitest";
 
 import { failedTurnCause } from "../shared/failed-turn.ts";
@@ -26,10 +26,12 @@ const bash = (command: string, description = "Show the tree"): Start =>
 const codex = (command: string, cwd = "/repo"): Start =>
   ({ title: command, summary: command, input: JSON.stringify({ command, cwd }, null, 2) });
 const times = (count: number, play: (index: number) => void) => { for (let i = 0; i < count; i++) play(i); };
+/** The same success every time: what a poll comes back with while it waits. */
+const WAITING: Result = { ok: true, output: '{"status":"in_progress","conclusion":null}' };
 const note = (call: string, count: number) =>
-  `[OpenMausBot: this exact call has returned the same result ${count} times in a row: ${call}. Change approach, or stop and report what is blocking.]`;
+  `[OpenMausBot: this exact call has failed the same way ${count} times in a row: ${call}. Change approach, or stop and report what is blocking.]`;
 const stopped = (call: string, count: number) =>
-  `the same call returned the same result ${count} times in a row (${call}) — the turn was stopped`;
+  `the same call failed the same way ${count} times in a row (${call}) — the turn was stopped`;
 
 function rig(options: {
   settings?: Partial<LoopGuardSettings>;
@@ -90,7 +92,7 @@ function rig(options: {
     repeat(count: number, title = "git status", threadId = T) { times(count, () => this.call(title, threadId)); },
     /** One shell command run to its end. */
     run: (command = "git status", result: Result = SAME, threadId = T) => play(bash(command), result, threadId),
-    /** `count` runs of one command, back to back, each coming back the same. */
+    /** `count` runs of one command, back to back, each coming back the same (failing, unless told otherwise). */
     loop(count: number, command = "git status", result: Result = SAME, threadId = T) { times(count, () => this.run(command, result, threadId)); },
     ask: (tool = "Bash", summary = "npm test", threadId = T) =>
       emit({ ...base(threadId), type: "request.opened", requestType: "permission", tool, summary }),
@@ -130,9 +132,10 @@ describe("loop guard, setting off", () => {
     ]);
   });
 
-  it("does nothing about a command that keeps coming back the same, however often", () => {
+  it("does nothing about a command that keeps failing the same way, however often", () => {
     const r = rig({ settings: { enabled: false } });
     r.loop(30);
+    r.loop(30, "gh run view 1 --json status", WAITING);
     expect(r.rows).toEqual([]);
     times(25, () => r.play(codex("git status")));
     expect(r.rows.map((row) => row.name)).toEqual([5, 10, 20].map((count) => `Same call repeated ${count}× — tool: git status — it may be stuck`));
@@ -162,7 +165,51 @@ describe("loop guard, the notice", () => {
 });
 
 describe("loop guard, setting on", () => {
-  it("never touches a turn that edits and re-runs its tests: the same command, a different result every time", () => {
+  it("never touches a poll: the same command succeeding with the same output, thirty times in a row", () => {
+    const r = rig();
+    r.loop(30, "sleep 60 && gh run view 1 --json status,conclusion", WAITING);
+    r.loop(30, "tail -n 5 build.log", { ok: true, output: "[12:00:01] compiling…" });
+    expect(r.steers).toEqual([]);
+    expect(r.interrupts).toEqual([]);
+    expect(r.rows).toEqual([]);
+    // Codex titles the call with the command, so the chip does say it saw the repeats
+    const titled = rig();
+    times(30, () => titled.play(codex("gh run view 1 --json status"), WAITING));
+    expect(titled.notices()).toHaveLength(3);
+    expect(titled.steers).toEqual([]);
+    expect(titled.interrupts).toEqual([]);
+    expect(titled.failures()).toEqual([]);
+  });
+
+  it("does not reach five in a row through a success: fail, fail, succeed, fail, fail", () => {
+    const r = rig({ settings: { steerAt: 3, stopAt: 5 } });
+    const succeeded: Result = { ok: true, output: "1 passed" };
+    for (const result of [SAME, SAME, succeeded, SAME, SAME]) r.run("pnpm test", result);
+    expect(r.steers).toEqual([]);
+    expect(r.interrupts).toEqual([]);
+    // however many failures the turn piles up that way: twenty more, never three in a row
+    times(10, () => {
+      r.run("pnpm test", succeeded);
+      r.loop(2, "pnpm test");
+    });
+    expect(r.steers).toEqual([]);
+    expect(r.interrupts).toEqual([]);
+    // and a third failure in a row is told, as ever
+    r.run("pnpm test");
+    expect(r.steers).toEqual([{ threadId: T, note: note("Bash: pnpm test", 3) }]);
+  });
+
+  it("ends the streak when any other shell command succeeds", () => {
+    const r = rig();
+    times(6, () => {
+      r.loop(4);
+      r.run("ls", { ok: true, output: "README.md" });
+    });
+    expect(r.steers).toEqual([]);
+    expect(r.interrupts).toEqual([]);
+  });
+
+  it("never touches a turn that edits and re-runs its tests: the same command, a different failure every time", () => {
     const r = rig();
     times(30, (index) => {
       r.play({ title: "Edit", input: '{\n  "file_path": "/repo/src/x.ts"\n}' }, { output: "edited" });
@@ -173,7 +220,7 @@ describe("loop guard, setting on", () => {
     expect(r.rows).toEqual([]);
   });
 
-  it("steers one note into the turn when a command comes back the same five times in a row, and none at 6 to 9", () => {
+  it("steers one note into the turn when a command fails the same way five times in a row, and none at 6 to 9", () => {
     const r = rig();
     r.loop(4);
     expect(r.steers).toEqual([]);
@@ -195,7 +242,7 @@ describe("loop guard, setting on", () => {
     expect(r.steers).toHaveLength(1);
   });
 
-  it("starts the streak over when a different command runs in between", () => {
+  it("starts the streak over when a different command fails in between", () => {
     const r = rig();
     times(6, () => {
       r.loop(4);
@@ -207,14 +254,13 @@ describe("loop guard, setting on", () => {
     expect(r.steers).toHaveLength(1);
   });
 
-  it("starts the streak over when the same command comes back different", () => {
+  it("starts the streak over when the same command fails differently, or succeeds with the very same words", () => {
     const r = rig();
     times(6, (index) => {
       r.loop(4);
       r.run("git status", { ok: false, output: `fatal: something else (${index})` });
     });
     expect(r.steers).toEqual([]);
-    // succeeding and failing with the same words are different results too
     r.loop(4, "git status", { ok: true, output: "fatal: not a git repository" });
     r.loop(4);
     expect(r.steers).toEqual([]);
@@ -233,7 +279,7 @@ describe("loop guard, setting on", () => {
   it("never acts on an engine that reports no outcome", () => {
     const r = rig();
     r.loop(30, "git status", { ok: false });
-    r.loop(30, "git status", { ok: true, output: "" });
+    r.loop(30, "git status", { ok: false, output: "" });
     expect(r.steers).toEqual([]);
     expect(r.interrupts).toEqual([]);
     expect(r.rows).toEqual([]);
@@ -243,7 +289,7 @@ describe("loop guard, setting on", () => {
     const r = rig();
     r.loop(30, "pnpm test", { ok: false, output: `${"PASS src/a.test.ts\n".repeat(300)}\n[… preview shortened]` });
     r.loop(30, "pnpm test", { ok: false, output: "x".repeat(4_000) });
-    r.loop(30, "printenv", { output: "TOKEN=«redacted 40 chars»" });
+    r.loop(30, "printenv && false", { ok: false, output: "TOKEN=«redacted 40 chars»" });
     expect(r.steers).toEqual([]);
     expect(r.interrupts).toEqual([]);
     // and a result like that ends the streak it interrupts
@@ -421,7 +467,7 @@ describe("loop guard, setting on", () => {
 
   it("never puts what the command printed in the note, the stop line or the cause", () => {
     const r = rig();
-    r.loop(10, "cat secrets.txt", { ok: true, output: "the-launch-code-is-0000" });
+    r.loop(10, "cat secrets.txt && false", { ok: false, output: "the-launch-code-is-0000" });
     const said = [...r.steers.map((steer) => steer.note), ...r.interrupts.map((stop) => stop.cause), ...r.rows.map((row) => row.name)].join("\n");
     expect(r.steers).toHaveLength(1);
     expect(r.interrupts).toHaveLength(1);
@@ -545,7 +591,7 @@ describe("loop guard, the same command", () => {
 
   it("still acts on a command the title alone carries", () => {
     const r = rig();
-    times(5, () => r.play({ title: "Read src/x.ts" }, { output: "export const x = 1;" }));
+    times(5, () => r.play({ title: "Read src/x.ts" }, { ok: false, output: "ENOENT: no such file or directory" }));
     expect(r.notices()).toEqual(["Same call repeated 5× — tool: Read src/x.ts — it may be stuck"]);
     expect(r.steers).toEqual([{ threadId: T, note: note("tool: Read src/x.ts", 5) }]);
   });

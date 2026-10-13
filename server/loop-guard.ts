@@ -6,24 +6,28 @@
 //
 // With the loop guard switched on (config `loopGuard`, off by default) it
 // also acts, and on something narrower than that count. A healthy turn runs
-// its tests ten times; what it does not do is get the same result ten times
-// running. So the guard acts on a streak (repeat-streak.ts): the same shell
-// command completing with the same outcome as the time before, back to back.
+// its tests ten times, and polls a build with one command for an hour; what
+// it does not do is fail the same way ten times running. So the guard acts
+// on a streak (repeat-streak.ts): the same shell command failing the same
+// way as the time before, back to back.
 //
 //   steerAt  in a row: one short note steered into the running turn, where
 //            the engine takes a message mid-turn. The model reads it before
 //            its next call and can change approach on its own. Once per
 //            command.
 //   stopAt   in a row: the turn is stopped the way the person's Stop stops
-//            it, and a failed-turn line says what kept coming back the same
-//            and how often, so Retry is there. On an engine that cannot be
-//            steered this is the only action. Once per turn.
+//            it, and a failed-turn line says what kept failing and how
+//            often, so Retry is there. On an engine that cannot be steered
+//            this is the only action. Once per turn.
 //
-// A streak is made only of shell commands the harness can see all of, with
-// a result it can see all of (shellCall below, outcomeDigest). An engine
-// that reports no output for a command gives the guard nothing to act on.
-// A turn that is waiting on a person or on a computer is left alone: it is
-// spending nothing, and the person is already looking at it.
+// A streak is made only of failures: shell commands the harness can see all
+// of, failing with an output it can see all of (shellCall below,
+// failureDigest). A command that succeeds ends it, so a turn that keeps
+// getting the same successful output is never told or stopped; the chip is
+// all that notices it. An engine that reports no output for a command gives
+// the guard nothing to act on. A turn that is waiting on a person or on a
+// computer is left alone: it is spending nothing, and the person is already
+// looking at it.
 //
 // The counting and the streak are pure and live in their own files;
 // everything this touches is handed in, so server/index.ts only wires it.
@@ -32,12 +36,12 @@ import { nameIsCommand } from "../shared/tool-name.ts";
 import type { RuntimeEvent, SteerOutcome } from "./contracts.ts";
 import { quoteInNote } from "./peer-provenance.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
-import { RepeatStreak, outcomeDigest } from "./repeat-streak.ts";
+import { RepeatStreak, failureDigest } from "./repeat-streak.ts";
 import { COMMAND_SUMMARY_MAX, previewIsPartial } from "./tool-summary.ts";
 
 export interface LoopGuardSettings {
   enabled: boolean;
-  /** Times in a row a command comes back the same before the model is told. */
+  /** Times in a row a command fails the same way before the model is told. */
   steerAt: number;
   /** Times in a row before the turn is stopped. At or below `steerAt`, the
    * turn is stopped without a note first. */
@@ -179,13 +183,13 @@ function shellCall(event: ToolStart): CountedCall | null | undefined {
  * bracket that could close the note early. What the command printed is
  * never in it: the harness holds only a digest of that. */
 function loopNote(call: string, streak: number): string {
-  return `[OpenMausBot: this exact call has returned the same result ${streak} times in a row: ${call}. Change approach, or stop and report what is blocking.]`;
+  return `[OpenMausBot: this exact call has failed the same way ${streak} times in a row: ${call}. Change approach, or stop and report what is blocking.]`;
 }
 
 /** Why the guard stopped a turn: the failed-turn line, and what the turn's
  * requester and a routine's run are told. Shaped like the stall's cause. */
 function loopCause(call: string, streak: number): string {
-  return `the same call returned the same result ${streak} times in a row (${call}) — the turn was stopped`;
+  return `the same call failed the same way ${streak} times in a row (${call}) — the turn was stopped`;
 }
 
 export function startLoopGuard(deps: LoopGuardDeps): LoopGuard {
@@ -233,7 +237,7 @@ export function startLoopGuard(deps: LoopGuardDeps): LoopGuard {
     void stopping.catch(() => {});
   };
 
-  /** A shell command came back the same as the time before, `streak` times
+  /** A shell command failed the same way as the time before, `streak` times
    * in a row now. */
   const act = (threadId: string, call: CountedCall, streak: number, settings: LoopGuardSettings) => {
     if (streak < Math.min(settings.steerAt, settings.stopAt)) return;
@@ -285,7 +289,7 @@ export function startLoopGuard(deps: LoopGuardDeps): LoopGuard {
       if (call !== undefined) streaks.started(threadId, event.itemId, call);
       return;
     }
-    const run = streaks.completed(threadId, event.itemId, outcomeDigest(event.ok, event.output));
+    const run = streaks.completed(threadId, event.itemId, failureDigest(event.ok, event.output));
     if (run) act(threadId, run.call, run.streak, settings);
   });
 
