@@ -36,10 +36,12 @@ import type {
   SendTurnInput,
   StdioMcpSpec,
   SteerOutcome,
+  TextGenerationOptions,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { decodeCodexSelection, OFFICIAL_CODEX_PROVIDER, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
 import { codexLocalProviderArgs } from "./local-inject.ts";
+import { codexBackgroundModel, runCodexOneShot } from "./codex-background-text.ts";
 import { augmentedPath, splitCliString } from "../env-path.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { appendNative } from "./native.ts";
@@ -51,7 +53,7 @@ import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import { CodexDeviceAuthController } from "./codex-device-auth.ts";
 import { codexAccountEmail, codexHome } from "./codex-identity.ts";
 import { keyRejected, noteKeyAccepted, noteKeyRejected } from "../key-rejections.ts";
-import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
+import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
 import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
@@ -608,6 +610,11 @@ export function codexNativeIncomingLogMessage(
   return message;
 }
 
+/** Codex's default for one MCP server's tools (codex-rs #17843): "auto"
+ * runs without asking only tools the server marks read-only, "approve" runs
+ * every tool without asking, "prompt" asks for each call. */
+type McpApprovalMode = "approve" | "auto" | "prompt";
+
 /** Every mount is a command Codex starts: URL servers arrive here already
  * behind OpenMausBot's remote proxy (see scopedServer in sendTurn). */
 function mountMcpServer(
@@ -615,7 +622,7 @@ function mountMcpServer(
   env: Record<string, string | undefined>,
   name: string,
   server: StdioMcpSpec,
-  preApproved = true,
+  approval: McpApprovalMode = "auto",
   /** Settings that are not secret, written into the mount's own `env`
    * table: its process gets them, the shell Codex runs commands in does not. */
   literalEnv: Record<string, string> = {},
@@ -635,9 +642,7 @@ function mountMcpServer(
   if (Object.keys(literalEnv).length) appServerArgs.push("-c", `${prefix}.env=${tomlInlineTable(literalEnv)}`);
   // Harness-owned servers are pre-quieted; a user-configured server keeps
   // codex's on-request policy so its tool calls become approval cards.
-  if (preApproved) {
-    appServerArgs.push("-c", `${prefix}.default_tools_approval_mode="auto"`);
-  }
+  if (approval !== "prompt") appServerArgs.push("-c", `${prefix}.default_tools_approval_mode="${approval}"`);
 }
 
 export const CodexDriver: ProviderDriver<CodexConfig> = {
@@ -872,7 +877,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const baseEnv = new Map(Object.entries(env).filter(([, value]) => value !== undefined));
         const mountedNames = new Set<string>();
         const selectedMcp = new Map<string, StdioMcpSpec>();
-        const selectedApprovals = new Map<string, boolean>();
+        const selectedApprovals = new Map<string, McpApprovalMode>();
         /** Mounts whose big catalog is searched (plan turns' URL servers). */
         const directoryMounts = new Set<string>();
         /** Each mount's settings that are not secret (mountMcpServer's literalEnv). */
@@ -915,20 +920,26 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
           return { command: proxy.command, args: proxy.args ?? [], env: shared };
         };
-        const mountSelected = (name: string, mountName: string, server: McpServerSpec, preApproved = true) => {
+        const mountSelected = (name: string, mountName: string, server: McpServerSpec, approval: McpApprovalMode = "auto") => {
           const selected = scopedServer(name, mountName, server);
           if (selected) {
             selectedMcp.set(mountName, selected);
-            selectedApprovals.set(mountName, preApproved);
-            mountMcpServer(appServerArgs, env, mountName, selected, preApproved, literalEnvs.get(mountName), mountedNames);
-            if (turn.toolScope !== undefined && !preApproved) appServerArgs.push("-c", `mcp_servers.${mountName}.default_tools_approval_mode="prompt"`);
+            selectedApprovals.set(mountName, approval);
+            mountMcpServer(appServerArgs, env, mountName, selected, approval, literalEnvs.get(mountName), mountedNames);
+            if (turn.toolScope !== undefined && approval === "prompt") appServerArgs.push("-c", `mcp_servers.${mountName}.default_tools_approval_mode="prompt"`);
           }
         };
         if (turn.integrations?.composio) {
           mountSelected("composio", "openmausbot_connectors", turn.integrations.composio);
         }
         if (turn.integrations?.agents) {
-          mountSelected("agents", "agents", turn.integrations.agents);
+          // OpenMausBot's own coordination tools never ask, as on Claude
+          // (mcp__agents is pre-allowed): "auto" quiets only read-only tools,
+          // so coordinate_bots raised a card on every hand-off and an
+          // unattended Chief's job died when the card timed out. A teammate's
+          // own work still follows its own level; computer, browser,
+          // connector and custom servers keep their approvals.
+          mountSelected("agents", "agents", turn.integrations.agents, "approve");
         }
         if (turn.integrations?.localComputer) {
           // The host daemon and isolated Local VM both arrive as a direct Cua
@@ -937,6 +948,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         }
         if (turn.integrations?.browser) {
           mountSelected("browser", "browser", turn.integrations.browser);
+        }
+        if (turn.integrations?.data) {
+          mountSelected("data", "data", turn.integrations.data);
         }
         // A custom server named like one in the user's own config.toml would
         // be merged with it by the `-c` override — a stdio command over a
@@ -949,7 +963,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
           const mountName = mountedMcpServerName(name, declaredInCodexConfig);
           if (mountName !== name) noteRenamedMcpServer(name, mountName);
-          mountSelected(name, mountName, server, false);
+          mountSelected(name, mountName, server, "prompt");
         }
         if (turn.integrations?.phone) {
           if (turn.toolScope !== undefined) {
@@ -995,7 +1009,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
         const selectionConfig: { config?: Record<string, unknown> } = turn.toolScope === undefined ? {} : { config: { mcp_servers: Object.fromEntries(
           [...selectedMcp].map(([name, server]) => [name, {
-            command: server.command, args: server.args, env_vars: Object.keys(server.env), env: {}, default_tools_approval_mode: selectedApprovals.get(name) ? "auto" : "prompt",
+            command: server.command, args: server.args, env_vars: Object.keys(server.env), env: {}, default_tools_approval_mode: selectedApprovals.get(name) ?? "prompt",
           }]),
         ) } };
 
@@ -1670,7 +1684,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       });
       child.on("error", (e) => {
         if (abandoned) return;
-        emit({ ...base(threadId, turnId), type: "runtime.error", ...describeSpawnFailure(e, config.cli) });
+        emit({ ...base(threadId, turnId), type: "runtime.error", ...describeSpawnFailure(e, config.cli, turn.cwd ?? homedir()) });
         void settle(false, "spawn_error");
       });
       child.on("close", (code, signal) => {
@@ -1820,7 +1834,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             if (!expected || actual?.command !== expected.command
               || JSON.stringify(actual?.args ?? []) !== JSON.stringify(expected.args ?? [])
               || !Array.isArray(actual?.env_vars) || JSON.stringify([...actual.env_vars].sort()) !== JSON.stringify(Object.keys(expected.env).sort())
-              || actual.default_tools_approval_mode !== (selectedApprovals.get(name) ? "auto" : "prompt")
+              || actual.default_tools_approval_mode !== (selectedApprovals.get(name) ?? "prompt")
               || (actual.env != null && (typeof actual.env !== "object" || Array.isArray(actual.env) || Object.keys(actual.env).length > 0))
               || (actual.tools != null && (typeof actual.tools !== "object" || Array.isArray(actual.tools) || Object.keys(actual.tools).length > 0))) {
               throw new Error("Codex has an MCP server outside the selected configuration. Disable native MCP entries for this account before using tool selection. No prompt was sent.");
@@ -1905,12 +1919,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               promptSubmitted,
               producedOutput: state.sawStreamDelta,
             });
-            if ((!config.managed && !turn.recoveryIsReplay) || recoveredMissingSession || stopRequested || state.settled ||
+            if (recoveredMissingSession || stopRequested || state.settled ||
                 !turn.recoveryText?.trim() || !missingNativeCodexThread(error, cursor) || !mayReplay(failure)) throw error;
-            // The prompt has never been submitted. Rebuild missing Company
-            // histories, and a personal thread only for a turn whose recovery
-            // text is the replay it would have had anyway; once, through the
-            // same approved model/provider below.
+            // The prompt has never been submitted and Codex no longer has the
+            // thread: without a rebuild every later turn resumes the same
+            // missing rollout and fails the same way. Rebuild it from the
+            // chat, Company or personal, as Claude does for a refused resume;
+            // once, through the same approved model/provider below. The
+            // person is told (runtime.notice beside session.started).
             recoveredMissingSession = true;
             const rebuild = recoveryPromptFor({ recoveryText: turn.recoveryText, currentText: turn.text, failure });
             // Announced as rebuilt only when the replacement really carries the
@@ -1963,6 +1979,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           );
         }
         emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null, ...(rebuiltFromReplay ? { rebuilt: true } : {}) });
+        if (rebuiltFromReplay) emit({ ...base(threadId, turnId), type: "runtime.notice", message: rebuiltSessionNotice("Codex") });
         const turnInput = [
           ...(promptText ? [{ type: "text" as const, text: promptText }] : []),
           ...(turn.images ?? []).map((image) => ({ type: "localImage" as const, path: image.path })),
@@ -2090,6 +2107,50 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     };
   };
 
+  /** The background steps' one-shot call (memory upkeep, the skill review):
+   * `codex exec` with no tools and no session, in an empty folder, on this
+   * account's own sign-in and routing (./codex-background-text.ts). Offered
+   * as generateMemoryText, never generateText: titles and compaction would
+   * then start a whole Codex process for every new chat. */
+  const generateMemoryText = async (prompt: string, options: TextGenerationOptions = {}): Promise<string> => {
+    if (startupModelRefresh) await startupModelRefresh;
+    if (disposed) throw new Error("This provider was removed.");
+    if (planUnavailable) throw new Error(planUnavailable);
+    const env = childEnv();
+    let providerArgs: string[] = [];
+    if (planAuth) {
+      if (planSigningOut) throw new Error("This ChatGPT account is being disconnected.");
+      if (!models.options.length) await refreshModels();
+      env.OPENMAUSBOT_CHATGPT_TOKEN = await planAuth.accessToken();
+      if (planSigningOut || disposed) throw new Error("This ChatGPT account is being disconnected.");
+      mkdirSync(join(planDirectory, "codex"), { recursive: true, mode: 0o700 });
+      providerArgs = chatgptPlanCodexArgs();
+    } else if (config.managed) {
+      if (!input.environment.OPENMAUSBOT_COMPANY_API_KEY || !input.environment.CODEX_HOME) {
+        throw new Error("Company model access is unavailable. Reconnect your organization; personal billing will not be used.");
+      }
+      providerArgs = managedCodexArgs(config.managed);
+    }
+    const id = codexBackgroundModel(models);
+    if (!id) throw new Error("Codex lists no model for background calls. Refresh models in Settings → Model providers → Codex.");
+    // ChatGPT plan and Company routing name their own provider in
+    // providerArgs; an own login picks it from the model id, as a turn does.
+    const selection = planAuth || config.managed ? { model: id, modelProvider: null } : decodeCodexSelection(id);
+    if (!planAuth && !config.managed) providerArgs = codexLocalProviderArgs(env, id);
+    return runCodexOneShot({
+      spawn: spawnCli,
+      kill: killCliTree,
+      cli: config.cli,
+      env,
+      prompt,
+      model: selection.model ?? id,
+      modelProvider: selection.modelProvider,
+      providerArgs,
+      options,
+      describeError: (message) => codexUserError(message, plan),
+    });
+  };
+
   return {
     instanceId,
     driverKind: DRIVER_KIND,
@@ -2100,6 +2161,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     },
     refreshModels,
     ...(startupModelRefresh ? { startupModelRefresh } : {}),
+    generateMemoryText,
     ...(plan ? { authenticationMethod: "browser-pkce" as const } : {}),
     startAuthentication: async () => {
       if (planUnavailable) throw new Error(planUnavailable);
@@ -2148,6 +2210,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       customMcp: true,
         phoneMcp: true,
         browserMcp: true,
+        dataMcp: true,
         images: true,
         nativeImageInput: true,
         effortLevels: ["low", "medium", "high", "xhigh", "max"],

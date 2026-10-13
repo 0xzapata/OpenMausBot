@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { jevEndpoint } from "./decider/jev.ts";
-import { boatCredential, deciderCredential, voiceCredential } from "./included-services.ts";
+import { boatCredential, deciderCredential, trialCreditCredential, voiceCredential } from "./included-services.ts";
 
 const RELAY_BOAT = "https://cloud.example.test/api/cloud/services/boat/api/box/v1";
 const RELAY_VOICE = "https://cloud.example.test/api/cloud/services/voice/v1";
@@ -26,15 +26,16 @@ describe("Boat credential", () => {
   });
 
   it("uses the person's own key, sent only to Boat, whenever there is one", () => {
-    expect(boatCredential("box_own", cloud)).toEqual({ token: "box_own", api: "https://ascii.dev/api/box/v1", included: false });
-    // OMB_BOX_API keeps pointing own keys at a stub for dev and tests.
-    expect(boatCredential("box_own", { ...cloud, OMB_BOX_API: "http://127.0.0.1:9/api/box/v1" }))
-      .toEqual({ token: "box_own", api: "http://127.0.0.1:9/api/box/v1", included: false });
+    // Boat's public API v1.
+    expect(boatCredential("box_own", cloud)).toEqual({ token: "box_own", api: "https://boat.dev/api/v1", included: false });
+    // OMB_BOAT_API points own keys at a stub for dev and tests.
+    expect(boatCredential("box_own", { ...cloud, OMB_BOAT_API: "http://127.0.0.1:9/api/v1" }))
+      .toEqual({ token: "box_own", api: "http://127.0.0.1:9/api/v1", included: false });
   });
 
   it("sends the included token only to the relay even when it comes back as a plain token", () => {
     // A leased computer descriptor carries the token in use back to boat.ts.
-    expect(boatCredential("box_omb_included", { ...cloud, OMB_BOX_API: "http://127.0.0.1:9/api/box/v1" }))
+    expect(boatCredential("box_omb_included", { ...cloud, OMB_BOAT_API: "http://127.0.0.1:9/api/v1" }))
       .toEqual({ token: "box_omb_included", api: RELAY_BOAT, included: true });
   });
 
@@ -117,6 +118,21 @@ describe("Jev credential", () => {
   });
 });
 
+describe("the trial's AI credit", () => {
+  const AI = "https://cloud.example.test/api/cloud/services/ai", TOKEN = `omb_ai_${"a".repeat(43)}`;
+  it("is the relay and this machine's token, only when both are set, HTTPS (loopback for tests) and the Admin's own token shape", () => {
+    expect(trialCreditCredential({ OMB_CLOUD_AI_URL: AI, OMB_CLOUD_AI_TOKEN: TOKEN })).toEqual({ token: TOKEN, api: AI, included: true });
+    expect(trialCreditCredential({ OMB_CLOUD_AI_URL: `${AI}/`, OMB_CLOUD_AI_TOKEN: ` ${TOKEN} ` })).toEqual({ token: TOKEN, api: AI, included: true });
+    expect(trialCreditCredential({ OMB_CLOUD_AI_URL: "http://127.0.0.1:9/ai", OMB_CLOUD_AI_TOKEN: TOKEN })?.api).toBe("http://127.0.0.1:9/ai");
+    for (const env of [{}, { OMB_CLOUD_AI_URL: AI }, { OMB_CLOUD_AI_TOKEN: TOKEN }, { OMB_CLOUD_AI_URL: "http://cloud.example.test/ai", OMB_CLOUD_AI_TOKEN: TOKEN },
+      { OMB_CLOUD_AI_URL: "https://user:pw@cloud.example.test/ai", OMB_CLOUD_AI_TOKEN: TOKEN }, { OMB_CLOUD_AI_URL: `${AI}?key=1`, OMB_CLOUD_AI_TOKEN: TOKEN },
+      { OMB_CLOUD_AI_URL: "not a url", OMB_CLOUD_AI_TOKEN: TOKEN }, { OMB_CLOUD_AI_URL: AI, OMB_CLOUD_AI_TOKEN: "sk-ant-own-key" },
+      { OMB_CLOUD_AI_URL: AI, OMB_CLOUD_AI_TOKEN: `omb_ai_${"a".repeat(42)}` }, { ...cloud }]) {
+      expect(trialCreditCredential(env), JSON.stringify(env)).toBeNull();
+    }
+  });
+});
+
 describe("holdIncludedServices", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -128,7 +144,11 @@ describe("holdIncludedServices", () => {
     // A fresh module: the hold is process-wide state.
     vi.resetModules();
     const services = await import("./included-services.ts");
+    vi.stubEnv("OMB_CLOUD_AI_URL", "https://cloud.example.test/api/cloud/services/ai");
+    vi.stubEnv("OMB_CLOUD_AI_TOKEN", `omb_ai_${"a".repeat(43)}`);
     services.holdIncludedServices();
+    expect(process.env.OMB_CLOUD_AI_TOKEN).toBeUndefined();
+    expect(services.trialCreditCredential()).toEqual({ token: `omb_ai_${"a".repeat(43)}`, api: "https://cloud.example.test/api/cloud/services/ai", included: true });
     expect(process.env.OMB_CLOUD_BOAT_TOKEN).toBeUndefined();
     expect(process.env.OMB_CLOUD_VOICE_TOKEN).toBeUndefined();
     expect(process.env.OMB_CLOUD_DECIDER_TOKEN).toBeUndefined();

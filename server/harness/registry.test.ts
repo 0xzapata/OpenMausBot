@@ -187,6 +187,19 @@ describe("ProviderRegistry", () => {
     expect(registry.entries().map((e) => e.instanceId)).toEqual(["slow"]);
   });
 
+  // A settings save replaces only the engines it changed: the list the model
+  // picker shows must not reorder because one of them was rebuilt.
+  it("keeps a replaced instance in its place and adds a new one at the end", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({ a: { driver: "fake" }, b: { driver: "fake" }, c: { driver: "fake" } });
+    const before = registry.get("b");
+    await registry.load({ b: { driver: "fake", displayName: "Rebuilt" }, d: { driver: "fake" } });
+    expect(registry.entries().map((e) => e.instanceId)).toEqual(["a", "b", "c", "d"]);
+    expect(registry.get("b")).not.toBe(before);
+    expect(registry.get("b")?.displayName).toBe("Rebuilt");
+  });
+
   it("describe() reports a snapshot() failure as unavailable rather than throwing", async () => {
     const fake = makeFakeDriver({ failSnapshot: "provider probe exploded" });
     const registry = new ProviderRegistry([fake.driver]);
@@ -232,6 +245,17 @@ describe("ProviderRegistry", () => {
     expect((await registry.describe())[0].capabilities.approvalReview).toBe(false);
     Object.assign(registry.get("a")!, { reviewPermission: async () => "ok" });
     expect((await registry.describe())[0].capabilities.approvalReview).toBe(true);
+  });
+
+  it("reports whether an instance can make the background steps' one-shot call", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({ a: { driver: "fake" }, b: { driver: "fake" } });
+
+    expect((await registry.describe()).map((item) => item.capabilities.backgroundText)).toEqual([false, false]);
+    Object.assign(registry.get("a")!, { generateText: async () => "ok" });
+    Object.assign(registry.get("b")!, { generateMemoryText: async () => "ok" });
+    expect((await registry.describe()).map((item) => item.capabilities.backgroundText)).toEqual([true, true]);
   });
 
   it("refreshes a live model catalog only on an explicit provider action", async () => {
@@ -327,6 +351,7 @@ process.exit(0);
     await registry.load({ a: { driver: "fake" } });
     const [described] = await registry.describe();
     expect(described.install?.server).toEqual({ package: "fake-engine" });
+    expect(described.install?.platform).toBe(process.platform);
     expect(await registry.installRuntime("a")).toBe(true);
     const calls = readFileSync(process.env.FAKE_NPM_LOG!, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(calls).toHaveLength(1);

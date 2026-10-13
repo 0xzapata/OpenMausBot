@@ -15,6 +15,8 @@ export const CREDENTIAL_ENV_NAMES = [
   "XAI_API_KEY",
   "MISTRAL_API_KEY",
   "CEREBRAS_API_KEY",
+  "OMB_GROQ_API_KEY",
+  "OMB_META_API_KEY",
   "OMB_ANTHROPIC_API_KEY",
   "OMB_ANTHROPIC_API_URL",
   "OMB_HOSTED_MODEL_TOKEN",
@@ -36,10 +38,12 @@ export const CREDENTIAL_ENV_NAMES = [
   "OMB_CLOUD_BOAT_TOKEN",
   "OMB_CLOUD_VOICE_TOKEN",
   "OMB_CLOUD_DECIDER_TOKEN",
+  "OMB_CLOUD_AI_TOKEN",
   // Browser capability files and app-owned state paths are private even
   // though they are not traditional API credentials.
   "OMB_BROWSER_CONNECTION",
   "OMB_USER_DATA",
+  "OMB_BOAT_API",
 ];
 
 // Credential-shaped tokens (server/redact.ts parity): unmistakable formats
@@ -47,6 +51,7 @@ export const CREDENTIAL_ENV_NAMES = [
 const CREDENTIAL_TOKEN_FORMATS = [
   /\bsk-[A-Za-z0-9_-]{16,}/g,
   /\bxai-[A-Za-z0-9]{16,}/g,
+  /\bgsk_[A-Za-z0-9]{40,}/g,
   /\bak_[A-Za-z0-9_-]{16,}/g,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,

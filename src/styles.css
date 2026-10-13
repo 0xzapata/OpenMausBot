@@ -48,6 +48,13 @@
   color: var(--color-ink);
   background: var(--color-raised-hover);
 }
+/* Safari zooms smaller form text on focus. In a standalone phone window that
+   can leave the header under the status bar after the keyboard closes. Keep
+   the native editor and its mention mirror at the same readable touch size. */
+@media (pointer: coarse) {
+  .mention-editor textarea,
+  .mention-editor-mirror { font-size: 16px; }
+}
 @media (forced-colors: active) {
   .mention-editor-mirror { display: none; }
   .mention-editor textarea { color: CanvasText; caret-color: CanvasText; }
@@ -87,6 +94,8 @@
 .table-action:hover, .table-action[aria-pressed="true"] { background: var(--color-raised); color: var(--color-ink); }
 .table-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 @media (pointer: coarse) { .table-action { min-width: 40px; min-height: 40px; } }
+/* inside a 28px file pill under a reply, the table preview is a 24px circle */
+.file-chip .table-action { width: 24px; height: 24px; min-width: 24px; min-height: 24px; border-radius: 9999px; }
 
 @theme {
   --animate-panel-in: panel-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
@@ -152,6 +161,11 @@
 
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Segoe UI", system-ui, sans-serif;
+
+  /* Add a rounded transition class.
+     For situations where multiple transition-properties need to be set simultaneously,
+     please use transition-[...], for example, transition-[color,background,border-radius] */
+  --transition-property-rounded: border-radius;
 }
 
 /* Tokens that no utility generates — declared outside `@theme` so Tailwind
@@ -215,6 +229,16 @@
     "Segoe UI", system-ui, sans-serif;
   --radius-lg: 0.5rem;
   --radius-xl: 0.75rem;
+  --identity-green: #009957;
+  --identity-blue: #377FE6;
+  --identity-red: #D94B52;
+  --identity-orange: #E78531;
+  --identity-purple: #8963cc;
+  --identity-cyan: #0EA5C6;
+  --identity-pink: #D84F8B;
+  --identity-yellow: #D8A729;
+  --identity-teal: #01A492;
+  --identity-coral: #E5634E;
 }
 
 /* ── Atelier ───────────────────────────────────────────────────────────────
@@ -268,6 +292,16 @@
     Roboto, sans-serif;
   --radius-lg: 6px;
   --radius-xl: 10px;
+  --identity-green: #007f48;
+  --identity-blue: #1b6adc;
+  --identity-red: #d12c34;
+  --identity-orange: #a95914;
+  --identity-purple: #8057C8;
+  --identity-cyan: #0a7891;
+  --identity-pink: #ca2d72;
+  --identity-yellow: #896a19;
+  --identity-teal: #017c6f;
+  --identity-coral: #cd361e;
 }
 
 /* ── Foundry ───────────────────────────────────────────────────────────────
@@ -326,6 +360,16 @@
     "Segoe UI", system-ui, sans-serif;
   --radius-lg: 4px;
   --radius-xl: 8px;
+  --identity-green: #009957;
+  --identity-blue: #377FE6;
+  --identity-red: #D94B52;
+  --identity-orange: #E78531;
+  --identity-purple: #8c67cd;
+  --identity-cyan: #0EA5C6;
+  --identity-pink: #D84F8B;
+  --identity-yellow: #D8A729;
+  --identity-teal: #01A492;
+  --identity-coral: #E5634E;
 }
 
 /* ── Lagoon ────────────────────────────────────────────────────────────────
@@ -391,6 +435,16 @@
     Roboto, sans-serif;
   --radius-lg: 8px;
   --radius-xl: 14px;
+  --identity-green: #007945;
+  --identity-blue: #1a65d1;
+  --identity-red: #c82a32;
+  --identity-orange: #a25513;
+  --identity-purple: #7c51c6;
+  --identity-cyan: #0a738b;
+  --identity-pink: #c12b6d;
+  --identity-yellow: #836518;
+  --identity-teal: #01776a;
+  --identity-coral: #c3341d;
 }
 
 /* ── Graphite ─────────────────────────────────────────────────────────────
@@ -436,6 +490,16 @@
     "Segoe UI", system-ui, sans-serif;
   --radius-lg: 6px;
   --radius-xl: 10px;
+  --identity-green: #009957;
+  --identity-blue: #377FE6;
+  --identity-red: #D94B52;
+  --identity-orange: #E78531;
+  --identity-purple: #8d69ce;
+  --identity-cyan: #0EA5C6;
+  --identity-pink: #D84F8B;
+  --identity-yellow: #D8A729;
+  --identity-teal: #01A492;
+  --identity-coral: #E5634E;
 }
 
 /* ── Linen ────────────────────────────────────────────────────────────────
@@ -481,6 +545,16 @@
     Roboto, sans-serif;
   --radius-lg: 8px;
   --radius-xl: 12px;
+  --identity-green: #007d47;
+  --identity-blue: #1b68d7;
+  --identity-red: #ce2c34;
+  --identity-orange: #a75713;
+  --identity-purple: #7f55c8;
+  --identity-cyan: #0a778e;
+  --identity-pink: #c72c70;
+  --identity-yellow: #886819;
+  --identity-teal: #017a6d;
+  --identity-coral: #c9361e;
 }
 
 /* ── Dusk ─────────────────────────────────────────────────────────────────
@@ -525,6 +599,16 @@
     "Segoe UI", system-ui, sans-serif;
   --radius-lg: 8px;
   --radius-xl: 12px;
+  --identity-green: #009957;
+  --identity-blue: #377FE6;
+  --identity-red: #D94B52;
+  --identity-orange: #E78531;
+  --identity-purple: #8d68ce;
+  --identity-cyan: #0EA5C6;
+  --identity-pink: #D84F8B;
+  --identity-yellow: #D8A729;
+  --identity-teal: #01A492;
+  --identity-coral: #E5634E;
 }
 
 /* ── Daylight ─────────────────────────────────────────────────────────────
@@ -585,6 +669,16 @@
     "Segoe UI", system-ui, sans-serif;
   --radius-lg: 8px;
   --radius-xl: 14px;
+  --identity-green: #00864c;
+  --identity-blue: #2271e3;
+  --identity-red: #d63a42;
+  --identity-orange: #b35e15;
+  --identity-purple: #8057C8;
+  --identity-cyan: #0b7f99;
+  --identity-pink: #d2357a;
+  --identity-yellow: #91701b;
+  --identity-teal: #018375;
+  --identity-coral: #d83920;
 }
 
 /* ── Meadow ───────────────────────────────────────────────────────────────
@@ -633,6 +727,16 @@
     "Segoe UI", system-ui, sans-serif;
   --radius-lg: 10px;
   --radius-xl: 16px;
+  --identity-green: #00884e;
+  --identity-blue: #2573e4;
+  --identity-red: #d63f47;
+  --identity-orange: #b65f15;
+  --identity-purple: #8057C8;
+  --identity-cyan: #0b819b;
+  --identity-pink: #d3397d;
+  --identity-yellow: #93721b;
+  --identity-teal: #018577;
+  --identity-coral: #db3a20;
 }
 
 /* Shiki emits both palettes so cached blocks follow the nearest skin without
@@ -667,10 +771,39 @@
   text-align: start;
 }
 
+/* Chat copy. 15px stays; the line box goes from Tailwind's leading-relaxed
+   (1.625) to 1.75 so Arabic and Latin both get a little more air without
+   moving the surrounding chrome. Arabic and Hebrew use a local face when
+   the machine has one. Inter and the UI stack do not carry those glyphs,
+   and a generic family listed later would otherwise win. */
+@font-face {
+  font-family: "omb-chat";
+  src: local("Noto Naskh Arabic"), local("Noto Sans Arabic"), local("Geeza Pro"), local("SF Arabic");
+  unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF;
+}
+@font-face {
+  font-family: "omb-chat";
+  src: local("Noto Sans Hebrew"), local("Arial Hebrew"), local("SF Hebrew");
+  unicode-range: U+0590-05FF, U+FB1D-FB4F;
+}
+.chat-text,
+.chat-md {
+  line-height: 1.75;
+  font-family: "omb-chat", var(--font-sans);
+}
+
 html,
 body,
 #root {
   height: 100%;
+}
+
+/* Standalone phone windows can reach behind the notch and home indicator.
+   Keep the app's existing h-full layout inside the usable area. Desktop
+   browsers and Electron report zero insets. */
+#root {
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -710,7 +843,8 @@ body {
 }
 
 /* Shared action rhythm. Existing skin tokens supply the colors and radius;
-   use utilities for placement rather than inventing another button size. */
+   use utilities for placement and the control scale below for size, rather
+   than inventing another button size. */
 @layer components {
   .ui-button,
   .ui-icon-button {
@@ -726,7 +860,9 @@ body {
     transition: background-color 120ms ease, color 120ms ease;
   }
   .ui-button {
-    padding: 0.375rem 0.75rem;
+    /* 4px + 20px line + 4px + a 1px border each side = 30px, so the 32px
+       min-height decides the box and the label sits on its center. */
+    padding: 0.25rem 0.75rem;
     border: 1px solid var(--color-hairline);
     background: var(--color-control);
     color: var(--color-ink);
@@ -736,6 +872,105 @@ body {
     padding: 0.375rem;
     color: var(--color-ink-secondary);
   }
+  /* Control scale. `.ui-button` is the 32px default; the size classes step
+     it down for dense rows and inline actions. Every step keeps weight 500
+     and a line box equal to its text height plus leading, so the label sits
+     on the box center. Radii reuse the skin tokens: rounded-lg for buttons,
+     full for pills and chips. */
+  .ui-button-md {
+    min-height: 1.75rem;
+    gap: 0.375rem;
+    padding: 0.125rem 0.625rem;
+    font-size: 13px;
+    line-height: 1.25rem;
+  }
+  .ui-button-sm {
+    min-height: 1.5rem;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    font-size: 12px;
+    line-height: 1rem;
+  }
+  .ui-button-primary {
+    border-color: transparent;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+  }
+  .ui-button-primary:enabled:hover,
+  a.ui-button-primary:hover {
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+    filter: brightness(1.1);
+  }
+  /* A pill-shaped action in the transcript: run and conversation chips,
+     "load earlier", the failed-turn Retry. Same 28px as `.ui-button-md`. */
+  .ui-pill {
+    display: inline-flex;
+    max-width: 100%;
+    min-width: 0;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 1.75rem;
+    padding: 0.125rem 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--color-hairline) 40%, transparent);
+    border-radius: 9999px;
+    background: var(--color-panel);
+    color: var(--color-ink-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.25rem;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  button.ui-pill:enabled:hover,
+  a.ui-pill:hover {
+    background: var(--color-raised);
+    color: var(--color-ink);
+  }
+  button.ui-pill:disabled { opacity: 0.6; }
+  /* A static label: a digest, a count, a status. */
+  .ui-chip {
+    display: inline-flex;
+    max-width: 100%;
+    min-width: 0;
+    align-items: center;
+    gap: 0.25rem;
+    min-height: 1.375rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1rem;
+  }
+  /* Inline code inside prose. Sized off the surrounding text so it reads at
+     the same optical size in a 15px bubble or a 13px note. It stays an
+     inline box, not inline-flex, so a long path can still wrap mid-line;
+     an inline background already centers on the glyphs, and `clone` keeps
+     the padding on every wrapped piece. */
+  .ui-code-chip {
+    padding: 0.125em 0.3em;
+    border-radius: 0.25rem;
+    background: var(--color-inset);
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    line-height: 1;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  /* One row of a popover menu: 36px, 14px, icon then label. */
+  .ui-menu-row {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 0.75rem;
+    min-height: 2.25rem;
+    padding: 0.5rem 0.875rem;
+    text-align: left;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.25rem;
+  }
+  .ui-menu-row:enabled:hover { background: color-mix(in srgb, var(--color-raised) 70%, transparent); }
+  .ui-menu-row:disabled { opacity: 0.6; }
   .ui-button:enabled:hover,
   .ui-icon-button:enabled:hover {
     background: var(--color-raised-hover);
@@ -752,7 +987,8 @@ body {
   }
   @media (prefers-reduced-motion: reduce) {
     .ui-button,
-    .ui-icon-button { transition: none; }
+    .ui-icon-button,
+    .ui-pill { transition: none; }
   }
 }
 
@@ -804,11 +1040,10 @@ body {
 .glass-rail {
   background: color-mix(in srgb, var(--color-app) 22%, transparent);
 }
-/* Behind a glass pop-up: dim a little and blur, never black out. */
+/* Behind a glass pop-up: dim without adding a second, full-window blur pass.
+   The pop-up surface provides the glass blur over the content it covers. */
 .glass-scrim {
   background: color-mix(in srgb, black 28%, transparent);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
 }
 @media (prefers-reduced-transparency: reduce) {
   .glass-surface {
@@ -821,8 +1056,6 @@ body {
   .glass-rail { background: var(--color-app); }
   .glass-scrim {
     background: color-mix(in srgb, black 50%, transparent);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
   }
 }
 @media (forced-colors: active) {
@@ -1157,11 +1390,29 @@ html[data-cloud-intent-morph] [data-tour="composer"] { view-transition-name: clo
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  /* background-clip:text only paints glyphs inside the background box. A
+     tight line box (leading-none) is shorter than ascenders, descenders and
+     arabic marks, so they were cut. Pad the box past the glyphs and pull the
+     margins back so the layout doesn't move. */
+  padding: 0.35em 0.12em;
+  margin: -0.35em -0.12em;
 }
+/* rotating presence phrase: the old phrase fades out where the new one
+   fades in, in the same grid cell */
+@keyframes turn-phrase-in {
+  from { opacity: 0; }
+}
+@keyframes turn-phrase-out {
+  to { opacity: 0; }
+}
+.turn-phrase-in { animation: shimmer 2s linear infinite, turn-phrase-in 0.32s ease-out both; }
+.turn-phrase-out { animation: shimmer 2s linear infinite, turn-phrase-out 0.32s ease-in both; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .animate-caret, .animate-msg-in, .animate-shimmer, .animate-pop-in, .animate-pop-out { animation: none; }
   .animate-status-pulse { animation: none; opacity: 0.6; }
   .thinking-shimmer { background: none; color: var(--color-ink-secondary); }
+  .turn-phrase-in { animation: none; }
+  .turn-phrase-out { display: none; }
   .turn-mascot-in, .turn-mascot-out, .turn-answer { animation: none; }
   .animate-rise, .animate-spot-in { animation: none; }
   .animate-ripple, .animate-bolt { animation: none; }
@@ -1756,17 +2007,26 @@ button:disabled.bg-danger {
   opacity: 1;
 }
 
-/* Sidebar items are clickable and should say so on hover. Tailwind v4's
-   preflight stopped giving buttons a pointer cursor, so bot rows, section
-   headers, and menu entries hovered like static text. Scoped to the sidebar
-   (and its portalled context menu) rather than every button in the app;
-   disabled or busy controls keep the default cursor. */
-[data-sidebar] :is(button, [role="button"]):not(:disabled, [aria-busy="true"]) {
-  cursor: pointer;
+/* Tailwind v4 does not provide pointer cursors for buttons by default.
+   Restore them for enabled interactive controls across the app.
+   Keep specificity low so component cursor styles can override this. */
+
+@layer base {
+  :where(
+    button:not(:disabled, [aria-disabled="true"], [aria-busy="true"]),
+    [role="button"]:not(:disabled, [aria-disabled="true"], [aria-busy="true"]),
+    [role="link"]:not([aria-disabled="true"], [aria-busy="true"]),
+    summary:not([aria-disabled="true"], [aria-busy="true"])
+  ) {
+    cursor: pointer;
+  }
 }
+
+
 ::highlight(omb-citation-source) {
   background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
 }
+
 
 /* Wide-gamut displays. The sRGB values above stay the fallback.
    On Display P3 the same hue is a little more chromatic, with lightness
@@ -1852,4 +2112,47 @@ button:disabled.bg-danger {
     --color-danger: color(display-p3 0.7202 0.1738 0.2207);
     --color-warning: color(display-p3 0.5270 0.3546 0.0278);
   }
+}
+
+/* Window drag regions. A header marked by useCaptionChrome().dragProps is
+   the window's title bar on macOS and frameless Windows; every control in it
+   opts back out so it stays clickable, and so do menus and dialogs, which
+   may overlap a header from a portal later in the DOM (Blink resolves
+   regions in DOM order, so a later no-drag cuts into an earlier drag). The
+   property inherits, so a select's or input's wrapper is cut out too: its
+   chevron or icon overlay would otherwise drag over the field. A modal's
+   full-window backdrop is cut out with its dialog, so a press on it over a
+   header still closes the dialog instead of moving the window. */
+[data-window-drag] :has(> :is(select, input)),
+[data-window-drag] :is(button, a[href], input, select, textarea, label, summary, [role="button"], [role="link"], [role="tab"], [role="switch"], [role="checkbox"], [role="radio"], [role="combobox"], [role="slider"], [role="separator"], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"])),
+:is([role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"], [role="tooltip"]),
+.fixed:has(> :is([role="dialog"], [role="alertdialog"], [aria-modal="true"])) {
+  -webkit-app-region: no-drag;
+}
+
+/* Room speaker names. Each skin sets a tone of the bot's palette that clears
+   4.5:1 on the thread (--color-app). The class below only picks the token. */
+.bot-identity[data-bot-color="green"] { color: var(--identity-green); }
+.bot-identity[data-bot-color="blue"] { color: var(--identity-blue); }
+.bot-identity[data-bot-color="red"] { color: var(--identity-red); }
+.bot-identity[data-bot-color="orange"] { color: var(--identity-orange); }
+.bot-identity[data-bot-color="purple"] { color: var(--identity-purple); }
+.bot-identity[data-bot-color="cyan"] { color: var(--identity-cyan); }
+.bot-identity[data-bot-color="pink"] { color: var(--identity-pink); }
+.bot-identity[data-bot-color="yellow"] { color: var(--identity-yellow); }
+.bot-identity[data-bot-color="teal"] { color: var(--identity-teal); }
+.bot-identity[data-bot-color="coral"] { color: var(--identity-coral); }
+
+/* A colored user bubble sets its own tokens inline. Mentions and selection
+   still have to clear white text: the chip keeps a little of the named bot's
+   color, and selection darkens the fill instead of washing it out. */
+.user-bubble-colored .mention-highlight {
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--mention-color) 22%, var(--color-inset));
+  text-decoration-color: var(--color-ink);
+}
+.user-bubble-colored::selection,
+.user-bubble-colored *::selection {
+  background-color: color-mix(in srgb, #000000 35%, var(--color-bubble-user));
+  color: #ffffff;
 }

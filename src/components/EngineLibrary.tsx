@@ -6,6 +6,9 @@ import { t } from "@/lib/i18n";
 import { InstanceProviderMark } from "./ProviderIcons";
 
 export function engineReady(instance: InstanceInfo): boolean {
+  if (instance.driverKind === "clineAgent") {
+    return instance.snapshot.state === "available" && instance.snapshot.authenticated === true;
+  }
   return instance.snapshot.state === "available" &&
     (instance.access === "custom" || instance.snapshot.authenticated !== false);
 }
@@ -14,7 +17,7 @@ const providers: Record<string, string> = {
   claudeAgent: "Anthropic", codex: "OpenAI", grok: "xAI", grokAgent: "xAI",
   kimiAgent: "Moonshot AI", droidAgent: "Factory", cursorAgent: "Cursor",
   antigravityAgent: "Google", opencodeGo: "OpenCode", qwenAgent: "Qwen",
-  hermesAgent: "Nous Research", piAgent: "pi.dev", mistral: "Mistral AI", cerebras: "Cerebras",
+  hermesAgent: "Nous Research", clineAgent: "Cline", piAgent: "pi.dev", mistral: "Mistral AI", cerebras: "Cerebras", groq: "Groq", meta: "Meta", museCode: "Meta",
 };
 
 /** One disclosure, not a second settings dialog. Keep its children mounted so
@@ -44,7 +47,8 @@ export function EngineCard({ instance, children }: { instance: InstanceInfo; chi
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
           <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium", ready ? "bg-success/10 text-success" : "bg-control text-ink-secondary")}>
             {ready ? <Check size={12} aria-hidden="true" /> : <span className="size-1.5 rounded-full bg-warning" aria-hidden="true" />}
-            {ready ? t("onboarding.engines.ready") : t("onboarding.engines.needsSetup")}
+            {ready ? t("onboarding.engines.ready") : instance.snapshot.state === "available" && instance.snapshot.authenticated === false
+              ? t("model.signInRequired") : t("onboarding.engines.needsSetup")}
           </span>
           {ready ? (
             <span className="text-[11px] tabular-nums text-ink-secondary">{version ? `v${version}` : t("engines.library.manage")}</span>
@@ -73,7 +77,7 @@ export function EngineSections({ instances, renderEngine }: {
       if (!rows.length) return [];
       const label = t(ready ? "onboarding.engines.ready" : "onboarding.engines.needsSetup");
       return [
-        <div key={`heading-${ready}`} className={cn("col-span-full flex items-center justify-between gap-3", !ready && instances.some(engineReady) && "mt-4")}>
+        <div key={`heading-${ready}`} className={cn("col-span-full flex items-center justify-between gap-3 px-4", !ready && instances.some(engineReady) && "mt-4")}>
           <h2 className="text-[12px] font-semibold text-ink-secondary">{label}</h2>
           <span className="text-[11px] tabular-nums text-ink-secondary">{t(rows.length === 1 ? "engines.library.countOne" : "engines.library.count", { count: rows.length })}</span>
         </div>,
@@ -87,11 +91,21 @@ export function EngineSections({ instances, renderEngine }: {
 export function RefreshEngines() {
   const { refreshInstances } = useStore();
   const [busy, setBusy] = useState(false);
-  return <button type="button" disabled={busy} onClick={async () => {
-    setBusy(true);
-    try { await refreshInstances(); } finally { setBusy(false); }
-  }} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-[12px] font-medium text-ink-secondary hover:bg-control hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50">
-    <RefreshCw size={13} aria-hidden="true" className={cn(busy && "animate-spin")} />
-    {busy ? t("common.checking") : t("engines.library.refresh")}
-  </button>;
+  const [error, setError] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+  return <div>
+    <button type="button" disabled={busy} onClick={async () => {
+      setBusy(true);
+      setError(null);
+      setChecked(false);
+      try { await refreshInstances({ reportErrors: true }); setChecked(true); }
+      catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+      finally { setBusy(false); }
+    }} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-[12px] font-medium text-ink-secondary hover:bg-control hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50">
+      <RefreshCw size={13} aria-hidden="true" className={cn(busy && "animate-spin")} />
+      {busy ? t("common.checking") : t("engines.library.refresh")}
+    </button>
+    {error && <p role="alert" className="mt-1 text-[12px] text-danger">{t("engineSetup.checkFailed", { reason: error })}</p>}
+    {checked && <p role="status" className="mt-1 text-[11px] text-ink-secondary">{t("engineSetup.checked")}</p>}
+  </div>;
 }

@@ -264,6 +264,12 @@ describe("routine editor", () => {
     expect(html).not.toMatch(/aria-pressed="true"/);
   });
 
+  it("shows a saved startup choice when the simple editor opens", () => {
+    const html = editor({ ...routine, runOnStartup: true });
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toMatch(/<input type="checkbox" aria-label="Also run when OpenMausBot starts"[^>]*checked[^>]*>/);
+  });
+
   // Continuity was only reachable by asking a bot; the editor offers it for
   // repeating bot routines, right under the instructions.
   it("offers Remember the last run for a repeating routine, off unless the routine has it", () => {
@@ -301,6 +307,14 @@ describe("routine editor", () => {
     click(buttons(tree).get("Save"));
     const [, off] = fixture.api.mock.calls.at(-1) as unknown as [string, { body: string }];
     expect(JSON.parse(off.body)).toMatchObject({ continuity: false });
+  });
+
+  it("shows a routine with no thread of its own reporting into the bot's main thread", () => {
+    fixture.advanced = true;
+    const { resultsThreadId: _chosen, ...unchosen } = routine;
+    const destination = (html: string) => html.slice(html.indexOf("Post results to")).match(/^[\s\S]*?<\/select>/)![0];
+    expect(destination(editor(unchosen))).toContain('<option value="new" selected="">The bot&#x27;s main thread</option>');
+    expect(destination(editor(routine))).toContain('<option value="brief-thread" selected="">Morning briefs</option>');
   });
 
   it("leaves the Advanced editor as it was", () => {

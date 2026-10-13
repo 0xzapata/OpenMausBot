@@ -1,8 +1,9 @@
 // Shown on an OMB Cloud home in place of a chat until one of the person's own
 // engines is signed in (docs/cloud-pro.md; lib/onboarding cloudSignInDue).
 // Cloud Pro includes no AI: the person brings a Claude, ChatGPT or Grok
-// account, or an API key. Each choice opens the setup that already exists for
-// it: the paste-code Claude sign-in and the Codex and Grok device codes
+// account, or an API key. A free trial's AI credit runs bots until then; once
+// it is used up, this says so first. Each choice opens the setup that already
+// exists for it: the paste-code Claude sign-in and the Codex and Grok device codes
 // (EngineSetup, the card the model picker shows), or the model-provider keys
 // in Settings → Connections. Grok is offered only where this Cloud computer
 // has the Grok CLI. Once an engine can run, the chat takes this screen's place.
@@ -85,6 +86,8 @@ export function CloudEngineSignIn() {
   if (handing) face = "proud";
   else if (checking) face = "searching";
   else if (open) face = "listening";
+  // Shown here because the trial's AI credit can no longer run a bot.
+  const credit = state.instances.find((instance) => instance.trialCredit && instance.trialCredit !== "active")?.trialCredit;
 
   return (
     <main data-cloud-sign-in className="relative flex h-full min-w-0 flex-1 flex-col overflow-y-auto bg-app">
@@ -123,6 +126,9 @@ export function CloudEngineSignIn() {
         <h1 className={cn("animate-rise text-center text-[22px] font-semibold tracking-[-0.01em] text-ink", pending ? "mt-7" : "mt-5")} style={staggerIndex(1)}>
           {t(pending ? "cloudSignIn.titleForJob" : "cloudSignIn.title")}
         </h1>
+        {credit && <p role="status" data-trial-credit={credit} className="animate-rise mx-auto mt-2 max-w-[440px] text-center text-[13.5px] font-medium leading-relaxed text-ink" style={staggerIndex(2)}>
+          {t(credit === "used_up" ? "cloudSignIn.creditUsedUp" : "cloudSignIn.creditEnded")}
+        </p>}
         <p className="animate-rise mx-auto mt-2 max-w-[440px] text-center text-[13.5px] leading-relaxed text-ink-secondary" style={staggerIndex(2)}>
           {t(pending ? "cloudSignIn.introForJob" : "cloudSignIn.intro")}
         </p>

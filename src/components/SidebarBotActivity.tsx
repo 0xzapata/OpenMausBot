@@ -2,6 +2,7 @@ import { BellDot, CircleAlert, Clock3, Loader2, Pin, PinOff, type LucideIcon } f
 import type { Dispatch } from "react";
 import type { Action, AppState, Bot, Group, Task } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 import { t } from "@/lib/i18n";
 import { orderedSidebarThreads, orderedThreadList, threadRecency, threadUpdatedLabel } from "./SidebarThreadRow";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
@@ -32,19 +33,22 @@ export function threadsWhenTreeHidden(bot: Bot, queued: Record<string, unknown[]
   return orderedThreadList([...attention, ...pinned]);
 }
 
-/** The room-level twin of sidebarBotActivityTasks: a room's own aggregate
- * working/busyBotId/unread state, attributed to its primary thread exactly
- * as GroupThreadList's own sidebar row derives it (Sidebar.tsx) — keep the
- * two derivations in sync. A bot⇄bot DM channel mirrors the other side's
- * own thread, so it is never attention here on its own account. */
+/** The room-level twin of sidebarBotActivityTasks: each of a room's threads
+ * with its own working state and speaker (they run side by side), and the
+ * room's unread on its open thread, exactly as GroupThreadList's own sidebar
+ * rows derive them (Sidebar.tsx) — keep the two derivations in sync. A
+ * bot⇄bot DM channel mirrors the other side's own thread, so it is never
+ * attention here on its own account. */
 export function sidebarGroupActivityTasks(group: Group, bots: Bot[], queued: Record<string, unknown[]>): Array<Task & { queued: boolean }> {
   if (group.dm) return [];
-  const busy = Boolean(group.working || group.busyBotId);
-  const waiting = bots.find((bot) => bot.id === group.busyBotId)?.activity === "waiting-on-you";
-  const tasks = (group.tasks ?? [{ threadId: group.threadId, title: group.name, createdAt: group.createdAt }]).map((task) => ({
-    ...task, busy: task.threadId === group.threadId && busy, unread: task.threadId === group.threadId && Boolean(group.unread),
-    activity: task.threadId === group.threadId && waiting ? "waiting-on-you" as const : undefined,
-  }));
+  const tasks = (group.tasks ?? [{ threadId: group.threadId, title: group.name, createdAt: group.createdAt }]).map((task) => {
+    const speakerId = roomThreadSpeakerId(group, task.threadId);
+    const waiting = Boolean(speakerId) && bots.find((bot) => bot.id === speakerId)?.activity === "waiting-on-you";
+    return {
+      ...task, busy: roomThreadWorking(group, task.threadId), unread: task.threadId === group.threadId && Boolean(group.unread),
+      activity: waiting ? "waiting-on-you" as const : undefined,
+    };
+  });
   return tasks.map((task) => ({ ...task, queued: Boolean(queued[task.threadId]?.length) }))
     .filter((task) => task.activity === "waiting-on-you" || task.busy || task.queued || task.unread);
 }
@@ -227,9 +231,14 @@ export function PinnedThreadRows({ entries, now, onJump, onUnpin }: { entries: A
 }
 
 /** The escape hatch for other ongoing conversations when their tree is hidden.
- * These are selection-only buttons: no create, rename, move, or delete menu. */
-export function SidebarBotActivity({ bot, density, pendingQueued, dispatch }: { bot: Bot; density: SidebarDensity; pendingQueued: AppState["pendingQueued"]; dispatch: Dispatch<Action> }) {
-  const tasks = threadsWhenTreeHidden(bot, pendingQueued).filter((task) => task.threadId !== bot.threadId);
+ * These are selection-only buttons: no create, rename, move, or delete menu.
+ * `rowThreadId` is the thread the bot's own row stands for, so it gets no
+ * row here: the one on screen while the bot is, else the one its row opens
+ * (botOpensTo). With threads hidden that is the bot's main thread, and the
+ * thread the bot was left on gets a row like any sibling: a reply landing
+ * there must not wait for the bot to be opened first. */
+export function SidebarBotActivity({ bot, rowThreadId, density, pendingQueued, dispatch }: { bot: Bot; rowThreadId: string; density: SidebarDensity; pendingQueued: AppState["pendingQueued"]; dispatch: Dispatch<Action> }) {
+  const tasks = threadsWhenTreeHidden(bot, pendingQueued).filter((task) => task.threadId !== rowThreadId);
   if (!tasks.length) return null;
   const iconOnly = density === "icons";
   return <div data-sidebar-bot-activity={bot.id} className={cn("mb-1 space-y-0.5", !iconOnly && "ml-6")}>

@@ -5,11 +5,13 @@
 // from a phone, by opening the desktop and reading every thread. The team
 // already has a role for exactly this — the Chief coordinates the section —
 // so an incident is delivered to the Chief as a turn of its own, with a
-// link to the thread and the means to act (retry_thread, delegate_bot), and
+// link to the thread and the means to act (retry_thread, coordinate_bots), and
 // the person reads one place: the Chief's "Team incidents" thread.
 //
 // The policy here is pure so it can be read and tested on its own; the
 // harness (server/index.ts) supplies the store and starts the turns.
+import type { WireMessage as Message } from "../shared/wire.ts";
+import { withoutDeliveredNote } from "./peer-provenance.ts";
 import { canAccessTeam } from "./peer-roster.ts";
 
 export type IncidentKind = "failed" | "stalled" | "could-not-start" | "routine-failed";
@@ -98,6 +100,12 @@ export class IncidentLedger {
   forget(threadId: string): void {
     this.at.delete(threadId);
   }
+
+  /** When this thread was last reported, whatever the window: a report
+   * can reach the Chief after a wait, and its thread may have moved on. */
+  lastAt(threadId: string): number | undefined {
+    return this.at.get(threadId)?.at(-1);
+  }
 }
 
 const fold = (text: string, max: number): string => {
@@ -122,6 +130,20 @@ function whatHappened(incident: Incident): string {
   }
 }
 
+/** The last thing asked in a thread: the person's line, or a requester's
+ * words without the note the harness delivered them under (which says who
+ * sent them and why, and would fill the quote). A line that is only a note
+ * (a retry) asks nothing new, so the line above it is the request. */
+export function incidentRequest(messages: readonly Pick<Message, "role" | "kind" | "text" | "peerAsk">[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role !== "user" || message.kind !== "text" || !message.text) continue;
+    const asked = message.peerAsk ? withoutDeliveredNote(message.text) : message.text;
+    if (asked) return asked;
+  }
+  return null;
+}
+
 /** The one-line chip left in the incidents thread, before the Chief's turn. */
 export function incidentChip(incident: Incident): string {
   return `Incident: ${whatHappened(incident)}`;
@@ -141,7 +163,7 @@ export function incidentText(incident: Incident, count: IncidentCount): string {
     ? [
       "Decide, in this order:",
       "1. If the cause is something only the person can fix — a sign-in, a missing credential, an unanswered question, a setting — say so here in one or two plain sentences and stop.",
-      `2. Otherwise call retry_thread with bot_id "${incident.bot.id}" and thread_id "${incident.threadId}" to resume that thread where it stopped; use delegate_bot with a corrected brief instead when the request itself needs to change.`,
+      `2. Otherwise call retry_thread with bot_id "${incident.bot.id}" and thread_id "${incident.threadId}" to resume that thread where it stopped; use coordinate_bots with a corrected brief instead when the request itself needs to change.`,
       "3. Report in one or two sentences what failed and what you did. Never retry the same thread more than twice.",
     ].join("\n")
     : "Retries for that thread are used up. Do not retry it again: say in one or two plain sentences what is blocking and what the person should do, then stop.");

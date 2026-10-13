@@ -20,7 +20,8 @@ import { openStartupModelCatalog, writeStartupModelCache } from "../startup-mode
 import { writeFileAtomic, writeFileAtomicIfChanged } from "../atomic.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
-import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
+import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
+import { hostTimeZone } from "../turn-clock.ts";
 import { ClaudeLoginController } from "./claude-login-auth.ts";
 
 import type {
@@ -40,7 +41,7 @@ import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { askInputSummary, commandSummary, toolDetailPreview } from "../tool-summary.ts";
-import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
+import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS, USAGE_LIMIT } from "./retry.ts";
 import { sessionIdlePolicy } from "./session-idle.ts";
 import { parseVersionTriple, versionAtLeast } from "./acp/core.ts";
 import {
@@ -51,11 +52,13 @@ import {
   resolveInjectId,
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
+import { runKeepWarmPing, type KeepWarmContract } from "./claude-keepwarm.ts";
 import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import {
   ASK_USER_QUESTION_TOOL,
+  ASK_USER_TOOL,
   askQuestionSummary,
   parseAskQuestions,
   parseChoices,
@@ -170,6 +173,92 @@ export function claudeVersionTooOld(
 ): boolean {
   if (frame.is_api_error_message !== true && typeof frame.error !== "string") return false;
   return /\bClaude Code v?\d+(?:\.\d+)+ does not support this model\b/i.test(text);
+}
+
+/** The usage window that refuses a Claude account's requests. */
+export interface ClaudeLimit {
+  /** the CLI's rateLimitType: five_hour, seven_day, seven_day_opus,
+   * seven_day_sonnet, seven_day_overage_included or overage (2.1.295); null
+   * when it names none */
+  window: string | null;
+  /** when that window reopens, in epoch seconds; null when unsaid */
+  resetsAt: number | null;
+}
+
+/** The window a CLI's `rate_limit_info` says refuses this account, or null
+ * while its requests go through. The CLI reads it from the API's headers on
+ * every response and reports it in a `rate_limit_event` — "allowed",
+ * "allowed_warning" near a limit, "rejected" past it (2.1.272, 2.1.295) —
+ * and, from 2.1.295, on the refused call's api-error frame too
+ * (`api_error_params`). A rejected window with extra usage in use still runs
+ * the turn on usage credits, so only a refusal without them counts. */
+export function claudeLimitRefusal(info: unknown): ClaudeLimit | null {
+  if (!info || typeof info !== "object") return null;
+  const { status, rateLimitType, resetsAt, isUsingOverage } = info as Record<string, unknown>;
+  if (status !== "rejected" || isUsingOverage === true) return null;
+  return {
+    window: typeof rateLimitType === "string" ? rateLimitType : null,
+    resetsAt: typeof resetsAt === "number" && Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null,
+  };
+}
+
+/** The CLI's api-error frame for a call its account's usage limit refused:
+ * its own code says so (`api_error: "usage_limit_reached"`, 2.1.295), or its
+ * words do ("You've hit your weekly limit · resets …"), or a
+ * `rate_limit_event` had already refused the account (`refused`). A refused
+ * account runs nothing until the window reopens, so that is the failure to
+ * report whatever else the same call said: 2.1.272 answered an account at
+ * its weekly limit with "does not support this model" and an update offer,
+ * and the person updated, to the same refusal. Gated on the CLI's error
+ * flag, like a sign-in failure. */
+export function claudeUsageLimit(
+  frame: { error?: unknown; is_api_error_message?: unknown; api_error?: unknown },
+  text: string,
+  refused = false,
+): boolean {
+  if (frame.is_api_error_message !== true && typeof frame.error !== "string") return false;
+  return refused || frame.api_error === "usage_limit_reached" || USAGE_LIMIT.test(text);
+}
+
+/** Each window as Settings → Usage names it ("5-hour", "Weekly"); any other
+ * is the account's usage limit. */
+const CLAUDE_LIMIT_NAMES: Record<string, string> = {
+  five_hour: "5-hour limit",
+  seven_day: "weekly limit",
+  seven_day_opus: "weekly Opus limit",
+  seven_day_sonnet: "weekly Sonnet limit",
+};
+
+/** One plain line for a turn its account's usage limit refused: which limit,
+ * when it reopens, and what runs before then — a model's own weekly limit
+ * leaves the account's other models running. Nothing to install, sign in to
+ * or retry. The reset is written in this machine's zone, named as the turn
+ * clock names it; with no reset to write, the CLI's own words (`said`) are
+ * quoted, as they may carry one. */
+export function claudeLimitMessage(limit: ClaudeLimit | null, said?: string, now = Date.now(), timeZone = hostTimeZone()): string {
+  const name = limit?.window && Object.hasOwn(CLAUDE_LIMIT_NAMES, limit.window) ? CLAUDE_LIMIT_NAMES[limit.window] : "usage limit";
+  const meanwhile = /^seven_day_(?:opus|sonnet)$/.test(limit?.window ?? "") ? "choose another model for this bot" : "switch this bot to another engine or Claude account";
+  if (limit?.resetsAt && limit.resetsAt * 1000 > now) {
+    let resets: string;
+    try {
+      resets = `${new Date(limit.resetsAt * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone })} (${timeZone})`;
+    } catch {
+      resets = `${new Date(limit.resetsAt * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+    }
+    return `This Claude account has reached its ${name}, which resets ${resets}. Until then, ${meanwhile}.`;
+  }
+  const words = said?.trim().replace(/[.\s]+$/, "");
+  return `This Claude account has reached its ${name}${words ? ` (Claude says: "${words}")` : ""}. For now, ${meanwhile}.`;
+}
+
+/** What an error `result` says failed its turn: its `errors` (2.1.295:
+ * "No conversation found with session ID: …"), else its text, else its
+ * kind. */
+export function claudeResultError(frame: { errors?: unknown; result?: unknown; subtype?: unknown; terminal_reason?: unknown }): string {
+  const errors = Array.isArray(frame.errors) ? frame.errors.filter((error): error is string => typeof error === "string" && error.trim() !== "") : [];
+  if (errors.length) return errors.join("; ");
+  if (typeof frame.result === "string" && frame.result.trim()) return frame.result.trim();
+  return `Claude ended the turn with an error (${String(frame.subtype ?? frame.terminal_reason ?? "unknown")}).`;
 }
 
 /** The CLI environment shared by auth probes and real turns.
@@ -337,6 +426,11 @@ export const CLAUDE_FLAG_FLOORS = {
   // A guest's turn on a Cloud home (GUEST_CLAUDE_TOOLS): 2.1.248 takes
   // --restricted, 2.1.257 honours blockReadsOutsideWorkingDirectories.
   "--restricted": [2, 1, 257],
+  // Prompt-cache keep-warm pings (claude-keepwarm.ts) only. Not bisected:
+  // both are in every 2.1 build checked. A CLI that lacks one rejects the
+  // ping as an argument error, which ends the keep-warm window, nothing else.
+  "--fork-session": [2, 1, 0],
+  "--no-session-persistence": [2, 1, 0],
 } as const satisfies Record<string, ClaudeCliVersion>;
 
 /** The only built-in tools a guest's turn on a Cloud home gets
@@ -443,6 +537,7 @@ export const STATIC_CLAUDE_MODELS: ModelCatalog = {
     { id: "claude-opus-5", label: "Claude Opus 5" },
     { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", contextWindow: 1_000_000 },
     { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+    { id: "claude-haiku-5-5", label: "Claude Haiku 5.5", contextWindow: 1_000_000 },
     { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
   ],
 };
@@ -570,10 +665,10 @@ function systemEndedReply(kind: Ask["kind"]): { behavior: AskBehavior; message: 
 }
 
 /** The structured questions behind an ask, when it is one. Claude's own
- * AskUserQuestion carries them; everything else answers null and keeps the
- * plain summary/choices card. */
+ * AskUserQuestion carries them, and so does a multiSelect ask_user;
+ * everything else answers null and keeps the plain summary/choices card. */
 function askQuestions(ask: Ask): AskQuestion[] | null {
-  return ask.tool === ASK_USER_QUESTION_TOOL ? parseAskQuestions(ask.input) : null;
+  return ask.tool === ASK_USER_QUESTION_TOOL || ask.tool === ASK_USER_TOOL ? parseAskQuestions(ask.input) : null;
 }
 
 /** One human-readable line for an ask — what the card subtitle shows. */
@@ -1281,6 +1376,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         awaitingInit?: boolean;
         authFailed?: boolean;
         updateRequired?: boolean;
+        /** the window the latest `rate_limit_event` says refuses this
+         * account (claudeLimitRefusal), null while requests go through */
+        limit?: ClaudeLimit | null;
+        /** the turn failed on its account's usage limit, and said so */
+        limitReached?: boolean;
+        /** what failed this turn is already in front of the person: a
+         * sign-in, update or usage-limit error, or the CLI's own api-error
+         * text. An error `result` says nothing more. */
+        explained?: boolean;
         stopRequested?: boolean;
         /** Steered messages, by the uuid this driver sent them with, that no
          * model call has taken in yet as far as the driver can tell. With
@@ -1318,6 +1422,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       closed: Promise<void>;
     }
     const sessions = new Map<string, Session>();
+    // Prompt-cache keep-warm (claude-keepwarm.ts): what each live process
+    // was launched with, so a ping can replay the exact request prefix, and
+    // how long a keep-warm window wants that process kept past its idle
+    // close (the next real turn must reuse it: a relaunch recomputes the
+    // volatile system prompt and would miss the cache anyway).
+    const warmContracts = new Map<string, KeepWarmContract>();
+    const warmHolds = new Map<string, number>();
     const { idleMs: SESSION_IDLE_MS } = sessionIdlePolicy("CLAUDE");
 
     const stopSession = (session: Session) => {
@@ -1329,6 +1440,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const s = sessions.get(threadId);
       if (!s || s.closing) return;
       s.closing = true;
+      warmContracts.delete(threadId);
+      warmHolds.delete(threadId);
       if (s.idleTimer) clearTimeout(s.idleTimer);
       // Broker ownership belongs to this session. Detach and close it now,
       // before a replacement can bind the same per-thread socket; the old
@@ -1350,7 +1463,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const s = sessions.get(threadId);
       if (!s) return;
       if (s.idleTimer) clearTimeout(s.idleTimer);
-      s.idleTimer = setTimeout(() => closeSession(threadId, "idle"), SESSION_IDLE_MS);
+      const held = (warmHolds.get(threadId) ?? 0) - Date.now();
+      s.idleTimer = setTimeout(() => closeSession(threadId, "idle"), Math.min(2_147_483_647, Math.max(SESSION_IDLE_MS, held)));
       s.idleTimer.unref?.();
     };
     const writeUser = (s: Session, threadId: string, promptMsg: ClaudeUserMessage): Promise<boolean> => {
@@ -1548,7 +1662,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // Host tools always route through OpenMausBot's permission broker.
         if (!controlsHost) allowed.push("mcp__computer");
       }
-      // peer-agent comms (list_bots/ask_bot) — the harness builds the whole
+      // peer-agent comms (list_bots/coordinate_bots) — the harness builds the whole
       // spawn contract (command/args/env incl. the boot token) in
       // agentsIntegration(); pre-allowing matters doubly here, or the CLI's
       // own ListAgents look-alike shadows it and "@Bot" asks go nowhere
@@ -1563,8 +1677,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         allowed.push("mcp__phone");
       }
       if (turn.integrations?.browser) {
-        mcpServers.browser = { ...turn.integrations.browser };
+        // Behind tool search, the first browser action costs a ToolSearch
+        // model step. Load the tools up front when browsing is the point.
+        mcpServers.browser = turn.preloadBrowserTools
+          ? { ...turn.integrations.browser, alwaysLoad: true }
+          : { ...turn.integrations.browser };
         allowed.push("mcp__browser");
+      }
+      if (turn.integrations?.data) {
+        mcpServers.data = { ...turn.integrations.data };
+        allowed.push("mcp__data");
       }
       // dweb network daemon (status / repo / opencode model access) via
       // server/drivers/dweb-proxy.ts — points at the configured dweb instance
@@ -1683,6 +1805,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = "1";
       }
       const settings: Record<string, unknown> = { ...authSettings };
+      // Project-only settings still discover the personal memory through ancestor
+      // directories when the bot workspace lives below HOME. Keep project memory.
+      if (isolated) settings.claudeMdExcludes = [join(homedir(), ".claude", "CLAUDE.md")];
       if (hooks) settings.hooks = claudeHookSettings(HOOK_HELPER_PATH);
       if (turn.guestConfined) settings.permissions = GUEST_CLAUDE_PERMISSIONS;
       const authSettingsPath = mcpConfigPath && Object.keys(settings).length
@@ -1690,7 +1815,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (authSettingsPath) args.push("--settings", authSettingsPath);
       // Our approvals and browser credentials expire at the user-turn
       // boundary. Native background workers cannot outlive that boundary;
-      // parallel bot work must use the harness's durable delegate_bot path.
+      // parallel bot work must use the harness's durable coordinate_bots path.
       env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
       const cwd = turn.cwd ?? homedir();
       const commandCwd = permissionLaunchCwd(cwd);
@@ -1885,6 +2010,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         cleanupUnownedLaunch();
         throw error;
       }
+      // The contract a keep-warm ping replays. Never for a guest's turn.
+      if (turn.guestConfined) warmContracts.delete(threadId);
+      else {
+        warmContracts.set(threadId, {
+          args: [...args], env: { ...env }, cwd, system: turn.system ?? null,
+          mcpServers: mcpConfigPath ? JSON.parse(JSON.stringify(mcpServers)) : null,
+          settings: authSettingsPath ? JSON.parse(JSON.stringify(settings)) : null,
+        });
+      }
       let markClosed!: () => void;
       const session: Session = {
         closed: new Promise<void>((resolve) => { markClosed = resolve; }),
@@ -1958,6 +2092,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       };
       const settleResult = (result: NativeTurnResult) => settle(result.ok, result.stopReason, result.cost, result.usage);
       const currentTurnId = () => session.turn?.turnId ?? turnId;
+      // The turn ran into its account's usage limit: one plain line, once, in
+      // place of the CLI's words or whatever else the refused call said. It
+      // settles as "quota" — never a setup failure or an update offer. The
+      // refused call's own window (`api_error_params`) outranks the event's.
+      const reachLimit = (frame: { api_error_params?: { rate_limit_info?: unknown } }, words: unknown) => {
+        const t = session.turn;
+        if (!t || t.limitReached) return;
+        t.limitReached = t.explained = true;
+        t.limit = claudeLimitRefusal(frame.api_error_params?.rate_limit_info) ?? t.limit;
+        const said = typeof words === "string" && USAGE_LIMIT.test(words) ? words : undefined;
+        emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: claudeLimitMessage(t.limit ?? null, said) });
+      };
       // The process's first result with a cost says what --resume restored,
       // which its turns are measured from; every result is kept for a later
       // resume. A result without one (an API error) decides nothing yet.
@@ -2030,6 +2176,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 held.continuationSilence.unref?.();
               }
               emit({ ...base(threadId, currentTurnId()), type: "session.started", sessionId: o.session_id, model: o.model, ...(retry.rebuilt ? { rebuilt: true } : {}) });
+              // the person reads what did not carry over; announced once: a
+              // steered continuation's own init re-reports the same session,
+              // which is no new rebuild
+              if (retry.rebuilt) emit({ ...base(threadId, currentTurnId()), type: "runtime.notice", message: rebuiltSessionNotice("Claude Code") });
+              retry.rebuilt = false;
             } else if (o.subtype === "thinking_tokens") {
               emit({ ...base(threadId, currentTurnId()), type: "item.updated", itemType: "reasoning", tokens: o.estimated_tokens });
             }
@@ -2058,19 +2209,28 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // reply strands the user. Every other engine reports this as a
             // setup error; that is what routes them to the sign-in card.
             if (claudeAuthFailure(o, text)) {
-              if (session.turn) session.turn.authFailed = true;
+              if (session.turn) session.turn.authFailed = session.turn.explained = true;
               emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: text, setup: true });
               break;
             }
+            // An account past its usage limit runs nothing until the window
+            // reopens, on any model or version: that is what to report, not
+            // the update the same refused call may also have asked for.
+            if (claudeUsageLimit(o, text, Boolean(session.turn?.limit))) {
+              reachLimit(o, text);
+              break;
+            }
             if (claudeVersionTooOld(o, text)) {
-              if (session.turn) session.turn.updateRequired = true;
+              if (session.turn) session.turn.updateRequired = session.turn.explained = true;
               emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: text, setup: true, claudeUpdate: true });
               break;
             }
             if (text.trim()) {
               // The CLI's own report of any other API error is still shown,
               // but marked: the model never produced it.
-              const synthetic = o.is_api_error_message === true || typeof o.error === "string" ? { synthetic: true } : {};
+              const apiError = o.is_api_error_message === true || typeof o.error === "string";
+              const synthetic = apiError ? { synthetic: true } : {};
+              if (apiError && session.turn) session.turn.explained = true;
               // fallback delta for CLIs/paths that never streamed the block
               if (!session.turn?.sawStreamDelta) {
                 emit({ ...base(threadId, currentTurnId()), ...synthetic, type: "content.delta", streamKind: "assistant_text", delta: text });
@@ -2124,11 +2284,39 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             }
             break;
           }
+          case "rate_limit_event":
+            // the account's usage window as the API's last response left it;
+            // read only when the turn fails (claudeUsageLimit, `result`)
+            if (session.turn) session.turn.limit = claudeLimitRefusal(o.rate_limit_info);
+            break;
           case "result": {
             // A synthetic background completion is not the result of the
             // submitted user turn. Settling it would revoke browser access
             // and deny approvals while that user turn is still running.
             if (o.origin?.kind === "task-notification") break;
+            // A --resume the CLI refused before announcing the session: no
+            // `init`, so it never took the prompt. After a long idle 2.1.295
+            // answers a session it no longer has with an error result
+            // ("No conversation found with session ID …") and stays up,
+            // instead of exiting. End the process: its close rebuilds the
+            // conversation on a fresh session, once, as for a CLI that exits
+            // before `init` (classifyResumeFailure).
+            if (o.is_error === true && sessionId && !session.sawInit && session.turn && !session.turn.settled) {
+              closeSession(threadId, "resume refused");
+              break;
+            }
+            // The usage limit refused this turn even if no frame said so: the
+            // result's own error code (2.1.295) or words do, or the CLI's
+            // rate_limit_event did and nothing failed the turn before it.
+            if (o.is_error === true && !session.turn?.authFailed && (session.turn?.limit ||
+                o.api_error === "usage_limit_reached" || USAGE_LIMIT.test(String(o.result ?? "")))) reachLimit(o, o.result);
+            // Any other error result nothing has explained yet is a turn that
+            // failed without an api-error frame: its own words say why, so a
+            // failed turn is never an empty one. A Stop is no failure.
+            if (o.is_error === true && session.turn && !session.turn.settled && !session.turn.explained && !session.turn.stopRequested) {
+              session.turn.explained = true;
+              emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: claudeResultError(o) });
+            }
             // result.usage is this turn's own figure, "per-turn in
             // streaming-input sessions" (2.1.282) even on a retained process.
             // cache reads count as input: they are billed (at the cache rate)
@@ -2144,11 +2332,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             });
             const native: NativeTurnResult = {
               ok: o.is_error !== true,
+              // An error result's stop_reason is its synthetic message's
+              // ("stop_sequence") or none, which says nothing; its terminal
+              // reason ("api_error") or kind ("error_during_execution") does.
               stopReason: session.turn?.authFailed
                 ? "auth_required"
-                : session.turn?.updateRequired
-                  ? "update_required"
-                  : o.stop_reason ?? o.terminal_reason ?? null,
+                : session.turn?.limitReached
+                  ? "quota"
+                  : session.turn?.updateRequired
+                    ? "update_required"
+                    : o.is_error === true
+                      ? o.terminal_reason ?? (typeof o.subtype === "string" && o.subtype !== "success" ? o.subtype : null) ?? o.stop_reason ?? null
+                      : o.stop_reason ?? o.terminal_reason ?? null,
               cost: o.total_cost_usd ?? null,
               ...(o.usage
                 ? {
@@ -2238,7 +2433,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       });
 
       child.on("error", (e) => {
-        emit({ ...base(threadId, currentTurnId()), type: "runtime.error", ...describeSpawnFailure(e, config.cli) });
+        emit({ ...base(threadId, currentTurnId()), type: "runtime.error", ...describeSpawnFailure(e, config.cli, cwd) });
         settle(false, "spawn_error");
       });
 
@@ -2416,16 +2611,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // Same relaunch handle as the transient-retry path above. The new
             // session is announced as rebuilt only when it is actually given
             // the replay: with nothing to replay it gets the turn text alone.
+            // That announcement, with its notice, is what the person is told;
+            // this is no retry of a failure.
             retry.rebuilt = recovery.replayed;
             retryState.set(threadId, retry);
             active.set(threadId, { stop: () => { retry.cancelled = true; retryAbort.abort(); }, turnId });
-            emit({
-              ...base(threadId, turnId),
-              type: "turn.retrying",
-              attempt: retry.attempt + 1,
-              delayMs: 0,
-              reason: "resume_rejected",
-            });
             void (async () => {
               try {
                 // no cursor: a fresh session, carrying the rebuild
@@ -2493,17 +2683,27 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * next model call, or — when no call is left in this turn — as its next
      * native turn, which this driver keeps inside the same logical turn.
      * "refused" when nothing is running here to steer or the stdin write
-     * provably failed; the caller queues those words. */
-    const steer = async (threadId: string, text: string): Promise<SteerOutcome> => {
+     * provably failed; the caller queues those words. Images ride as the
+     * same native blocks a new turn's do (claudeUserMessage). */
+    const steer = async (threadId: string, text: string, images?: readonly ClaudeImage[]): Promise<SteerOutcome> => {
       const s = sessions.get(threadId);
       if (!s || !s.turn || s.turn.settled || s.closing || s.child.exitCode !== null) return "refused";
       const turn = s.turn;
+      // Materialize before counting or writing anything: an attachment that
+      // vanished since it was admitted refuses the steer, and nothing was
+      // sent, so the caller may queue the words for a real turn.
+      let message: ClaudeUserMessage;
+      try {
+        message = claudeUserMessage(text, images);
+      } catch {
+        return "refused";
+      }
       // Counted before the write: a `result` read while the words are still
       // on their way must hold for them too. A failed write takes it back.
       // The uuid is what the CLI's echo names when a model call takes it in.
       const id = randomUUID();
       turn.pendingSteers.add(id);
-      if (!(await writeUser(s, threadId, { ...claudeUserMessage(text, undefined), uuid: id }))) {
+      if (!(await writeUser(s, threadId, { ...message, uuid: id }))) {
         turn.pendingSteers.delete(id);
         return "refused";
       }
@@ -2656,10 +2856,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           composioMcp: true,
           phoneMcp: true,
           browserMcp: true,
+          dataMcp: true,
           images: true,
           nativeImageInput: true,
           effortLevels: ["low", "medium", "high", "xhigh", "max"],
           queueing: true,
+          // stream-json takes image blocks on any user message, mid-turn too
+          steerImages: true,
           // Only while this CLI can be told to refresh a resumed session's
           // recorded system prompt (--system-prompt-snapshot). Keeping a
           // session across an update from outside it means the harness keeps
@@ -2687,6 +2890,29 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return behavior === "allow" ? "allowed-once" : behavior === "answer" ? "answered" : "rejected";
         },
         hasSession: (threadId) => active.has(threadId),
+        cacheKeepWarm: {
+          ping: async (threadId, options) => {
+            const live = sessions.get(threadId);
+            const contract = warmContracts.get(threadId);
+            if (!live || live.closing || live.child.exitCode !== null || !contract || !live.sessionId) {
+              return { ok: false, reason: "the conversation's Claude session has closed" };
+            }
+            if (live.turn || active.has(threadId)) return { ok: false, reason: "a turn is running", busy: true };
+            if (cliVersion !== null && !(claudeCliSupports(cliVersion, "--fork-session") && claudeCliSupports(cliVersion, "--no-session-persistence"))) {
+              return { ok: false, reason: "this Claude Code is too old to fork a session; update Claude Code" };
+            }
+            return runKeepWarmPing({ cli: config.cli, contract, sessionId: live.sessionId, signal: options?.signal });
+          },
+          hold: (threadId, until) => {
+            if (until === null) warmHolds.delete(threadId);
+            else warmHolds.set(threadId, until);
+            const live = sessions.get(threadId);
+            if (!live || live.closing || live.child.exitCode !== null) return false;
+            // re-time an idle process's close; a busy one re-arms at settle
+            if (!live.turn) armIdle(threadId);
+            return true;
+          },
+        },
         stopAll: async () => {
           for (const { stop } of active.values()) stop();
           for (const threadId of Array.from(sessions.keys())) closeSession(threadId, "stopAll");

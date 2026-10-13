@@ -35,11 +35,17 @@ vi.mock("./ToolActivity", async (importOriginal) => ({
 // The real button, run inside a counting component: whatever it subscribes
 // to re-renders this component, so every render of it is counted.
 vi.mock("./SpeakButton", async (importOriginal) => {
-  const { SpeakButton } = await importOriginal<typeof import("./SpeakButton")>();
+  const actual = await importOriginal<typeof import("./SpeakButton")>();
   return {
-    SpeakButton: (props: Parameters<typeof SpeakButton>[0]) => {
+    ...actual,
+    SpeakButton: (props: Parameters<typeof actual.SpeakButton>[0]) => {
       renders.speak++;
-      return SpeakButton(props);
+      return actual.SpeakButton(props);
+    },
+    // read aloud now lives in the more menu, built by this hook on every row
+    useSpeakAction: (args: Parameters<typeof actual.useSpeakAction>[0]) => {
+      renders.speak++;
+      return actual.useSpeakAction(args);
     },
   };
 });
@@ -94,6 +100,26 @@ async function draw() {
   const children = createElement(ChatView, { bot: state.bots.find((bot) => bot.id === "pepper")! });
   flushSync(() => root.render(createElement(BotEditorStore, { value, children })));
   await settle();
+}
+// What a row's more menu offers: open it, read the items, close it again.
+async function menuOf(mid: string) {
+  const more = document.querySelector<HTMLButtonElement>(`[data-mid="${mid}"] button[aria-haspopup="menu"]`);
+  if (!more) return [];
+  flushSync(() => more.click());
+  await settle();
+  const items = [...document.querySelectorAll<HTMLButtonElement>(`[data-mid="${mid}"] [role=menuitem]`)]
+    .map((item) => ({ label: item.textContent ?? "", title: item.title, disabled: item.disabled }));
+  flushSync(() => more.click());
+  await settle();
+  return items;
+}
+async function menusWith(label: string) {
+  const found: { mid: string; title: string; disabled: boolean }[] = [];
+  for (const row of document.querySelectorAll("[data-mid]")) {
+    const mid = row.getAttribute("data-mid")!;
+    for (const item of await menuOf(mid)) if (item.label === label) found.push({ mid, title: item.title, disabled: item.disabled });
+  }
+  return found;
 }
 async function rowRendersAfter(change: (current: AppState) => AppState) {
   renders.botText = renders.userText = renders.toolChip = renders.speak = 0;
@@ -157,18 +183,17 @@ describe("chat transcript rows", () => {
   });
 
   it("offers Regenerate on the last answer only, and not during a turn", async () => {
-    const regenerate = () => [...document.querySelectorAll(`button[aria-label="${t("chat.regenerate")}"]`)]
-      .map((button) => button.closest("[data-mid]")?.getAttribute("data-mid"));
-    expect(regenerate()).toEqual(["m5"]);
+    const regenerate = async () => (await menusWith(t("chat.regenerate"))).map((item) => item.mid);
+    expect(await regenerate()).toEqual(["m5"]);
     const busy = (value: boolean) => (current: AppState) => {
       const { messages: _transcript, ...frame } = current.bots.find((bot) => bot.id === "pepper")!;
       const tasks = frame.tasks?.map((task) => ({ ...task, busy: value, activity: value ? "working" as const : "idle" as const }));
       return reducer(current, { type: "botPatched", bot: { ...frame, busy: value, tasks } });
     };
     await rowRendersAfter(busy(true));
-    expect(regenerate()).toEqual([]);
+    expect(await regenerate()).toEqual([]);
     await rowRendersAfter(busy(false));
-    expect(regenerate()).toEqual(["m5"]);
+    expect(await regenerate()).toEqual(["m5"]);
   });
 
   // A paired Mac keeps its voice choice ("This Mac" or "Host voice") on the
@@ -181,9 +206,7 @@ describe("chat transcript rows", () => {
     vi.stubGlobal("localStorage", { getItem: (key: string) => kept.get(key) ?? null, setItem: (key: string, value: string) => kept.set(key, value) });
     vi.stubGlobal("speechSynthesis", { getVoices: () => [] });
     vi.stubGlobal("SpeechSynthesisUtterance", class {});
-    const speak = () => [...document.querySelectorAll<HTMLButtonElement>("button[aria-label]")]
-      .filter((button) => button.getAttribute("aria-label") === t("chat.speak.read") || button.getAttribute("aria-label") === t("chat.speak.needsKey"))
-      .map((button) => `${button.getAttribute("aria-label")}${button.disabled ? " (off)" : ""}`);
+    const speak = async () => (await menusWith(t("chat.speak.read"))).map((item) => `${item.title}${item.disabled ? " (off)" : ""}`);
     const switchTo = async (provider: "host" | "system") => {
       await rowRendersAfter((current) => reducer(current, { type: "toggleSettings", open: true }));
       setRemoteVoiceProvider(provider);
@@ -191,10 +214,10 @@ describe("chat transcript rows", () => {
     };
     try {
       await switchTo("system");
-      expect(speak()).toEqual([t("chat.speak.read"), t("chat.speak.read")]);
+      expect(await speak()).toEqual([t("chat.speak.read"), t("chat.speak.read")]);
       // no speech key on the host, so Host voice cannot read aloud
       await switchTo("host");
-      expect(speak()).toEqual([`${t("chat.speak.needsKey")} (off)`, `${t("chat.speak.needsKey")} (off)`]);
+      expect(await speak()).toEqual([`${t("chat.speak.needsKey")} (off)`, `${t("chat.speak.needsKey")} (off)`]);
     } finally {
       // the stubbed globals go in afterAll
       window.ogb = bridge;

@@ -66,7 +66,7 @@ export interface RoutineContextAttachment {
 
 const persistedSourceThreadId = z.string().trim().min(1).optional().catch(undefined);
 
-export type RoutineRunTrigger = "schedule" | "manual" | "webhook";
+export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "startup";
 
 export type RoutineRunStatus =
   | "queued"
@@ -100,6 +100,9 @@ export interface Routine {
   /** Default skips overlapping scheduled occurrences. Queue retains at most
    * one pending scheduled run; manual/webhook requests stay independent. */
   overlap?: "skip" | "queue";
+  /** Also run once each time OpenMausBot starts, for a computer that is often
+   * off at the scheduled time. Absent means off, so older files load as-is. */
+  runOnStartup?: boolean;
   skippedRuns?: number;
   lastSkippedAt?: number;
   /** Derived from retained terminal receipts, not another persisted authority. */
@@ -107,8 +110,9 @@ export interface Routine {
   /** Conversation that created this routine in chat. Calendar/import-created
    * routines intentionally have no source, and older files migrate in place. */
   sourceThreadId?: string;
-  /** Stable visible report destination (the bot's main thread unless the
-   * person chose another); execution still gets a fresh task. */
+  /** The thread chosen in "Post results to", or a Cloud guest's own
+   * results thread; execution still gets a fresh task. Absent: every run
+   * reports into the bot's main thread as it is when the run is made. */
   resultsThreadId?: string;
   /** Server-private: added from the organization's library. Never on the
    * wire (routineWithHealth drops it); packageStamps() reads it. */
@@ -178,7 +182,8 @@ export interface RoutineRun {
   /** Snapshot the routine's reporting destination. Execution remains on the
    * separate `threadId` so recurring work never contaminates chat context. */
   sourceThreadId?: string;
-  /** Snapshot of the chosen destination, never redirected by later edits. */
+  /** Where this run reports (its routine's destination, else the bot's main
+   * thread when the run was made), never redirected by later edits. */
   resultsThreadId?: string;
   threadId?: string;
   startedAt?: number;
@@ -242,18 +247,25 @@ export interface RoutineInput {
   attachments?: RoutineContextAttachment[];
   continuity?: boolean;
   overlap?: "skip" | "queue";
+  runOnStartup?: boolean;
   /** Omission preserves routing; null resets it to the bot's main thread. */
   resultsThreadId?: string | null;
 }
 
 interface RoutineFile {
   version: 1;
+  /** The destinations v0.1.98 to v0.1.107 saved as a default
+   * (RoutineManagerOptions.frozenResultsThread) are cleared. */
+  frozenResultsCleared?: true;
   routines: Routine[];
   runs: RoutineRun[];
   /** Durable commit receipts for cross-file confirmation recovery. */
   routineRequestReceipts?: RoutineRequestReceipt[];
   /** Compact delivery identities outlive the independently trimmed run log. */
   webhookRunReceipts?: WebhookRunReceipt[];
+  /** The desktop launch whose startup runs were already queued
+   * (RoutineManagerOptions.launchId). */
+  startupLaunchId?: string;
 }
 
 const webhookRunReceiptSchema = z.object({
@@ -289,9 +301,15 @@ export interface RoutineManagerOptions {
   joinConversation?: (run: RoutineRun) => string | null;
   createGoalTask?: (groupId: string, title: string) => { threadId: string } | null;
   isResultsThread?: (botId: string, threadId: string) => boolean;
-  /** Reuse a chosen routine.resultsThreadId, else the bot's main thread (a
-   * Cloud guest's routine may allocate its own). `forceNew` ignores the choice. */
-  resolveResultsThread?: (routine: Routine, forceNew: boolean) => string | undefined;
+  /** Reuse a chosen routine.resultsThreadId, else the bot's main thread
+   * (`main`: never saved on the routine, since the next run asks again), else
+   * a Cloud guest's routine allocates its own. `forceNew` ignores the choice. */
+  resolveResultsThread?: (routine: Routine, forceNew: boolean) => { threadId: string; main?: true } | undefined;
+  /** Whether `threadId` can be the thread v0.1.98 to v0.1.107 saved on every
+   * bot routine that had no destination of its own: its bot's oldest open
+   * thread then, saved as if a person had chosen it. A file from then has it
+   * cleared, once (clearFrozenResultsThreads). */
+  frozenResultsThread?: (botId: string, threadId: string) => boolean;
   /** Compensate an uncommitted allocation, only while still empty. */
   discardResultsThread?: (botId: string, threadId: string) => void;
   startTurn: (
@@ -324,6 +342,11 @@ export interface RoutineManagerOptions {
   /** A successful provider turn is intermediate while its peer work or
    * queued continuation still belongs to this detached execution. */
   hasPendingDelegations?: (threadId: string) => boolean;
+  /** The desktop app launch this server belongs to. The desktop restarts its
+   * server within one launch (crash recovery, switching back to a workspace),
+   * and that is not the app starting, so startup runs happen once per launch.
+   * Without one, as on a standalone server, every process start counts. */
+  launchId?: string;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -334,6 +357,8 @@ const WAKE_HORIZON_MS = 60 * 60_000;
 /** How long a run may sit deferred behind a busy target before the user
  * hears about it once. Surfacing only; dispatch semantics stay unchanged. */
 export const ROUTINE_DEFERRAL_NOTICE_MS = 30 * 60_000;
+/** Why a run still going when the server stopped failed at the next start. */
+export const ROUTINE_RESTARTED = "OpenMausBot restarted while this routine was running";
 const MAX_DATE_MS = 8_640_000_000_000_000;
 const LOCAL_DAY_MS = 24 * 60 * 60_000;
 const INTERVAL_RESTRICTION_SEARCH_MS = 9 * LOCAL_DAY_MS;
@@ -763,6 +788,7 @@ function sanitizeInput(input: RoutineInput, after: number): Omit<Routine, "id" |
   if (continuity && target === "room-goal") {
     throw new Error("Room goals do not carry continuity yet");
   }
+  const schedule = cleanSchedule(input.schedule, after);
   return {
     name,
     prompt,
@@ -771,12 +797,14 @@ function sanitizeInput(input: RoutineInput, after: number): Omit<Routine, "id" |
     groupId: target === "room-goal" ? groupId : undefined,
     runOn,
     enabled: input.enabled !== false,
-    schedule: cleanSchedule(input.schedule, after),
+    schedule,
     durationMinutes: Math.min(240, Math.max(5, Math.round(Number(input.durationMinutes) || 30))),
     ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }),
     attachments,
     ...(continuity ? { continuity: true } : {}),
     ...(input.overlap === "queue" ? { overlap: "queue" as const } : {}),
+    // A one-time routine has no schedule to keep running beside it.
+    ...(input.runOnStartup === true && schedule.type !== "once" ? { runOnStartup: true } : {}),
   };
 }
 
@@ -785,15 +813,25 @@ export class RoutineManager {
   private readonly now: () => number;
   private readonly options: RoutineManagerOptions;
   private routines: Routine[] = [];
+  /** Stored routines whose schedule no longer loads. They stay hidden and
+   * never run, but every save writes them back unchanged so unrelated work
+   * cannot delete a row that is still repairable on disk. */
+  private unloadedRoutines: Routine[] = [];
   private runs: RoutineRun[] = [];
   private routineRequestReceipts: RoutineRequestReceipt[] = [];
   private webhookRunReceipts: WebhookRunReceipt[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Startup runs belong to the process start, not to a resume after pause. */
+  private startupRunsQueued = false;
+  private startupLaunchId: string | undefined;
   private ticking = false;
   /** The file existed but could not be read (corrupt JSON or a schema
    * failure). Saves are refused while set so a fresh empty state can never
    * overwrite whatever is on disk. Missing means a first run. */
   private unreadable = false;
+  /** A file from before frozenResultsCleared: clearFrozenResultsThreads has
+   * not run on it yet, and no save says it has. */
+  private frozenPending = false;
 
   constructor(options: RoutineManagerOptions) {
     this.options = options;
@@ -811,7 +849,11 @@ export class RoutineManager {
       this.routines = Array.isArray(disk.routines)
         ? disk.routines.flatMap((routine) => {
             const schedule = loadSchedule(routine.schedule, this.now());
-            if (!schedule) return [];
+            if (!schedule) {
+              console.warn(`routines: keeping ${String(routine.id)} on disk unscheduled; its schedule could not load`);
+              this.unloadedRoutines.push(routine);
+              return [];
+            }
             const target = loadTarget(routine.target);
             const loaded: Routine = {
               ...routine,
@@ -824,11 +866,13 @@ export class RoutineManager {
               sourceThreadId: persistedSourceThreadId.parse(routine.sourceThreadId),
               resultsThreadId: persistedSourceThreadId.parse(routine.resultsThreadId),
               overlap: routine.overlap === "queue" ? "queue" : undefined,
+              runOnStartup: routine.runOnStartup === true ? true : undefined,
               skippedRuns: Number.isSafeInteger(routine.skippedRuns) && routine.skippedRuns! > 0 ? routine.skippedRuns : undefined,
               lastSkippedAt: Number.isSafeInteger(routine.lastSkippedAt) && routine.lastSkippedAt! >= 0 && routine.lastSkippedAt! <= MAX_DATE_MS ? routine.lastSkippedAt : undefined,
               installedPackage: loadInstalledPackage(routine.installedPackage),
             };
             if (loaded.timeoutMinutes === undefined) delete loaded.timeoutMinutes;
+            if (loaded.runOnStartup === undefined) delete loaded.runOnStartup;
             if (loaded.installedPackage === undefined) delete loaded.installedPackage;
             delete loaded.failureStreak;
             return [loaded];
@@ -871,6 +915,8 @@ export class RoutineManager {
             return parsed.success ? [parsed.data] : [];
           })
         : [];
+      this.frozenPending = disk.frozenResultsCleared !== true;
+      if (typeof disk.startupLaunchId === "string") this.startupLaunchId = disk.startupLaunchId;
       // Upgrade old run logs before history pruning can discard their IDs.
       const known = new Set(this.webhookRunReceipts.map((r) => JSON.stringify([r.webhookId, r.deliveryId])));
       for (const run of this.runs) {
@@ -882,6 +928,7 @@ export class RoutineManager {
       }
     } catch (error) {
       this.routines = [];
+      this.unloadedRoutines = [];
       this.runs = [];
       this.routineRequestReceipts = [];
       this.webhookRunReceipts = [];
@@ -896,13 +943,21 @@ export class RoutineManager {
         console.error(`routines: ignoring unreadable ${this.file}: ${reason}`);
       }
     }
-    // A local process cannot still own these turns after a full restart.
+    // A local process cannot still own these turns after a full restart. A
+    // run whose teammates' work the job runtime still carries goes on with
+    // it (the runtime's restart policy reruns a cut turn and resumes the
+    // run with the results); every other cut run failed.
     const recovered: RoutineRun[] = [];
     for (const run of this.runs) {
       if (run.status === "running" || run.status === "waiting") {
+        if (run.threadId && run.target === "bot" && this.options.hasPendingDelegations?.(run.threadId) === true) {
+          run.status = "waiting";
+          run.attention = "Waiting for delegated work to finish";
+          continue;
+        }
         run.status = "failed";
         if (run.target === "room-goal") run.goalStatus = "failed";
-        run.error = "OpenMausBot restarted while this routine was running";
+        run.error = ROUTINE_RESTARTED;
         run.attention = undefined;
         run.finishedAt = this.now();
         recovered.push(cloneRun(run));
@@ -919,6 +974,21 @@ export class RoutineManager {
 
   listRoutines(): Routine[] {
     return this.routines.map(routine => this.routineWithHealth(routine));
+  }
+
+  /** Clear the destination v0.1.98 to v0.1.107 saved on routines as if a
+   * person had chosen it (RoutineManagerOptions.frozenResultsThread), once:
+   * a later pick of that same thread is a person's. Called once it is
+   * settled who opened which conversation (a Cloud home's earlier device
+   * keys), before any run or request can read a routine. */
+  clearFrozenResultsThreads(): void {
+    if (!this.frozenPending) return;
+    for (const routine of this.routines) {
+      if (routine.target === "bot" && routine.resultsThreadId !== undefined &&
+        this.options.frozenResultsThread?.(routine.botId, routine.resultsThreadId)) delete routine.resultsThreadId;
+    }
+    this.frozenPending = false;
+    this.save();
   }
 
   private routineWithHealth(routine: Routine): Routine {
@@ -1122,6 +1192,7 @@ export class RoutineManager {
       attachments: patch.attachments ?? routine.attachments,
       continuity: patch.continuity ?? routine.continuity,
       overlap: Object.hasOwn(patch, "overlap") ? patch.overlap : routine.overlap,
+      runOnStartup: patch.runOnStartup ?? routine.runOnStartup,
     }, now);
     if (this.targetState(clean) === "missing") throw new Error(this.missingTargetMessage(clean.target));
     const scheduleChanged = JSON.stringify(clean.schedule) !== JSON.stringify(routine.schedule);
@@ -1149,6 +1220,7 @@ export class RoutineManager {
       // rather than false, so switching continuity off has to delete it.
       if (!clean.continuity) delete routine.continuity;
       if (clean.overlap !== "queue") delete routine.overlap;
+      if (!clean.runOnStartup) delete routine.runOnStartup;
       if (Object.hasOwn(patch, "timeoutMinutes") && patch.timeoutMinutes == null) {
         delete routine.timeoutMinutes;
       }
@@ -1455,6 +1527,7 @@ export class RoutineManager {
 
   start() {
     if (this.timer) return;
+    if (!this.startupRunsQueued) this.startupRunsQueued = this.queueStartupRuns();
     void this.tick();
     this.timer = setInterval(() => void this.tick(), 10_000);
     this.timer.unref?.();
@@ -1463,6 +1536,49 @@ export class RoutineManager {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  /** One run for each enabled routine marked to run on startup, once per
+   * desktop launch. A routine the scheduler is about to catch up on, or one
+   * with a run already queued or under way, is left to that run so a start
+   * never doubles it. An occurrence too late to catch up is replaced by the
+   * startup run instead of being recorded as missed. False when the runs
+   * could not be saved. */
+  private queueStartupRuns(): boolean {
+    const launchId = this.options.launchId;
+    if (launchId !== undefined && launchId === this.startupLaunchId) return true;
+    const now = this.now();
+    const flagged = this.routines.filter((routine) =>
+      routine.enabled && routine.runOnStartup && routine.schedule.type !== "once" &&
+      (routine.schedule.type !== "interval" || routine.schedule.endsAt === undefined || now <= routine.schedule.endsAt));
+    const marked = flagged.filter((routine) =>
+      !(routine.nextRunAt != null && routine.nextRunAt <= now && now - routine.nextRunAt <= CATCH_UP_MS) &&
+      !this.runs.some((run) => run.routineId === routine.id && ["queued", "running", "waiting"].includes(run.status)));
+    // Already covered: with a launch id, still record that this launch started.
+    if (marked.length === 0 && launchId === undefined) return true;
+    const previousLaunchId = this.startupLaunchId;
+    const runs: RoutineRun[] = [];
+    const allocations: ResultsThreadAllocation[] = [];
+    try {
+      this.commitMutation(() => {
+        if (launchId !== undefined) this.startupLaunchId = launchId;
+        for (const routine of marked) {
+          const run = this.newRun(routine, now, false, allocations);
+          run.triggerSource = "startup";
+          runs.push(run);
+          if (routine.nextRunAt != null && routine.nextRunAt <= now) this.advancePastOccurrence(routine, now, routine.nextRunAt);
+        }
+      }, () => {
+        this.startupLaunchId = previousLaunchId;
+        this.discardResultsThreads(allocations);
+      });
+    } catch (error) {
+      console.error("routines: could not queue startup runs", error);
+      return false;
+    }
+    for (const routine of marked) this.emitRoutine(routine);
+    for (const run of runs) this.emitRun(run);
+    return true;
   }
 
   async tick(): Promise<void> {
@@ -1523,20 +1639,7 @@ export class RoutineManager {
               routine.skippedRuns = Math.min(Number.MAX_SAFE_INTEGER, (routine.skippedRuns ?? 0) + 1);
               routine.lastSkippedAt = scheduledFor;
             }
-            routine.nextRunAt =
-              routine.schedule.type === "once" ? null : nextOccurrence(routine.schedule, Math.max(now, scheduledFor));
-            // `updatedAt` is the optimistic definition revision carried by
-            // routine confirmation cards. Moving the scheduler cursor is runtime
-            // progress, not a definition edit, so recurring ticks must not make a
-            // still-accurate pending confirmation stale. A one-time routine does
-            // mutate its definition by auto-disabling after its occurrence.
-            if (routine.schedule.type === "once") {
-              routine.enabled = false;
-              routine.updatedAt = Math.max(now, routine.updatedAt + 1);
-            } else if (routine.schedule.type === "interval" && routine.nextRunAt === null) {
-              routine.enabled = false;
-              routine.updatedAt = Math.max(now, routine.updatedAt + 1);
-            }
+            this.advancePastOccurrence(routine, now, scheduledFor);
           }
         }, () => this.discardResultsThreads(allocations));
       }
@@ -1711,14 +1814,9 @@ export class RoutineManager {
       if (event.cost != null) run.cost = (run.cost ?? 0) + event.cost;
       if (event.denials?.length) run.denials = [...new Set([...(run.denials ?? []), ...event.denials])];
       if (!event.ok) {
-        const genericStopReason = event.stopReason === "error" || event.stopReason === "tool_error";
-        this.failRun(
-          run,
-          (genericStopReason ? run.error : undefined) ??
-            event.stopReason ??
-            run.error ??
-            "The bot did not complete this run",
-        );
+        // the run's own last error says what failed it; a provider's stop
+        // token ("error", "quota", "stop_sequence") alone says little
+        this.failRun(run, run.error ?? event.stopReason ?? "The bot did not complete this run");
         queueMicrotask(() => void this.tick());
         return cloneRun(run);
       }
@@ -1801,6 +1899,24 @@ export class RoutineManager {
     this.options.onRunFailed?.(cloneRun(run));
   }
 
+  /** Move the scheduler cursor past an occurrence that has been dealt with. */
+  private advancePastOccurrence(routine: Routine, now: number, occurrence: number) {
+    routine.nextRunAt =
+      routine.schedule.type === "once" ? null : nextOccurrence(routine.schedule, Math.max(now, occurrence));
+    // `updatedAt` is the optimistic definition revision carried by
+    // routine confirmation cards. Moving the scheduler cursor is runtime
+    // progress, not a definition edit, so recurring ticks must not make a
+    // still-accurate pending confirmation stale. A one-time routine does
+    // mutate its definition by auto-disabling after its occurrence.
+    if (routine.schedule.type === "once") {
+      routine.enabled = false;
+      routine.updatedAt = Math.max(now, routine.updatedAt + 1);
+    } else if (routine.schedule.type === "interval" && routine.nextRunAt === null) {
+      routine.enabled = false;
+      routine.updatedAt = Math.max(now, routine.updatedAt + 1);
+    }
+  }
+
   private targetState(target: Pick<RoutineRun, "target" | "groupId" | "botId">): "ready" | "busy" | "missing" {
     if (target.target === "room-goal") {
       if (!target.groupId || !this.options.goalState) return "missing";
@@ -1833,13 +1949,17 @@ export class RoutineManager {
     allocations: ResultsThreadAllocation[],
     sourceThreadId = routine.sourceThreadId,
   ): RoutineRun {
+    let resultsThreadId = routine.resultsThreadId;
     if (routine.target === "bot" && this.options.resolveResultsThread) {
       const destination = this.options.resolveResultsThread({ ...routine, sourceThreadId }, false);
-      if (destination !== routine.resultsThreadId) {
-        if (destination) allocations.push({ botId: routine.botId, threadId: destination });
-        routine.resultsThreadId = destination;
+      const own = destination?.main ? undefined : destination?.threadId;
+      if (own !== routine.resultsThreadId) {
+        if (own) allocations.push({ botId: routine.botId, threadId: own });
+        if (own) routine.resultsThreadId = own;
+        else delete routine.resultsThreadId;
         routine.updatedAt = Math.max(this.now(), routine.updatedAt + 1);
       }
+      resultsThreadId = destination?.threadId;
     }
     const run: RoutineRun = {
       id: randomUUID(),
@@ -1858,7 +1978,7 @@ export class RoutineManager {
       manual,
       triggerSource: manual ? "manual" : "schedule",
       sourceThreadId,
-      resultsThreadId: routine.resultsThreadId,
+      resultsThreadId,
       createdAt: this.now(),
     };
     this.runs.push(run);
@@ -1883,10 +2003,15 @@ export class RoutineManager {
     }
     if (value === undefined) return;
     if (value === null) {
+      // The main thread is no destination of a routine's own: only a
+      // routine that may not report there gets one.
       const destination = this.options.resolveResultsThread?.(routine, true);
-      if (!destination) throw new Error("Could not find a results thread for this routine");
-      routine.resultsThreadId = destination;
-      return () => this.options.discardResultsThread?.(routine.botId, destination);
+      if (!destination || destination.main) {
+        delete routine.resultsThreadId;
+        return;
+      }
+      routine.resultsThreadId = destination.threadId;
+      return () => this.options.discardResultsThread?.(routine.botId, destination.threadId);
     }
     if (typeof value !== "string" || !value.trim() || !this.options.isResultsThread?.(routine.botId, value.trim())) {
       throw Object.assign(new Error("Choose a visible results thread belonging to this bot"), { status: 400 });
@@ -1999,10 +2124,12 @@ export class RoutineManager {
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(this.file, JSON.stringify({
       version: 1,
-      routines: this.routines,
+      ...(this.frozenPending ? {} : { frozenResultsCleared: true }),
+      routines: [...this.routines, ...this.unloadedRoutines],
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,
       webhookRunReceipts: this.webhookRunReceipts,
+      ...(this.startupLaunchId === undefined ? {} : { startupLaunchId: this.startupLaunchId }),
     } satisfies RoutineFile, null, 2), { mode: 0o600 });
   }
 }

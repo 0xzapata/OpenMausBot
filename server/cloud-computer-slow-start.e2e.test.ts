@@ -75,7 +75,7 @@ describe("a slow cloud computer start", () => {
     const env = sent.mcpConfig.mcpServers.computer.env;
     const response = await fetch(new URL("/api/internal/computer/mcp", env.OMB_HARNESS_URL), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${env.OMB_MCP_TOKEN}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.OMB_MCP_TOKEN_COMPUTER}` },
       body: JSON.stringify({ method: "tools/call", params: { name: "screenshot", arguments: {} } }),
     });
     const body = await response.json() as any;
@@ -154,10 +154,10 @@ describe("a slow cloud computer start", () => {
         PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         HOME: home, USERPROFILE: home, OMB_DATA_DIR: data, TEMP: home, TMP: home, TMPDIR: home,
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1),
-        OMB_BOX_API: `${relayBase}/own-key-must-not-be-used`,
+        OMB_BOAT_API: `${relayBase}/own-key-must-not-be-used`,
         OMB_CLOUD_BOAT_URL: `${relayBase}/relay/api/box/v1`,
         OMB_CLOUD_BOAT_TOKEN: INCLUDED,
-        OMB_CLOUD_COMPUTER_START_WAIT_MS: String(CALL_WAIT_MS),
+        OMB_COMPUTER_CALL_WAIT_MS: String(CALL_WAIT_MS),
         OMB_CLOUD_COMPUTER_START_BUDGET_MS: String(START_BUDGET_MS),
       },
       stdio: ["ignore", "pipe", "pipe"],

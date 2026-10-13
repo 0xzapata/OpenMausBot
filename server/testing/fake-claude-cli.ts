@@ -6,6 +6,11 @@
 //
 //   FAKE_CLAUDE_MODE   happy (default) | exit-early | hang | malformed |
 //                      dead-session (fails only when --resume is passed)
+//                      | stale-session (a --resume launch answers each
+//                        message with the error result 2.1.295 gives a
+//                        session it no longer has, with no init, and stays
+//                        up until stdin ends) | error-result (every launch
+//                        answers that way, resumed or not)
 //                      | resume-dies-after-init (a --resume launch emits
 //                        init, then exits without result or output)
 //                      | stream (partial-message text deltas before the
@@ -14,7 +19,14 @@
 //                        sends, captured from 2.1.263)
 //                      | api-error (the CLI reports a non-auth API error as
 //                        assistant text, then an error result; no model output)
-//   FAKE_CLAUDE_API_ERROR text for the api-error frame (default: overloaded).
+//                      | usage-limit (the account's usage limit refused the
+//                        call: the api-error frame and result 2.1.295 sends,
+//                        code usage_limit_reached, carrying the refused window)
+//   FAKE_CLAUDE_API_ERROR text for the api-error frame (default: overloaded;
+//                      for usage-limit, the weekly limit's words).
+//   FAKE_CLAUDE_RATE_LIMIT JSON rate_limit_info: each turn reports it in a
+//                      `rate_limit_event` after init, as the CLI does from the
+//                      API's headers ({status, rateLimitType, resetsAt, …}).
 //   FAKE_CLAUDE_RELEASE with hang: the turn ends normally once this file exists.
 //   FAKE_CLAUDE_DUMP   path to write {argv, env, cwd, prompt, systemPrompt,
 //                      mcpConfig} as JSON at each turn this process is given
@@ -43,8 +55,20 @@
 //                      fresh each run: a one-shot prompt containing a marker
 //                      gets that reply (first match wins), before
 //                      FAKE_CLAUDE_TEXT_FILE is consulted.
+//   FAKE_CLAUDE_CACHE_READ_TOKENS cache_read_input_tokens each ordinary
+//                      turn's model calls report (default 2).
+//   FAKE_CLAUDE_PING_DUMP path: a keep-warm ping (one-shot json run with
+//                      --fork-session) writes {argv, env, prompt, mcpConfig,
+//                      settings, systemPrompt} here, read while its private
+//                      files still exist.
+//   FAKE_CLAUDE_PING_USAGE JSON usage for a keep-warm ping's result
+//                      (default: a warm read of 150000, write of 40).
+//   FAKE_CLAUDE_PING_RESULT raw json result for a keep-warm ping, verbatim.
 //   FAKE_CLAUDE_TEXT_DUMP like FAKE_CLAUDE_DUMP, but for one-shot text runs,
 //                      so they never overwrite a turn's dump mid-test.
+//   FAKE_CLAUDE_TEXT_LOG path of a JSON-lines file every one-shot prompt is
+//                      appended to, for a test that needs one step's prompt
+//                      when later background steps overwrite the dump.
 //   FAKE_CLAUDE_TEXT_HANG when set, the one-shot text mode never replies —
 //                      the caller's abort signal is the only way it ends,
 //                      which is exactly what its tests need to prove.
@@ -66,6 +90,12 @@
 //                      through them, over stdio, the way a model's first
 //                      computer call does; the call and its result are
 //                      reported like any tool call before the reply.
+//   FAKE_CLAUDE_CONNECT_APPS comma-separated toolkits (gmail,slack): a turn
+//                      launched with the connected-apps tools (the `composio`
+//                      server in --mcp-config) first starts a connection to
+//                      them with COMPOSIO_MANAGE_CONNECTIONS through that
+//                      server, over stdio, the way a model asks for a Connect
+//                      card; reported like any tool call before the reply.
 //   FAKE_CLAUDE_HOOKS  1: honour the `hooks` block of the --settings file the
 //                      way the real CLI does — after each tool_result run
 //                      every PostToolUse command with the event JSON on
@@ -100,6 +130,9 @@
 //                      announced the continuation yet.
 //   FAKE_CLAUDE_LATE_STEER_SILENT 1: the late turn prints `init` and then
 //                      nothing at all — a continuation that never speaks.
+//   FAKE_CLAUDE_SLOW_FINISH_GATE path: `slow` replies once this file exists;
+//                      a body of exactly "fail" then ends the turn as an
+//                      engine error (is_error) instead of a success.
 //   FAKE_CLAUDE_SLOW_TAIL_TOOL 1: `slow` makes one more tool call right
 //                      before its reply — a fold seam the harness sees after
 //                      a steer that was already too late to be folded.
@@ -139,11 +172,35 @@
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runRoomHandoffAgent } from "./room-handoff-agent.ts";
 
 const mode = process.env.FAKE_CLAUDE_MODE ?? "happy";
+
+// Concurrent bot/room turns share a capture path. Publish whole JSON in one
+// rename so neither another writer nor a test reader can see a partial dump.
+// Kept local like the Codex fake: subprocess fixtures cannot import ../atomic.
+const writeDumpAtomic = (path: string, contents: string): void => {
+  const tmp = `${path}.${process.pid}.tmp`;
+  const delays = [5, 10, 20, 40, 80];
+  try {
+    writeFileSync(tmp, contents);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        renameSync(tmp, path);
+        return;
+      } catch (error) {
+        // Windows indexers can briefly hold either file open.
+        const code = (error as NodeJS.ErrnoException).code ?? "";
+        if (!["EPERM", "EACCES", "EBUSY"].includes(code) || attempt >= delays.length) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delays[attempt]);
+      }
+    }
+  } finally {
+    try { unlinkSync(tmp); } catch { /* already renamed, or failed cleanup */ }
+  }
+};
 
 // Follow the spawning server down, including on Windows where ppid does
 // not change after parent exit. Inline: fakes must stay self-contained.
@@ -316,16 +373,41 @@ if (["text", "json"].includes(argAfter("--output-format") ?? "")) {
     process.stdin.on("data", (chunk) => { input += chunk; });
     process.stdin.on("end", () => resolve(input));
   });
-  // Memory upkeep's background one-shots (on for every bot) never overwrite
-  // the shared turn dump a test reads; FAKE_CLAUDE_TEXT_DUMP still records them.
-  const upkeepCall = /You are the (?:CAPTURE|TIDY|ORGANIZE) step of a memory system/.test(prompt);
+  // A keep-warm ping: a fork of a live session that is never persisted.
+  if (argv.includes("--fork-session")) {
+    const read = (flag: string) => {
+      const path = argAfter(flag);
+      if (!path) return null;
+      try { return readFileSync(path, "utf8"); } catch { return null; }
+    };
+    if (process.env.FAKE_CLAUDE_PING_DUMP) {
+      writeDumpAtomic(process.env.FAKE_CLAUDE_PING_DUMP, JSON.stringify({
+        pid: process.pid, argv, env: process.env, prompt, cwd: process.cwd(),
+        mcpConfig: JSON.parse(read("--mcp-config") ?? "null"),
+        settings: JSON.parse(read("--settings") ?? "null"),
+        systemPrompt: read("--append-system-prompt-file"),
+      }, null, 2));
+    }
+    const pingModel = argAfter("--model") ?? "claude-fake";
+    const usage = JSON.parse(process.env.FAKE_CLAUDE_PING_USAGE ?? '{"input_tokens":4,"cache_read_input_tokens":150000,"cache_creation_input_tokens":40,"output_tokens":3}');
+    process.stdout.write(process.env.FAKE_CLAUDE_PING_RESULT ?? JSON.stringify({
+      type: "result", is_error: false, result: "warm", session_id: "fake-fork", usage, total_cost_usd: 0.05,
+      modelUsage: { [pingModel]: { costUSD: 0.05 } },
+    }));
+    process.exit(0);
+  }
+  // Memory upkeep's background one-shots (on for every bot) and the
+  // automatic skill review never overwrite the shared turn dump a test
+  // reads; FAKE_CLAUDE_TEXT_DUMP still records them.
+  const upkeepCall = /You are the (?:CAPTURE|TIDY|ORGANIZE) step of a memory system|You are the SKILL REVIEW step/.test(prompt);
   const oneShotDump = process.env.FAKE_CLAUDE_TEXT_DUMP ?? (upkeepCall ? undefined : process.env.FAKE_CLAUDE_DUMP);
   if (oneShotDump) {
-    writeFileSync(
+    writeDumpAtomic(
       oneShotDump,
       JSON.stringify({ pid: process.pid, argv, env: process.env, prompt, mcpConfig: null }, null, 2),
     );
   }
+  if (process.env.FAKE_CLAUDE_TEXT_LOG) appendFileSync(process.env.FAKE_CLAUDE_TEXT_LOG, `${JSON.stringify({ prompt })}\n`);
   if (process.env.FAKE_CLAUDE_TEXT_HANG) {
     // a repeating timer keeps the loop alive without settling the
     // top-level await, which Node would otherwise treat as fatal
@@ -451,6 +533,16 @@ const promptText = (prompt: JsonValue): string => {
   const m = prompt && typeof prompt === "object" && !Array.isArray(prompt) ? (prompt as { message?: { content?: unknown } }).message : undefined;
   return typeof m?.content === "string" ? m.content : "";
 };
+/** A steered message as the reply names it: its words, and one `[image]`
+ * per native image block, so a test can see the pictures were folded in. */
+const steeredText = (prompt: JsonValue): string => {
+  const m = prompt && typeof prompt === "object" && !Array.isArray(prompt) ? (prompt as { message?: { content?: unknown } }).message : undefined;
+  if (!Array.isArray(m?.content)) return promptText(prompt);
+  return m.content
+    .map((block: { type?: unknown; text?: unknown }) => block?.type === "image" ? "[image]" : typeof block?.text === "string" ? block.text.trim() : "")
+    .filter(Boolean)
+    .join(" ");
+};
 
 /** A message the finished turn could not fold runs as the next turn — once
  * FAKE_CLAUDE_LATE_STEER_INIT_GATE, if set, lets its `init` out. True while
@@ -544,6 +636,52 @@ const useCloudComputer = () => {
     is_error: Boolean(reply.error || reply.result?.isError), content: reply.result?.content ?? reply.error?.message ?? "" }] } });
 };
 
+// Runs in a child of this process: launch the MCP server, send one request,
+// print the reply that answers it, then close. The connected-apps bridge
+// exits as soon as its stdin closes, before an answer that needs a round trip
+// to the harness, so this keeps stdin open until the reply arrives; spawnSync
+// around it keeps the turn loop synchronous.
+const MCP_CALL_PROGRAM = `
+const { spawn } = require("node:child_process");
+const { command, args, env, request } = JSON.parse(process.argv[1]);
+const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "inherit"] });
+let buffer = "";
+child.stdout.on("data", (chunk) => {
+  buffer += chunk;
+  for (const line of buffer.split("\\n").slice(0, -1)) {
+    let reply;
+    try { reply = JSON.parse(line); } catch { continue; }
+    if (reply.id !== request.id) continue;
+    process.stdout.write(JSON.stringify(reply) + "\\n");
+    child.kill();
+    process.exit(0);
+  }
+  buffer = buffer.slice(buffer.lastIndexOf("\\n") + 1);
+});
+child.on("exit", () => process.exit(1));
+child.stdin.write(JSON.stringify(request) + "\\n");
+`;
+
+/** COMPOSIO_MANAGE_CONNECTIONS through the launched connected-apps server, if
+ * this turn has one: the bridge turns it into a Connect card in the chat. */
+const connectApps = (toolkits: string[]) => {
+  launchFiles ??= readLaunchFiles();
+  const server = (launchFiles.mcpConfig as { mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }> } | null)
+    ?.mcpServers?.composio;
+  if (!server?.command) return;
+  const id = `tu-${process.pid}-${++toolUseCount}`;
+  const input = { toolkits };
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "mcp__composio__COMPOSIO_MANAGE_CONNECTIONS", input }] } });
+  const request = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: input } };
+  const ran = spawnSync(process.execPath, ["-e", MCP_CALL_PROGRAM, JSON.stringify({ command: server.command, args: server.args ?? [], env: server.env ?? {}, request })], {
+    encoding: "utf8", timeout: 60_000,
+  });
+  let reply: { result?: { isError?: boolean; content?: unknown }; error?: { message?: string } } = {};
+  try { reply = JSON.parse(ran.stdout.trim().split("\n")[0] ?? ""); } catch { reply = { error: { message: ran.stderr || "no answer" } }; }
+  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id,
+    is_error: Boolean(reply.error || reply.result?.isError), content: reply.result?.content ?? reply.error?.message ?? "" }] } });
+};
+
 const playTurn = (prompt: JsonValue, late = false) => {
   turnRunning = true;
   lateContinuation = late;
@@ -554,7 +692,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
   if (process.env.FAKE_CLAUDE_PROMPTS) appendFileSync(process.env.FAKE_CLAUDE_PROMPTS, `${JSON.stringify(prompt)}\n`);
   if (!late && process.env.FAKE_CLAUDE_DUMP) {
     launchFiles ??= readLaunchFiles();
-    writeFileSync(
+    writeDumpAtomic(
       process.env.FAKE_CLAUDE_DUMP,
       JSON.stringify({ pid: process.pid, argv, env: process.env, cwd: process.cwd(), prompt, ...launchFiles }, null, 2),
     );
@@ -580,6 +718,17 @@ const playTurn = (prompt: JsonValue, late = false) => {
   if (mode === "dead-session" && argv.includes("--resume")) {
     process.stderr.write(`fake-claude: No conversation found with session ID: ${argAfter("--resume")}\n`);
     process.exit(1);
+  }
+  // The same, as 2.1.295 says it after a long idle: an error result for the
+  // message, no `init`, and the process stays up for the next one.
+  if ((mode === "stale-session" && argv.includes("--resume")) || mode === "error-result") {
+    out({
+      type: "result", subtype: "error_during_execution", duration_ms: 0, is_error: true, num_turns: 0, stop_reason: null,
+      session_id: sessionId, total_cost_usd: 0, errors: [`No conversation found with session ID: ${sessionId}`],
+    });
+    turnRunning = false;
+    finishIfDone();
+    return;
   }
 
   if (mode === "exit-early") {
@@ -612,6 +761,8 @@ const playTurn = (prompt: JsonValue, late = false) => {
 
   // the real CLI re-announces init on every turn of a live process
   out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode, tools });
+  const rateLimit = process.env.FAKE_CLAUDE_RATE_LIMIT ? JSON.parse(process.env.FAKE_CLAUDE_RATE_LIMIT) : null;
+  if (rateLimit) out({ type: "rate_limit_event", rate_limit_info: rateLimit, session_id: sessionId });
 
   // a continuation that announces itself and then never speaks again
   if (lateContinuation && process.env.FAKE_CLAUDE_LATE_STEER_SILENT) {
@@ -630,6 +781,19 @@ const playTurn = (prompt: JsonValue, late = false) => {
 
   const resumedError = process.env.FAKE_CLAUDE_RESUMED_API_ERROR === "1" && argv.includes("--resume") && !resumedErrorPlayed;
   if (resumedError) resumedErrorPlayed = true;
+  if (mode === "usage-limit") {
+    // captured from 2.1.295 for an account past its weekly limit
+    const text = process.env.FAKE_CLAUDE_API_ERROR ?? "You've hit your weekly limit \u00b7 resets Oct 12 at 2:30pm (Asia/Calcutta)";
+    out({
+      type: "assistant", message: { model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text }] },
+      error: "rate_limit", is_api_error_message: true, api_error: "usage_limit_reached",
+      ...(rateLimit ? { api_error_params: { rate_limit_info: rateLimit } } : {}),
+    });
+    out({ type: "result", subtype: "success", is_error: true, stop_reason: "stop_sequence", terminal_reason: "api_error", api_error: "usage_limit_reached", result: text });
+    turnRunning = false;
+    finishIfDone();
+    return;
+  }
   if (mode === "api-error" || resumedError) {
     const text = process.env.FAKE_CLAUDE_API_ERROR ?? "API Error: 529 Overloaded. This is a server-side issue, usually temporary.";
     out({ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text }] }, error: "unknown", is_api_error_message: true });
@@ -715,6 +879,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
   }
 
   if (process.env.FAKE_CLAUDE_USES_CLOUD_COMPUTER === "1") useCloudComputer();
+  if (process.env.FAKE_CLAUDE_CONNECT_APPS) connectApps(process.env.FAKE_CLAUDE_CONNECT_APPS.split(",").filter(Boolean));
 
   let replyParts = nextScriptedReply();
   const defaultToolId = `tu-${process.pid}-${++toolUseCount}`;
@@ -732,7 +897,10 @@ const playTurn = (prompt: JsonValue, late = false) => {
     const context = runHooks("SessionStart", { source: "compact" });
     if (context.trim()) replyParts = [`${context.trim()}\n\n${replyParts[0] ?? ""}`, ...replyParts.slice(1)];
   }
-  const usage = { input_tokens: 10, cache_read_input_tokens: 2, output_tokens: 5 };
+  // FAKE_CLAUDE_CACHE_READ_TOKENS: a big cached context on each model call
+  // (keep-warm arms only above 50k), default 2.
+  const cacheRead = Number(process.env.FAKE_CLAUDE_CACHE_READ_TOKENS);
+  const usage = { input_tokens: 10, cache_read_input_tokens: Number.isSafeInteger(cacheRead) && cacheRead > 0 ? cacheRead : 2, output_tokens: 5 };
   if (scriptedToolCalls) {
     // scripted calls come first, each settled before the reply text
     for (const call of scriptedToolCalls) {
@@ -807,6 +975,14 @@ const playTurn = (prompt: JsonValue, late = false) => {
       const tail = steered.length ? ` + steered: ${steered.join(" | ")}` : "";
       replaySteered();
       out({ type: "assistant", message: { content: [{ type: "text", text: `reply to: ${promptText(prompt)}${tail}` }] } });
+      // a finish gate that reads "fail" ends the turn as an engine error
+      const gate = process.env.FAKE_CLAUDE_SLOW_FINISH_GATE;
+      if (!lateContinuation && gate && readFileSync(gate, "utf8").trim() === "fail") {
+        out({ type: "result", is_error: true, stop_reason: "error", result: "fixture turn failed" });
+        turnRunning = false;
+        finishIfDone();
+        return;
+      }
       finish();
     };
     // a late steer's turn holds on its own gate, so a test can look at the
@@ -852,7 +1028,7 @@ process.stdin.on("data", (c) => {
       // behind any queued message whose turn has not been announced yet
       if (process.env.FAKE_CLAUDE_LATE_STEER_GATE) lateSteers.push(prompt);
       else {
-        steered.push(promptText(prompt));
+        steered.push(steeredText(prompt));
         steeredMessages.push(prompt);
       }
       if (process.env.FAKE_CLAUDE_STEER_RECEIVED) writeFileSync(process.env.FAKE_CLAUDE_STEER_RECEIVED, "received");

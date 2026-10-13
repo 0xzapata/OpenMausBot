@@ -71,7 +71,7 @@ describe("CI concurrency", () => {
     expect(workflow.jobs.vitest.strategy.matrix).toEqual({
       os: "${{ fromJSON(needs.static.outputs.vitest_os) }}", shard: [1, 2, 3, 4],
     });
-    expect(workflow.jobs.vitest["timeout-minutes"]).toBe("${{ matrix.os == 'ubuntu-latest' && 20 || 35 }}");
+    expect(workflow.jobs.vitest["timeout-minutes"]).toBe("${{ matrix.os == 'ubuntu-latest' && 30 || 35 }}");
   });
 
   it("keeps each PR to one macOS job", () => {
@@ -81,6 +81,23 @@ describe("CI concurrency", () => {
     expect(macosJobs.sort()).toEqual(["electron-smokes"]);
     const smokes = workflow.jobs["electron-smokes"].steps.map((step: { run?: string }) => step.run);
     expect(smokes).toContain("pnpm test:packaged-server");
+  });
+
+  it("checks delegated approval modes on the receipt's work thread, not the selected sibling", () => {
+    const smoke = readFileSync(new URL("./smoke-approval-modes.cjs", import.meta.url), "utf8");
+    const delegated = smoke.slice(smoke.indexOf("const peerTarget ="), smoke.indexOf("const customCalls ="));
+    expect(delegated).toContain("const peerWorkThreadId = peerResponse.body.receipts[0].threadId;");
+    expect(delegated).toContain("assert.notEqual(peerWorkThreadId, peerThread.threadId);");
+    expect(delegated).toContain("task.threadId === peerWorkThreadId)?.busy === false");
+    expect(delegated).toContain("/tasks/${peerWorkThreadId}`");
+    expect(delegated).toContain("assert.equal(askPeerResponse.body.receipts[0].threadId, peerWorkThreadId);");
+    expect(delegated).toContain("/api/threads/${peerWorkThreadId}/messages");
+    expect(delegated).toContain("/api/threads/${peerWorkThreadId}/respond");
+    expect(delegated).toContain("const customThreadId = customResponse.body.receipts[0].threadId;");
+    expect(delegated).toContain("/api/threads/${customThreadId}/messages");
+    expect(delegated).toContain("/api/threads/${customThreadId}/respond");
+    expect(delegated).not.toContain("pendingCard((await api(\"/api/bots\"))");
+    expect(delegated).not.toContain("/tasks/${peerThread.threadId}`");
   });
 
   it("makes a release wait for its commit's CI gate before any draft", () => {

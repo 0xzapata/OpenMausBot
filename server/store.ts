@@ -23,7 +23,8 @@ import { newId, type ModelSelection } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
-import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk } from "../shared/approval-mode.ts";
+import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk, type ApprovalMode } from "../shared/approval-mode.ts";
+import { lastChangeRequestUrl } from "../shared/thread-link.ts";
 import { REMOVED_COMPUTER_DRIVER, type ComputerEngineMove } from "./computer-engine-removal.ts";
 import type { ProfileRequestChanges } from "../shared/profile-request.ts";
 import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts";
@@ -99,12 +100,17 @@ export interface TaskRecord extends Omit<WireTask, TaskWireDerivedKeys> {
    * so only positively identified auto pins yield to Works on changes.
    * Clients see only whether a pin is an auto pin (WireTask.surfaceAuto). */
   surfaceSource?: "user" | "auto";
+  /** Epoch ms a person last wrote here: never a teammate, a routine, a
+   * webhook, the bot itself or a line relayed from Slack. The newest open
+   * one is the bot's main thread (server/main-thread.ts), which clients get
+   * worked out (WireBot.mainThreadId). Absent until someone writes. */
+  askedAt?: number;
 }
 
 /** TaskRecord fields no client may see. Everything else must be on WireTask:
  * the exactness assertion below fails to compile when either side drifts,
  * so a new server field forces a decision — wire-visible or private here. */
-export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource";
+export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource" | "askedAt";
 /** WireTask fields computed by toWireTask and never stored on a TaskRecord. */
 export type TaskWireDerivedKeys = "surfaceAuto" | "followsBotModel";
 export type TaskWireProjection = Pick<TaskRecord, Exclude<keyof TaskRecord, TaskWirePrivateKeys>> & Pick<WireTask, TaskWireDerivedKeys>;
@@ -122,7 +128,7 @@ export const taskWireProjectionIsExact: TaskWireProjectionIsExact = true;
 export function toWireTask(task: TaskRecord, botModel: ModelSelection): WireTask {
   const { resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, handedMessages: _handedMessages,
     appliedCompactionId: _appliedCompactionId, contextFloor: _contextFloor, lastContextModel: _lastContextModel,
-    surfaceSource, ...stored } = task;
+    surfaceSource, askedAt: _askedAt, ...stored } = task;
   const wire: WireTask = { ...stored, modelSelection: structuredClone(task.modelSelection ?? botModel), followsBotModel: task.modelSelection === undefined };
   // Who pinned stays private. A client learns only whether the pin is the
   // machine's own record, so it never presents one as the person's choice.
@@ -136,7 +142,7 @@ const ASK_NOW = { approvalMode: "ask" as const, autoApprove: false, alwaysAllow:
 const TASK_PATCH_FIELDS = [
   "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow",
   "unread", "lastReadMessageId", "rewound", "archivedAt", "pinned", "pinnedMessageId", "resumeCursors", "lastInstanceId", "cwd",
-  "routineRunId", "surface", "surfaceSource", "snoozedUntil", "appliedCompactionId", "contextFloor", "lastContextModel",
+  "routineRunId", "surface", "surfaceSource", "snoozedUntil", "link", "linkAuto", "appliedCompactionId", "contextFloor", "lastContextModel",
 ] as const satisfies readonly (keyof TaskRecord)[];
 export type TaskPatch = Partial<Pick<TaskRecord, typeof TASK_PATCH_FIELDS[number]>>;
 
@@ -158,6 +164,11 @@ function persistedPin<T extends { pinned?: boolean }>(task: T): T {
 function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number }>(message: T): T {
   if (message.role !== "bot") return message;
   const out = { ...message };
+  if (out.dataResult) out.dataResult = {
+    ...out.dataResult,
+    title: redactSecretsInText(out.dataResult.title),
+    ...(out.dataResult.sql === undefined ? {} : { sql: redactSecretsInText(out.dataResult.sql) }),
+  };
   if (typeof out.text === "string") out.text = redactSecretsInText(out.text);
   if (out.compaction) out.compaction = { ...out.compaction, summary: redactSecretsInText(out.compaction.summary) };
   if (out.tool?.name) {
@@ -179,6 +190,8 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       detail: out.goalRun.detail ? redactSecretsInText(out.goalRun.detail) : undefined,
     };
   }
+  // A Live call's title is the bot engine's own words about the call.
+  if (out.call?.title) out.call = { ...out.call, title: redactSecretsInText(out.call.title) };
   if (out.card) {
     const card = { ...out.card } as OptionCardData & { summary?: string };
     card.title = redactSecretsInText(card.title);
@@ -306,6 +319,14 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       label: redactSecretsInText(out.secret.label),
       description: redactSecretsInText(out.secret.description),
       error: out.secret.error ? redactSecretsInText(out.secret.error) : undefined,
+    };
+  }
+  if (out.signIn) {
+    // The bot's own words: a model can paste a secret into a reason too.
+    out.signIn = {
+      ...out.signIn,
+      reason: out.signIn.reason ? redactSecretsInText(out.signIn.reason) : undefined,
+      error: out.signIn.error ? redactSecretsInText(out.signIn.error) : undefined,
     };
   }
   return out;
@@ -480,6 +501,9 @@ const GROUPS_FILE = join(DATA_DIR, "groups.json");
 /** Written once the copies older builds made of a bot's model on its threads
  * are cleared (Store load), so that cleanup runs once per data directory. */
 const THREAD_MODEL_COPIES_CLEARED = join(DATA_DIR, "thread-model-copies-cleared");
+/** Written once threads from before builds kept askedAt have it from their
+ * transcripts (Store load); since then each person's line stamps it. */
+const ASKED_AT_FILLED = join(DATA_DIR, "asked-at-filled");
 
 /** The registries carry souls, project paths and per-bot settings, so they are
  * owner-only like the other data-dir stores. A file written by an older
@@ -605,6 +629,16 @@ export function roomResponders<T extends { id: string; name: string; hidden?: bo
     return fallback ? [fallback] : [];
   }
   return [];
+}
+
+/** Drop holds and held messages of bots that are no longer room members. */
+export function pruneRoomHolds(group: Pick<GroupRecord, "memberIds" | "holds" | "heldMessages">): void {
+  for (const key of ["holds", "heldMessages"] as const) {
+    const map = group[key];
+    if (!map) continue;
+    const kept = Object.fromEntries(Object.entries(map).filter(([botId]) => group.memberIds.includes(botId)));
+    if (Object.keys(kept).length !== Object.keys(map).length) (group as Record<typeof key, unknown>)[key] = kept;
+  }
 }
 
 /** A hidden routine execution is not a conversation the person can open. */
@@ -807,6 +841,20 @@ export class Store {
         botsMigrated = true;
       }
     }
+    // Early builds of durable provider-tool grants saved them only on the
+    // task that raised the approval card. The UI promised a standing bot
+    // grant, so recover those exact app-issued keys into the bot defaults;
+    // never promote ordinary task/session grants such as shell commands.
+    for (const b of this.bots) {
+      const taskProviderGrants = (b.tasks ?? []).flatMap((task) =>
+        (task.alwaysAllow ?? []).filter((key) => key.startsWith("provider-tool:")),
+      );
+      if (!taskProviderGrants.length) continue;
+      const migrated = [...new Set([...(b.alwaysAllow ?? []), ...taskProviderGrants])].slice(0, 200);
+      if (JSON.stringify(migrated) === JSON.stringify(b.alwaysAllow ?? [])) continue;
+      b.alwaysAllow = migrated;
+      botsMigrated = true;
+    }
     const botIds = new Set(this.bots.map((b) => b.id));
     for (const g of this.groups) {
       g.busyBotId = null;
@@ -821,6 +869,13 @@ export class Store {
       const normalized = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, Boolean(g.dm));
       if (JSON.stringify(normalized) !== JSON.stringify(g.defaultResponder)) groupsMigrated = true;
       g.defaultResponder = normalized;
+      // Holds survive a restart (a stopped bot stays stopped); a member who
+      // left while the server was down takes its hold with it.
+      if (g.holds !== undefined || g.heldMessages !== undefined) {
+        const before = JSON.stringify([g.holds, g.heldMessages]);
+        pruneRoomHolds(g);
+        if (JSON.stringify([g.holds, g.heldMessages]) !== before) groupsMigrated = true;
+      }
       // Bot-to-bot channels intentionally remain one canonical thread.
       if (g.dm) {
         if (g.tasks !== undefined) {
@@ -859,6 +914,7 @@ export class Store {
     // different model can't be told apart from a pick and stays. Only over a
     // bot list this load could read, so an unreadable file is not skipped.
     const clearModelCopies = !existsSync(THREAD_MODEL_COPIES_CLEARED) && (botsLoaded || !existsSync(BOTS_FILE));
+    const fillAskedAts = !existsSync(ASKED_AT_FILLED) && (botsLoaded || !existsSync(BOTS_FILE));
     // bots saved before tasks existed have one endless thread; adopt it as
     // their first task so nothing is lost and nothing special-cases it
     for (const b of this.bots) {
@@ -950,6 +1006,7 @@ export class Store {
     // After legacy transcripts are in SQLite, so the first boot sees their
     // newest message instead of stamping createdAt and jumping next launch.
     this.repairThreadUpdatedAts();
+    if (fillAskedAts) this.fillTaskAskedAts();
     // After the roster is loaded, so identity resolution sees which opener
     // ids are still live.
     this.repairDuplicatePairConversations();
@@ -997,6 +1054,23 @@ export class Store {
     for (const task of groupTasks) if (repair(task)) groupsDirty = true;
     if (botsDirty) this.saveBots();
     if (groupsDirty) this.saveGroups();
+  }
+
+  /** Where a person last wrote in a thread from before builds kept it
+   * (TaskRecord.askedAt) is only in its transcript: once, a thread without
+   * the stamp takes its newest line a person sent from an app. Without it a
+   * bot's main thread (server/main-thread.ts) is whichever thread is
+   * selected until someone writes again: often the oldest one, where
+   * v0.1.98 to v0.1.107 reported, left selected by its activity row. */
+  private fillTaskAskedAts(): void {
+    const tasks = this.bots.flatMap((bot) => bot.tasks ?? []).filter((task) => task.askedAt === undefined && !task.routineRunId);
+    const asked = mdb.latestPersonLineAts(tasks.map((task) => task.threadId));
+    for (const task of tasks) {
+      const at = asked.get(task.threadId);
+      if (at !== undefined) task.askedAt = at;
+    }
+    if (asked.size) this.saveBots();
+    writeFileAtomic(ASKED_AT_FILLED, "Threads from before askedAt have it from the lines people wrote there.\n", { mode: 0o600 });
   }
 
   /** Resolve the identity of a historical pair row, including a sender
@@ -1254,7 +1328,7 @@ export class Store {
     );
   }
 
-  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "lastReadMessageId" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage" | "turnTimeoutMinutes">>): GroupRecord | null {
+  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "lastReadMessageId" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage" | "turnTimeoutMinutes" | "holds" | "heldMessages">>): GroupRecord | null {
     const group = this.group(id);
     if (!group) return null;
     if (Object.prototype.hasOwnProperty.call(patch, "section")) {
@@ -1283,6 +1357,8 @@ export class Store {
       group.memberIds,
       Boolean(group.dm),
     );
+    // A member who left the room takes its hold and held messages with it.
+    if (Object.prototype.hasOwnProperty.call(patch, "memberIds")) pruneRoomHolds(group);
     this.saveGroups();
     this.emit({ type: "group", groupId: group.id });
     return group;
@@ -1692,7 +1768,7 @@ export class Store {
    * (same parent, new text) and becomes the active leaf. `sendId` is the
    * client's identity for this edit, so its instant bubble reconciles onto
    * the canonical message and a network retry cannot fork twice. */
-  branchMessage(threadId: string, sourceId: string, text: string, sendId?: string, sender?: Message["sender"]): Message | null {
+  branchMessage(threadId: string, sourceId: string, text: string, sendId?: string, sender?: Message["sender"], dataContext?: Message["dataContext"]): Message | null {
     const t = this.thread(threadId);
     const source = t.messages.find((m) => m.id === sourceId);
     if (!source) return null;
@@ -1706,6 +1782,7 @@ export class Store {
       replyToId: source.replyToId,
       ...(sendId ? { sendId } : {}),
       ...(sender ? { sender } : {}),
+      ...(dataContext ? { dataContext } : {}),
     };
     t.messages.push(full);
     t.activeLeafId = full.id;
@@ -2711,6 +2788,13 @@ export class Store {
     return task;
   }
 
+  suggestTaskLink(botId: string, threadId: string, text: string): TaskRecord | null {
+    const url = lastChangeRequestUrl(text);
+    const task = this.taskByThread(botId, threadId);
+    if (!url || !task || task.linkAuto === false || (task.link && !task.linkAuto) || task.link === url) return null;
+    return this.patchTask(botId, threadId, { link: url, linkAuto: true });
+  }
+
   /** A Works on change is the newest explicit choice, so this bot's
    * machine-recorded pins that now point somewhere else give way. A pin a
    * person set, a legacy pin with unknown provenance, and a pin that already
@@ -2785,11 +2869,16 @@ export class Store {
     return moved;
   }
 
-  /** One durable write: never leave only part of a bot's threads updated. */
-  setAllThreadApprovalMode(botId: string, mode: "full" | "ask"): BotRecord | null {
+  /** One approval level for the bot and every one of its threads, in one
+   * durable write: never leave only part of a bot's threads updated. Full
+   * also drops standing approvals ("Always allow"), which decide nothing
+   * there; at every other level they still decide, so the bot's and each
+   * thread's stay as the person granted them. Custom never comes here: it
+   * belongs to one bot's engine and the desktop's own two-phase grant. */
+  setAllThreadApprovalMode(botId: string, mode: Exclude<ApprovalMode, "custom">): BotRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
-    const patch = { approvalMode: mode, autoApprove: false, alwaysAllow: [] };
+    const patch = { approvalMode: mode, autoApprove: mode === "auto", ...(mode === "full" ? { alwaysAllow: [] } : {}) };
     const tasks = (bot.tasks ?? []).map(task => ({ ...task, ...patch }));
     const next = { ...bot, ...patch, approvalGrant: undefined, tasks };
     this.saveBots(this.bots.map(candidate => candidate === bot ? next : candidate));
@@ -2828,7 +2917,7 @@ export class Store {
    * model unless the caller hands it another one: a thread opened from
    * another of this bot's threads keeps the model a person picked there. */
   createTask(botId: string, title?: string, activate = true, projectId?: string, openedBy?: TaskOpenedBy, approvalMode?: "ask" | "full",
-    modelSelection?: ModelSelection): TaskRecord | null {
+    modelSelection?: ModelSelection, cwd?: string): TaskRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
     if (projectId !== undefined && !this.project(botId, projectId)) return null;
@@ -2838,6 +2927,9 @@ export class Store {
       title: threadTitleFrom(title),
       createdAt,
       updatedAt: createdAt,
+      // Only a new task can receive an explicit working folder. The HTTP
+      // caller validates it; subsequent turns use the existing pin unchanged.
+      ...(cwd !== undefined ? { cwd } : {}),
       ...(projectId ? { projectId } : {}),
       ...(openedBy ? { openedBy: structuredClone(openedBy) } : {}),
       resumeCursors: {},
@@ -2867,6 +2959,18 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
     task.openedBy = structuredClone(openedBy);
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+    return task;
+  }
+
+  /** A person wrote in this thread at `at` (startTurn and a steer decide
+   * who is one). Never moves back, and never reachable from the HTTP task
+   * PATCH: askedAt is not a TASK_PATCH_FIELD. */
+  setTaskAskedAt(botId: string, threadId: string, at: number): TaskRecord | null {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || !Number.isFinite(at) || (task.askedAt ?? -1) >= at) return task ?? null;
+    task.askedAt = at;
     this.saveBots();
     this.emit({ type: "bot", botId });
     return task;

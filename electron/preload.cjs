@@ -14,11 +14,26 @@ ipcRenderer.on("package:install", (_event, url) => {
   for (const listener of packageInstallListeners) listener(url);
 });
 
+// A chat link opened from outside the app. Held until the page subscribes,
+// then handed over once: replaying it to a remounted listener would yank the
+// person back to that chat.
+let pendingChatLink = null;
+const chatLinkListeners = new Set();
+ipcRenderer.on("chat:open", (_event, link) => {
+  if (typeof link !== "string") return;
+  if (!chatLinkListeners.size) {
+    pendingChatLink = link;
+    return;
+  }
+  for (const listener of chatLinkListeners) listener(link);
+});
+
 // Main can finish loading the document before React subscribes. Retain only
-// the fixed actions (Organisation, the openmausbot://cloud link, and plain
-// Settings → OMB Cloud from the lending menu-bar item), never a destination
-// supplied by a renderer.
-const FIXED_SETTINGS_ACTIONS = new Set(["organization", "cloud", "cloud-settings"]);
+// the fixed actions (Organisation, the openmausbot://cloud link, plain
+// Settings → OpenMausBot Cloud from the lending menu-bar item, and the Add a
+// Cloud dialog from the server menu, plain or reached through Show me how),
+// never a destination supplied by a renderer.
+const FIXED_SETTINGS_ACTIONS = new Set(["organization", "cloud", "cloud-settings", "cloud-add", "cloud-add-howto"]);
 let pendingSettingsAction = null;
 const appSettingsListeners = new Set();
 ipcRenderer.on("app:open-settings", (_event, section) => {
@@ -58,7 +73,7 @@ const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(upda
 // Only main can request a fresh snapshot; there is no renderer-callable method.
 const COMPANY_BACKUP_CLIENT_KEYS = [
   "omb-drafts", "omb-draft-attachments", "omb-draft-send-ids", "omb-draft-channel-modes",
-  "omb-skin", "omb-show-threads", "omb-show-run-card", "openmausbot.sidebarDensity",
+  "omb-skin", "omb-show-threads", "omb-show-run-card", "omb-send-key", "omb-color-user-bubbles", "openmausbot.sidebarDensity",
   "openmausbot.sidebarCollapsedSections.v1", "openmausbot.sidebarSectionOrder.v1",
   "omb-analytics-opt-out", "openmausbot.remote-voice.v1",
 ];
@@ -88,7 +103,8 @@ const bridge = {
   // Electron. No direct switching, saved-list reads, host files or secrets.
   workspaces: {
     state: () => ipcRenderer.invoke("workspaces:state"),
-    menu: () => ipcRenderer.invoke("workspaces:menu"),
+    // `from: "howto"` only says the Show me how tip opened it; nothing else passes.
+    menu: (options) => ipcRenderer.invoke("workspaces:menu", ...(options?.from === "howto" ? ["howto"] : [])),
   },
   getCapabilities: () => ipcRenderer.invoke("desktop:capabilities"),
   onCapabilitiesChanged: (cb) => {
@@ -132,6 +148,7 @@ const bridge = {
     requestCode: (email) => ipcRenderer.invoke("companion-account:request-code", email),
     verifyCode: (email, code) => ipcRenderer.invoke("companion-account:verify-code", email, code),
     retry: () => ipcRenderer.invoke("companion-account:retry"),
+    prepare: () => ipcRenderer.invoke("companion-account:prepare"),
     signOut: () => ipcRenderer.invoke("companion-account:sign-out"),
   },
   /** Full/Custom and transitions out of Custom are deliberately unavailable
@@ -233,6 +250,17 @@ const bridge = {
     if (pendingPackageInstallUrl) cb(pendingPackageInstallUrl);
     return () => packageInstallListeners.delete(cb);
   },
+  /** A chat link (openmausbot://thread/… or openmausbot://bot/…) opened from
+   * outside the app. */
+  onChatLink: (cb) => {
+    chatLinkListeners.add(cb);
+    if (pendingChatLink) {
+      const link = pendingChatLink;
+      pendingChatLink = null;
+      cb(link);
+    }
+    return () => chatLinkListeners.delete(cb);
+  },
   /** Mirrors durable unread state into the native Dock/taskbar badge. */
   setUnreadCount: (count) => ipcRenderer.send("desktop:unread-count", count),
   /** Live VNC/noVNC in a sandboxed window owned by the app window. */
@@ -299,14 +327,17 @@ const bridge = {
     },
   },
 
-  /** Saved servers and the active one (Server menu). Switching, adding and
-   * forgetting are local-only: a remote page may read the list but not change
-   * where this window goes. */
+  /** Saved servers, this computer's named local environments, and the active
+   * one (Server menu). Switching, creating, adding and forgetting are
+   * local-only: a remote page may read the list but not change where this
+   * window goes. */
   environments: {
     state: () => ipcRenderer.invoke("environments:state"),
     switch: (id) => ipcRenderer.invoke("environments:switch", id),
     addFromLink: (link, name) => ipcRenderer.invoke("environments:add-from-link", link, name),
-    forget: (id) => ipcRenderer.invoke("environments:forget", id),
+    create: (name, dataDir) => ipcRenderer.invoke("environments:create", name, dataDir),
+    pickDir: () => ipcRenderer.invoke("environments:pick-dir"),
+    forget: (id, purge) => ipcRenderer.invoke("environments:forget", id, purge === true),
     /** Settings → Servers, on a saved server's Computer access panel, or
      * ("copy") its Copy this computer here panel. */
     onOpenSettings: (cb) => {
@@ -324,6 +355,10 @@ const bridge = {
     refresh: () => ipcRenderer.invoke("cloud-account:refresh"),
     signOut: () => ipcRenderer.invoke("cloud-account:signOut"),
     openDashboard: () => ipcRenderer.invoke("cloud-account:openDashboard"),
+    // What this person may buy now; no arguments.
+    offer: () => ipcRenderer.invoke("cloud-account:offer"),
+    // A checkout for one of the offer's plans, opened by main in the browser; main checks both.
+    checkout: (plan, source) => ipcRenderer.invoke("cloud-account:checkout", String(plan), String(source)),
     connectHome: () => ipcRenderer.invoke("cloud-account:connectHome"),
     connectHomeForPhone: () => ipcRenderer.invoke("cloud-account:connectHomeForPhone"),
     onState: cb => {
@@ -366,13 +401,16 @@ const bridge = {
   } : undefined,
   /** The plan, read only, in Settings on the person's own Cloud: its name and
    * whether it is active, Manage (the Plan page in the browser) and
-   * back to this computer. No arguments; a remote page acts only on a click. */
+   * back to this computer. No arguments; a remote page acts only on a click.
+   * Also the free trial's popup, on this computer's page and the Cloud's:
+   * noticeSeen says the notice due now was shown (main knows which). */
   cloudPlan: process.argv.includes("--omb-company-desktop=1") ? {
     state: () => ipcRenderer.invoke("cloud-plan:state"),
     manage: () => isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("cloud-plan:manage") : Promise.reject(new Error("Choose Manage to open your Plan page.")),
     useThisComputer: () => isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("cloud-plan:local") : Promise.reject(new Error("Choose Use this computer to switch.")),
+    noticeSeen: () => ipcRenderer.invoke("cloud-plan:notice-seen"),
   } : undefined,
   organization: process.argv.includes("--omb-company-desktop=1") ? {
     settingsOpened: () => ipcRenderer.invoke("organization:settings-opened"),

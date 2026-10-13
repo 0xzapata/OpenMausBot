@@ -17,10 +17,21 @@ describe("admission golden tables", () => {
     const plain = { carriesImages: false, pendingComputerSelection: false, engineCanSteer: true };
     expect(admit("direct-busy", plain)).toEqual({ action: "steer" });
     // Each mechanical clamp alone forces the reasonless busy-thread park.
-    expect(admit("direct-busy", { ...plain, carriesImages: true })).toEqual({ action: "queue" });
+    // Attachments park only where the engine cannot take them mid-turn,
+    // and say so: the engine would otherwise have taken the words.
+    expect(admit("direct-busy", { ...plain, carriesImages: true })).toEqual({ action: "queue", blockedBy: "images" });
     expect(admit("direct-busy", { ...plain, pendingComputerSelection: true })).toEqual({ action: "queue" });
     expect(admit("direct-busy", { ...plain, engineCanSteer: false })).toEqual({ action: "queue" });
     expect(admit("direct-busy", {})).toEqual({ action: "queue" });
+  });
+
+  it("direct-busy: attachments steer into an engine that takes images mid-turn", () => {
+    const images = { carriesImages: true, engineCanSteerImages: true, pendingComputerSelection: false, engineCanSteer: true };
+    expect(admit("direct-busy", images)).toEqual({ action: "steer" });
+    // Image steering never lifts the other clamps, and text needs no image support.
+    expect(admit("direct-busy", { ...images, engineCanSteer: false })).toEqual({ action: "queue" });
+    expect(admit("direct-busy", { ...images, pendingComputerSelection: true })).toEqual({ action: "queue" });
+    expect(admit("direct-busy", { ...images, carriesImages: false, engineCanSteerImages: false })).toEqual({ action: "steer" });
   });
 
   it("direct: starts on a free bot, parks behind slots, room turns, and coordination", () => {
@@ -41,6 +52,8 @@ describe("admission golden tables", () => {
   it("room: a working channel always queues; it never auto-steers", () => {
     expect(admit("room", {}, { roomWorking: true })).toEqual({ action: "queue" });
     expect(admit("room", {}, { roomWorking: false })).toEqual({ action: "start" });
+    expect(admit("room", {}, { roomWorking: true, threadWorking: false })).toEqual({ action: "start" });
+    expect(admit("room", {}, { roomWorking: true, threadWorking: true })).toEqual({ action: "queue" });
   });
 
   it("room-steer: only the head of a capable room's queue steers", () => {
@@ -53,6 +66,18 @@ describe("admission golden tables", () => {
     // speaker could actually take the steer (capability is checked first).
     expect(admit("room-steer", { ...head, isQueueHead: false })).toEqual({ action: "refuse", code: "queue-head-only" });
     expect(admit("room-steer", { speakerPresent: false, engineCanSteer: false, isQueueHead: false })).toEqual({ action: "queue" });
+  });
+
+  it("room-steer: an attachment head steers only into a speaker that takes images mid-turn", () => {
+    const head = { speakerPresent: true, engineCanSteer: true, isQueueHead: true, carriesImages: true };
+    expect(admit("room-steer", { ...head, engineCanSteerImages: true })).toEqual({ action: "steer" });
+    // A speaker without image steering keeps the head queued and says why —
+    // before the head-only rule, as the route always answered.
+    expect(admit("room-steer", head)).toEqual({ action: "queue", blockedBy: "images" });
+    expect(admit("room-steer", { ...head, isQueueHead: false })).toEqual({ action: "queue", blockedBy: "images" });
+    expect(admit("room-steer", { ...head, engineCanSteerImages: true, isQueueHead: false })).toEqual({ action: "refuse", code: "queue-head-only" });
+    // An incapable room's plain queue stays reasonless.
+    expect(admit("room-steer", { ...head, engineCanSteer: false })).toEqual({ action: "queue" });
   });
 
   it("guarded: any busy shape refuses guarded_busy; it never queues or steers", () => {
@@ -100,5 +125,21 @@ describe("admission golden tables", () => {
     expect(admit("opened-thread", {}, { atCapacity: true, groupTurn: true })).toEqual({ action: "queue", reason: "capacity" });
     // A brand-new thread cannot be busy, so the policy never consults it.
     expect(admit("opened-thread", {}, { threadBusy: true })).toEqual({ action: "start" });
+  });
+
+  it("incident: a report to the Chief's reused incidents thread queues behind anything and is never refused", () => {
+    expect(admit("incident", {}, {})).toEqual({ action: "start" });
+    // The previous report still running there parks this one (the drop
+    // this surface exists to prevent), reasonless like a busy-thread park.
+    expect(admit("incident", {}, { threadBusy: true })).toEqual({ action: "queue" });
+    expect(admit("incident", {}, { atCapacity: true })).toEqual({ action: "queue", reason: "capacity" });
+    expect(admit("incident", {}, { groupTurn: true })).toEqual({ action: "queue", reason: "group-turn" });
+    // Work the Chief handed on from an earlier report does not hold the
+    // next one back, even for a Chief that parks its follow-ups (#1194).
+    expect(admit("incident", {}, { parksBehindCoordination: true })).toEqual({ action: "start" });
+    expect(admit("incident", {}, { threadBusy: true, atCapacity: true, groupTurn: true })).toEqual({ action: "queue", reason: "capacity" });
+    expect(admit("incident", {}, { threadBusy: true, groupTurn: true })).toEqual({ action: "queue", reason: "group-turn" });
+    // Another of the Chief's threads working does not hold a report back.
+    expect(admit("incident", {}, { botBusy: true })).toEqual({ action: "start" });
   });
 });

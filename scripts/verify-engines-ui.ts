@@ -54,6 +54,13 @@ const chatgptPlan: InstanceInfo = {
   install: { docsUrl: "https://developers.openai.com/siwc/token-sharing-open-source" },
 };
 instances.push(chatgptPlan);
+instances.push({
+  instanceId: "cline", driverKind: "clineAgent", displayName: "Cline", cliDefault: "cline",
+  snapshot: { state: "available", authenticated: true, version: "3.0.70" },
+  models: { default: "cline-default", options: [{ id: "cline-default", label: "Cline default (configured)" }] },
+  install: { command: { darwin: "echo 'Preview only'", linux: "echo 'Preview only'", win32: "echo Preview only" },
+    needsNode: true, signInCommand: "echo 'Preview only'", docsUrl: "https://docs.cline.bot/usage/acp" },
+});
 const controller = new AbortController();
 const cancel = () => controller.abort();
 process.once("SIGINT", cancel);

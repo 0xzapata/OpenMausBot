@@ -119,6 +119,10 @@ export interface SendTurnInput {
    * collide with another bot's live session or broker (see #1017). */
   botId?: string;
   text: string;
+  /** The automatic recall block the harness put in front of the person's
+   * message inside `text`. It informs this turn only, so a driver that
+   * replays the turn as sent later can leave it out. */
+  recalled?: string;
   /** Per-bot approval policy, reasserted by providers on every turn so a
    * resumed native session cannot retain a stale, more permissive mode. */
   approvalMode?: ApprovalMode;
@@ -154,10 +158,6 @@ export interface SendTurnInput {
    * prompt (server/resume-recovery.ts) — so a session the provider lost
    * does not brick the thread, and the new session is not blank. */
   recoveryText?: string;
-  /** recoveryText is the replay this turn would have been sent without a
-   * resume cursor (it carries an update from outside the session). A driver
-   * that rebuilds only some lost sessions may also rebuild this one. */
-  recoveryIsReplay?: boolean;
   /** Prior turns for transcript-replay providers (API-backed drivers). */
   transcript?: Array<{ role: "user" | "assistant"; text: string }>;
   /** Bot persona (name/title/description) as a system prompt. */
@@ -177,6 +177,10 @@ export interface SendTurnInput {
    * systemVolatile describes this turn even when its text is unchanged from
    * the previous turn, so digest-based delivery must not suppress the note. */
   mentionTurn?: boolean;
+  /** The built-in browser is this conversation's place, so the bot will very
+   * likely browse: a driver may load its tools up front instead of behind a
+   * tool search, which costs the first browser action a model step. */
+  preloadBrowserTools?: boolean;
   /** Per-bot integrations the driver may hand to the agent as tools. */
   integrations?: {
     /** A local stdio bridge owns the remote Composio transport. Keeping the
@@ -203,7 +207,7 @@ export interface SendTurnInput {
      * registers the helper with its engine; the harness only ever observes
      * and injects context through this channel, never decides state. */
     hooks?: { url: string; token: string };
-    /** Peer-agent comms: an MCP proxy (list_bots / ask_bot) that routes back
+    /** Peer-agent comms: an MCP proxy (list_bots / coordinate_bots) that routes back
      * through the harness so this bot can message other bots. The harness
      * owns turns, permissions, and recursion limits; the proxy only forwards. */
     agents?: { command: string; args: string[]; env: Record<string, string> };
@@ -213,6 +217,10 @@ export interface SendTurnInput {
      * that forwards to the Electron-owned WebContentsView the Browser tab
      * shows. One tab per bot, in its own persistent session partition. */
     browser?: { command: string; args: string[]; env: Record<string, string> };
+    /** The Data tools (server/data): an MCP proxy (server/harness-mcp-proxy
+     * data) that forwards to the harness, where DuckDB runs on this bot's
+     * own database and the Computer panel's Data tab shows the sheet. */
+    data?: { command: string; args: string[]; env: Record<string, string> };
     /** dweb network daemon: an MCP proxy exposing dweb status, repo, and
      * opencode model access as tools. url is the dweb HTTP base. */
     dweb?: { url: string };
@@ -280,6 +288,10 @@ export interface ProviderAdapter {
     /** True when the driver can mount the built-in browser MCP. Same rule:
      * a bot must never be told it has a browser its driver cannot hand it. */
     browserMcp?: boolean;
+    /** True when the driver can mount the Data tools MCP (the same stdio
+     * proxy shape as the browser). Same rule: never tell a bot it has data
+     * tools its driver cannot hand it. */
+    dataMcp?: boolean;
     /** True when this engine accepts images in the prompt — gates image
      * paste in the composer. Same rule as computerMcp: never offer an
      * attachment an engine cannot open (a bot told it has an image it
@@ -301,6 +313,11 @@ export interface ProviderAdapter {
      * others keep the queue-one-and-wait behaviour. Same rule as the other
      * flags: never show a control the driver cannot honour. */
     queueing?: boolean;
+    /** True when steer() delivers `images` into the running turn as
+     * structured provider input, the way sendTurn does for a new turn.
+     * Requires queueing and nativeImageInput. Without it, words that carry
+     * attachments wait in the queue for a real turn, as they always did. */
+    steerImages?: boolean;
     /** True only when local MCP calls can reach the human approval channel.
      * Full-auto/bypass provider instances must leave this false. */
     localComputerMcp?: boolean;
@@ -355,12 +372,36 @@ export interface ProviderAdapter {
    * - "indeterminate" — delivered, but the outcome is unknown (the RPC
    *   timed out after accept, transport failed, or the turn settled while
    *   the answer was in flight). The caller must NOT re-queue: the words
-   *   may already be running, and replaying them would execute them twice. */
-  steer?(threadId: ThreadId, text: string): Promise<SteerOutcome>;
+   *   may already be running, and replaying them would execute them twice.
+   *
+   * `images` are admitted attachments (as SendTurnInput.images). Callers pass
+   * them only to drivers with `capabilities.steerImages`; a driver that cannot
+   * read one refuses the whole steer rather than drop the picture. */
+  steer?(threadId: ThreadId, text: string, images?: readonly TurnImageInput[]): Promise<SteerOutcome>;
   hasSession(threadId: ThreadId): boolean;
   stopAll(): Promise<void>;
   onEvent(listener: RuntimeEventListener): () => void;
+  /** Prompt-cache keep-warm (server/cache-keepwarm.ts). Only drivers that
+   * keep a live native session per thread and can send one tool-less,
+   * forked request over its transcript implement it (Claude Code today).
+   * `ping` never changes the thread's own session; `hold` keeps that live
+   * session open until `until` (epoch ms), or releases the hold with null,
+   * and says whether a live session exists to hold. */
+  cacheKeepWarm?: {
+    ping(threadId: ThreadId, options?: { signal?: AbortSignal }): Promise<CacheWarmPingResult>;
+    hold(threadId: ThreadId, until: number | null): boolean;
+  };
 }
+
+/** One keep-warm ping as the engine reported it. Tokens are the request's
+ * own: `cacheRead` re-read from the prompt cache, `cacheWrite` written to it,
+ * `input` uncached input. `costUsd` is the engine's figure (on a subscription
+ * an equivalent, not a charge). A refusal says why; `busy` means the thread
+ * had a turn running and nothing was sent; `limit` means the account's usage
+ * limit refused the call. */
+export type CacheWarmPingResult =
+  | { ok: true; input: number; cacheRead: number; cacheWrite: number; output: number; costUsd: number | null; model: string | null }
+  | { ok: false; reason: string; busy?: boolean; limit?: boolean };
 
 /** The tri-state result of Adapter.steer — see the contract above. */
 export type SteerOutcome = "steered" | "refused" | "indeterminate";
@@ -409,6 +450,8 @@ export interface ProviderSnapshot {
 // login (Codex, Grok) signs in from the app instead (drivers/device-auth.ts),
 // and signInCommand stays its terminal route.
 export interface EngineInstall {
+  /** Added by the registry: commands run on this server, not its web client. */
+  platform?: "darwin" | "win32" | "linux";
   /** One-liner per platform. Omit a platform that has no such command —
    * the UI falls back to docsUrl rather than offering something that
    * cannot work there (a curl|bash line is not a Windows command). */
@@ -551,6 +594,12 @@ export interface ProviderInstance {
    * The signal is a best-effort cap: drivers that can honor it abort the
    * underlying provider call; the rest keep their own timeout. */
   generateText?(prompt: string, options?: TextGenerationOptions): Promise<string>;
+  /** A one-shot text call for the background steps only (memory upkeep, the
+   * skill review), on an engine whose turns are a whole agent process (the
+   * ACP family, Codex). It starts a fresh tool-free session on the engine's
+   * own provider, so it is never offered to titles or compaction, which would
+   * then spawn a process for every new chat. */
+  generateMemoryText?(prompt: string, options?: TextGenerationOptions): Promise<string>;
   /** Isolated, tool-free permission review on this same provider. Kept
    * separate from generateText so the UI never infers a security capability
    * from a generic helper that may expose prompts in argv or lack approvals. */

@@ -9,9 +9,9 @@ import { useMenuMotion } from "./MenuMotion";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 
-export type ConfigSection = "composio" | "box" | "opencodeGo" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras";
+export type ConfigSection = "composio" | "box" | "opencodeGo" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
 /** Sections whose key can be tried against the provider from the server. */
-export type TestableProvider = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras";
+export type TestableProvider = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -45,6 +45,8 @@ const SECTIONS: Record<
   openaiCompat: { body: (v) => ({ openaiCompat: { key: v } }), flag: (c) => c.openaiCompat?.configured ?? false },
   mistral: { body: (v) => ({ mistral: { key: v } }), flag: (c) => c.mistral?.configured ?? false },
   cerebras: { body: (v) => ({ cerebras: { key: v } }), flag: (c) => c.cerebras?.configured ?? false },
+  groq: { body: (v) => ({ groq: { key: v } }), flag: (c) => c.groq?.configured ?? false },
+  meta: { body: (v) => ({ meta: { key: v } }), flag: (c) => c.meta?.configured ?? false },
   xai: { body: (v) => ({ xai: { key: v } }), flag: (c) => c.xai?.configured ?? false },
 };
 
@@ -148,6 +150,22 @@ const CREDENTIALS: Record<
     linkLabelKey: "keys.cerebras.link",
     optional: true,
   },
+  groq: {
+    labelKey: "keys.groq.label",
+    placeholder: "gsk_…",
+    descriptionKey: "keys.groq.desc",
+    href: "https://console.groq.com/docs/overview",
+    linkLabelKey: "keys.groq.link",
+    optional: true,
+  },
+  meta: {
+    labelKey: "keys.meta.label",
+    placeholder: "LLM|…",
+    descriptionKey: "keys.meta.desc",
+    href: "https://dev.meta.ai/docs/authentication",
+    linkLabelKey: "keys.meta.link",
+    optional: true,
+  },
   xai: {
     labelKey: "keys.xai.label",
     placeholder: "xai-…",
@@ -209,7 +227,7 @@ function CredentialHelp({ section }: { section: ConfigSection }) {
         aria-expanded={open}
         aria-controls={popoverId}
         onClick={() => setOpen((current) => !current)}
-        className="flex size-6 items-center justify-center rounded-md text-ink-secondary outline-none transition-colors hover:bg-control hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/70"
+        className="cursor-pointer flex size-6 items-center justify-center rounded-md text-ink-secondary outline-none transition-colors hover:bg-control hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/70"
       >
         <CircleHelp size={14} aria-hidden="true" />
       </button>
@@ -371,7 +389,7 @@ export function ApiKeyRow({
             type="button"
             onClick={() => save(true)}
             disabled={saving}
-            className="flex w-[72px] shrink-0 items-center justify-center rounded-lg bg-control py-2 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className="cursor-pointer flex w-[72px] shrink-0 items-center justify-center rounded-lg bg-control py-2 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
             title={t("keys.removeKey")}
           >
             {t("keys.clear")}
@@ -382,7 +400,7 @@ export function ApiKeyRow({
             type="button"
             onClick={() => void test()}
             disabled={testing || saving}
-            className="flex shrink-0 items-center justify-center rounded-lg border border-hairline/40 px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised/50 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            className="cursor-pointer flex shrink-0 items-center justify-center rounded-lg border border-hairline/40 px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised/50 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             {testing ? t("keys.testing") : t("keys.test")}
           </button>
@@ -459,7 +477,7 @@ export function OpenCodeProviderKeys() {
               onClick={() => remove(saved)}
               disabled={busy}
               aria-label={t("keys.opencode.otherProviders.removeAria", { name: saved })}
-              className="flex w-[72px] shrink-0 items-center justify-center rounded-lg bg-control py-1.5 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="cursor-pointer flex w-[72px] shrink-0 items-center justify-center rounded-lg bg-control py-1.5 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {removing === saved ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : t("keys.clear")}
             </button>
@@ -493,7 +511,7 @@ export function OpenCodeProviderKeys() {
             type="button"
             onClick={add}
             disabled={busy || !name.trim() || !key.trim()}
-            className="flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className="cursor-pointer flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {adding ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <><Check size={13} aria-hidden="true" />{t("common.save")}</>}
           </button>
@@ -608,7 +626,7 @@ export function VpsConnection() {
           onClick={save}
           disabled={saving || (!alias.trim() && !configured)}
           className={cn(
-            "flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg py-2 text-[13px]",
+            "cursor-pointer flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg py-2 text-[13px]",
             !alias.trim() && configured ? "bg-control text-danger hover:bg-raised-hover" : "bg-control text-ink hover:bg-raised-hover",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}

@@ -12,13 +12,16 @@ import {
 import { createApprovalModeSupport } from "./harness-capabilities.ts";
 
 describe("approval modes", () => {
-  it("resets only grants that cannot safely carry to the selected provider", () => {
+  it("carries Full silently to any engine that runs it; Custom never crosses engines", () => {
     for (const driver of ["codex", "claudeAgent", "grokAgent", "antigravityAgent", "piAgent", "customAcp"]) {
       expect(modelSwitchNeedsAsk("ask", "codex", driver)).toBe(false);
       expect(modelSwitchNeedsAsk("auto", "codex", driver)).toBe(false);
-      expect(modelSwitchNeedsAsk("full", "codex", driver)).toBe(driver !== "codex");
+      // the person's Full access stays with the bot; only an engine that cannot run Full stops it
+      expect(modelSwitchNeedsAsk("full", "codex", driver)).toBe(!supportsApprovalMode(driver, "full"));
       expect(modelSwitchNeedsAsk("custom", "codex", driver)).toBe(driver !== "codex");
     }
+    expect(modelSwitchNeedsAsk("full", "codex", "claudeAgent")).toBe(false);
+    expect(modelSwitchNeedsAsk("full", "claudeAgent", "openai-compat")).toBe(false);
     expect(modelSwitchNeedsAsk("edits", "claudeAgent", "codex")).toBe(true);
     expect(modelSwitchNeedsAsk("edits", "claudeAgent", "grokAgent")).toBe(false);
     expect(modelSwitchNeedsAsk("full", "claudeAgent", "claudeAgent")).toBe(false);
@@ -54,7 +57,7 @@ describe("approval modes", () => {
   // (createOpenAIChatRuntime answers its own gate), so it IS offered. Without
   // it these engines had no level that ever stops asking, and a Chief's
   // delegated Full access could not reach them either.
-  it.each(["grok", "openai-compat", "minimax"])("offers harness-implemented Full on %s, but never native Auto", (driver) => {
+  it.each(["grok", "openai-compat", "minimax", "groq", "meta"])("offers harness-implemented Full on %s, but never native Auto", (driver) => {
     expect(supportsApprovalMode(driver, "ask")).toBe(true);
     expect(supportsApprovalMode(driver, "auto")).toBe(true);
     expect(supportsApprovalMode(driver, "full")).toBe(true);

@@ -4,7 +4,7 @@
 // and speaker over WebRTC, straight to OpenAI. This controller holds the
 // sideband WebSocket to the same GPT-Live session and runs every rule that
 // connects the voice to the bot, so all three clients behave the same:
-//   delegation → a user message "via call" on the bot's thread;
+//   delegation → a user message "via call", carrying the call's id, on the bot's thread;
 //   bot progress → quiet thinking; the turn's final text → spoken commentary;
 //   an approval card → a strict spoken yes/no; a question card → the next request;
 //   a typed message → nothing until the bot answers it; then the answer is read
@@ -15,10 +15,10 @@
 import { randomUUID } from "node:crypto";
 import { spokenConsent } from "../shared/call-consent.ts";
 import {
-  LIVE_COPY, liveCardKind, liveStepLabel, spokenApprovalPrompt, spokenConnectorPrompt, spokenQuestionPrompt, spokenReviewPrompt, spokenSecretPrompt,
+  LIVE_COPY, liveCardKind, liveStepLabel, spokenApprovalPrompt, spokenConnectorPrompt, spokenQuestionPrompt, spokenReviewPrompt, spokenSecretPrompt, spokenSignInPrompt,
 } from "../shared/live-approval.ts";
 import { clampAppend, commentaryChunks, LiveTranscript } from "../shared/live-call.ts";
-import type { LiveCallState, LiveClient, LiveEndReason } from "../shared/wire.ts";
+import type { LiveCallRecord, LiveCallState, LiveClient, LiveEndReason } from "../shared/wire.ts";
 import { liveCallSummaryLine, LiveSessionError, liveVoice } from "./live-call.ts";
 import type { RequestAuth } from "./request-auth.ts";
 import type { Message, StoreChange } from "./store.ts";
@@ -57,10 +57,13 @@ export type LiveRespondResult = { ok: true } | { ok: false; error: string };
 
 export interface LiveCallDeps {
   store: { onChange(listener: (change: StoreChange) => void): () => void };
-  /** Throws LiveCallSignedOutError once the sign-in that started the call has ended. */
-  send(input: { auth: RequestAuth; botId: string; threadId: string; text: string }): Promise<LiveSendResult>;
-  /** Throws LiveCallSignedOutError once the sign-in that started the call has ended. */
-  respond(input: { auth: RequestAuth; threadId: string; requestId: string; behavior: "allow" | "deny" | "answer"; message?: string }): Promise<LiveRespondResult>;
+  /** Throws LiveCallSignedOutError once the sign-in that started the call has ended.
+   * `callId`: the call the words were spoken on; the harness stores it on the line. */
+  send(input: { auth: RequestAuth; botId: string; threadId: string; text: string; callId: string }): Promise<LiveSendResult>;
+  /** Throws LiveCallSignedOutError once the sign-in that started the call has ended.
+   * `callId` comes with a spoken answer to a question: an answer that arrives
+   * after its turn ended is stored as one of the call's lines. */
+  respond(input: { auth: RequestAuth; threadId: string; requestId: string; behavior: "allow" | "deny" | "answer"; message?: string; callId?: string }): Promise<LiveRespondResult>;
   /** Whether a call request that send() queued still waits in the thread's
    * queue. Editing or cancelling it in a client removes it undelivered. */
   queued(botId: string, threadId: string, queueId: string): boolean;
@@ -71,11 +74,19 @@ export interface LiveCallDeps {
   personKey?(auth: RequestAuth): string | undefined;
   activity(botId: string, threadId: string): LiveActivity;
   broadcast(frame: { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }): void;
+  /** Whether the person's plan allows a Live call from a phone now
+   * (server/pro-plan.ts). Asked when a phone's call starts and never during
+   * one: a plan change never cuts off a running call. */
+  pro(): boolean;
   settings(): { key: string; voice: string; readTypedReplies: boolean; idleMinutes: number };
   createSession(input: { key: string; sdp: string; botId: string; threadId: string; voice: string }): Promise<{ sessionId: string; sdp: string }>;
   openSocket(url: string, key: string): LiveSocket;
   attachUrl(sessionId: string): string;
   speakable(text: string): string[];
+  /** A call that went live has ended: write its one "call" row on the
+   * call's chat. Called once per such call, never for a call that did not
+   * attach. Omitted: no row. */
+  recordCall?(input: { threadId: string; botName: string; record: LiveCallRecord }): void;
   log(line: string): void;
   now?(): number;
 }
@@ -94,6 +105,22 @@ export class LiveCallSignedOutError extends LiveSessionError {
   constructor() {
     super("The sign-in that started this call has ended.", 401);
   }
+}
+
+/** Live calls from a phone need an active Pro plan (electron/pro-plan.mjs);
+ * the desktop app's own calls are free. Refused before the key is asked
+ * for: there is no point asking for a key a call cannot use. */
+export class LiveCallNeedsProError extends LiveSessionError {
+  constructor() {
+    super("Live calls from your phone need a Pro plan.", 402);
+  }
+}
+
+/** A call from a phone: a paired device the companion vouched for (the
+ * phone cannot choose its device id or drop it), or a phone app by its own
+ * account. Everything else is the desktop app or a browser on this computer. */
+export function liveCallFromPhone(input: { device?: string; client: LiveClient }): boolean {
+  return Boolean(input.device) || input.client === "ios" || input.client === "android";
 }
 
 type AppendKind = "instructions" | "thinking" | "commentary";
@@ -187,6 +214,7 @@ export class LiveCallController {
   async start(input: { auth: RequestAuth; device?: string; botId: string; botName: string; threadId: string; client: LiveClient; sdp: string }): Promise<{ call: LiveCallState; sdp: string }> {
     if (this.call && this.call.state.status !== "ended") throw new LiveCallBusyError({ ...this.call.state });
     if (input.device && this.revokedDevices.has(input.device)) throw new LiveCallSignedOutError();
+    if (liveCallFromPhone(input) && !this.deps.pro()) throw new LiveCallNeedsProError();
     const settings = this.deps.settings();
     const key = settings.key.trim();
     if (!key) throw new LiveSessionError("Add an OpenAI API key to use Live calls.", 409);
@@ -400,6 +428,7 @@ export class LiveCallController {
       try { socket.close(1000, "call ended"); } catch { /* already closed */ }
     }
     this.emit(call);
+    this.writeRecord(call, reason);
     this.deps.log(liveCallSummaryLine({
       botId: call.state.botId,
       voice: call.state.voice,
@@ -416,6 +445,29 @@ export class LiveCallController {
     }));
     if (this.call === call) this.call = null;
     for (const resolve of call.closeWaiters.splice(0)) resolve();
+  }
+
+  /** The one row a call that went live leaves in its chat (deps.recordCall):
+   * its id, times and length, never anything said on it. A call that never
+   * attached leaves none. Writing it may fail; the call still ends. */
+  private writeRecord(call: Call, reason: LiveEndReason): void {
+    if (!call.attached || !this.deps.recordCall) return;
+    const endedAt = this.now();
+    const record: LiveCallRecord = {
+      callId: call.state.callId,
+      botId: call.state.botId,
+      client: call.state.client,
+      startedAt: call.state.startedAt,
+      endedAt,
+      // OpenAI's usage seconds when it sent them, else wall clock: the summary line's source
+      seconds: Math.max(0, Math.round(call.stats.seconds ?? (endedAt - call.state.startedAt) / 1000)),
+      endReason: reason,
+    };
+    try {
+      this.deps.recordCall({ threadId: call.state.threadId, botName: call.botName, record });
+    } catch {
+      this.recordError(call, "record");
+    }
   }
 
   private checkIdle(call: Call): void {
@@ -514,7 +566,7 @@ export class LiveCallController {
       // answer. When that leaves nothing, the person spoke over the voice:
       // keep everything heard.
       const answer = heard.withoutEcho || said;
-      const result = await this.respond(call, { auth: call.auth, threadId: call.state.threadId, requestId: question.requestId, behavior: "answer", message: answer }, id);
+      const result = await this.respond(call, { auth: call.auth, threadId: call.state.threadId, requestId: question.requestId, behavior: "answer", message: answer, callId: call.state.callId }, id);
       if (!result) return;
       if (result.ok) {
         this.append(call, "thinking", LIVE_COPY.answerPassed, id);
@@ -540,7 +592,7 @@ export class LiveCallController {
     call.stats.sentToBot += 1;
     this.append(call, "thinking", LIVE_COPY.working, id);
     try {
-      const result = await this.deps.send({ auth: call.auth, botId: call.state.botId, threadId: call.state.threadId, text: said });
+      const result = await this.deps.send({ auth: call.auth, botId: call.state.botId, threadId: call.state.threadId, text: said, callId: call.state.callId });
       if (result.kind === "queued") call.queuedIds.add(result.queueId);
       else if (result.kind === "steered") {
         call.pendingCall.add(result.messageId);
@@ -659,7 +711,7 @@ export class LiveCallController {
       this.onCard(call, message);
       return;
     }
-    if (message.kind === "connector" || message.kind === "secret") {
+    if (message.kind === "connector" || message.kind === "secret" || message.kind === "signin") {
       this.onSetupCard(call, message);
       return;
     }
@@ -681,8 +733,8 @@ export class LiveCallController {
   }
 
   /** A line the caller typed in a client (every client sends a sendId with
-   * what is typed), as the same person. Not a peer bot's line (ask_bot,
-   * start_thread, an aside: the answer goes back to that bot), not a line a
+   * what is typed), as the same person. Not a peer bot's line (coordinate_bots,
+   * start_thread: the answer goes back to that bot), not a line a
    * routine, a webhook or the local API added (no sendId, or via "api"), not
    * a line a worker relayed for someone else (the Slack relay, any guarded
    * send: relayed), and not another member's line in a shared workspace. */
@@ -773,14 +825,17 @@ export class LiveCallController {
    * the chat. The voice says so once; neither can be done by voice, and a
    * credential must never be spoken into the call. */
   private onSetupCard(call: Call, message: Message): void {
-    const { connector, secret } = message;
+    const { connector, secret, signIn } = message;
     const waiting = message.kind === "connector"
       ? Boolean(connector && connector.status !== "connected" && !connector.dismissed && !connector.resumed)
-      : Boolean(secret && !secret.provided && !secret.dismissed && !secret.superseded && !secret.resumed);
+      : message.kind === "signin"
+        ? Boolean(signIn && !signIn.done && !signIn.cancelled && !signIn.superseded)
+        : Boolean(secret && !secret.provided && !secret.dismissed && !secret.superseded && !secret.resumed);
     const key = `${message.kind}:${message.id}`;
     if (!waiting || call.announced.has(key)) return;
     call.announced.add(key);
-    this.append(call, "instructions", connector ? spokenConnectorPrompt(connector.label) : spokenSecretPrompt(secret?.label ?? ""));
+    this.append(call, "instructions", connector ? spokenConnectorPrompt(connector.label)
+      : signIn ? spokenSignInPrompt(signIn.site) : spokenSecretPrompt(secret?.label ?? ""));
   }
 
   private onCardSettled(call: Call, requestId: string): void {

@@ -8,6 +8,7 @@
  * server/store.ts; the wire projection is typed so a new server field
  * fails compilation until it is either declared here or explicitly listed
  * as server-private. */
+import type { DataBroadcast } from "./data-surface.ts";
 import type { ApprovalMode } from "./approval-mode.ts";
 import type { ToolScope } from "./tool-scope.ts";
 import type { CommandAllowlistCandidate } from "./command-allowlist.ts";
@@ -141,6 +142,8 @@ export interface WireTask {
   /** The person pinned this thread above the update-ordered list. Only true
    * is stored; absence means unpinned. */
   pinned?: boolean;
+  link?: string;
+  linkAuto?: boolean;
   /** Epoch ms of the newest message, or createdAt when the thread has none.
    * Server-derived. Clients must not write it. */
   updatedAt?: number;
@@ -184,8 +187,20 @@ export interface WireTask {
   surfaceAuto?: true;
   /** what this task has spent, banked once per turn */
   usage?: TaskUsage;
+  /** Prompt-cache keep-warm status for this thread (server/cache-keepwarm.ts),
+   * derived at projection and never stored; absent when no window is open. */
+  cacheKeepWarm?: CacheKeepWarmStatus;
   /** the folder this task's turns run in, pinned on its first turn. */
   cwd?: string | null;
+}
+
+/** One thread's keep-warm window as a client shows it. Times are epoch ms. */
+export interface CacheKeepWarmStatus {
+  state: "warm" | "stopped";
+  until?: number;
+  nextPingAt?: number;
+  last?: { at: number; read: number; write: number; costUsd: number | null };
+  stopped?: string;
 }
 
 /** A lightweight organizational label within one bot. */
@@ -252,6 +267,10 @@ export interface WireBot {
   id: string;
   /** The task selected in the UI; running turns keep their own thread id. */
   threadId: string;
+  /** The bot's main thread (server/main-thread.ts): where a routine without
+   * a thread of its own reports, and what a bot opens to while threads are
+   * hidden. Server-derived; absent only for a bot without threads. */
+  mainThreadId?: string;
   /** every task this bot has, newest first, projected like wireTask */
   tasks?: WireTask[];
   /** Projects group this bot's threads; older bots have no projects. */
@@ -344,6 +363,9 @@ export interface WireBot {
    * tidies nightly. On unless explicitly false; every change is journaled
    * and can be undone. */
   memoryUpkeep?: boolean;
+  /** Prompt-cache keep-warm for this bot's Claude threads: true or false
+   * overrides the workspace setting (Settings → Engines); absent follows it. */
+  cacheKeepWarm?: boolean;
   /** Which of the app-wide MCP servers this bot mounts, by name. */
   mcpServers?: string[];
   /** Owner-selected original tool identities. An empty allowlist permits none. */
@@ -401,7 +423,7 @@ export interface WireMessage {
   roomRequest?: { id: string; phase: "request" | "result" };
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "signin" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
   text?: string;
   digest?: TurnDigest;
   compaction?: {
@@ -416,17 +438,23 @@ export interface WireMessage {
    * and video a bot attached with attach_file; they are opened through the
    * message-scoped file route, never by path. */
   attachments?: Array<
-    | { kind: "image"; path: string; mime: string }
+    | { kind: "image"; path: string; mime: string; name?: string }
     | { kind: "file"; path: string; mime: string; name: string }
     | { kind: "audio"; path: string; mime: string; durationMs?: number }
   >;
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
+  /** signin rows: the bot asked the person to sign in to a site themselves. */
+  signIn?: SignInRequestCardData;
   /** One idempotently updated status card for a routine run. */
   routineRun?: RoutineRunCardData;
   /** Terminal receipt for a bounded multi-bot channel goal. */
   goalRun?: GroupGoalRunCardData;
+  /** call rows (kind "call"): the finished Live call this row records. The
+   * row's text is only the fallback line for clients that do not know the
+   * kind. */
+  call?: LiveCallRecord;
   /** activity messages: tool name + outcome. */
   tool?: {
     name: string; ok?: boolean; spoken?: string; setup?: boolean; terminal?: boolean; summary?: string; input?: string; output?: string;
@@ -455,6 +483,10 @@ export interface WireMessage {
   /** A user-role message that arrived through the server's HTTP API
    * ("api"), or a request a person spoke on a Live call ("call"). */
   via?: "api" | "call";
+  /** The Live call a "call" line was spoken on (LiveCallState.callId). Set
+   * only on user messages with `via: "call"`; a turn's own messages point
+   * at their request through `requestMessageId` instead. */
+  callId?: string;
   /** A user line an external interface relayed through the guarded send
    * route (the Slack worker, for someone else, as this computer): nobody
    * typed it in one of this workspace's clients. A Live call never reads it
@@ -503,14 +535,25 @@ export interface WireMessage {
    * not know it ignore it. */
   routedBy?: { provider: "jev"; probability: number };
   /** Set on the user-role line another bot delivered into this bot's own
-   * conversation (ask_bot, start_thread). */
-  peerAsk?: { botId: string; name: string; unattended?: boolean };
+   * conversation (coordinate_bots, start_thread). `incident`: the line is
+   * OpenMausBot's Team incidents report about that bot's broken run in
+   * `threadId` (server/incidents.ts), not its words; `notified`: that
+   * failure already buzzed the person (a run that could not start, a
+   * failed routine). */
+  peerAsk?: { botId: string; name: string; unattended?: boolean; incident?: { threadId: string; notified?: boolean } };
   /** emoji reactions; by = "user" or a member botId. */
   reactions?: Array<{ emoji: string; by: string }>;
   /** comm chips: "Messaged @X", linking to the bot-bot channel. */
   comm?: { groupId: string; threadId?: string; withBotId: string; withName: string; withColor: string };
   /** thread chips: "Opened thread #Title on @X". */
   threadRef?: { botId: string; threadId: string; title: string };
+  /** A published Data result, linked to its bot's main viewer. */
+  dataResult?: { botId: string; cardId: string; title: string; kind: "table" | "chart" | "text"; sql?: string };
+  /** user messages: the Data result the person was viewing when they sent
+   * this (shared/data-context.ts). Its own field, so `text` stays exactly
+   * what they typed; the server puts the hint in front of the text it
+   * sends the model for this turn and for every retry of it. */
+  dataContext?: { cardId: string; draftSql?: string };
   /** user messages waiting in the steer-queue while the bot is mid-turn. */
   queued?: boolean;
   /** steer-queue entry this drained user line came from. */
@@ -601,6 +644,22 @@ export interface LiveCallState {
   error?: string;
 }
 
+/** One finished Live call, written once when a call that went live ends. Never carries speech. */
+export interface LiveCallRecord {
+  callId: string;
+  botId: string;
+  client: LiveClient;
+  /** epoch ms, = LiveCallState.startedAt */
+  startedAt: number;
+  /** epoch ms when the call ended */
+  endedAt: number;
+  /** whole seconds: OpenAI usage seconds when given, else wall clock */
+  seconds: number;
+  endReason: LiveEndReason;
+  /** only when LLM thread titles are on and the engine can generateText */
+  title?: string;
+}
+
 /** Non-secret Live settings, as GET /api/config and PATCH /api/live/settings report them. */
 export interface LiveSettings {
   configured: boolean;
@@ -622,6 +681,9 @@ export interface ConnectorCardData {
   error?: string;
   dismissed?: boolean;
   resumed?: boolean;
+  /** Stop ended the turn this card paused: it offers no action, and a
+   * connection made afterwards is kept but continues nothing. */
+  stopped?: boolean;
 }
 
 export interface SecretRequestCardData {
@@ -640,6 +702,48 @@ export interface SecretRequestCardData {
   superseded?: boolean;
   resumed?: boolean;
   error?: string;
+  /** Stop ended the turn this card paused: it offers no entry, and a key
+   * saved afterwards is kept but continues nothing. */
+  stopped?: boolean;
+}
+
+/** A bot asked the person to sign in to a website themselves
+ * (shared/sign-in-request.ts): they type the password into the page, in the
+ * place the bot works, or save a login the server fills for the bot. The
+ * bot never sees the password either way. */
+export interface SignInRequestCardData {
+  /** The page to open, an http(s) address. */
+  url: string;
+  /** Its host, the card's headline. */
+  site: string;
+  /** The bot's own words: why it needs the sign-in. */
+  reason?: string;
+  /** Where the login has to happen: the place the asking turn worked in. */
+  place: Surface;
+  done?: boolean;
+  cancelled?: boolean;
+  /** A newer request for the same site in this conversation replaced this
+   * card; it no longer offers Done or Cancel. */
+  superseded?: boolean;
+  /** Answered by saving a login (shared/logins.ts): the exact host it was
+   * saved for, which the bot then fills with fill_login. */
+  savedLogin?: string;
+  resumed?: boolean;
+  error?: string;
+  /** Stop ended the turn this card paused: it offers no Done or Cancel,
+   * and an answer given afterwards is kept but continues nothing. */
+  stopped?: boolean;
+}
+
+/** The open sign-in request a bot's computer plea stands for, so whichever
+ * panel shows the plea can settle that card. */
+export interface ComputerHelpRef {
+  /** The asking bot: a team computer's plea reaches every member's panel. */
+  botId: string;
+  threadId: string;
+  messageId: string;
+  site: string;
+  place: Surface;
 }
 
 /** Who answers a room message nobody was @mentioned in. `auto` asks the
@@ -669,6 +773,10 @@ export interface GroupTask {
   /** The first message already drove a title attempt for this thread, so a
    * later one does not rename a room the person may have retitled. */
   titleFromFirstMessage?: true;
+  /** Whether a turn is actively running in this thread. */
+  working?: boolean;
+  /** The member bot currently speaking or generating in this thread, if any. */
+  busyBotId?: string | null;
 }
 
 /** A room as a client may see it: the record plus the computed working
@@ -676,6 +784,10 @@ export interface GroupTask {
 export interface WireGroup {
   /** Computed from the usage ledger, not stored in groups.json. */
   usage?: GroupThreadUsage | null;
+  /** transient: each member's context in the active thread, from its last
+   * turn there (server/room-context.ts), and whether its next turn there
+   * was asked to start compacted. Absent until a member reports one. */
+  memberContext?: Record<string, { tokens: number; window: number; compactRequested?: true }> | null;
   id: string;
   /** The active task's thread. Direct-message channels stay single-threaded. */
   threadId: string;
@@ -720,6 +832,26 @@ export interface WireGroup {
   /** A direct-message channel's turn ceiling. Null on the wire means the
    * global group limit. Channel conversations store theirs on each task. */
   turnTimeoutMinutes?: number | null;
+  /** Members the person stopped in this room ("stop @Bot"), by bot id.
+   * A held member gets no turn until it is @mentioned again or resumed.
+   * Room-wide, persisted (server/room-holds.ts). */
+  holds?: Record<string, RoomHold>;
+  /** Room messages addressed to a member while it was held, by bot id;
+   * its next turn is shown them, then they are cleared. */
+  heldMessages?: Record<string, RoomHeldMessage[]>;
+}
+
+/** One member's hold in a room: when the person stopped it, and whether the
+ * room has already said so (the held line is written once per hold). */
+export interface RoomHold {
+  at: number;
+  noted?: boolean;
+}
+
+/** A room message that reached a member while it was held. */
+export interface RoomHeldMessage {
+  threadId: string;
+  messageId: string;
 }
 
 // ── live wire frames ───────────────────────────────────────────────────
@@ -782,7 +914,10 @@ export type ServerFrame =
    * one progress line until its first screen frame. `place` names a cloud
    * computer (absent: a Local VM). */
   | { kind: "computer"; botId: string; state: "provisioning" | "waking"; place?: "cloud" }
-  | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null }
+  | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null; help?: ComputerHelpRef | null }
+  /** A bot's data sheet changed (a card added, updated, failed, removed; a
+   * table loaded). Whole sheet each time: see shared/data-surface.ts. */
+  | DataBroadcast
   | { kind: "bot.deleted"; botId: string }
   | { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }
   /** The config status object spread flat into the frame; its full typing

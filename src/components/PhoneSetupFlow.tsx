@@ -50,13 +50,20 @@ import {
   preparePhonePairingRoute,
   queuePhonePairingAttempt,
   releasePhonePairingAttempt,
+  secureAddressRequestLapsed,
   shouldArmPhoneSetupProvisioningTimeout,
+  shouldPrepareSecureAddress,
   startNonOverlappingPhoneSetupPoll,
   type PhoneSetupPhase,
   type PhonePairingAttemptLock,
   type PhonePairingAttemptQueue,
 } from "../lib/phone-setup";
 import type { CompanionAccountState } from "../types/ogb";
+import {
+  companionStateRefreshIsCurrent,
+  mutateCompanionBridgeState,
+  phonePairingManualCodeMode,
+} from "../lib/companion-state";
 import { ConnectionDetail } from "./ConnectionDetail";
 import { brand } from "../lib/brand";
 
@@ -145,30 +152,6 @@ export const loadCompanionBridgeState = async (
   };
 };
 
-export interface CompanionStateMutationEpoch {
-  current: number;
-}
-
-/** Polls capture the epoch before reading. A mutation advances it both before
- * and after the IPC call, invalidating snapshots taken before or during that
- * mutation while leaving the independently loaded account result usable. */
-export const mutateCompanionBridgeState = async <State,>(
-  epoch: CompanionStateMutationEpoch,
-  mutate: () => Promise<State>,
-): Promise<State> => {
-  epoch.current += 1;
-  try {
-    return await mutate();
-  } finally {
-    epoch.current += 1;
-  }
-};
-
-export const companionStateRefreshIsCurrent = (
-  epoch: CompanionStateMutationEpoch,
-  refreshEpoch: number,
-): boolean => epoch.current === refreshEpoch;
-
 export const shouldHydrateCompanionEmail = (
   userEdited: boolean,
   account: CompanionAccountState,
@@ -180,14 +163,6 @@ export const companionAccountActionError = (
 ): string | null => {
   if (actionError) return actionError;
   return account?.status === "signed-out" ? account.message ?? null : null;
-};
-
-export const phonePairingManualCodeMode = (
-  pairingOpen: boolean,
-  pairingLink: string | null,
-): "details" | "direct" | "hidden" => {
-  if (!pairingOpen) return "hidden";
-  return pairingLink ? "details" : "direct";
 };
 
 export interface PhoneSetupController {
@@ -420,10 +395,23 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
         }
         const explicitRoute = routeMode !== "automatic";
         const gate = phonePairingGate(accountOverride ?? account, started, explicitRoute);
+        const remote = companionAccountBridge();
+        const prepare = remote?.prepare && shouldPrepareSecureAddress(routeMode, gate, accountOverride ?? account)
+          ? remote.prepare
+          : null;
         if (gate !== "open") {
           setProvisioning(gate === "wait" || gate === "start");
+          // The address is created now, under the spinner; the QR opens on
+          // the next refresh, or the account shows why it could not be.
+          if (prepare) {
+            const next = await mutateCompanionBridgeState(companionMutationEpoch, () => prepare());
+            if (isCurrent()) setAccount(next);
+          }
           return;
         }
+        // The address is already there and the QR does not wait for this:
+        // it only tells the desktop someone is pairing over it.
+        if (prepare) void Promise.resolve().then(() => prepare()).catch(() => {});
         if (explicitRoute && !companionPairingRoute(started, routeMode)) {
           setProvisioning(false);
           setError(routeMode === "tailscale"
@@ -761,13 +749,17 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
       flow.tailscaleFallback ||
       flow.pairingAttempted ||
       setupTimedOut ||
-      !state ||
-      phonePairingGate(account, state, false) !== "open"
+      !state
     ) {
       return;
     }
-    void openPairing("automatic");
-  }, [account, flow.active, flow.localFallback, flow.pairingAttempted, flow.tailscaleFallback, openPairing, setupTimedOut, state]);
+    if (
+      phonePairingGate(account, state, false) === "open"
+      || (!provisioning && secureAddressRequestLapsed(account, state))
+    ) {
+      void openPairing("automatic");
+    }
+  }, [account, flow.active, flow.localFallback, flow.pairingAttempted, flow.tailscaleFallback, openPairing, provisioning, setupTimedOut, state]);
 
   const shouldPoll = flow.active || Boolean(state?.pairing);
   useEffect(() => {

@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
+import { launchVerificationServer, runControlOmb, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { handleToolCall, request } from "../scripts/mcp-server.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 
 it("boots and reports an interrupted routine back to its source room", async () => {
   const fixture = await launchVerificationServer();
@@ -60,3 +61,67 @@ it("boots and reports an interrupted routine back to its source room", async () 
     await fixture.close();
   }
 }, 30_000);
+
+// A routine still running at a restart keeps its teammates' work when the
+// runtime still carries it (docs/runtime-contract.md §5): the cut teammate
+// turn runs again once, in place; the run stays waiting instead of failing;
+// its resume says what the restart did, and the run completes with it. The
+// tree here is one the server before the job runtime left behind, imported
+// once at boot (server/runtime/import-legacy.ts).
+it("keeps a routine waiting through a restart, reruns its cut teammate once, and completes it", async () => {
+  const fixture = await launchVerificationServer();
+  const { url, dataDir, logPath } = fixture.info;
+  let restarted: ChildProcess | undefined;
+  try {
+    const cli = (...args: string[]) => runControlOmb([...args, "--url", url]) as Promise<any>;
+    const { bot: chief } = await cli("new-bot", "--name", "Clive", "--section", "Leadership");
+    const { bot: mate } = await cli("new-bot", "--name", "Mira", "--section", "Engineering");
+    await request(`/api/bots/${chief.id}`, { method: "PATCH", body: JSON.stringify({ chiefOfStaff: true, managedSections: ["Engineering"], acknowledgePeerScope: true }) }, url);
+    await waitForExit(fixture.child, { signal: "SIGTERM" });
+    const at = Date.now() - 60_000;
+    writeFileSync(join(dataDir, "routines.json"), JSON.stringify({ version: 1, routines: [], runs: [{
+      id: "cut-run", routineId: "cut-routine", routineName: "Weekly export", botId: chief.id, target: "bot", runOn: "maus",
+      threadId: chief.activeTaskId, status: "running", prompt: "Have Engineering build the export", createdAt: at, scheduledFor: at, startedAt: at,
+    }] }));
+    const node = { result: "", executions: 0, approvalGranted: false, kind: "work", restarts: 0, rootId: "cut-root" };
+    writeFileSync(join(dataDir, "room-handoffs.json"), JSON.stringify([
+      { ...node, id: "cut-root", key: "root", botId: chief.id, threadId: chief.activeTaskId, text: "Have Engineering build the export", createdAt: at, status: "source", reported: true, executions: 1 },
+      { ...node, id: "cut-work", parentId: "cut-root", key: "build", botId: mate.id, threadId: mate.activeTaskId, text: "Build the export", createdAt: at + 1, startedAt: at + 2, status: "running", reported: false },
+    ]));
+    const log = openSync(logPath, "a", 0o600);
+    restarted = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./index.ts", import.meta.url))], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      env: { ...verificationServerEnvironment(process.env, dataDir, Number(new URL(url).port)), FAKE_CLAUDE_MODE: "happy" },
+      stdio: ["ignore", log, log],
+    });
+    closeSync(log);
+    await expect.poll(async () => {
+      if (restarted?.exitCode !== null) throw new Error(readFileSync(logPath, "utf8"));
+      return fetch(url + "/api/health").then(r => r.ok).catch(() => false);
+    }, { timeout: 10_000, interval: 150 }).toBe(true);
+    const run = async () => ((await request("/api/routines", {}, url) as any).runs as any[]).find((r) => r.id === "cut-run");
+    const nodes = () => readHandoffs(dataDir);
+    expect(existsSync(join(dataDir, "room-handoffs.json.migrated"))).toBe(true);
+    // The run is not failed: the runtime carries its tree, so it waits.
+    expect(await run()).toMatchObject({ status: "waiting" });
+    expect((await run()).error).toBeUndefined();
+    // The cut teammate turn runs again once, told so, and settles.
+    await expect.poll(() => nodes().find((n: any) => n.id === "cut-work")?.status, { timeout: 20_000 }).toBe("completed");
+    expect(nodes().find((n: any) => n.id === "cut-work")).toMatchObject({ restarts: 1, executions: 1, result: expect.stringContaining("hello from fake claude") });
+    const mates = (await request(`/api/threads/${mate.activeTaskId}/messages`, {}, url) as any).messages as any[];
+    expect(mates.filter((m) => m.tool?.name === "Resuming after a restart")).toHaveLength(1);
+    // Its result resumes the run as a routine turn, and the run completes with it.
+    await expect.poll(async () => (await run())?.status, { timeout: 30_000 }).toBe("completed");
+    expect((await run()).output).toContain("hello from fake claude");
+    await expect.poll(() => nodes().find((n: any) => n.id === "cut-root")?.status, { timeout: 15_000 }).toBe("completed");
+    const chiefs = (await request(`/api/threads/${chief.activeTaskId}/messages`, {}, url) as any).messages as any[];
+    expect(chiefs.some((m) => m.tool?.name === "Mira was cut off by a restart; resuming")).toBe(true);
+    expect(chiefs.some((m) => m.tool?.name === "Mira replied")).toBe(true);
+    expect(chiefs.some((m) => String(m.tool?.name ?? "").startsWith("Resumed with Mira results after a restart"))).toBe(true);
+    // The tree ran once more and no more.
+    expect(nodes().map((n: any) => [n.id, n.status, n.executions])).toEqual([["cut-root", "completed", 2], ["cut-work", "completed", 1]]);
+  } finally {
+    await waitForExit(restarted, { signal: "SIGTERM" });
+    await fixture.close();
+  }
+}, 45_000);

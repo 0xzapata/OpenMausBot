@@ -9,6 +9,7 @@ import type { Message } from "@/state/store";
 import { formatElapsed } from "@/lib/working-time";
 import { t } from "@/lib/i18n";
 import { failedTurnCause } from "../../shared/failed-turn";
+import { isStoppedTurnName } from "../../shared/client-cancel";
 import { localDay } from "@/lib/transcript-derivations";
 
 export type ActivityTranscriptItem =
@@ -21,11 +22,13 @@ export type TranscriptItem =
 
 /** A status row rather than a tool step: `recovery:` when automatic recovery
  * changes this conversation's engine, `notice:` when the engine runs another
- * model than the saved one. Both must remain visible and are never folded. */
-export function statusActivity(message: Message): { kind: "recovery" | "notice"; text: string } | null {
+ * model than the saved one, `stopped:` when the person or the client stopped
+ * the turn. All three must remain visible and are never folded. */
+export function statusActivity(message: Message): { kind: "recovery" | "notice" | "stopped"; text: string } | null {
   const name = message.kind === "activity" ? message.tool?.name : undefined;
   if (name?.startsWith("recovery:")) return { kind: "recovery", text: name.slice("recovery:".length).trim() };
   if (name?.startsWith("notice:")) return { kind: "notice", text: name.slice("notice:".length).trim() };
+  if (name && isStoppedTurnName(name)) return { kind: "stopped", text: name.slice("stopped:".length).trim() };
   return null;
 }
 
@@ -38,16 +41,23 @@ export function isStatusActivity(message: Message): boolean {
   return statusActivity(message) !== null;
 }
 
-/** A step that may be folded away: finished, a real tool, and not a
- * bot⇄bot or opened-thread chip (those are navigation, not work) or a
- * failed turn (that renders as an error). A step still running stays out,
- * so live progress is never hidden behind a fold. */
-function foldable(message: Message): boolean {
+/** A tool the bot ran: an activity row with a tool, whether it is running,
+ * finished or failed. Not a bot⇄bot or opened-thread chip (those are
+ * navigation, not work), a status row, or a failed turn (that renders as an
+ * error). One definition for every reader that must agree on what a step
+ * is: the fold below and a call's record (call-record.ts). */
+export function isToolStep(message: Message): message is Message & { tool: NonNullable<Message["tool"]> } {
   const tool = message.tool;
   if (message.kind !== "activity" || !tool) return false;
-  if (message.comm || message.threadRef || isStatusActivity(message)) return false;
-  if (tool.ok !== true) return false;
+  if (message.comm || message.threadRef || message.dataResult || isStatusActivity(message)) return false;
   return failedTurnCause(tool.name) === null;
+}
+
+/** A step that may be folded away: a tool step that finished. A step still
+ * running stays out, so live progress is never hidden behind a fold, and so
+ * does one that failed. */
+function foldable(message: Message): boolean {
+  return isToolStep(message) && message.tool.ok === true;
 }
 
 type TurnFold = Extract<TranscriptItem, { kind: "turn" }>;
@@ -104,6 +114,27 @@ function assistantTurnFolds(messages: Message[]): {
   });
 
   return { byAnchorId, hiddenIds };
+}
+
+/** A room's settled turns, folded under their final message: in a room
+ * every member's working notes would otherwise read as one reply each.
+ * Keyed by the final (terminal) message, which stays in the transcript and
+ * carries the fold above it; the notes are left out of the room's rows. */
+export function roomTurnFolds(messages: Message[]): {
+  byTerminalId: Map<string, TurnFold>;
+  hiddenIds: Set<string>;
+} {
+  const { byAnchorId, hiddenIds } = assistantTurnFolds(messages);
+  const terminals = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role === "bot" && message.kind === "text" && message.turnId && message.turnTerminal) terminals.set(message.turnId, message.id);
+  }
+  const byTerminalId = new Map<string, TurnFold>();
+  for (const fold of byAnchorId.values()) {
+    const terminalId = terminals.get(fold.turnId);
+    if (terminalId) byTerminalId.set(terminalId, fold);
+  }
+  return { byTerminalId, hiddenIds };
 }
 
 function group(messages: Message[], foldAssistantTurns: boolean): TranscriptItem[] {

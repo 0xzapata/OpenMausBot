@@ -31,8 +31,14 @@ helpVerbs.add("help");
 // modules under server/routes (server/routes/README.md). Tests there quote
 // paths without registering them, so they do not count.
 const ROUTES_DIR = join(ROOT, "server", "routes");
-const routeModules = readdirSync(ROUTES_DIR).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts")).sort();
-const serverSource = [join(ROOT, "server", "index.ts"), ...routeModules.map((name) => join(ROUTES_DIR, name))]
+// Every route module, including those in folders under server/routes and the
+// three factories that live beside their feature (data, workspace backup,
+// cloud move); a route moved out of index.ts stays a registered route here.
+const routeModules = readdirSync(ROUTES_DIR, { recursive: true, encoding: "utf8" })
+  .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts")).sort()
+  .map((name) => join(ROUTES_DIR, name));
+const featureRouteModules = ["data/routes.ts", "workspace-backup-http.ts", "cloud-move-http.ts"].map((name) => join(ROOT, "server", name));
+const serverSource = [join(ROOT, "server", "index.ts"), ...routeModules, ...featureRouteModules]
   .map((file) => readFileSync(file, "utf8")).join("\n");
 const hooksSource = readFileSync(join(ROOT, "server", "webhook-ingress.ts"), "utf8");
 const hostedSource = readFileSync(join(ROOT, "enterprise", "server", "workspace-access.ts"), "utf8");

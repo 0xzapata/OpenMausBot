@@ -20,13 +20,14 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AudioLines, Check, ChevronDown, Loader2, Phone, PhoneOff, X } from "lucide-react";
 
-import { useStore, visibleMessages, type Bot } from "@/state/store";
+import { useShowThreads } from "@/lib/thread-preferences";
+import { openBot, useStore, visibleMessages, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { currentCall, deferCallCleanup, endCall, startCall, useOnCall } from "@/lib/call";
 import { CALL_MODES, callModeHint, effectiveCallMode, setCallMode, useCallMode, type CallMode } from "@/lib/call-mode";
 import { NO, YES } from "../../shared/call-consent";
-import { dismissKeyPrompt, hangUpLiveCall, isLiveCallRunning, startLiveCall, useLiveMedia } from "@/lib/live-call-media";
+import { dismissStartPrompt, hangUpLiveCall, isLiveCallRunning, startLiveCall, useLiveMedia } from "@/lib/live-call-media";
 import { t } from "@/lib/i18n";
 import { speaker } from "@/lib/tts";
 import { localSystemVoiceActive } from "@/lib/local-voice";
@@ -35,6 +36,7 @@ import { usePushToTalk } from "@/lib/push-to-talk";
 import { BotAvatar } from "./Avatar";
 import { navigateThreadMenu } from "./BotProjects";
 import { LiveKeySetup } from "./LiveKeySetup";
+import { LiveProPrompt } from "./ProIntroduction";
 import { liveLineHeldElsewhere } from "./LiveCallBar";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
 import { track } from "@/lib/analytics";
@@ -96,6 +98,7 @@ export function CallTargetButton({
   onStart: (mode: CallMode) => void;
 }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const { capabilities, ready: capabilitiesReady } = useDesktopCapabilities();
   const media = useLiveMedia();
   const liveThreadId = liveCapable ? threadId : undefined;
@@ -152,13 +155,19 @@ export function CallTargetButton({
   // here. A Live call always asks for the microphone first, so a page that
   // can't have one says so before anyone pastes a key it can't use.
   const keyPopover = canLive && !active && media.needsKey && media.botId === targetId;
+  // The harness answered that this Live call needs a Pro plan (a phone's call; the desktop app's own are free) (it asks for a key
+  // only after that): the Pro card here, where the key form would be.
+  const proPopover = canLive && !active && media.needsPro && media.botId === targetId;
+  const startPrompt = keyPopover || proPopover;
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const chevronRef = useRef<HTMLButtonElement>(null);
   const keyRef = useRef<HTMLDivElement>(null);
+  const proRef = useRef<HTMLDivElement>(null);
   const helpId = useId();
   const menuId = useId();
   const keyId = useId();
+  const proId = useId();
   const elsewhereName = liveElsewhere ? state.bots.find((candidate) => candidate.id === media.botId)?.name : undefined;
   const composer = placement === "composer";
   const label = active
@@ -192,16 +201,18 @@ export function CallTargetButton({
   const closePopovers = useCallback(() => {
     setHelpOpen(false);
     setMenuOpen(false);
-    dismissKeyPrompt(targetId);
+    dismissStartPrompt(targetId);
   }, [targetId]);
 
-  // The "no key" answer belongs to this chat's call attempt: leaving the
-  // chat drops it, so it never reopens (and takes focus) on a later visit.
-  useEffect(() => () => dismissKeyPrompt(targetId), [targetId]);
+  // The "no key" (or "no Pro plan") answer belongs to this chat's call
+  // attempt: leaving the chat drops it, so it never reopens (and takes
+  // focus) on a later visit.
+  useEffect(() => () => dismissStartPrompt(targetId), [targetId]);
 
   /** Start a call in this mode. Live never opens the overlay: the media
    * module marks the call and the call bar shows it. A Live call with no key
-   * yet asks for the microphone, then for the key (the harness's needsKey). */
+   * yet asks for the microphone, then for the key (the harness's needsKey);
+   * without a Pro plan, it shows the Pro card instead (needsPro). */
   const start = (next: CallMode) => {
     setHelpOpen(false);
     setMenuOpen(false);
@@ -218,7 +229,7 @@ export function CallTargetButton({
     startCall(targetId);
   };
 
-  const popoverOpen = helpOpen || menuOpen || keyPopover;
+  const popoverOpen = helpOpen || menuOpen || startPrompt;
   useEffect(() => {
     if (!popoverOpen) return;
     const closeOnOutsideClick = (event: PointerEvent) => {
@@ -245,6 +256,15 @@ export function CallTargetButton({
     keyShown.current = keyPopover;
     if (opened) keyRef.current?.querySelector<HTMLInputElement>("input")?.focus();
   }, [keyPopover]);
+  // ...and on the Pro card itself: what it offers depends on the plan, which
+  // arrives a moment after it opens, so a button focused first could be
+  // replaced under the person's focus.
+  const proShown = useRef(proPopover);
+  useEffect(() => {
+    const opened = proPopover && !proShown.current;
+    proShown.current = proPopover;
+    if (opened) proRef.current?.focus();
+  }, [proPopover]);
 
   // Another device (a phone, another window) holds the one Live line: no
   // button that would start a Live call here, as on the iPhone. The remote
@@ -253,7 +273,7 @@ export function CallTargetButton({
   // already running, stay.
   if (liveMode && !onCall && liveLineHeldElsewhere(media, state.liveCall)) return null;
   return (
-    <div ref={rootRef} className="relative flex items-center">
+    <div ref={rootRef} className="relative flex items-center gap-0.5">
       <button
         ref={buttonRef}
         disabled={liveElsewhere || (onLiveCall && media.phase === "ending")}
@@ -263,7 +283,7 @@ export function CallTargetButton({
             return;
           }
           if (onCall) return endCall(targetId);
-          if (keyPopover) {
+          if (startPrompt) {
             closePopovers();
             return;
           }
@@ -274,23 +294,24 @@ export function CallTargetButton({
           }
           start(liveMode ? "live" : "turns");
         }}
-        aria-expanded={unavailable ? helpOpen : keyPopover ? true : undefined}
-        aria-controls={unavailable ? helpId : keyPopover ? keyId : undefined}
+        aria-expanded={unavailable ? helpOpen : startPrompt ? true : undefined}
+        aria-controls={unavailable ? helpId : keyPopover ? keyId : proPopover ? proId : undefined}
         aria-label={label}
         title={label}
         data-call-button={placement}
         className={cn(
-          "relative flex shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-60",
+          "relative flex shrink-0 items-center justify-center disabled:opacity-60",
+          "rounded-l-3xl rounded-r-lg active:rounded-3xl transition-[color,background,border-radius]",
           composer ? "size-8" : "size-9",
           active
             ? "bg-danger text-white hover:brightness-110"
             : composer
               ? unavailable
                 ? "bg-control text-ink-tertiary hover:text-ink-secondary"
-                : "bg-control text-ink hover:bg-raised"
+                : "bg-control text-ink hover:bg-raised-hover"
               : unavailable
-                ? "text-ink-tertiary hover:bg-raised hover:text-ink-secondary"
-                : "text-ink-secondary hover:bg-raised hover:text-ink",
+                ? "text-ink-tertiary hover:bg-raised-hover hover:text-ink-secondary"
+                : "text-ink-secondary hover:bg-raised-hover hover:text-ink",
         )}
       >
         {active
@@ -316,7 +337,12 @@ export function CallTargetButton({
           aria-controls={menuOpen ? menuId : undefined}
           aria-label={t("call.mode.menu")}
           title={t("call.mode.menu")}
-          className={cn("-ml-1 flex w-4 items-center justify-center rounded-full text-ink-secondary transition-colors hover:text-ink disabled:opacity-40", composer ? "h-8" : "h-9")}
+          className={cn(
+              "grid place-content-center",
+              "bg-control w-8 hover:bg-raised-hover text-ink-secondary hover:text-ink disabled:opacity-40 transition-colors",
+              "rounded-l-lg rounded-r-3xl active:rounded-3xl transition-[color,background,border-radius]",
+              composer ? "h-8" : "h-9"
+            )}
         >
           <ChevronDown size={13} className={cn("transition-transform", menuOpen && "rotate-180")} />
         </button>
@@ -353,6 +379,17 @@ export function CallTargetButton({
         </div>
       )}
 
+      {proPopover && (
+        <div
+          ref={proRef}
+          id={proId}
+          tabIndex={-1}
+          className={cn("animate-pop-in absolute right-0 z-30 w-[340px] max-w-[90vw] rounded-xl shadow-2xl outline-none", composer ? "bottom-full mb-1.5" : "top-full mt-1.5")}
+        >
+          <LiveProPrompt />
+        </div>
+      )}
+
       {helpMotion.shown && (
         <div
           id={helpId}
@@ -384,7 +421,7 @@ export function CallTargetButton({
                 setHelpOpen(false);
                 if (remoteClient) {
                   // In a room the agent is a member: open its chat first.
-                  if (setupBot.id !== targetId) dispatch({ type: "select", id: setupBot.id });
+                  if (setupBot.id !== targetId) openBot(dispatch, setupBot, showThreads);
                   dispatch({ type: "toggleSettings", open: true, section: "voice" });
                   return;
                 }
@@ -444,7 +481,7 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
         if (event.key === "Tab") onClose();
         else navigateThreadMenu(event);
       }}
-      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
+      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl space-y-1", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
     >
       {CALL_MODES.map((entry) => {
         const unavailable = entry.id === "turns" ? turnsUnavailable : null;

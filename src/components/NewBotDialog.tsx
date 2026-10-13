@@ -22,9 +22,9 @@ import { useBotSettingsDerived } from "./bot-settings/useBotSettingsDerived";
 import { BotEditorContext } from "./bot-settings/BotEditorContext";
 import { inputCls } from "./bot-settings/field";
 import { RoutineEditor } from "./RoutinesPage";
-import { FullAccessWarning } from "./FullAccessWarning";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { SharePresetDialog } from "./SharePresetDialog";
+import { SettingRow } from "./SettingsPrimitives";
 
 const SECTIONS = ["Identity", "Soul", "Skills", "Memory", "Routines", "Access", "Model", "Permissions", "Voice & alerts"] as const;
 type Section = typeof SECTIONS[number];
@@ -80,7 +80,7 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   const savingRef = useRef(false);
   const alive = useRef(true);
   const [error, setError] = useState("");
-  const [warning, setWarning] = useState<"full" | "local" | null>(null);
+  const [warning, setWarning] = useState<"local" | null>(null);
   const [audience, setAudience] = useState<VisibilityMode>("everyone");
   const [people, setPeople] = useState("");
   const ownerOrAdmin = useOwnerOrAdmin();
@@ -97,7 +97,10 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
       .then(result => {
         if (cancelled) return;
         const defaults = structuredClone(result.defaults);
-        defaults.profile.modelSelection ??= result.modelSelection;
+        const selection = defaults.profile.modelSelection;
+        if (!selection || (selection.instanceId === "" && selection.model === "")) {
+          defaults.profile.modelSelection = result.modelSelection;
+        }
         if (!defaultsMode) defaults.profile.name = defaults.profile.name?.trim() || result.suggestedName;
         if (section !== undefined) defaults.profile.section = section;
         setDraft(new BotCreationDraft(defaults, () => render(value => value + 1)));
@@ -132,7 +135,6 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   }, []);
   const save = async () => {
     if (!ready || savingRef.current || parent.state.botCreationPending) return;
-    if (!defaultsMode && draft.bot.approvalMode === "full" && !draft.consent.confirmFullAccess) { setWarning("full"); return; }
     if (!defaultsMode && draft.bot.approvalMode === "auto" && draft.bot.computer === "local" && !draft.consent.acknowledgeLocalAuto) { setWarning("local"); return; }
     const visibility = choosesVisibility ? visibilityFromForm(audience, people) : null;
     if (visibility && !visibility.ok) { setError(t("botSettings.visibility.needPeople")); return; }
@@ -228,7 +230,6 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
           {saving && <Loader2 size={15} className="animate-spin" />}{t(defaultsMode ? "newBot.saveDefaults" : "newBot.create")}
         </button>
       </div>
-      <FullAccessWarning open={warning === "full"} onCancel={() => setWarning(null)} onConfirm={() => { draft.consent.confirmFullAccess = true; setWarning(null); void save(); }} />
       <LocalComputerAutoWarning open={warning === "local"} onCancel={() => setWarning(null)} onConfirm={() => { draft.consent.acknowledgeLocalAuto = true; setWarning(null); void save(); }} />
     </div>
   </div>;
@@ -363,14 +364,18 @@ function DraftRoutines({ draft }: { draft: BotCreationDraft }) {
 export function DefaultBotSettings() {
   const [open, setOpen] = useState(false);
   const [sharing, setSharing] = useState(false);
-  return <>
-    <div className="flex items-center justify-between gap-4 py-3"><span className="text-[13px] text-ink">{t("newBot.defaults")}</span>
+
+    const content = <>
       <div className="flex shrink-0 gap-2">
-        <button type="button" onClick={() => setSharing(true)} className="rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-control hover:text-ink">{t("newBot.sharePreset")}</button>
-        <button type="button" onClick={() => setOpen(true)} className="rounded-lg bg-control px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover">{t("newBot.edit")}</button>
+        <button type="button" onClick={() => setSharing(true)} className="cursor-pointer rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-control hover:text-ink">{t("newBot.sharePreset")}</button>
+        <button type="button" onClick={() => setOpen(true)} className="cursor-pointer rounded-lg bg-control px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover">{t("newBot.edit")}</button>
       </div>
-    </div>
-    {open && <NewBotDialog defaultsMode onClose={() => setOpen(false)} />}
-    {sharing && <SharePresetDialog onClose={() => setSharing(false)} />}
+      {open && <NewBotDialog defaultsMode onClose={() => setOpen(false)} />}
+      {sharing && <SharePresetDialog onClose={() => setSharing(false)} />}
+    </>
+
+  return <>
+    <SettingRow title={t("newBot.defaults")} children={content} />
+
   </>;
 }

@@ -15,6 +15,7 @@
 //                       session, so its load succeeds.
 //   FAKE_ACP_CACHED_LIVE_LOAD  acknowledge session/load of a live session but
 //                       keep its original MCP credentials, matching Qwen.
+//   FAKE_ACP_TEXT_REPLY  answer every session/prompt with only this text.
 //   FAKE_ACP_MODE   happy (default) | image | empty-reply | reasoning-only | exit-early | fail-after-text | hang | hang-initialize | stall-after-text | unkeyed-tool | no-auth | auth-required | permission | question
 //                   | ask-question-unsupported (send a cursor/ask_question server→client
 //                     request mid-prompt; the driver must answer -32601 method
@@ -24,14 +25,28 @@
 //                   | no-session-config (reject session/set_mode + set_model
 //                     with -32601, i.e. an agent predating those methods)
 //                   | ask-peer (spawn the injected "agents" MCP server from
-//                     session/new's mcpServers, call list_bots + ask_bot on a
-//                     peer, and reply with what the peer said — the comms e2e)
-//                   | delegate-peer (same as ask-peer but uses delegate_bot —
-//                     returns immediately, the peer runs after our turn)
-//                   | chief-delegate (delegates only for an ASSIGN_TO_PEER
-//                     prompt; ordinary follow-ups stay responsive)
-//                   | create-peer (a Chief creates a specialist, then delegates
-//                     work to it through the returned id)
+//                     session/new's mcpServers, call list_bots, then ask a
+//                     peer a question with coordinate_bots(consult: true) and
+//                     reply with the tool's answer — the comms e2e; the
+//                     peer's answer resumes this bot in a later turn)
+//                   | delegate-peer (same as ask-peer but hands work on with
+//                     coordinate_bots — returns immediately, the peer runs
+//                     after our turn. With FAKE_ACP_REDELEGATE_FILE set, the
+//                     first wake that saw the result hands on a second task,
+//                     once, and writes that file)
+//                   | chief-delegate (hands work on only for an ASSIGN_TO_PEER
+//                     prompt, remembers the assignment id in
+//                     FAKE_ACP_TASKID_FILE, and answers a CHECK_STATUS prompt
+//                     with assignment_status(id); ordinary follow-ups stay
+//                     responsive)
+//                   | create-peer (a Chief creates a specialist, then hands
+//                     work to it through the returned id with coordinate_bots)
+//                   The four peer modes call coordinate_bots / assignment_status
+//                   (docs/runtime-contract.md §9).
+//                   A wake carrying a hand-off's result (the legacy "[A
+//                   delegated task just completed]" or the runtime's
+//                   "[OpenMausBot report from …]") is answered with a fixed
+//                   line and never hands work on again.
 //                   | echo-gated (reply by echoing the full prompt, and when
 //                     FAKE_ACP_GATE_FILE is set hold the turn open until that
 //                     file exists — a deterministic busy window for the
@@ -166,10 +181,22 @@ const variantValues = (entries: any[]): string[] => entries.flatMap((entry) => (
 ));
 const modes = (process.env.FAKE_ACP_MODES ?? "").split(",").filter(Boolean);
 let currentMode: string | null = modes[0] ?? null;
-// task id captured from the last delegate_bot reply, for a later
-// check_delegation call. Each turn is a fresh process, so the id is passed
+// assignment id captured from the last hand-off reply, for a later
+// assignment_status call. Each turn is a fresh process, so the id is passed
 // through a file (same state-passing pattern as FAKE_ACP_GATE_FILE).
 const taskIdFile = process.env.FAKE_ACP_TASKID_FILE ?? "";
+/** The teammate id as list_bots prints it ("[id: …]"). */
+const peerIdOf = (list: string): string => /id: ([\w-]+)/.exec(list)?.[1] ?? "";
+/** The hand-off a scripted mode makes to one peer. */
+function handoffCall(message: string, options: { consult?: boolean; reason?: string } = {}): { name: string; args: (list: string) => object } {
+  const reason = options.reason ? { reason: options.reason } : {};
+  return { name: "coordinate_bots", args: (list) => ({ bot_ids: [peerIdOf(list)], message, ...(options.consult ? { consult: true } : {}), ...reason }) };
+}
+/** The assignment id a hand-off reply names: coordinate_bots answers with
+ * JSON receipts (requestId). */
+const handoffIdOf = (reply: string): string => /"requestId":"([\w-]+)"/.exec(reply)?.[1] ?? "";
+/** The status read for a remembered assignment id. */
+const statusCall = (id: string): { name: string; args: () => object } => ({ name: "assignment_status", args: () => ({ id }) });
 const logFile = process.env.FAKE_ACP_LOG_FILE ?? "";
 const rejectLiveLoadFile = process.env.FAKE_ACP_REJECT_LIVE_LOAD_FILE ?? "";
 function fakeLog(line: string): void {
@@ -231,9 +258,10 @@ const configOptions = () => {
 // cursor-shaped surface: the session advertises `models.availableModels` with
 // parameterised ids (`default[]`) that differ from the argv `--model` slugs
 // (`auto`). Off unless FAKE_ACP_SESSION_MODELS is set, so every existing mode
-// stays byte-identical. Format: "id|Name,id|Name" — the name is optional.
+// stays byte-identical. Format: "id|Name,id|Name" — the name is optional, and
+// commas inside an id's `[...]` parameters do not split it.
 const acpModels = (process.env.FAKE_ACP_SESSION_MODELS ?? "")
-  .split(",")
+  .split(/,(?![^[]*\])/)
   .filter(Boolean)
   .map((entry) => {
     const [modelId, name] = entry.split("|");
@@ -273,6 +301,10 @@ const dumpEnv = Object.fromEntries(
     "FACTORY_API_KEY",
     "UNSLOTH_STUDIO_AUTH_TOKEN",
     "CURSOR_API_KEY",
+    "CLINE_API_KEY",
+    "CLINE_PROVIDER",
+    "CLINE_MODEL",
+    "CLINE_MCP_SETTINGS_PATH",
     "CURSOR_AUTH_TOKEN",
     "KIMI_MODEL_NAME",
     "KIMI_MODEL_API_KEY",
@@ -411,6 +443,7 @@ const configCalls: Array<{ method: string; params: unknown }> = [];
 // pending server→client permission request id → resolver
 let pendingPermissionId: number | null = null;
 let onPermissionAnswered: ((allowed: boolean) => void) | null = null;
+let lastPermissionCancelled = false;
 // pending server→client cursor/ask_question probe → resolver (the unsupported
 // method the driver must reject rather than guess a shape for)
 let pendingAskQuestionId: number | null = null;
@@ -626,6 +659,7 @@ function handle(msg: any) {
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && msg.id === pendingPermissionId) {
     pendingPermissionId = null;
     const chosen = msg.result?.outcome?.optionId;
+    lastPermissionCancelled = msg.result?.outcome?.outcome === "cancelled";
     // which option the client picked, for tests asserting allow_always
     if (process.env.FAKE_ACP_PERMISSION_ANSWER) writeFileSync(process.env.FAKE_ACP_PERMISSION_ANSWER, String(chosen ?? "cancelled"));
     onPermissionAnswered?.(typeof chosen === "string" && chosen.startsWith("allow"));
@@ -671,6 +705,10 @@ function handle(msg: any) {
       break;
     }
     case "authenticate":
+      if (mode === "authenticate-failed") {
+        out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "Login expired" } });
+        break;
+      }
       result(msg.id, {});
       break;
     case "_x.ai/mcp/list":
@@ -768,7 +806,8 @@ function handle(msg: any) {
         // an older agent that predates these methods
         return out({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });
       }
-      if (mode === "set-model-invalid-params" && msg.method === "session/set_model") {
+      if (msg.method === "session/set_model" && (mode === "set-model-invalid-params" ||
+          (mode === "set-model-invalid-after-first" && configCalls.some((call) => call.method === "session/set_model")))) {
         // an agent whose ACP model namespace does not contain the id it was
         // sent — Cursor's answer when handed an argv slug like `auto`.
         return out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "Invalid params" } });
@@ -858,6 +897,13 @@ function handle(msg: any) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.prompt.json`, JSON.stringify(msg.params?.prompt ?? null, null, 2));
       }
       if (failRpc(msg)) return;
+      // FAKE_ACP_TEXT_REPLY: a plain text answer and nothing else, the shape of
+      // memory upkeep's one-shot call (drivers/acp/background-text.ts)
+      if (process.env.FAKE_ACP_TEXT_REPLY !== undefined) {
+        out({ jsonrpc: "2.0", method: "session/update", params: { sessionId: msg.params?.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: process.env.FAKE_ACP_TEXT_REPLY } } } });
+        result(msg.id, { stopReason: "end_turn", _meta: { inputTokens: 12, outputTokens: 4 } });
+        return;
+      }
       if (mode === "hang") {
         // never resolve the prompt on our own — lets tests exercise interrupt
         hangingPromptId = msg.id;
@@ -945,16 +991,36 @@ function handle(msg: any) {
         return;
       }
       const promptText = String(msg.params?.prompt?.[0]?.text ?? "");
-      // A delegated reply woke this bot (control-plane continuation): the
-      // harness revived it to fold the result in. Synthesize instead of
-      // driving the mode's usual delegate/ask flow, which would loop or
-      // re-ask for approval on a turn the user did not initiate.
+      // A hand-off's result woke this bot (the runtime's resume, or the
+      // legacy wake): the harness revived it to fold the result in.
+      // Synthesize instead of driving the mode's usual hand-off flow, which
+      // would loop or re-ask for approval on a turn the user did not initiate.
+      const runtimeReport = /\[OpenMausBot report from @[^\]\n]*: ([a-z_]+)/.exec(promptText);
       const wokeFromDelegation = promptText.includes("[A delegated task just completed]")
-        || promptText.includes("[A delegated task failed]");
+        || promptText.includes("[A delegated task failed]")
+        || runtimeReport !== null;
       if (wokeFromDelegation) {
         fakeLog("branch: wokeFromDelegation");
-        const failed = promptText.includes("[A delegated task failed]");
-        const sawResult = promptText.includes("replied to the delegated task");
+        const failed = promptText.includes("[A delegated task failed]")
+          || (runtimeReport !== null && runtimeReport[1] !== "done" && runtimeReport[1] !== "completed");
+        const sawResult = promptText.includes("replied to the delegated task") || /\nWhat @\S+ said: "/.test(promptText);
+        const redelegateFile = process.env.FAKE_ACP_REDELEGATE_FILE;
+        if (mode === "delegate-peer" && agentsMcp && sawResult && redelegateFile && !existsSync(redelegateFile)) {
+          writeFileSync(redelegateFile, "1");
+          void driveMcp(agentsMcp, [
+            { name: "list_bots", args: () => ({}) },
+            handoffCall("second delegated task"),
+          ])
+            .then((reply) => {
+              out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `delegated again: ${reply}` } } } });
+              complete();
+            })
+            .catch((e) => {
+              out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `delegate error: ${(e as Error).message}` } } } });
+              complete();
+            });
+          return;
+        }
         out({
           jsonrpc: "2.0",
           method: "session/update",
@@ -982,12 +1048,7 @@ function handle(msg: any) {
           complete();
           return;
         }
-        void driveMcp(agentsMcp, [
-          {
-            name: "check_delegation",
-            args: () => ({ task_id: savedTaskId }),
-          },
-        ])
+        void driveMcp(agentsMcp, [statusCall(savedTaskId)])
           .then((reply) => {
             out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `status: ${reply}` } } } });
             complete();
@@ -1027,17 +1088,10 @@ function handle(msg: any) {
       ) {
         void driveMcp(agentsMcp, [
           { name: "list_bots", args: () => ({}) },
-          {
-            name: "delegate_bot",
-            args: (list) => ({
-              bot_id: /id: ([\w-]+)/.exec(list)?.[1] ?? "",
-              message: "long delegated task",
-              reason: "background assignment",
-            }),
-          },
+          handoffCall("long delegated task", { reason: "background assignment" }),
         ])
           .then((reply) => {
-            rememberDelegatedTaskId(/Task id: ([\w-]+)/.exec(reply)?.[1] ?? "");
+            rememberDelegatedTaskId(handoffIdOf(reply));
             out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `assigned: ${reply}` } } } });
             complete();
           })
@@ -1060,15 +1114,13 @@ function handle(msg: any) {
         return;
       }
       if (mode === "ask-peer" && agentsMcp) {
-        // the comms e2e: reach a peer bot through the injected agents proxy
-        // and reply with whatever it said (the peer's fake runs plain happy
-        // — its depth-1 turn gets no agents server, so no recursion)
+        // the comms e2e: ask a peer bot a question through the injected
+        // agents proxy and reply with what the tool said (the peer's fake
+        // runs plain happy — its depth-1 turn gets no agents server, so no
+        // recursion; its answer resumes this bot in a later turn)
         void driveMcp(agentsMcp, [
           { name: "list_bots", args: () => ({}) },
-          {
-            name: "ask_bot",
-            args: (list) => ({ bot_id: /id: ([\w-]+)/.exec(list)?.[1] ?? "", message: "ping from fake" }),
-          },
+          handoffCall("ping from fake", { consult: true }),
         ])
           .then((reply) => {
             out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `peer says: ${reply}` } } } });
@@ -1098,13 +1150,12 @@ function handle(msg: any) {
             },
           },
           {
-            // The routine turn has delegate_bot. The resumed turn after the
-            // card is a person's turn, which coordinates instead.
-            name: () => (listed.includes("coordinate_bots") ? "coordinate_bots" : "delegate_bot"),
+            // Every turn hands work on the same way, the routine's and the
+            // person's resumed one after the card alike.
+            name: "coordinate_bots",
             args: (created) => {
               const id = /id: ([\w-]+)/.exec(created)?.[1] ?? /^- Pixel\b.*?\[id: ([\w-]+)/m.exec(listed)?.[1] ?? "";
-              const message = "Review the new onboarding flow.";
-              return listed.includes("coordinate_bots") ? { bot_ids: [id], message } : { bot_id: id, message, reason: "design review" };
+              return handoffCall("Review the new onboarding flow.", { reason: "design review" }).args(`id: ${id}`);
             },
           },
         ])
@@ -1145,20 +1196,13 @@ function handle(msg: any) {
         return;
       }
       if (mode === "delegate-peer" && agentsMcp) {
-        // async peer-handoff e2e: queue the delegation and return
-        // immediately; the harness fires the peer's depth-1 turn after our
-        // turn settles. We don't need the peer's reply in our text — the
-        // comms e2e verifies the channel mirroring on its own.
+        // async peer-handoff e2e: hand the work on and return immediately;
+        // the harness fires the peer's depth-1 turn after our turn settles.
+        // We don't need the peer's reply in our text — the result resumes
+        // this bot in a later turn, which the wake branch above answers.
         void driveMcp(agentsMcp, [
           { name: "list_bots", args: () => ({}) },
-          {
-            name: "delegate_bot",
-            args: (list) => ({
-              bot_id: /id: ([\w-]+)/.exec(list)?.[1] ?? "",
-              message: "delegated task",
-              reason: "followup",
-            }),
-          },
+          handoffCall("delegated task", { reason: "followup" }),
         ])
           .then((reply) => {
             out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `delegated: ${reply}` } } } });
@@ -1261,6 +1305,12 @@ function handle(msg: any) {
       if (mode === "question") {
         pendingPermissionId = 9002;
         onPermissionAnswered = () => {
+          // FAKE_ACP_HOLD_ON_CANCELLED: a cancelled question leaves the prompt
+          // open until session/cancel, the way Antigravity's agent does
+          if (process.env.FAKE_ACP_HOLD_ON_CANCELLED && lastPermissionCancelled) {
+            hangingPromptId = msg.id;
+            return;
+          }
           out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "answered the question" } } } });
           complete();
         };

@@ -44,7 +44,8 @@ import {
 } from "@/lib/memory";
 import { shortPath } from "@/lib/short-path";
 import { t } from "@/lib/i18n";
-import { ApiError, useStore, type Bot } from "@/state/store";
+import { roomMemoryCaptureEnabled } from "@/lib/feature-flags";
+import { api, ApiError, useStore, type Bot, type ConfigStatus } from "@/state/store";
 import { Switch } from "../SettingsPrimitives";
 import { useDesktopCapabilities } from "../DesktopCapabilities";
 import { inputCls } from "./field";
@@ -114,7 +115,10 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
   const [lendingReview, setLendingReview] = useState<LendingReview | null>(null);
   const [lendingReviewStale, setLendingReviewStale] = useState(false);
   const [reviewing, setReviewing] = useState(false);
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
+  const learnFromRooms = roomMemoryCaptureEnabled(state.config);
+  const [roomsSaving, setRoomsSaving] = useState(false);
+  const [roomsError, setRoomsError] = useState("");
 
   const refresh = async (openPath?: string) => {
     const [nextOverview, nextJournal, nextUpkeep] = await Promise.all([
@@ -247,6 +251,25 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
     setUpkeep((current) => (current ? { ...current, enabled } : current));
   };
 
+  // Learn from group chats is one switch for every bot on this server, shown
+  // here beside the upkeep it feeds.
+  const toggleRooms = async () => {
+    if (roomsSaving) return;
+    setRoomsSaving(true);
+    setRoomsError("");
+    try {
+      const config: ConfigStatus = await api("/api/config", {
+        method: "PATCH",
+        body: JSON.stringify({ features: { roomMemoryCapture: !learnFromRooms } }),
+      });
+      dispatch({ type: "configStatus", config });
+    } catch (cause) {
+      setRoomsError(cause instanceof Error ? cause.message : t("memory.learnFromRooms.error"));
+    } finally {
+      setRoomsSaving(false);
+    }
+  };
+
   const tidyNow = async () => {
     setTidying(true);
     setError(null);
@@ -329,6 +352,7 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
         tidying={tidying}
         onToggle={toggleUpkeep}
         onTidy={() => void tidyNow()}
+        rooms={{ enabled: learnFromRooms, saving: roomsSaving, error: roomsError, onToggle: () => void toggleRooms() }}
       />}
 
       {editing && (
@@ -460,12 +484,15 @@ export function MemoryUpkeepCard({
   tidying,
   onToggle,
   onTidy,
+  rooms,
 }: {
   enabled: boolean;
   status: UpkeepStatus | null;
   tidying: boolean;
   onToggle: () => void;
   onTidy: () => void;
+  /** The Learn from group chats switch (for every bot on this server). */
+  rooms?: { enabled: boolean; saving: boolean; error: string; onToggle: () => void };
 }) {
   return (
     <div className="rounded-xl bg-card p-4">
@@ -481,11 +508,27 @@ export function MemoryUpkeepCard({
         </div>
         <Switch checked={enabled} aria-label="Memory upkeep" onClick={onToggle} />
       </div>
+      {enabled && rooms && (
+        <div className="mt-3 flex items-start justify-between gap-3 border-t border-hairline/40 pt-3">
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-ink">{t("memory.learnFromRooms.title")}</div>
+            <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-secondary">{t("memory.learnFromRooms.subtitle")}</p>
+            {status && !status.modelSteps && (
+              <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">{t("memory.learnFromRooms.noModelSteps")}</p>
+            )}
+            {rooms.error && <p role="alert" className="mt-1 text-[12.5px] text-danger">{rooms.error}</p>}
+          </div>
+          <Switch
+            checked={rooms.enabled}
+            aria-label={t("memory.learnFromRooms.title")}
+            disabled={rooms.saving}
+            onClick={rooms.onToggle}
+            className="disabled:cursor-wait disabled:opacity-50"
+          />
+        </div>
+      )}
       {enabled && status && !status.modelSteps && (
-        <p className="mt-2 text-[12.5px] text-ink-secondary">
-          This bot's engine can't make the quick background model call upkeep uses, so it only archives expired notes and
-          merges exact duplicates. Claude and chat-model engines can do the rest.
-        </p>
+        <p className="mt-2 text-[12.5px] text-ink-secondary">{t("memory.upkeep.noModelSteps")}</p>
       )}
       {enabled && (
         <div className="mt-3 flex flex-wrap items-center gap-3">

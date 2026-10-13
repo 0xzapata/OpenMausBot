@@ -35,6 +35,7 @@ export type BotUpdatePatch = Partial<
     | "browser"
     | "browserProfile"
     | "memoryUpkeep"
+    | "cacheKeepWarm"
     | "mcpServers"
     | "modelSelection"
   >
@@ -52,18 +53,20 @@ export type BotUpdatePatch = Partial<
    * reach the wire inside the coalesced body and must never fold into bot
    * state — the queue strips it from every overlay it hands back. */
   acknowledgeLocalAuto?: boolean;
-  /** Renderer-local marker that the elevated-risk Full access dialog was
-   * confirmed. StoreProvider consumes it before the private Electron request;
-   * it is never sent over HTTP or folded into bot state. */
-  confirmFullAccess?: boolean;
-  /** Private desktop grant scope, never an HTTP patch or bot field. */
+  /** With approvalMode (any level but Custom): every existing thread takes
+   * that level too. It rides the PATCH body (or the desktop grant's scope),
+   * never a bot field. */
   applyToAllThreads?: boolean;
+  /** With modelSelection, from a bulk change: a thread with a model of its
+   * own keeps it, the selected one included; only followers move. Rides the
+   * PATCH body, never a bot field. */
+  keepThreadModels?: boolean;
 };
 
 /** A wire patch after clear-only values have been normalized for Bot state. */
 export type BotStatePatch = Omit<
   BotUpdatePatch,
-  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "confirmFullAccess" | "applyToAllThreads"
+  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "applyToAllThreads" | "keepThreadModels"
 > & {
   computer?: Bot["computer"];
   connectorTools?: Bot["connectorTools"];
@@ -116,13 +119,13 @@ const hasOwn = (value: object, key: PropertyKey): boolean =>
 const isAbortError = (error: unknown): boolean =>
   Boolean(error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError");
 
-/** What may fold back into renderer bot state: everything except the consent
- * flag, which is wire-only. One strip point covers both overlay paths. */
+/** What may fold back into renderer bot state: everything except the
+ * wire-only flags. One strip point covers both overlay paths. */
 const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
   const {
     acknowledgeLocalAuto: _localAck,
-    confirmFullAccess: _fullConfirmation,
     applyToAllThreads: _allThreads,
+    keepThreadModels: _keepThreadModels,
     computer,
     connectorTools,
     connectorScopes,
@@ -226,6 +229,9 @@ export function createBotPatchQueue(options: BotPatchQueueOptions): BotPatchQueu
       };
       entries.set(botId, entry);
       entry.pending = { ...entry.pending, ...patch };
+      // An all-threads scope belongs to the level it came with: a newer level
+      // without one (a quick switch from Full back to Ask) is the default only.
+      if (hasOwn(patch, "approvalMode") && !hasOwn(patch, "applyToAllThreads")) delete entry.pending.applyToAllThreads;
       // A private Full/Custom grant cannot be cancelled after it crosses the
       // Electron bridge. Signal the sender as soon as a newer level exists so
       // it can compensate a late grant back to Ask before this lane advances.

@@ -2,13 +2,14 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   ChatMarkdown,
   CodeBlock,
   HIGHLIGHT_CACHE_MAX,
   HIGHLIGHT_CACHE_MAX_CHARS,
+  HIGHLIGHT_MAX_CHARS,
   samePeers,
   chatUrlTransform,
   markdownImageName,
@@ -16,8 +17,11 @@ import {
   localFilePath,
   normalizeMathDelimiters,
   textDirection,
+  ensureChatKatex,
+  messageNeedsKatex,
 } from "./ChatMarkdown";
 import { StoreProvider } from "@/state/store";
+import { setLocale } from "@/lib/i18n";
 import { ThreadRefsContext } from "./ThreadRefs";
 import * as AttachmentPreview from "./AttachmentPreview";
 
@@ -77,7 +81,29 @@ describe("mention highlighting", () => {
   });
 });
 
+describe("math before katex loads", () => {
+  it("keeps the formula as source until katex is loaded, then typesets it", async () => {
+    expect(messageNeedsKatex("Inline $x$.")).toBe(true);
+    expect(messageNeedsKatex("Jan −$3,000 · Feb −$2,000")).toBe(false);
+    expect(messageNeedsKatex("`const price = '$5'`\n\nUnclosed \\(x")).toBe(false);
+    expect(messageNeedsKatex("```tex\n\\(not rendered\\)\n```")).toBe(false);
+    expect(messageNeedsKatex("\\(x^2\\)")).toBe(true);
+    expect(messageNeedsKatex("Plans: US$5, or $x$ per seat.")).toBe(true);
+    const before = renderToStaticMarkup(createElement(ChatMarkdown, { text: "Inline $x$." }));
+    expect(before).not.toContain('class="katex"');
+    expect(before).toContain("x");
+    await ensureChatKatex();
+    const after = renderToStaticMarkup(createElement(ChatMarkdown, { text: "Inline $x$." }));
+    expect(after).toContain('class="katex"');
+    expect(after).toContain("<mi>x</mi>");
+  });
+});
+
 describe("math rendering", () => {
+  beforeAll(async () => {
+    await ensureChatKatex();
+  });
+
   it.each([
     "\\(x% comment\r\n+y\\)\n\nAfter",
     "> Before \\(x% comment\n> +y\\)\n\nAfter",
@@ -422,6 +448,43 @@ it("keeps the newest highlighted code within both the count and the size bound",
   }
 });
 
+it("leaves a block past the highlight bound as plain text and never tokenizes it", async () => {
+  const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
+  const effects: React.EffectCallback[] = [];
+  const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
+  shiki.codeToHtml.mockReset();
+  shiki.codeToHtml.mockImplementation(async (code: string) => `<pre class="highlighted">${code.length}</pre>`);
+  const cleanup: ReturnType<React.EffectCallback>[] = [];
+  const paint = (code: string) => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, { code, lang: "json" }));
+    for (const callback of effects.splice(0)) cleanup.push(callback());
+    return html;
+  };
+  try {
+    // exactly at the bound still highlights, as every block did before
+    const atBound = "1".repeat(HIGHLIGHT_MAX_CHARS);
+    paint(atBound);
+    await vi.waitFor(() => expect(shiki.codeToHtml).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(paint(atBound)).toContain('class="highlighted"'));
+
+    // one character past it: the plain <pre> with the full text, and Shiki is never asked
+    shiki.codeToHtml.mockClear();
+    const past = `${"2".repeat(HIGHLIGHT_MAX_CHARS)}x`;
+    const html = paint(past);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shiki.codeToHtml).not.toHaveBeenCalled();
+    expect(html).not.toContain('class="highlighted"');
+    expect(html).toContain(past);
+    // and a remount still paints it plain, without a highlight pass
+    expect(paint(past)).not.toContain('class="highlighted"');
+    expect(shiki.codeToHtml).not.toHaveBeenCalled();
+  } finally {
+    for (const close of cleanup) if (typeof close === "function") close();
+    effect.mockImplementation(originalUseEffect);
+    shiki.codeToHtml.mockReset();
+  }
+});
+
 it("loads a curated grammar once and leaves an unbundled language plain", async () => {
   const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
   const effects: React.EffectCallback[] = [];
@@ -575,6 +638,35 @@ describe("ChatMarkdown attachments", () => {
     expect(html).toContain('title="Save a copy"');
     expect(html).not.toContain("/Users/milind/report.md");
     expect(html).not.toContain("C:/Users/Maus/report.md");
+  });
+
+  it("says an image with no source is unavailable in the person's language", () => {
+    setLocale("de");
+    try {
+      expect(renderToStaticMarkup(createElement(ChatMarkdown, { text: "![Sideboard]()" }))).toContain("Bild nicht verfügbar");
+    } finally {
+      setLocale("en");
+    }
+  });
+
+  it("keeps delivered-file downloads scoped alongside GitHub reference pills", () => {
+    const save = vi.spyOn(AttachmentPreview, "useLocalFileSave");
+    const message = { threadId: "thread-1", messageId: "message-1" };
+    try {
+      const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+        text: "See https://github.com/a/app/pull/7 and [report.pdf](/work/report.pdf).",
+        message,
+        delivered: { "report.pdf": "/store/delivered-report.pdf" },
+      }));
+      expect(html).toContain('data-github-ref="pull"');
+      expect(html).toContain("<span>#7</span>");
+      expect(html).toContain('title="Save a copy"');
+      expect(save).toHaveBeenCalledWith("/store/delivered-report.pdf", "report.pdf", message);
+      expect(html).not.toContain("/store/delivered-report.pdf");
+      expect(html).not.toContain("/work/report.pdf");
+    } finally {
+      save.mockRestore();
+    }
   });
 
   it("routes a backslash Windows path through the scoped file handlers, every backslash intact", () => {

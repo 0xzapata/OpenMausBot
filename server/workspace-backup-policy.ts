@@ -41,6 +41,9 @@ export function excludedWorkspaceAuthPath(path: string): boolean {
   if (/^command-allowlist\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   // MCP sign-in tokens belong to this machine's browser sign-ins.
   if (/^mcp-oauth\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
+  // Saved website logins and their key (server/login-store.ts) stay on the
+  // computer they were saved on: never in a backup, an export or a move.
+  if (/^(?:logins\.json\.enc|logins-key)(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   return /^(?:(?:providers|caddy|chrome-profile|\.agent-browser)(?:\/|$)|workspace-credentials\.json$|external-runtimes\.json$|browser-engine-key$)/.test(path) ||
     /^(?:config\.json|webhooks\.json|workspace-credentials\.json|external-runtimes\.json|browser-engine-key|sessions\.json|tunnel-account\.json)\.\d+(?:\.[0-9a-f-]+)?\.tmp$/.test(path) ||
     /^(?:vm-home|vm-homes\/[^/]+)\/\.browser-profiles(?:\/|$)/.test(path);
@@ -65,4 +68,13 @@ export function redownloadedOrgLibraryPath(path: string): boolean {
  * leaves the destination's own marker where it is (workspace-backup.ts). */
 export function ephemeralWorkspaceTokenPath(path: string): boolean {
   return /^(?:hook-tokens(?:\/|$)|sessions\.json\.open$)/.test(path);
+}
+
+/** A bot's DuckDB database (`bots/<id>/data.duckdb`, its WAL, its spill
+ * directory; server/data/engine.ts). Copying the file while the engine holds
+ * it open is not a consistent snapshot (an unflushed WAL), it can run to
+ * gigabytes, and every table in it came from a source the bot can load
+ * again. The sheet beside it (sheet.json) is backed up. */
+export function liveDataEnginePath(path: string): boolean {
+  return /^bots\/[^/]+\/(?:data\.duckdb(?:\.wal)?$|data-tmp(?:\/|$))/.test(path);
 }

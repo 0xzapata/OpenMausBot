@@ -204,19 +204,20 @@ describe("Computer panel tabs", () => {
     }
   });
 
-  it("shows Computer, Browser and Files in Simple mode", () => {
+  it("shows Computer, Browser, Data and Files in Simple mode", () => {
     fixture.android = true;
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Browser", "Files"]);
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Browser", "Data", "Files"]);
   });
 
   it("keeps the Advanced tabs unchanged", () => {
     fixture.advanced = true;
     fixture.android = true;
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Android", "Browser"]);
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Android", "Browser", "Data"]);
     fixture.config = {};
     fixture.android = false;
-    // The Browser tab now stays in Advanced too, with its own switch.
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Browser"]);
+    // The Browser tab now stays in Advanced too, with its own switch; Data
+    // is in both modes.
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Browser", "Data"]);
   });
 
   it("reads a Routines view stored by Advanced as the Computer tab in Simple", () => {
@@ -246,6 +247,56 @@ describe("Computer panel tabs", () => {
   it("explains an empty Files tab", () => {
     fixture.view.current = "files";
     expect(render(makeBot()).html).toContain("Files Scout makes or changes in this chat will show up here.");
+  });
+
+  it("shows the selected chat's pinned folder after the bot default changes", () => {
+    fixture.view.current = "files";
+    const rendered = render(makeBot({
+      cwd: "/workspace/new-project",
+      tasks: [
+        { threadId: "other-thread", title: "Other chat", createdAt: 1, cwd: "/workspace/other-project" },
+        { threadId: "thread-scout", title: "Existing chat", createdAt: 2, cwd: "/Users/me/original-project" },
+      ],
+    }));
+    expect(rendered.html).toContain('title="/Users/me/original-project"');
+    expect(rendered.html).toContain("~/original-project");
+    expect(rendered.html).not.toContain("/workspace/new-project");
+    expect(rendered.html).not.toContain("/workspace/other-project");
+    expect(rendered.html).toContain("Change default");
+    expect(rendered.html).toContain("This chat keeps its current folder.");
+  });
+
+  it("keeps showing the pinned private folder after the bot default is cleared", () => {
+    fixture.view.current = "files";
+    const rendered = render(makeBot({ tasks: [
+      { threadId: "thread-scout", title: "Existing chat", createdAt: 1, cwd: "/Users/me/.openmausbot/task-workspaces/scout/thread-scout" },
+    ] }));
+    expect(rendered.html).toContain('title="/Users/me/.openmausbot/task-workspaces/scout/thread-scout"');
+    expect(rendered.html).toContain("~/.openmausbot/task-workspaces/scout/thread-scout");
+    expect(rendered.html).not.toContain("Scout&#x27;s private folder");
+  });
+
+  it("shows a legacy home-folder pin instead of the new bot default", () => {
+    fixture.view.current = "files";
+    const rendered = render(makeBot({
+      cwd: "/workspace/new-project",
+      tasks: [{ threadId: "thread-scout", title: "Legacy chat", createdAt: 1, cwd: null }],
+    }));
+    expect(rendered.html).toContain("Home folder");
+    expect(rendered.html).not.toContain("/workspace/new-project");
+    expect(rendered.html).not.toContain("Scout&#x27;s private folder");
+    expect(rendered.html).toContain("Change default");
+  });
+
+  it("uses the bot default until the selected chat has a folder pin", () => {
+    fixture.view.current = "files";
+    for (const tasks of [undefined, [{ threadId: "thread-scout", title: "New chat", createdAt: 1 }]]) {
+      const rendered = render(makeBot({ cwd: "/Users/me/new-project", tasks }));
+      expect(rendered.html).toContain('title="/Users/me/new-project"');
+      expect(rendered.html).toContain("~/new-project");
+      expect(rendered.html).not.toContain("This chat keeps its current folder.");
+      expect(rendered.html).not.toContain("Change default");
+    }
   });
 });
 
