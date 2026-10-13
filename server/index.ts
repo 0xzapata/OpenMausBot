@@ -203,6 +203,7 @@ import { entitled } from "./enterprise.ts";
 import { HOSTED_CONTRACT_HEADER, HOSTED_CONTRACT_METADATA, HOSTED_CONTRACT_VERSION } from "./hosted-contract.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, buildSpendNotification, type Notification } from "./notify.ts";
+import { personMentionExcerpt } from "../shared/person-mention.ts";
 import {
   isModelVariant,
   TurnNotStartedError,
@@ -9664,6 +9665,18 @@ bus.subscribe((event: RuntimeEvent) => {
           });
         }
         liveTurnByThread.delete(event.threadId);
+        // A reply that tags the person (@you, or their profile name) is the
+        // room asking for them. Room turns never send "done", so this is the
+        // turn's one buzz; bot-to-bot channels have no person to ask.
+        if (event.ok && !stopped && !group.dm && speakingBot) {
+          const excerpt = roomPersonMention(group, event.threadId, speaker.botId, completedTurnId, reply);
+          if (excerpt) {
+            notify(buildNotification("mention", { ...speakingBot, threadId: event.threadId }, event.threadId, excerpt, {
+              avatarUrl: speakingBot.avatarUrl,
+              group: { id: group.id, name: group.name },
+            }));
+          }
+        }
       }
       if (speaker) {
         releaseTurnResources(turnResourceOwners.get(event.threadId));
@@ -9681,6 +9694,26 @@ bus.subscribe((event: RuntimeEvent) => {
     }
   }
 });
+
+/** The line of a settled room reply that tags the person, or null. Reads
+ * every text the speaker posted this turn (a reply can arrive in parts), and
+ * lets a room member's name win over the person's, as the renderer does. */
+function roomPersonMention(group: GroupRecord, threadId: string, botId: string, turnId: string | undefined, reply: string): string | null {
+  const texts = turnId
+    ? store.activePath(threadId)
+      .filter((message) => message.role === "bot" && message.kind === "text" && message.turnId === turnId && message.from?.botId === botId)
+      .map((message) => message.text ?? "")
+    : [reply];
+  const botNames = group.memberIds
+    .map((id) => store.bot(id))
+    .filter((member): member is BotRecord => Boolean(member && !member.hidden))
+    .map((member) => member.name);
+  for (const text of texts) {
+    const excerpt = personMentionExcerpt(text, { profileName: cfg.profile?.name, botNames });
+    if (excerpt) return excerpt;
+  }
+  return null;
+}
 
 /** The card in this thread that is waiting on the person: an approval, a
  * question or a proposal to review, newest first. */
@@ -14410,7 +14443,7 @@ async function runClaimedGroupMemberTurn(
     bot.description && `About: ${bot.description}`,
     `Room members: ${roster}, and ${userName} (the human).`,
     readyGroup.bulletin.trim() && `Room bulletin (shared instructions for everyone):\n${readyGroup.bulletin.trim()}`,
-    `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,
+    `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond. To get ${userName}'s attention or ask them something blocking, write @you.`,
     outsideRoom.length > 0 && roomPeerRosterSystemPrompt(outsideRoom),
     integrations.agents && (CREDENTIAL_PROMPT + (orchestration && !orchestration.roomHandoffId ? THREADS_PROMPT : "")).trim(),
     integrations.agents && (!orchestration || orchestration.roomHandoffId) && "For actual OpenMausBot teamwork, discover IDs with list_room_targets and use coordinate_bots for advice or work in this or another room. Do not substitute native coding helpers for these named bots. Consult only when needed to make a decision; no discussion step is mandatory. Give concrete responsibilities, exact accessible paths and acceptance checks. End your turn after assigning; busy teammates queue and results automatically resume you. When they return, finish the requested verification and give the user one final answer. Native helper names are not evidence that an OpenMausBot teammate participated. Plain @mentions are only for conversational replies in this room.",

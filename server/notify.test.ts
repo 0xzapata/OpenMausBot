@@ -37,9 +37,27 @@ describe("buildNotification", () => {
     expect(buildNotification("delegation-settled", { ...bot, notifications: false }, "thread-1", "Results in from Atlas")).toBeNull();
   });
 
+  it("says who mentioned the person, and where", () => {
+    const group = { id: "group-1", name: "Launch" };
+    expect(buildNotification("mention", bot, "room-thread", "@you three open questions\nare blocking Section 2", { group })).toEqual({
+      kind: "mention",
+      botId: "bot-1",
+      botName: "Scout",
+      threadId: "room-thread",
+      groupId: "group-1",
+      title: "Scout in Launch mentioned you",
+      body: "@you three open questions are blocking Section 2",
+    });
+    // on by default, off when the bot's notifications are off
+    expect(buildNotification("mention", { ...bot, notifications: undefined }, "room-thread", "@you", { group })).not.toBeNull();
+    expect(buildNotification("mention", { ...bot, notifications: false }, "room-thread", "@you", { group })).toBeNull();
+    // and never an empty banner
+    expect(buildNotification("mention", bot, "room-thread", "   ", { group })).toBeNull();
+  });
+
   it("stays silent for a bot whose notifications are off", () => {
     const quiet = { ...bot, notifications: false };
-    for (const kind of ["approval", "question", "done", "routine-failed", "turn-failed"] as const) {
+    for (const kind of ["approval", "question", "done", "mention", "routine-failed", "turn-failed"] as const) {
       expect(buildNotification(kind, quiet, "thread-1", "anything")).toBeNull();
     }
     // absent means "not turned off" — older bot records predate the flag

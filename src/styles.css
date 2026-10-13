@@ -25,6 +25,18 @@
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
+/* The person's own tag (@you, or their name) is a filled accent chip rather
+   than an underlined mascot color: a bot can share the accent's hue, never
+   its shape, so a line addressed to the person reads as theirs at a glance. */
+.mention-highlight.mention-you {
+  --mention-color: var(--color-accent);
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--mention-color) 40%, var(--color-inset));
+  text-decoration: none;
+  font-weight: 600;
+  padding: 0 0.25em;
+  border-radius: 4px;
+}
 ::highlight(search-result-text) {
   color: var(--color-ink);
   background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);

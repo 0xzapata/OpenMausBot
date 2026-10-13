@@ -88,11 +88,14 @@ export function buildNotification(
                 ? `${who} hit a problem`
                 : kind === "delegation-settled"
                   ? `${who} resumed with results`
-                  : `${who} finished`;
+                  : kind === "mention"
+                    ? `${who} mentioned you`
+                    : `${who} finished`;
 
   // A "finished" with nothing to say is not worth a notification — the
   // badge in the sidebar already carries that much.
-  if (kind === "done" && !body) return null;
+  // Neither is a mention without the line that carries it.
+  if ((kind === "done" || kind === "mention") && !body) return null;
 
   const notification: Notification = { kind, botId: bot.id, botName: bot.name, threadId, title, body };
   if (extra?.avatarUrl) notification.avatarUrl = extra.avatarUrl;

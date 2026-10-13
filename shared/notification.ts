@@ -20,6 +20,11 @@ export type NotifyKind =
    * without this frame the parent conversation can sit in silence for the
    * minutes a huge context takes to reach its first token. */
   | "delegation-settled"
+  /** A bot's settled reply in a room tagged the person (`@you`, or their
+   * profile name). Rooms only: in a 1:1 thread every reply is already to
+   * them, and "done" covers it. Clients that do not know a kind show it like
+   * any other banner: the title and body carry the whole message. */
+  | "mention"
   /** The workspace crossed its monthly spend warning or reached its cap.
    * Sent to admins only, at most once per month for each. */
   | "spend";
