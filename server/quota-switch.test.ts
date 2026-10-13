@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA_DIR } from "./config.ts";
 import type { ModelSelection, ProviderAdapter, ProviderSnapshot } from "./contracts.ts";
 import { createCoordinator, type Coordinator, type HostTurnResult } from "./coordinator.ts";
+import { PROBE_TIMEOUT_MS } from "./engine-install.ts";
 import { closeMessageDb } from "./message-db.ts";
 import { createQuotaSwitch, NOT_NOW, quotaSwitchEnabled, type QuotaRequest, type QuotaSwitch, type QuotaSwitchDeps, type QuotaSwitchEngine } from "./quota-switch.ts";
 import { Store, type BotRecord, type Message } from "./store.ts";
@@ -68,6 +69,10 @@ describe("quota-switch card", () => {
   /** What a teammate's turn says when the runtime runs it; none starts until a test sets this. */
   let teammateSays: HostTurnResult | undefined;
   let parked: () => void;
+  /** The injected clock: every wait the module starts, to fire by hand. */
+  let timers: Array<{ ms: number; fire: () => void; cancelled: boolean }>;
+  /** An engine whose probe never answers. */
+  const silent = (instanceId: string, displayName: string) => engine(instanceId, "codex", displayName, { snapshot: () => new Promise(() => {}) });
 
   /** The thread as a turn sees it: its own model and approval level. */
   const thread = () => store.projectBotForTask(bot.id, bot.threadId)!;
@@ -117,6 +122,7 @@ describe("quota-switch card", () => {
     turns = 0;
     teammateSays = undefined;
     parked = () => {};
+    timers = [];
     // The real job runtime, in memory. Its host is the least these scenarios
     // need: no teammate's turn starts until a test says what it answers.
     coordinator = createCoordinator({
@@ -134,8 +140,15 @@ describe("quota-switch card", () => {
       turnStops: { failureCause: () => cause },
       enabled: () => enabled,
       gate,
+      // index.ts's threadBusy; the store's own flag is what a turn's admission sets
+      busy: (botId, threadId) => store.taskByThread(botId, threadId)?.busy === true,
       request: (threadId) => requests.get(threadId),
       resend,
+      after: (ms, fire) => {
+        const timer = { ms, fire, cancelled: false };
+        timers.push(timer);
+        return { cancel: () => { timer.cancelled = true; } };
+      },
     };
     quota = createQuotaSwitch(deps);
   });
@@ -209,6 +222,17 @@ describe("quota-switch card", () => {
       engines = [engines[0]!, engine("local", "codex", "Local model", { snapshot: async () => ({ state: "available", authenticated: false }) })];
       deps.access = (instanceId) => instanceId === "local" ? "custom" : "subscription";
       expect((await failed())!.card!.options).toEqual(["Local model", NOT_NOW]);
+    });
+
+    it("builds the card without an engine that does not say how it is in time", async () => {
+      engines[1] = silent("codex", "Codex");
+      const raising = failed(QUOTA, { messageId: said("hi") });
+      // Codex was asked first; its wait is the one an engine probe gets elsewhere.
+      expect(timers[0]).toMatchObject({ ms: PROBE_TIMEOUT_MS, cancelled: false });
+      timers[0]!.fire();
+      expect((await raising)!.card!.options).toEqual(["Cursor", NOT_NOW]);
+      // an engine that answered stopped its clock
+      expect(timers[1]).toMatchObject({ cancelled: true });
     });
 
     it("raises no card when every other engine is unavailable", async () => {
@@ -438,28 +462,100 @@ describe("quota-switch card", () => {
       expect(resend).toHaveBeenCalledTimes(1);
     });
 
-    it("switches nothing when the engine the thread runs on was removed while the card was open", async () => {
+    it("closes the card and says so when the engine the thread runs on was removed while the card was open", async () => {
       const card = (await failed(QUOTA, { messageId: said("hi") }))!;
       engines = engines.filter((candidate) => candidate.instanceId !== "claude");
 
-      await answer(card, "Codex");
+      expect(await answer(card, "Codex")).toBe("unavailable");
 
       expect(thread().modelSelection.instanceId).toBe("claude");
       expect(gate).not.toHaveBeenCalled();
       expect(resend).not.toHaveBeenCalled();
-      expect(notices()).toContainEqual({ name: "notice: Codex is no longer available — nothing switched.", ok: false });
+      // It is the conversation's own engine that is gone, not Codex: no backup
+      // can be checked against it, now or on the next press.
+      expect(notices()).toEqual([{
+        name: "notice: this conversation's own engine is no longer configured here, so no other engine can be checked against it — nothing switched. Choose a model for this conversation instead.",
+        ok: false,
+      }]);
+      expect(cardNow(card)).toMatchObject({ answered: "unavailable", dismissed: true });
     });
 
-    it("switches nothing when the chosen engine was removed while the card was open", async () => {
+    it("takes a removed engine off the card instead of refusing it on every press", async () => {
       const card = (await failed(QUOTA, { messageId: said("hi") }))!;
       engines = engines.filter((candidate) => candidate.instanceId !== "codex");
 
-      await answer(card, "Codex");
+      expect(await answer(card, "Codex")).toBe("unavailable");
 
       expect(thread().modelSelection.instanceId).toBe("claude");
       expect(resend).not.toHaveBeenCalled();
-      expect(notices()).toContainEqual({ name: "notice: Codex is no longer configured — nothing switched.", ok: false });
+      expect(notices()).toEqual([{ name: "notice: Codex is no longer configured — nothing switched.", ok: false }]);
+      // Gone for good, so it leaves the card; what is left can still be chosen.
       expect(pending()?.id).toBe(card.id);
+      expect(cardNow(card)).toMatchObject({ options: ["Cursor", NOT_NOW], quotaSwitch: { engines: [{ instanceId: "cursor", name: "Cursor" }] } });
+      expect(await answer(card, "Cursor")).toBe("answered");
+      expect(thread().modelSelection.instanceId).toBe("cursor");
+      expect(resend).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes the card when the only engine on it was removed", async () => {
+      engines = [engines[0]!, engines[1]!];
+      const card = (await failed(QUOTA, { messageId: said("hi") }))!;
+      expect(card.card!.options).toEqual(["Codex", NOT_NOW]);
+      engines = [engines[0]!];
+
+      expect(await answer(card, "Codex")).toBe("unavailable");
+
+      expect(notices()).toEqual([{ name: "notice: Codex is no longer configured, and the card offered no other engine — nothing switched.", ok: false }]);
+      expect(cardNow(card)).toMatchObject({ answered: "unavailable", dismissed: true });
+      expect(pending()).toBeUndefined();
+    });
+
+    it("refuses when the chosen engine does not say how it is in time, and leaves the offer open", async () => {
+      const card = (await failed(QUOTA, { messageId: said("hi") }))!;
+      engines[1] = silent("codex", "Codex");
+
+      const pressed = quota.answer(bot.threadId, card.card!.requestId!, "answer", "Codex")!;
+      // one wait is running, the one an engine probe gets elsewhere; it runs out
+      const waiting = timers.filter((timer) => !timer.cancelled);
+      expect(waiting.map((timer) => timer.ms)).toEqual([PROBE_TIMEOUT_MS]);
+      waiting[0]!.fire();
+
+      expect(await pressed).toBe("unavailable");
+      expect(thread().modelSelection.instanceId).toBe("claude");
+      expect(gate).not.toHaveBeenCalled();
+      expect(resend).not.toHaveBeenCalled();
+      expect(notices()).toEqual([{ name: "notice: Codex did not answer in time — nothing switched. Try again in a moment.", ok: false }]);
+      // the card is free again: another engine on it can be chosen
+      expect(pending()?.id).toBe(card.id);
+      expect(await answer(card, "Cursor")).toBe("answered");
+      expect(thread().modelSelection.instanceId).toBe("cursor");
+    });
+
+    it("sends nothing again into a thread that is already working on the chosen engine", async () => {
+      // The person changed the engine by hand and typed the message again.
+      // While that turn runs they press the same engine on the card, still open.
+      const card = (await failed(QUOTA, { messageId: said("how's the weather") }))!;
+      store.switchTaskModel(bot.id, bot.threadId, { instanceId: "codex", model: "codex-default" }, false, false);
+      begin(bot.threadId, { messageId: said("how's the weather") });
+      store.setTaskActivity(bot.id, bot.threadId, "working");
+
+      expect(await answer(card, "Codex")).toBe("answered");
+
+      expect(gate).not.toHaveBeenCalled();
+      expect(resend).not.toHaveBeenCalled();
+      expect(cardNow(card)).toMatchObject({ answered: "answer", answeredText: "Codex" });
+      expect(notices()).toEqual([{ name: "notice: already on Codex. This conversation is working, so your message was not sent again.", ok: true }]);
+    });
+
+    it("still resends into an idle thread the person had already moved to the chosen engine", async () => {
+      const card = (await failed(QUOTA, { messageId: said("how's the weather") }))!;
+      store.switchTaskModel(bot.id, bot.threadId, { instanceId: "codex", model: "codex-default" }, false, false);
+
+      expect(await answer(card, "Codex")).toBe("answered");
+
+      expect(gate).not.toHaveBeenCalled();
+      expect(resend).toHaveBeenCalledTimes(1);
+      expect(notices()).toEqual([{ name: "notice: continuing on Codex after hitting quota", ok: true }]);
     });
 
     it("switches nothing when the chosen engine ran into its own limit while the card was open", async () => {

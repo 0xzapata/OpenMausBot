@@ -13881,6 +13881,7 @@ const quotaSwitch = createQuotaSwitch({
   refusal: policyModelRefusal,
   gate: (thread, selection) => checkedTaskModelSwitch(thread, selection, false, false, true),
   reset: (from, to) => hostedModels?.resetTask(from, to),
+  busy: threadBusy,
   request: threadId => directRequestOwners.get(threadId),
   resend: (botId, threadId, message, replyTo) => startOrQueueDirectMessage(botId, threadId, message.text ?? "", replyTo, undefined, message.sender, undefined, undefined, undefined, message.dataContext),
 });

@@ -14,7 +14,9 @@ import { execCli, killCliTree, spawnCli } from "./procs.ts";
 
 const MAX_OUTPUT = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
-const PROBE_TIMEOUT_MS = 30_000;
+/** How long an engine gets to answer a probe: its CLI's `--version` here,
+ * its state for a quota-switch offer (server/quota-switch.ts). */
+export const PROBE_TIMEOUT_MS = 30_000;
 
 /** npm's global prefix for engines the app installs itself. */
 export function enginesPrefix(baseDir = DATA_DIR): string {
