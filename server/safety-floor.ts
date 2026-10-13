@@ -28,8 +28,8 @@
 //
 //   - On macOS and Linux a line is read as a POSIX shell line, against the
 //     POSIX rules (`rm`, `dd`, `mkfs`, `diskutil`, redirections, the fork
-//     bomb). cmd and PowerShell commands are not evaluated at all: that host
-//     cannot run `rd /s /q C:\`.
+//     bomb). cmd commands are not evaluated: that host does not run
+//     `rd /s /q C:\`. PowerShell does run there; see the one wrapper below.
 //   - On Windows a line is read twice, because Git Bash and WSL run there
 //     beside cmd and PowerShell: once as POSIX against the POSIX rules, once
 //     as cmd and PowerShell against theirs (`rd`, `del`, `Remove-Item`,
@@ -215,12 +215,6 @@ function lex(source: string, windows: boolean): Reading {
       at += 2;
       return variable(balanced("{", "}", inDoubleQuotes));
     }
-    if (next === "[" && !windows) {
-      // $[ … ] is the old spelling of arithmetic.
-      at += 2;
-      balanced("[", "]", inDoubleQuotes);
-      return DYNAMIC;
-    }
     if (next === "'" && !windows && !inDoubleQuotes) {
       // $'…' decodes escapes such as \x2f, so its text is not read here.
       for (at += 2; at < source.length && source[at] !== "'"; at++) if (source[at] === "\\") at++;
@@ -387,10 +381,6 @@ function lex(source: string, windows: boolean): Reading {
         at++;
         balanced("(", ")", false);
         add(DYNAMIC);
-      } else if (c === "(" && after === "(" && word === null && !windows) {
-        // (( … )) is arithmetic: `<<` in it shifts, and nothing in it runs.
-        at++;
-        balanced("(", ")", false);
       } else if (c === "(" || c === ")") {
         // A subshell, or the parentheses of a function: what is inside runs.
         bare += c;

@@ -5,8 +5,8 @@
 // HOW TO READ THE TABLES. The platform picks the reading, and nothing else:
 //
 //   - macOS and Linux read a line as a POSIX shell line, against the POSIX
-//     rules only. A cmd or PowerShell command is NOT evaluated there: that
-//     host cannot run it.
+//     rules only. A cmd command is NOT evaluated there, and neither is a
+//     PowerShell one outside `pwsh -c` (see the exception below).
 //   - Windows reads a line twice, as POSIX (Git Bash, WSL) and as cmd and
 //     PowerShell, each against its own rules. A hit in either blocks.
 //
@@ -289,9 +289,27 @@ const BLOCKED: Case[] = [
   ["powershell -Command 'ri -r /usr'", "delete-system-directory", "posix"],
   ["pwsh -c 'Set-Location /tmp; Remove-Item -Recurse -Force /'", "delete-root"],
   ["pwsh -Command Remove-Item -Recurse -Force /", "delete-root"],
-  // review round 3: arithmetic, where `<<` shifts and starts no heredoc
-  ["(( x << 1 ))\nrm -rf /", "delete-root"],
-  ["echo $[1<<2]\nrm -rf /", "delete-root"],
+  // review round 4: text inside `(( … ))` and `$[ … ]` runs, so it is read.
+  // A substitution inside arithmetic:
+  ["(( n = $(rm -rf /etc; echo 1) ))", "delete-system-directory"],
+  ["if (( $(rm -rf / ; echo 1) )); then :; fi", "delete-root"],
+  ["for (( i = $(rm -rf ~; echo 0); i < 1; i++ )); do :; done", "delete-home"],
+  ["while (( $(mkfs.ext4 /dev/sda1; echo 0) )); do :; done", "format-disk"],
+  ["echo $[ $(rm -rf /) ]", "delete-root"],
+  ['echo "$[ $(rm -rf /) ]"', "delete-root"],
+  ["x=$[ `rm -rf ~` ]", "delete-home"],
+  // a `((` that is two subshells:
+  ["((rm -rf /) )", "delete-root"],
+  ["((rm -rf /); echo done)", "delete-root"],
+  ["((cd /tmp && make) || (rm -rf ~))", "delete-home"],
+  ["((mkfs.ext4 /dev/sda1) )", "format-disk"],
+  ["bash -c '((rm -rf ~); true)'", "delete-home"],
+  ["((rm -rf /);(rm -rf ~))", "delete-root"],
+  ["true && ((rm -rf /) || true)", "delete-root"],
+  // and a shell with no arithmetic command at all:
+  ["((rm -rf /))", "delete-root"],
+  ["sh -c '((rm -rf /))'", "delete-root"],
+  ["echo $[ ; rm -rf / ; echo ]", "delete-root"],
   // spellings found by probing, kept so they stay blocked
   ["RM -rf /", "delete-root"],
   ["rm -rf / >/dev/null 2>&1 &", "delete-root"],
@@ -507,9 +525,6 @@ const ALLOWED: Array<[command: string, on?: Platform | "posix"]> = [
   ["pwsh -c 'Remove-Item -Recurse -Force $env:TEMP/work'"],
   ["pwsh -NoProfile -File cleanup.ps1"],
   ["pwsh -c 'Write-Host deleting; Get-ChildItem ~'"],
-  ["(( count << 1 ))"],
-  ["echo $[1<<2]"],
-  ["for ((i=0; i<3; i++)); do echo $i; done"],
   // review round 2: ordinary cmd and PowerShell lines, clear on Windows too
   ["cd C:\\proj\\ ; npm test"],
   ["dir C:\\Users\\me\\ "],
@@ -550,6 +565,14 @@ const NOT_CLEAR: Array<[command: string, on: Platform | "posix" | "all", outcome
   ['echo "say \\"hi\\"; rd /s /q C:\\"', "all", "unreadable"],
   // the same shape with a POSIX command in the text is a command to the POSIX reading
   ['cd "C:\\proj\\"; echo "cleaning; rm -rf / skipped"', "all", "delete-root"],
+  // KNOWN LIMITATION: a bare arithmetic shift. `<<` there is read as the
+  // start of a heredoc, which then never ends, so the answer is "could not
+  // read" and a person is asked. Reading it as arithmetic meant skipping
+  // what is inside, and text inside does run (the rows above).
+  ["(( x << 1 ))", "all", "unreadable"],
+  ["echo $[1<<2]", "all", "unreadable"],
+  ["(( x << 1 ))\nrm -rf /", "all", "unreadable"],
+  ["echo $[1<<2]\nrm -rf /", "all", "unreadable"],
   // a wrapper nested deeper than is followed was not read
   ["eval eval eval eval eval rm -rf /", "all", "unreadable"],
 ];
