@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { allowsTool, parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
+import { bridgedCallTarget } from "./drivers/agents-bridge.ts";
 import { resolveCliSpawn } from "./env-path.ts";
 import { directoryCallTarget, isDirectoryTool } from "./mcp-directory.ts";
 import { DEFAULT_RESULT_BUDGET, trimResultText, trimStructured } from "./mcp-trim.ts";
@@ -270,8 +271,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       || (params.arguments !== undefined && !isRecord(params.arguments))) {
       return rejectRequest(message.id, -32602, "Invalid tool call");
     }
-    const target = callTarget(params.name, params.arguments);
-    if (target !== undefined && !allowsTool(scope, { kind: "mcp", server: NAME, name: target })) {
+    // The agents server behind a selection is started without its tool
+    // bridge (mcp-gate-config.ts). Should one answer here all the same, a
+    // use_tool call is judged by the tool it names as well as by its own name.
+    const targets = [callTarget(params.name, params.arguments), ...(NAME === "agents" ? [bridgedCallTarget(params.name, params.arguments)] : [])];
+    if (targets.some((target) => target !== undefined && !allowsTool(scope, { kind: "mcp", server: NAME, name: target }))) {
       return rejectRequest(message.id, -32602, "Tool selection excludes this tool. Check the bot's Access settings.");
     }
   }

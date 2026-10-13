@@ -6,6 +6,7 @@ import { stripControlPlaneEnv } from "../config.ts";
 import type { SendTurnInput } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
+import { bridgedCallTarget, unbridgedServer } from "./agents-bridge.ts";
 import { chatImage, type ChatImagePart } from "./chat-images.ts";
 import { CALL_TOOL, directoryCallTarget, isDirectoryTool } from "../mcp-directory.ts";
 import { mcpStdioServer } from "../mcp-gate-config.ts";
@@ -258,7 +259,11 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   const eligible = (server: string) => scope === undefined || canUseMcpServer(scope, server);
   if (computerUse && integrations?.localComputer && eligible("computer")) servers.push(["computer", integrations.localComputer]);
   if (computerUse && integrations?.browser && eligible("browser")) servers.push(["browser", integrations.browser]);
-  if (integrations?.agents && eligible("agents")) servers.push(["agents", integrations.agents]);
+  // A selection is matched against the name in the call (include and
+  // validate below), and a call made through the agents tool bridge is named
+  // use_tool: with a selection the agents server lists its whole catalog.
+  const agentsServer = integrations?.agents && scope !== undefined ? unbridgedServer(integrations.agents) : integrations?.agents;
+  if (agentsServer && eligible("agents")) servers.push(["agents", agentsServer]);
   if (integrations?.composio && eligible("composio")) servers.push(["composio", integrations.composio]);
   if (integrations?.data && eligible("data")) servers.push(["data", integrations.data]);
   for (const [name, server] of Object.entries(integrations?.custom ?? {})) {
@@ -309,7 +314,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
       // A bridge into a machine minted a fresh bearer this turn, so its
       // grants last a turn, as a warm engine restarts for it (perTurn).
       const launch = createHash("sha256").update(JSON.stringify(descriptor)).digest("hex");
-      return { name, client, launch, builtInBrowser: descriptor === integrations?.browser, agents: descriptor === integrations?.agents,
+      return { name, client, launch, builtInBrowser: descriptor === integrations?.browser, agents: descriptor === agentsServer,
         hostComputer: descriptor === integrations?.localComputer && integrations?.localComputer?.scope === "local-computer", tools };
     }));
     for (const mount of mounts) {
@@ -354,7 +359,8 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
     // answers a mistake with guidance: a wrong name or a malformed search
     // ran nothing, and must not end the turn as a failed tool call.
     const directory = tool.searched && isDirectoryTool(tool.name);
-    if (!directory && excluded(tool.name)) throw new Error("Tool selection excludes this tool");
+    // (and, should a bridged agents server answer here all the same, the tool a use_tool call names)
+    if (!directory && (excluded(tool.name) || (tool.agents && excluded(bridgedCallTarget(tool.name, args))))) throw new Error("Tool selection excludes this tool");
     omitBlankDefaults(tool.builtInBrowser, tool.name, args);
     if (!object(args) || (!directory && !tool.schema(args))) throw new Error("Tool arguments do not match the advertised input schema; use its required fields and types");
     if (tool.searched && excluded(target(tool, args))) throw new Error("Tool selection excludes this tool");

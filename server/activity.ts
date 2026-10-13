@@ -11,6 +11,7 @@
 // decisions share the decision log. Read those alongside native tool runs.
 import { join } from "node:path";
 
+import { bridgedCallName } from "./agents-bridge-names.ts";
 import { readDecisions, type DecisionKind, type DecisionRow } from "./decision-log.ts";
 import { isRuntimeEvent, readRecentLines } from "./thread-events.ts";
 
@@ -166,7 +167,10 @@ function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
           at: event.createdAt,
           threadId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
-          tool: event.title ?? "unknown",
+          // A call made through the agents tool bridge is logged as use_tool;
+          // it reads as the tool it ran. This is built from the event alone,
+          // so only where the title itself says whose tool it is.
+          tool: bridgedCallName(event.title ?? "unknown", event.input, { serverNamed: true }),
           outcome: "running",
         }),
       );

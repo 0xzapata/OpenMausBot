@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
 import { DATA_DIR } from "./config.ts";
+import { unbridgedServer } from "./drivers/agents-bridge.ts";
 import { DEFAULT_RESULT_BUDGET } from "./mcp-trim.ts";
 import { REMOTE_MCP_CONFIG_ENV, remoteMcpSpec } from "./mcp-http.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
@@ -174,9 +175,16 @@ export function gateServer(input: {
     if (scoped) throw new Error("Tool selection requires a supported MCP server.");
     return null;
   }
+  // A selection is matched against the name in the call, and a call made
+  // through the agents tool bridge is named use_tool. So behind a selection
+  // the agents server lists its whole catalog, whatever the turn decided
+  // for its integration: the selection in force is the one this mount was
+  // handed, which a room turn reads after that decision and a direct turn
+  // before it. Either way the mount does not rely on the two agreeing.
+  const upstream = scoped && name === "agents" ? unbridgedServer(spec) : spec;
   const env = {
     OMB_GATE_NAME: name,
-    OMB_GATE_UPSTREAM: JSON.stringify({ command: spec.command, args: spec.args ?? [], env: spec.env ?? {} }),
+    OMB_GATE_UPSTREAM: JSON.stringify({ command: upstream.command, args: upstream.args ?? [], env: upstream.env ?? {} }),
     OMB_GATE_SPILL_DIR: spillDir(input.threadId),
     OMB_GATE_BUDGET: String(budget),
     ...(scoped ? { OMB_GATE_TOOL_SCOPE: JSON.stringify(parsed.scope) } : {}),
