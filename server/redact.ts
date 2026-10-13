@@ -18,7 +18,7 @@ const SECRET_KEY_PARTS = ["token", "secret", "password", "passwd", "apikey", "ap
 /** `key` alone is too broad — it matches `keyboard`, `keys`, `hotkey`. Only
  * treat it as a credential when it stands alone or is a suffix, which is how
  * every real one is spelled (API_KEY, consumer-key, xai_key). */
-function isSecretName(name: string): boolean {
+export function isSecretName(name: string): boolean {
   const lower = name.toLowerCase();
   if (lower === "omb_gate_upstream" || lower === "omb_remote_mcp_server" || lower.startsWith("omb_remote_mcp_config_")) return true;
   if (SECRET_KEY_PARTS.some((part) => lower.includes(part))) return true;
