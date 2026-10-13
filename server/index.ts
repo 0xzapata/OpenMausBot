@@ -104,10 +104,8 @@ import {
 } from "./message-file.ts";
 import {
   avatarGenerationRequestSchema,
-  avatarGenerationStateMatches,
   generateAvatarImage,
   avatarImageStatus,
-  snapshotAvatarGenerationState,
 } from "./avatar-image.ts";
 import { fitsOnOneLine, parseBotProfilePatch } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
@@ -127,13 +125,12 @@ import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
-import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
+import { parseToolScope } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot } from "./boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "./boat-delete-journal.ts";
 import { liveCardKind, liveDecisionRefusal } from "../shared/live-approval.ts";
 import {
-  cloudBackendChangeError,
 } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
 import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
@@ -241,10 +238,8 @@ import { recoveryCapabilityError } from "./automatic-recovery.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
   addDisabledMcpServer,
-  MAX_MCP_SERVERS,
   isRemoteMcpServer,
   listMcpServers,
-  mcpServerNameError,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
 import { MCP_OAUTH_CALLBACK_PATH, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
@@ -336,7 +331,6 @@ import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPos
 import {
   isProjectEmoji,
   mentionedBots,
-  parseConnectorTools,
   roomResponders,
   sectionKey,
   Store,
@@ -386,7 +380,6 @@ import {
   beginMemoryTurn,
   endMemoryTurn,
   flushAllMemoryJournals,
-  journalMemoryWrite,
   journalTurnWrite,
   type MemoryJournalEntry,
 } from "./memory-journal.ts";
@@ -394,10 +387,8 @@ import {
   readSectionContext,
   readSections,
   sectionContextKey,
-  sectionContextLabel,
   sectionContextSystemPrompt,
   writeSectionContext,
-  SECTION_CONTEXT_MAX_BYTES,
 } from "./section-context.ts";
 import {
   applyStagedSkillWrite,
@@ -405,7 +396,6 @@ import {
   getStagedSkillWrite,
   installOrgSkill,
   installSkill,
-  listBotSkillsWithOrigin,
   resolveBotSkills,
   parseSkillMd,
   scanSkillText,
@@ -414,7 +404,6 @@ import {
   isSkillName,
   readSkillFile,
   rejectStagedSkillWrite,
-  removeSkill,
   setSkillEnabled,
   skillPackageStamps,
   skillsSystemPrompt,
@@ -424,7 +413,7 @@ import {
 } from "./skills.ts";
 import { fetchSkillFromSource } from "./skill-fetch.ts";
 import { pickBotName } from "./names.ts";
-import { botSkillTemplateSchema, newBotDefaultsSchema, resolveBotCreationDefaults } from "./new-bot-defaults.ts";
+import { botSkillTemplateSchema, newBotDefaultsSchema } from "./new-bot-defaults.ts";
 import { expandLearnTurnText, learnSource } from "./skill-learn.ts";
 import { connectedAppsForSetup, expandSetupTurnText, setupModeActive, setupSystemPrompt, type SetupConnectedApps } from "./setup-mode.ts";
 import type { SkillRequestCardData } from "../shared/skill-request.ts";
@@ -508,8 +497,8 @@ import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memor
 import { describeTool } from "./activity.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
 import { OutboundRequestService } from "./outbound-requests.ts";
-import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, normalizeOutboundPolicy, outboundCallsIn } from "../shared/outbound.ts";
-import { connectorAccessDecision, describeConnectorScopes, normalizeConnectorScopes } from "../shared/connector-scopes.ts";
+import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, outboundCallsIn } from "../shared/outbound.ts";
+import { connectorAccessDecision, describeConnectorScopes } from "../shared/connector-scopes.ts";
 import { bindThreadLogCapProvider } from "./thread-log-rotation.ts";
 import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./webhook-ingress.ts";
 import { assertModelVariantSupported, memberTurnSelection } from "./member-turn.ts";
@@ -518,25 +507,20 @@ import type { WebhookTrigger } from "../shared/webhooks.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { harnessMcpTokenEnv } from "./harness-mcp-token.ts";
 import {
-  installLibrarySkill,
-  listLibrarySkills,
   loadBundledSkills,
   loadUserSkills,
   mergeSkills,
   readLibrarySkillFile,
-  readSkillLibraryIndex,
   renderSkillInstructions,
   selectBundledSkills,
-  setLibrarySkillReviewState,
 } from "./skill-library.ts";
-import type { SkillsLibrarySkillWire } from "../shared/wire.ts";
 import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport, createLibraryPackageExport, createTeamPackageExport, picture as sharedPicture, TeamExportError, type ExportablePackageSkill, type TeamExportSkip } from "./package-export.ts";
 import { importPackageDocument, importTeamManifest, PackageImportError, type PackageImportDeps, type PackageImportResult } from "./package-import.ts";
 import {
-  applyPresetToBot, createPresetStore, DEFAULTS_PRESET_KEY, PRESET_UNAVAILABLE_MESSAGE,
-  presetFromDefaults, presetOffered, readPublishedLibrary, writePublishedLibrary,
+  createPresetStore, DEFAULTS_PRESET_KEY,
+  presetFromDefaults, readPublishedLibrary, writePublishedLibrary,
 } from "./presets.ts";
 import { readPublishedTeam, writePublishedTeam } from "./published-teams.ts";
 import { OrgLibrary } from "./org-library.ts";
@@ -569,7 +553,6 @@ import { allowedScopes, createEmailSignIn, parseAllowList } from "./account-sign
 import { ProviderAuthSessions } from "./provider-auth-sessions.ts";
 import {
   clearSessionCookie,
-  clientBotPatchViolation,
   clientGroupPatchViolation,
   isLoopbackHost,
   isProxied,
@@ -637,6 +620,12 @@ import { ROUTES, dispatchRoutes } from "./routes/table.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
+import { createBotCreateRoutes } from "./routes/bots-create.ts";
+import { createBotSettingsRoutes, pinnedClientThreadGuard } from "./routes/bot-settings.ts";
+import { createBotPatchRoutes } from "./routes/bot-patch.ts";
+import { createBotLifecycleRoutes } from "./routes/bot-lifecycle.ts";
+import { createBotSkillsRoutes } from "./routes/bot-skills.ts";
+import { createTeamContextRoutes } from "./routes/team-context.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
@@ -17470,6 +17459,46 @@ ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: (
 // its file, so New bot cannot disagree with it. No organization: none.
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));
+// Creating a bot (POST /api/bots): the saved New bot defaults and a preset
+// are applied around the store's own creation.
+ROUTES.push(createBotCreateRoutes({
+  store, cfg, presetStore, orgInstallStatuses,
+  hostedWorkspace: HOSTED_WORKSPACE, hostedFullAccessRefusal: HOSTED_FULL_ACCESS_REFUSAL, desktopManaged: DESKTOP_MANAGED,
+  maxWorkspaceBots: MAX_WORKSPACE_BOTS, cloudOwnerKey: CLOUD_OWNER_KEY,
+  hostedModels, supportsApprovalMode, cloudRoutineAuthors,
+  routines: () => routines,
+  storedAvatarExists, defaultSelection, checkedModelSelection, cloudOwnerSession, wireBot,
+}));
+// The pinned-thread guard the bot routes below and the inline bot routes
+// build per request: a paired or companion client that names no thread on a
+// bot with several is refused (bot-settings.ts).
+const pinnedClientThread = pinnedClientThreadGuard(store);
+// A bot's settings: avatar, profile, model, read receipt, command allow-list
+// and always-allow (bot-settings.ts), then the broad PATCH (bot-patch.ts).
+ROUTES.push(createBotSettingsRoutes({
+  store, cfg, registry, commandAllowlist, commandAllowlistDrivers: COMMAND_ALLOWLIST_DRIVERS,
+  cloudHome: Boolean(CLOUD_HOME), cloudOwnerProfileFields: CLOUD_OWNER_PROFILE_FIELDS,
+  hostedModels, supportsApprovalMode, directTurnBots, broadcast, wireBot, cloudOwnerSession, storedAvatarExists,
+  requestedTaskBot, threadBusy, activeGroupTurnForBot, checkedModelSelection, engineSwitchNeedsAsk, readCursor,
+  canManageCommandAllowlist, commandAllowlistResponse, cardAnswerRefusal,
+}));
+ROUTES.push(createBotPatchRoutes({
+  store, cfg, registry, sessions, browserRuntime, browserLive, memoryUpkeep, cacheKeepWarm, hostedModels, supportsApprovalMode,
+  routines: () => routines, activeVpsThreads,
+  hostedWorkspace: HOSTED_WORKSPACE, hostedFullAccessRefusal: HOSTED_FULL_ACCESS_REFUSAL, desktopManaged: DESKTOP_MANAGED, maxWorkspaceBots: MAX_WORKSPACE_BOTS,
+  broadcast, wireBot, publicGroupState, audienceChanged, storedAvatarExists, requestedTaskBot, threadBusy, activeGroupTurnForBot,
+  checkedModelSelection, engineSwitchNeedsAsk, currentBrowserSession, interruptAllDirectThreads, cancelGroupTurnOperations,
+  revokeInternalCapabilitiesForThread, runningTurnInstance, closeOpenApprovals, assertTeamComputerChangeIdle, forgetTemporaryBrowser,
+}));
+// Stopping every bot on this computer and deleting a bot (bot-lifecycle.ts),
+// a bot's skills and the skills library (bot-skills.ts), a team's brief and
+// shared memory (team-context.ts).
+ROUTES.push(createBotLifecycleRoutes({
+  store, routines: () => routines, interruptAllDirectThreads, cancelDirectTurnDispatch, revokeInternalCapabilitiesForThread,
+  activeGroupTurnForBot, cancelGroupTurnOperations, runningTurnInstance, closeOpenApprovals, deleteBotWithLifecycle,
+}));
+ROUTES.push(createBotSkillsRoutes({ store, cfg, listBotSkills, readBotSkillFile, stagedSkillListing }));
+ROUTES.push(createTeamContextRoutes({ store, teamMemory }));
 // The bot-memory panel's routes (MEMORY.md, memory/ topics, journal); the
 // store lookups — the 404 precheck and journal thread titles — stay explicit.
 ROUTES.push(createBotMemoryRoutes({
@@ -20943,16 +20972,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     // ── bots ──
-    // Paired sessions are authenticated above. The companion marker may
-    // only narrow behavior (including its capability-free local dev proxy);
-    // it never grants authority or replaces the existing request gate.
-    const requirePinnedClientThread = (botId: string, threadId: unknown): void => {
-      if (threadId === undefined &&
-        (auth.kind === "session" || req.headers["x-openmausbot-companion"] === "1") &&
-        store.tasks(botId).length > 1) {
-        throw Object.assign(new Error("This bot has more than one thread. Update the OpenMausBot app on this device, then choose a thread and try again."), { status: 409 });
-      }
-    };
+    const requirePinnedClientThread = pinnedClientThread(auth, req);
     if (method === "GET" && path === "/api/bots") {
       try { groupUsageReader.refresh(); } catch { /* accounting must not block a snapshot */ }
       const limit = pageSize(url.searchParams.get("messages"));
@@ -22457,1285 +22477,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // A preview belongs to the draft. Upload it through the existing image
       // endpoint only when the user commits the new bot or its defaults.
       return json(res, 200, { dataUrl: `data:${generated.mime};base64,${generated.bytes.toString("base64")}` });
-    }
-    if (method === "POST" && path === "/api/bots") {
-      let body = await readBody(req);
-      if (!body || typeof body !== "object" || Array.isArray(body)) {
-        return json(res, 400, { error: "bot must be a JSON object" });
-      }
-      const template = resolveBotCreationDefaults(cfg.newBotDefaults, body);
-      const settings = template.profile;
-      if (auth.kind === "session" && !auth.scopes.includes("admin")) {
-        const field = clientBotPatchViolation(settings);
-        if (field || body.preset !== undefined || template.skills.length || template.routines.length || Object.keys(template.memory).length) {
-          return json(res, 403, { error: "Creating a bot with these defaults needs the admin scope" });
-        }
-      }
-      // A preset (presets.ts) supplies content: playbooks, skills and
-      // starter notes. Name, look and instructions stay the request's own.
-      if (body.preset !== undefined && (typeof body.preset !== "string" || !/^[\w-]{1,64}$/.test(body.preset))) {
-        return json(res, 400, { error: "preset must be a preset id from New bot" });
-      }
-      const resolvedPreset = typeof body.preset === "string" ? presetStore.resolve(body.preset) : null;
-      const preset = resolvedPreset && presetOffered(resolvedPreset.row, orgInstallStatuses()) ? resolvedPreset : null;
-      if (body.preset !== undefined && !preset) return json(res, 404, { error: PRESET_UNAVAILABLE_MESSAGE });
-      body = { ...body, ...settings, name: settings.name };
-      // Full is applied like any other level; its first conversation follows
-      // the bot. Custom still comes only through the desktop's private channel.
-      if (settings.approvalMode === "custom") {
-        return json(res, 403, { error: "Custom approval requires the desktop permission flow. Use the bot creation dialog or choose another level for API creation." });
-      }
-      if (settings.approvalMode === "full" && HOSTED_WORKSPACE) return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
-      if (settings.computer === "local" && settings.approvalMode === "auto" && body.acknowledgeLocalAuto !== true) {
-        return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
-      }
-      if (settings.avatarUrl && !storedAvatarExists(settings.avatarUrl)) {
-        return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
-      }
-      if (settings.browserProfile && settings.browserProfile !== "guest" && !(cfg.browserProfiles ?? []).some(profile => profile.id === settings.browserProfile)) {
-        return json(res, 400, { error: "browserProfile must name an existing browser profile" });
-      }
-      if (settings.mcpServers?.some(name => mcpServerNameError(name) !== null) || (settings.mcpServers?.length ?? 0) > MAX_MCP_SERVERS) {
-        return json(res, 400, { error: "Invalid MCP server selection" });
-      }
-      if (settings.managedSections?.length) {
-        if (!settings.chiefOfStaff || settings.managedSections.some(name => name !== "" && !store.sections.includes(name))) {
-          return json(res, 400, { error: "Only a Chief may manage existing additional teams" });
-        }
-        if (body.acknowledgePeerScope !== true) return json(res, 400, { error: "Confirm additional team access (acknowledgePeerScope)" });
-        if (auth.kind === "loopback" && !DESKTOP_MANAGED && store.bots.some(bot => bot.busy)) {
-          return json(res, 409, { error: "Stop running bots before granting access to another team" });
-        }
-      }
-      const checkedCwd = validateBotCwd(settings.cwd ?? null);
-      if (!checkedCwd.ok) return json(res, 400, { error: checkedCwd.error });
-      if (body.requireAvailableModel !== undefined && typeof body.requireAvailableModel !== "boolean") {
-        return json(res, 400, { error: "requireAvailableModel must be true or false" });
-      }
-      if (body.requireAvailableModel === true && body.modelSelection === undefined) {
-        return json(res, 400, { error: "requireAvailableModel requires modelSelection" });
-      }
-      const profileInput = Object.fromEntries(
-        ["name", "title", "description"]
-          .filter((key) => body[key] !== undefined)
-          .map((key) => [key, body[key]]),
-      );
-      const profile = parseBotProfilePatch(profileInput, true);
-      if (!profile.ok) return json(res, 400, { error: profile.error });
-      let section: string | undefined;
-      if (body.section !== undefined && body.section !== null) {
-        if (typeof body.section !== "string") return json(res, 400, { error: "section must be a string" });
-        section = body.section.trim() || undefined;
-        if (section && section.length > 60) {
-          return json(res, 400, { error: "section must be at most 60 characters" });
-        }
-      }
-      let selection: ModelSelection;
-      if (body.modelSelection === undefined) {
-        selection = await defaultSelection();
-      } else {
-        const checked = checkedModelSelection(body.modelSelection, undefined, body.requireAvailableModel === true);
-        if (!checked.ok) return json(res, checked.status, { error: checked.error });
-        selection = checked.selection;
-      }
-      if (hostedModels && !hostedModels.allows(selection)) return json(res, 400, { error: hostedModels.error() });
-      if (settings.approvalMode === "full" && !supportsApprovalMode(selection, "full")) {
-        return json(res, 400, { error: "This provider does not support Full access" });
-      }
-      // Keep the capacity check immediately beside the synchronous write.
-      // Awaiting provider discovery before this point cannot race the cap.
-      if (store.bots.length >= MAX_WORKSPACE_BOTS) {
-        return json(res, 409, { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` });
-      }
-      // Apply the audience before creation can announce the bot to members.
-      const created = body.visibility === undefined ? null : parseVisibility(body.visibility);
-      if (created && !created.ok) return json(res, 400, { error: created.error });
-      const bot = store.createBot({ ...profile.patch, soul: settings.soul, section, modelSelection: selection,
-        toolScope: settings.toolScope ?? undefined,
-        ...(created?.ok ? { visibility: created.visibility } : {}) });
-      const createdRoutines: Array<{ id: string; enabled: boolean }> = [];
-      try {
-        const { chiefOfStaff: _chief, managedSections: _managed, toolScope: _toolScope, ...ordinary } = settings;
-        store.patchBot(bot.id, {
-          // Store creation completes workspace defaults (including effort).
-          // Applying the rest of the template must not undo that selection.
-          ...ordinary, name: bot.name, section, modelSelection: bot.modelSelection,
-          mascotExpression: ordinary.mascotExpression ?? undefined,
-          avatarUrl: ordinary.avatarUrl || undefined,
-          computer: ordinary.computer ?? undefined, cwd: checkedCwd.cwd ?? undefined,
-          peers: ordinary.peers ?? undefined, mcpServers: ordinary.mcpServers ?? undefined,
-          browserProfile: ordinary.browserProfile || undefined,
-          autoApprove: ordinary.approvalMode === "auto",
-        });
-        // What the preset brings wins over the saved defaults for the same
-        // skill name or note file.
-        const presetSkills = new Set(preset?.preset.skills ?? []);
-        const presetNotes = new Set(Object.keys(preset?.preset.seed?.memory ?? {}));
-        for (const [file, text] of Object.entries(template.memory)) {
-          if (presetNotes.has(file)) continue;
-          journalMemoryWrite(bot.id, file, text, { actor: "person", via: "api" });
-        }
-        if (preset) {
-          applyPresetToBot(bot.id, preset, {
-            store,
-            skills: { install: installSkill, setEnabled: setSkillEnabled, installOrg: installOrgSkill },
-            memory: { writeIndex: writeMemoryFile, writeTopic: writeMemoryTopic },
-          });
-        }
-        for (const skill of template.skills) {
-          if (presetSkills.has(skill.name)) continue;
-          const parsed = parseSkillMd(skill.text);
-          if ("error" in parsed || parsed.name !== skill.name) throw Object.assign(new Error("Skill name does not match its contents"), { status: 400 });
-          const installed = installSkill(bot.id, skill.source, [{ path: "SKILL.md", content: skill.text }]);
-          if ("error" in installed) throw Object.assign(new Error(installed.error), { status: 422 });
-          if (skill.enabled) {
-            const enabled = setSkillEnabled(bot.id, skill.name, true);
-            if ("error" in enabled) throw Object.assign(new Error(enabled.error), { status: 422 });
-          }
-        }
-        // On a Cloud home only the owner's devices create bots: its routines
-        // (and the conversations they report into) are theirs.
-        const ownersRoutines = CLOUD_OWNER_KEY && auth.kind === "session" && cloudOwnerSession(auth) ? CLOUD_OWNER_KEY : null;
-        for (const routine of template.routines) {
-          const created = routines!.create({ ...routine, botId: bot.id, enabled: false });
-          createdRoutines.push({ id: created.id, enabled: routine.enabled !== false });
-          if (ownersRoutines) cloudRoutineAuthors?.wrote(created.id, ownersRoutines);
-        }
-      } catch (error) {
-        for (const routine of createdRoutines) routines!.remove(routine.id);
-        store.deleteBot(bot.id);
-        throw error;
-      }
-      // Creation is complete. Activation errors must not invite a duplicate
-      // creation retry or delete a bot whose routine may already have run.
-      const warnings: string[] = [];
-      if (settings.chiefOfStaff) {
-        try {
-          store.patchBot(bot.id, { managedSections: settings.managedSections ?? [] });
-          store.setChiefOfStaff(bot.id);
-        } catch {
-          warnings.push("Bot created; review its Chief of Staff setting before delegating work.");
-        }
-      }
-      for (const routine of createdRoutines) if (routine.enabled) {
-        try { routines!.update(routine.id, { enabled: true }); }
-        catch { warnings.push(`Bot created; routine ${routine.id} could not be activated.`); }
-      }
-      return json(res, 201, {
-        ...(warnings.length ? { warnings } : {}),
-        bot: {
-          ...wireBot(bot),
-          messages: store.messagesFor(bot.threadId),
-          activeLeafId: store.activeLeaf(bot.threadId),
-        },
-      });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/avatar\/generate$/);
-    if (m && method === "POST") {
-      const existing = store.bot(m[1]);
-      if (!existing) return json(res, 404, { error: "no such bot" });
-      // Generation is slow and both desktop and companion clients may edit or
-      // delete this bot while it is in flight. Snapshot the two fields this
-      // request owns before the first await so a late result cannot win.
-      const initialAvatar = snapshotAvatarGenerationState(existing);
-      const parsed = avatarGenerationRequestSchema.safeParse(await readBody(req));
-      if (!parsed.success) {
-        return json(res, 400, { error: `prompt must be at most 400 characters` });
-      }
-      const generated = await generateAvatarImage(cfg, existing, parsed.data.prompt);
-      const current = store.bot(existing.id);
-      if (!current) return json(res, 404, { error: "no such bot" });
-      if (!avatarGenerationStateMatches(initialAvatar, current)) {
-        return json(res, 409, { error: "avatar changed while generation was in progress" });
-      }
-      const saved = saveImage(generated.bytes, generated.mime);
-      const avatarUrl = botAvatarUrlFromStoredPath(saved.path);
-      if (!avatarUrl) throw Object.assign(new Error("Could not store the generated avatar"), { status: 500 });
-      const avatarCrop = initialAvatar.avatarCrop && initialAvatar.avatarCrop !== "mascot"
-        ? initialAvatar.avatarCrop
-        : "circle";
-      const bot = store.patchBot(current.id, { avatarUrl, avatarCrop });
-      if (!bot) {
-        // There are no awaits between the refreshed lookup and this patch, but
-        // keep the attachment invariant explicit if the store ever changes.
-        deleteAttachment(saved.path);
-        return json(res, 404, { error: "no such bot" });
-      }
-      const visible = wireBot(bot);
-      broadcast({ kind: "bot", bot: visible });
-      return json(res, 201, { avatarUrl, bot: visible });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/profile$/);
-    if (m && method === "PATCH") {
-      const parsed = parseBotProfilePatch(await readBody(req), true);
-      if (!parsed.ok) return json(res, 400, { error: parsed.error });
-      if (parsed.patch.avatarUrl && !storedAvatarExists(parsed.patch.avatarUrl)) {
-        return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
-      }
-      const existingBot = store.bot(m[1]);
-      // On a Cloud home a bot's name, title, description and standing
-      // instructions ride every one of the owner's turns (and a lent Mac):
-      // only the owner's own devices change them. Anyone else keeps the
-      // picture and the voice. Resending an unchanged value is not a change.
-      if (CLOUD_HOME && existingBot && !cloudOwnerSession(auth)) {
-        const changed = CLOUD_OWNER_PROFILE_FIELDS.find((field) => parsed.patch[field] !== undefined && (field === "notifications"
-          ? (parsed.patch.notifications !== false) !== (existingBot.notifications !== false)
-          : parsed.patch[field] !== (existingBot[field] ?? "")));
-        if (changed) return json(res, 403, { error: "On this Cloud only its owner can change a bot's name, title, description, instructions or notifications." });
-      }
-      const beforeProfile = existingBot ? profileSnapshot(existingBot) : undefined;
-      const bot = store.patchBotProfile(m[1], parsed.patch);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      if (beforeProfile) recordProfileChange(bot.id, "user", "api", beforeProfile, profileSnapshot(bot));
-      const visible = wireBot(bot);
-      broadcast({ kind: "bot", bot: visible });
-      return json(res, 200, { bot: visible });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/model$/);
-    if (m && method === "PATCH") {
-      const body = await readBody(req);
-      if (body && typeof body === "object" && !Array.isArray(body)) {
-        const unsupported = Object.keys(body).find(
-          (key) => key !== "instanceId" && key !== "model" && key !== "effort" && key !== "variant",
-        );
-        if (unsupported) return json(res, 400, { error: `unsupported model field: ${unsupported}` });
-      }
-      const existing = store.bot(m[1]);
-      if (!existing) return json(res, 404, { error: "no such bot" });
-      requirePinnedClientThread(existing.id, undefined);
-      const selected = requestedTaskBot(existing.id, undefined);
-      if (existing.approvalGrant) {
-        return json(res, 409, { error: "wait for the approval-level change to finish before changing models" });
-      }
-      const checked = checkedModelSelection(
-        body,
-        { selection: selected.modelSelection, busy: threadBusy(selected.id, selected.threadId) },
-        true,
-      );
-      if (!checked.ok) return json(res, checked.status, { error: checked.error });
-      if (activeGroupTurnForBot(existing.id)) {
-        const groupChecked = checkedModelSelection(checked.selection, { selection: existing.modelSelection, busy: true });
-        if (!groupChecked.ok) return json(res, groupChecked.status, { error: groupChecked.error });
-      }
-      if ([existing, selected].some((owner) => {
-        const mode = approvalModeFor(owner);
-        return (mode === "full" || mode === "custom") &&
-          (!supportsApprovalMode(checked.selection, mode) || engineSwitchNeedsAsk(mode, owner.modelSelection, checked.selection));
-      })) {
-        return json(res, 400, {
-          error: "Changing providers with elevated permissions requires choosing Ask first",
-        });
-      }
-      // patchBot persists first and emits the canonical bot change, which the
-      // store listener above turns into the slim wire-format SSE broadcast.
-      // Every thread that follows the bot moves with it; the selected thread
-      // follows it from now on too, as if picked there.
-      const bot = store.patchBot(existing.id, { modelSelection: checked.selection });
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      store.patchTask(bot.id, selected.threadId, { modelSelection: undefined,
-        ...hostedModels?.resetTask(selected.modelSelection, checked.selection) });
-      return json(res, 200, { bot: wireBot(bot) });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/read$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      requirePinnedClientThread(m[1], body?.threadId);
-      const current = requestedTaskBot(m[1], body?.threadId);
-      store.patchTask(current.id, current.threadId, { unread: false, ...readCursor(current.threadId) });
-      const bot = store.bot(current.id)!;
-      const visible = wireBot(bot);
-      broadcast({ kind: "bot", bot: visible });
-      return json(res, 200, { bot: visible });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/command-allowlist(?:\/([\w-]+))?$/);
-    if (m && ["GET", "POST", "DELETE"].includes(method)) {
-      if (!canManageCommandAllowlist(auth)) return json(res, 403, { error: "Only the owner or an admin can manage command permissions." });
-      const bot = requestedTaskBot(m[1], url.searchParams.get("threadId") ?? undefined);
-      if (method === "GET" && !m[2]) return json(res, 200, commandAllowlistResponse(bot));
-      if (method === "POST" && !m[2]) {
-        const candidate = commandAllowlistCandidate(await readBody(req));
-        if (!candidate) return json(res, 400, { error: "Enter an exact command without secret values, an absolute working folder, and a provider." });
-        const instance = registry.get(candidate.providerInstanceId);
-        if (!instance || !COMMAND_ALLOWLIST_DRIVERS.has(instance.driverKind)) {
-          return json(res, 400, { error: "This provider does not supply structured command approvals." });
-        }
-        commandAllowlist.add(bot.id, candidate);
-        return json(res, 200, commandAllowlistResponse(bot));
-      }
-      if (method === "DELETE" && m[2]) {
-        commandAllowlist.remove(bot.id, m[2]);
-        return json(res, 200, commandAllowlistResponse(bot));
-      }
-      return json(res, 405, { error: "Unsupported command allowlist operation" });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/always-allow$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      requirePinnedClientThread(m[1], body?.threadId);
-      const allowKey = typeof body.allowKey === "string" ? body.allowKey : "";
-      const bot = requestedTaskBot(m[1], body.threadId);
-      if (!allowKey) return json(res, 400, { error: "allowKey required" });
-      const pending = store.messagesFor(bot.threadId).find((message) =>
-        message.card?.requestId &&
-        !message.card.answered &&
-        message.card.dismissed !== true &&
-        message.card.allowKey === allowKey
-      );
-      if (!pending) {
-        return json(res, 409, { error: "that grant is not on a pending approval for this bot" });
-      }
-      // A standing grant is an approval: the same people who may approve
-      // the card it came from may remember it.
-      const refusal = cardAnswerRefusal(auth, bot.threadId, pending.card!.requestId!, "allow");
-      if (refusal) return json(res, 403, { error: refusal });
-      // This is a standing permission for the bot, not merely for the thread
-      // that happened to raise the card. Save it on the bot defaults so a
-      // fresh direct or delegated task inherits it, while also updating the
-      // current task's independent permission snapshot immediately.
-      const savedBot = store.bot(bot.id)!;
-      store.patchBot(bot.id, {
-        alwaysAllow: [...new Set([...(savedBot.alwaysAllow ?? []), allowKey])].slice(0, 200),
-      });
-      store.patchTask(bot.id, bot.threadId, {
-        alwaysAllow: [...new Set([...(bot.alwaysAllow ?? []), allowKey])].slice(0, 200),
-      });
-      const live = directTurnBots.get(bot.threadId);
-      if (live) live.alwaysAllow = [...new Set([...(live.alwaysAllow ?? []), allowKey])].slice(0, 200);
-      const updated = store.bot(bot.id)!;
-      const visible = wireBot(updated);
-      broadcast({ kind: "bot", bot: visible });
-      return json(res, 200, { bot: visible });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)$/);
-    if (m && method === "PATCH") {
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || Array.isArray(body)) {
-        return json(res, 400, { error: "body must be a JSON object" });
-      }
-      if (auth.kind === "session" && !auth.scopes.includes("admin")) {
-        const field = clientBotPatchViolation(body);
-        if (field) return json(res, 403, { error: `forbidden: this session may change how a bot looks, not "${field}" (needs the admin scope)` });
-      }
-      const existingBot = store.bot(m[1]);
-      const selectedTask = existingBot ? requestedTaskBot(existingBot.id, undefined) : null;
-      const beforeProfile = existingBot ? profileSnapshot(existingBot) : undefined;
-      const beforeVisibility = existingBot?.visibility;
-      if (body.requireAvailableModel !== undefined && typeof body.requireAvailableModel !== "boolean") {
-        return json(res, 400, { error: "requireAvailableModel must be true or false" });
-      }
-      const beforeBrowserProfile = existingBot?.browserProfile;
-      const beforeBrowserEnabled = existingBot?.browser;
-      // Neither Codex (free-form string field) nor Grok (lazy, logs-only)
-      // rejects an unknown effort level at their own boundary — this is the
-      // only real gate, so it stays. But it fires only when the target
-      // instance actually resolves. An instance that isn't there declares no
-      // levels, and rejecting against that empty list would 400 the *whole*
-      // request: this is the app's general-purpose bot endpoint, and
-      // duplicateBot re-sends the source bot's entire modelSelection beside
-      // its name, title and description, so a source engine that happens to
-      // be offline would cost the copy all of them. Letting it through is
-      // safe — startTurn refuses to run a turn on an unavailable instance
-      // anyway, so an unverifiable level never reaches a CLI.
-      const rawSelection = (body as Record<string, unknown>).modelSelection;
-      if (rawSelection !== undefined) requirePinnedClientThread(m[1], undefined);
-      if (body.keepThreadModels !== undefined) {
-        if (typeof body.keepThreadModels !== "boolean") return json(res, 400, { error: "keepThreadModels must be true or false" });
-        if (body.keepThreadModels && rawSelection === undefined) return json(res, 400, { error: "keepThreadModels goes with modelSelection" });
-      }
-      // The thread a new bot model moves besides those that follow the bot.
-      // From the bot's own panel that is the selected thread, whatever model
-      // it had: it follows the bot from now on, as if picked there (#2401).
-      // A bulk change (keepThreadModels: the team dialog) is about the bots,
-      // not the thread each one last had open, so a thread with a model of
-      // its own keeps it there, selected or not, and only followers move.
-      const movedTask = selectedTask && !(body.keepThreadModels === true &&
-        store.taskByThread(selectedTask.id, selectedTask.threadId)?.modelSelection !== undefined) ? selectedTask : null;
-      if (
-        existingBot?.approvalGrant &&
-        (rawSelection !== undefined || body.approvalMode !== undefined || body.autoApprove !== undefined)
-      ) {
-        return json(res, 409, { error: "wait for the approval-level change to finish before changing this setting" });
-      }
-      if (body.requireAvailableModel === true && rawSelection === undefined) {
-        return json(res, 400, { error: "requireAvailableModel requires modelSelection" });
-      }
-      let normalizedSelection: ModelSelection | undefined;
-      if (rawSelection !== undefined) {
-        const checked = checkedModelSelection(
-          rawSelection,
-          movedTask ? { selection: movedTask.modelSelection, busy: threadBusy(movedTask.id, movedTask.threadId) } : undefined,
-          body.requireAvailableModel === true,
-        );
-        if (!checked.ok) return json(res, checked.status, { error: checked.error });
-        normalizedSelection = checked.selection;
-        if (existingBot && activeGroupTurnForBot(existingBot.id)) {
-          const groupChecked = checkedModelSelection(normalizedSelection, { selection: existingBot.modelSelection, busy: true });
-          if (!groupChecked.ok) return json(res, groupChecked.status, { error: groupChecked.error });
-        }
-      }
-      // Persona/profile fields reach prompts and paired clients. Both this
-      // broad desktop endpoint and the paired-safe profile endpoint pass
-      // through the same validation and clear-value normalization.
-      const profile = parseBotProfilePatch(body);
-      if (!profile.ok) return json(res, 400, { error: profile.error });
-      if (profile.patch.avatarUrl && !storedAvatarExists(profile.patch.avatarUrl)) {
-        return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
-      }
-      const patch: Record<string, unknown> = {};
-      Object.assign(patch, profile.patch);
-      let section: string | undefined | null;
-      if (body.section !== undefined) {
-        if (body.section === null) section = null;
-        else if (typeof body.section !== "string") return json(res, 400, { error: "section must be a string" });
-        else {
-          const trimmed = body.section.trim();
-          if (!trimmed) section = null;
-          else if (trimmed.length > 60) return json(res, 400, { error: "section must be at most 60 characters" });
-          else section = trimmed;
-        }
-      }
-      for (const key of ["unread", "cloudBackend", "color", "mascotExpression", "mascotBody", "pinned", "hidden"] as const) {
-        if (body[key] !== undefined) patch[key] = body[key];
-      }
-      const computerSpecified = Object.prototype.hasOwnProperty.call(body, "computer");
-      let requestedComputer = existingBot?.computer;
-      if (computerSpecified) {
-        if (body.computer === null) {
-          // Auto is represented by an absent durable field. JSON needs a
-          // concrete clear value, so clients send null at the PATCH boundary.
-          requestedComputer = undefined;
-          patch.computer = undefined;
-        } else if (
-          typeof body.computer === "string" &&
-          ["cloud", "vm", "local", "browser", "off"].includes(body.computer)
-        ) {
-          requestedComputer = body.computer;
-          patch.computer = body.computer;
-        } else {
-          return json(res, 400, { error: "computer must be null (Auto), cloud, vm, local, browser, or off" });
-        }
-      }
-      if (normalizedSelection) patch.modelSelection = normalizedSelection;
-      // one pinned message per thread; null/"" clears. The id is not
-      // validated against the transcript here — a pin whose message was
-      // edited to another branch or deleted simply resolves to nothing.
-      if (body.pinnedMessageId !== undefined) {
-        if (body.pinnedMessageId === null || body.pinnedMessageId === "") patch.pinnedMessageId = undefined;
-        else if (typeof body.pinnedMessageId === "string" && /^[\w-]+$/.test(body.pinnedMessageId)) {
-          patch.pinnedMessageId = body.pinnedMessageId;
-        } else return json(res, 400, { error: "pinnedMessageId must be a message id" });
-      }
-      if (section !== undefined) patch.section = section ?? undefined;
-      if (body.chiefOfStaff === false) patch.chiefOfStaff = false;
-      // where a task carries on when this engine is unavailable, in order
-      if (body.fallback !== undefined) {
-        if (!Array.isArray(body.fallback) || body.fallback.length > 5) {
-          return json(res, 400, { error: "fallback must be a list of up to five { instanceId, model } entries" });
-        }
-        const chain: Array<{ instanceId: string; model: string }> = [];
-        for (const entry of body.fallback as unknown[]) {
-          const row = entry && typeof entry === "object" ? (entry as { instanceId?: unknown; model?: unknown }) : null;
-          if (!row || typeof row.instanceId !== "string" || !/^[\w.-]+$/.test(row.instanceId) || typeof row.model !== "string" || !row.model.trim() || row.model.length > 500) {
-            return json(res, 400, { error: "fallback must be a list of up to five { instanceId, model } entries" });
-          }
-          if (!registry.get(row.instanceId)) return json(res, 400, { error: `fallback engine "${row.instanceId}" is not available` });
-          if (chain.some((seen) => seen.instanceId === row.instanceId)) continue;
-          chain.push({ instanceId: row.instanceId, model: row.model.trim() });
-        }
-        patch.fallback = chain;
-      }
-      // which connected apps this bot may use; null clears back to all of them
-      if (body.connectorScopes !== undefined) {
-        if (body.connectorScopes === null) patch.connectorScopes = undefined;
-        else {
-          const scopes = normalizeConnectorScopes(body.connectorScopes);
-          if (!scopes) return json(res, 400, { error: "connectorScopes must be { apps: { <toolkit>: read | write } } or null" });
-          patch.connectorScopes = scopes;
-        }
-      }
-      // sending on the person's behalf: ask every time, or a daily allowance
-      if (body.outbound !== undefined) {
-        const policy = normalizeOutboundPolicy(body.outbound);
-        if (!policy) return json(res, 400, { error: "outbound must be { policy: ask | allow, dailyCap: 1..1000 }" });
-        patch.outbound = policy;
-      }
-      // per-bot gate on the workspace's connected apps (Composio)
-      if (body.composio !== undefined) {
-        if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
-        patch.composio = body.composio;
-      }
-      // per-bot gate on sending voice notes: the toggle is about what this
-      // bot may do (an admin decision), not how it looks, so it lives here
-      // rather than the client-writable profile surface.
-      if (body.voiceNotes !== undefined) {
-        if (typeof body.voiceNotes !== "boolean") return json(res, 400, { error: "voiceNotes must be true or false" });
-        patch.voiceNotes = body.voiceNotes;
-      }
-      if (body.memoryEnabled !== undefined) {
-        if (typeof body.memoryEnabled !== "boolean") return json(res, 400, { error: "memoryEnabled must be true or false" });
-        if (existingBot && (existingBot.busy || activeGroupTurnForBot(existingBot.id)) &&
-            body.memoryEnabled !== (existingBot.memoryEnabled !== false)) {
-          return json(res, 409, { error: "stop this bot's turn before changing its memory setting" });
-        }
-        patch.memoryEnabled = body.memoryEnabled;
-      }
-      // which of those apps' tools this bot may call (connector grants 1/5:
-      // data model only — enforcement lands with slice 2). null returns the
-      // bot to boolean-only legacy behavior; {} means no tools.
-      if (body.connectorTools !== undefined) {
-        if (body.connectorTools === null) {
-          patch.connectorTools = undefined;
-        } else {
-          const parsed = parseConnectorTools(body.connectorTools);
-          if (!parsed.ok) return json(res, 400, { error: parsed.error });
-          // Connector grants 3/5: past the shape checks, slugs must name
-          // connected services and tool names must carry their service
-          // prefix. Unreachable backends never block the patch — the
-          // call-time verdict from slice 2 stays the authority.
-          const semantic = await composio.validateConnectorGrants(cfg, parsed.grants);
-          if (semantic) return json(res, 400, { error: semantic });
-          patch.connectorTools = parsed.grants;
-        }
-      }
-      // Queue this bot's direct messages behind outstanding delegated work
-      // instead of steering the conversation immediately (#1194).
-      if (body.parkDirectMessages !== undefined) {
-        if (typeof body.parkDirectMessages !== "boolean") return json(res, 400, { error: "parkDirectMessages must be true or false" });
-        patch.parkDirectMessages = body.parkDirectMessages;
-      }
-      // Per-bot selection of app-wide MCP servers. Omitted keeps the current
-      // selection; null restores all enabled servers; [] explicitly mounts none.
-      let requestedMcpServers = existingBot?.mcpServers;
-      if (Object.hasOwn(body, "toolScope")) {
-        const parsed = parseToolScope(body.toolScope === null ? undefined : body.toolScope);
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        patch.toolScope = parsed.scope;
-      }
-      if (body.mcpServers !== undefined) {
-        if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-          return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
-        }
-        if (body.mcpServers === null) {
-          requestedMcpServers = undefined;
-        } else if (!Array.isArray(body.mcpServers) || body.mcpServers.some((t: unknown) => typeof t !== "string" || mcpServerNameError(t) !== null)) {
-          return json(res, 400, { error: "mcpServers must be a list of server names, or null" });
-        } else {
-          requestedMcpServers = [...new Set(body.mcpServers as string[])];
-          if (requestedMcpServers.length > MAX_MCP_SERVERS) {
-            return json(res, 400, { error: `Select at most ${MAX_MCP_SERVERS} MCP servers.` });
-          }
-        }
-        patch.mcpServers = requestedMcpServers;
-      }
-      if (body.memoryUpkeep !== undefined) {
-        if (typeof body.memoryUpkeep !== "boolean") return json(res, 400, { error: "memoryUpkeep must be true or false" });
-        patch.memoryUpkeep = body.memoryUpkeep;
-      }
-      // Prompt-cache keep-warm: true/false overrides the workspace, null follows it.
-      if (body.cacheKeepWarm !== undefined) {
-        if (body.cacheKeepWarm !== null && typeof body.cacheKeepWarm !== "boolean") return json(res, 400, { error: "cacheKeepWarm must be true, false or null" });
-        patch.cacheKeepWarm = body.cacheKeepWarm ?? undefined;
-      }
-      // per-bot gate on the app's built-in browser
-      if (body.browser !== undefined) {
-        if (typeof body.browser !== "boolean") return json(res, 400, { error: "browser must be true or false" });
-        if (existingBot?.busy && body.browser !== (existingBot.browser !== false)) {
-          return json(res, 409, { error: "stop this bot's turn before changing its browser access" });
-        }
-        patch.browser = body.browser;
-      }
-      // which named browser session this bot uses; null/"" = its own
-      if (body.browserProfile !== undefined) {
-        const requestedProfile = body.browserProfile === null || body.browserProfile === ""
-          ? undefined
-          : body.browserProfile;
-        if (existingBot?.busy && requestedProfile !== existingBot.browserProfile) {
-          return json(res, 409, { error: "stop this bot's turn before changing its browser profile" });
-        }
-        if (existingBot && requestedProfile !== existingBot.browserProfile &&
-            browserRuntime.heldBy(currentBrowserSession(existingBot.id, existingBot.browserProfile))) {
-          return json(res, 409, { error: "Release browser control before changing its profile." });
-        }
-        if (requestedProfile === undefined) patch.browserProfile = undefined;
-        else if (
-          typeof requestedProfile === "string" &&
-          (requestedProfile === "guest" || (cfg.browserProfiles ?? []).some((profile) => profile.id === requestedProfile))
-        ) {
-          patch.browserProfile = requestedProfile;
-        } else return json(res, 400, { error: "browserProfile must name an existing browser profile" });
-      }
-      if (body.cloudBackend !== undefined && !["box", "vps"].includes(String(body.cloudBackend))) {
-        return json(res, 400, { error: "cloudBackend must be box or vps" });
-      }
-      if (body.autoStartVps !== undefined) {
-        if (typeof body.autoStartVps !== "boolean") return json(res, 400, { error: "autoStartVps must be true or false" });
-        patch.autoStartVps = body.autoStartVps;
-      }
-      if (body.chiefOfStaff !== undefined && typeof body.chiefOfStaff !== "boolean") {
-        return json(res, 400, { error: "chiefOfStaff must be true or false" });
-      }
-      if (body.cloudBackend !== undefined) {
-        const backendError = cloudBackendChangeError(Boolean(existingBot?.busy), activeVpsThreads.has(m[1]));
-        if (backendError) return json(res, 409, { error: backendError });
-      }
-      if (body.cwd !== undefined) {
-        const checked = validateBotCwd(body.cwd);
-        if (!checked.ok) return json(res, 400, { error: checked.error });
-        patch.cwd = checked.cwd ?? undefined;
-      }
-      if (body.hidden === true && existingBot?.chiefOfStaff && body.chiefOfStaff !== false) {
-        return json(res, 400, { error: "choose another Chief of Staff before hiding this bot" });
-      }
-      // the permission fields decide what runs unattended, so they are
-      // type-checked rather than copied through: a string alwaysAllow would
-      // still answer .includes() — with substring matches, not tool names
-      if (body.autoApprove !== undefined) {
-        if (typeof body.autoApprove !== "boolean") return json(res, 400, { error: "autoApprove must be true or false" });
-      }
-      let requestedApprovalMode: ApprovalMode;
-      if (body.approvalMode !== undefined) {
-        if (!isApprovalMode(body.approvalMode)) {
-          return json(res, 400, {
-            error: "approvalMode must be ask, auto, full, or custom",
-          });
-        }
-        requestedApprovalMode = body.approvalMode;
-      } else if (body.autoApprove !== undefined) {
-        // Compatibility for desktop/mobile builds that predate the four-level
-        // selector. Their boolean can choose only safe Auto or Ask; it can
-        // never silently create Full access.
-        requestedApprovalMode = body.autoApprove ? "auto" : "ask";
-      } else {
-        requestedApprovalMode = approvalModeFor(existingBot ?? {});
-      }
-      const currentApprovalMode = approvalModeFor(existingBot ?? {});
-      const approvalChangeRequested = body.approvalMode !== undefined || body.autoApprove !== undefined;
-      if (existingBot?.busy && approvalChangeRequested && requestedApprovalMode !== currentApprovalMode) {
-        return json(res, 409, {
-          error: "stop this bot's turn before changing its approval level",
-        });
-      }
-      if (body.approvalMode !== undefined || body.autoApprove !== undefined) {
-        patch.approvalMode = requestedApprovalMode;
-        // Keep the old wire field truthful for older paired apps. It means
-        // specifically safe Auto, not "some mode that approves things".
-        patch.autoApprove = requestedApprovalMode === "auto";
-      }
-      const targetSelection = normalizedSelection ?? existingBot?.modelSelection;
-      if (normalizedSelection && movedTask) {
-        const mode = approvalModeFor(movedTask);
-        if ((mode === "full" || mode === "custom") &&
-          (!supportsApprovalMode(normalizedSelection, mode) || engineSwitchNeedsAsk(mode, movedTask.modelSelection, normalizedSelection))) {
-          return json(res, 400, { error: "Choose Ask for the selected thread before changing providers with elevated permissions" });
-        }
-      }
-      if (
-        (requestedApprovalMode === "full" || requestedApprovalMode === "custom") &&
-        (body.approvalMode !== undefined || normalizedSelection !== undefined) &&
-        (!targetSelection || !supportsApprovalMode(targetSelection, requestedApprovalMode) ||
-          (existingBot && normalizedSelection && engineSwitchNeedsAsk(requestedApprovalMode, existingBot.modelSelection, normalizedSelection)))
-      ) {
-        return json(res, 400, {
-          error: "This provider does not support the selected approval level, or changing providers requires choosing Ask first",
-        });
-      }
-      // Full access applies at once from any client that can reach this API
-      // (owner decision, Oct 12): no desktop channel, no consent field.
-      // Custom keeps the packaged desktop's private channel, into it and out
-      // of it, because it holds restrictions the person wrote themselves.
-      const requiresPrivateApprovalTransition =
-        (requestedApprovalMode === "custom" && currentApprovalMode !== "custom") ||
-        (currentApprovalMode === "custom" && requestedApprovalMode !== "custom");
-      if (requiresPrivateApprovalTransition) {
-        return json(res, 403, {
-          error: "This approval-level change can only be made from the packaged desktop app",
-        });
-      }
-      if (HOSTED_WORKSPACE && requestedApprovalMode === "full" &&
-        (currentApprovalMode !== "full" || body.applyToAllThreads === true)) {
-        return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
-      }
-      // One level for the bot and every one of its conversations, the same
-      // way for every level but Custom: bot settings sends it with Full, a
-      // team-wide change with each level it sets. Without it only the default
-      // (and the threads that follow it) changes. A thread on Custom leaves
-      // it only through the desktop's private channel, as the bot does.
-      if (body.applyToAllThreads !== undefined) {
-        if (typeof body.applyToAllThreads !== "boolean") return json(res, 400, { error: "applyToAllThreads must be true or false" });
-        if (body.applyToAllThreads && (body.approvalMode === undefined || requestedApprovalMode === "custom")) {
-          return json(res, 400, { error: "applyToAllThreads goes with an approvalMode other than custom" });
-        }
-      }
-      if (body.applyToAllThreads === true && existingBot) {
-        const threads = store.tasks(existingBot.id);
-        if (threads.some((task) => threadBusy(existingBot.id, task.threadId))) {
-          return json(res, 409, { error: "stop this bot's turns before changing its approval level" });
-        }
-        if (threads.some((task) => approvalModeFor(store.projectBotForTask(existingBot.id, task.threadId) ?? {}) === "custom")) {
-          return json(res, 403, { error: "A thread on Custom approval can only leave it from the packaged desktop app" });
-        }
-        if (threads.some((task) => !supportsApprovalMode(task.modelSelection ?? targetSelection, requestedApprovalMode))) {
-          return json(res, 400, { error: "Every thread's provider must support this approval level" });
-        }
-      }
-      // "Auto on this Mac" hands a bot the user's real session, so the grant
-      // must prove a human saw the warning. The desktop dialog is the only
-      // caller that sends acknowledgeLocalAuto; without it a PATCH that would
-      // create the combination — a bot curling the loopback API from a tool
-      // call, a script, a stale client — is refused. The renderer dialog
-      // alone is not a boundary; this check is.
-      const wantsComputer = computerSpecified ? requestedComputer : existingBot?.computer;
-      const wantsAuto = requestedApprovalMode === "auto";
-      // Every thread counts when the level goes to all of them: one still
-      // on another level gets Auto on this computer for the first time.
-      const alreadyGranted =
-        existingBot?.computer === "local" && approvalModeFor(existingBot) === "auto" &&
-        (body.applyToAllThreads !== true || store.tasks(existingBot.id).every((task) =>
-          approvalModeFor(store.projectBotForTask(existingBot.id, task.threadId) ?? {}) === "auto"));
-      if (wantsComputer === "local" && wantsAuto === true && !alreadyGranted && body.acknowledgeLocalAuto !== true) {
-        return json(res, 400, {
-          error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)",
-        });
-      }
-      if (body.approvePeerComms !== undefined) {
-        if (typeof body.approvePeerComms !== "boolean") {
-          return json(res, 400, { error: "approvePeerComms must be true or false" });
-        }
-        patch.approvePeerComms = body.approvePeerComms;
-      }
-      // Who this bot may contact. null clears the list back to "everyone
-      // visible in my section"; an array — including an empty one — is the
-      // explicit wiring, so a bot can be given exactly one correspondent.
-      //
-      // Narrowing is free, widening is not. The bot this field constrains
-      // can reach this endpoint: resolveRequestAuth hands admin+client to
-      // any loopback caller, so a bot holding Bash is one curl from
-      // deleting its own leash — the same adversary the acknowledgeLocalAuto
-      // block above is written against, and the exact bot the allow-list
-      // exists to contain. So cutting reach needs nothing (an operator, a
-      // script, even the bot itself may only ever make it smaller), while
-      // clearing the list or adding an id needs the proof of a human the
-      // desktop dialog sends and a tool call cannot forge.
-      if (body.peers !== undefined) {
-        let nextPeers: string[] | undefined;
-        if (body.peers === null) nextPeers = undefined;
-        else if (
-          !Array.isArray(body.peers) ||
-          body.peers.some((peerId: unknown) => typeof peerId !== "string")
-        ) {
-          return json(res, 400, { error: "peers must be a list of bot ids, or null for every bot in this section" });
-        } else {
-          nextPeers = [...new Set<string>(body.peers)].slice(0, MAX_WORKSPACE_BOTS);
-        }
-        // A bot with no list is already at its widest, so the first list it
-        // is ever given can only narrow it.
-        const currentPeers = existingBot?.peers;
-        const widensReach =
-          Array.isArray(currentPeers) &&
-          (nextPeers === undefined || nextPeers.some((peerId) => !currentPeers.includes(peerId)));
-        if (widensReach && body.acknowledgePeerScope !== true) {
-          return json(res, 400, {
-            error: "Widening a bot's allowed peers requires confirming it first (acknowledgePeerScope)",
-          });
-        }
-        patch.peers = nextPeers;
-      }
-      if (body.managedSections !== undefined) {
-        const parsed = z.array(z.string().trim().max(60)).max(100).safeParse(body.managedSections);
-        if (!parsed.success) return json(res, 400, { error: "managedSections must be a list of up to 100 team names (60 characters each)" });
-        const sections = [...new Set(parsed.data)];
-        const newSections = sections.filter(section => !(existingBot?.managedSections ?? []).includes(section));
-        if (newSections.some(section => section !== "" && !store.sections.includes(section))) {
-          return json(res, 400, { error: "Create the named team before giving a Chief access to it" });
-        }
-        if (sections.length && !(body.chiefOfStaff === true || (existingBot?.chiefOfStaff && body.chiefOfStaff !== false))) {
-          return json(res, 400, { error: "Only a Chief of Staff can be given access to additional teams" });
-        }
-        if (newSections.length && body.acknowledgePeerScope !== true) {
-          return json(res, 400, { error: "Confirm which additional teams this Chief may work with (acknowledgePeerScope)" });
-        }
-        patch.managedSections = sections;
-      }
-      // Removing the role revokes its grants, rather than leaving dormant
-      // authority to return if this bot is elected Chief again later.
-      if (body.chiefOfStaff === false) patch.managedSections = [];
-      // Who may see this bot on a workspace several people share
-      // (bot-visibility.ts): "everyone" (the default), "admins", or
-      // { people: [...] }. Access control, applied at once; members' PATCHes
-      // never get here (clientBotPatchViolation).
-      if (Object.hasOwn(body, "visibility")) {
-        const parsed = parseVisibility(body.visibility);
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        patch.visibility = parsed.visibility;
-      }
-      if (body.alwaysAllow !== undefined) {
-        if (!Array.isArray(body.alwaysAllow) || body.alwaysAllow.some((t: unknown) => typeof t !== "string")) {
-          return json(res, 400, { error: "alwaysAllow must be a list of tool keys" });
-        }
-        patch.alwaysAllow = [...new Set(body.alwaysAllow as string[])].slice(0, 200);
-      }
-      // What "the proof of a human" above actually rests on. In the packaged
-      // desktop it is real: every mutation here already carried the owner
-      // capability a tool call cannot forge. Outside it — `pnpm dev`, the
-      // CLI, the Docker stack — loopback is the owner by design, so the
-      // acknowledgement flag and the settings that loosen a bot's leash
-      // (a wider peer list, the peer-approval gate switched off, a section
-      // move that changes who is in reach, a standing always-allow grant)
-      // are one curl away from the bot they constrain. What such a request
-      // does NOT have is a paired session or a browser origin; and the one
-      // moment a bot's shell can send it is while a turn is running. So an
-      // originless, session-less loopback caller may loosen a bot only
-      // while every bot is idle — and is logged when it does — while the
-      // served UI (a browser, with its origin) and a paired device keep
-      // working mid-turn as before. A bar, not a wall: the wall is the
-      // desktop capability or a paired session, which is what the refusal
-      // points at.
-      const loosened: string[] = [];
-      // These three fields were validated above before joining the broad patch.
-      const trustPatch = patch as Pick<Partial<BotRecord>, "outbound" | "connectorScopes" | "fallback">;
-      if (body.outbound !== undefined && trustPatch.outbound?.policy === "allow" &&
-          (existingBot?.outbound?.policy !== "allow" || trustPatch.outbound.dailyCap > existingBot.outbound.dailyCap)) loosened.push("outbound");
-      if (body.connectorScopes !== undefined && existingBot?.connectorScopes &&
-          (!trustPatch.connectorScopes || Object.entries(trustPatch.connectorScopes.apps).some(([slug, scope]) =>
-            !existingBot.connectorScopes!.apps[slug] || (scope === "write" && existingBot.connectorScopes!.apps[slug] === "read")))) loosened.push("connectorScopes");
-      if (body.fallback !== undefined && trustPatch.fallback?.some(candidate =>
-          !existingBot?.fallback?.some(previous => previous.instanceId === candidate.instanceId && previous.model === candidate.model))) loosened.push("fallback");
-      if (Array.isArray(patch.managedSections) && patch.managedSections.some(section => !(existingBot?.managedSections ?? []).includes(section))) {
-        loosened.push("managedSections");
-      }
-      // A shell can forge an Origin header. New cross-team authority may
-      // come from local scripts only when all bots are idle; paired owners
-      // and the packaged desktop's private capability can grant it mid-turn.
-      if (loosened.includes("managedSections") && auth.kind === "loopback" && !DESKTOP_MANAGED && store.bots.some(bot => bot.busy)) {
-        return json(res, 409, { error: "Stop running bots before granting access to another team, or use the desktop app or a paired Full-access session." });
-      }
-      if (body.peers !== undefined && Array.isArray(existingBot?.peers)) {
-        const nextPeers = patch.peers;
-        if (nextPeers === undefined || (Array.isArray(nextPeers) && nextPeers.some((peerId) => !existingBot.peers!.includes(peerId)))) {
-          loosened.push("peers");
-        }
-      }
-      if (body.approvePeerComms === false && existingBot?.approvePeerComms === true) loosened.push("approvePeerComms");
-      if (section !== undefined && sectionKey(existingBot?.section) !== sectionKey(section)) loosened.push("section");
-      if (Array.isArray(patch.alwaysAllow) && patch.alwaysAllow.some((key) => !(existingBot?.alwaysAllow ?? []).includes(key))) {
-        loosened.push("alwaysAllow");
-      }
-      if (body.mcpServers !== undefined && Array.isArray(existingBot?.mcpServers) &&
-          (requestedMcpServers === undefined || requestedMcpServers.some((name) => !existingBot.mcpServers!.includes(name)))) {
-        loosened.push("mcpServers");
-      }
-      if (Object.hasOwn(body, "toolScope") && toolScopeWidens(existingBot?.toolScope, patch.toolScope)) loosened.push("toolScope");
-      const browserOrigin = typeof req.headers.origin === "string" && req.headers.origin.trim() !== "";
-      if (loosened.length && auth.kind === "loopback" && !DESKTOP_MANAGED && !browserOrigin) {
-        if (store.bots.some((candidate) => candidate.busy)) {
-          return json(res, 409, {
-            error: "A bot is working right now, so this change has to come from the desktop app or a paired device. Try again once every bot is idle.",
-          });
-        }
-        console.warn(`bot ${m[1]}: ${loosened.join(", ")} loosened by ${requestSource(req)} through the local API with no paired session`);
-      }
-      if (existingBot?.computer === "local" && computerSpecified && requestedComputer !== "local") {
-        await interruptAllDirectThreads(existingBot.id);
-        const routine = routines!.activeBotRunForBot(existingBot.id);
-        if (routine) await routines!.cancelRun(routine.id);
-        const groupTurn = activeGroupTurnForBot(existingBot.id);
-        if (groupTurn) {
-          cancelGroupTurnOperations(groupTurn.group.id, groupTurn.threadId);
-          revokeInternalCapabilitiesForThread(groupTurn.threadId);
-          await runningTurnInstance(existingBot, groupTurn.threadId)?.adapter.interruptTurn(groupTurn.threadId).catch(() => {});
-          closeOpenApprovals(groupTurn.threadId);
-        }
-      }
-      const chiefMovedSections =
-        Boolean(existingBot?.chiefOfStaff) &&
-        body.chiefOfStaff !== false &&
-        section !== undefined &&
-        sectionKey(existingBot?.section) !== sectionKey(section);
-      let bot: BotRecord | null;
-      const freshBrowserBot = store.bot(m[1]);
-      // Connector validation and runtime revocation can yield after the first
-      // memory check. Keep the same idle-only transition at the final commit.
-      if (freshBrowserBot && body.memoryEnabled !== undefined &&
-          body.memoryEnabled !== (freshBrowserBot.memoryEnabled !== false) &&
-          (freshBrowserBot.busy || activeGroupTurnForBot(freshBrowserBot.id))) {
-        return json(res, 409, { error: "stop this bot's turn before changing its memory setting" });
-      }
-      if (Object.hasOwn(body, "toolScope")) {
-        if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-          return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
-        }
-        if (toolScopeWidens(freshBrowserBot?.toolScope, patch.toolScope) && auth.kind === "loopback" && !DESKTOP_MANAGED && !browserOrigin && store.bots.some((candidate) => candidate.busy)) {
-          return json(res, 409, { error: "A bot is working right now, so this change has to come from the desktop app or a paired device. Try again once every bot is idle." });
-        }
-        if (freshBrowserBot && JSON.stringify(freshBrowserBot.toolScope) !== JSON.stringify(patch.toolScope)
-          && (freshBrowserBot.busy || activeGroupTurnForBot(freshBrowserBot.id))) {
-          return json(res, 409, { error: "Stop this bot's turns before changing its tool selection." });
-        }
-      }
-      // Custom servers are process configuration: a running turn cannot
-      // unmount them. Recheck after any awaited runtime revocation above.
-      if (body.mcpServers !== undefined) {
-        if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-          return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
-        }
-        if (Array.isArray(freshBrowserBot?.mcpServers) &&
-            (requestedMcpServers === undefined || requestedMcpServers.some((name) => !freshBrowserBot.mcpServers!.includes(name))) &&
-            auth.kind === "loopback" && !DESKTOP_MANAGED && !browserOrigin && store.bots.some((candidate) => candidate.busy)) {
-          return json(res, 409, { error: "A bot is working right now, so this change has to come from the desktop app or a paired device. Try again once every bot is idle." });
-        }
-        if (freshBrowserBot &&
-            JSON.stringify(requestedMcpServers?.toSorted()) !== JSON.stringify(freshBrowserBot.mcpServers?.toSorted()) &&
-            (freshBrowserBot.busy || activeGroupTurnForBot(freshBrowserBot.id))) {
-          return json(res, 409, { error: "Stop this bot's turns before changing its MCP servers." });
-        }
-      }
-      if (normalizedSelection && movedTask) {
-        const current = store.projectBotForTask(movedTask.id, movedTask.threadId);
-        if (!current) return json(res, 404, { error: "no such task" });
-        const checked = checkedModelSelection(normalizedSelection, { selection: current.modelSelection, busy: threadBusy(current.id, current.threadId) });
-        if (!checked.ok) return json(res, checked.status, { error: checked.error });
-        if (freshBrowserBot && activeGroupTurnForBot(freshBrowserBot.id)) {
-          const groupChecked = checkedModelSelection(normalizedSelection, { selection: freshBrowserBot.modelSelection, busy: true });
-          if (!groupChecked.ok) return json(res, groupChecked.status, { error: groupChecked.error });
-        }
-      }
-      if (freshBrowserBot && body.browserProfile !== undefined &&
-          patch.browserProfile !== freshBrowserBot.browserProfile &&
-          (freshBrowserBot.busy || browserRuntime.heldBy(currentBrowserSession(freshBrowserBot.id, freshBrowserBot.browserProfile)))) {
-        return json(res, 409, { error: "Stop the bot and release browser control before changing its profile." });
-      }
-      if (profile.patch.soul !== undefined) {
-        if (freshBrowserBot) assertTeamComputerChangeIdle(freshBrowserBot, { ...freshBrowserBot, ...patch } as BotRecord);
-        // A mixed settings request must not turn a runtime revocation into
-        // a persist-first edit. Apply runtime fields with their existing
-        // fail-closed semantics; atomically commit only the profile fields.
-        const runtimePatch = { ...patch };
-        for (const field of Object.keys(profile.patch)) delete runtimePatch[field];
-        if (Object.keys(runtimePatch).length) store.patchBot(m[1], runtimePatch);
-        bot = store.patchBotProfile(m[1], profile.patch);
-      } else {
-        if (freshBrowserBot) assertTeamComputerChangeIdle(freshBrowserBot, { ...freshBrowserBot, ...patch } as BotRecord);
-        bot = store.patchBot(m[1], patch);
-      }
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      // The same one durable write the desktop's all-threads grant commits.
-      if (body.applyToAllThreads === true && requestedApprovalMode !== "custom") store.setAllThreadApprovalMode(bot.id, requestedApprovalMode);
-      if (body.memoryUpkeep === false || body.memoryEnabled === false) memoryUpkeep.dropBot(bot.id);
-      if (body.cacheKeepWarm !== undefined) cacheKeepWarm.refresh();
-      // A defined Works on is the newest explicit choice: this bot's
-      // auto-recorded pins that now point elsewhere give way immediately, so
-      // the next turn on each thread follows the new setting. Person-set pins
-      // and pins that already match stay; returning to Auto sweeps nothing.
-      if (computerSpecified && requestedComputer !== undefined) store.clearAutoSurfacePins(m[1], requestedComputer);
-      // A new bot model moves every thread that follows the bot, and the
-      // moved thread (movedTask above) follows it from now on too.
-      if (normalizedSelection && movedTask) store.patchTask(bot.id, movedTask.threadId, { modelSelection: undefined,
-        ...hostedModels?.resetTask(movedTask.modelSelection, normalizedSelection) });
-      if (existingBot && (bot.browserProfile !== beforeBrowserProfile || bot.browser !== beforeBrowserEnabled)) {
-        browserLive.closeForBot(bot.id);
-        if (beforeBrowserProfile === "guest" && (bot.browserProfile !== "guest" || bot.browser === false)) {
-          void forgetTemporaryBrowser(bot.id).catch((error) => console.warn("temporary browser cleanup failed", error));
-        }
-      }
-      const chiefChanges =
-        body.chiefOfStaff === true || chiefMovedSections
-          ? store.setChiefOfStaff(bot.id)
-          : [];
-      if (chiefChanges === null) return json(res, 404, { error: "no such bot" });
-      if (beforeProfile) {
-        const now = store.bot(bot.id)!;
-        recordProfileChange(bot.id, "user", "api", beforeProfile, profileSnapshot(now));
-      }
-      // A new audience changes who may see this bot's rooms and teams too:
-      // re-announce them so every member's stream gains or withdraws them.
-      if (Object.hasOwn(patch, "visibility") && JSON.stringify(beforeVisibility ?? "everyone") !== JSON.stringify(bot.visibility ?? "everyone")) {
-        for (const group of store.groups.filter((candidate) => candidate.memberIds.includes(bot!.id))) {
-          broadcast({ kind: "group", group: publicGroupState(group) });
-        }
-        broadcast({ kind: "sections", sections: store.sections });
-        audienceChanged();
-      }
-      return json(res, 200, { bot: wireBot(store.bot(bot.id)!) });
-    }
-
-    if (method === "POST" && path === "/api/local-computer/interrupt") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      await Promise.allSettled(
-        store.bots
-          .filter((bot) => bot.computer === "local")
-          .map(async (bot) => {
-            await interruptAllDirectThreads(bot.id);
-            const routineRun = routines!.activeBotRunForBot(bot.id);
-            if (routineRun) {
-              cancelDirectTurnDispatch(bot.id, routineRun.threadId);
-              if (routineRun.threadId) {
-                revokeInternalCapabilitiesForThread(routineRun.threadId);
-              }
-              await routines!.cancelRun(routineRun.id);
-            }
-            const groupTurn = activeGroupTurnForBot(bot.id);
-            if (groupTurn) {
-              cancelGroupTurnOperations(groupTurn.group.id, groupTurn.threadId);
-              revokeInternalCapabilitiesForThread(groupTurn.threadId);
-              await runningTurnInstance(bot, groupTurn.threadId)?.adapter.interruptTurn(groupTurn.threadId).catch(() => {});
-              closeOpenApprovals(groupTurn.threadId);
-            }
-          }),
-      );
-      return json(res, 200, { ok: true });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)$/);
-    if (m && method === "DELETE") {
-      const result = await deleteBotWithLifecycle(m[1]);
-      return json(res, result.status, result.body);
-    }
-
-    // ── bot skills: imported Agent Skills (SKILL.md) ────────────────────
-    // Import lands DISABLED; the UI shows SKILL.md + scan warnings and a
-    // person enables after reading. See server/skills.ts for the policy.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/skill-template$/);
-    if (m && method === "POST") {
-      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      const checked = botSkillTemplateSchema.safeParse(await readBody(req));
-      if (!checked.success) return json(res, 400, { error: checked.error.message });
-      const input = checked.data;
-      const parsed = parseSkillMd(input.text);
-      if ("error" in parsed || parsed.name !== input.name) return json(res, 400, { error: "Skill name does not match its contents" });
-      const installed = installSkill(m[1], input.source, [{ path: "SKILL.md", content: input.text }]);
-      if ("error" in installed) return json(res, 422, { error: installed.error });
-      if (input.enabled) {
-        const enabled = setSkillEnabled(m[1], input.name, true);
-        if ("error" in enabled) return json(res, 422, { error: enabled.error });
-      }
-      return json(res, 201, { installed });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/skills$/);
-    if (m && method === "GET") {
-      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      if (skillsLibraryEnabled(cfg)) {
-        const { skills, library } = listBotSkillsWithOrigin(m[1]!, store.bot(m[1])!.assignedSkills);
-        return json(res, 200, {
-          skills,
-          library,
-          // the authoritative assignment list: merged rows hide
-          // assignments a same-name private skill shadows
-          assignedSkills: store.bot(m[1])!.assignedSkills,
-          staged: listStagedSkillWrites(m[1]).map(stagedSkillListing),
-        });
-      }
-      return json(res, 200, {
-        skills: listBotSkills(store.bot(m[1])!),
-        staged: listStagedSkillWrites(m[1]).map(stagedSkillListing),
-      });
-    }
-    if (m && method === "POST") {
-      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      const parsed = z.object({ source: z.string().min(1).max(2000) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "source must be a GitHub or skills.sh URL, or owner/repo" });
-      const fetched = await fetchSkillFromSource(parsed.data.source);
-      if ("error" in fetched) return json(res, 422, { error: fetched.error });
-      const results = fetched.skills.map((skill) => installSkill(m![1]!, skill.source, skill.files));
-      const installed = results.filter((entry): entry is Exclude<typeof entry, { error: string }> => !("error" in entry));
-      const errors = results.flatMap((entry) => ("error" in entry ? [entry.error] : []));
-      if (!installed.length) return json(res, 422, { error: errors.join("; ") || "nothing importable found" });
-      return json(res, 201, { installed, errors });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/skills\/([a-z0-9-]+)$/);
-    if (m && method === "GET") {
-      const bot = store.bot(m[1]);
-      const text = bot ? readBotSkillFile(bot, m[2]!) : null;
-      if (text === null) return json(res, 404, { error: "no such skill" });
-      return json(res, 200, { text });
-    }
-    if (m && method === "PATCH") {
-      const parsed = z.object({ enabled: z.boolean() }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "enabled must be true or false" });
-      const result = setSkillEnabled(m[1]!, m[2]!, parsed.data.enabled);
-      if ("error" in result) return json(res, 404, { error: result.error });
-      return json(res, 200, { skill: result });
-    }
-    if (m && method === "DELETE") {
-      const result = removeSkill(m[1]!, m[2]!);
-      if ("error" in result) return json(res, 404, { error: result.error });
-      return json(res, 200, { ok: true });
-    }
-
-    // ── skills library (features.skillsLibrary): local browse surface ────
-    // Everything here is local: the library on disk, assignments on bot
-    // records, imports from pasted SKILL.md text. No registry, no network.
-    m = path.match(/^\/api\/skills-library$/);
-    if (m && method === "GET") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      const index = readSkillLibraryIndex();
-      const skills: SkillsLibrarySkillWire[] = listLibrarySkills()
-        .map((listing): SkillsLibrarySkillWire => ({
-          name: listing.name,
-          description: listing.description,
-          source: listing.source,
-          enabled: listing.enabled,
-          tags: listing.tags ?? [],
-          version: index[listing.name]?.package?.release ?? null,
-          importedAt: listing.importedAt,
-          ...(listing.license ? { license: listing.license } : {}),
-          ...(listing.compatibility ? { compatibility: listing.compatibility } : {}),
-          warnings: listing.warnings,
-          assignedBots: store.bots
-            .filter((bot) => bot.assignedSkills?.includes(listing.name))
-            .map((bot) => ({ id: bot.id, name: bot.name })),
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      return json(res, 200, { skills });
-    }
-    if (m && method === "POST") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      const parsed = z.object({ text: z.string().min(1) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "text must be the SKILL.md contents to import" });
-      const skill = parseSkillMd(parsed.data.text);
-      if ("error" in skill) return json(res, 400, { error: skill.error });
-      // Imports land disabled with their scan warnings attached: enabling is
-      // a separate, explicit review step on the row.
-      const installed = installLibrarySkill({
-        name: skill.name,
-        instructions: parsed.data.text,
-        source: "local-import",
-        license: skill.license,
-        compatibility: skill.compatibility,
-        tags: skill.tags,
-        warnings: scanSkillText(parsed.data.text),
-        reviewState: "disabled",
-      });
-      if ("error" in installed) return json(res, 422, { error: installed.error });
-      return json(res, 201, { skill: installed });
-    }
-    m = path.match(/^\/api\/skills-library\/([a-z0-9-]+)$/);
-    if (m && method === "GET") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      const text = readLibrarySkillFile(m[1]!);
-      if (text === null) return json(res, 404, { error: "no such skill" });
-      return json(res, 200, { text });
-    }
-    if (m && method === "PATCH") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      const parsed = z.object({ enabled: z.boolean() }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "enabled must be true or false" });
-      const result = setLibrarySkillReviewState(m[1]!, parsed.data.enabled ? "approved" : "disabled");
-      if ("error" in result) return json(res, 404, { error: result.error });
-      return json(res, 200, { skill: result });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/skills-library$/);
-    if (m && method === "PUT") {
-      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
-      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      const parsed = z.object({ skills: z.array(z.string().min(1).max(64)).max(200) }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "skills must be a list of skill names" });
-      const index = readSkillLibraryIndex();
-      const names = [...new Set(parsed.data.skills)];
-      const unknown = names.filter((name) => !index[name]);
-      if (unknown.length) return json(res, 422, { error: "not in the library: " + unknown.join(", ") });
-      store.patchBot(m[1]!, { assignedSkills: names });
-      return json(res, 200, { assignedSkills: names });
-    }
-
-    // ── section context: a user-owned team brief ────────────────────────
-    // Bots receive this in their system context, but no agent tool can write
-    // it. That keeps one bot from silently changing every teammate's future
-    // turns. The section query parameter is required even for General (""),
-    // so a malformed client cannot accidentally read or replace that brief.
-    // ── team memory: the section's shared people, places, decisions, terms ──
-    // The person's view and their edits. Same section rule as the brief:
-    // the query parameter is required even for General.
-    if (path === "/api/team-memory" && (method === "GET" || method === "POST")) {
-      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
-      const section = sectionContextKey(url.searchParams.get("section") ?? "");
-      if (section.length > 60) return json(res, 400, { error: "section must be at most 60 characters" });
-      if (method === "GET") {
-        return json(res, 200, { section, label: sectionContextLabel(section), entries: teamMemory.list(section) });
-      }
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || !(TEAM_MEMORY_KINDS as readonly string[]).includes(String(body.kind))) {
-        return json(res, 400, { error: `kind must be one of ${TEAM_MEMORY_KINDS.join(", ")}` });
-      }
-      try {
-        const proposed = teamMemory.propose(
-          section,
-          { kind: body.kind as TeamMemoryKind, name: String(body.name ?? ""), detail: String(body.detail ?? ""), aliases: Array.isArray(body.aliases) ? body.aliases.map(String) : undefined },
-          { botId: "", botName: "you", threadId: "", at: Date.now() },
-        );
-        // the person's own entry never waits on the person
-        if (proposed.status === "proposed") teamMemory.resolve(section, proposed.entry.id, "accept");
-        return json(res, 201, { entries: teamMemory.list(section) });
-      } catch (error) {
-        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-    m = path.match(/^\/api\/team-memory\/([\w-]+)$/);
-    if (m && (method === "PATCH" || method === "DELETE")) {
-      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
-      const section = sectionContextKey(url.searchParams.get("section") ?? "");
-      if (method === "DELETE") {
-        if (!teamMemory.remove(section, m[1])) return json(res, 404, { error: "no such entry" });
-        return json(res, 200, { entries: teamMemory.list(section) });
-      }
-      const body = await readBody(req);
-      if (!body || typeof body !== "object") return json(res, 400, { error: "body must be a JSON object" });
-      if (body.accept === true) {
-        const result = teamMemory.resolve(section, m[1], "accept");
-        if (!result.claimed) return json(res, 404, { error: "no such entry" });
-        return json(res, 200, { entries: teamMemory.list(section) });
-      }
-      const patch: { name?: string; detail?: string; aliases?: string[]; kind?: TeamMemoryKind } = {};
-      if (typeof body.name === "string") patch.name = body.name;
-      if (typeof body.detail === "string") patch.detail = body.detail;
-      if (Array.isArray(body.aliases)) patch.aliases = body.aliases.map(String);
-      if (typeof body.kind === "string" && (TEAM_MEMORY_KINDS as readonly string[]).includes(body.kind)) patch.kind = body.kind as TeamMemoryKind;
-      try {
-        const updated = teamMemory.update(section, m[1], patch);
-        if (!updated) return json(res, 404, { error: "no such entry" });
-        return json(res, 200, { entry: updated, entries: teamMemory.list(section) });
-      } catch (error) {
-        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-
-    if (path === "/api/section-context" && (method === "GET" || method === "PUT")) {
-      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
-      const requested = url.searchParams.get("section") ?? "";
-      const section = sectionContextKey(requested);
-      if (section.length > 60) return json(res, 400, { error: "section must be at most 60 characters" });
-      const exists =
-        section === "" ||
-        store.sections.includes(section) ||
-        store.bots.some((bot) => !bot.hidden && sectionKey(bot.section) === section) ||
-        store.groups.some((group) => sectionKey(group.section) === section);
-      if (!exists) return json(res, 404, { error: "no such team" });
-
-      if (method === "GET") {
-        const context = readSectionContext(section);
-        return json(res, 200, {
-          section,
-          label: sectionContextLabel(section),
-          text: context?.text ?? "",
-          updatedAt: context?.updatedAt ?? null,
-          maxBytes: SECTION_CONTEXT_MAX_BYTES,
-        });
-      }
-
-      const parsed = z.object({ text: z.string() }).safeParse(await readBody(req));
-      if (!parsed.success) return json(res, 400, { error: "text must be a string" });
-      if (Buffer.byteLength(parsed.data.text, "utf8") > SECTION_CONTEXT_MAX_BYTES) {
-        return json(res, 400, { error: `section context is capped at ${SECTION_CONTEXT_MAX_BYTES / 1000}KB` });
-      }
-      const context = writeSectionContext(section, parsed.data.text);
-      return json(res, 200, {
-        ok: true,
-        section,
-        label: sectionContextLabel(section),
-        text: context?.text ?? "",
-        updatedAt: context?.updatedAt ?? null,
-        maxBytes: SECTION_CONTEXT_MAX_BYTES,
-      });
     }
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/soul$/);
