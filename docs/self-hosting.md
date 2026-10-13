@@ -856,9 +856,8 @@ stay where they are, and their message is sent again. Turns nobody typed
 (routines, webhooks, a teammate's work) get no card.
 
 The offer is on by default. To switch it off, start the server with
-`OMB_QUOTA_SWITCH=0`; any other value, or none, leaves it on. A typed
-`quotaSwitch.enabled` key in `config.json` is deliberately left out for now,
-because `server/config.ts` is pinned by the file-size ratchet.
+`OMB_QUOTA_SWITCH=0`; any other value, or none, leaves it on. It has no
+setting in `config.json` yet.
 
 ### The decision log
 
