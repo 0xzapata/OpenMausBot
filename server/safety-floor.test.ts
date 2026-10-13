@@ -227,7 +227,6 @@ const BLOCKED: Case[] = [
   ["rm -rf ${HOME:?no home}/", "delete-home"],
   ["bash -c -- 'rm -rf /'", "delete-root"],
   ["function wipe { rm -rf /; }; wipe", "delete-root"],
-  ["echo $((1 << 2))\nrm -rf /", "delete-root"],
   // review round 2: a later line that cannot be read does not undo an earlier block
   ['rm -rf /\necho "C:\\"', "delete-root"],
   ['rm -rf ~\ncd "C:\\Users\\me\\"', "delete-home"],
@@ -298,6 +297,10 @@ const BLOCKED: Case[] = [
   ["echo $[ $(rm -rf /) ]", "delete-root"],
   ['echo "$[ $(rm -rf /) ]"', "delete-root"],
   ["x=$[ `rm -rf ~` ]", "delete-home"],
+  ["echo $(( $(rm -rf /) + 1 ))", "delete-root"],
+  ['echo "$(( `rm -rf /` ))"', "delete-root"],
+  ["bash -c 'echo $(( $(rm -rf ~) + 1 ))'", "delete-home"],
+  ["n=$(( $(mkfs.ext4 /dev/sda1; echo 1) * 2 ))", "format-disk"],
   // a `((` that is two subshells:
   ["((rm -rf /) )", "delete-root"],
   ["((rm -rf /); echo done)", "delete-root"],
@@ -480,7 +483,6 @@ const ALLOWED: Array<[command: string, on?: Platform | "posix"]> = [
   ["rm -rf /private/var", "linux"],
   ["sudo -udeploy rm -rf /srv/app/releases/old"],
   ['rm -rf "${HOME:?}/.cache/app"'],
-  ["x=$((2 << 3)); echo $x"],
   ["function clean { rm -rf ./build; }; clean"],
   ["bash -c -- 'rm -rf ./build'"],
   // review round 1: sudo -l lists what may be run and runs nothing
@@ -518,7 +520,12 @@ const ALLOWED: Array<[command: string, on?: Platform | "posix"]> = [
   ['docker run --rm \\\n  -v "$PWD":/w \\\n  img sh -c \'rm -rf /w/dist\''],
   ["rm -r \\\n  /tmp/build"],
   ["mkfs.ext4 /tmp/dev/sda.img"],
-  // review round 3: PowerShell that deletes nothing on the list, and arithmetic
+  // review round 5: arithmetic with no shift in it is read to the end
+  ["echo $((i + 1))"],
+  ["n=$(( (a + b) * 2 ))"],
+  ["for i in $(seq 1 $((n - 1))); do :; done"],
+  ["echo $(( $(wc -l < f) + 1 ))"],
+  // review round 3: PowerShell that deletes nothing on the list
   ["pwsh -c 'Remove-Item -Recurse -Force ./build'"],
   ["pwsh -c 'Get-ChildItem /'"],
   ["pwsh -c 'Remove-Item -Force /etc/hosts.bak'"],
@@ -565,14 +572,17 @@ const NOT_CLEAR: Array<[command: string, on: Platform | "posix" | "all", outcome
   ['echo "say \\"hi\\"; rd /s /q C:\\"', "all", "unreadable"],
   // the same shape with a POSIX command in the text is a command to the POSIX reading
   ['cd "C:\\proj\\"; echo "cleaning; rm -rf / skipped"', "all", "delete-root"],
-  // KNOWN LIMITATION: a bare arithmetic shift. `<<` there is read as the
-  // start of a heredoc, which then never ends, so the answer is "could not
-  // read" and a person is asked. Reading it as arithmetic meant skipping
-  // what is inside, and text inside does run (the rows above).
+  // KNOWN LIMITATION: an arithmetic shift, in `(( … ))`, `$[ … ]` or
+  // `$(( … ))`. `<<` there is read as the start of a heredoc, which then
+  // never ends, so the answer is "could not read" and a person is asked.
+  // Reading these as arithmetic meant skipping what is inside, and text
+  // inside does run (the must-block rows for the same three forms).
   ["(( x << 1 ))", "all", "unreadable"],
   ["echo $[1<<2]", "all", "unreadable"],
+  ["x=$((2 << 3)); echo $x", "all", "unreadable"],
   ["(( x << 1 ))\nrm -rf /", "all", "unreadable"],
   ["echo $[1<<2]\nrm -rf /", "all", "unreadable"],
+  ["echo $((1 << 2))\nrm -rf /", "all", "unreadable"],
   // a wrapper nested deeper than is followed was not read
   ["eval eval eval eval eval rm -rf /", "all", "unreadable"],
 ];

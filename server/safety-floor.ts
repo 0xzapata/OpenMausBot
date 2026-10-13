@@ -315,9 +315,7 @@ function lex(source: string, windows: boolean): Reading {
     const dollar = (inDoubleQuotes: boolean): string => {
       if (source[at + 1] !== "(") return variableAt(inDoubleQuotes);
       at += 2;
-      // $(( … )) is arithmetic: `<<` in it shifts, and nothing in it runs.
-      if (source[at] === "(") balanced("(", ")", inDoubleQuotes);
-      else nested(")");
+      nested(")");
       return DYNAMIC;
     };
 
