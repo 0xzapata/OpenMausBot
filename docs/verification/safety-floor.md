@@ -7,6 +7,11 @@ a fork bomb. It is off by default (`safetyFloor.enabled` in `config.json`, or
 `OMB_SAFETY_FLOOR=1`). No check here runs any of those commands: the
 classifier only reads text, and every permission request is a fake one.
 
+It is not applied on a Windows server yet. There the setting is accepted and
+does nothing, the server says so once at startup, and every check below that
+expects a denial is run with the server's platform given as Linux, so the
+suites say the same thing on a Windows runner.
+
 ## Run
 
 ```sh
@@ -28,8 +33,9 @@ pnpm exec vitest run server/auto-approve.test.ts server/command-allowlist.e2e.te
   the reading, so every platform's rows run on any machine: a POSIX row is
   asserted on macOS, Linux and Windows; a cmd or PowerShell row must block on
   Windows and must not be blocked on macOS or Linux, where it is not
-  evaluated. A third table pins what is neither blocked nor clear, and what
-  reading every line twice costs on Windows. Separate cases cover a reading
+  evaluated (the gate does not use the Windows rows yet). A third table pins
+  what is neither blocked nor clear, and what reading every line twice costs
+  on Windows. Separate cases cover a reading
   that loses its place (never "clear"), the 32 KB cap, and a 20 KB body full
   of escaped quotes.
 - `server/safety-floor-gate.test.ts` feeds fake permission requests to
@@ -37,7 +43,9 @@ pnpm exec vitest run server/auto-approve.test.ts server/command-allowlist.e2e.te
   the setting is off by default and the environment can only add it; a
   never-list command is denied with a reason, one status line and one
   `auto-denied` decision row; anything else is left to the grant; a denial
-  that cannot be delivered stops the turn instead of leaving it waiting. A
+  that cannot be delivered stops the turn instead of leaving it waiting. With
+  the platform given as Windows the gate does none of this, and says so once
+  at startup. A
   request with no known working directory is still denied, from the command
   line it carries. A command the reader cannot read (forced with a reader
   that fails) is neither denied nor allowed: the grant's verdict becomes a
@@ -74,11 +82,22 @@ pnpm exec vitest run server/auto-approve.test.ts server/command-allowlist.e2e.te
 
 ## Limits
 
-The floor reads a command for the platform the server runs on. On macOS and
-Linux no cmd or PowerShell command is evaluated, so a Mac or Linux server
-driving a Windows machine gets no protection for what runs there. On Windows
-every line is read as POSIX and as cmd/PowerShell; the tables pin the false
-blocks and the "could not read" answers that causes.
+Not applied on a Windows server yet. The gate in
+`server/safety-floor-gate.ts` is inert there whatever the setting says. The
+classifier still has a Windows reading (every line read as POSIX and as
+cmd/PowerShell), and the win32 rows of the tables keep it tested through the
+platform argument, but nothing uses it: on a real Windows server it leaves
+too many ordinary commands unread. The gate tests check the inert path with
+the platform given as Windows: nothing is classified, denied, held or logged,
+and the startup notice is written once. On a Windows runner
+`server/safety-floor.e2e.test.ts` checks the same against the real server and
+stops there.
+
+On macOS and Linux a command is read as a POSIX shell line. cmd commands are
+not evaluated, so a Mac or Linux server driving a Windows machine gets no
+protection for what runs there. What follows `pwsh -c` or
+`powershell -Command` is the one exception: it is read both as a POSIX line
+and as PowerShell deleting POSIX paths.
 
 These checks prove the places the server answers by itself: the
 `request.opened` fold, the chat runtime's own tool gate, and the Codex and
