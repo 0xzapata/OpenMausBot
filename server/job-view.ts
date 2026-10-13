@@ -90,7 +90,7 @@ export interface JobInput {
   full?: boolean;
 }
 
-const RESULT_CLIP = 600;
+const RESULT_CLIP = 280;
 const NODES_SHOWN = 500;
 const ended = (a: Assignment) => a.status === "completed" || a.status === "failed" || a.status === "cancelled";
 

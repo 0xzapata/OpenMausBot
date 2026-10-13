@@ -117,7 +117,7 @@ describe("the job of a conversation", () => {
     const job = view(rows, { visible: (threadId) => threadId !== "priya-work" });
     expect(job).toMatchObject({ state: "completed", hidden: 1 });
     expect(job.nodes.map((node) => node.id)).toEqual(["root"]);
-    expect(job.nodes[0]!.result).toHaveLength(601);
+    expect(job.nodes[0]!.result).toHaveLength(281);
     expect(view(rows, { full: true }).nodes[0]!.result).toBe(long);
     // a running row's half-written result is not shown
     expect(view([root({ result: "half" })]).nodes[0]).not.toHaveProperty("result");
