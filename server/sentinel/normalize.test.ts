@@ -37,6 +37,7 @@ describe("sentinel signatures", () => {
     expect(failureKey("Bash", "Exit code 1\nsomething else entirely").key).toBe(failureKey("Bash", "Exit code 1\nsomething broke").key);
     expect(failureKey("Bash", "Exit code 2\nsomething broke").key).not.toBe(failureKey("Bash", "Exit code 1\nsomething broke").key);
     expect(failureKey("Bash", "").title).toBe("failed");
+    expect(failureKey("Bash", `Exit code ${"9".repeat(300)}\ncommand not found`).title.length).toBe(160);
   });
 
   it("keeps the whole normalized error, capped, for every other tool", () => {

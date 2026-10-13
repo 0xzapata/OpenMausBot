@@ -43,7 +43,7 @@ export function readState(out: string): SentinelState {
     if (!isRecord(parsed) || parsed.version !== STATE_VERSION) return emptyState();
     // a damaged field starts the whole state over rather than failing every scan
     if (!isRecord(parsed.logs) || !isRecord(parsed.seen)) return emptyState();
-    if (typeof parsed.lastScanAt !== "number" && parsed.lastScanAt !== null) return emptyState();
+    if (parsed.lastScanAt !== null && !(typeof parsed.lastScanAt === "number" && Number.isFinite(parsed.lastScanAt))) return emptyState();
     if (typeof parsed.fingerprint !== "string" && parsed.fingerprint !== null) return emptyState();
     return { ...emptyState(), ...parsed };
   } catch {

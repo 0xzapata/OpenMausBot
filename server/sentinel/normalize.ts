@@ -64,7 +64,7 @@ export function failureKey(tool: string, text: string): { key: string; title: st
     // a timeout's exit code is whichever signal stopped it
     const code = errorClass === "timed out" ? undefined : EXIT_CODE.exec(text)?.[1];
     const title = [code !== undefined ? `exit ${code}` : null, errorClass ?? (code === undefined ? "failed" : null)].filter(Boolean).join(": ");
-    return { key: `${code ?? ""}\n${errorClass ?? ""}`, title };
+    return { key: `${code ?? ""}\n${errorClass ?? ""}`, title: capTitle(title) };
   }
   const normalized = normalizeSignatureText(text);
   return { key: normalized, title: capTitle(normalized) || "failed" };

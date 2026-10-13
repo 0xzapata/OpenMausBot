@@ -73,7 +73,8 @@ describe("sentinel issue store", () => {
       writeFileSync(join(dir, STATE_FILE), JSON.stringify({ ...emptyState(), lastScanAt: 5, ...damaged }));
       expect(readState(dir)).toEqual(emptyState());
     }
-    for (const damaged of ["null", "[]", "1"]) {
+    // 1e309 parses to Infinity: no finite scan window can start there
+    for (const damaged of ["null", "[]", "1", '{"version":1,"lastScanAt":1e309,"fingerprint":null,"logs":{},"seen":{}}']) {
       writeFileSync(join(dir, STATE_FILE), damaged);
       expect(readState(dir)).toEqual(emptyState());
     }
