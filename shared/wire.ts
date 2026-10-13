@@ -366,6 +366,11 @@ export interface WireBot {
   /** Prompt-cache keep-warm for this bot's Claude threads: true or false
    * overrides the workspace setting (Settings → Engines); absent follows it. */
   cacheKeepWarm?: boolean;
+  /** Whether the workspace's helper model (config.json `helper`) may write
+   * this bot's small background texts when its own engine cannot. Absent or
+   * true = allowed; false = never, for a bot whose text must not go to
+   * another provider (server/side-jobs.ts). */
+  helperModel?: boolean;
   /** Which of the app-wide MCP servers this bot mounts, by name. */
   mcpServers?: string[];
   /** Owner-selected original tool identities. An empty allowlist permits none. */

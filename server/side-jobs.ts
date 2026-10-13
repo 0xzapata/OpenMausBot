@@ -24,11 +24,13 @@
 // can write.
 //
 // The helper is skipped, and the job falls back as it does with no helper,
-// when the bot's own engine is missing or disallowed, or when the helper
-// instance is not connected, switched off, disallowed by the organisation,
-// not assigned on a hosted workspace, or has no `generateText` of its own. A
-// helper call that fails, hangs or meets the spend limit is an ordinary
-// failed call to the job, which already bounds it and falls back.
+// when the bot's own engine is missing or disallowed, when the bot is
+// switched to never use it (WireBot.helperModel === false: a bot whose text
+// must not go to another provider), or when the helper instance is not
+// connected, switched off, disallowed by the organisation, not assigned on a
+// hosted workspace, or has no `generateText` of its own. A helper call that
+// fails, hangs or meets the spend limit is an ordinary failed call to the
+// job, which already bounds it and falls back.
 //
 // A helper call is its own usage row: the bot it wrote for, the helper's
 // instance and model, and the trigger `helper` (server/usage-ledger.ts), so
@@ -87,6 +89,8 @@ export interface SideJobBot {
   /** The bot's main conversation, where a spend alert a call raises is shown. */
   threadId: string;
   modelSelection: { instanceId: string };
+  /** false: the helper model never writes for this bot (WireBot.helperModel). */
+  helperModel?: boolean;
 }
 
 export interface SideJobText {
@@ -217,6 +221,9 @@ export function createSideJobs(deps: SideJobsDeps): SideJobs {
         if (job === "compaction") return { via: "engine", generateText: call };
         return { via: "engine", generateText: booked(job, bot, own, call, { kind: "bot", botId: bot.id }) };
       }
+      // The bot's own switch: its text never goes to the helper's provider.
+      // The answer is the one a server with no helper gives, for every job.
+      if (bot.helperModel === false) return null;
       const helper = usableHelper();
       if (!helper) return null;
       return { via: "helper", generateText: booked(job, bot, helper.instance, helper.call, { kind: "helper", botId: bot.id, job }, helper.model) };

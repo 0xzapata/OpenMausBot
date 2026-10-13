@@ -4,9 +4,11 @@
 // (the fake Claude's one-shot mode, with the model the setting names), each
 // booked as a helper call for that bot. A Codex bot keeps its own background
 // call for memory upkeep and gets only the summary from the helper; a Claude
-// bot keeps writing everything with its own engine and quick model. A second
-// server without the setting shows the Pi bot keeping today's fallbacks, and
-// the setting followed from config.json as the file changes.
+// bot keeps writing everything with its own engine and quick model. A bot
+// switched to never use the helper (PATCH helperModel: false) gets none of
+// the three from it. A second server without the setting shows the Pi bot
+// keeping today's fallbacks, and the setting followed from config.json as
+// the file changes.
 //
 // POSIX-gated like the other CLI e2es (the fakes are shebang scripts).
 import { spawn, type ChildProcess } from "node:child_process";
@@ -17,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { CAPTURE_MARKER } from "./memory-capture.ts";
+import { NO_TEXT_ENGINE } from "./memory-upkeep.ts";
 import { SKILL_REVIEW_MARKER } from "./skill-review.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
@@ -181,6 +184,46 @@ posixOnly("the helper model, through the real server", () => {
     const byPerson = (await api("GET", "/api/usage?groupBy=user")).body.groups as Array<{ key: string; label: string }>;
     expect(byPerson.find((group) => group.key === "helper")).toMatchObject({ label: "Helper model" });
     expect(server.log()).toContain('helper model: small writing jobs for bots whose engine has no one-off text call are written by "claude" (claude-haiku-5-5)');
+  }, 300_000);
+
+  it("accepts a bot's never-use-the-helper switch, saves it, refuses a wrong type, and then writes none of the three jobs for that bot", async () => {
+    const { api, waitFor, getBot, newBot, turn, ledger, memory, dataDir } = server;
+    const bot = await newBot("pi");
+    const upkeep = async () => (await api("GET", `/api/bots/${bot.id}/memory/upkeep`)).body;
+    expect(await upkeep()).toMatchObject({ modelSteps: true });
+
+    for (const wrong of ["no", 0, null, { off: true }]) {
+      const refused = await api("PATCH", `/api/bots/${bot.id}`, { helperModel: wrong });
+      expect(refused.status, JSON.stringify(wrong)).toBe(400);
+      expect(refused.body.error).toBe("helperModel must be true or false");
+    }
+    expect(await getBot(bot.id)).not.toHaveProperty("helperModel");
+
+    const saved = await api("PATCH", `/api/bots/${bot.id}`, { helperModel: false });
+    expect(saved.status).toBe(200);
+    expect(saved.body.bot).toMatchObject({ id: bot.id, helperModel: false });
+    expect(await getBot(bot.id)).toMatchObject({ helperModel: false });
+    const onDisk = () => (JSON.parse(readFileSync(join(dataDir, "bots.json"), "utf8")) as Array<{ id: string; helperModel?: boolean }>).find((record) => record.id === bot.id);
+    expect(onDisk()).toMatchObject({ helperModel: false });
+
+    // memory upkeep: the panel's answer is the one a server with no helper gives, and the capture that comes due is refused
+    expect(await upkeep()).toMatchObject({ modelSteps: false });
+    for (const text of ["Just so you know, I'm vegetarian.", "Write the weekly report from the notes.", "Shorter please, five bullets at most."]) await turn(bot, text);
+    await waitFor(async () => (await upkeep()).lastCapture?.note === NO_TEXT_ENGINE, "the capture to be refused for want of an engine");
+    expect(await memory(bot.id)).not.toContain("The person is vegetarian");
+    // the skill review: three tool steps are due, and it is refused the same way
+    await waitFor(() => server.log().includes(`skill review: ${bot.id}: this bot's engine cannot run a background review`), "the review to be refused");
+    expect((await getBot(bot.id)).messages.some((message) => message.card?.skillRequest)).toBe(false);
+    // the compaction summary: excerpts, not the helper's text
+    const summary = await compacted(bot);
+    expect(summary).toMatch(/^Historical excerpts in chronological order/);
+    expect(summary).not.toContain(SUMMARY);
+    expect(ledger(bot.id).some((row) => row.trigger.kind === "helper")).toBe(false);
+
+    // switched back, the helper may write for it again
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { helperModel: true })).status).toBe(200);
+    expect(onDisk()).toMatchObject({ helperModel: true });
+    expect(await upkeep()).toMatchObject({ modelSteps: true });
   }, 300_000);
 
   it("writes a Codex bot's summary with the helper, while its memory upkeep stays on Codex's own background call", async () => {

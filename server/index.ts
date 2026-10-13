@@ -22971,6 +22971,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (body.cacheKeepWarm !== null && typeof body.cacheKeepWarm !== "boolean") return json(res, 400, { error: "cacheKeepWarm must be true, false or null" });
         patch.cacheKeepWarm = body.cacheKeepWarm ?? undefined;
       }
+      // false: the helper model never writes for this bot (server/side-jobs.ts)
+      if (body.helperModel !== undefined) {
+        if (typeof body.helperModel !== "boolean") return json(res, 400, { error: "helperModel must be true or false" });
+        patch.helperModel = body.helperModel;
+      }
       // per-bot gate on the app's built-in browser
       if (body.browser !== undefined) {
         if (typeof body.browser !== "boolean") return json(res, 400, { error: "browser must be true or false" });

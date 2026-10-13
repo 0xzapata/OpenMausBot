@@ -3,9 +3,9 @@
 // bot's own engine answers whenever it can, exactly as before; the optional
 // helper instance covers an engine that cannot (Pi and Muse Code; Codex and
 // the ACP engines for the compaction summary). Covered here: the setting,
-// the order, what is booked and to whom, every reason the helper is refused,
-// and memory upkeep run through the resolver (its own test file is left as
-// it was).
+// the order, what is booked and to whom, every reason the helper is refused
+// (a bot's own "never the helper" switch among them), and memory upkeep run
+// through the resolver (its own test file is left as it was).
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -362,6 +362,37 @@ describe("when the helper is not used", () => {
     expect(quiet.state.logs).toEqual([]);
   });
 
+  it("never writes for a bot switched to never use the helper, for any of the three jobs, as if none were set", async () => {
+    const { jobs, state, claude } = setup();
+    // Pi has no text call at all; Codex has none for the summary
+    state.bots.set("pi", { ...bot("pi", "pi"), helperModel: false });
+    state.bots.set("codex", { ...bot("codex", "codex"), helperModel: false });
+    for (const job of ["compaction", "memory", "skill-review"] as const) expect(jobs.text(job, "pi"), job).toBeNull();
+    expect(jobs.text("compaction", "codex")).toBeNull();
+    // nothing was asked of the helper, and nothing is said about it either
+    expect(claude.calls).toEqual([]);
+    expect(state.booked).toEqual([]);
+    expect(state.logs).toEqual([]);
+
+    // a bot without the switch still gets the helper, beside it
+    for (const job of ["compaction", "memory", "skill-review"] as const) expect(jobs.text(job, "muse")?.via, job).toBe("helper");
+    // and switching it back on is all it takes
+    state.bots.set("pi", { ...bot("pi", "pi"), helperModel: true });
+    expect(jobs.text("memory", "pi")?.via).toBe("helper");
+  });
+
+  it("leaves a bot's own engine writing when the bot is switched to never use the helper", async () => {
+    const { jobs, state, claude, codex, openrouter } = setup({ helper: { instanceId: "openrouter" } });
+    state.bots.set("claude", { ...bot("claude", "claude"), helperModel: false });
+    state.bots.set("codex", { ...bot("codex", "codex"), helperModel: false });
+    for (const job of ["compaction", "memory", "skill-review"] as const) expect(jobs.text(job, "claude")?.via, job).toBe("engine");
+    await jobs.text("memory", "claude")!.generateText("p");
+    await jobs.text("memory", "codex")!.generateText("p");
+    expect(claude.calls).toHaveLength(1);
+    expect(codex.calls).toHaveLength(1);
+    expect(openrouter.calls).toEqual([]);
+  });
+
   it("does not open the skill review to an engine that cannot mount the bot's skill tools", () => {
     const { jobs, state } = setup();
     state.instances.set("pi", turnsOnly("pi", "piAgent", false));
@@ -416,6 +447,16 @@ describe("memory upkeep through the resolver", () => {
     expect(service.status(BOT.id).modelSteps).toBe(false);
     expect(await service.capture({ botId: BOT.id, threadId: "t1", turns })).toMatchObject({ added: 0, note: NO_TEXT_ENGINE });
     expect(await service.tidy(BOT.id)).toMatchObject({ contradictionsChecked: false, note: NO_TEXT_ENGINE });
+  });
+
+  it("captures nothing for a bot switched to never use the helper, with a helper set: the same answer as with none", async () => {
+    const { jobs, state, claude } = setup();
+    state.bots.set(BOT.id, { ...bot(BOT.id, "pi"), helperModel: false });
+    const service = upkeep(jobs);
+    expect(service.status(BOT.id).modelSteps).toBe(false);
+    expect(await service.capture({ botId: BOT.id, threadId: "t1", turns })).toMatchObject({ added: 0, note: NO_TEXT_ENGINE });
+    expect(await service.tidy(BOT.id)).toMatchObject({ contradictionsChecked: false, note: NO_TEXT_ENGINE });
+    expect(claude.calls).toEqual([]);
   });
 
   it("writes nothing and fails nothing when the helper throws or the workspace is at its spend limit", async () => {
