@@ -56,8 +56,9 @@ export interface BusyFlag {
 }
 
 /** The remote computer providers a config write can switch accounts for
- * (index.ts's `RemoteComputerProvider`). */
-type RemoteComputerProvider = "box" | "vps";
+ * (index.ts's `RemoteComputerProvider`); the computer routes refuse
+ * inventory changes on a provider while its account is in transition. */
+export type RemoteComputerProvider = "box" | "vps";
 
 /** What a model-selection check answers (index.ts `checkedModelSelection`). */
 export type ModelSelectionCheck = { ok: true; selection: ModelSelection } | { ok: false; status: number; error: string };
