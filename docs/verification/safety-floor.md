@@ -101,13 +101,19 @@ protection for what runs there. What follows `pwsh -c` or
 `powershell -Command` is the one exception: it is read both as a POSIX line
 and as PowerShell deleting POSIX paths.
 
-Known limitation: a bare arithmetic shift, `(( x << 1 ))` or `echo $[1<<2]`,
-is "could not read". The reader takes `<<` for the start of a heredoc that
-then never ends, so the request goes to a person instead of being approved.
-Text inside `(( … ))` and `$[ … ]` can run (a substitution, or a `((` that is
-really two subshells), so it is read like any other text and not skipped;
-the tables pin both the block and the "could not read". The same shape
-inside `$(( … ))` is skipped, and a substitution there is not read.
+Known limitations:
+
+- An arithmetic shift in `(( … ))`, `$[ … ]` or `$(( … ))` is "could not
+  read": `(( x << 1 ))`, `echo $[1<<2]`, `x=$((2 << 3))`. The reader takes
+  `<<` for the start of a heredoc that then never ends, so nothing approves
+  the request automatically: it comes as a card, or is refused where there is
+  no card to show. That also holds when a never-list command follows on a
+  later line: the answer is "could not read", not a block.
+- The three forms are not skipped as arithmetic, because text inside them
+  can run: a substitution (`$(( $(rm -rf /) + 1 ))`), or a `((` that is
+  really two subshells. It is read like any other text, and arithmetic with
+  no shift in it (`$((i + 1))`, `$(( (a + b) * 2 ))`) reads clear. The tables
+  pin all three outcomes.
 
 These checks prove the places the server answers by itself: the
 `request.opened` fold, the chat runtime's own tool gate, and the Codex and
