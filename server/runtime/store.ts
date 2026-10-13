@@ -100,7 +100,8 @@ export interface RuntimeStore {
   children(id: string): Assignment[];
   /** The root of this id's tree. */
   root(id: string): Assignment | undefined;
-  all(filter?: { rootId?: string; nonTerminal?: boolean; ownerThreadId?: string }): Assignment[];
+  /** `assignee` reads one bot's rows in one conversation (an indexed lookup). */
+  all(filter?: { rootId?: string; nonTerminal?: boolean; ownerThreadId?: string; assignee?: { botId: string; threadId: string } }): Assignment[];
   /** Insert a new row and its event in one transaction. */
   insert(a: Assignment, event: { kind: EventKind; detail?: string; at?: number }): void;
   /** Write the whole row and (optionally) an event in one transaction. */
@@ -310,6 +311,10 @@ export function openRuntimeStore(path: string): RuntimeStore {
       if (filter.rootId !== undefined) { where.push("root_id = ?"); params.push(filter.rootId); }
       if (filter.nonTerminal) where.push(LIVE);
       if (filter.ownerThreadId !== undefined) { where.push("requester_thread_id = ?"); params.push(filter.ownerThreadId); }
+      if (filter.assignee !== undefined) {
+        where.push("assignee_bot_id = ? AND assignee_thread_id = ?");
+        params.push(filter.assignee.botId, filter.assignee.threadId);
+      }
       const sql = `SELECT id, json FROM assignments${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, rowid`;
       return (db.prepare(sql).all(...params) as Row[]).map(readAssignment);
     },

@@ -557,6 +557,33 @@ describe("RuntimeCoordinator: read models", () => {
     expect(w.coordinator.assignerOf("tester-work")).toMatchObject({ id: b.id, status: "waiting" });
   });
 
+  it("job reads the work a conversation holds: its roots since a time, or the assignment running in it, with everything under each", async () => {
+    let now = 1_000;
+    const host = fakeHost(hold);
+    const coordinator = new RuntimeCoordinator({ dataDir: ":memory:", host, now: () => now });
+    const w: World = { host, coordinator, logs: [] };
+    // an earlier request in the Chief's chat, finished before the job began
+    begun(w, chief, "gen-0", "Say hello");
+    ended(w, "gen-0");
+    now = 2_000;
+    const { node: b } = send(w, chief, "gen-1", undefined, builder, "Build it");
+    const { node: n } = send(w, chief, "gen-1", undefined, tester, "FYI: release Friday", {});
+    coordinator.tick();
+    const { node: t } = send(w, builder, "gen-1", b.id, { botId: "tester", threadId: "tester-review" }, "Review it");
+    begun(w, { botId: "other", threadId: "other-chat" }, "gen-x", "Unrelated");
+    const ids = (job: { rows: Array<{ id: string }> }) => job.rows.map((row) => row.id);
+    expect(coordinator.job("chief-chat", 1_500)).toEqual({ scopes: ["gen-1"], rows: expect.any(Array) });
+    expect(ids(coordinator.job("chief-chat", 1_500))).toEqual(["gen-1", b.id, n.id, t.id]);
+    // from the start of time: both of its requests
+    expect(coordinator.job("chief-chat", 0).scopes).toEqual(["gen-0", "gen-1"]);
+    // the builder's own conversation holds its assignment and what it handed on
+    expect(coordinator.job("builder-work", 0, "builder")).toMatchObject({ scopes: [b.id] });
+    expect(ids(coordinator.job("builder-work", 0, "builder"))).toEqual([b.id, t.id]);
+    expect(coordinator.job("builder-work", 0).scopes).toEqual([]);
+    expect(coordinator.job("nobody-chat", 0)).toEqual({ scopes: [], rows: [] });
+    await host.release(b.id, { ok: true, text: "built" });
+  });
+
   it("sharedRequest batches one call's room recipients and nothing else", () => {
     const w = world();
     const { node: b } = send(w, chief, "gen-1", undefined, inRoom("builder"), "Review it", { batchKey: "call-1" });

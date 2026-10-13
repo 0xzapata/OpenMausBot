@@ -282,6 +282,37 @@ export class RuntimeCoordinator implements Coordinator {
     return this.runtime.status(id);
   }
 
+  job(threadId: string, since: number, botId?: string): { scopes: string[]; rows: Assignment[] } {
+    this.ready();
+    const open = (a: Assignment) => a.finishedAt === undefined || a.finishedAt >= since;
+    // Its own turns are roots requested from here (an indexed read); a
+    // teammate's assignment running here is read by its bot and thread.
+    const given = new Map<string, Assignment>();
+    for (const a of this.store.all({ ownerThreadId: threadId })) {
+      if (!a.parentId && a.assignee.destination.threadId === threadId && open(a)) given.set(a.id, a);
+    }
+    if (botId) for (const a of this.store.all({ assignee: { botId, threadId } })) if (open(a)) given.set(a.id, a);
+    const rows = new Map<string, Assignment>();
+    const scopes: string[] = [];
+    for (const start of [...given.values()].sort((a, b) => a.createdAt - b.createdAt)) {
+      if (rows.has(start.id)) continue;
+      scopes.push(start.id);
+      const subtree = start.parentId ? this.subtree(start) : this.store.all({ rootId: start.id });
+      for (const a of subtree) rows.set(a.id, a);
+    }
+    return { scopes, rows: [...rows.values()].sort((a, b) => a.createdAt - b.createdAt) };
+  }
+
+  /** A node and everything handed out under it, parents first. */
+  private subtree(start: Assignment): Assignment[] {
+    const out = [start];
+    const seen = new Set([start.id]);
+    for (let i = 0; i < out.length; i++) {
+      for (const child of this.store.children(out[i]!.id)) if (!seen.has(child.id)) { seen.add(child.id); out.push(child); }
+    }
+    return out;
+  }
+
   poll(owner: Owner): { items: StatusView["inbox"]; assignments: HandoffView[] } {
     this.ready();
     const polled = this.runtime.poll(owner);

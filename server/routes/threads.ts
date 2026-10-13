@@ -2,8 +2,9 @@
 // routes into the route table (server/routes/README.md): the GET /api/bots
 // snapshot, a thread's message pages and one message's image or file, image
 // and document uploads, serving an attachment, search across every
-// transcript, and the transcript export. The table runs after the auth gate;
-// scope rules stay keyed by path in server/request-auth.ts.
+// transcript, the transcript export, and a conversation's job (jobs.ts). The
+// table runs after the auth gate; scope rules stay keyed by path in
+// server/request-auth.ts.
 import type { WireBot, WireGroup, WireTask } from "../../shared/wire.ts";
 import {
   ATTACHMENTS_DIR, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, parseAudioRange, readAttachment, saveFile, saveImageUpload,
@@ -13,6 +14,7 @@ import { deliveredCopy } from "../bot-attachment.ts";
 import { memberBot, memberGroup, type Viewer, type VisibleSet } from "../bot-visibility.ts";
 import type { ComputerControl } from "../computer-control.ts";
 import type { AppConfig } from "../config.ts";
+import type { Coordinator } from "../coordinator.ts";
 import type { ModelSelection } from "../contracts.ts";
 import type { WorkspaceAccess } from "../enterprise.ts";
 import type { GroupUsageReader } from "../group-thread-usage.ts";
@@ -24,6 +26,7 @@ import {
 import { resolveRequestAuth, type RequestAuth, type ResolveOptions } from "../request-auth.ts";
 import type { queuedSteerSnapshot } from "../steer-queue.ts";
 import type { BotRecord, GroupRecord, Message, Store, TaskRecord } from "../store.ts";
+import { createJobRoutes } from "./jobs.ts";
 import { PASS, type RouteContext, type RouteHandler } from "./table.ts";
 
 /** A transcript page as index.ts's messagePage builds it: the whole thread,
@@ -32,8 +35,11 @@ export type MessagePage = { messages: Array<Message | Record<string, unknown>>; 
 
 export interface ThreadRouteDeps {
   store: Pick<Store,
-    | "activeLeaf" | "activePath" | "botByThread" | "bots" | "groupByThread" | "groupTaskByThread" | "groups" | "messagesFor"
-    | "sections" | "taskByThread" | "tasks">;
+    | "activeLeaf" | "activePath" | "bot" | "botByThread" | "bots" | "groupByThread" | "groupTaskByThread" | "groups" | "messagesFor"
+    | "onChange" | "sections" | "taskByThread" | "tasks">;
+  /** The job runtime, for a conversation's job (jobs.ts). */
+  coordinator: Pick<Coordinator, "job">;
+  groupThreadIsWorking(groupId: string, threadId: string): boolean;
   cfg: Pick<AppConfig, "profile">;
   sessions: ResolveOptions["sessions"];
   groupUsageReader: Pick<GroupUsageReader, "refresh">;
@@ -69,6 +75,7 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
     pageSize, messagePage, messageWindow, publicBotQueuedMessages, publicGroupState, wireBot, wireTask,
     botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo,
   } = deps;
+  const jobs = createJobRoutes({ store, coordinator: deps.coordinator, groupThreadIsWorking: deps.groupThreadIsWorking, viewerFor, visibleTo });
   // The image, file and export routes answer with `return res.end(…)`, so the
   // body's result is whatever Node hands back; the table only asks whether
   // it was PASS.
@@ -554,5 +561,5 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
     }
     return PASS;
   };
-  return async (ctx) => (await handle(ctx) === PASS ? PASS : undefined);
+  return async (ctx) => (await jobs(ctx) !== PASS || await handle(ctx) !== PASS ? undefined : PASS);
 }

@@ -17417,8 +17417,8 @@ ROUTES.push(createBotMessageRoutes({
   cancelGroupTurnOperations, closeOpenApprovals,
 }));
 // Conversation reads and uploads: the /api/bots snapshot, message pages, a
-// message's image or file, uploads, attachments, search and the export. The
-// `let` slots are read per request; visibility is computed as the preamble does.
+// message's image or file, uploads, attachments, search, the export and a
+// conversation's job. `let` slots are read per request, visibility as the preamble does.
 ROUTES.push(createThreadRoutes({
   store, cfg, sessions, groupUsageReader, lendingEnabled,
   hostedWorkspace: HOSTED_WORKSPACE, sessionCookie: SESSION_COOKIE, loopback: LOOPBACK, defaultPage: DEFAULT_PAGE,
@@ -17427,7 +17427,7 @@ ROUTES.push(createThreadRoutes({
   companionMutationToken: () => companionMutationToken,
   cliOwnerToken: () => cliOwnerToken,
   pageSize, messagePage, messageWindow, publicBotQueuedMessages, publicGroupState, wireBot, wireTask,
-  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo,
+  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo, coordinator, groupThreadIsWorking,
 }));
 // Creating a bot (POST /api/bots): the saved New bot defaults and a preset
 // are applied around the store's own creation.
