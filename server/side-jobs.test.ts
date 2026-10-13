@@ -343,6 +343,39 @@ describe("when the helper is not used", () => {
     }
   });
 
+  it("reads a helper that cannot even be looked up as no helper: nothing is thrown at the job, and it is said once", () => {
+    const broken = (deps: Partial<SideJobsDeps>) => {
+      const logs: string[] = [];
+      const claude = textEngine("claude", "claudeAgent");
+      const engines: Record<string, SideJobInstance> = { claude: claude.instance, pi: turnsOnly("pi", "piAgent") };
+      const jobs = createSideJobs({
+        bot: (id) => bot(id, id),
+        instance: (id) => engines[id] ?? null,
+        refusal: () => undefined,
+        helper: () => ({ instanceId: "claude" }),
+        assertWithinBudget: () => {},
+        book: () => {},
+        log: (line) => logs.push(line),
+        ...deps,
+      });
+      return { jobs, logs, claude };
+    };
+    const lookups = {
+      "the setting": broken({ helper: () => { throw new Error("config.json could not be read"); } }),
+      "the instance": broken({ instance: (id) => { if (id === "claude") throw new Error("the registry is reloading"); return turnsOnly("pi", "piAgent"); } }),
+      "the policy": broken({ refusal: (instance) => { if (instance.instanceId === "claude") throw new Error("the policy could not be read"); return undefined; } }),
+      "the hosted list": broken({ helper: () => ({ instanceId: "claude", model: "m" }), modelAllowed: () => { throw new Error("no catalog"); } }),
+    };
+    for (const [what, { jobs, logs, claude }] of Object.entries(lookups)) {
+      for (let i = 0; i < 3; i += 1) {
+        for (const job of ["compaction", "memory", "skill-review"] as const) expect(jobs.text(job, "pi"), `${what} ${job}`).toBeNull();
+      }
+      expect(logs, what).toHaveLength(1);
+      expect(logs[0], what).toContain("could not be looked up");
+      expect(claude.calls, what).toEqual([]);
+    }
+  });
+
   it("says where the text goes, or why it does not, once per change rather than on every call", () => {
     const { jobs, state } = setup({ helper: { instanceId: "gone" } });
     for (let i = 0; i < 5; i += 1) jobs.text("memory", "pi");
@@ -377,6 +410,21 @@ describe("when the helper is not used", () => {
     // a bot without the switch still gets the helper, beside it
     for (const job of ["compaction", "memory", "skill-review"] as const) expect(jobs.text(job, "muse")?.via, job).toBe("helper");
     // and switching it back on is all it takes
+    state.bots.set("pi", { ...bot("pi", "pi"), helperModel: true });
+    expect(jobs.text("memory", "pi")?.via).toBe("helper");
+  });
+
+  it("reads anything but an absent switch or a strict true as never: a hand-edited record fails closed", () => {
+    const { jobs, state, claude } = setup();
+    for (const odd of ["false", "true", 0, 1, null, {}, []]) {
+      state.bots.set("pi", { ...bot("pi", "pi"), helperModel: odd as unknown as boolean });
+      for (const job of ["compaction", "memory", "skill-review"] as const) expect(jobs.text(job, "pi"), `${JSON.stringify(odd)} ${job}`).toBeNull();
+    }
+    expect(claude.calls).toEqual([]);
+    expect(state.logs).toEqual([]);
+    // absent and true are the only two that allow it
+    state.bots.set("pi", bot("pi", "pi"));
+    expect(jobs.text("memory", "pi")?.via).toBe("helper");
     state.bots.set("pi", { ...bot("pi", "pi"), helperModel: true });
     expect(jobs.text("memory", "pi")?.via).toBe("helper");
   });

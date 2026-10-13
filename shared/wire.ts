@@ -262,6 +262,11 @@ export const CONNECTOR_TOOL_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
  * settlement receipts (lastProfileRequestId, lastTeamSetupReceipt); the
  * projected tasks are WireTask[] and avatarUrl is always present
  * (null when the bot has none). */
+/** Whether the helper model may write for a bot (WireBot.helperModel): only
+ * an absent switch or a strict true allows it. Anything else a hand-edited
+ * bots.json can hold (a "false" string, 0, null) reads as never. */
+export const helperModelAllowed = (bot: { helperModel?: unknown }): boolean => bot.helperModel === undefined || bot.helperModel === true;
+
 export interface WireBot {
   waitingForTeammates?: boolean;
   id: string;

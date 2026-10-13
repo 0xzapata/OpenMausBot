@@ -17,7 +17,7 @@
 // Codex and the ACP engines have none for the summary) used to mean the
 // job's mechanical fallback: an excerpt summary, no capture, no review. The
 // optional helper model fills that gap: one connected provider instance,
-// named in config.json or the environment (config.ts helperSelection), whose
+// named in config.json or the environment (helperSelection below), whose
 // `generateText` writes for those bots. It is unset by default, because it
 // sends their conversation text to a second provider (docs/memory.md). The
 // order never reverses: the helper is not asked while the bot's own engine
@@ -25,12 +25,18 @@
 //
 // The helper is skipped, and the job falls back as it does with no helper,
 // when the bot's own engine is missing or disallowed, when the bot is
-// switched to never use it (WireBot.helperModel === false: a bot whose text
-// must not go to another provider), or when the helper instance is not
+// switched to never use it (WireBot.helperModel: only an absent switch or a
+// strict true allows the helper), or when the helper instance is not
 // connected, switched off, disallowed by the organisation, not assigned on a
-// hosted workspace, or has no `generateText` of its own. A helper call that
-// fails, hangs or meets the spend limit is an ordinary failed call to the
-// job, which already bounds it and falls back.
+// hosted workspace, or has no `generateText` of its own. Looking the helper
+// up never throws at a job: whatever goes wrong on the way reads as no
+// helper. A helper call that fails, hangs or meets the spend limit is an
+// ordinary failed call to the job, which already bounds it and falls back.
+//
+// The bot's switch covers that bot's own three jobs and nothing else. What a
+// bot says in a room or to a teammate is part of those bots' conversations,
+// read by their engines and by whatever writes their jobs, the helper
+// included (docs/memory.md).
 //
 // A helper call is its own usage row: the bot it wrote for, the helper's
 // instance and model, and the trigger `helper` (server/usage-ledger.ts), so
@@ -38,6 +44,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
+import { helperModelAllowed } from "../shared/wire.ts";
 import type { ProviderAdapter, ProviderInstance, TextGenerationOptions } from "./contracts.ts";
 import type { UsageRow, UsageTrigger } from "./usage-ledger.ts";
 
@@ -89,7 +96,8 @@ export interface SideJobBot {
   /** The bot's main conversation, where a spend alert a call raises is shown. */
   threadId: string;
   modelSelection: { instanceId: string };
-  /** false: the helper model never writes for this bot (WireBot.helperModel). */
+  /** The bot's own switch (WireBot.helperModel): only absent or true lets
+   * the helper model write for it. */
   helperModel?: boolean;
 }
 
@@ -172,8 +180,22 @@ export function createSideJobs(deps: SideJobsDeps): SideJobs {
       });
     };
 
-  /** The helper instance when it may write now, and with which model. */
+  /** The helper instance when it may write now, and with which model. A
+   * helper never fails a job or the turn that waits for one, and that holds
+   * for looking it up too: the setting, the registry and the policy are read
+   * here, and whatever one of them throws reads as no helper. */
   function usableHelper(): { instance: SideJobInstance; call: TextCall; model?: string } | null {
+    try {
+      return findHelper();
+    } catch (error) {
+      // a JSON error can quote the text it failed on, so it is named, not printed
+      const why = error instanceof SyntaxError ? "invalid JSON" : error instanceof Error ? error.message : "unknown";
+      say(`the helper could not be looked up (${why}), so bots whose engine has no one-off text call keep their fallback`);
+      return null;
+    }
+  }
+
+  function findHelper(): { instance: SideJobInstance; call: TextCall; model?: string } | null {
     const helper = deps.helper();
     if (!helper) {
       say(null);
@@ -221,9 +243,10 @@ export function createSideJobs(deps: SideJobsDeps): SideJobs {
         if (job === "compaction") return { via: "engine", generateText: call };
         return { via: "engine", generateText: booked(job, bot, own, call, { kind: "bot", botId: bot.id }) };
       }
-      // The bot's own switch: its text never goes to the helper's provider.
-      // The answer is the one a server with no helper gives, for every job.
-      if (bot.helperModel === false) return null;
+      // The bot's own switch, read closed: unless it is absent or a strict
+      // true, the helper never writes this bot's jobs, and the answer is the
+      // one a server with no helper gives.
+      if (!helperModelAllowed(bot)) return null;
       const helper = usableHelper();
       if (!helper) return null;
       return { via: "helper", generateText: booked(job, bot, helper.instance, helper.call, { kind: "helper", botId: bot.id, job }, helper.model) };
