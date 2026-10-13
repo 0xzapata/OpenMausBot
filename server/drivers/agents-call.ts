@@ -1146,7 +1146,9 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     try {
       r = await api(`/api/internal/session-read?${query.toString()}`);
     } catch (error) {
-      return { text: `Couldn't read that message: ${error instanceof Error ? error.message : String(error)}. Use ids from a session_search hit.`, isError: true };
+      // Echo the ids it was given, so a mistyped one shows against the hit.
+      const given = `message ${JSON.stringify(messageId.slice(0, 80))} in thread ${JSON.stringify(threadId.slice(0, 80))}`;
+      return { text: `Couldn't read ${given}: ${error instanceof Error ? error.message : String(error)}. Copy thread_id and message_id exactly from a session_search hit's "thread …" and "message …" fields.`, isError: true };
     }
     const when = recallWhen(r.at, true);
     const readTask = typeof r.task === "string" && r.task ? `task "${r.task}"` : "an earlier task";

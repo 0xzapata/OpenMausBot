@@ -12774,6 +12774,18 @@ describe("bot memory API", () => {
       const ownHits = ((await own.json()) as { hits: Array<Record<string, unknown>> }).hits;
       expect(ownHits[0]).toMatchObject({ current: true, crossed: false });
       expect(await roomActivity()).toHaveLength(1);
+
+      // a room hit opens too: session_read takes exactly the ids every hit carries
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "The deploy checklist was signed off" })).status).toBe(202);
+      await api("POST", `/api/groups/${room.id}/interrupt`, {});
+      const roomHits = ((await (await searchFrom(privateThreadId, "deploy checklist signed")).json()) as { hits: Array<Record<string, unknown>> }).hits;
+      expect(roomHits[0]).toMatchObject({ threadId: roomThreadId, room: "Ops" });
+      const roomRead = await fetch(
+        `${BASE}/api/internal/session-read?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(privateThreadId)}&threadId=${encodeURIComponent(roomThreadId)}&messageId=${encodeURIComponent(String(roomHits[0]!.messageId))}`,
+        { headers: { authorization: `Bearer ${await mintTestCapability(BASE, bot.id, privateThreadId)}` } },
+      );
+      expect(roomRead.status).toBe(200);
+      expect(await roomRead.json()).toMatchObject({ text: "The deploy checklist was signed off" });
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`);
       await api("DELETE", `/api/groups/${room.id}`);

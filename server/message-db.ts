@@ -656,9 +656,10 @@ export function recallTerms(query: string): string[] {
  * short report reads whole; a longer one is fetched with readMessageText. */
 const SNIPPET_TOKENS = 48;
 
-/** Full text of one text message, for a session_read after a search hit.
- * Null for a missing row or a non-text kind (activity chips carry no
- * transcript text). */
+/** Full text of one message, for a session_read after a search hit: every
+ * kind recallMessages can return (text, and a digest of a run's work). Null
+ * for a missing row or any other kind (activity chips carry no transcript
+ * text). */
 export function readMessageText(
   threadId: string,
   messageId: string,
@@ -667,7 +668,7 @@ export function readMessageText(
     .prepare(
       "SELECT at, role, text, json_extract(json, '$.from.name') AS from_name, " +
         "json_extract(json, '$.peerAsk.name') AS peer_name FROM messages " +
-        "WHERE thread_id = ? AND id = ? AND kind = 'text' AND text IS NOT NULL",
+        "WHERE thread_id = ? AND id = ? AND kind IN ('text', 'digest') AND text IS NOT NULL",
     )
     .get(threadId, messageId) as
     | { at: number; role: string; text: string; from_name: string | null; peer_name: string | null }

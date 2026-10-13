@@ -160,17 +160,35 @@ export function resolveTeammate<T extends RosterMember>(
   const wanted = raw.trim();
   if (bots.some(bot => bot.id === wanted)) return { id: wanted, byName: false };
   const fold = (value: string) => value.replace(/^@/, "").replace(/\s+/g, " ").trim().toLowerCase();
+  // Models slug a name they saw ("Reviewer 2" → "reviewer-2"): dashes and
+  // underscores read as spaces, but only when that names one teammate.
+  const loose = (value: string) => fold(value.replace(/[-_]+/g, " "));
   const name = fold(wanted);
   // The caller's own argument is echoed, flattened and clipped like any
   // other text that lands in a model's context, never a bot's persona.
   const shown = peerName(wanted) || wanted;
   if (!name) return { error: `No bot with id "${shown}" — call list_bots and copy the exact id from the result` };
-  const matches = reachablePeers(bots, from).filter(bot => fold(bot.name) === name);
+  const reachable = reachablePeers(bots, from);
+  const matches = reachable.filter(bot => fold(bot.name) === name);
   if (matches.length === 1) return { id: matches[0]!.id, byName: true };
   if (matches.length > 1) {
     return { error: `${matches.length} reachable teammates are named "${shown}" — call list_bots and use the id of the one you mean` };
   }
-  return { error: `No bot with id or name "${shown}" — call list_bots and copy the exact id from the result. ${PEER_ACCESS_HELP}` };
+  const near = reachable.filter(bot => loose(bot.name) === loose(wanted));
+  if (near.length === 1) return { id: near[0]!.id, byName: true };
+  return { error: `No bot with id or name "${shown}" — call list_bots and copy the exact id from the result.${teammateChoices(reachable)} ${PEER_ACCESS_HELP}` };
+}
+
+/** How many teammates a not-found refusal lists; list_bots has the rest. */
+const CHOICES_MAX = 12;
+
+/** The teammates a refused name could have meant, as a refusal lists them:
+ * names flattened like the roster's, each with the id to copy. */
+function teammateChoices(reachable: readonly RosterMember[]): string {
+  if (!reachable.length) return "";
+  const listed = reachable.slice(0, CHOICES_MAX).map(bot => `${peerName(bot.name)} (id ${bot.id})`).join(", ");
+  const more = reachable.length > CHOICES_MAX ? `, and ${reachable.length - CHOICES_MAX} more` : "";
+  return ` You can reach: ${listed}${more}.`;
 }
 
 // The roster is interpolated into a TRUSTED bot's system prompt on every
