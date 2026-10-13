@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Parser } from "tar";
 
 import { BrowserEvidence, EVIDENCE_LIMITS, imageFileName, type StepRecord } from "./browser-evidence.ts";
@@ -108,6 +108,27 @@ describe("the browser step store", () => {
     expect((await shot(evidence, "thread-2", Buffer.from("x"))).image).not.toBeNull();
   });
 
+  it("stops taking steps once a conversation's step lines reach their cap, until old ones expire", async () => {
+    const evidence = store();
+    const steps = join(evidence.root, "thread-1", GEN2, "steps.jsonl");
+    mkdirSync(join(evidence.root, "thread-1", GEN2), { recursive: true });
+    writeFileSync(steps, Buffer.alloc(EVIDENCE_LIMITS.threadStepBytes - 100, 0x20));
+    // Under the cap by a little: this step is kept, and counted as it is written.
+    expect(evidence.accepts("thread-1")).toBe(true);
+    await evidence.commit(step(evidence, "thread-1"), null);
+    expect(evidence.accepts("thread-1")).toBe(false);
+    await expect(evidence.commit(step(evidence, "thread-1"), null)).rejects.toThrow(/no more browser steps/);
+    expect(evidence.list("thread-1").steps).toHaveLength(1);
+    // Another conversation is not held up.
+    expect(evidence.accepts("thread-2")).toBe(true);
+    // The old turn's lines expire after 30 days, and steps resume.
+    const old = new Date(Date.now() - EVIDENCE_LIMITS.retentionMs - 60_000);
+    utimesSync(steps, old, old);
+    utimesSync(join(evidence.root, "thread-1", GEN2), old, old);
+    await evidence.sweep();
+    expect(evidence.accepts("thread-1")).toBe(true);
+  });
+
   it("never evicts a generation being written now", async () => {
     let now = Date.now();
     const evidence = store({ free: 1.25 * 1024 ** 3, now: () => now });
@@ -202,5 +223,26 @@ describe("the browser step store", () => {
     expect(index).toMatchObject({ v: 1, threadId: "thread-1" });
     expect(index.steps.map((entry: StepRecord) => entry.image)).toEqual([`${GEN}/${one.image}`, null, `${GEN2}/${two.image}`]);
     expect(JSON.stringify(index)).not.toContain("imageUrl");
+  });
+
+  it("exports a big conversation reading each step once, not once per page of 500", async () => {
+    const evidence = store();
+    for (let index = 0; index < 1_200; index++) await evidence.commit(step(evidence, "thread-big", index < 600 ? GEN : GEN2), null);
+    const parse = vi.spyOn(JSON, "parse");
+    const out = new PassThrough();
+    const chunks: Buffer[] = [];
+    out.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let parsed = 0;
+    try {
+      await evidence.exportTar("thread-big", out);
+      parsed = parse.mock.calls.length;
+    } finally { parse.mockRestore(); }
+    expect(parsed).toBeGreaterThanOrEqual(1_200);
+    expect(parsed).toBeLessThan(1_300);
+    const tar = Buffer.concat(chunks);
+    const index = JSON.parse(tar.subarray(512, 512 + Number.parseInt(tar.subarray(124, 136).toString().trim(), 8)).toString());
+    expect(index.steps).toHaveLength(1_200);
+    const order = index.steps.map((entry: StepRecord) => entry.step);
+    expect(order).toEqual([...order].sort((a: number, b: number) => a - b));
   });
 });

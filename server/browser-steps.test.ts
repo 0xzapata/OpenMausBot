@@ -43,6 +43,10 @@ describe("what a step says it did", () => {
     expect(stepLabel("agent_browser_fill", { selector: "@e5", text: "fake-hunter2" }, { role: "textbox", name: "Password" })).toBe('Filled the "Password" textbox with ••••');
     expect(stepLabel("agent_browser_type", { selector: "#otp-code", text: "123456" })).toBe('Typed •••• into the element "#otp-code"');
     expect(stepLabel("agent_browser_fill", { selector: "@e7", text: "4111" }, { role: "textbox", name: "Card number" })).not.toContain("4111");
+    // A character pressed into a secret field is typing; a named key is not.
+    const code = { role: "textbox", name: "Code", editable: true, valueLength: 2, secret: true, rect: { x: 0, y: 0, w: 1, h: 1 } };
+    expect(stepLabel("agent_browser_press", { key: "7" }, undefined, code)).toBe('Pressed •••• in the "Code" textbox');
+    expect(stepLabel("agent_browser_press", { key: "Enter" }, undefined, code)).toBe('Pressed "Enter" in the "Code" textbox');
   });
 
 });
@@ -384,6 +388,64 @@ describe("around every bot's browser call", () => {
     const out = await run("get_url", {}, undefined, { content: [{ type: "text", text: "about:blank" }], structuredContent: { response: { data: { lifecycle: { launched: true, relaunchedBrowser: false } } } } });
     expect(resize).toHaveBeenCalledOnce();
     expect(out.parts[0]!.text).toMatch(/started again/u);
+  });
+
+  it("masks what was typed into a field that looks secret only to the page, even when the focus was elsewhere before", async () => {
+    const { daemon, evidence, run } = await setup({ record: true });
+    const field = (name: string, secret: boolean, valueLength = 0) => ({ role: "textbox", name, editable: true, valueLength, secret, rect: { x: 0, y: 0, w: 10, h: 10 }, frame: null });
+    // The focus sat on the email field; the fill moved it into the one-time-code field (autocomplete one-time-code).
+    daemon.geometry = { ...daemon.geometry, focus: field("Email", false) };
+    await run("fill", { selector: "#code", text: "482913" }, () => { daemon.geometry = { ...daemon.geometry, focus: field("Code", true, 6) }; });
+    await run("press", { key: "7" });
+    expect(evidence.list("thread-1").steps.map((step) => step.action)).toEqual(['Filled the element "#code" with ••••', 'Pressed •••• in the "Code" textbox']);
+    expect(JSON.stringify(evidence.list("thread-1").steps)).not.toContain("482913");
+  });
+
+  it("never hands the bot, or keeps, what the page reported while a person held the browser", async () => {
+    const { daemon, steps, evidence, run } = await setup({ record: true });
+    await run("click", { selector: "#go" });
+    expect(steps.recentFrame(daemon.session)).not.toBeNull();
+    const personsTurn = (id: string) => {
+      steps.personTook(daemon.session);
+      daemon.console.push({ type: "error", text: "Wrong password for ada@example.com" });
+      daemon.requests.push({ ...failure, requestId: id, url: "https://app.example.com/api/login" });
+    };
+    // Handed back, then a read: nothing of it, and no picture from before the hold stands in for a frame.
+    personsTurn("held-1");
+    expect(steps.recentFrame(daemon.session)).toBeNull();
+    expect((await run("snapshot")).parts).toEqual([]);
+    // Handed back, then an action: only what the action itself caused.
+    personsTurn("held-2");
+    const out = await run("click", { selector: "#go" }, () => { daemon.console.push({ type: "error", text: "the click's own" }); });
+    expect(out.parts.map((part) => part.text).join("\n")).toContain("1 console error: \"the click's own\"");
+    const kept = JSON.stringify(evidence.list("thread-1").steps) + JSON.stringify(out);
+    expect(kept).not.toContain("ada@example.com");
+    expect(kept).not.toContain("/api/login");
+  });
+
+  it("takes a daemon that outlived its Chrome as keeping its old lists, and one that was not running as holding only the call's news", async () => {
+    const outlived = await setup();
+    outlived.daemon.connected = false;
+    outlived.daemon.console = [{ type: "error", text: "left from an earlier run" }];
+    const first = await outlived.run("open", { url: "https://app.example.com/" }, () => { outlived.daemon.connected = true; });
+    expect(JSON.stringify(first.parts)).not.toContain("earlier run");
+    const started = await setup();
+    started.daemon.removeStreamFile();
+    const news = await started.run("open", { url: "https://app.example.com/" }, () => {
+      started.daemon.writeStreamFile();
+      started.daemon.console.push({ type: "error", text: "Boom on load" });
+    });
+    expect(news.parts.map((part) => part.text).join("\n")).toContain('1 console error: "Boom on load"');
+  });
+
+  it("takes no step and no picture for a conversation whose step lines are full", async () => {
+    const { daemon, evidence, run } = await setup({ record: true });
+    const accepts = vi.spyOn(evidence, "accepts").mockReturnValue(false);
+    const out = await run("click", { selector: "#go" });
+    expect(accepts).toHaveBeenCalledWith("thread-1");
+    expect(out.parts.map((part) => part.text).join("\n")).not.toMatch(/Recorded as step/u);
+    expect(daemon.actions()).not.toContain("screenshot");
+    expect(evidence.list("thread-1").steps).toEqual([]);
   });
 
   it("keeps held secrets out of every text a step keeps, the page's console lines included", async () => {

@@ -23,6 +23,8 @@ export class FakeRelay {
   readonly commands: Array<Record<string, unknown>> = [];
   connected = true;
   sessionName: string;
+  /** The daemon's process id, as `session_info` reports it: this test's own, so it is alive. */
+  daemonPid = process.pid;
   console: Array<{ type: string; text: string }> = [];
   errors: Array<{ text: string; url: null; line: number | null; column: number | null }> = [];
   requests: Array<Record<string, unknown>> = [];
@@ -70,7 +72,7 @@ export class FakeRelay {
       };
       switch (command.action) {
         case "stream_status": return reply({ enabled: true, port: this.port, connected: this.connected, screencasting: false });
-        case "session_info": return reply({ session: this.sessionName, backgroundPid: 4242, browserLaunched: this.connected });
+        case "session_info": return reply({ session: this.sessionName, backgroundPid: this.daemonPid, browserLaunched: this.connected });
         case "console":
           if (command.clear === true) { this.console = []; return reply({ cleared: true }); }
           return reply({ messages: this.console });

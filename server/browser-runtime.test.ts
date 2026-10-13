@@ -222,6 +222,7 @@ lines.on('line', line => {
   else if (m.params.name === 'rpc-error') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'Expected refusal'}})+'\\n'); return; }
   else if (m.params.name === 'rpc-timeout') { rpcTimeoutCalls += 1; if (rpcTimeoutCalls === 1) { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'request timed out'}})+'\\n'); return; } result = { content:[{type:'text',text:'engine answered a repeat rpc-timeout call'}] }; }
   else if (m.params.name === 'agent_browser_open' && m.params.arguments.url === 'https://refused.test') result = { isError:true, content:[{type:'text',text:'Navigation refused'}] };
+  else if (m.params.name === 'agent_browser_open' && process.env.OPEN_LAUNCHED === '1') result = { content:[{type:'text',text:'Opened'}], structuredContent:{ response:{ data:{ lifecycle:{ launched:true, relaunchedBrowser:false } } } } };
   else if (m.params.name === 'agent_browser_snapshot' && process.env.REJECT_VERIFICATION === '1') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'Snapshot refused'}})+'\\n'); return; }
   else if (m.params.name === 'agent_browser_snapshot' && process.env.HANG_VERIFICATION === '1') return;
   else if (m.params.name === 'agent_browser_snapshot' && process.env.EMPTY_VERIFICATION === '1') result = { content:[] };
@@ -882,6 +883,7 @@ describe("around each bot call (browser-steps.ts)", () => {
       note: vi.fn(async () => null),
       forget: vi.fn(),
       recentFrame: vi.fn((): { png: string; format: "jpeg" } | null => null),
+      personTook: vi.fn(),
     };
     return { steps, log };
   }
@@ -981,6 +983,29 @@ describe("around each bot call (browser-steps.ts)", () => {
     expect(capture).not.toHaveBeenCalled();
     await expect(value.previewFrame("s", capture)).resolves.toEqual({ png: "CAPTURED", format: "jpeg" });
     expect(steps.recentFrame).toHaveBeenCalledWith("s");
+  });
+
+  it("hands the hook the engine's own answer to an open, so a browser the open started is seen and sized", async () => {
+    const { steps } = hook();
+    const value = runtime({ steps });
+    const launching = { ...spec(), env: { ...spec().env, OPEN_LAUNCHED: "1" } };
+    const result = await value.agentRpc("s", launching, "tools/call", { name: "agent_browser_open", arguments: { url: "https://example.com" } }, undefined, ctx) as Record<string, unknown>;
+    expect(steps.after.mock.calls[0]![1]).toMatchObject({ structuredContent: { response: { data: { lifecycle: { launched: true } } } } });
+    // The bot's own copy stays text only.
+    expect(result.structuredContent).toBeUndefined();
+  });
+
+  it("tells the hook the moment a person takes the browser, so what they cause is theirs", async () => {
+    const { steps } = hook();
+    const value = runtime({ steps });
+    const action = deferred();
+    const pending = value.withAgentAction("s", () => action.promise);
+    const taking = value.take("s", "person");
+    // Before the bot's action has even drained.
+    expect(steps.personTook).toHaveBeenCalledWith("s");
+    action.resolve();
+    await expect(pending).rejects.toThrow(/paused/);
+    await taking;
   });
 
   it("forgets a browser's page state when it closes or restarts", async () => {

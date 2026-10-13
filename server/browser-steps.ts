@@ -76,6 +76,10 @@ interface StepState {
   action: boolean;
   recorded: boolean;
   aliveBefore: boolean | null;
+  /** No daemon answered for this session before the call: its lists, when
+   * one runs after, hold only this call's news. A daemon that outlived its
+   * Chrome (or this server) keeps its old lists. */
+  noDaemon: boolean;
   wasRunning: boolean;
   late: HealthDelta | null;
   geometry: Geometry | null;
@@ -277,7 +281,8 @@ export function stepLabel(tool: string, args: Record<string, unknown>, ref?: { r
     case "click": return `Clicked ${element}${args.newTab === true ? " to open it in a new tab" : ""}`;
     case "fill": return `Filled ${element} with ${typed()}`;
     case "type": return `Typed ${typed()} into ${element}`;
-    case "press": return `Pressed ${q(args.key)}${focus?.name ? ` in the ${q(focus.name)} ${sanitizePageText(focus.role, 40)}` : ""}`;
+    // One character pressed into a secret field is typing, masked like it.
+    case "press": return `Pressed ${focus?.secret && [...String(args.key ?? "")].length === 1 ? "••••" : q(args.key)}${focus?.name ? ` in the ${q(focus.name)} ${sanitizePageText(focus.role, 40)}` : ""}`;
     case "check": return `Checked ${element}`;
     case "uncheck": return `Unchecked ${element}`;
     case "select": return `Chose ${Array.isArray(args.values) ? args.values.slice(0, 3).map(q).join(", ") : q(args.value)} in ${element}`;
@@ -324,6 +329,15 @@ export function markerFor(box: Box | null, before: Geometry | null, after: Geome
   const right = Math.min(after.vw, shown.x + shown.w), bottom = Math.min(after.vh, shown.y + shown.h);
   const marker: Marker = { x: Math.round(left * dpr), y: Math.round(top * dpr), w: Math.round((right - left) * dpr), h: Math.round((bottom - top) * dpr) };
   return { marker: approx ? { ...marker, approx: true } : marker, why: null };
+}
+
+/** The focus a step's label names: where it was before the call (a key
+ * press goes there), else where the call left it. Secret when either one
+ * looks secret: typing lands in the field the call named, which may only have
+ * taken the focus during the call. */
+function labelFocus(before: Focus | null, after: Focus | null): Focus | null {
+  const focus = before ?? after;
+  return focus && !focus.secret && after?.secret ? { ...focus, secret: true } : focus;
 }
 
 interface SessionSteps {
@@ -428,13 +442,14 @@ export class BrowserSteps {
     steps.image = null;
     const state: StepState = {
       startedAt: this.now(), actionAt: 0, action: ACTIONS.has(call.tool), recorded: call.ctx?.record === true && ACTIONS.has(call.tool),
-      aliveBefore: null, wasRunning: steps.running, late: null, geometry: null, box: null, target: null,
+      aliveBefore: null, noDaemon: false, wasRunning: steps.running, late: null, geometry: null, box: null, target: null,
     };
     try {
       if (call.stopped()) return state;
       const target = this.target(call);
       const probe = await this.ports.probe(target);
       state.aliveBefore = probe ? probe.connected : (this.ports.isTripped(call.session) ? null : false);
+      state.noDaemon = !probe && state.aliveBefore === false;
       if (!probe?.connected || !state.action) return state;
       const read = this.reader(target, probe.port);
       state.late = await this.health.read(call.session, read, call.ctx?.threadId ?? null);
@@ -516,8 +531,8 @@ export class BrowserSteps {
       }
       const page = geometry ?? parseGeometry((await read({ action: "evaluate", script: PAGE_SCRIPT }))?.data?.result);
       this.health.setPage(call.session, page?.url ?? null, page?.loadedAt ?? null);
-      // A browser that was not up before this call holds only what this call did.
-      const delta = await this.health.read(call.session, read, call.ctx?.threadId ?? null, state.aliveBefore === false);
+      // A daemon that was not up before this call holds only what this call did.
+      const delta = await this.health.read(call.session, read, call.ctx?.threadId ?? null, state.noDaemon);
       if (this.ports.takeStarted(call.session)) await this.started(call, steps, true, out);
       const pageHost = this.health.pageHost(call.session);
       const lines = [
@@ -579,7 +594,6 @@ export class BrowserSteps {
     const ctx = call.ctx;
     if (!ctx || !this.evidence) return null;
     const steps = this.session(call.session);
-    const step = this.evidence.nextStep();
     const geometry = facts.geometry ?? null;
     const navigated = Boolean(state.geometry && geometry && state.geometry.url !== geometry.url);
     const ref = state.target?.role !== undefined ? { role: state.target.role, name: state.target.name ?? "" } : undefined;
@@ -597,6 +611,9 @@ export class BrowserSteps {
     if (typed && here !== null && ((target?.inFrame && SECRET_TARGET.test(`${target.role ?? ""} ${target.name ?? ""}`)) || (geometry?.focus?.frame === "cross" && geometry.focus.secret))) {
       steps.secretPage = here;
     }
+    // A conversation whose step lines reached their cap takes no more steps: no number, no picture.
+    if (!this.evidence.accepts(ctx.threadId)) return null;
+    const step = this.evidence.nextStep();
     let imageSkipped = facts.imageSkipped ?? null;
     if (!imageSkipped) {
       if (!geometry || this.ports.isTripped(call.session)) imageSkipped = /dialog/iu.test(facts.failure ?? "") ? "dialog-open" : "page-not-responding";
@@ -634,7 +651,7 @@ export class BrowserSteps {
       v: 1, step, at: state.startedAt, botId: ctx.botId, botName: sanitizePageText(ctx.botName, 100),
       threadId: ctx.threadId, generation: ctx.generation, turnId: ctx.turnId(),
       tool: call.tool, kind: call.tool.replace(/^agent_browser_/u, ""),
-      action: ctx.label ? sanitizePageText(ctx.label, 200) : stepLabel(call.tool, call.args, ref, state.geometry?.focus ?? geometry?.focus),
+      action: ctx.label ? sanitizePageText(ctx.label, 200) : stepLabel(call.tool, call.args, ref, labelFocus(state.geometry?.focus ?? null, geometry?.focus ?? null)),
       ok: facts.ok,
       target: state.target ? { ...state.target, box: state.box } : null,
       page: geometry ? {
@@ -686,7 +703,7 @@ export class BrowserSteps {
 
   /** A step with no screenshot and no page reads: fill_login, restart_browser. */
   async note(ctx: StepContext | undefined, fact: { tool: string; action?: string; ok: boolean }): Promise<number | null> {
-    if (!ctx?.record || !this.evidence) return null;
+    if (!ctx?.record || !this.evidence?.accepts(ctx.threadId)) return null;
     const step = this.evidence.nextStep();
     try {
       await this.evidence.commit(clean({
@@ -696,6 +713,14 @@ export class BrowserSteps {
       }), null);
       return step;
     } catch { return null; }
+  }
+
+  /** A person took the browser (BrowserRuntime.take): what its page reports
+   * while they hold it never reaches a bot or a step, and no picture from
+   * before their hold stands in for a preview frame. */
+  personTook(session: string): void {
+    this.health.discardNext(session);
+    this.session(session).image = null;
   }
 
   /** The browser closed or restarted: nothing of its page carries over. */

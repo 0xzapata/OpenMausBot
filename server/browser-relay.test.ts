@@ -63,6 +63,31 @@ describe("the engine's loopback command relay", () => {
     expect(daemon.commands.length).toBe(before);
   });
 
+  it("asks again once the daemon it confirmed has died, so a port another bot's daemon took over is never typed into or pictured", async () => {
+    const daemon = await fake("bot-a");
+    const alive = new Set([daemon.daemonPid]);
+    const ports = new RelayPorts({ alive: (pid) => alive.has(pid) });
+    expect(await ports.port(daemon.target)).toBe(daemon.port);
+    // bot-a's daemon crashed and left its .stream file; bot-b's daemon now listens on that port.
+    alive.delete(daemon.daemonPid);
+    daemon.sessionName = "bot-b";
+    daemon.daemonPid = 5151;
+    alive.add(5151);
+    expect(await ports.port(daemon.target)).toBeNull();
+    await expect(captureFrame(ports, daemon.target)).rejects.toThrow(/no open page/);
+    await expect(typeText(ports, daemon.target, "fake-S3cret!")).rejects.toThrow();
+    expect(daemon.typed).toEqual([]);
+    expect(daemon.actions().filter((action) => action === "screenshot" || action === "keyboard")).toEqual([]);
+  });
+
+  it("takes a daemon too busy to confirm its session as unknown, not absent", async () => {
+    const daemon = await fake();
+    daemon.hang.add("session_info");
+    const ports = new RelayPorts();
+    expect(await ports.probe(daemon.target)).toBeNull();
+    expect(ports.isTripped(daemon.session)).toBe(true);
+  });
+
   it("probes whether Chrome is connected, and leaves a session alone after a timeout until a probe answers", async () => {
     const daemon = await fake();
     const ports = new RelayPorts();

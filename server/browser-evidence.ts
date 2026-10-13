@@ -12,7 +12,9 @@
 // and the steps carry on without them, when a conversation holds 200 MB, all
 // evidence holds the smaller of 2 GB and a quarter of the free space, or the
 // disk has less than 1 GB free; the oldest other conversations' screenshots
-// are evicted first. The exported tar is the copy that lasts.
+// are evicted first. Steps themselves stop once a conversation's step lines
+// reach 50 MB (some 55,000 steps), so a bot stuck in a loop cannot fill the
+// disk. The exported tar is the copy that lasts.
 import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, constants, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { open, readFile, stat, statfs as statfsAsync } from "node:fs/promises";
@@ -43,6 +45,7 @@ export interface StepRecord {
 export const EVIDENCE_LIMITS = {
   imageBytes: 1_500_000,
   threadBytes: 200 * 1024 * 1024,
+  threadStepBytes: 50 * 1024 * 1024,
   totalBytes: 2 * 1024 * 1024 * 1024,
   freeShare: 0.25,
   freeFloor: 1024 * 1024 * 1024,
@@ -93,6 +96,8 @@ export class BrowserEvidence {
   private counter: { next: number; reserved: number } | null = null;
   /** Screenshot bytes per conversation, read from disk on first use. */
   private threadBytes = new Map<string, number>();
+  /** Step-line bytes per conversation, read from disk on first use. */
+  private stepBytes = new Map<string, number>();
   /** All screenshot bytes; unknown until the first sweep has measured them. */
   private totalBytes: number | null = null;
   private budget = { cap: EVIDENCE_LIMITS.totalBytes as number, low: false };
@@ -170,6 +175,23 @@ export class BrowserEvidence {
     return bytes;
   }
 
+  private threadStepSize(threadId: string): number {
+    let bytes = this.stepBytes.get(threadId);
+    if (bytes === undefined) {
+      bytes = 0;
+      const dir = join(this.root, threadId);
+      for (const generation of directories(dir)) bytes += size(join(dir, generation, STEPS_FILE));
+      this.stepBytes.set(threadId, bytes);
+    }
+    return bytes;
+  }
+
+  /** Whether a conversation takes another step: its step lines stay under
+   * their cap. Asked before a step is numbered or pictured. */
+  accepts(threadId: string): boolean {
+    return THREAD_ID.test(threadId) && this.threadStepSize(threadId) < EVIDENCE_LIMITS.threadStepBytes;
+  }
+
   /** Where this step's screenshot may be written, created empty and 0600 so
    * the engine's write keeps that mode; or why no screenshot is taken. */
   imageTarget(threadId: string, generation: string, step: number): { path: string } | { skipped: string } {
@@ -195,6 +217,7 @@ export class BrowserEvidence {
   async commit(record: StepRecord, imagePath: string | null): Promise<StepRecord> {
     const { threadId, generation } = record;
     if (!THREAD_ID.test(threadId) || !GENERATION.test(generation)) throw new Error("Invalid evidence location.");
+    if (!this.accepts(threadId)) throw new Error("This conversation keeps no more browser steps.");
     const out: StepRecord = { ...record, image: null };
     if (imagePath) {
       const drop = (reason: string) => { try { unlinkSync(imagePath); } catch { /* already gone */ } out.imageSkipped = reason; };
@@ -219,43 +242,50 @@ export class BrowserEvidence {
     }
     const dir = join(this.root, threadId, generation);
     this.ensureDir(dir);
-    appendFileSync(join(dir, STEPS_FILE), `${JSON.stringify(out)}\n`, { mode: 0o600 });
+    const line = `${JSON.stringify(out)}\n`;
+    appendFileSync(join(dir, STEPS_FILE), line, { mode: 0o600 });
+    this.stepBytes.set(threadId, this.threadStepSize(threadId) + Buffer.byteLength(line));
     this.active.set(`${threadId}/${generation}`, this.now());
     return out;
+  }
+
+  /** Every step of a conversation, or of one of its generations, in step
+   * order: each step file read once. */
+  private readSteps(threadId: string, generation?: string): StepRecord[] {
+    if (!THREAD_ID.test(threadId)) return [];
+    const dir = join(this.root, threadId);
+    const generations = generation !== undefined ? (GENERATION.test(generation) ? [generation] : []) : directories(dir);
+    const steps: StepRecord[] = [];
+    for (const name of generations) {
+      let text = "";
+      try { text = readFileSync(join(dir, name, STEPS_FILE), "utf8"); } catch { continue; }
+      for (const line of text.split("\n")) {
+        if (!line) continue;
+        try {
+          const step = JSON.parse(line) as StepRecord;
+          if (typeof step.step === "number" && step.generation === name) steps.push(step);
+        } catch { /* a torn last line */ }
+      }
+    }
+    return steps.sort((a, b) => a.step - b.step);
+  }
+
+  /** A step with its screenshot's URL, or why the screenshot is gone. */
+  private withImageUrl(threadId: string, step: StepRecord): StepRecord & { imageUrl: string | null; imageGone?: "evicted" } {
+    if (!step.image || !IMAGE_FILE.test(step.image)) return { ...step, imageUrl: null };
+    return this.imageFile(threadId, step.generation, step.image) !== null
+      ? { ...step, imageUrl: `/api/threads/${threadId}/evidence/${step.generation}/${step.image}` }
+      : { ...step, imageUrl: null, imageGone: "evicted" as const };
   }
 
   /** A conversation's steps in step order, `after` a step number, with each
    * screenshot's URL, or why it is gone. */
   list(threadId: string, options: { generation?: string; after?: number; limit?: number } = {}): { steps: Array<StepRecord & { imageUrl: string | null; imageGone?: "evicted" }>; nextAfter: number | null } {
-    if (!THREAD_ID.test(threadId)) return { steps: [], nextAfter: null };
     const limit = Math.min(500, Math.max(1, options.limit ?? 200));
     const after = options.after ?? 0;
-    const dir = join(this.root, threadId);
-    const generations = options.generation ? (GENERATION.test(options.generation) ? [options.generation] : []) : directories(dir);
-    const steps: StepRecord[] = [];
-    for (const generation of generations) {
-      let text = "";
-      try { text = readFileSync(join(dir, generation, STEPS_FILE), "utf8"); } catch { continue; }
-      for (const line of text.split("\n")) {
-        if (!line) continue;
-        try {
-          const step = JSON.parse(line) as StepRecord;
-          if (typeof step.step === "number" && step.step > after && step.generation === generation) steps.push(step);
-        } catch { /* a torn last line */ }
-      }
-    }
-    steps.sort((a, b) => a.step - b.step);
+    const steps = this.readSteps(threadId, options.generation || undefined).filter((step) => step.step > after);
     const page = steps.slice(0, limit);
-    return {
-      steps: page.map((step) => {
-        if (!step.image || !IMAGE_FILE.test(step.image)) return { ...step, imageUrl: null };
-        const present = this.imageFile(threadId, step.generation, step.image) !== null;
-        return present
-          ? { ...step, imageUrl: `/api/threads/${threadId}/evidence/${step.generation}/${step.image}` }
-          : { ...step, imageUrl: null, imageGone: "evicted" as const };
-      }),
-      nextAfter: steps.length > limit ? page.at(-1)!.step : null,
-    };
+    return { steps: page.map((step) => this.withImageUrl(threadId, step)), nextAfter: steps.length > limit ? page.at(-1)!.step : null };
   }
 
   /** A screenshot's path, only for well-formed names of a regular file
@@ -275,13 +305,9 @@ export class BrowserEvidence {
    * screenshot by its path in the archive) and the screenshots, regular
    * files only, under POSIX paths. */
   async exportTar(threadId: string, out: Writable): Promise<void> {
-    const all: StepRecord[] = [];
-    for (let after = 0; ;) {
-      const page = this.list(threadId, { after, limit: 500 });
-      all.push(...page.steps);
-      if (page.nextAfter === null) break;
-      after = page.nextAfter;
-    }
+    // One read of every step file: paging through list() re-read them all for
+    // each 500 steps, a long stall of the server for a big conversation.
+    const all = this.readSteps(threadId).map((step) => this.withImageUrl(threadId, step));
     const files = new Map<string, string>();
     const steps = all.map((step) => {
       const { imageUrl: _url, ...rest } = step as StepRecord & { imageUrl?: unknown };
@@ -335,6 +361,7 @@ export class BrowserEvidence {
     const bytes = this.threadSize(threadId);
     try { rmSync(join(this.root, threadId), { recursive: true, force: true }); } catch { /* the sweep retries */ }
     this.threadBytes.delete(threadId);
+    this.stepBytes.delete(threadId);
     for (const key of [...this.lastImage.keys(), ...this.active.keys()]) {
       if (key.startsWith(`${threadId}/`)) { this.lastImage.delete(key); this.active.delete(key); }
     }
@@ -395,6 +422,7 @@ export class BrowserEvidence {
         continue;
       }
       let threadTotal = 0;
+      let stepTotal = 0;
       for (const generation of directories(dir)) {
         const gen = join(dir, generation);
         if (Math.max(modified(join(gen, STEPS_FILE)), modified(gen)) < expired) {
@@ -402,12 +430,14 @@ export class BrowserEvidence {
           this.lastImage.delete(`${thread}/${generation}`);
           continue;
         }
+        stepTotal += size(join(gen, STEPS_FILE));
         for (const name of files(gen)) {
           if (IMAGE_FILE.test(name)) threadTotal += size(join(gen, name));
         }
       }
       if (!directories(dir).length) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* next sweep */ } }
       this.threadBytes.set(thread, threadTotal);
+      this.stepBytes.set(thread, stepTotal);
       total += threadTotal;
     }
     this.totalBytes = total;

@@ -13,6 +13,7 @@
 // Page text is untrusted. Whatever reaches a model is one line per sample,
 // stripped of control, bidirectional and zero-width characters, capped, and
 // JSON-quoted, inside a sentence that says it is page output.
+import { scrubHeldSecrets } from "../shared/redact.ts";
 import { siteOf } from "../shared/site.ts";
 import type { RelayAnswer } from "./browser-relay.ts";
 
@@ -57,15 +58,20 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-// Control characters, bidirectional overrides and isolates, zero-width
-// characters and the BOM: none belongs in one line of page output.
+// Control characters, bidirectional marks, overrides and isolates,
+// zero-width and other invisible format characters, the BOM, variation
+// selectors and Unicode tag characters (which spell text a model reads and a
+// person never sees): none belongs in one line of page output.
 // eslint-disable-next-line no-control-regex -- removing them is the point
-const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2060\u202a-\u202e\u2066-\u2069\ufeff]/gu;
+const UNSAFE = /[\ufe00-\ufe0f\u{e0100}-\u{e01ef}\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu;
 
-/** One line of page text a model may read: the first line only, unsafe
- * characters removed, whitespace collapsed, capped at `max` characters. */
+/** One line of page text a model may read: the first line only, held
+ * secrets masked while the text is still as the page wrote it (cutting it or
+ * collapsing its spaces first could leave part of a password the scrubber no
+ * longer knows), unsafe characters removed, whitespace collapsed, capped at
+ * `max` characters. */
 export function sanitizePageText(text: string, max: number): string {
-  const line = (String(text).split(/\r\n|\r|\n|\u2028|\u2029/u)[0] ?? "").replace(UNSAFE, "").replace(/\s+/gu, " ").trim();
+  const line = scrubHeldSecrets(String(text).split(/\r\n|\r|\n|\u2028|\u2029/u)[0] ?? "").replace(UNSAFE, "").replace(/\s+/gu, " ").trim();
   return line.length > max ? `${line.slice(0, Math.max(0, max - 1))}…` : line;
 }
 
@@ -169,6 +175,8 @@ interface SessionHealth {
   shown: Set<string>;
   /** The thread that last used this browser: another thread's leftovers are not its news. */
   thread: string | null;
+  /** A person took the browser: the next read moves past what they caused, reporting none of it. */
+  discard: boolean;
 }
 
 export class PageHealthReader {
@@ -177,7 +185,7 @@ export class PageHealthReader {
   private state(session: string): SessionHealth {
     let state = this.sessions.get(session);
     if (!state) {
-      state = { console: freshCursor(), errors: freshCursor(), seen: new Set(), seenOrder: [], visit: null, host: null, site: null, shown: new Set(), thread: null };
+      state = { console: freshCursor(), errors: freshCursor(), seen: new Set(), seenOrder: [], visit: null, host: null, site: null, shown: new Set(), thread: null, discard: false };
       this.sessions.set(session, state);
     }
     return state;
@@ -205,15 +213,17 @@ export class PageHealthReader {
   pageSite(session: string): string | null { return this.sessions.get(session)?.site ?? null; }
 
   /** What the page reported since this session was last read. The first
-   * read of a session only notes where its lists stand, unless `fresh`: a
-   * browser that was not running before this call holds only its news.
-   * Null when a read failed: unknown, never "nothing". */
+   * read of a session only notes where its lists stand, its failed requests
+   * included, unless `fresh`: a browser whose daemon was not running before
+   * this call holds only its news. Null when a read failed: unknown, never
+   * "nothing". */
   async read(session: string, read: RelayRead, thread: string | null, fresh = false): Promise<HealthDelta | null> {
     const state = this.state(session);
     if (fresh) {
       if (!state.console.ready) state.console = { ready: true, count: 0, tail: [] };
       if (!state.errors.ready) state.errors = { ready: true, count: 0, tail: [] };
     }
+    const noting = !state.console.ready;
     const consoleAnswer = await read({ action: "console" });
     const errorsAnswer = consoleAnswer?.success ? await read({ action: "errors" }) : null;
     const requestsAnswer = errorsAnswer?.success ? await read({ action: "requests", status: "400-599" }) : null;
@@ -234,10 +244,13 @@ export class PageHealthReader {
       if (state.seenOrder.length > SEEN_REQUESTS) state.seen.delete(state.seenOrder.shift()!);
       freshRequests.push(raw);
     }
-    // Another thread's leftovers in a shared browser are not this one's news.
+    // Another thread's leftovers in a shared browser are not this one's news,
+    // nor what a person caused while they held it.
     const sameThread = state.thread === null || state.thread === thread;
     state.thread = thread;
-    if (!sameThread) return emptyDelta();
+    const held = state.discard;
+    state.discard = false;
+    if (noting || held || !sameThread) return emptyDelta();
     const more: NonNullable<HealthDelta["more"]> = {};
     const delta: HealthDelta = {
       requests: cap(freshRequests.flatMap((raw) => reduceRequest(raw, state.site) ?? []), "requests", more),
@@ -281,6 +294,11 @@ export class PageHealthReader {
       console: delta.console.filter((line) => once(`c\u0000${line.level}\u0000${line.text}`)),
     };
   }
+
+  /** A person took the browser: what its page reports while they hold it is
+   * theirs, never a bot's news or evidence. The next read that answers moves
+   * the cursors past it and reports nothing. */
+  discardNext(session: string): void { this.state(session).discard = true; }
 
   /** The browser closed, restarted or relaunched: its lists start over. */
   forget(session: string): void { this.sessions.delete(session); }

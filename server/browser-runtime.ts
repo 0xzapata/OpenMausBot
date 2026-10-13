@@ -355,7 +355,7 @@ export class BrowserRuntime {
   private closeBrowser: CloseBrowser;
   private applyViewport?: ApplyViewport;
   /** Around each bot call: page health for every bot, recorded steps for some. */
-  private steps?: Pick<BrowserSteps, "before" | "after" | "signIn" | "note" | "forget" | "recentFrame">;
+  private steps?: Pick<BrowserSteps, "before" | "after" | "signIn" | "note" | "forget" | "recentFrame" | "personTook">;
   private lanes = new BrowserLanes();
   /** Held secrets (a filled login's password, a fresh one-time code) out of
    * every tool result before the bot reads it. */
@@ -618,7 +618,7 @@ export class BrowserRuntime {
             phases.observeMs = (phases.observeMs ?? 0) + performance.now() - observeStarted;
           }
           beforeDispatch?.();
-          const navigation = result as { content?: unknown[] };
+          const navigation = result as { content?: unknown[]; structuredContent?: unknown };
           const page = observation as { content?: unknown[]; isError?: boolean } | null;
           const observed = page?.isError !== true && Array.isArray(page?.content) && page.content.some((item) =>
             item && typeof item === "object" && (item as { type?: unknown }).type === "text" &&
@@ -631,6 +631,8 @@ export class BrowserRuntime {
                 : "Page observed after navigation. Its refs are current, so act on them without another snapshot. Check this result for redirects, sign-in requirements or page errors before reporting task success:" },
               ...(Array.isArray(page?.content) ? page.content : []),
             ],
+            // The engine's own answer (a launch it reports) for the steps hook; shaping drops it.
+            ...(navigation.structuredContent !== undefined ? { structuredContent: navigation.structuredContent } : {}),
             ...(!observed ? { isError: true } : {}),
           };
         }
@@ -740,6 +742,7 @@ export class BrowserRuntime {
     if (gate.owner !== null && gate.owner !== owner) throw new Error("Another person controls this browser.");
     gate.owner = owner; // synchronous: no new agent work slips in while draining.
     gate.ready = false;
+    this.steps?.personTook(session); // what the page reports while they hold it is theirs
     const waited = gate.dispatched > 0;
     await new Promise<void>((resolve, reject) => {
       const finish = (error?: Error) => {

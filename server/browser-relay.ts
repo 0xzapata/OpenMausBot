@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { browserDaemonFile, inRunningBrowser } from "./browser-engine.ts";
+import { processAlive } from "./browser-processes.ts";
 import { browserRuntimeEnv, type BrowserSpawnSpec } from "./browser-runtime.ts";
 
 /** A session's browser as the harness addresses it: the engine binary and
@@ -100,22 +101,27 @@ export class RelayPorts {
   private tripped = new Set<string>();
   private started = new Set<string>();
   private readFile: (path: string) => string | null;
+  private alive: (pid: number) => boolean;
 
-  constructor(options: { readFile?: (path: string) => string | null } = {}) {
+  constructor(options: { readFile?: (path: string) => string | null; alive?: (pid: number) => boolean } = {}) {
     this.readFile = options.readFile ?? ((path) => { try { return readFileSync(path, "utf8"); } catch { return null; } });
+    this.alive = options.alive ?? ((pid) => processAlive(pid));
   }
 
   /** The session's relay port, from the `.stream` file its daemon writes
    * and deletes on exit, confirmed once per daemon by a relayed
    * `session_info` naming this session: a port a closed daemon left behind
    * may already belong to another bot's browser. Read again on every call,
-   * so a daemon that exited is forgotten at once. Null when none runs. */
+   * so a daemon that exited is forgotten at once, and confirmed again once
+   * the daemon it named has died (a crash leaves its file, and its port to
+   * whichever daemon takes it next). Null when none runs; a daemon too busy
+   * to confirm trips the session (unknown, never "not running"). */
   async port(target: RelayTarget): Promise<number | null> {
     const text = this.readFile(browserDaemonFile(target.env, ".stream"))?.trim() ?? "";
     const port = /^\d{1,5}$/.test(text) ? Number(text) : 0;
     if (port < 1 || port > 65_535) { this.known.delete(target.session); return null; }
     const known = this.known.get(target.session);
-    if (known?.port === port) return port;
+    if (known?.port === port && (known.daemonPid === null || this.alive(known.daemonPid))) return port;
     this.known.delete(target.session);
     try {
       const info = await relay(port, { action: "session_info" }, { timeoutMs: PROBE_MS * 4, maxBytes: 65_536 });
@@ -123,7 +129,10 @@ export class RelayPorts {
       const daemonPid = typeof info.data.backgroundPid === "number" ? info.data.backgroundPid : null;
       this.known.set(target.session, { port, daemonPid });
       return port;
-    } catch { return null; }
+    } catch (error) {
+      if (error instanceof RelayTimeout) this.trip(target.session);
+      return null;
+    }
   }
 
   /** The daemon behind the confirmed port, as its process id. */

@@ -193,6 +193,22 @@ describe("page health and browser steps on the real engine", () => {
     expect(steps()).toHaveLength(count);
   }, 120_000);
 
+  run("never hands the bot what the page reported while a person held the browser", async () => {
+    await call("open", { url: `${base}/` }, false);
+    await runtime.take(session, "person");
+    // The person's own click: its POST answers 500 and the page throws.
+    const port = (await new RelayPorts().port(target()))!;
+    expect((await relay(port, { action: "click", selector: "#signup" }, { timeoutMs: 10_000 })).success).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    runtime.release(session, "person");
+    const next = (await call("snapshot", {}, false)).join("\n");
+    expect(next).not.toContain("Page reported");
+    // What the bot itself causes afterwards is its news again.
+    await call("click", { selector: "#signup" }, false);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect((await call("snapshot", {}, false)).join("\n")).toContain('1 failed request: POST "/api/signup" → 500');
+  }, 120_000);
+
   runPosix("never starts a dead Chrome itself; the bot's next call does, at 1280x720, and the bot is told", async () => {
     await call("open", { url: `${base}/` }, false);
     const ports = new RelayPorts();

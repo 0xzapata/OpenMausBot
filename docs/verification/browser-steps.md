@@ -65,7 +65,9 @@ requests, a ref's box and a screenshot after an MCP open.
    ```
 
 4. Take control of the browser during a bot action: that step has no image
-   (`person-took-control`). Show a password in plain text on a page and act:
+   (`person-took-control`), and what the page reported while you held it
+   (a failed sign-in, a console error) never reaches the bot or a step. Show
+   a password in plain text on a page and act:
    no image (`secret-on-screen`); the same on a checkout page after the bot
    types a card number into the payment provider's card frame, until the page
    moves on. After fill_login fills a one-time code, the steps on that page
