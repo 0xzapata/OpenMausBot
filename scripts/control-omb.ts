@@ -510,7 +510,7 @@ export async function launchVerificationServer(
     OMB_AGENT_BROWSER_PATH: browser.binaryPath,
     AGENT_BROWSER_EXECUTABLE_PATH: browser.executablePath,
   });
-  if (boatFixtureApi) childEnv.OMB_BOX_API = boatFixtureApi;
+  if (boatFixtureApi) childEnv.OMB_BOAT_API = boatFixtureApi;
   if (staticDir) childEnv.OMB_STATIC_DIR = staticDir;
   const child = spawn(process.execPath, verificationServerArgs(childEnv), {
     cwd: ROOT,

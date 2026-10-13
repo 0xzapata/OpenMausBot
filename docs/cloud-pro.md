@@ -836,7 +836,7 @@ For each service the Admin has configured, it also sets:
 
 | Variable | Fly | Value |
 | --- | --- | --- |
-| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. It keeps Boat's own `/api/box/v1` ending. Bots use it only for cloud computers, as a tool on their own engine; no turn runs on Boat's own agent, so nothing calls its `/prompt`, `/events`, `/prompts/{id}` or `/interrupt` routes. |
+| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. The app speaks Boat's public API v1 (`/sandboxes`, `sandbox` envelopes); this relay still serves Boat's retired box API (`/boxes`, `box` envelopes), so for a base ending in `/api/box/v1` the app translates paths and answers in one place, `server/boat-relay.ts`. A base ending in `/api/v1` gets v1 as it is. Bots use it only for cloud computers, as a tool on their own engine; no turn runs on Boat's own agent, so nothing calls its `/prompt`, `/events`, `/prompts/{id}` or `/interrupt` routes. |
 | `OMB_CLOUD_BOAT_TOKEN` | secret | This machine's Boat relay token (`box_omb_…`). It is not a Boat key and works only through the relay. |
 | `OMB_CLOUD_VOICE_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/voice/v1`, the Admin's voice relay. |
 | `OMB_CLOUD_VOICE_TOKEN` | secret | This machine's voice relay token (`omb_voice_…`). |
@@ -857,7 +857,7 @@ computers belong to this machine on every request.
   that key's cloud computers are deleted: removing a Boat key that still has
   computers is refused). The choice is made on every request.
 - **Each credential goes to one place.** The relays know only the Admin's
-  accounts, so an own key goes only to the provider (`OMB_BOX_API`,
+  accounts, so an own key goes only to the provider (`OMB_BOAT_API`,
   `OMB_ELEVENLABS_API` or `decider.baseUrl` when set, for development and
   tests, else Boat's, ElevenLabs' and Jev's own APIs) and an included token
   only to its relay, whatever those settings say.

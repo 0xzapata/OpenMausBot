@@ -423,11 +423,11 @@ describe("cloud computer inventory UI", () => {
     expect(missing.overrides).toEqual(stale.overrides);
 
     const settled = reconcileCloudInventorySnapshot(
-      [{ ...ownedCloudComputer, state: "stopped" }],
+      [{ ...ownedCloudComputer, state: "archived" }],
       missing.instances,
       missing.overrides,
     );
-    expect(settled.instances[0]?.state).toBe("stopped");
+    expect(settled.instances[0]?.state).toBe("archived");
     expect(settled.overrides).toEqual({});
   });
 
