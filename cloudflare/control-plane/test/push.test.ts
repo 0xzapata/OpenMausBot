@@ -270,6 +270,23 @@ describe("phone push relay", () => {
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toBe("60");
     expect(apns.calls).toHaveLength(PUSH_DEVICE_SEND_LIMIT);
+    // The refused send took nothing from the installation's own window.
+    const workspace = await env.DB.prepare("SELECT attempts FROM installation_action_rate_limits WHERE action = 'push_send' ORDER BY updated_at DESC").first<{ attempts: number }>();
+    expect(workspace?.attempts).toBe(PUSH_DEVICE_SEND_LIMIT);
+  });
+
+  it("treats a signing key that will not import as the relay being unavailable", async () => {
+    const garbage = new Uint8Array(138);
+    crypto.getRandomValues(garbage);
+    const testEnv = await pushEnv(pem(garbage.buffer));
+    const apns = fakeApns();
+    const worker = createWorker(fetch, apns.fetch);
+    const { credential } = await installation(worker, testEnv, "badkey@example.test");
+    expect((await register(worker, testEnv, credential)).status).toBeLessThan(300);
+    const response = await send(worker, testEnv, credential);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "push_unavailable" });
+    expect(apns.calls).toHaveLength(0);
   });
 
   it("forgets an unregistered token, and every token of a revoked installation", async () => {

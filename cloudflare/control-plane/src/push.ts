@@ -297,11 +297,21 @@ export async function sendPush(
   if (!row || row.token !== body.token) return errorResponse(404, "push_device_unknown");
 
   const now = Date.now();
-  const [perInstallation, perDevice] = await env.DB.batch([
-    limitStatement(env, installation.installation_id, "push_send", PUSH_SEND_LIMIT, now),
-    limitStatement(env, installation.installation_id, `push_send:${tokenHash.slice(0, 32)}`, PUSH_DEVICE_SEND_LIMIT, now),
-  ]);
-  if (perInstallation?.meta.changes === 0 || perDevice?.meta.changes === 0) return rateLimited(60);
+  // Check both windows before taking from either, so a send refused by one
+  // limit does not use up the other. The upserts still enforce each cap, so
+  // two racing sends can at worst both be refused, never both pass a full one.
+  const limits = [
+    { action: "push_send", limit: PUSH_SEND_LIMIT },
+    { action: `push_send:${tokenHash.slice(0, 32)}`, limit: PUSH_DEVICE_SEND_LIMIT },
+  ];
+  const full = await env.DB.prepare(
+    `SELECT COUNT(*) AS full FROM installation_action_rate_limits
+     WHERE installation_id = ? AND window_started_at > ? AND ((action = ? AND attempts >= ?) OR (action = ? AND attempts >= ?))`,
+  ).bind(installation.installation_id, now - HOUR_MS, limits[0]!.action, limits[0]!.limit, limits[1]!.action, limits[1]!.limit)
+    .first<{ full: number }>();
+  if (full?.full) return rateLimited(60);
+  const taken = await env.DB.batch(limits.map(({ action, limit }) => limitStatement(env, installation.installation_id, action, limit, now)));
+  if (taken.some((result) => result.meta.changes === 0)) return rateLimited(60);
 
   const outcome = await deliver(config, row.environment, body, apnsFetch, now);
   if (outcome.kind === "sent") {
@@ -341,12 +351,20 @@ async function deliver(
   // Repeats for one kind in one conversation replace each other on the lock screen.
   const collapseId = (await sha256(`${request.notification.kind}:${request.notification.threadId}`)).slice(0, 32);
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    // A key that passes the PEM check can still fail to import or sign:
+    // that is the relay's configuration, not APNs being unreachable.
+    let providerToken: string;
+    try {
+      providerToken = await apnsProviderToken(config, now);
+    } catch {
+      return { kind: "credentials", status: 0, reason: "invalid signing key" };
+    }
     let response: Response;
     try {
       response = await apnsFetch(`${APNS_HOSTS[environment]}/3/device/${request.token}`, {
         method: "POST",
         headers: {
-          authorization: `bearer ${await apnsProviderToken(config, now)}`,
+          authorization: `bearer ${providerToken}`,
           "apns-topic": config.bundleId,
           "apns-push-type": "alert",
           "apns-priority": "10",
