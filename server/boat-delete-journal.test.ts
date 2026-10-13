@@ -15,7 +15,7 @@ function operation(
   targetId = "bx_23456789",
   status: "pending" | "processing" | "blocked" | "completed" = "pending",
 ) {
-  return { id: OPERATION_ID, kind: "box" as const, targetId, status };
+  return { id: OPERATION_ID, kind: "sandbox" as const, targetId, status };
 }
 
 function worker(dataDir: string, source: string) {

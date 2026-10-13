@@ -22,7 +22,7 @@ it("keeps the selected API model for direct, group and scheduled Boat turns and 
     const body = raw ? JSON.parse(raw) : {};
     res.setHeader("content-type", "application/json");
     const gate = boatReadsGate;
-    if (gate && req.method === "GET" && path.startsWith("/boxes")) {
+    if (gate && req.method === "GET" && path.startsWith("/sandboxes")) {
       gate.entered = true;
       await gate.resumed;
     }
@@ -36,20 +36,20 @@ it("keeps the selected API model for direct, group and scheduled Boat turns and 
         : { role: "assistant", content: null, tool_calls: [{ id: "capture", type: "function", function: { name: tool?.function.name ?? "missing_computer", arguments: "{}" } }] },
       finish_reason: completed ? "stop" : "tool_calls" }] }));
     }
-    if (boatOffline && path.startsWith("/boxes")) { res.statusCode = 503; return res.end(JSON.stringify({ error: "Fixture Boat unavailable" })); }
-    if (path === "/boxes" && req.method === "POST") {
+    if (boatOffline && path.startsWith("/sandboxes")) { res.statusCode = 503; return res.end(JSON.stringify({ error: "Fixture Boat unavailable" })); }
+    if (path === "/sandboxes" && req.method === "POST") {
       const row = { id: rows.length ? "bx_3456789a" : "bx_23456789", name: body.name, state: "idle" }; rows.push(row);
-      return res.end(JSON.stringify({ box: row }));
+      return res.end(JSON.stringify({ sandbox: row }));
     }
-    if (path === "/boxes") return res.end(JSON.stringify({ boxes: rows }));
+    if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: rows }));
     if (path.endsWith("/commands")) { commands.push(body.command); return res.end(JSON.stringify({ exitCode: 0, stdout: "captured", stderr: "" })); }
     if (path.endsWith("/artifacts")) { res.setHeader("content-type", "image/jpeg"); return res.end(Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD8qqKKKAP/2Q==", "base64")); }
     if (path.endsWith("/desktop")) return res.end(JSON.stringify({ desktopUrl: "https://desktop.fixture.invalid" }));
     if (path.endsWith("/prompt")) { nativePrompts++; return res.end(JSON.stringify({ promptRun: { id: "unexpected-native" } })); }
-    const row = rows.find(row => path === "/boxes/" + row.id);
+    const row = rows.find(row => path === "/sandboxes/" + row.id);
     if (row) {
       if (req.method === "PATCH" && typeof body.name === "string") row.name = body.name;
-      return res.end(JSON.stringify({ box: row }));
+      return res.end(JSON.stringify({ sandbox: row }));
     }
     res.end("{}");
   });

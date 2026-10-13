@@ -90,7 +90,7 @@ describe("surface pin provenance against the real server", () => {
         APPDATA: join(home, "appdata"), LOCALAPPDATA: join(home, "localappdata"),
         TEMP: home, TMP: home, TMPDIR: home,
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: ui, OMB_TEST_VM_STATE: stateFile,
-        OMB_BOX_API: boatApi, OMB_USER_DATA: join(home, "user-data"),
+        OMB_BOAT_API: boatApi, OMB_USER_DATA: join(home, "user-data"),
       }, stdio: ["ignore", "pipe", "pipe"],
     });
     child = proc;
@@ -125,8 +125,8 @@ describe("surface pin provenance against the real server", () => {
     boatServer = createServer(async (req, res) => {
       res.setHeader("content-type", "application/json");
       const path = new URL(req.url ?? "/", "http://box.fixture").pathname;
-      if (boatDown && path.startsWith("/boxes")) { res.statusCode = 503; return res.end(JSON.stringify({ error: "Fixture Boat unavailable" })); }
-      if (path === "/boxes") return res.end(JSON.stringify({ boxes: [] }));
+      if (boatDown && path.startsWith("/sandboxes")) { res.statusCode = 503; return res.end(JSON.stringify({ error: "Fixture Boat unavailable" })); }
+      if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: [] }));
       return res.end("{}");
     });
     await new Promise<void>(resolve => boatServer.listen(0, "127.0.0.1", resolve));
