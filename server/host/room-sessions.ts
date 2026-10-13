@@ -57,7 +57,8 @@
 //                        a driver keeps one process per thread
 //   what changed         the instance or its adapter, or anything in the
 //                        turn's standing input (the fingerprint)
-//   time                 longer than the driver keeps a quiet process
+//   time                 the member's last turn here ended longer ago than
+//                        the driver keeps a quiet process
 //   the lines            one it was never shown is outside the window, the
 //                        window reaches behind its start, or its anchors left
 //
@@ -90,10 +91,10 @@ import { isRoomContextMessage, type RoomLine, type RoomWindow } from "./room-tra
  * compactions through the engine-hook channel. */
 export const ROOM_SESSION_ENGINES: Readonly<Record<string, string>> = { claudeAgent: "CLAUDE" };
 
-/** How long after a member's last turn its room session is still resumed: as
- * long as the engine's driver keeps a quiet process, the same number the
- * driver arms its idle timer with. Undefined for an engine that is not
- * covered. */
+/** How long after a member's last turn ended its room session is still
+ * resumed: as long as the engine's driver keeps a quiet process, the same
+ * number the driver arms its idle timer with when a turn ends. Undefined for
+ * an engine that is not covered. */
 export function roomSessionIdleMs(driverKind: string, env: Record<string, string | undefined> = process.env): number | undefined {
   return Object.hasOwn(ROOM_SESSION_ENGINES, driverKind) ? sessionIdlePolicy(ROOM_SESSION_ENGINES[driverKind]!, env).idleMs : undefined;
 }
@@ -161,10 +162,12 @@ export interface RoomDispatch {
   send: { sessionReset?: true; resumeCursor?: string; recoveryText?: string };
 }
 
+/** None of these throws for a reason of its own. They are called from the
+ * room turn and from the main event fold, and a fault in this bookkeeping
+ * must cost neither: dispatch answers one with today's call, the others
+ * forget the thread, so its next turn is a start. */
 export interface RoomSessions {
-  /** Immediately before sendTurn, in the same synchronous step. Never
-   * throws for a reason of its own: a fault inside is answered with today's
-   * call. */
+  /** Immediately before sendTurn, in the same synchronous step. */
   dispatch(input: RoomDispatchInput): RoomDispatch;
   bindTurn(threadId: string, claimId: string, turnId: string | undefined): void;
   /** Every provider event of a room thread, from the main fold. */
@@ -220,6 +223,8 @@ interface Flight {
   claimId: string;
   since: number;
   turnId?: string;
+  /** The session the turn was sent to resume; absent on a start. */
+  cursor?: string;
   /** The last session the driver announced for the turn. */
   session?: string;
   /** The engine compacted the session while the turn ran. */
@@ -306,14 +311,20 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
           handed = { ids: [] };
         }
       }
-      // Handoffs writes once the provider acted on the prompt. The session
-      // the turn resumed then holds the delta on top of what it was shown
-      // before; a session that starts on the turn, or that a driver rebuilt
-      // from the whole turn, was shown the window.
+      // Handoffs writes once the provider acted on the prompt. The record
+      // then holds a hash for exactly the lines its session was sent: this
+      // turn sent the session it resumed the delta, and any other session
+      // (one that starts on the turn, or that a driver rebuilt from the whole
+      // turn) the window; what an earlier turn showed the same session
+      // stays. A resumed session with no earlier record gets the delta's
+      // lines and no more. That cannot happen today, because nothing lets go
+      // of a record while its member's turn is in flight: pruning skips it,
+      // and whatever else drops it (a compaction, the setting going off, the
+      // thread forgotten, a later dispatch) ends or bars the flight as well.
       const previous = members.get(botId);
+      const earlier = previous && previous.handed.session === handed.session ? previous.texts : [];
       const texts = handed.session === undefined ? new Map<string, string>()
-        : previous?.handed.session === handed.session ? new Map([...previous.texts, ...flight.delta])
-        : new Map(flight.window);
+        : new Map([...earlier, ...(handed.session === flight.cursor ? flight.delta : flight.window)]);
       members.set(botId, { instanceId, adapter: flight.adapter, handed, texts });
     },
     // Working notes included: the session wrote them itself.
@@ -331,9 +342,13 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     traces.clear();
   }
 
-  /** Let go of what can no longer matter: a record or a last speaker older
-   * than any session lives, and a turn nobody saw end. A thread that was
-   * deleted or abandoned would otherwise hold its adapter for good. */
+  /** Let go of what can no longer matter: a turn nobody saw end, and a
+   * record, a last speaker or a reading of a member that has been quiet,
+   * since its turn ended, for longer than any session lives. A thread that
+   * was deleted or abandoned would otherwise hold its adapter for good.
+   * Nothing of a member is let go while its turn is in flight on the thread:
+   * the settle of that turn, and the turn after it, need all three, however
+   * long the turn runs and whoever dispatches elsewhere meanwhile. */
   function prune(at: number): void {
     const life = Math.max(0, ...Object.keys(ROOM_SESSION_ENGINES).map((kind) => roomSessionIdleMs(kind) ?? 0));
     for (const [threadId, flight] of inFlight) {
@@ -341,19 +356,24 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
       land(threadId);
       drop(threadId, flight.botId);
     }
+    const flying = (threadId: string, botId: string) => inFlight.get(threadId)?.botId === botId;
     for (const [threadId, members] of records) {
       for (const [botId, record] of members) {
-        const stale = record.settledAt === undefined ? inFlight.get(threadId)?.botId !== botId : at - record.settledAt > life;
-        if (stale) members.delete(botId);
+        if (flying(threadId, botId)) continue;
+        // (a record with no turn in flight and none seen to settle is nobody's)
+        if (record.settledAt === undefined || at - record.settledAt > life) members.delete(botId);
       }
       if (!members.size) records.delete(threadId);
     }
     for (const [threadId, speakers] of lastSpeakers) {
-      for (const [instanceId, last] of speakers) if (at - last.at > life) speakers.delete(instanceId);
+      for (const [instanceId, last] of speakers) {
+        if (flying(threadId, last.botId) && inFlight.get(threadId)!.instanceId === instanceId) continue;
+        if (at - last.at > life) speakers.delete(instanceId);
+      }
       if (!speakers.size) lastSpeakers.delete(threadId);
     }
     for (const [threadId, members] of traces) {
-      for (const [botId, trace] of members) if (at - trace.at > life) members.delete(botId);
+      for (const [botId, trace] of members) if (!flying(threadId, botId) && at - trace.at > life) members.delete(botId);
       if (!members.size) traces.delete(threadId);
     }
   }
@@ -437,6 +457,13 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
   function decide(input: RoomDispatchInput, full: string, today: RoomDispatch["send"]): RoomDispatch {
     const { threadId, botId, instance, window } = input;
     const legacy = (): RoomDispatch => ({ mode: "legacy", text: full, send: today });
+    // A managed turn that was never seen to end (timed out, stalled, stopped
+    // in the handshake, rejected at dispatch): its member's record is not
+    // trusted any more. First, so that nothing after it can fail and leave
+    // that record behind a flight that is gone.
+    const stale = inFlight.get(threadId);
+    if (stale) drop(threadId, stale.botId);
+    land(threadId);
     // Off: no fingerprint, no hash, no record. What was held is let go.
     if (!roomSessionsEnabled(deps.settings(), deps.env)) {
       clear();
@@ -444,13 +471,6 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     }
     const at = now();
     prune(at);
-
-    // A managed turn that was never seen to end (timed out, stalled, stopped
-    // in the handshake, rejected at dispatch): its member's record is not
-    // trusted any more.
-    const stale = inFlight.get(threadId);
-    if (stale) drop(threadId, stale.botId);
-    land(threadId);
 
     const speakers = lastSpeakers.get(threadId) ?? new Map<string, { botId: string; at: number }>();
     lastSpeakers.set(threadId, speakers);
@@ -484,10 +504,11 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     // Never credited with anything it was not sent.
     const nothing: SessionStart = { ...(order.length ? { omitted: order.at(-1)! } : {}), sent: [] };
     const handoff = { botId, instanceId: instance.instanceId, config, started, recovery: started, resumed: nothing, carried: [], own: [] };
-    const fly = (delta: Map<string, string>) => {
+    const fly = (delta: Map<string, string>, cursor?: string) => {
       handoffs.dispatching(threadId, input.claimId);
       inFlight.set(threadId, {
         botId, instanceId: instance.instanceId, adapter: instance.adapter, claimId: input.claimId, since: at,
+        ...(cursor === undefined ? {} : { cursor }),
         window: new Map(window.lines.map((line) => [line.id, lineHash(line.text)])), delta,
       });
     };
@@ -505,12 +526,67 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
     // everything the thread held when the window was read: the lines it is
     // shown now, and the working notes between them that no reader is shown.
     handoffs.begin(threadId, input.claimId, { ...handoff, resumeCursor: delta.session, placed: [...order] });
-    fly(delta.shown);
+    fly(delta.shown, delta.session);
     return {
       mode: "resume",
       text: input.wrap(renderRoomDelta(delta.lines) + input.tail),
       send: { resumeCursor: delta.session, recoveryText: full },
     };
+  }
+
+  function forget(threadId: string): void {
+    records.delete(threadId);
+    lastSpeakers.delete(threadId);
+    traces.delete(threadId);
+    land(threadId);
+  }
+
+  /** Runs a piece of the bookkeeping for a thread. A fault forgets the
+   * thread instead of reaching the caller. */
+  function guarded(threadId: string, work: () => void): void {
+    try {
+      work();
+    } catch (error) {
+      try { forget(threadId); } catch { /* nothing more to let go of */ }
+      console.warn(`room sessions: forgot a thread's sessions (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+
+  function onEvent(event: RuntimeEvent): void {
+    handoffs.onEvent(event);
+    if (event.type !== "turn.completed" && event.type !== "session.started") return;
+    const flight = inFlight.get(event.threadId);
+    if (!flight || event.providerInstanceId !== flight.instanceId) return;
+    if (flight.turnId && event.turnId && event.turnId !== flight.turnId) return;
+    if (event.type === "session.started") {
+      // Handoffs stops listening for a session once the provider has
+      // acted; a driver that relaunches after that ends the turn somewhere
+      // the record does not describe. Kept to compare at the end.
+      if (event.sessionId) flight.session = event.sessionId;
+      return;
+    }
+    inFlight.delete(event.threadId);
+    // Quiet is counted from here, not from the dispatch: the driver keeps
+    // its process for its idle time after the turn ends, however long the
+    // turn ran.
+    const spoke = lastSpeakers.get(event.threadId)?.get(flight.instanceId);
+    if (spoke?.botId === flight.botId) spoke.at = now();
+    // Where the member is now: the next turn's reading measures this session.
+    const members = traces.get(event.threadId) ?? new Map<string, Trace>();
+    traces.set(event.threadId, members);
+    members.set(flight.botId, { ...members.get(flight.botId), ended: flight.session, at: now() });
+    // Trusted for the member's next turn only when this one was seen to
+    // complete ok, in the session the record names, with no compaction
+    // reported meanwhile. A stop, a provider error, a hold or a parked
+    // seat ends the turn not ok.
+    const record = records.get(event.threadId)?.get(flight.botId);
+    if (!event.ok || flight.distrusted || !record || record.handed.session === undefined || record.handed.session !== flight.session) {
+      drop(event.threadId, flight.botId);
+      return;
+    }
+    record.settledAt = now();
+    const turnId = event.turnId ?? flight.turnId;
+    if (turnId) for (const id of roomStore.replies(event.threadId, turnId)) record.texts.set(id, OWN);
   }
 
   return {
@@ -532,52 +608,23 @@ export function createRoomSessions(deps: RoomSessionsDeps): RoomSessions {
       }
     },
     bindTurn(threadId, claimId, turnId) {
-      handoffs.bindTurn(threadId, claimId, turnId);
-      const flight = inFlight.get(threadId);
-      if (flight?.claimId === claimId) flight.turnId ??= turnId;
+      guarded(threadId, () => {
+        handoffs.bindTurn(threadId, claimId, turnId);
+        const flight = inFlight.get(threadId);
+        if (flight?.claimId === claimId) flight.turnId ??= turnId;
+      });
     },
     onEvent(event) {
-      handoffs.onEvent(event);
-      if (event.type !== "turn.completed" && event.type !== "session.started") return;
-      const flight = inFlight.get(event.threadId);
-      if (!flight || event.providerInstanceId !== flight.instanceId) return;
-      if (flight.turnId && event.turnId && event.turnId !== flight.turnId) return;
-      if (event.type === "session.started") {
-        // Handoffs stops listening for a session once the provider has
-        // acted; a driver that relaunches after that ends the turn somewhere
-        // the record does not describe. Kept to compare at the end.
-        if (event.sessionId) flight.session = event.sessionId;
-        return;
-      }
-      inFlight.delete(event.threadId);
-      // Where the member is now: the next turn's reading measures this session.
-      const members = traces.get(event.threadId) ?? new Map<string, Trace>();
-      traces.set(event.threadId, members);
-      members.set(flight.botId, { ...members.get(flight.botId), ended: flight.session, at: now() });
-      // Trusted for the member's next turn only when this one was seen to
-      // complete ok, in the session the record names, with no compaction
-      // reported meanwhile. A stop, a provider error, a hold or a parked
-      // seat ends the turn not ok.
-      const record = records.get(event.threadId)?.get(flight.botId);
-      if (!event.ok || flight.distrusted || !record || record.handed.session === undefined || record.handed.session !== flight.session) {
-        drop(event.threadId, flight.botId);
-        return;
-      }
-      record.settledAt = now();
-      const turnId = event.turnId ?? flight.turnId;
-      if (turnId) for (const id of roomStore.replies(event.threadId, turnId)) record.texts.set(id, OWN);
+      guarded(event.threadId, () => onEvent(event));
     },
     distrust(threadId, botId) {
-      drop(threadId, botId);
-      const flight = inFlight.get(threadId);
-      if (flight?.botId === botId) flight.distrusted = true;
+      guarded(threadId, () => {
+        drop(threadId, botId);
+        const flight = inFlight.get(threadId);
+        if (flight?.botId === botId) flight.distrusted = true;
+      });
     },
-    forget(threadId) {
-      records.delete(threadId);
-      lastSpeakers.delete(threadId);
-      traces.delete(threadId);
-      land(threadId);
-    },
+    forget,
     tracked() {
       const count = (map: Map<string, Map<string, unknown>>) => [...map.values()].reduce((n, inner) => n + inner.size, 0);
       const lines = [...records.values()].flatMap((members) => [...members.values()]).reduce((n, record) => n + record.texts.size, 0);

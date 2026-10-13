@@ -81,18 +81,28 @@ Every other turn is the call described above, unchanged:
 | **Claude Code compacted the session** (`PreCompact`, `SessionStart` with source `compact`) | whole transcript on the same warm session: it holds the CLI's summary now, not the room's lines. Also for a turn that was running when it compacted |
 | Its last measured context here is at 80% or more of where the engine compacts (`OMB_CLAUDE_AUTOCOMPACT`, 200,000 tokens by default; the model's window when that is `auto` or `off`) | whole transcript, so no delta is handed to a session about to compact |
 | **Its measured context here is lower than after its turn before, in the same native session** | whole transcript. A session's context only grows from one turn's end to the next, so it was compacted, trimmed or replaced, whatever the hooks said |
-| Ten quiet minutes (the driver's own idle time) | whole transcript |
+| Its last turn here ended more than ten minutes ago (the driver's own idle time, counted from when that turn ended, however long it ran) | whole transcript |
 | It missed more lines than the window holds | whole transcript |
 | Its model, folder, instructions, approval level, tools, connections or `claudeUserMcp` changed, or the engine instance was reloaded | whole transcript |
 | A guest's turn | whole transcript, nothing remembered |
 
 A compaction is therefore noticed in two ways: the engine's hook says so
 while the turn runs, and, should the hook never arrive, the member's next
-reading is lower than its last. What is still not caught is a compaction on
-a turn whose hook was lost and whose reading cannot show it: the turn
-reported no reading, or the one before it reported none for that session,
-or the turn went on to grow the session past where it stood before. The
-member's next turn is then sent only the new lines although its session
+reading is lower than the last one kept for that session. A member's last
+reading, its record and its place as last speaker are kept for as long as
+its turn runs, whatever is dispatched in other rooms meanwhile. With the
+hook delivered, no case is known that leaves a member without a line. What
+is still not caught is a compaction on a turn whose hook was lost and whose
+reading cannot show it, which is one of three things:
+
+- the turn reported no reading (the room keeps the one before, which is not
+  lower);
+- there is no earlier reading of that session to fall from: the session
+  began on that very turn, or no turn in it reported a reading before;
+- the turn went on to grow the session past its earlier reading (a long
+  turn that began in a small session).
+
+The member's next turn is then sent only the new lines although its session
 holds the engine's summary in place of the earlier ones; the turn after
 that is judged afresh.
 

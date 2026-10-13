@@ -20,7 +20,9 @@
 // session was handed is no longer what it holds, and the member's next turn
 // carries the whole transcript again, as every turn does without the setting.
 // A hook that never arrives is caught by the reading kept here: one that is
-// lower than after the member's turn before means its session was compacted.
+// lower than after the member's turn before, in the same session, means the
+// session was compacted (unless that turn reported none, the session had no
+// earlier reading, or the turn regrew past it: the doc lists these).
 //
 // Measurements live in memory on purpose. They describe a warm process, and
 // warm processes do not outlive this server either.

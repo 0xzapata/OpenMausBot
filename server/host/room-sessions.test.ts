@@ -15,6 +15,7 @@ const NOTE = "[Messages this conversation received since your last turn in this 
 const NONE = "[Messages this conversation received since your last turn in this room: none.]";
 const CLOCK = turnClockLine(Date.UTC(2026, 9, 13, 9, 30), "UTC");
 const IDLE_MS = sessionIdlePolicy("CLAUDE").idleMs;
+const MIN = 60_000;
 
 const engine = (instanceId: string, driverKind = "claudeAgent", strictResume = true): RoomSessionEngine =>
   ({ instanceId, driverKind, adapter: { capabilities: { strictResume } } });
@@ -1311,15 +1312,17 @@ describe("room sessions: what it keeps, and that it cannot fail a turn", () => {
     second.emit(abandoned, second.output);
     expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 1, speakers: 2 });
 
-    // Ten quiet minutes later, a turn somewhere else: the settled record and
-    // both speakers are past their life. The turn still running is not.
+    // Ten quiet minutes later, a turn somewhere else. The settled member's
+    // record, its place as last speaker and its last reading are past their
+    // life. Nothing of the member whose turn is still running is touched:
+    // its record and its place as last speaker stay.
     first.state.now += IDLE_MS + 1;
     third.say("Three.");
     third.run("scout", "T3");
-    // (the settled turn's last reading went with its record; scout's is new)
-    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 1, speakers: 1, readings: 1 });
+    // (records: the running turn's and scout's; speakers: the same two; readings: scout's)
+    expect(first.sessions.tracked()).toMatchObject({ records: 2, flights: 1, speakers: 2, readings: 1 });
 
-    // A day on, the turn that never ended is given up with its record.
+    // A day on, the turn that never ended is given up, and all it held with it.
     first.state.now += 24 * 60 * 60_000 + 1;
     third.say("Three again.");
     const later = third.dispatch("scout");
@@ -1342,6 +1345,35 @@ describe("room sessions: what it keeps, and that it cannot fail a turn", () => {
     // the window's lines, and the three the last turn wrote itself
     expect(most).toBeLessThanOrEqual(GROUP_CONTEXT_MESSAGES + 3);
     expect(most).toBeGreaterThan(GROUP_CONTEXT_MESSAGES / 2);
+  });
+
+  it("cannot fail the event fold either: a fault there forgets the thread, and its next turn is a start", () => {
+    const r = room();
+    r.say("Cut the intro.");
+    r.run("editor", "S1");
+    r.say("Trim the middle.");
+    const turn = r.dispatch("editor");
+    expect(turn.result.mode).toBe("resume");
+    r.bind(turn);
+    r.emit(turn, { type: "session.started", sessionId: "S1" });
+    // the store fails while the provider's first output is being credited
+    const messages = r.threads.get("room")!;
+    r.threads.set("room", new Proxy(messages, { get() { throw new Error("the store gave way"); } }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() => r.emit(turn, r.output)).not.toThrow();
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+      r.threads.set("room", messages);
+    }
+    expect(r.sessions.tracked()).toEqual({ records: 0, flights: 0, speakers: 0, lines: 0, readings: 0 });
+    // the rest of the turn is nobody's, and the next one starts
+    r.botSays("editor", "Trimmed.", { turnId: turn.turnId, turnTerminal: true });
+    expect(() => r.emit(turn, { type: "turn.completed", ok: true })).not.toThrow();
+    r.say("Tighten the outro.");
+    const next = r.dispatch("editor");
+    expect(next.result).toStrictEqual({ mode: "start", text: r.full(next), send: {} });
   });
 
   it("answers with today's call if anything in it throws, and drops the member's record", () => {
@@ -1367,15 +1399,164 @@ describe("room sessions: what it keeps, and that it cannot fail a turn", () => {
   });
 });
 
+// Quiet is measured from when a member's turn ended, and nothing a running
+// turn's settle will need is let go while the turn runs, whoever dispatches
+// elsewhere meanwhile (every dispatch prunes).
+describe("room sessions: long turns, and turns in other rooms meanwhile", () => {
+  const reading = (tokens?: number) => ({ context: () => (tokens === undefined ? undefined : { tokens, window: 1_000_000 }) });
+  /** Two rooms on one tracker: the editor's, and another where a turn is dispatched now and then. */
+  const rooms = () => {
+    const r = room({ threadId: "room" });
+    const other = room({ threadId: "other", shared: { messages: r.threads, sessions: r.sessions } });
+    const elsewhere = () => { other.say("Hello."); other.run("scout", "X1", {}, { instance: engine("claude-2") }); };
+    return { r, elsewhere };
+  };
+  const ready = () => {
+    const both = rooms();
+    both.r.say("Cut the intro. ALPHA");
+    both.r.run("editor", "S1", { reply: "Intro cut." });
+    both.r.say("Trim the middle.");
+    return both;
+  };
+
+  it("resumes after a long turn that was answered soon after it settled", () => {
+    // a 6-minute turn answered 5 minutes after it settled: 11 since its dispatch
+    const { r } = ready();
+    r.finish(r.dispatch("editor"), "S1", { reply: "Trimmed.", during: () => { r.state.now += 6 * MIN; } });
+    r.state.now += 5 * MIN;
+    r.say("Tighten the outro.");
+    const next = r.dispatch("editor");
+    expect(next.result.send.resumeCursor).toBe("S1");
+    expect(r.body(next)).toBe(`${NOTE}\nOmkar: Tighten the outro.`);
+  });
+
+  it("resumes after a turn that itself ran longer than a quiet process is kept", () => {
+    const { r, elsewhere } = ready();
+    r.finish(r.dispatch("editor"), "S1", {
+      reply: "Trimmed.",
+      before: () => { r.state.now += 7 * MIN; elsewhere(); },
+      during: () => { r.state.now += 7 * MIN; elsewhere(); },
+    });
+    r.say("Tighten the outro.");
+    const next = r.dispatch("editor");
+    expect(next.result.send.resumeCursor).toBe("S1");
+    expect(r.body(next)).toBe(`${NOTE}\nOmkar: Tighten the outro.`);
+  });
+
+  it("starts when a turn is answered more than the idle life after it settled, however long it ran", () => {
+    for (const ran of [0, 6 * MIN, 12 * MIN]) {
+      const within = ready().r;
+      within.finish(within.dispatch("editor"), "S1", { reply: "Trimmed.", during: () => { within.state.now += ran; } });
+      within.state.now += IDLE_MS;
+      within.say("Tighten the outro.");
+      expect(within.dispatch("editor").result.mode, `ran ${ran}`).toBe("resume");
+
+      const past = ready().r;
+      past.finish(past.dispatch("editor"), "S1", { reply: "Trimmed.", during: () => { past.state.now += ran; } });
+      past.state.now += IDLE_MS + 1;
+      past.say("Tighten the outro.");
+      const turn = past.dispatch("editor");
+      expect(turn.result, `ran ${ran}`).toStrictEqual({ mode: "start", text: past.full(turn), send: {} });
+    }
+  });
+
+  it("keeps a member's last reading while its turn runs: a lost hook is still caught", () => {
+    // The reviewer's sequence. Turn 2 settles at T0 with the hook channel on.
+    const { r, elsewhere } = ready();
+    r.finish(r.dispatch("editor", reading(60_000)), "S1", { reply: "Trimmed." });
+    const T0 = r.state.now;
+    // T0 + 9 min: the next turn is dispatched as a delta on S1; its reading is 120k.
+    r.state.now = T0 + 9 * MIN;
+    r.say("Tighten the outro, slowly.");
+    const long = r.dispatch("editor", reading(120_000));
+    expect(long.result.send.resumeCursor).toBe("S1");
+    r.finish(long, "S1", {
+      reply: "Tightened.",
+      during: () => {
+        // T0 + 10.5 min: a turn is dispatched in another room.
+        r.state.now = T0 + 10.5 * MIN;
+        elsewhere();
+        // S1 compacts while the turn runs; neither hook arrives.
+        r.state.now = T0 + 12 * MIN;
+      },
+    });
+    // T0 + 13 min: the reading fell from 120k to 25k.
+    r.state.now = T0 + 13 * MIN;
+    r.say("Export it. CHARLIE");
+    const next = r.dispatch("editor", reading(25_000));
+    expect(next.result).toStrictEqual({ mode: "start", text: r.full(next), send: {} });
+    expect(next.result.text).toContain("Omkar: Cut the intro. ALPHA");
+  });
+
+  it("keeps record and reading from the dispatch on, before the provider has acted", () => {
+    // The turn waits on its engine past the idle life before it says a word,
+    // and other rooms dispatch meanwhile.
+    const waited = (after: number) => {
+      const { r, elsewhere } = ready();
+      r.finish(r.dispatch("editor", reading(60_000)), "S1", { reply: "Trimmed." });
+      r.state.now += 9 * MIN;
+      r.say("Tighten the outro, slowly.");
+      const long = r.dispatch("editor", reading(120_000));
+      r.state.now += 2 * MIN;
+      elsewhere();
+      r.finish(long, "S1", { reply: "Tightened.", before: () => { r.state.now += 2 * MIN; elsewhere(); } });
+      r.say("Export it.");
+      return { r, next: r.dispatch("editor", reading(after)) };
+    };
+    // Its record survived the wait: with a context that grew, a delta.
+    const grew = waited(130_000);
+    expect(grew.next.result.send.resumeCursor).toBe("S1");
+    expect(grew.r.body(grew.next)).toBe(`${NOTE}\nOmkar: Export it.`);
+    // And so did its last reading: with a context that fell, a start.
+    expect(waited(25_000).next.result.mode).toBe("start");
+  });
+
+  it("keeps the record of a turn in flight, so none is made up for a session that was sent only a delta", () => {
+    // A resume flight whose record went missing before the provider acted
+    // would get a new one from Handoffs. Nothing lets go of it while its
+    // turn runs (pruning skips it, and whatever else drops it ends or bars
+    // the flight too), so the record a delta is credited to is the one the
+    // session's earlier turns built.
+    const { r, elsewhere } = ready();
+    const report = r.add({ role: "bot", kind: "activity", roomRequest: { id: "request-1", phase: "result" } });
+    r.say("Editor, read it.");
+    r.finish(r.dispatch("editor"), "S1", { reply: "Read." });
+    r.say("Tighten the outro.");
+    const turn = r.dispatch("editor");
+    expect(r.body(turn)).toBe(`${NOTE}\nOmkar: Tighten the outro.`);
+    const held = r.sessions.tracked();
+    // the editor's record is long past its life before the provider says a word
+    r.state.now += IDLE_MS + 1;
+    elsewhere();
+    expect(r.sessions.tracked()).toMatchObject({ records: held.records + 1, lines: held.lines + 2 });
+    r.finish(turn, "S1", { reply: "Tightened." });
+    // The record is still the session's own: the next turn is a delta, and it
+    // knows how the report read when S1 was shown it, two turns ago.
+    expect(r.messages.some((m) => m.id === report)).toBe(true);
+    r.reports.set("request-1", "[Teammate result withheld or no longer retained]");
+    r.say("Export it.");
+    const next = r.dispatch("editor");
+    expect(next.result.send.resumeCursor).toBe("S1");
+    expect(r.body(next)).toBe([
+      NOTE,
+      "(The first message was shown to you before and has changed since: this copy replaces what you were shown.)",
+      "[Teammate result withheld or no longer retained]",
+      "Omkar: Export it.",
+    ].join("\n"));
+  });
+});
+
 // A seeded model of a room on one Claude instance and one other: members
 // speak in any order, lines arrive and are edited between and during turns,
 // turns end well, badly or not at all, the driver refuses a resume now and
 // then, a warm process ends without the harness seeing it, a turn ends in
 // another session than the one that accepted it, and the engine compacts a
-// session mid-turn, with its hook delivered or lost. The model keeps, per
-// native session, every line that session was shown, by a tag that changes
-// when the line's text does, and how large the session's context is: the
-// reading the next turn is given.
+// session mid-turn, with its hook delivered or lost. Time passes between
+// turns and while a turn runs, sometimes longer than a quiet process is
+// kept, and turns are dispatched in another room meanwhile (every dispatch
+// prunes). The model keeps, per native session, every line that session was
+// shown, by a tag that changes when the line's text does, and how large the
+// session's context is: the reading the next turn is given.
 // Whatever the interleaving: every line of the window a turn was built from,
 // as it reads now, is in the text sent or already in the session that runs
 // the turn (the invariant in the module header), and no accepted turn shows
@@ -1392,13 +1573,19 @@ describe("room sessions: randomized rooms", () => {
     };
   }
   const sentinels = (text: string) => [...text.matchAll(/<(L\d+)>/g)].map((match) => match[1]!);
+  const SEEDS = [1, 7, 42, 1337, 2024, 9001, 31337, 65537, ...Array.from({ length: 16 }, (_, n) => 1000 + n * 7919)];
+  const STEPS = 400;
+  /** What the seeds exercised between them, checked once at the end. */
+  const seen = { deltas: 0, starts: 0, fromDisk: 0, updates: 0, lostHooks: 0, elsewhere: 0, longTurns: 0, afterLongTurn: 0 };
 
-  for (const seed of [1, 7, 42, 1337, 2024, 9001, 31337, 65537]) {
+  for (const seed of SEEDS) {
     it(`seed ${seed}: the window is always in the text or in the session, and a delta repeats nothing`, () => {
       const random = prng(seed);
       const pick = <T,>(items: readonly T[]) => items[Math.floor(random() * items.length)]!;
       const r = room();
+      const other = room({ threadId: "elsewhere", shared: { messages: r.threads, sessions: r.sessions } });
       const second = engine("claude-2");
+      const third = engine("claude-3");
       const instanceOf: Record<string, RoomSessionEngine> = { editor: r.claude, writer: r.claude, scout: second };
       const members = Object.keys(instanceOf);
       let line = 0;
@@ -1414,27 +1601,37 @@ describe("room sessions: randomized rooms", () => {
         const recent = r.messages.slice(-12).filter((m) => m.role === "user" && m.kind === "text");
         if (recent.length) pick(recent).text = `says <L${line++}> (edited)`;
       };
+      /** Time passes while a turn runs, and now and then another room takes
+       * a turn of its own meanwhile. Returns how long passed. */
+      const meanwhile = () => {
+        const passed = pick([0, 0, MIN, 2 * MIN, 3 * MIN, 4 * MIN, 11 * MIN]);
+        r.state.now += passed;
+        if (random() < 0.5) {
+          other.say("elsewhere");
+          other.run("ghost", "G", {}, { instance: third });
+          seen.elsewhere += 1;
+        }
+        return passed;
+      };
       /** what each native session has been shown */
       const held = new Map<string, Set<string>>();
-      /** the driver's one warm process per thread and instance: whose, and which session */
-      const warm = new Map<string, { botId: string; session: string }>();
+      /** the driver's one warm process per thread and instance: whose, which session, and since when it is quiet */
+      const warm = new Map<string, { botId: string; session: string; endedAt: number }>();
       /** instances whose warm process ended without the harness being told */
       const endedUnseen = new Set<string>();
       /** each session's context, and each member's last reading in this room with the session it measured */
       const size = new Map<string, number>();
       const reading = new Map<string, { tokens: number; session: string }>();
-      let lostHooks = 0;
+      /** the member whose turn just ran longer than a quiet process is kept, to see what its next turn gets */
+      let longTurnBy: string | undefined;
       let sessionSerial = 0;
-      let deltas = 0;
-      let starts = 0;
-      let fromDisk = 0;
-      let updates = 0;
 
-      for (let step = 0; step < 400; step++) {
+      for (let step = 0; step < STEPS; step++) {
         for (let n = Math.floor(random() * 4); n > 0; n--) append();
         if (random() < 0.15) edit();
-        // Ten quiet minutes: the drivers close their warm processes.
-        if (random() < 0.03) { r.state.now += IDLE_MS + 1; warm.clear(); }
+        r.state.now += random() < 0.03 ? IDLE_MS + 1 : pick([0, 30_000, 3 * MIN, 6 * MIN, 8 * MIN, 9 * MIN]);
+        // The drivers close a process that has been quiet for their idle time.
+        for (const [id, slot] of warm) if (r.state.now - slot.endedAt > IDLE_MS) warm.delete(id);
         const botId = pick(members);
         const instance = instanceOf[botId]!;
         // A warm process crashes between turns; nothing tells the harness.
@@ -1455,13 +1652,14 @@ describe("room sessions: randomized rooms", () => {
           expect(cursor).toBeUndefined();
           session = `N${sessionSerial++}`;
         } else if (cursor !== undefined) {
-          deltas += 1;
+          seen.deltas += 1;
+          if (longTurnBy === botId) seen.afterLongTurn += 1;
           // Resume only where main would have gone on in this very process,
           // or where that process ended unseen: then the driver reopens the
           // same session from disk, and it holds what it held.
-          if (slot) expect(slot, `step ${step}: a resume needs the member's own warm process`).toEqual({ botId, session: cursor });
-          else { expect(endedUnseen.has(instance.instanceId), `step ${step}: a resume with no process to go on in`).toBe(true); fromDisk += 1; }
-          if (turn.result.text.includes("changed since")) updates += 1;
+          if (slot) expect({ botId: slot.botId, session: slot.session }, `step ${step}: a resume needs the member's own warm process`).toEqual({ botId, session: cursor });
+          else { expect(endedUnseen.has(instance.instanceId), `step ${step}: a resume with no process to go on in`).toBe(true); seen.fromDisk += 1; }
+          if (turn.result.text.includes("changed since")) seen.updates += 1;
           if (random() < 0.1) {
             // refused before the prompt: a new session from recoveryText
             session = `N${sessionSerial++}`;
@@ -1477,17 +1675,19 @@ describe("room sessions: randomized rooms", () => {
             for (const tag of sentTags) expect(before.has(tag), `step ${step}: ${tag} sent twice to ${session}`).toBe(false);
           }
         } else {
-          starts += 1;
+          seen.starts += 1;
           expect(sentTags).toEqual(windowTags);
           session = slot?.botId === botId ? slot.session : `N${sessionSerial++}`;
         }
         expect(new Set(sentTags).size).toBe(sentTags.length);
+        longTurnBy = undefined;
 
         const outcome = random();
         if (outcome < 0.08) {
           // never completes: timed out, stalled or rejected at dispatch. The
           // process may be anybody's or nobody's afterwards.
           warm.delete(instance.instanceId);
+          meanwhile();
           continue;
         }
         const ok = outcome >= 0.2;
@@ -1500,20 +1700,28 @@ describe("room sessions: randomized rooms", () => {
         // the model loses one only where the reading can show it: the turn
         // before reported this session's size, and this turn reports its own.
         const before = size.get(session) ?? 0;
-        const compacts = !switchTo && before >= 12 && random() < 0.2;
+        const compacts = !switchTo && before >= 12 && random() < 0.3;
         const known = reading.get(botId);
-        const hookLost = compacts && known?.session === session && known.tokens === before && random() < 0.6;
-        if (hookLost) lostHooks += 1;
+        const hookLost = compacts && known?.session === session && known.tokens === before && random() < 0.7;
+        if (hookLost) seen.lostHooks += 1;
+        // the turn waits for its engine, starts, works, and ends
+        let ran = meanwhile();
         r.finish(turn, session, {
           ok, rebuilt, reply: `answers <L${line++}>`,
           notes: random() < 0.4 ? [`note <L${line++}>`] : [],
           ...(switchTo ? { switchTo } : {}),
+          before: () => { ran += meanwhile(); },
           during: () => {
             for (let n = Math.floor(random() * 3); n > 0; n--) append();
             if (random() < 0.1) edit();
             if (compacts && !hookLost) r.sessions.distrust(r.threadId, botId);
+            ran += meanwhile();
           },
         });
+        if (ran > IDLE_MS) {
+          seen.longTurns += 1;
+          if (ok && !compacts && !switchTo) longTurnBy = botId;
+        }
         // The provider acted on the prompt either way: the session that took
         // it holds it, and the session the turn ended in holds what the
         // member said itself.
@@ -1535,15 +1743,15 @@ describe("room sessions: randomized rooms", () => {
         // and then a turn reports none and the old one stands.
         if (hookLost || random() >= 0.1) reading.set(botId, { tokens: size.get(ended)!, session: ended });
         endedUnseen.delete(instance.instanceId);
-        if (ok) warm.set(instance.instanceId, { botId, session: ended });
+        if (ok) warm.set(instance.instanceId, { botId, session: ended, endedAt: r.state.now });
         else warm.delete(instance.instanceId);
       }
-      // the model exercised every shape
-      expect(deltas).toBeGreaterThan(20);
-      expect(starts).toBeGreaterThan(20);
-      expect(fromDisk).toBeGreaterThan(0);
-      expect(updates).toBeGreaterThan(0);
-      expect(lostHooks).toBeGreaterThan(0);
     });
   }
+
+  it("exercised every shape between the seeds", () => {
+    expect(seen.deltas).toBeGreaterThan(SEEDS.length * 20);
+    expect(seen.starts).toBeGreaterThan(SEEDS.length * 20);
+    for (const [what, count] of Object.entries(seen)) expect(count, what).toBeGreaterThan(SEEDS.length);
+  });
 });
