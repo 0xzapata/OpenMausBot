@@ -31,7 +31,6 @@ import { assertRequestTarget, guardedRequestPath, requestConflict, requestNeedsI
 import { botAvatarUrlFromStoredPath } from "../shared/bot-avatar.ts";
 import { BOT_PROFILE_LIMITS } from "../shared/bot-profile.ts";
 import { CLOUD_COMPUTER_BUSY_ERROR } from "../shared/computer-contention.ts";
-import { threadLinkUrl } from "../shared/thread-link.ts";
 import { failedTurnTool } from "../shared/failed-turn.ts";
 import { STOPPED_TURN_NAME, assistantTranscript, errorTranscript } from "../shared/client-cancel.ts";
 import { phonePairingLink } from "../shared/pairing-link.ts";
@@ -123,7 +122,7 @@ import { createDataRoutes } from "./data/routes.ts";
 import { DataSheetRegistry } from "./data/sheet.ts";
 import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
-import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
+import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
 import { parseToolScope } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
@@ -286,16 +285,10 @@ import {
   settleHeldSteeredQueue,
 } from "./steer-queue.ts";
 import {
-  cancelChannelMessage,
   drainChannelMessages,
-  holdChannelQueue,
-  headChannelGroup,
   queuedChannelMessage,
   queueChannelMessage,
   restoreChannelMessages,
-  restoreHeldChannelQueue,
-  resolveHeldReplyTarget,
-  settleHeldChannelQueueHead,
   type ChannelQueueItem,
 } from "./channel-queue.ts";
 import {
@@ -329,7 +322,6 @@ import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.t
 import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
 import {
-  isProjectEmoji,
   mentionedBots,
   roomResponders,
   sectionKey,
@@ -356,7 +348,7 @@ import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./t
 import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
 import { extractSteerImages, extractTurnImages } from "./turn-images.ts";
-import { callTitleExcerpt, threadTitlePrompt, titleConversationExcerpt, type ThreadTitleSource } from "./thread-title.ts";
+import { callTitleExcerpt, threadTitlePrompt, type ThreadTitleSource } from "./thread-title.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import { TurnResources, type TurnOwner } from "./turn-resources.ts";
 import {
@@ -384,7 +376,6 @@ import {
   type MemoryJournalEntry,
 } from "./memory-journal.ts";
 import {
-  readSectionContext,
   readSections,
   sectionContextKey,
   sectionContextSystemPrompt,
@@ -488,11 +479,7 @@ import { TeamSetupError, TeamSetupRequestService } from "./team-setup-requests.t
 import type { TeamSetupRequest } from "../shared/team-setup.ts";
 import { profileRevision, profileSnapshot } from "./profile-revision.ts";
 import { flushAllProfileHistory, flushProfileHistory, readHistory, recordProfileChange } from "./profile-versions.ts";
-import { fetchBotDirectory, matchDirectoryBots, type MatchedDirectoryBot } from "./bot-directory.ts";
-import { scoutProject, suggestTeam } from "./project-scout.ts";
-import { fetchGithubTeam, fetchLibraryTeam, fetchTeamCatalog } from "./team-library.ts";
-import { BOT_PACKAGE_MAX_SKILLS, isBotPackage, packageSummary, parsePackageDocument, renderBotPackageMarkdown, type PackageDocument } from "./bot-package.ts";
-import { createTeamManifest, parseTeamManifest } from "./team-manifest.ts";
+import { BOT_PACKAGE_MAX_SKILLS } from "./bot-package.ts";
 import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
 import { describeTool } from "./activity.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
@@ -516,16 +503,13 @@ import {
 } from "./skill-library.ts";
 import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
-import { createBotPackageExport, createLibraryPackageExport, createTeamPackageExport, picture as sharedPicture, TeamExportError, type ExportablePackageSkill, type TeamExportSkip } from "./package-export.ts";
-import { importPackageDocument, importTeamManifest, PackageImportError, type PackageImportDeps, type PackageImportResult } from "./package-import.ts";
+import { picture as sharedPicture, type ExportablePackageSkill, type TeamExportSkip } from "./package-export.ts";
+import type { PackageImportDeps } from "./package-import.ts";
 import {
   createPresetStore, DEFAULTS_PRESET_KEY,
-  presetFromDefaults, readPublishedLibrary, writePublishedLibrary,
+  presetFromDefaults,
 } from "./presets.ts";
-import { readPublishedTeam, writePublishedTeam } from "./published-teams.ts";
 import { OrgLibrary } from "./org-library.ts";
-import { createTeamBackup, importTeamBackup } from "./team-backup.ts";
-import { MAX_TEAM_BACKUP_BYTES } from "../shared/team-backup.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 import { autoLocalVmAttachable, type ContainerComputerStatus } from "./container-computer.ts";
 import { startAutoVmClaim, type AutoVmClaimSlot, type AutoVmClaimTable } from "./auto-vm-claims.ts";
@@ -553,7 +537,6 @@ import { allowedScopes, createEmailSignIn, parseAllowList } from "./account-sign
 import { ProviderAuthSessions } from "./provider-auth-sessions.ts";
 import {
   clearSessionCookie,
-  clientGroupPatchViolation,
   isLoopbackHost,
   isProxied,
   labelFromUserAgent,
@@ -589,7 +572,6 @@ import {
   audienceEquals,
   memberGroup,
   narrowestAudience,
-  parseVisibility,
   pathSubject,
   roomFeeds,
   routineVisible,
@@ -630,6 +612,10 @@ import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
 import { createRoomHoldRoutes } from "./routes/room-holds.ts";
+import { createGroupRoutes } from "./routes/groups.ts";
+import { createChannelRoutes } from "./routes/channels.ts";
+import { createTaskRoutes } from "./routes/tasks.ts";
+import { createTeamRoutes } from "./routes/teams.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
@@ -2504,7 +2490,6 @@ const createSidebarSectionSchema = z.object({
   name: z.string(),
   botIds: z.array(z.string().regex(/^[\w-]+$/)).max(MAX_WORKSPACE_BOTS).default([]),
 }).strict();
-const createGroupTaskRequestSchema = z.object({ title: z.string().optional() });
 const phoneSecretEnvelopeSchema = z.object({
   version: z.literal(PHONE_SECRET_PROTOCOL_VERSION),
   threadId: z.string().regex(/^[\w-]{1,128}$/),
@@ -17538,6 +17523,112 @@ ROUTES.push(createRoomHoldRoutes({
     return updated ? publicGroupState(updated) : null;
   },
 }));
+// Rooms: create and setup (groups.ts); teams as files, the libraries and the
+// scout (teams.ts). `routines` and `orgLibrary` are assigned at boot, after
+// this line, so those dependencies read them per request.
+ROUTES.push(createGroupRoutes({
+  store,
+  cloudHome: Boolean(CLOUD_HOME),
+  visibleFor: (auth) => visibleTo(viewerFor(auth)),
+  actorKey,
+  threadStarters,
+  createChannel,
+  publicGroupState,
+  checkedGroupResponder,
+}));
+// A room's tasks, messages, queue, steer, compact and Stop (channels.ts).
+ROUTES.push(createChannelRoutes({
+  store,
+  cfg,
+  desktopManaged: DESKTOP_MANAGED,
+  routines: () => routines,
+  broadcast,
+  actorKey,
+  threadStarters,
+  phoneSecretSubmissions,
+  sendSequencer,
+  roomMemberContexts,
+  skillReview,
+  groupSpeakers,
+  groupTurnOperations,
+  lastReply,
+  cloudThreadRefusal,
+  messageSender,
+  usageTriggerFor,
+  publicGroupState,
+  groupWithThread,
+  updateChannel,
+  groupIsWorking,
+  groupThreadIsWorking,
+  readCursor,
+  pageSize,
+  messagePage,
+  resolveReplyTarget,
+  runningTurnInstance,
+  startGroupTurn, engineSteersImages,
+  applyRoomHoldsFromMessage,
+  cancelGroupTurnOperations,
+  drainQueuedChannelSends,
+  clearTurnDigestState,
+  closeOpenApprovals,
+  revokeInternalCapabilitiesForThread,
+  stagedSkillCleanupsForThread,
+  rejectDeletedThreadSkillStages,
+}));
+// A bot's folders and tasks (tasks.ts).
+ROUTES.push(createTaskRoutes({
+  store,
+  cloudHome: Boolean(CLOUD_HOME),
+  desktopManaged: DESKTOP_MANAGED,
+  hostedWorkspace: HOSTED_WORKSPACE,
+  hostedFullAccessRefusal: HOSTED_FULL_ACCESS_REFUSAL,
+  hostedModels,
+  routines: () => routines,
+  coordinator,
+  handoffs,
+  skillReview,
+  threadStarters,
+  phoneSecretSubmissions,
+  titleRegenerations,
+  directTurnGenerationByThread,
+  actorKey,
+  cloudOwnerSession,
+  cloudThreadRefusal,
+  sharedWorkspaceFullAccessEnabled,
+  supportsApprovalMode,
+  threadBusy,
+  publicBot,
+  wireBot,
+  wireTask,
+  pageSize,
+  messagePage,
+  checkedModelSelection,
+  checkedTaskModelSwitch,
+  threadTitleGate,
+  generateThreadTitle,
+  settleDirectFollowup,
+  clearTurnDigestState,
+  revokeInternalCapabilitiesForThread,
+  stagedSkillCleanupsForThread,
+  rejectDeletedThreadSkillStages,
+}));
+ROUTES.push(createTeamRoutes({
+  store,
+  cfg,
+  routines: () => routines,
+  orgLibrary: () => orgLibrary,
+  broadcast,
+  publicBot,
+  publicGroupState,
+  groupWithThread,
+  defaultSelection,
+  defaultsPresetFor,
+  packageImportDeps,
+  starterNotes,
+  checkedExportSkillNames,
+  collectExportSkills,
+  collectTeamSkills,
+}));
 ROUTES.push(createBrowserSiteRoutes({
   target: (which) => {
     const engine = browserEngineStatus();
@@ -21444,925 +21535,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return res.end(lines.join("\n"));
     }
 
-    // ── channels (persisted internally as groups) ───────────────────────
-    if (method === "POST" && path === "/api/groups") {
-      const body = await readBody(req);
-      // A member may only put bots they can see in a room: the room would
-      // otherwise show them a restricted bot (bot-visibility.ts).
-      const hiddenMember = Array.isArray(body?.memberIds) ? body.memberIds.find((id: unknown) => typeof id === "string" && store.bot(id) && !visible.bot(id)) : undefined;
-      if (hiddenMember) return json(res, 400, { error: `unknown channel member: ${String(hiddenMember)}` });
-      const group = createChannel(body);
-      // On a Cloud home whoever opens a room names it (cloudThreadRefusal).
-      if (CLOUD_HOME && auth.kind === "session") threadStarters.set(group.threadId, actorKey(auth));
-      return json(res, 201, { group: { ...publicGroupState(group), messages: [] } });
-    }
-    if (method === "POST" && path === "/api/teams/export") {
-      // Pictures the Share dialog prepared ride this body, so it is larger
-      // than the default JSON limit (the document itself is capped at 4 MB).
-      const body = await readBody(req, 8 * 1024 * 1024);
-      const profileName = cfg.profile?.name?.trim();
-      if (body.format === "package" && body.version === 2 && body.kind === "library") {
-        // Preset bots and their skills, no team: my New bot defaults as a
-        // preset someone else picks in New bot (presets.ts has the allowlist).
-        const optional = (value: unknown) => (typeof value === "string" ? value : undefined);
-        const built = defaultsPresetFor(body, body.includeMemory === true);
-        try {
-          const exported = createLibraryPackageExport({
-            name: optional(body.name),
-            tagline: optional(body.tagline),
-            summary: optional(body.summary),
-            release: optional(body.release),
-            notes: optional(body.notes),
-            authorName: profileName,
-            published: readPublishedLibrary(),
-            preset: built.preset,
-            skipped: built.skipped,
-          });
-          if (body.dryRun !== true) writePublishedLibrary(exported.published);
-          return json(res, 200, {
-            document: exported.document,
-            filename: exported.filename,
-            redacted: exported.redacted,
-            skipped: exported.skipped,
-            summary: packageSummary(exported.document),
-          });
-        } catch (error) {
-          if (error instanceof TeamExportError) return json(res, error.status, { error: error.message });
-          throw error;
-        }
-      }
-      if (body.format === "package" && body.version === 2) {
-        // One team, whole, except its chat history (package format v2).
-        if (typeof body.team !== "string") return json(res, 400, { error: "Choose a team to share." });
-        const team = body.team.trim();
-        if (team && !store.sections.includes(team) && !store.bots.some((bot) => sectionKey(bot.section) === team)) {
-          return json(res, 404, { error: "That team no longer exists." });
-        }
-        const optional = (value: unknown) => (typeof value === "string" ? value : undefined);
-        const teamBots = store.bots.filter((bot) => !bot.hidden && sectionKey(bot.section) === team);
-        const skills = collectTeamSkills(teamBots, body.skills);
-        if (!skills.ok) return json(res, 400, { error: skills.error, choices: { skills: skills.available } });
-        const avatars = body.avatars && typeof body.avatars === "object" && !Array.isArray(body.avatars)
-          ? body.avatars as Record<string, unknown>
-          : undefined;
-        // Off unless asked: New bot defaults are personal until shared.
-        const defaults = body.includeDefaultsPreset === true ? defaultsPresetFor(body, body.includeMemory === true) : null;
-        try {
-          const exported = createTeamPackageExport({
-            team,
-            name: optional(body.name),
-            tagline: optional(body.tagline),
-            summary: optional(body.summary),
-            release: optional(body.release),
-            notes: optional(body.notes),
-            authorName: profileName,
-            bots: store.bots,
-            groups: store.groups,
-            routines: routines!.listRoutines(),
-            brief: readSectionContext(team)?.text,
-            published: readPublishedTeam(team),
-            skillsByBot: skills.skillsByBot,
-            skillSelection: skills.all ? "all" : "chosen",
-            memoryByBot: body.includeMemory === true ? new Map(teamBots.map((bot) => [bot.id, starterNotes(bot.id)])) : undefined,
-            avatars,
-            mcpServers: cfg.mcpServers ?? {},
-            skipped: [...skills.skipped, ...(defaults?.skipped ?? [])],
-            preset: defaults?.preset ?? null,
-          });
-          // A preview (the dialog's live counts) never records keys; saving
-          // the file does, so renaming anything later keeps its identity.
-          if (body.dryRun !== true) writePublishedTeam(team, exported.published);
-          return json(res, 200, {
-            document: exported.document,
-            filename: exported.filename,
-            redacted: exported.redacted,
-            skipped: exported.skipped,
-            summary: packageSummary(exported.document),
-            choices: { skills: skills.available },
-          });
-        } catch (error) {
-          if (error instanceof TeamExportError) return json(res, error.status, { error: error.message, choices: { skills: skills.available } });
-          throw error;
-        }
-      }
-      const name =
-        typeof body.name === "string" && body.name.trim()
-          ? body.name.trim()
-          : profileName
-            ? `${profileName}'s Team`
-            : "My OpenMaus Team";
-      const memberIds = store.bots.filter((bot) => !bot.hidden).map((bot) => bot.id);
-      if ((body.format === "backup" ? store.bots.length : memberIds.length) === 0) return json(res, 400, { error: "Create a bot before exporting your team" });
-      try {
-        if (body.format === "backup") {
-          return json(res, 200, createTeamBackup(store, routines!.listRoutines(), name));
-        }
-        if (body.format === "package") {
-          const selectedBots = store.bots.filter((bot) => !bot.hidden);
-          const skillNames = checkedExportSkillNames(body.skillIds, selectedBots);
-          if (!skillNames.ok) return json(res, 400, { error: skillNames.error });
-          const document = createBotPackageExport({
-            name,
-            authorName: profileName,
-            bots: selectedBots,
-            groups: store.groups,
-            routines: routines!.listRoutines(),
-            skillsByBot: collectExportSkills(selectedBots, skillNames.names),
-          });
-          return json(res, 200, {
-            name: document.package.name,
-            members: document.package.agents.length,
-            markdown: renderBotPackageMarkdown(document),
-          });
-        }
-        return json(
-          res,
-          200,
-          createTeamManifest(
-            {
-              name,
-              memberIds,
-            },
-            store.bots,
-          ),
-        );
-      } catch (error) {
-        return json(res, 400, { error: error instanceof Error ? error.message : "Team could not be exported" });
-      }
-    }
-    if (method === "GET" && path === "/api/team-library/catalog") {
-      try {
-        return json(res, 200, await fetchTeamCatalog());
-      } catch (error) {
-        return json(res, 502, { error: error instanceof Error ? error.message : "The team library is unavailable" });
-      }
-    }
-    m = path.match(/^\/api\/team-library\/teams\/([a-z0-9][a-z0-9-]*)$/);
-    if (m && method === "GET") {
-      try {
-        return json(res, 200, await fetchLibraryTeam(m[1]));
-      } catch (error) {
-        const status = (error as { status?: number }).status === 404 ? 404 : 502;
-        return json(res, status, { error: error instanceof Error ? error.message : "The team could not be loaded" });
-      }
-    }
-    if (method === "POST" && path === "/api/team-library/github") {
-      const body = await readBody(req);
-      if (typeof body.url !== "string" || !body.url.trim()) {
-        return json(res, 400, { error: "A GitHub URL is required" });
-      }
-      try {
-        return json(res, 200, await fetchGithubTeam(body.url));
-      } catch (error) {
-        const status = (error as { status?: number }).status === 404 ? 404 : 400;
-        return json(res, status, { error: error instanceof Error ? error.message : "The GitHub team could not be loaded" });
-      }
-    }
-    if (method === "GET" && path === "/api/teams/scout") {
-      // The scout reads a folder and answers with a suggestion — it creates
-      // nothing. Bots and the room come into being only when the human sends
-      // the suggested manifest through /api/teams/import, so "the agent
-      // proposes, the person imports" is enforced by the route split itself.
-      // The folder is whatever validateBotCwd accepts: the same local-user
-      // trust boundary as pointing any bot's working folder at a path.
-      // Deliberately offline — the community directory lives on its own
-      // route below, so a slow network can never delay the suggestion.
-      const validated = validateBotCwd(url.searchParams.get("cwd"));
-      if (!validated.ok) return json(res, 400, { error: validated.error });
-      if (!validated.cwd) return json(res, 400, { error: "scout needs a folder to read" });
-      const profile = scoutProject(validated.cwd);
-      return json(res, 200, { profile, suggestion: suggestTeam(profile) });
-    }
-    if (method === "GET" && path === "/api/teams/scout/directory") {
-      // Community bots that fit the scouted folder — a separate, lazy call
-      // so an unreachable directory degrades to "no extra candidates", never
-      // to a broken scout.
-      const validated = validateBotCwd(url.searchParams.get("cwd"));
-      if (!validated.ok) return json(res, 400, { error: validated.error });
-      if (!validated.cwd) return json(res, 400, { error: "scout needs a folder to read" });
-      let directory: MatchedDirectoryBot[] = [];
-      try {
-        directory = matchDirectoryBots(scoutProject(validated.cwd), await fetchBotDirectory());
-      } catch (error) {
-        // an unreachable directory is a fact of life, not an error — but an
-        // empty section should still be diagnosable from the server log
-        console.warn("bot directory lookup failed:", error instanceof Error ? error.message : String(error));
-      }
-      return json(res, 200, { directory });
-    }
-    // ── the organization library (server/org-library.ts) ─────────────────
-    // Admin scope, as import is. With no organization every read answers
-    // {organization: null} and nothing else changes.
-    if (method === "GET" && path === "/api/org-library") {
-      return json(res, 200, orgLibrary?.list() ?? { organization: null, packages: [] });
-    }
-    m = path.match(/^\/api\/org-library\/packages\/([a-f0-9-]{36})$/);
-    if (m && method === "GET") {
-      const outcome = orgLibrary?.preview(m[1]!);
-      if (!outcome) return json(res, 404, { error: "This package is not in your organization's library.", code: "not_listed" });
-      return outcome.ok ? json(res, 200, outcome.value) : json(res, outcome.status, { error: outcome.error, code: outcome.code });
-    }
-    if (method === "POST" && path === "/api/org-library/add") {
-      // One click, no confirmation: the person's click is the decision.
-      const body = await readBody(req);
-      const packageId = typeof body?.packageId === "string" && /^[a-f0-9-]{36}$/.test(body.packageId) ? body.packageId : null;
-      if (!packageId) return json(res, 400, { error: "Choose a package from your organization's library." });
-      if (!orgLibrary) return json(res, 404, { error: "This package is not in your organization's library.", code: "not_listed" });
-      const outcome = orgLibrary.add(packageId, packageImportDeps(await defaultSelection()));
-      if (!outcome.ok) return json(res, outcome.status, { error: outcome.error, code: outcome.code });
-      if (outcome.value.alreadyAdded) return json(res, 200, outcome.value);
-      const imported = outcome.value.result;
-      return json(res, 201, {
-        alreadyAdded: false,
-        installId: imported.installId,
-        name: imported.name,
-        section: imported.section,
-        bots: imported.bots.map((bot) => publicBot(store.bot(bot.id) ?? bot)),
-        groups: imported.groups.map((created) => ({ ...publicGroupState(store.group(created.id) ?? created), messages: [] })),
-        routines: imported.routines,
-        offeredSkills: imported.offeredSkills,
-        connections: imported.connections,
-        skipped: imported.skipped,
-        brief: imported.brief,
-        notes: imported.notes,
-        presets: imported.presets ?? [],
-      });
-    }
-    if (method === "GET" && path === "/api/org-library/skills") {
-      const botId = url.searchParams.get("botId") ?? undefined;
-      return json(res, 200, orgLibrary?.offeredSkills(botId) ?? { organization: null, skills: [] });
-    }
-    if (method === "POST" && path === "/api/org-library/skills") {
-      const body = await readBody(req);
-      const parsed = z.object({ botId: z.string().min(1).max(128), installId: z.string().regex(/^[a-f0-9]{32}$/), name: z.string().min(1).max(64) })
-        .safeParse(body);
-      if (!parsed.success) return json(res, 400, { error: "Choose a bot and a skill from your organization's library." });
-      if (!orgLibrary) return json(res, 404, { error: "This package is not in your organization's library.", code: "not_listed" });
-      const outcome = orgLibrary.addOfferedSkill(parsed.data.botId, parsed.data.installId, parsed.data.name);
-      return outcome.ok ? json(res, 201, { skill: outcome.value }) : json(res, outcome.status, { error: outcome.error, code: outcome.code });
-    }
-    if (method === "POST" && path === "/api/teams/import") {
-      // Import is additive-only. A manifest is untrusted input (catalog,
-      // GitHub, a shared file), so it must be structurally unable to reach
-      // records the user already has: every member becomes a NEW bot with a
-      // fresh id — a manifest cannot name, update, or merge into an existing
-      // bot or room. Repeated imports create freshly numbered copies.
-      const importMode = url.searchParams.get("mode") ?? "add";
-      if (importMode === "replace") {
-        return json(res, 400, { error: "Replacing your team is no longer supported. Reopen Import in the updated app to add bots alongside your existing conversations." });
-      }
-      if (importMode !== "add" && importMode !== "project") {
-        return json(res, 400, { error: "Team import mode must be add or project" });
-      }
-      // `project` adds the team AND opens a caller-owned room on a folder.
-      // Legacy team manifests remain people-only. Full bot packages may add
-      // their own new rooms, but neither format can point at an existing room
-      // or choose a local folder; workspace access always comes from this
-      // explicit caller parameter.
-      let projectCwd: string | null = null;
-      if (importMode === "project") {
-        const requested = url.searchParams.get("cwd");
-        if (requested !== null) {
-          const validated = validateBotCwd(requested);
-          if (!validated.ok) return json(res, 400, { error: validated.error });
-          projectCwd = validated.cwd;
-        }
-      }
-      // Who may see the imported bots, from their first moment: the admin's
-      // choice (?visibility=admins, or a JSON value), never the file's.
-      const rawVisibility = url.searchParams.get("visibility");
-      let importVisibility: BotVisibility | undefined;
-      if (rawVisibility !== null) {
-        let value: unknown = rawVisibility;
-        if (rawVisibility.trim().startsWith("{")) {
-          try {
-            value = JSON.parse(rawVisibility);
-          } catch {
-            /* parseVisibility refuses the raw text with a plain sentence */
-          }
-        }
-        const parsed = parseVisibility(value);
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        importVisibility = parsed.visibility;
-      }
-      const body = await readBody(req, MAX_TEAM_BACKUP_BYTES);
-      if (body?.format === "openmaus.backup") {
-        if (importMode !== "add") return json(res, 400, { error: "Import backups alongside your existing bots; project mode is only for templates" });
-        try {
-          const imported = importTeamBackup(store, routines!, body, await defaultSelection(), { visibility: importVisibility });
-          // A restore writes its transcripts without store events, after the
-          // store's own frames announced each bot and room, so these frames
-          // are what carries the restored pages to other clients.
-          const bots = imported.bots.map((bot) => publicBot(bot));
-          const groups = imported.groups.map((group) => groupWithThread(group));
-          for (const bot of bots) broadcast({ kind: "bot", bot });
-          for (const group of groups) broadcast({ kind: "group", group });
-          return json(res, 201, { ...imported, bots, groups });
-        } catch (error) {
-          return json(res, 400, { error: error instanceof Error ? error.message : "Backup could not be imported" });
-        }
-      }
-      // Every package (v1 JSON, BotMRR Markdown, v2) is read by the one shared
-      // parser as a FILE: it cannot claim a publisher, and its skills and
-      // routines arrive off. A body field such as `trust` is just an unknown
-      // field of the document and is stripped; only the organization library
-      // module ever imports with trust "org".
-      let packageDocument: PackageDocument | null = null;
-      let manifest: ReturnType<typeof parseTeamManifest> | null = null;
-      try {
-        if (isBotPackage(body)) packageDocument = parsePackageDocument(body, { trust: "file" });
-        else manifest = parseTeamManifest(body);
-      } catch (error) {
-        return json(res, 400, { error: error instanceof Error ? error.message : "Invalid bot package" });
-      }
-      const deps = packageImportDeps(await defaultSelection());
-      const options = {
-        mode: importMode as "add" | "project",
-        cwd: projectCwd,
-        room: url.searchParams.get("room") ?? undefined,
-        ...(importVisibility ? { visibility: importVisibility } : {}),
-      };
-      let imported: PackageImportResult;
-      try {
-        const result = packageDocument
-          ? importPackageDocument(packageDocument, { ...options, trust: "file" }, deps)
-          : importTeamManifest(manifest!, options, deps);
-        // A file import always gets a fresh install id, so it never reports
-        // "already added"; that answer belongs to the organization library.
-        if (result.alreadyAdded) return json(res, 200, result);
-        imported = result;
-      } catch (error) {
-        if (error instanceof PackageImportError) return json(res, error.status, { error: error.message, code: error.code });
-        throw error;
-      }
-      return json(res, 201, {
-        name: imported.name,
-        section: imported.section,
-        bots: imported.bots.map((bot) => publicBot(store.bot(bot.id) ?? bot)),
-        group: imported.group,
-        groups: imported.groups.map((created) => ({ ...created, messages: [] })),
-        routines: imported.routines,
-        offeredSkills: imported.offeredSkills,
-        connections: imported.connections,
-        skipped: imported.skipped,
-        brief: imported.brief,
-        notes: imported.notes,
-        presets: imported.presets ?? [],
-      });
-    }
-    m = path.match(/^\/api\/groups\/([\w-]+)\/setup$/);
-    if (m && method === "PATCH") {
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such room" });
-      if (group.dm) return json(res, 400, { error: "direct-message channels do not have room setup" });
-      const body = await readBody(req);
-      if (body.action !== "complete" && body.action !== "skip") {
-        return json(res, 400, { error: "action must be complete or skip" });
-      }
-      if (group.setupCompletedAt != null || group.setupSkippedAt != null) {
-        return json(res, 200, { group: publicGroupState(group) });
-      }
-      if (store.messagesFor(group.threadId).length > 0) {
-        return json(res, 409, { error: "room setup must be finished before the first message" });
-      }
-
-      const patch: Partial<Pick<GroupRecord, "cwd" | "defaultResponder" | "bulletin" | "setupCompletedAt" | "setupSkippedAt">> = {};
-      if (body.action === "complete") {
-        const checked = validateBotCwd(body.cwd ?? null);
-        if (!checked.ok) return json(res, 400, { error: checked.error });
-        if (typeof body.bulletin !== "string") return json(res, 400, { error: "bulletin must be a string" });
-        if (body.bulletin.length > 12_000) return json(res, 400, { error: "bulletin must be at most 12000 characters" });
-        const responder = checkedGroupResponder(body.defaultResponder, group.memberIds);
-        if (!responder) return json(res, 400, { error: "invalid default responder" });
-        patch.cwd = checked.cwd ?? undefined;
-        patch.defaultResponder = responder;
-        patch.bulletin = body.bulletin;
-        patch.setupCompletedAt = Date.now();
-      } else {
-        patch.setupSkippedAt = Date.now();
-      }
-      const updated = store.patchGroup(m[1], patch);
-      if (!updated) return json(res, 404, { error: "no such room" });
-      return json(res, 200, { group: publicGroupState(updated) });
-    }
-
-    // ── channel tasks: separate conversations for the same team ────────
-
-
-
-
-    m = path.match(/^\/api\/groups\/([\w-]+)\/tasks$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such channel" });
-      if (group.dm) return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
-// Navigation and thread creation stay unblocked while other threads work
-      if (phoneSecretSubmissions.hasGroup(group.id)) {
-        return json(res, 409, { error: "this channel is securely saving a credential — try again when it finishes" });
-      }
-      if (!body || typeof body !== "object" || Array.isArray(body)) {
-        return json(res, 400, { error: "body must be a JSON object" });
-      }
-      const request = createGroupTaskRequestSchema.safeParse(body);
-      if (!request.success) return json(res, 400, { error: "title must be text" });
-      const task = store.createGroupTask(group.id, request.data.title);
-      if (!task) return json(res, 500, { error: "couldn't create that task" });
-      // Who opened it decides who may answer its cards on a shared workspace.
-      if (auth.kind === "session") threadStarters.set(task.threadId, actorKey(auth));
-      return json(res, 201, { group: groupWithThread(store.group(group.id)!), task });
-    }
-
-    m = path.match(/^\/api\/groups\/([\w-]+)\/tasks\/([\w-]+)$/);
-    if (m && method === "POST") {
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such channel" });
-      if (group.dm) return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
-      if (phoneSecretSubmissions.hasGroup(group.id)) {
-        return json(res, 409, { error: "this channel is securely saving a credential — try again when it finishes" });
-      }
-// Navigation between tasks is always allowed
-      // Parsed before the switch: a rejected parameter must not leave the
-      // channel pointing at another thread.
-      const requestedMessages = url.searchParams.get("messages");
-      const switchLimit = pageSize(requestedMessages);
-      if (switchLimit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
-      const switched = store.switchGroupTask(group.id, m[2]);
-      if (!switched) return json(res, 404, { error: "no such channel task" });
-      const switchedSettings = publicGroupState(switched);
-      // "0" predates paging and means settings only — no `messages` key at
-      // all, which clients tell apart from an empty page. A positive page is
-      // the transcript a client can actually hold; omitting the parameter
-      // keeps the whole transcript, as it always did — and only that branch
-      // materialises it.
-      const responseGroup = requestedMessages === "0"
-        ? switchedSettings
-        : { ...switchedSettings, ...messagePage(switched.threadId, switchLimit) };
-      return json(res, 200, { group: responseGroup });
-    }
-    if (m && method === "PATCH") {
-      const body = await readBody(req);
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such channel" });
-      if (group.dm) return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
-      if (!body || typeof body !== "object" || Array.isArray(body)) {
-        return json(res, 400, { error: "body must be a JSON object" });
-      }
-      const allowed = new Set(["title", "pinned", "turnTimeoutMinutes"]);
-      if (Object.keys(body).some((key) => !allowed.has(key))) return json(res, 400, { error: "unsupported channel thread setting" });
-      const existing = store.groupTaskByThread(group.id, m[2]);
-      if (!existing) return json(res, 404, { error: "no such channel task" });
-      const pinning = body.pinned !== undefined;
-      const renaming = body.title !== undefined;
-      const limiting = Object.prototype.hasOwnProperty.call(body, "turnTimeoutMinutes");
-      if (!pinning && !renaming && !limiting) return json(res, 400, { error: "unsupported channel thread setting" });
-      if (pinning && typeof body.pinned !== "boolean") return json(res, 400, { error: "pinned must be a boolean" });
-      if (renaming && typeof body.title !== "string") return json(res, 400, { error: "title must be a string" });
-      const parsedLimit = limiting ? parseConversationTurnTimeout(body.turnTimeoutMinutes) : null;
-      if (parsedLimit && !parsedLimit.ok) return json(res, 400, { error: parsedLimit.error });
-      // Echoing the current title lets a newer client pin on an older server
-      // without the old handler turning a missing title into "Untitled".
-      // That echo is not a rename. A real rename stays blocked while working.
-      const titleChange = renaming && body.title !== existing.title;
-      const notYours = titleChange ? cloudThreadRefusal(auth, m[2]) : null;
-      if (notYours) return json(res, 403, { error: notYours });
-      // A longer limit applies to the next turn, so it can be saved while
-      // this one is still running. A rename still waits.
-      if (titleChange && groupThreadIsWorking(group.id, m[2])) {
-        return json(res, 409, { error: "this task is running — stop it first" });
-      }
-      let task = existing;
-      if (limiting && parsedLimit?.ok) {
-        const limited = store.setGroupTaskTurnTimeout(group.id, m[2], parsedLimit.minutes);
-        if (!limited) return json(res, 404, { error: "no such channel task" });
-        task = limited;
-      }
-      if (pinning) {
-        const pinned = store.setGroupTaskPinned(group.id, m[2], body.pinned === true);
-        if (!pinned) return json(res, 404, { error: "no such channel task" });
-        task = pinned;
-      }
-      if (titleChange) {
-        const renamed = store.renameGroupTask(group.id, m[2], body.title);
-        if (!renamed) return json(res, 404, { error: "no such channel task" });
-        task = renamed;
-      }
-      return json(res, 200, { task });
-    }
-    if (m && method === "DELETE") {
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such channel" });
-      if (group.dm) return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
-      if (phoneSecretSubmissions.hasThread(m[2])) {
-        return json(res, 409, { error: "this task is securely saving a credential — try again when it finishes" });
-      }
-      if (groupThreadIsWorking(group.id, m[2])) {
-        return json(res, 409, { error: "this task is running — stop it first" });
-      }
-      if (!store.groupTaskByThread(group.id, m[2])) return json(res, 404, { error: "no such channel task" });
-      const notYours = cloudThreadRefusal(auth, m[2]);
-      if (notYours) return json(res, 403, { error: notYours });
-      const stagedSkillCleanups = stagedSkillCleanupsForThread(m[2]);
-      lastReply.delete(m[2]);
-      const updated = store.deleteGroupTask(group.id, m[2]);
-      if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
-      clearTurnDigestState(m[2]);
-      skillReview.dropThread(m[2]);
-      revokeInternalCapabilitiesForThread(m[2]);
-      rejectDeletedThreadSkillStages(stagedSkillCleanups);
-      return json(res, 200, { group: groupWithThread(updated) });
-    }
-
-    m = path.match(/^\/api\/groups\/([\w-]+)$/);
-    if (m && method === "PATCH") {
-      const body = await readBody(req);
-      if (auth.kind === "session" && !auth.scopes.includes("admin")) {
-        const field = clientGroupPatchViolation(body);
-        if (field) return json(res, 403, { error: `forbidden: this session may rename or mark a room, not change "${field}" (needs the admin scope)` });
-      }
-      // On a Cloud home a room's name and bulletin are its opener's (or the owner's).
-      const renamed = store.group(m[1]);
-      if (renamed && body && typeof body === "object" &&
-        ((body.name !== undefined && body.name !== renamed.name) || (body.bulletin !== undefined && body.bulletin !== (renamed.bulletin ?? "")))) {
-        const notYours = cloudThreadRefusal(auth, renamed.threadId);
-        if (notYours) return json(res, 403, { error: notYours });
-      }
-      const group = updateChannel(m[1], body);
-      return json(res, 200, { group: publicGroupState(group) });
-    }
-    m = path.match(/^\/api\/groups\/([\w-]+)\/read$/);
-    if (m && method === "POST") {
-      const room = store.group(m[1]);
-      if (!room) return json(res, 404, { error: "no such room" });
-      const group = store.patchGroup(room.id, { unread: false, ...readCursor(room.threadId) })!;
-      broadcast({ kind: "group", group: publicGroupState(group) });
-      return json(res, 200, { group: publicGroupState(group) });
-    }
-    m = path.match(/^\/api\/groups\/([\w-]+)$/);
-    if (m && method === "DELETE") {
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such room" });
-      if (phoneSecretSubmissions.hasGroup(group.id)) {
-        return json(res, 409, { error: "this channel is securely saving a credential — try again when it finishes" });
-      }
-      if (groupIsWorking(group)) {
-        return json(res, 409, { error: "this channel is working — stop that turn first" });
-      }
-      const threadIds = new Set([group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]);
-      const stagedSkillCleanups = [...threadIds].flatMap(stagedSkillCleanupsForThread);
-      for (const threadId of threadIds) {
-        lastReply.delete(threadId);
-        clearTurnDigestState(threadId);
-        skillReview.dropThread(threadId);
-      }
-      routines!.disableForGroup(group.id);
-      store.deleteGroup(group.id);
-      rejectDeletedThreadSkillStages(stagedSkillCleanups);
-      return json(res, 200, { ok: true });
-    }
-    m = path.match(/^\/api\/groups\/([\w-]+)\/messages$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || Array.isArray(body)) {
-        return json(res, 400, { error: "body must be a JSON object" });
-      }
-      const text = String(body.text ?? "").trim();
-      if (!text) return json(res, 400, { error: "text required" });
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such group" });
-      if (body.mode !== undefined && body.mode !== "chat" && body.mode !== "goal") {
-        return json(res, 400, { error: "mode must be chat or goal" });
-      }
-      const channelMode: "chat" | "goal" = body.mode === "goal" ? "goal" : "chat";
-      if (group.dm && channelMode === "goal") {
-        return json(res, 400, { error: "goal mode is available in team channels, not bot-to-bot channels" });
-      }
-      if (body.threadId !== undefined && (typeof body.threadId !== "string" || !/^[\w-]+$/.test(body.threadId))) {
-        return json(res, 400, { error: "threadId must be a task id" });
-      }
-      const threadId = body.threadId ?? group.threadId;
-      const trigger = usageTriggerFor(auth);
-      try {
-        assertWithinBudget(cfg, DATA_DIR);
-      } catch (error) {
-        return json(res, 409, { error: error instanceof Error ? error.message : String(error), code: "spend_cap" });
-      }
-      const ownsThread = group.dm
-        ? group.threadId === threadId
-        : Boolean(store.groupTaskByThread(group.id, threadId));
-      if (!ownsThread) {
-        return json(res, 409, { error: "the channel switched tasks before it could receive the message" });
-      }
-      const sendId = parseSendId(body.sendId);
-      const replyTo = resolveReplyTarget(threadId, body.replyToId);
-      // Who is this "user"? On a headless server loopback is the owner by
-      // design, and a bot's shell is a loopback caller too. A request with
-      // no paired session and no browser origin cannot be told from a
-      // script, so its message is stamped rather than trusted as typed —
-      // the room's readers, its posting budget and its transcript all look
-      // at that stamp — and the send is logged where the operator can see
-      // it. The desktop app never gets here: its owner capability is
-      // checked before this handler runs.
-      const browserOrigin = typeof req.headers.origin === "string" && req.headers.origin.trim() !== "";
-      const via: "api" | undefined =
-        auth.kind === "loopback" && !DESKTOP_MANAGED && !browserOrigin ? "api" : undefined;
-      if (via) {
-        console.warn(`room message from ${requestSource(req)} through the local API (no session, no browser origin) into "${group.name}"`);
-      }
-      const receipt = await sendSequencer.run(
-        sendId ? `group:${group.id}:${threadId}:${sendId}` : undefined,
-        sendFingerprint(text, replyTo?.id, channelMode),
-        async () => {
-          if (sendId) {
-            if (cancelledChatFollowup("channel", group.id, threadId, sendId)) {
-              throw Object.assign(new Error("this queued sendId was cancelled; send a new message to try again"), { status: 409 });
-            }
-            const accepted = acceptedSendMatch(store.messagesFor(threadId), sendId, text, replyTo?.id, channelMode);
-            if (accepted.kind === "conflict") {
-              throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
-            }
-            if (accepted.kind === "match") {
-              return { ok: true as const, threadId, message: accepted.message };
-            }
-            const queued = queuedChannelMessage(group.id, threadId, sendId);
-            if (queued) {
-              if (
-                queued.text !== text ||
-                queued.replyToId !== replyTo?.id ||
-                queued.mode !== channelMode
-              ) {
-                throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
-              }
-              return { ok: true as const, queued: true as const, queueId: queued.id, threadId };
-            }
-          }
-          const current = store.group(group.id);
-          if (!current) throw Object.assign(new Error("no such group"), { status: 404 });
-          const ownsTarget = current.threadId === threadId || store.groupTasks(current.id).some((task) => task.threadId === threadId);
-          if (!ownsTarget) {
-            throw Object.assign(new Error("no such thread in channel"), {
-              status: 404,
-            });
-          }
-          // "stop @Bot" / "@Bot resume" act now, even when the message itself
-          // waits in the queue: a stop must reach a member working right now.
-          if (channelMode === "chat") applyRoomHoldsFromMessage(current.id, text);
-          const threadWorking = groupThreadIsWorking(current.id, threadId);
-          const decision = admit("room", {}, { roomWorking: threadWorking, threadWorking });
-          if (decision.action === "queue") {
-            const queued = queueChannelMessage(current.id, threadId, text, {
-              replyToId: replyTo?.id,
-              sendId,
-              mode: channelMode,
-              via,
-              sender: messageSender(auth),
-              trigger,
-            });
-            return { ok: true as const, queued: true as const, queueId: queued.id, threadId };
-          }
-          const message = startGroupTurn(current.id, text, replyTo, sendId, channelMode, undefined, { via, sender: messageSender(auth), trigger, threadId });
-          return { ok: true as const, threadId, message };
-        },
-      );
-      return json(res, 202, receipt);
-    }
-    m = path.match(/^\/api\/groups\/([\w-]+)\/queue\/([\w-]+)$/);
-    if (m && method === "DELETE") {
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such group" });
-      if (!cancelChannelMessage(group.id, m[2])) {
-        return json(res, 404, { error: "no such queued message" });
-      }
-      return json(res, 200, { ok: true });
-    }
-
-    // Steer a queued room message into the RUNNING room turn (no interrupt).
-    // Only the head steers — room queues drain one item at a time — and the
-    // engine that receives it is the thread's live speaker. A room whose
-    // running driver cannot steer keeps its queue, exactly like an incapable
-    // 1:1 engine; this never ends the running turn.
-    m = path.match(/^\/api\/groups\/([\w-]+)\/queue\/([\w-]+)\/steer$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      if (body !== null && (typeof body !== "object" || Array.isArray(body))) {
-        return json(res, 400, { error: "body must be a JSON object" });
-      }
-      const threadId = typeof body?.threadId === "string" ? body.threadId : undefined;
-      if (threadId !== undefined && !/^[\w-]+$/.test(threadId)) {
-        return json(res, 400, { error: "threadId must be a task id" });
-      }
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such room" });
-      const targetThreadId = threadId ?? group.threadId;
-      const ownsThread = group.dm
-        ? group.threadId === targetThreadId
-        : Boolean(store.groupTaskByThread(group.id, targetThreadId));
-      if (!ownsThread) {
-        return json(res, 409, { error: "the channel switched tasks before it could receive the message" });
-      }
-      // Steering folds words into the running room turn; who pressed Steer
-      // does not re-book that turn (its sender was captured when it started).
-      const current = store.group(group.id);
-      if (!current) return json(res, 404, { error: "no such room" });
-      // Which engine owns the running room turn on this thread? The same
-      // resolution the room's own Stop uses: the live speaker, else the busy
-      // bot on the channel's main thread.
-      const speakerBotId =
-        groupSpeakers.get(targetThreadId)?.botId ??
-        (targetThreadId === current.threadId ? current.busyBotId : undefined);
-      const speaker = speakerBotId ? store.bot(speakerBotId) : undefined;
-      const instance = speaker ? runningTurnInstance(speaker, targetThreadId) : undefined;
-      // Lift the queue atomically: the room settling can drain it as the
-      // next follow-up, or this request can steer its head into the live
-      // turn — never both for the same words.
-      const held = holdChannelQueue(current.id, targetThreadId, m[2]);
-      if (!held) return json(res, 404, { error: "no such queued message" });
-      // M2: the head may be a coalesced group (one sender's contiguous
-      // burst); Steer folds that whole group into the live turn as one.
-      const headGroup = headChannelGroup(held.items);
-      const [head] = headGroup;
-      // Attachments steer only into a speaker that takes images mid-turn
-      // (steerImages), as the native blocks the drained turn would carry;
-      // elsewhere — the same rule as the 1:1 queue — attachment words wait
-      // for a real turn where central admission hands the images over.
-      const steerInput = extractSteerImages(headGroup.map((item) => item.text));
-      const decision = admit("room-steer", {
-        speakerPresent: Boolean(speaker),
-        engineCanSteer: Boolean(instance?.adapter.capabilities.queueing && instance.adapter.steer),
-        carriesImages: !steerInput || steerInput.images.length > 0,
-        engineCanSteerImages: Boolean(steerInput) && engineSteersImages(instance),
-        isQueueHead: Boolean(head && head.id === m[2]),
-      });
-      if (decision.action === "refuse") {
-        restoreHeldChannelQueue(held);
-        return json(res, 409, { error: "only the first queued message can steer" });
-      }
-      if (decision.action === "queue" || !steerInput) {
-        restoreHeldChannelQueue(held);
-        return json(res, 200, {
-          ok: true,
-          queued: true,
-          threadId: targetThreadId,
-          ...(decision.action === "queue" && decision.blockedBy ? { blockedBy: decision.blockedBy } : {}),
-        });
-      }
-      // A reply target that cannot be resolved restores the held queue
-      // before the request fails — the room's normal drain keeps the head.
-      const replyTo = resolveHeldReplyTarget(held, resolveReplyTarget);
-      // Each burst line keeps its own reply relationship: the fold renders
-      // per-item reply context (the head through the helper above, the rest
-      // resolved here) so a mixed burst does not inherit the head's quote
-      // or drop its own. A target that cannot be resolved restores the held
-      // queue before the request fails, mirroring the helper's contract.
-      const speakerName = cfg.profile?.name?.trim() || "User";
-      let foldedPrompt: string;
-      try {
-        foldedPrompt = headGroup
-          .map((item, index) =>
-            promptWithReply(
-              steerInput.texts[index] ?? item.text,
-              index === 0
-                ? replyTo
-                : item.replyToId
-                  ? resolveReplyTarget(targetThreadId, item.replyToId)
-                  : undefined,
-              speakerName,
-            ),
-          )
-          .join("\n\n");
-      } catch (error) {
-        restoreHeldChannelQueue(held);
-        throw error;
-      }
-      // steer was offered only when a live speaker instance could take it;
-      // the check carries that invariant to the type system.
-      const steered: SteerOutcome = instance?.adapter.steer
-        ? await (steerInput.images.length > 0
-            ? instance.adapter.steer(targetThreadId, foldedPrompt, steerInput.images)
-            : instance.adapter.steer(targetThreadId, foldedPrompt))
-            .catch((): SteerOutcome => "indeterminate")
-        : "refused";
-      // The steer was awaited adapter work: re-read every ownership
-      // invariant before writing anything, exactly like the 1:1 path. A
-      // speaker change, a channel switch, or a settled room restores the
-      // queue instead of recording words the new turn never saw.
-      const after = store.group(current.id);
-      const afterSpeakerBotId = after
-        ? groupSpeakers.get(targetThreadId)?.botId ??
-          (targetThreadId === after.threadId ? after.busyBotId : undefined)
-        : undefined;
-      // "indeterminate" (timeout after delivery, lost transport, a settle
-      // race) never restores: the words may already be folded into the turn
-      // that was live when they were sent, and replaying them into a new
-      // turn would run them twice. Record them once — even under a new
-      // speaker — and settle the head.
-      const delivered = steered !== "refused";
-      if (after && delivered && (steered === "indeterminate" || afterSpeakerBotId === speakerBotId)) {
-        const messages = headGroup.map((item) => store.appendMessage(targetThreadId, {
-          role: "user",
-          kind: "text",
-          text: item.text,
-          replyToId: item.replyToId,
-          sendId: item.sendId,
-          channelMode: item.mode,
-          queueId: item.id,
-          via: item.via,
-          steered: true,
-          sender: item.sender,
-        }));
-        settleHeldChannelQueueHead(held);
-        return json(res, 200, {
-          ok: true,
-          steered: true,
-          threadId: targetThreadId,
-          messages,
-          queueIds: headGroup.map((item) => item.id),
-        });
-      }
-      if (steered === "indeterminate" && !after) {
-        // The room vanished while the answer was lost: settle the head so a
-        // restart cannot replay words the dead turn may already have run.
-        settleHeldChannelQueueHead(held);
-        return json(res, 404, { error: "no such room" });
-      }
-      restoreHeldChannelQueue(held);
-      // The room may have settled while the steer was refused; a queue that
-      // is now drainable must not strand behind a missed settle.
-      if (after && !groupThreadIsWorking(after.id, targetThreadId)) drainQueuedChannelSends();
-      return json(res, 200, { ok: true, queued: true, threadId: targetThreadId });
-    }
-    // "Compact now" for one member of a room: its next turn in the room's
-    // active thread starts on a fresh provider session (room-context.ts).
-    // Nothing runs now and the transcript is untouched.
-    m = path.match(/^\/api\/groups\/([\w-]+)\/members\/([\w-]+)\/compact$/);
-    if (m && method === "POST") {
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such room" });
-      if (!group.memberIds.includes(m[2])) return json(res, 404, { error: "that bot is not in this room" });
-      const notYours = cloudThreadRefusal(auth, group.threadId);
-      if (notYours) return json(res, 403, { error: notYours });
-      if (!roomMemberContexts.request(group.threadId, m[2])) {
-        return json(res, 409, { error: "this bot has no measured context in this room yet" });
-      }
-      const visible = publicGroupState(store.group(group.id) ?? group);
-      broadcast({ kind: "group", group: visible });
-      return json(res, 202, { ok: true, threadId: group.threadId, group: visible });
-    }
-    m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
-    if (m && method === "POST") {
-      const group = store.group(m[1]);
-      if (!group) return json(res, 404, { error: "no such room" });
-      const rawBody = await readBody(req);
-      if (rawBody !== null && (typeof rawBody !== "object" || Array.isArray(rawBody))) {
-        return json(res, 400, { error: "body must be a JSON object" });
-      }
-      const body = rawBody ?? {};
-      if (body.threadId !== undefined && (typeof body.threadId !== "string" || !/^[\w-]+$/.test(body.threadId))) {
-        return json(res, 400, { error: "threadId must be a task id" });
-      }
-      if (body.threadId !== undefined) {
-        const ownsThread = group.dm
-          ? body.threadId === group.threadId
-          : Boolean(store.groupTaskByThread(group.id, body.threadId));
-        if (!ownsThread) {
-          return json(res, 409, { error: "the channel switched tasks before it could be interrupted" });
-        }
-      }
-      const activeOperations = [...(groupTurnOperations.get(group.id) ?? [])]
-        .filter((operation) => !operation.cancelled);
-      // Without an explicit task, Stop means the room's live operation—not
-      // merely whichever task the UI was showing when a detached routine
-      // began. There is normally one operation; cancel every active thread
-      // defensively so no queued handoff survives a room-level stop.
-      const targetThreadIds = body.threadId !== undefined
-        ? [body.threadId]
-        : activeOperations.length > 0
-          ? [...new Set(activeOperations.map((operation) => operation.threadId))]
-          : [group.threadId];
-      const interruptTargets = targetThreadIds.map((threadId) => {
-        const speaker = groupSpeakers.get(threadId);
-        const busy = speaker
-          ? store.bot(speaker.botId)
-          : threadId === group.threadId && group.busyBotId
-            ? store.bot(group.busyBotId)
-            : undefined;
-        return {
-          threadId,
-          instance: busy ? runningTurnInstance(busy, threadId) : undefined,
-        };
-      });
-      // Abort every queued operation before the first provider round trip;
-      // otherwise one queued task could begin while Stop awaits interruption
-      // of the task ahead of it.
-      for (const { threadId } of interruptTargets) cancelGroupTurnOperations(group.id, threadId);
-      for (const { threadId, instance } of interruptTargets) {
-        revokeInternalCapabilitiesForThread(threadId);
-        await instance?.adapter.interruptTurn(threadId).catch(() => {});
-        closeOpenApprovals(threadId);
-      }
-      return json(res, 200, { ok: true });
-    }
-
     // emoji reactions — works on any thread (1:1 or room)
     m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/reactions$/);
     if (m && method === "POST") {
@@ -23256,330 +22428,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       handoffs.stoppedByPerson(expectedThreadId ?? bot.threadId);
       await interruptDirectThread(bot.id, expectedThreadId ?? bot.threadId);
       return json(res, 200, { ok: true });
-    }
-
-    // ── tasks: a bot's separate contexts ────────────────────────────────
-    // Replies carry the open thread's newest page: a create or delete can
-    // change which transcript is live. The frames come from store.onChange.
-
-    // Folders organize one bot's threads; they never own settings,
-    // transcripts or working directories. The project wire names stay stable.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/projects\/order$/);
-    if (m && method === "PATCH") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || Array.isArray(body) ||
-        Object.keys(body).some((key) => key !== "projectIds") ||
-        !Array.isArray(body.projectIds) || body.projectIds.some((id: unknown) => typeof id !== "string")) {
-        return json(res, 400, { error: "projectIds must be an array of folder IDs" });
-      }
-      const projects = store.reorderProjects(bot.id, body.projectIds);
-      if (!projects) return json(res, 400, { error: "projectIds must include each of this bot's folders exactly once" });
-      return json(res, 200, { projects, bot: publicBot(bot) });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/projects(?:\/([\w-]+))?$/);
-    if (m && ((method === "POST" && !m[2]) || (method === "PATCH" && m[2]) || (method === "DELETE" && m[2]))) {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      if (m[2] && !store.project(bot.id, m[2])) return json(res, 404, { error: "no such folder" });
-      if (method === "DELETE") {
-        const updated = store.deleteProject(bot.id, m[2]!);
-        return json(res, 200, { bot: publicBot(updated!) });
-      }
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
-      if (Object.keys(body).some((key) => key !== "name" && key !== "emoji")) {
-        return json(res, 400, { error: "unsupported folder setting" });
-      }
-      if ((method === "POST" || body.name !== undefined) &&
-        (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 80)) {
-        return json(res, 400, { error: "folder name must be between 1 and 80 characters" });
-      }
-      if (body.emoji !== undefined && body.emoji !== null && !isProjectEmoji(body.emoji)) {
-        return json(res, 400, { error: "folder emoji must be one emoji, or null to reset it" });
-      }
-      const patch: Parameters<typeof store.patchProject>[2] = {};
-      if (body.name !== undefined) patch.name = body.name.trim();
-      if (body.emoji !== undefined) patch.emoji = body.emoji;
-      const project = method === "POST"
-        ? store.createProject(bot.id, patch.name!, patch.emoji)
-        : store.patchProject(bot.id, m[2]!, patch);
-      return json(res, method === "POST" ? 201 : 200, { project, bot: publicBot(bot) });
-    }
-
-    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks$/);
-    if (m && method === "POST") {
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      let cwd: string | undefined;
-      if (body.cwd !== undefined) {
-        // Opening a conversation is client-scoped, choosing where its file
-        // tools run has the same authority as editing the bot's folder.
-        if (!auth.scopes.includes("admin")) {
-          return json(res, 403, { error: "Choosing a working folder requires the admin scope" });
-        }
-        const checked = validateBotCwd(body.cwd);
-        if (!checked.ok) return json(res, 400, { error: checked.error });
-        if (!checked.cwd) return json(res, 400, { error: "Choose an existing working folder, or omit cwd to use the bot's default" });
-        cwd = checked.cwd;
-      }
-      if (body.approvalMode !== undefined && body.approvalMode !== "ask" && body.approvalMode !== "full") {
-        return json(res, 400, { error: "new task approvalMode must be ask or full" });
-      }
-      if (body.approvalMode === "full") {
-        if (auth.kind !== "loopback" || !sharedWorkspaceFullAccessEnabled()) {
-          return json(res, 403, { error: "New Full tasks require the operator's dedicated shared-workspace policy" });
-        }
-        if (bot.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
-        if (!supportsApprovalMode(bot.modelSelection, "full")) {
-          return json(res, 400, { error: "This provider does not support Full access" });
-        }
-      }
-      if (phoneSecretSubmissions.hasBot(bot.id)) {
-        return json(res, 409, { error: "this bot is securely saving a credential — try again when it finishes" });
-      }
-      if (body.projectId !== undefined && (typeof body.projectId !== "string" || !store.project(bot.id, body.projectId))) {
-        return json(res, 400, { error: "projectId must belong to this bot" });
-      }
-      const task = store.createTask(bot.id, typeof body.title === "string" ? body.title : undefined, true, body.projectId, undefined, body.approvalMode, undefined, cwd);
-      if (!task) return json(res, 500, { error: "couldn't create that task" });
-      // Who opened it decides who may answer its cards on a shared workspace.
-      if (auth.kind === "session") threadStarters.set(task.threadId, actorKey(auth));
-      return json(res, 201, { bot: publicBot(store.bot(bot.id)!), task: wireTask(task, store.bot(bot.id)!.modelSelection) });
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)$/);
-    if (m && method === "POST") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      if (phoneSecretSubmissions.hasBot(bot.id)) {
-        return json(res, 409, { error: "this bot is securely saving a credential — try again when it finishes" });
-      }
-      // Navigation only: execution owns its thread, never this selected id.
-      const requestedMessages = url.searchParams.get("messages");
-      const switchLimit = pageSize(requestedMessages);
-      if (switchLimit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
-      const switched = store.switchTask(bot.id, m[2]);
-      if (!switched) return json(res, 404, { error: "no such task" });
-      const switchedSettings = { ...wireBot(switched), tasks: store.tasks(switched.id).map((task) => wireTask(task, switched.modelSelection)) };
-      // "0" is settings only, a positive page is a bounded transcript, and no
-      // parameter is the whole thread — the one branch that materialises it.
-      // Search results land through that branch (src/lib/focus-message.ts):
-      // the hit can be older than one page.
-      const responseBot = requestedMessages === "0"
-        ? switchedSettings
-        : { ...switchedSettings, ...messagePage(switched.threadId, switchLimit) };
-      return json(res, 200, { bot: responseBot });
-    }
-    if (m && method === "PATCH") {
-      const body = await readBody(req);
-      if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
-      const current = store.projectBotForTask(m[1], m[2]);
-      if (!current) return json(res, 404, { error: "no such task" });
-      const allowed = new Set(["title", "projectId", "modelSelection", "updateBotDefault", "resetApprovalToAsk", "approvalMode", "autoApprove", "requireAvailableModel", "pinnedMessageId", "acknowledgeLocalAuto", "archivedAt", "pinned", "snoozedUntil", "surface", "refreshPermissions", "link"]);
-      if (Object.keys(body).some((key) => !allowed.has(key))) return json(res, 400, { error: "unsupported thread setting" });
-      const notYours = cloudThreadRefusal(auth, m[2]);
-      if (notYours) return json(res, 403, { error: notYours });
-      // On a Cloud home only the owner decides whether a bot may act without
-      // asking them, even in a conversation someone else started, and what
-      // the bot itself defaults to.
-      if (CLOUD_HOME && !cloudOwnerSession(auth) &&
-        (body.approvalMode !== undefined || body.autoApprove !== undefined || body.acknowledgeLocalAuto !== undefined || body.updateBotDefault === true || body.refreshPermissions === true)) {
-        return json(res, 403, { error: "On this Cloud only its owner can change how a bot asks for approval, or its default model." });
-      }
-      for (const key of ["requireAvailableModel", "acknowledgeLocalAuto", "updateBotDefault", "resetApprovalToAsk"] as const) {
-        if (body[key] !== undefined && typeof body[key] !== "boolean") return json(res, 400, { error: `${key} must be a boolean` });
-      }
-      if (body.requireAvailableModel === true && body.modelSelection === undefined) return json(res, 400, { error: "requireAvailableModel requires modelSelection" });
-      if (body.updateBotDefault === true && body.modelSelection === undefined) return json(res, 400, { error: "updateBotDefault requires modelSelection" });
-      if (body.resetApprovalToAsk === true && (body.modelSelection === undefined ||
-        (body.approvalMode !== undefined && body.approvalMode !== "ask") || body.autoApprove === true)) {
-        return json(res, 400, { error: "resetApprovalToAsk requires a model selection and cannot be combined with another approval mode" });
-      }
-      if (body.refreshPermissions !== undefined && body.refreshPermissions !== true) {
-        return json(res, 400, { error: "refreshPermissions must be true" });
-      }
-      if (body.refreshPermissions === true) {
-        const extra = Object.keys(body).filter((key) => key !== "refreshPermissions" && key !== "acknowledgeLocalAuto");
-        if (extra.length) return json(res, 400, { error: "refreshPermissions cannot be combined with other thread settings" });
-        const profile = store.bot(m[1]);
-        if (!profile) return json(res, 404, { error: "no such bot" });
-        if (profile.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
-        if (threadBusy(profile.id, m[2])) return json(res, 409, { error: "stop this thread before changing its approval mode" });
-        const nextMode = approvalModeFor({ ...profile, approvalGrant: undefined });
-        // Custom never travels over the bot-reachable HTTP surface: the
-        // desktop's private channel copies it, and it is also the only way
-        // to leave Custom. Full is copied here like any other level.
-        if (nextMode === "custom") {
-          return json(res, 403, { error: "Refresh Custom access from the packaged desktop app" });
-        }
-        if (nextMode === "full" && HOSTED_WORKSPACE && approvalModeFor(current) !== "full") {
-          return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
-        }
-        if (approvalModeFor(current) === "custom") {
-          return json(res, 403, { error: "Leaving Custom approval requires the packaged desktop app" });
-        }
-        if (!supportsApprovalMode(current.modelSelection, nextMode)) {
-          return json(res, 400, { error: "This provider does not support the selected approval level" });
-        }
-        if (nextMode === "auto" && current.computer === "local" && approvalModeFor(current) !== "auto" && body.acknowledgeLocalAuto !== true) {
-          return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
-        }
-        const approvalRank = { ask: 0, edits: 1, auto: 2, full: 3, custom: 4 } as const;
-        const widensMode = approvalRank[nextMode] > approvalRank[approvalModeFor(current)];
-        const nextAllow = profile.alwaysAllow ?? [];
-        const widensAllow = nextAllow.some((key) => !(current.alwaysAllow ?? []).includes(key));
-        // Full has no OMB-side guard (owner decision, Oct 12), here as on
-        // the bot and thread routes; the narrower levels keep this one.
-        if (nextMode !== "full" && (widensMode || widensAllow) && auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin && store.bots.some((bot) => bot.busy)) {
-          return json(res, 409, { error: "Change approval mode from the app or a paired device while bots are working." });
-        }
-        const task = store.refreshTaskPermissions(profile.id, m[2]);
-        if (!task) return json(res, 404, { error: "no such task" });
-        return json(res, 200, { task: wireTask(task, store.bot(profile.id)!.modelSelection), bot: publicBot(store.bot(profile.id)!) });
-      }
-      const patch: Parameters<typeof store.patchTask>[2] = {};
-      if (body.projectId !== undefined) {
-        if (body.projectId === null) patch.projectId = undefined;
-        else if (typeof body.projectId === "string" && store.project(current.id, body.projectId)) patch.projectId = body.projectId;
-        else return json(res, 400, { error: "projectId must belong to this bot, or null to ungroup the thread" });
-      }
-      if (body.title !== undefined) {
-        if (typeof body.title !== "string") return json(res, 400, { error: "title must be a string" });
-        patch.title = body.title;
-      }
-      if (body.archivedAt !== undefined) {
-        if (body.archivedAt === null) patch.archivedAt = undefined;
-        else if (typeof body.archivedAt === "number" && Number.isFinite(body.archivedAt) && body.archivedAt >= 0) patch.archivedAt = body.archivedAt;
-        else return json(res, 400, { error: "archivedAt must be a timestamp, or null to unarchive" });
-      }
-      if (body.pinned !== undefined) {
-        if (typeof body.pinned !== "boolean") return json(res, 400, { error: "pinned must be a boolean" });
-        patch.pinned = body.pinned ? true : undefined;
-      }
-      if (body.snoozedUntil !== undefined) {
-        if (body.snoozedUntil === null) patch.snoozedUntil = undefined;
-        else if (typeof body.snoozedUntil === "number" && Number.isFinite(body.snoozedUntil) && body.snoozedUntil >= 0) patch.snoozedUntil = body.snoozedUntil;
-        else return json(res, 400, { error: "snoozedUntil must be a timestamp, 0 to snooze until activity, or null to wake now" });
-      }
-      if (body.link !== undefined) {
-        const link = body.link === null ? undefined : threadLinkUrl(body.link);
-        if (link === null) return json(res, 400, { error: "link must be an http(s) address of at most 2048 characters, or null to remove it" });
-        patch.link = link;
-        patch.linkAuto = link ? undefined : false;
-      }
-      if (body.surface !== undefined) {
-        if (threadBusy(current.id, current.threadId)) return json(res, 409, { error: "Stop this thread before changing its computer destination." });
-        // Where this conversation works, chosen by the person and recorded as
-        // theirs, so a later Works on change never sweeps it. Null follows the
-        // bot's Works on again. Reachability is the turn's to judge.
-        if (body.surface === null) {
-          patch.surface = undefined;
-          patch.surfaceSource = undefined;
-        } else if (parseSurface(body.surface)) {
-          patch.surface = parseSurface(body.surface);
-          patch.surfaceSource = "user";
-        } else return json(res, 400, { error: "surface must be cloud, vm, local, browser, or null to follow the bot" });
-      }
-      if (body.pinnedMessageId !== undefined) {
-        if (body.pinnedMessageId === null || body.pinnedMessageId === "") patch.pinnedMessageId = undefined;
-        else if (typeof body.pinnedMessageId === "string" && store.messagesFor(current.threadId).some((message) => message.id === body.pinnedMessageId)) patch.pinnedMessageId = body.pinnedMessageId;
-        else return json(res, 400, { error: "pinnedMessageId must belong to this thread" });
-      }
-      if (body.modelSelection !== undefined) {
-        if (current.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
-        const checked = checkedModelSelection(body.modelSelection, { selection: current.modelSelection, busy: threadBusy(current.id, current.threadId) }, body.requireAvailableModel === true);
-        if (!checked.ok) return json(res, checked.status, { error: checked.error });
-        patch.modelSelection = checked.selection;
-      }
-      if (body.approvalMode !== undefined || body.autoApprove !== undefined) {
-        if (body.autoApprove !== undefined && typeof body.autoApprove !== "boolean") return json(res, 400, { error: "autoApprove must be a boolean" });
-        const mode: unknown = body.approvalMode ?? (body.autoApprove ? "auto" : "ask");
-        if (!isApprovalMode(mode)) return json(res, 400, { error: "approvalMode must be ask, edits, auto, full, or custom" });
-        // Full applies here like any other level. Custom still needs the
-        // trusted desktop transition: a thread PATCH cannot manufacture it.
-        if (mode === "custom") return json(res, 403, { error: "Custom access requires trusted desktop confirmation" });
-        if (mode === "full" && HOSTED_WORKSPACE && approvalModeFor(current) !== "full") return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
-        if (approvalModeFor(current) === "custom") return json(res, 403, { error: "Leaving Custom approval requires confirmation in the packaged desktop app" });
-        if (!supportsApprovalMode(patch.modelSelection ?? current.modelSelection, mode)) {
-          return json(res, 400, { error: "This provider does not support the selected approval level" });
-        }
-        if (threadBusy(current.id, current.threadId)) return json(res, 409, { error: "stop this thread before changing its approval mode" });
-        if (current.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
-        if (mode === "auto" && approvalModeFor(current) !== "auto" && auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin && store.bots.some((bot) => bot.busy)) {
-          return json(res, 409, { error: "Change approval mode from the app or a paired device while bots are working." });
-        }
-        if (mode === "auto" && current.computer === "local" && approvalModeFor(current) !== "auto" && body.acknowledgeLocalAuto !== true) {
-          return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
-        }
-        patch.approvalMode = mode;
-        patch.autoApprove = mode === "auto";
-      }
-      if (patch.modelSelection) {
-        const checked = checkedTaskModelSwitch({ ...current,
-          ...(patch.approvalMode ? { approvalMode: patch.approvalMode, autoApprove: patch.autoApprove } : {}),
-        }, patch.modelSelection, body.updateBotDefault === true, body.resetApprovalToAsk === true, body.requireAvailableModel === true);
-        if (!checked.ok) return json(res, checked.status, { error: checked.error });
-      }
-      const task = patch.modelSelection
-        ? store.switchTaskModel(m[1], m[2], patch.modelSelection, body.updateBotDefault === true, body.resetApprovalToAsk === true,
-          { ...patch, ...hostedModels?.resetTask(current.modelSelection, patch.modelSelection) })!
-        : store.patchTask(m[1], m[2], patch)!;
-      return json(res, 200, { task: wireTask(task, store.bot(m[1])!.modelSelection), bot: publicBot(store.bot(m[1])!) });
-    }
-    if (m && method === "DELETE") {
-      const bot = store.bot(m[1]);
-      if (!bot || !store.taskByThread(bot.id, m[2])) {
-        return json(res, 404, { error: "no such task" });
-      }
-      const notYours = cloudThreadRefusal(auth, m[2]);
-      if (notYours) return json(res, 403, { error: notYours });
-      if (phoneSecretSubmissions.hasThread(m[2])) {
-        return json(res, 409, { error: "this task is securely saving a credential — try again when it finishes" });
-      }
-      if (threadBusy(bot.id, m[2]) || routines!.isActiveThread(m[2])) {
-        return json(res, 409, { error: "this task is running — stop it first" });
-      }
-      const stagedSkillCleanups = stagedSkillCleanupsForThread(m[2]);
-      coordinator.cancelDirect(m[2], "The source conversation was deleted");
-      const updated = store.deleteTask(m[1], m[2]);
-      if (!updated) return json(res, 404, { error: "no such task" });
-      clearTurnDigestState(m[2]);
-      skillReview.dropThread(m[2]);
-      revokeInternalCapabilitiesForThread(m[2]);
-      handoffs.forget(m[2]);
-      settleDirectFollowup(directTurnGenerationByThread.get(m[2]));
-      rejectDeletedThreadSkillStages(stagedSkillCleanups);
-      return json(res, 200, { bot: publicBot(updated) });
-    }
-    // Regenerate title (#1858): name the thread again from its conversation
-    // as it is now. The person asked, so the result replaces any title, but
-    // only the one this started from: a rename that lands while the one-shot
-    // runs wins, and the late result is dropped.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/title$/);
-    if (m && method === "POST") {
-      const current = store.projectBotForTask(m[1], m[2]);
-      if (!current) return json(res, 404, { error: "no such task" });
-      const notYours = cloudThreadRefusal(auth, m[2]);
-      if (notYours) return json(res, 403, { error: notYours });
-      const gate = threadTitleGate(current);
-      if (!gate.ok) return json(res, 409, { error: gate.refusal });
-      if (titleRegenerations.has(m[2])) return json(res, 409, { error: "a new title is already being generated for this thread" });
-      const excerpt = titleConversationExcerpt(store.messagesTail(m[2], 200).messages);
-      if (!excerpt) return json(res, 409, { error: "this thread has no messages to take a title from yet" });
-      const startedFrom = store.taskByThread(m[1], m[2])!.title;
-      titleRegenerations.add(m[2]);
-      try {
-        const title = await generateThreadTitle(gate.instance, excerpt, "conversation");
-        if (!title) return json(res, 502, { error: "couldn't generate a title — try again, or rename the thread" });
-        const task = store.retitleTask(m[1], m[2], startedFrom, title) ?? store.taskByThread(m[1], m[2]);
-        if (!task) return json(res, 404, { error: "no such task" });
-        return json(res, 200, { task: wireTask(task, store.bot(m[1])!.modelSelection) });
-      } finally {
-        titleRegenerations.delete(m[2]);
-      }
     }
 
     // ── voice ─────────────────────────────────────────────────────────
