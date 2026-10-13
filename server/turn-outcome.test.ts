@@ -40,8 +40,6 @@ describe("TurnStops", () => {
     expect(stops.read("t1", "turn-1")).toEqual({ turnId: "turn-1", error: limit });
   });
 
-  // A step cap continues the same turn in place from its handoff, whoever
-  // started the turn: the path is kept for every thread.
   it("says why a settled turn failed: its own last error, else the provider's stop token, and nothing for a turn that worked", () => {
     const stops = new TurnStops();
     const limit = "You've hit your weekly limit · resets Oct 12 at 2:30pm (Asia/Calcutta)";
@@ -55,6 +53,8 @@ describe("TurnStops", () => {
     expect(stops.failureCause({ threadId: "t1", turnId: "turn-1", ok: true, stopReason: "end_turn" })).toBeUndefined();
   });
 
+  // A step cap continues the same turn in place from its handoff, whoever
+  // started the turn: the path is kept for every thread.
   it("keeps a step cap's handoff for the turn that continues from it", () => {
     const stops = new TurnStops();
     stops.note(event({ type: "cap.exhausted", turnId: "turn-1", handoffPath: "/data/handoffs/cap-1.md", reason: "cap" }));
