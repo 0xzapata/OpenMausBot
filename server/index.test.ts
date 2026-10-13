@@ -3693,7 +3693,9 @@ describe("harness HTTP API", () => {
         await expect.poll(async () => JSON.stringify(await threadMessages(task.threadId)), { timeout: 5_000 })
           .toMatch(new RegExp(`${index + 1}(st|nd|rd) in queue`));
         expect((await threadMessages(task.threadId)).some(message => (message.tool?.name ?? "").includes("recent waits here"))).toBe(false);
-        expect((await threadEvents(task.threadId)).find(event => event.type === "turn.wait_started")).toMatchObject({ position: index + 1 });
+        // the chip is written synchronously, the event log by an async append
+        await expect.poll(async () => (await threadEvents(task.threadId)).find(event => event.type === "turn.wait_started"), { timeout: 5_000 })
+          .toMatchObject({ position: index + 1 });
       }
 
       // Releasing the holder grants the seat to position 1 alone: exactly
