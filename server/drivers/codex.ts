@@ -23,7 +23,7 @@ import { cloudHomeConfigured } from "../cloud-home.ts";
 import { serverVersion } from "../environment.ts";
 import { ChatGptPlanAuthController } from "./chatgpt-plan-auth.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
-import { isHarnessOwnedMcpEnvName } from "../mcp-registry.ts";
+import { isReservedMcpEnvEntry } from "../mcp-registry.ts";
 
 import type {
   DriverCreateInput,
@@ -843,9 +843,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const approvalMode: ApprovalMode = turn.approvalMode ?? (config.fullAuto ? "full" : "ask");
       for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
         if ("url" in server) continue;
-        const reserved = Object.keys(server.env).find(isHarnessOwnedMcpEnvName);
+        // The registry allows the one shared value ("1"); a turn can carry
+        // servers that never passed through it, so the same rule re-checks.
+        const reserved = Object.entries(server.env).find(([key, value]) => isReservedMcpEnvEntry(key, value));
         if (reserved) {
-          throw new Error(`Custom MCP server “${name}” cannot set reserved environment variable “${reserved}”`);
+          throw new Error(`Custom MCP server “${name}” cannot set reserved environment variable “${reserved[0]}”`);
         }
       }
       let autoAcceptPermissions = approvalMode === "full";

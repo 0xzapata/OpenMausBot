@@ -64,10 +64,24 @@ export function isHarnessOwnedMcpEnvName(name: string): boolean {
   return name === "ELECTRON_RUN_AS_NODE" || name.startsWith("OMB_") || name.startsWith("OGB_");
 }
 
-function environmentNameError(name: string): string | null {
+/** The harness-owned rule with its one value exception. ELECTRON_RUN_AS_NODE
+ * carries no secret; every harness proxy sets it to "1" so the packaged
+ * app's own binary can run as node, and Codex resolves each mount's names
+ * against the one shared environment its app-server runs in. "1" is exactly
+ * what the harness already sets there, so a custom server may share it; any
+ * other value would overwrite the harness's own proxies. OMB_/OGB_ names
+ * stay reserved at every value — they carry bearers and routing. */
+export function isReservedMcpEnvEntry(name: string, value: string): boolean {
+  if (name === "ELECTRON_RUN_AS_NODE") return value !== "1";
+  return isHarnessOwnedMcpEnvName(name);
+}
+
+function environmentEntryError(name: string, value: string): string | null {
   if (!ENV_NAME.test(name)) return `Environment variable “${name}” is not valid.`;
-  if (isHarnessOwnedMcpEnvName(name)) {
-    return `Environment variable “${name}” is reserved by OpenMausBot.`;
+  if (isReservedMcpEnvEntry(name, value)) {
+    return name === "ELECTRON_RUN_AS_NODE"
+      ? `Environment variable “${name}” is reserved by OpenMausBot; a custom server may set it to “1” only.`
+      : `Environment variable “${name}” is reserved by OpenMausBot.`;
   }
   return null;
 }
@@ -214,13 +228,15 @@ function parseStdio(raw: unknown, mutation: boolean, existing?: StoredMcpServer)
     return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid MCP server." };
   }
   const incoming = parsed.data.env ?? {};
-  const invalidEnv = Object.keys(incoming).map(environmentNameError).find((error) => error !== null);
-  if (invalidEnv) return { ok: false, error: invalidEnv };
   if (Object.keys(incoming).length > MAX_ENV) {
     return { ok: false, error: `Use at most ${MAX_ENV} environment variables.` };
   }
   const env = resolveSecrets(incoming, existing && !isRemoteMcpServer(existing) ? existing.env : undefined);
   if (!env.ok) return env;
+  // Judged on resolved values, so a "keep" placeholder for an allowed value
+  // passes and the harness-owned rule sees what would actually run.
+  const invalidEnv = Object.entries(env.values).map(([name, value]) => environmentEntryError(name, value)).find((error) => error !== null);
+  if (invalidEnv) return { ok: false, error: invalidEnv };
   return {
     ok: true,
     server: {
