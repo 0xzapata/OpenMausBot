@@ -337,7 +337,8 @@ describe("a browser daemon that will not close (#2603)", () => {
     mkdirSync(join(home, ".agent-browser"), { recursive: true });
     const files = { BROWSER_PID: join(home, "browser.pid"), HELPER_PID: join(home, "helper.pid"), PROFILE_DIR: join(home, `agent-browser-chrome-${randomUUID()}`) };
     mkdirSync(join(files.PROFILE_DIR, "Default"), { recursive: true });
-    const daemonEnv = { ...process.env, ...files };
+    // What agent-browser hands each daemon, and its Chrome inherits.
+    const daemonEnv = { ...process.env, ...files, AGENT_BROWSER_DAEMON: "1", AGENT_BROWSER_SESSION: "work" };
     let daemon: number;
     if (options.via === "unreaped") {
       // No init: the daemon's parent never collects it, so once killed it stays a zombie.
@@ -450,6 +451,21 @@ describe("a browser daemon that will not close (#2603)", () => {
       expect(alive(stranger.pid!)).toBe(true);
     } finally {
       stranger.kill("SIGKILL");
+    }
+  });
+
+  // A daemon killed without cleanup leaves its pid file, and the engine lists
+  // the session for as long as that pid is alive: once another of this
+  // binary's processes took it (another bot's daemon, or an engine command
+  // such as a bot's MCP server), only the environment tells them apart.
+  it.skipIf(!posix)("leaves alone another session's daemon, or an engine command, that took the pid of this one", async () => {
+    const { actual, binaryPath, env } = await engine({ close: () => 1 });
+    for (const taken of [{ AGENT_BROWSER_DAEMON: "1", AGENT_BROWSER_SESSION: "play" }, { AGENT_BROWSER_SESSION: "work" }]) {
+      const other = actual.spawn(binaryPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", env: { PATH: process.env.PATH, ...taken } });
+      groups.push(other.pid!);
+      writeFileSync(browserDaemonPidPath(env), String(other.pid));
+      expect(await closeBrowserSession(binaryPath, env, 500)).toBe(false);
+      expect(alive(other.pid!)).toBe(true);
     }
   });
 });

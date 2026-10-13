@@ -29,6 +29,9 @@ export interface BrowserProcessTree {
   /** Chrome's temporary profile folders. The daemon removes its Chrome's when
    * it closes it; a browser stopped here has them removed here instead. */
   profiles?: string[];
+  /** Windows, which gives no start times: the image the daemon ran when read.
+   * Its pid counts as the daemon only while it still runs that image. */
+  image?: string;
 }
 
 /** agent-browser starts Chrome on a profile folder of its own,
@@ -117,31 +120,38 @@ async function processEnvironment(pid: number): Promise<Map<string, string> | nu
   }));
 }
 
-/** Whether `pid` runs this agent-browser binary. The daemon is started
- * through the binary's resolved path, so a symlink (a global npm install)
- * and its target both count; a pid file naming any other program does not. */
-async function runsEngine(pid: number, binaryPath: string): Promise<boolean> {
-  const paths = new Set([binaryPath]);
-  try { paths.add(realpathSync(binaryPath)); } catch { /* compared by the given path only */ }
-  if (process.platform === "win32") {
-    const image = (await execText("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"]))?.toLowerCase() ?? "";
-    return [...paths].some((path) => image.startsWith(`"${basename(path).toLowerCase()}"`));
-  }
-  const command = await processArgs(pid);
-  return !!command && [...paths].some((path) => command === path || command.startsWith(`${path} `));
+/** Windows: the image `pid` runs, lowercased; "" when no process has that
+ * pid, null when tasklist could not say. */
+async function imageOf(pid: number): Promise<string | null> {
+  const row = await execText("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"]);
+  return row === null ? null : /^"([^"]*)"/.exec(row.trim())?.[1]?.toLowerCase() ?? "";
 }
 
 /** The daemon `daemon` (from its pid file) and everything under it, or null
- * when that pid does not run this binary. Read before the daemon is asked to
- * close: once it exits, its Chrome is re-parented and no longer found below
- * it. */
-export async function browserProcessTree(binaryPath: string, daemon: number): Promise<BrowserProcessTree | null> {
+ * when that pid is not `session`'s daemon of this binary. agent-browser starts
+ * a daemon through the binary's resolved path, so a symlink (a global npm
+ * install) and its target both count, with AGENT_BROWSER_DAEMON=1 and the
+ * session's name: a pid the system has since given to another program, to an
+ * engine command of the same binary or to another session's daemon is not
+ * it. Read before the daemon is asked to close: once it exits, its Chrome is
+ * re-parented and no longer found below it. */
+export async function browserProcessTree(binaryPath: string, daemon: number, session: string): Promise<BrowserProcessTree | null> {
   if (!Number.isInteger(daemon) || daemon <= 1 || daemon === process.pid || !processAlive(daemon)) return null;
-  if (!await runsEngine(daemon, binaryPath)) return null;
+  const paths = new Set([binaryPath]);
+  try { paths.add(realpathSync(binaryPath)); } catch { /* compared by the given path only */ }
+  if (process.platform === "win32") {
+    // Windows shows no environments, trees or start times here: the image
+    // tells the daemon from a later program given its pid, and taskkill /T
+    // walks the tree from it.
+    const image = await imageOf(daemon);
+    return image && [...paths].some((path) => basename(path).toLowerCase() === image) ? { daemon, members: new Map([[daemon, ""]]), groups: [], image } : null;
+  }
+  const command = await processArgs(daemon);
+  if (!command || ![...paths].some((path) => command === path || command.startsWith(`${path} `))) return null;
+  const env = await processEnvironment(daemon);
+  if (env?.get("AGENT_BROWSER_DAEMON") !== "1" || env.get("AGENT_BROWSER_SESSION") !== session) return null;
   const table = await processTable();
-  // Windows lists no tree here; taskkill /T walks it from the daemon instead.
-  if (!table) return { daemon, members: new Map([[daemon, ""]]), groups: [] };
-  if (!table.has(daemon)) return null;
+  if (!table?.has(daemon)) return null;
   const children = new Map<number, number[]>();
   for (const [pid, entry] of table) children.set(entry.ppid, [...children.get(entry.ppid) ?? [], pid]);
   const members = new Map<number, string>();
@@ -209,8 +219,17 @@ function survivors(tree: BrowserProcessTree, table: Map<number, ListedProcess>):
   return { pids, groups: groups.filter((group) => pids.some((pid) => table.get(pid)!.pgid === group)) };
 }
 
+/** Windows: whether the tree's daemon still runs the image it ran when read;
+ * null when tasklist could not say. Windows soon gives a freed pid to a new
+ * process, which neither counts nor is ever killed as the daemon. */
+async function windowsDaemonRuns(tree: BrowserProcessTree): Promise<boolean | null> {
+  const image = await imageOf(tree.daemon);
+  return image === null ? null : !!image && image === tree.image;
+}
+
 /** Whether any process of the tree still runs. */
 export async function browserProcessesRunning(tree: BrowserProcessTree): Promise<boolean> {
+  if (process.platform === "win32") return await windowsDaemonRuns(tree) ?? processAlive(tree.daemon);
   const table = await processTable();
   if (!table) return [...tree.members.keys()].some(processAlive);
   return survivors(tree, table).pids.length > 0;
@@ -231,10 +250,11 @@ async function within(ms: number, done: () => Promise<boolean>): Promise<boolean
  * of the tree is killed by process group. True once nothing of it runs. */
 export async function stopBrowserProcesses(tree: BrowserProcessTree, graceMs = 1_500): Promise<boolean> {
   if (process.platform === "win32") {
-    // /T takes the daemon's Chrome with it while the daemon still runs.
-    if (processAlive(tree.daemon)) await execText("taskkill", ["/PID", String(tree.daemon), "/T", "/F"]);
-    await within(2_000, async () => !processAlive(tree.daemon));
-    return !processAlive(tree.daemon);
+    // /T takes the daemon's Chrome with it while the daemon still runs. Only
+    // a pid that still runs the daemon's image is named: never one Windows
+    // gave to another program, nor one tasklist could not vouch for.
+    if (await windowsDaemonRuns(tree)) await execText("taskkill", ["/PID", String(tree.daemon), "/T", "/F"]);
+    return within(2_000, async () => await windowsDaemonRuns(tree) === false);
   }
   const send = (target: number, signal: NodeJS.Signals) => { try { process.kill(target, signal); } catch { /* already gone */ } };
   const rootRuns = async () => {

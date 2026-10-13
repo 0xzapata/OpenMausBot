@@ -51,13 +51,16 @@ same rules hold on the desktop, a server and Cloud:
   so it can still save the sign-ins from its Chrome; whatever is left after
   a short grace is killed by process group, and a process outside those
   groups by its pid (Windows: `taskkill /T`), and Chrome's temporary profile
-  folder is removed as the daemon would have. Only a pid file that still names the same
-  agent-browser binary is acted on, and each process is matched by its start
-  time, so a pid the system gave to another program is never signalled. A
-  browser that is not running is never sent `close` at all: the CLI would
-  start a daemon only to stop it again (and leave its `.config` file
-  behind). On Linux the process table is read from `/proc`, so an image
-  without `ps` works the same.
+  folder is removed as the daemon would have. Only a pid file that still names
+  this session's daemon is acted on: the same agent-browser binary, with
+  `AGENT_BROWSER_DAEMON=1` and the session's name in its environment (on
+  Windows, which shows neither, the same image, checked again before
+  `taskkill` and while waiting). Each process is matched by its start time,
+  so a pid the system gave to another program, another bot's daemon or an
+  engine command included, is never signalled. A browser that is not running
+  is never sent `close` at all: the CLI would start a daemon only to stop it
+  again (and leave its `.config` file behind). On Linux the process table is
+  read from `/proc`, so an image without `ps` works the same.
 - **Unused browsers close.** A browser nothing has used for
   `browserEngine.idleTimeoutMinutes` in `config.json` (1 to 60; 10 when
   unset) is closed: no bot call (a tool listing counts), no turn that has
@@ -73,7 +76,13 @@ same rules hold on the desktop, a server and Cloud:
   daemon was killed under it (by the OOM killer, by hand) can never be used
   again: it is found by the session its environment names and stopped, and
   its profile folder removed. Anything else under the same HOME, such as a
-  person's own agent-browser sessions, is left alone.
+  person's own agent-browser sessions, is left alone. Browsers are told
+  apart by session name, and agent-browser keeps one daemon per name under a
+  HOME: a person's own agent-browser session named like one of this data
+  dir's profiles (a profile from before profile ids were random, such as
+  `work`), or a copy of this data dir run under the same HOME, shares this
+  data dir's browsers, and the sweep closes them as its own. Windows lists no
+  environments, so there a Chrome whose daemon was killed is not found.
 
 **Containers.** Chrome's helper processes need something to collect them
 once their parent exits, and Chrome needs shared memory. Both Docker compose

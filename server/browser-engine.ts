@@ -159,7 +159,7 @@ async function closeOnce(binaryPath: string, env: NodeJS.ProcessEnv, session: st
   const closing = daemonPid();
   // Read before anything is asked to stop: once the daemon exits, its Chrome
   // is re-parented and can no longer be found under it.
-  const tree = closing === null ? null : await browserProcessTree(binaryPath, Number(closing)).catch(() => null);
+  const tree = closing === null ? null : await browserProcessTree(binaryPath, Number(closing), session).catch(() => null);
   // A daemon that does not answer `close` keeps running with its Chrome,
   // detached from us, and every later restart failed the same way (#2603).
   if ((await runBrowserCommand(binaryPath, closeEnv, ["close"], deadline)).ok) {
@@ -176,8 +176,9 @@ async function closeOnce(binaryPath: string, env: NodeJS.ProcessEnv, session: st
     }
   }
   // Last resort: stop the daemon and its Chrome by the tree read before the
-  // close. Only a pid file that still names this exact agent-browser binary
-  // gave one, so a stale file naming a reused pid kills nothing.
+  // close. Only a pid file that still names this session's daemon of this
+  // agent-browser binary gave one, so a stale file naming a reused pid, even
+  // one another bot's engine now runs under, kills nothing.
   return tree ? stopBrowserProcesses(tree) : false;
 }
 
