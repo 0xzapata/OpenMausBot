@@ -100,7 +100,11 @@ export interface RuntimeStore {
   children(id: string): Assignment[];
   /** The root of this id's tree. */
   root(id: string): Assignment | undefined;
-  all(filter?: { rootId?: string; nonTerminal?: boolean; ownerThreadId?: string }): Assignment[];
+  /** `assignee` reads one bot's rows in one conversation (an indexed lookup);
+   * `roots` only rows with no parent; `openSince` only rows not finished
+   * before that time. */
+  all(filter?: { rootId?: string; nonTerminal?: boolean; ownerThreadId?: string; assignee?: { botId: string; threadId: string };
+    roots?: boolean; openSince?: number }): Assignment[];
   /** Insert a new row and its event in one transaction. */
   insert(a: Assignment, event: { kind: EventKind; detail?: string; at?: number }): void;
   /** Write the whole row and (optionally) an event in one transaction. */
@@ -117,6 +121,12 @@ export interface RuntimeStore {
   prune(before: number): number;
   close(): void;
 }
+
+const terminalList = TERMINAL.map(s => `'${s}'`).join(", ");
+/** A row that has not ended: the assignments_live index and all({ nonTerminal })
+ * share this one term, since SQLite reads a partial index only for a WHERE
+ * that repeats its own. */
+const LIVE = `status NOT IN (${terminalList})`;
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS assignments (
@@ -138,6 +148,11 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS assignments_requester_thread ON assignments(requester_thread_id);
   CREATE INDEX IF NOT EXISTS assignments_requester_run ON assignments(requester_run_id);
   CREATE INDEX IF NOT EXISTS assignments_assignee ON assignments(assignee_bot_id, assignee_thread_id);
+  -- The live rows in all()'s order. NOT IN cannot use assignments_status, so
+  -- without this every nonTerminal read walks the ended rows too, and those
+  -- only grow (#2765). Created on every open, so an existing file gets it too;
+  -- IF NOT EXISTS keeps an older definition, so a change to TERMINAL renames it.
+  CREATE INDEX IF NOT EXISTS assignments_live ON assignments(created_at) WHERE ${LIVE};
   CREATE TABLE IF NOT EXISTS assignment_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     assignment_id TEXT NOT NULL,
@@ -160,8 +175,6 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS inbox_run ON inbox(owner_run_id, delivered_at);
   CREATE INDEX IF NOT EXISTS inbox_assignment ON inbox(assignment_id);
 `;
-
-const terminalList = TERMINAL.map(s => `'${s}'`).join(", ");
 
 type Row = Record<string, unknown>;
 
@@ -299,8 +312,14 @@ export function openRuntimeStore(path: string): RuntimeStore {
       const where: string[] = [];
       const params: SQLInputValue[] = [];
       if (filter.rootId !== undefined) { where.push("root_id = ?"); params.push(filter.rootId); }
-      if (filter.nonTerminal) where.push(`status NOT IN (${terminalList})`);
+      if (filter.nonTerminal) where.push(LIVE);
       if (filter.ownerThreadId !== undefined) { where.push("requester_thread_id = ?"); params.push(filter.ownerThreadId); }
+      if (filter.assignee !== undefined) {
+        where.push("assignee_bot_id = ? AND assignee_thread_id = ?");
+        params.push(filter.assignee.botId, filter.assignee.threadId);
+      }
+      if (filter.roots) where.push("parent_id IS NULL");
+      if (filter.openSince !== undefined) { where.push("(finished_at IS NULL OR finished_at >= ?)"); params.push(filter.openSince); }
       const sql = `SELECT id, json FROM assignments${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, rowid`;
       return (db.prepare(sql).all(...params) as Row[]).map(readAssignment);
     },

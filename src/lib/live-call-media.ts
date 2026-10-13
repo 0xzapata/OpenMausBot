@@ -39,7 +39,7 @@ export interface LiveMediaState {
   notice: string | null;
   /** the server has no OpenAI key; show the key form */
   needsKey: boolean;
-  /** Live calls need a Pro plan; show the Pro card (never the key form) */
+  /** This Live call needs a Pro plan (a phone's); show the Pro card (never the key form) */
   needsPro: boolean;
   busyWith: LiveCallState | null;
   /** a stopped call's one action, only where it can help: never for a busy

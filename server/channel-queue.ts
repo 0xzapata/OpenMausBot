@@ -242,7 +242,11 @@ function coalesceIdentity(item: ChannelQueueItem): string {
   return "person:local";
 }
 
-/** Test helper. */
-export function _queuedChannelCount(threadId: string): number {
+/** How many sends wait behind this room thread's running turn (the job read
+ * counts them as work still to do). */
+export function queuedChannelSends(threadId: string): number {
   return queues.get(threadId)?.items.length ?? 0;
 }
+
+/** Test helper. */
+export const _queuedChannelCount = queuedChannelSends;

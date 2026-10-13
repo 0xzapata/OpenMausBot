@@ -924,14 +924,14 @@ posixOnly("Live calls need Pro: the desktop app's answer reaches its server", ()
     if (home) await removeTempDir(home);
   });
 
-  it("refuses a start until the desktop app says Pro, and a plan change never ends a running call", async () => {
+  it("refuses a phone's start until the desktop app says Pro, starts the desktop's own call without it, and a plan change never ends a running call", async () => {
     const created = await request("POST", "/api/bots", { name: "Ada", modelSelection: { instanceId: "claude", model: "claude-fake" } });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const botId = created.body.bot.id as string;
     const start = (client: LiveCallState["client"]) => request("POST", "/api/live/session", { botId, sdp: SDP, client });
 
-    // Not Pro: refused before the key (this server has one) and before OpenAI.
-    expect(await start("desktop")).toEqual({ status: 402, body: { error: "Live calls need a Pro plan.", needsPro: true } });
+    // Not Pro: a phone's start is refused before the key (this server has one) and before OpenAI.
+    expect(await start("ios")).toEqual({ status: 402, body: { error: "Live calls from your phone need a Pro plan.", needsPro: true } });
     expect(live.sessions).toHaveLength(0);
 
     // The Cloud sign-in is read: Pro. A malformed message after it is refused and changes nothing.
@@ -951,9 +951,14 @@ posixOnly("Live calls need Pro: the desktop app's answer reaches its server", ()
     await tellServer({ type: "openmausbot:pro-plan", pro: false });
     expect((await request("GET", "/api/live/call")).body).toMatchObject({ call: { callId, status: "live" } });
     expect(await request("POST", "/api/live/call/end", { callId })).toMatchObject({ status: 200, body: { call: { status: "ended", endReason: "hung-up" } } });
-    // ...and the next one is refused.
-    expect(await start("desktop")).toMatchObject({ status: 402, body: { needsPro: true } });
+    // ...and the phone's next one is refused.
+    expect(await start("android")).toMatchObject({ status: 402, body: { needsPro: true } });
     expect(live.sessions).toHaveLength(1);
+    // The desktop app's own call needs no plan.
+    const desktop = await start("desktop");
+    expect(desktop.status, JSON.stringify(desktop.body)).toBe(201);
+    expect(live.sessions).toHaveLength(2);
+    expect(await request("POST", "/api/live/call/end", { callId: desktop.body.call.callId })).toMatchObject({ status: 200 });
     expect(output).toContain("[pro-plan] the desktop app says Pro");
     expect(output).toContain("[pro-plan] the desktop app says not Pro");
     expect(output).toContain("rejected private parent message: invalid Pro plan message");

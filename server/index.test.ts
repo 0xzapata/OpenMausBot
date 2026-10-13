@@ -1009,7 +1009,7 @@ beforeAll(async () => {
     }
     if (
       req.headers.authorization === "Bearer box_slow"
-      && new URL(req.url ?? "/", "http://box.invalid").pathname === "/boxes"
+      && new URL(req.url ?? "/", "http://box.invalid").pathname === "/sandboxes"
     ) {
       boatSlowRequestCount += 1;
       await (boatSlowHold ?? new Promise((resolve) => setTimeout(resolve, 150)));
@@ -1026,7 +1026,7 @@ beforeAll(async () => {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ ok: false, code: "unauthorized" }));
       }
-      if (method === "GET" && requestUrl.pathname === "/boxes") {
+      if (method === "GET" && requestUrl.pathname === "/sandboxes") {
         const listGate = managedBoatListGate;
         if (listGate) {
           listGate.enter();
@@ -1035,7 +1035,7 @@ beforeAll(async () => {
         res.writeHead(managedBoatListStatus, { "content-type": "application/json" });
         return res.end(JSON.stringify(
           managedBoatListStatus === 200
-            ? { ok: true, boxes: managedBoatListRowsOverride ?? managedBoatRows, pageInfo: { nextCursor: null } }
+            ? { ok: true, sandboxes: managedBoatListRowsOverride ?? managedBoatRows, pageInfo: { nextCursor: null } }
             : { ok: false, message: "fixture list unavailable" },
         ));
       }
@@ -1050,7 +1050,7 @@ beforeAll(async () => {
           type: "deletion.operation",
           operation: {
             id: managedBoatDeletionOperationId,
-            kind: "box",
+            kind: "sandbox",
             targetId: managedBoatDeletionTarget,
             status: managedBoatLastDeletionStatus,
           },
@@ -1058,13 +1058,13 @@ beforeAll(async () => {
       }
       res.setHeader("content-type", "application/json");
       res.statusCode = 200;
-      if (method === "POST" && /^\/boxes\/[^/]+\/prompt$/.test(path)) {
+      if (method === "POST" && /^\/sandboxes\/[^/]+\/prompt$/.test(path)) {
         let raw = "";
         for await (const chunk of req) raw += chunk;
         boatPromptBodies.push(JSON.parse(raw));
         return res.end(JSON.stringify({ ok: true }));
       }
-      if (method === "POST" && path === "/boxes") {
+      if (method === "POST" && path === "/sandboxes") {
         let raw = "";
         for await (const chunk of req) raw += chunk;
         managedBoatCreateBodies.push(raw ? JSON.parse(raw) : {});
@@ -1081,21 +1081,21 @@ beforeAll(async () => {
           res.statusCode = 201;
           return res.end(JSON.stringify({
             ok: true,
-            box: { id: managedBoatCreateId, state: "idle" },
+            sandbox: { id: managedBoatCreateId, state: "idle" },
           }));
         }
         return res.end(JSON.stringify({ ok: false, message: "fixture refused create" }));
       }
-      if (method === "GET" && path === "/boxes/route-box") {
-        return res.end(JSON.stringify({ ok: true, box: { id: "route-box", state: "running" } }));
+      if (method === "GET" && path === "/sandboxes/route-box") {
+        return res.end(JSON.stringify({ ok: true, sandbox: { id: "route-box", state: "running" } }));
       }
-      if (method === "POST" && path === "/boxes/route-box/commands") {
+      if (method === "POST" && path === "/sandboxes/route-box/commands") {
         return res.end(JSON.stringify({ ok: true, exitCode: 0, stdout: "", stderr: "" }));
       }
-      if (method === "POST" && path === "/boxes/route-box/desktop?vnc=1") {
+      if (method === "POST" && path === "/sandboxes/route-box/desktop?vnc=1") {
         return res.end(JSON.stringify({ ok: true, desktopUrl: "https://desktop.invalid/route-box" }));
       }
-      const boatMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})$/);
+      const boatMatch = requestUrl.pathname.match(/^\/sandboxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})$/);
       if (method === "GET" && boatMatch) {
         const row = managedBoatRows.find((candidate) => candidate.id === boatMatch[1]);
         const exists = row ?? (managedBoatCreatedIds.has(boatMatch[1]!)
@@ -1105,7 +1105,7 @@ beforeAll(async () => {
           res.statusCode = 404;
           return res.end(JSON.stringify({ ok: false, message: "not found" }));
         }
-        return res.end(JSON.stringify({ ok: true, box: exists }));
+        return res.end(JSON.stringify({ ok: true, sandbox: exists }));
       }
       if (method === "PATCH" && boatMatch) {
         let raw = "";
@@ -1122,17 +1122,17 @@ beforeAll(async () => {
           ...managedBoatRows.filter((candidate) => candidate.id !== boatMatch[1]),
           { id: boatMatch[1], name: managedBoatCreateName || requestedName, state: "idle" },
         ];
-        return res.end(JSON.stringify({ ok: true, box: managedBoatRows.at(-1) }));
+        return res.end(JSON.stringify({ ok: true, sandbox: managedBoatRows.at(-1) }));
       }
-      const desktopMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})\/desktop$/);
+      const desktopMatch = requestUrl.pathname.match(/^\/sandboxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})\/desktop$/);
       if (method === "POST" && desktopMatch) {
         return res.end(JSON.stringify({ ok: true, desktopUrl: `https://desktop.invalid/${desktopMatch[1]}` }));
       }
-      const commandMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})\/commands$/);
+      const commandMatch = requestUrl.pathname.match(/^\/sandboxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})\/commands$/);
       if (method === "POST" && commandMatch) {
         return res.end(JSON.stringify({ ok: true, exitCode: 0, stdout: "", stderr: "" }));
       }
-      const stopMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})\/stop$/);
+      const stopMatch = requestUrl.pathname.match(/^\/sandboxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})\/stop$/);
       if (method === "POST" && stopMatch) {
         if (managedBoatStopDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, managedBoatStopDelayMs));
@@ -1140,7 +1140,7 @@ beforeAll(async () => {
         managedBoatRows = managedBoatRows.map((row) => row.id === stopMatch[1] ? { ...row, state: "archived" } : row);
         return res.end(JSON.stringify({ ok: true }));
       }
-      const deleteMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})$/);
+      const deleteMatch = requestUrl.pathname.match(/^\/sandboxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})$/);
       if (method === "DELETE" && deleteMatch) {
         if (managedBoatCreateMode === "fail-rename" && managedBoatCreatedIds.has(deleteMatch[1]!)) {
           res.statusCode = 503;
@@ -1172,7 +1172,7 @@ beforeAll(async () => {
             type: "deletion.operation",
             operation: {
               id: managedBoatDeletionOperationId,
-              kind: "box",
+              kind: "sandbox",
               targetId: deleteMatch[1],
               status: managedBoatLastDeletionStatus,
             },
@@ -1183,13 +1183,13 @@ beforeAll(async () => {
       return res.end(JSON.stringify({ ok: true }));
     }
     const ok = req.headers.authorization === "Bearer box_good" || req.headers.authorization === "Bearer box_slow";
-    const directBoatRead = /^\/boxes\/bx_[23456789abcdefghjkmnpqrstuvwxyz]{8}$/.test(req.url ?? "");
+    const directBoatRead = /^\/sandboxes\/bx_[23456789abcdefghjkmnpqrstuvwxyz]{8}$/.test(req.url ?? "");
     res.writeHead(ok && directBoatRead ? 404 : ok ? 200 : 401, { "content-type": "application/json" });
     res.end(JSON.stringify(
       ok && directBoatRead
         ? { ok: false, message: "not found" }
         : ok
-          ? { ok: true, boxes: [] }
+          ? { ok: true, sandboxes: [] }
           : { ok: false, code: "unauthorized" },
     ));
   });
@@ -1225,7 +1225,7 @@ beforeAll(async () => {
       OMB_PORT: String(PORT),
       OMB_WEBHOOK_PORT: String(WEBHOOK_PORT),
       OMB_EXTRA_PATH: fakeDockerDir,
-      OMB_BOX_API: `http://127.0.0.1:${boatStubPort}`,
+      OMB_BOAT_API: `http://127.0.0.1:${boatStubPort}`,
       OMB_COMPOSIO_API: `http://127.0.0.1:${boatStubPort}/api/v3.1`,
       OMB_COMPOSIO_TOOLKITS_API: `http://127.0.0.1:${boatStubPort}/api/v3`,
       // Managed connected-apps broker on the stub, so relayed MCP frames are
@@ -3301,7 +3301,7 @@ describe("harness HTTP API", () => {
       boatRouteCalls.length = 0;
       const passiveStatus = await api("GET", `/api/bots/${bot.id}/computer`);
       expect(passiveStatus).toMatchObject({ status: 200, body: { backend: "box", configured: true } });
-      expect(boatRouteCalls).toEqual([{ method: "GET", path: "/boxes?limit=200" }]);
+      expect(boatRouteCalls).toEqual([{ method: "GET", path: "/sandboxes?limit=200" }]);
 
       // A stale renderer cannot turn that passive read into infrastructure:
       // every Boat verb is rejected before any provider mutation is attempted.
@@ -3318,7 +3318,7 @@ describe("harness HTTP API", () => {
       const provisioned = await api("POST", `/api/bots/${bot.id}/computer/provision`, {});
       expect(provisioned.status).toBe(500);
       expect(provisioned.body.error).toMatch(/fixture refused create/);
-      expect(boatRouteCalls).toContainEqual({ method: "POST", path: "/boxes" });
+      expect(boatRouteCalls).toContainEqual({ method: "POST", path: "/sandboxes" });
     } finally {
       if (botId) await api("DELETE", `/api/bots/${botId}`);
       await api("PUT", "/api/config", { box: { token: "" } });
@@ -3496,7 +3496,7 @@ describe("harness HTTP API", () => {
     type ComputerDump = { mcpConfig: { mcpServers: { computer?: { args?: string[] } } } };
     // A turn on the team computer keeps the bot's own engine; the team's Boat
     // is its computer tools. Boat's own runner is never asked to run it.
-    const promptsOnBoat = () => boatRouteCalls.filter(call => call.method === "POST" && call.path === `/boxes/${managedBoatCreateId}/prompt`).length;
+    const promptsOnBoat = () => boatRouteCalls.filter(call => call.method === "POST" && call.path === `/sandboxes/${managedBoatCreateId}/prompt`).length;
     let promptBaseline = 0;
     const promptedOnTeamComputer = async (count: number, botId: string) => {
       try {
@@ -3527,7 +3527,7 @@ describe("harness HTTP API", () => {
       const room = (await api("POST", "/api/groups", { name: "Shared computer room", memberIds: [botIds[1]], section,
         setup: { bulletin: "", defaultResponder: { kind: "member", botId: botIds[1] } } })).body.group;
       roomId = room.id;
-      const createCount = boatRouteCalls.filter(call => call.method === "POST" && call.path === "/boxes").length;
+      const createCount = boatRouteCalls.filter(call => call.method === "POST" && call.path === "/sandboxes").length;
 
       // An explicit Off bot gets no computer even inside the assigned team.
       rmSync(fakeClaudeDump, { force: true });
@@ -3628,7 +3628,7 @@ describe("harness HTTP API", () => {
       )), { timeout: 5_000 }).toMatch(/team's cloud computer is missing/);
       await idle(botIds[0]);
       expect(existsSync(fakeClaudeDump)).toBe(false);
-      expect(boatRouteCalls.filter(call => call.method === "POST" && call.path === "/boxes")).toHaveLength(createCount);
+      expect(boatRouteCalls.filter(call => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(createCount);
     } finally {
       if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
       for (const botId of botIds) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
@@ -3773,7 +3773,7 @@ describe("harness HTTP API", () => {
         OMB_PORT: String(isolatedPort),
         OMB_WEBHOOK_PORT: String(isolatedPort + 1),
         OMB_STATIC_DIR: isolatedStatic,
-        OMB_BOX_API: `http://127.0.0.1:${boatStubPort}`,
+        OMB_BOAT_API: `http://127.0.0.1:${boatStubPort}`,
         FAKE_CLAUDE_MODE: "hang",
         FAKE_CLAUDE_PROMPTS: join(isolatedHome, "desktop-prompts.jsonl"),
         // seconds, not minutes: the point of this file is the cap firing,
@@ -3794,7 +3794,7 @@ describe("harness HTTP API", () => {
     // Each turn granted the shared desktop starts its own engine there once
     // (the fake engine hangs, holding the seat); Boat's runner is never asked.
     const promptsOnParkBox = () => {
-      expect(boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/boxes/bx_parkdskt/prompt")).toHaveLength(0);
+      expect(boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/sandboxes/bx_parkdskt/prompt")).toHaveLength(0);
       return claudePrompts(join(isolatedHome, "desktop-prompts.jsonl")).length;
     };
     let botId = "";
@@ -4029,7 +4029,7 @@ describe("harness HTTP API", () => {
         OMB_PORT: String(isolatedPort),
         OMB_WEBHOOK_PORT: String(isolatedPort + 1),
         OMB_STATIC_DIR: isolatedStatic,
-        OMB_BOX_API: `http://127.0.0.1:${boatStubPort}`,
+        OMB_BOAT_API: `http://127.0.0.1:${boatStubPort}`,
         OMB_COMPUTER_WAIT_MAX_MS: "2000",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -4047,7 +4047,7 @@ describe("harness HTTP API", () => {
     // step never gets a second run). Each starts its own engine; Boat's
     // runner is never asked.
     const promptsOnGoalBox = () => {
-      expect(boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/boxes/bx_parkedsk/prompt")).toHaveLength(0);
+      expect(boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/sandboxes/bx_parkedsk/prompt")).toHaveLength(0);
       return claudePrompts(join(isolatedHome, "desktop-prompts.jsonl")).length;
     };
     const goalCard = async () => {
@@ -4343,7 +4343,7 @@ describe("harness HTTP API", () => {
       managedBoatStopDelayMs = 1_000;
       const sleeping = api("POST", "/api/computers/boxes/bx_23456789/sleep", {});
       await expect.poll(() => boatRouteCalls.some(
-        (call) => call.method === "POST" && call.path === "/boxes/bx_23456789/stop",
+        (call) => call.method === "POST" && call.path === "/sandboxes/bx_23456789/stop",
       )).toBe(true);
       const racedTurn = await api("POST", `/api/bots/${bot.id}/messages`, { text: "do not race deletion" });
       expect(racedTurn.status).toBe(409);
@@ -4353,7 +4353,7 @@ describe("harness HTTP API", () => {
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(409);
       expect((await sleeping).status).toBe(200);
       managedBoatStopDelayMs = 0;
-      expect(boatRouteCalls).toContainEqual({ method: "POST", path: "/boxes/bx_23456789/stop" });
+      expect(boatRouteCalls).toContainEqual({ method: "POST", path: "/sandboxes/bx_23456789/stop" });
 
       // Orphans have no bot id for the shared lifecycle lane. Serialize their
       // Settings actions by provider id so two paired clients cannot Sleep and
@@ -4362,7 +4362,7 @@ describe("harness HTTP API", () => {
       managedBoatStopDelayMs = 1_000;
       const orphanSleep = api("POST", "/api/computers/boxes/bx_abcdefgh/sleep", {});
       await expect.poll(() => boatRouteCalls.some(
-        (call) => call.method === "POST" && call.path === "/boxes/bx_abcdefgh/stop",
+        (call) => call.method === "POST" && call.path === "/sandboxes/bx_abcdefgh/stop",
       )).toBe(true);
       const racedOrphanDelete = await api("POST", "/api/computers/boxes/bx_abcdefgh/delete", {
         confirmName: orphanName,
@@ -4381,7 +4381,7 @@ describe("harness HTTP API", () => {
       boatRouteCalls.length = 0;
       const botScopedSleep = api("POST", `/api/bots/${bot.id}/computer/sleep`, {});
       await expect.poll(() => boatRouteCalls.some(
-        (call) => call.method === "POST" && call.path === "/boxes/bx_23456789/stop",
+        (call) => call.method === "POST" && call.path === "/sandboxes/bx_23456789/stop",
       )).toBe(true);
       expect((await api("POST", "/api/computers/boxes/bx_23456789/delete", {
         confirmName: managedName,
@@ -4640,7 +4640,7 @@ describe("harness HTTP API", () => {
         }),
       ]);
       expect(boatRouteCalls.some(
-        (call) => call.method === "GET" && call.path.startsWith("/boxes?limit="),
+        (call) => call.method === "GET" && call.path.startsWith("/sandboxes?limit="),
       )).toBe(true);
       const racedTurn = await api("POST", `/api/bots/${bot.id}/messages`, { text: "do not provision during deletion" });
       expect(racedTurn.status).toBe(409);
@@ -4781,7 +4781,7 @@ describe("harness HTTP API", () => {
 
       const deletion = await api("DELETE", `/api/bots/${bot.id}`);
       expect(deletion).toMatchObject({ status: 200, body: { ok: true } });
-      expect(boatRouteCalls).toContainEqual({ method: "GET", path: `/boxes/${managedBoatCreateId}` });
+      expect(boatRouteCalls).toContainEqual({ method: "GET", path: `/sandboxes/${managedBoatCreateId}` });
       expect(managedBoatDeleteConfirmations).toContainEqual({
         boxId: managedBoatCreateId,
         confirmation: managedBoatCreateId,
@@ -8550,7 +8550,7 @@ describe("harness HTTP API", () => {
 
       const provisioning = api("POST", `/api/bots/${bot.id}/computer/provision`, {});
       await expect.poll(() => boatRouteCalls.some(
-        (call) => call.method === "PATCH" && call.path === `/boxes/${managedBoatCreateId}`,
+        (call) => call.method === "PATCH" && call.path === `/sandboxes/${managedBoatCreateId}`,
       )).toBe(true);
       const racedChange = await api("PUT", "/api/config", { box: { token: "box_good" } });
       expect(racedChange.status).toBe(409);
@@ -10164,8 +10164,10 @@ describe("harness HTTP API", () => {
       rmSync(join(home, "browser-calls.jsonl"), { force: true });
       expect((await api("PATCH", "/api/config", { browserProfiles: [] })).status).toBe(200);
       const calls = readFileSync(join(home, "browser-calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-      expect(calls).toContainEqual({ args: ["close"], session: profile.partitionId ?? profile.id });
+      // The engine says this profile's browser is not running, so nothing
+      // starts a daemon just to close it, and no other profile is touched.
       expect(calls).toContainEqual({ args: ["session", "list", "--json"], session: profile.partitionId ?? profile.id });
+      expect(calls).not.toContainEqual({ args: ["close"], session: profile.partitionId ?? profile.id });
       expect(calls.some((call: { args: string[] }) => call.args.includes("--all"))).toBe(false);
       const state = (await api("GET", "/api/bots")).body;
       expect(state.bots.find((candidate: { id: string }) => candidate.id === bot.id)).not.toHaveProperty("browserProfile");

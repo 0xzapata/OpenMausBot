@@ -1,9 +1,10 @@
 # Verifying OpenMausBot
 
-OpenMausBot has one development control surface: `pnpm control:omb`. It is a
-thin command-line adapter over `scripts/mcp-server.ts`, so verification uses
-the same URL validation, task pinning, bounded transcripts, wait states, and
-redaction as external MCP clients.
+OpenMausBot has one development control surface: `pnpm control:omb`. It runs
+the published `openmausbot` verbs (docs/headless-cli.md), which call the MCP
+tools in `scripts/mcp-server.ts`, so verification uses the same URL
+validation, task pinning, bounded transcripts, wait states, and redaction as
+external MCP clients and scripts.
 
 ## Launch
 
@@ -27,7 +28,7 @@ exception: `OMB_OPENAI_LIVE_URL` crosses when it is a loopback
 `http://127.0.0.1:PORT` (the fake GPT-Live that
 `node --experimental-strip-types server/testing/fake-openai-live.ts` prints),
 and `OMB_OPENAI_LIVE_KEY` crosses only with it, so that key can only ever
-reach the fake. `OMB_PRO_PLAN` crosses only as `1`: Live calls need a Pro plan,
+reach the fake. `OMB_PRO_PLAN` crosses only as `1`: Live calls from a phone need a Pro plan,
 and that is how a server the desktop app did not start says so.
 
 Pass the printed URL explicitly from a second terminal:
@@ -43,6 +44,7 @@ recipe from sending messages to the user's running app by accident.
 
 Use only mapped, tested commands:
 
+- [The headless command line](headless-cli.md)
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)

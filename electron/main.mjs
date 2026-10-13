@@ -49,8 +49,6 @@ import {
   managedCompanionTunnelAccess,
   resolveCloudflaredBinary,
   resolveManagedCompanionGuardian,
-  withManagedCompanionTunnelAccess,
-  withoutManagedCompanionTunnelAccess,
 } from "./managed-companion-tunnel.mjs";
 import { createSecureCredentialState } from "./secure-credential-state.mjs";
 import {
@@ -75,6 +73,7 @@ import { createControlPlaneClient } from "./control-plane-client.mjs";
 import {
   companionAccountCleanupPending,
   createCompanionAccountService,
+  managedEndpointNeed,
   resolveCompanionControlPlaneURL,
 } from "./companion-account-service.mjs";
 import capabilitiesModule from "./capabilities.cjs";
@@ -367,7 +366,7 @@ let companyBackupClientStateRequest = null;
 let companyRestoreCommitting = false;
 let companyBackupConfigurationRevision = 0;
 const managedDesktopRelay = createManagedDesktopRelay();
-// Whether the person counts as Pro, which starting a Live call needs
+// Whether the person counts as Pro, which starting a Live call from a phone needs
 // (pro-plan.mjs): kept here, where the Cloud sign-in lives, and handed to the
 // local server as the answer alone (syncProPlan).
 const proPlanRelay = createProPlanRelay();
@@ -722,11 +721,12 @@ installDesktopCrashListeners({
 });
 
 // ── managed companion connection ───────────────────────────────────────
-// Account onboarding provisions one remote Cloudflare Tunnel per desktop,
-// then calls reconcileManagedCompanionEndpointProvision below. Only the
-// endpoint is public state. The connector token stays in credentials.bin and
-// is passed to cloudflared through a private token file by the lifecycle
-// module — never through IPC, argv, the environment, or logs.
+// The account service (companion-account-service.mjs) holds one remote
+// Cloudflare Tunnel per desktop, only while a paired device or a pairing in
+// progress needs it, and starts or stops the connector through the hooks
+// below. Only the endpoint is public state. The connector token stays in
+// credentials.bin and is passed to cloudflared through a private token file
+// by the lifecycle module — never through IPC, argv, the environment, or logs.
 let managedCompanionConnector = null;
 let companionAccountService = null;
 let companionDesiredThisLaunch = false;
@@ -927,28 +927,6 @@ setCompanionLifecycleListener(({ expected, pid }) => {
   void managedCompanionConnector?.stop().catch(() => {});
 });
 
-/** Narrow main-process hook for the account onboarding flow. Its return value
- * is explicitly secret-free and can be used to refresh the settings panel. */
-export async function reconcileManagedCompanionEndpointProvision(provision) {
-  await updateSecureCredentialDocument((credentials) =>
-    withManagedCompanionTunnelAccess(credentials, provision),
-  );
-  if (companionDesiredThisLaunch) {
-    await startManagedCompanionConnection({ waitForVerification: true });
-  }
-  return publicManagedCompanionState();
-}
-
-/** Called only after the control plane has revoked/deleted the endpoint. */
-export async function clearManagedCompanionEndpointCredentials() {
-  await updateSecureCredentialDocument((credentials) =>
-    withoutManagedCompanionTunnelAccess(credentials),
-  );
-  await managedCompanionConnector?.stop();
-  if (companionDesiredThisLaunch) await reconcileCompanionAdvertisement(null);
-  return publicManagedCompanionState();
-}
-
 /** Account sign-out must stop advertising the hosted route before it asks
  * the control plane to revoke anything, but it must not erase the retry
  * credentials until that remote cleanup is durably scheduled. */
@@ -1010,6 +988,13 @@ function ensureCompanionAccountService() {
     // Retry capacity/transient setup failures with backoff, and re-provision a
     // reclaimed endpoint behind the same address without a new sign-in.
     autoRecover: true,
+    // A tunnel only while something needs it: created when a person pairs,
+    // kept while a device is paired, given back hours after nothing is. The
+    // running companion is the only one who knows; anything else is "can't
+    // tell", which never gives an address back.
+    onDemand: true,
+    managedEndpointNeeded: async () =>
+      companionRunning() ? managedEndpointNeed(await companionState().catch(() => null)) : null,
     // The failure code and support reference reach server.log, and with it
     // the bug-report bundle.
     log: (line) => slog(line),
@@ -3264,6 +3249,12 @@ ipcMain.handle("companion-account:verify-code", localOnly("companion-account:ver
   ensureCompanionAccountService().verifyCode(email, code),
 ));
 ipcMain.handle("companion-account:retry", localOnly("companion-account:retry", () => ensureCompanionAccountService().retry()));
+// Pairing that offers the HTTPS address is starting: create (or repair) it now.
+ipcMain.handle("companion-account:prepare", localOnly("companion-account:prepare", () => {
+  const refusal = managedRemoteAccessRefusal();
+  if (refusal) throw new Error(refusal);
+  return ensureCompanionAccountService().prepare();
+}));
 ipcMain.handle("companion-account:sign-out", localOnly("companion-account:sign-out", () => ensureCompanionAccountService().signOut()));
 
 const workspaceOnly = (handler) => (event, ...args) => {

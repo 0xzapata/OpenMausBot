@@ -201,6 +201,9 @@ const __APP_VERSION__: string;
         requestCode(email: string): Promise<CompanionAccountState>;
         verifyCode(email: string, code: string): Promise<CompanionAccountState>;
         retry(): Promise<CompanionAccountState>;
+        /** Create or repair this computer's HTTPS address because a person
+         * is pairing now. Absent in older desktop builds. */
+        prepare?(): Promise<CompanionAccountState>;
         signOut(): Promise<CompanionAccountState>;
       };
       /** Local-shell-only bridge for trusted approval-mode transitions. It is

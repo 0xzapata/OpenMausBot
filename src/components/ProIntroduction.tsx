@@ -78,7 +78,7 @@ export function ProSettingsCard() {
   </section>;
 }
 
-/** Live calls need a Pro plan (the harness's 402 `needsPro`): the Pro card,
+/** A phone's Live call needs a Pro plan (the harness's 402 `needsPro`; the desktop app's own calls are free): the Pro card,
  * in the call button's pop-up where the key form would be. The same rule as
  * the card in Settings: an offer only where buyOfferAllowed says (signed
  * out, signing in first); anyone who pays, may pay, or whose plan is not

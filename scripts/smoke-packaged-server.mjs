@@ -68,6 +68,9 @@ const [port, webhookPort] = await freePorts(2);
 // OMB_SMOKE_DIST lets the release workflow aim this at a packaged app's
 // Resources/server tree instead of the repo build.
 try {
+  // A desktop install can live beneath a user's CommonJS package scope.
+  // Only metadata shipped with the server may establish its ESM format.
+  writeFileSync(join(staging, "package.json"), '{"type":"commonjs"}\n');
   cpSync(process.env.OMB_SMOKE_DIST ?? join(root, "dist-server"), join(staging, "server"), { recursive: true });
   if (browserBundle) cpSync(resolve(browserBundle), join(staging, "browser-engine"), { recursive: true });
 } catch (error) {
@@ -252,6 +255,30 @@ if (listening) {
   }
 }
 
+// The published command's headless verbs run from the bundle too: doctor
+// (which reads the job capability) and bots, against the packaged server.
+let headlessReport = null;
+if (listening) {
+  const runCli = (args) => new Promise((resolve) => {
+    const cli = spawn(process.execPath, [join(staging, "server", "openmausbot.js"), ...args], {
+      cwd: staging, env: { ...fixtureEnv, OPENMAUSBOT_URL: `http://127.0.0.1:${port}` }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    cli.stdout.on("data", (chunk) => (stdout += chunk));
+    cli.stderr.on("data", (chunk) => (stderr += chunk));
+    const timer = setTimeout(() => cli.kill("SIGKILL"), 20_000);
+    cli.on("close", (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+  });
+  try {
+    const doctor = await runCli(["doctor", "--json"]);
+    const bots = await runCli(["bots", "--json"]);
+    headlessReport = { doctor: { code: doctor.code, body: JSON.parse(doctor.stdout), stderr: doctor.stderr }, bots: { code: bots.code, body: JSON.parse(bots.stdout) } };
+  } catch (error) {
+    headlessReport = { error: String((error && error.message) || error) };
+  }
+}
+
 // An HTTP export must actually start the bundled worker outside the checkout.
 // Existence checks alone cannot catch an unbundled transitive dependency.
 let backupReport = null;
@@ -433,6 +460,13 @@ if (
   process.exit(1);
 }
 
+if (!headlessReport || headlessReport.error || headlessReport.doctor.body?.server?.capabilities?.jobs !== true ||
+  headlessReport.bots.code !== 0 || !Array.isArray(headlessReport.bots.body?.bots)) {
+  console.error("the packaged openmausbot command's headless verbs failed:");
+  console.error(JSON.stringify(headlessReport, null, 2));
+  process.exit(1);
+}
+
 const count = Object.keys(proxyReport.resolved).length;
 if (!backupReport?.ok) {
   console.error("the packaged backup worker failed its encrypted export smoke:", backupReport);
@@ -441,6 +475,7 @@ if (!backupReport?.ok) {
 console.log(`packaged server started with no node_modules in reach (port ${port}) ✓`);
 console.log(`all ${count} spawned proxy paths resolve inside the packaged server dir ✓`);
 console.log("packaged MCP stdio server reached the API and flushed its final frames ✓");
+console.log("packaged openmausbot doctor and bots answered from the bundle ✓");
 console.log("packaged backup worker exported an encrypted archive ✓");
 if (launcherReport) console.log("packaged container launcher ran the server as its child and stopped it cleanly ✓");
 if (desktopEntryReport) console.log(`packaged desktop entry started the server twice on its compile cache (${desktopEntryReport.starts[0].cached.length} entries) ✓`);

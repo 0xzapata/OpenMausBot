@@ -62,7 +62,7 @@ import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts"
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
 import { claudeAccountInfo } from "./claude-accounts.ts";
 import {
-  BrowserCleanupCoordinator,
+  BrowserCleanupCoordinator, BrowserSweep, browserIdleMs,
   requireBrowserCleanupAcknowledged,
   type BrowserCleanupWireRequest,
 } from "./browser-lifecycle-cleanup.ts";
@@ -438,7 +438,7 @@ import {
   clearBrowserSessionState,
   closeBrowserSession,
   browserEngineStatus,
-  browserSessionId,
+  browserSessionId, isTemporaryBrowserSession,
   describeBrowserEngine,
   inRunningBrowser,
   setBrowserViewport,
@@ -2261,14 +2261,13 @@ function externalRuntimeCapability(header: string | string[] | undefined): Inter
   };
 }
 
-/** Roots begun for a test capability minted while no turn ran in its
- * thread (the testing route below): they stand in for a turn, so the next
- * real turn there ends them, or the runtime would never overlap the two. */
+/** Roots begun for a test capability minted while no turn ran in its thread
+ * (the testing route below): they stand in for a turn, so they end with their
+ * generation (the next real turn there revokes it), as a turn's root would. */
 const standInRoots = new Set<string>();
 function beginInternalCapabilityGeneration(threadId: string, generation = randomUUID()): string {
   const previous = activeInternalGenerationByThread.get(threadId);
   if (previous) revokeInternalCapabilityGeneration(threadId, previous);
-  if (previous && standInRoots.delete(previous)) coordinator.endTurn(previous, { ok: true, text: "" });
   activeInternalGenerationByThread.set(threadId, generation);
   return generation;
 }
@@ -2339,6 +2338,7 @@ function endForeignTurns(threadId: string, generation?: string): void {
 }
 
 function revokeInternalCapabilityGeneration(threadId: string, generation: string): void {
+  if (standInRoots.delete(generation)) coordinator.endTurn(generation, { ok: true, text: "" });
   endForeignTurns(threadId, generation);
   if (guestDrivenTurns.get(threadId) === generation) guestDrivenTurns.delete(threadId);
   for (const [token, capability] of internalCapabilities) {
@@ -2809,7 +2809,7 @@ const ENDED: ReadonlySet<HandoffView["status"]> = new Set(["completed", "failed"
  * or already had it (the node is queued on it); false when nothing is
  * parked on this card (a Stop cancelled it, or it already ran). */
 function answerCardNode(threadId: string, messageId: string, text: string): boolean {
-  const node = coordinator.all().find((n) => n.threadId === threadId && n.cards?.includes(messageId) && !ENDED.has(n.status));
+  const node = coordinator.active().find((n) => n.threadId === threadId && n.cards?.includes(messageId) && !ENDED.has(n.status));
   if (!node) return false;
   if (coordinator.answerNode(node.id, text)) return true;
   return node.status === "queued";
@@ -2819,7 +2819,7 @@ function answerCardNode(threadId: string, messageId: string, text: string): bool
  * the card can no longer be answered (dismissed): released, so the request
  * does not read as waiting forever. */
 function releaseCardNode(threadId: string, messageId: string, reason: string): void {
-  const live = coordinator.all().filter((n) => n.threadId === threadId && !ENDED.has(n.status));
+  const live = coordinator.active().filter((n) => n.threadId === threadId && !ENDED.has(n.status));
   const node = live.find((n) => n.cards?.includes(messageId) && n.status === "waiting");
   if (!node || live.length !== 1 || coordinator.children(node.id).some((child) => !ENDED.has(child.status))) return;
   if (node.groupId) coordinator.cancelRoom(node.groupId, threadId, reason);
@@ -2835,7 +2835,7 @@ function releaseCardNode(threadId: string, messageId: string, reason: string): v
  * node, which is when the cards are still its own. */
 function stopParkedCards(threadId: string): void {
   const ids = new Set<string>();
-  for (const node of coordinator.all()) {
+  for (const node of coordinator.active()) {
     if (node.threadId !== threadId || !(node.status === "waiting" || node.status === "queued")) continue;
     for (const id of node.cards ?? []) ids.add(id);
   }
@@ -2857,11 +2857,11 @@ function stopParkedCards(threadId: string): void {
  * a root waiting on teammates or parked on cards holds nothing back (a
  * typed line there is its own turn, decision 3). */
 function directRootQueued(threadId: string): boolean {
-  return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId && n.status === "queued");
+  return coordinator.active().some((n) => !n.parentId && !n.groupId && n.threadId === threadId && n.status === "queued");
 }
 
 function directRootPending(threadId: string): boolean {
-  return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId &&
+  return coordinator.active().some((n) => !n.parentId && !n.groupId && n.threadId === threadId &&
     (n.status === "waiting" || n.status === "resume" || n.status === "queued"));
 }
 
@@ -2871,7 +2871,7 @@ function directRootPending(threadId: string): boolean {
  * teammates (a typed line starts a new root there, decision 3). */
 function awaitingTeammates(threadId: string): boolean {
   if (coordinator.outstandingDirect(threadId).length > 0) return true;
-  return coordinator.all().some((n) => !n.parentId && !n.groupId && n.threadId === threadId &&
+  return coordinator.active().some((n) => !n.parentId && !n.groupId && n.threadId === threadId &&
     (n.status === "resume" || (n.status === "waiting" && n.question === undefined && !n.cards?.length)));
 }
 function settleDirectFollowup(generation: string | undefined, outcome: DirectTurnOutcome = { ok: false, text: "The coordinated turn was interrupted" }): void {
@@ -3313,20 +3313,19 @@ const browserRuntime = new BrowserRuntime({
   onTiming: process.env.OMB_BROWSER_TIMING === "1" ? (timing) => console.info(formatBrowserTiming(timing)) : undefined,
 });
 const browserLive = new BrowserLive({ runtime: browserRuntime });
-// Every browser session this server has used, with its launch settings. The
-// agent-browser daemon outlives its MCP transport, so stopping the transports
-// at shutdown left the daemon and its Chrome running until the engine's
-// one-hour idle timeout. Shutdown closes these (closeServerBrowsers).
+// Every browser session this server has used, with its launch settings.
 const usedBrowserSessions = new Map<string, { command: string; env: Record<string, string> }>();
-async function closeServerBrowsers(): Promise<void> {
-  await Promise.all([...usedBrowserSessions].map(async ([session, spec]) => {
-    // A Chrome attached over CDP is the person's own; it is not ours to close.
-    if (attachesToChrome(spec.env)) return;
-    // Closing saves the session's logins, which come back on its next use.
-    const closed = await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }), 4_000);
-    if (!closed) console.warn(`browser ${session}: could not close its browser at shutdown`);
-  }));
-}
+// The agent-browser daemon outlives its MCP transport and this server: the
+// sweep closes this data dir's browsers at boot, once idle, and at shutdown
+// (server/browser-lifecycle-cleanup.ts). My Chrome is the person's own.
+const browserSweep = new BrowserSweep({
+  engine: () => { const engine = browserEngineStatus(); return engine.kind === "ready" ? engine.binaryPath : null; },
+  owns: (session) => isTemporaryBrowserSession(session) || store.bots.some((bot) => browserSessionId(bot.id, "") === session)
+    || (cfg.browserProfiles ?? []).some((profile) => !usesMyChrome(profile.id) && currentBrowserSession("", profile.id) === session),
+  live: (session) => usedBrowserSessions.has(session),
+  held: (session) => !turnResources.free(`browser:${session}`),
+  closeIdle: (session) => browserRuntime.closeIfIdle(session, browserIdleMs(cfg), usedBrowserSessions.get(session)),
+});
 // Temporary profiles last for this server run, but are never saved to disk.
 // The viewer and the agent must address the SAME temporary browser.
 const temporaryBrowserSessions = new Map<string, string>();
@@ -5874,7 +5873,7 @@ function publicGroupState(record: GroupRecord): WireGroup {
   try { usage = groupUsageReader.forThread(group.threadId); } catch { /* accounting must not block chat */ }
   // A member's node parked on the person's cards holds nothing and is not
   // working: the room keeps taking messages while that member waits.
-  const openHandoffs = coordinator.all().filter(n => n.groupId === group.id && !ENDED.has(n.status) && !(n.status === "waiting" && n.cards?.length));
+  const openHandoffs = coordinator.active().filter(n => n.groupId === group.id && !ENDED.has(n.status) && !(n.status === "waiting" && n.cards?.length));
   // A task works while a turn runs in it or its hand-offs are still out: its
   // composer locks on this, so another task stays free to talk in.
   const tasks = store.groupTasks(record.id).map((task) => {
@@ -9776,7 +9775,7 @@ function handoffOpener(capability: Pick<InternalCapability, "botId" | "threadId"
  * "source"/"running" then and its children are what tells. */
 function runtimeWorkPending(threadId: string): boolean {
   if (coordinator.outstandingFor(threadId).length > 0) return true;
-  return coordinator.all().some(root => !root.parentId && !root.groupId && root.threadId === threadId
+  return coordinator.active().some(root => !root.parentId && !root.groupId && root.threadId === threadId
     && (root.status === "waiting" || root.status === "resume"
       || ((root.status === "source" || root.status === "running")
         && coordinator.children(root.id).some(child => child.reply !== "none" && child.createdAt >= (root.startedAt ?? 0)))));
@@ -13640,7 +13639,7 @@ roomHandoffTimer.unref();
  * still open stays answerable. Writes the cards' flags the live paths write,
  * once (decision 14). */
 function reconcileParkedRoots(): void {
-  for (const node of coordinator.all()) reconcileParkedNode(node);
+  for (const node of coordinator.active()) reconcileParkedNode(node);
 }
 // The room-context window IS the drain's coalescing cap: a burst longer
 // than the window would append transcript lines the responder never reads,
@@ -17417,8 +17416,8 @@ ROUTES.push(createBotMessageRoutes({
   cancelGroupTurnOperations, closeOpenApprovals,
 }));
 // Conversation reads and uploads: the /api/bots snapshot, message pages, a
-// message's image or file, uploads, attachments, search and the export. The
-// `let` slots are read per request; visibility is computed as the preamble does.
+// message's image or file, uploads, attachments, search, the export and a
+// conversation's job. `let` slots are read per request, visibility as the preamble does.
 ROUTES.push(createThreadRoutes({
   store, cfg, sessions, groupUsageReader, lendingEnabled,
   hostedWorkspace: HOSTED_WORKSPACE, sessionCookie: SESSION_COOKIE, loopback: LOOPBACK, defaultPage: DEFAULT_PAGE,
@@ -17427,7 +17426,7 @@ ROUTES.push(createThreadRoutes({
   companionMutationToken: () => companionMutationToken,
   cliOwnerToken: () => cliOwnerToken,
   pageSize, messagePage, messageWindow, publicBotQueuedMessages, publicGroupState, wireBot, wireTask,
-  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo,
+  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo, coordinator, groupThreadIsWorking,
 }));
 // Creating a bot (POST /api/bots): the saved New bot defaults and a preset
 // are applied around the store's own creation.
@@ -21978,6 +21977,7 @@ restoreChannelMessages();
 server.listen(PORT, "127.0.0.1", async () => {
   companyRuntimeReady();
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
+  browserSweep.start(); // what an earlier run left closes now, then once a minute
   // Words queued before the restart start first, ahead of anything sent from
   // now on. Their turns wait for the engines read at start like every turn.
   followupsReady = true;
@@ -22048,7 +22048,7 @@ function noteTurnsCutByShutdown(): void {
 /** A root in this thread (a bot's or a room's) the runtime still holds:
  * what a restart does to it, the runtime says, in this thread, once. */
 function runtimeHoldsRoot(threadId: string): boolean {
-  return coordinator.all().some((n) => !n.parentId && n.threadId === threadId && !ENDED.has(n.status));
+  return coordinator.active().some((n) => !n.parentId && n.threadId === threadId && !ENDED.has(n.status));
 }
 
 const gracefulShutdown = createGracefulShutdown({
@@ -22084,10 +22084,10 @@ const gracefulShutdown = createGracefulShutdown({
     // Every open DuckDB database flushes and closes; the next start reopens them.
     async () => { await dataEngine.closeAll().catch((error) => console.warn("data: close failed", error)); },
     async () => {
-      // Each temporary browser leaves usedBrowserSessions before its first
-      // await, so closeServerBrowsers does not close it a second time.
+      // A temporary browser's own close and the sweep's close of the same
+      // browser are one close (closeBrowserSession joins them).
       const temporaries = [...temporaryBrowserSessions.keys()].map((botId) => forgetTemporaryBrowser(botId));
-      await Promise.all([...temporaries, closeServerBrowsers()]);
+      await Promise.all([...temporaries, browserSweep.closeAll()]);
       await browserRuntime.closeAll();
     },
     () => liveCalls.shutdown(),

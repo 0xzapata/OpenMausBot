@@ -64,7 +64,7 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
     let raw = ""; for await (const part of req) raw += part;
     const body = raw ? JSON.parse(raw) : {};
     res.setHeader("content-type", "application/json");
-    if (path.startsWith("/boxes")) boatCalls++;
+    if (path.startsWith("/sandboxes")) boatCalls++;
     if (path === "/v1/models") return res.end(JSON.stringify({ data: [{ id: "tools-off-model" }] }));
     if (path === "/v1/chat/completions") {
       res.setHeader("content-type", "text/event-stream");
@@ -76,20 +76,20 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
       res.statusCode = 409;
       return res.end(JSON.stringify({ ok: false, code: "provider_not_configured", message: "Prompting is locked until Claude Code is configured on the Agents page." }));
     }
-    if (path === "/boxes" && req.method === "POST") {
+    if (path === "/sandboxes" && req.method === "POST") {
       boxesCreated++;
       const row = { id: ["bx_23456789", "bx_3456789a"][rows.length]!, name: body.name, state: "idle" }; rows.push(row);
-      return res.end(JSON.stringify({ box: row }));
+      return res.end(JSON.stringify({ sandbox: row }));
     }
-    if (path === "/boxes") return res.end(JSON.stringify({ boxes: rows }));
+    if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: rows }));
     if (path.endsWith("/commands")) { commands.push(String(body.command)); return res.end(JSON.stringify({ exitCode: 0, stdout: "captured", stderr: "" })); }
     if (path.endsWith("/artifacts")) { res.setHeader("content-type", "image/jpeg"); return res.end(JPEG); }
     if (path.endsWith("/desktop")) return res.end(JSON.stringify(failNewBoat ? {} : { desktopUrl: "https://desktop.fixture.invalid" }));
-    const row = rows.find(entry => path === "/boxes/" + entry.id);
+    const row = rows.find(entry => path === "/sandboxes/" + entry.id);
     if (row) {
       if (req.method === "DELETE" && failNewBoat) { res.statusCode = 500; return res.end(JSON.stringify({ ok: false, message: "fixture refused delete" })); }
       if (req.method === "PATCH" && typeof body.name === "string") row.name = body.name;
-      return res.end(JSON.stringify({ box: row }));
+      return res.end(JSON.stringify({ sandbox: row }));
     }
     res.end("{}");
   });

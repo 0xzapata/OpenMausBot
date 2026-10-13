@@ -12,6 +12,7 @@ const INCLUDED = "box_omb_included-relay-token";
 const LIMIT = "Your Pro plan's 200 cloud computer hours for September are used up. They reset on 1 October.";
 const botId = "included-boat-test";
 const boxId = "bx_23456789";
+const OPERATION_ID = "bdop_0123456789abcdef0123456789abcdef";
 
 let api: Server;
 let base = "";
@@ -29,10 +30,10 @@ let loadConfig: typeof import("./config.ts").loadConfig;
 const underBoat = () => requests.filter((request) => request.path.startsWith("/boat/"));
 const underRelay = () => requests.filter((request) => request.path.startsWith("/relay/"));
 
+// The legacy deterministic name findBoat still recognises (boat-lifecycle.test.ts).
+const machineName = `ogb-${botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "")}-${createHash("sha256").update(botId).digest("hex").slice(0, 6)}`;
+
 beforeAll(async () => {
-  // The legacy deterministic name findBoat still recognises (boat-lifecycle.test.ts).
-  const hash = createHash("sha256").update(botId).digest("hex").slice(0, 6);
-  const machineName = `ogb-${botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "")}-${hash}`;
   api = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://boat.test");
     req.resume();
@@ -43,17 +44,25 @@ beforeAll(async () => {
         res.end(JSON.stringify(body));
       };
       if (rejectCredentials) return send(401, { ok: false, code: "unauthorized", message: "This cloud computer key is not valid." });
-      const path = url.pathname.replace(/^\/(boat|relay)\/api\/box\/v1/, "");
-      if (path === "/boxes") return send(200, { boxes: [{ id: boxId, name: machineName, state }] });
-      if (path === `/boxes/${boxId}` && req.method === "GET") return send(200, { ok: true, box: { id: boxId, name: machineName, state } });
-      if (path === `/boxes/${boxId}/resume`) {
+      // Boat speaks its public API v1; the Admin relay wired at /api/box/v1
+      // still speaks the old box dialect (boat-relay.ts), and at /api/v1, v1.
+      const [, base = "", rest = ""] = /^(\/boat\/api\/v1|\/relay\/api\/box\/v1|\/relay\/api\/v1)(\/.*)$/.exec(url.pathname) ?? [];
+      const legacy = base === "/relay/api/box/v1";
+      const [root, one, many] = legacy ? ["/boxes", "box", "boxes"] : ["/sandboxes", "sandbox", "sandboxes"];
+      if (rest === root) return send(200, { ok: true, [many]: [{ id: boxId, name: machineName, state }] });
+      if (rest === `${root}/${boxId}` && req.method === "GET") return send(200, { ok: true, [one]: { id: boxId, name: machineName, state } });
+      if (rest === `${root}/${boxId}` && req.method === "DELETE") {
+        // Boat's operation, passed through as each dialect names its kind.
+        return send(202, { ok: true, operation: { id: OPERATION_ID, kind: legacy ? "box" : "sandbox", targetId: boxId, status: "completed" } });
+      }
+      if (rest === `${root}/${boxId}/resume`) {
         const reply = resumeReplies.length > 1 ? resumeReplies.shift()! : resumeReplies[0] ?? { status: 202, body: { ok: true } };
         if (reply.status < 300 && wakeOnResume) state = "idle";
         return send(reply.status, reply.body);
       }
-      if (path === `/boxes/${boxId}/desktop`) return send(200, { desktopUrl: "https://desktop.example.test/session" });
-      if (path.endsWith("/commands")) return send(200, { exitCode: 0, stdout: "", stderr: "" });
-      send(200, { ok: true });
+      if (rest === `${root}/${boxId}/desktop`) return send(200, { desktopUrl: "https://desktop.example.test/session" });
+      if (rest === `${root}/${boxId}/commands`) return send(200, { exitCode: 0, stdout: "", stderr: "" });
+      send(404, { ok: false, code: "not_found", message: `unexpected ${req.method} ${url.pathname}` });
     });
   });
   await new Promise<void>((resolve) => api.listen(0, "127.0.0.1", resolve));
@@ -71,7 +80,7 @@ beforeEach(async () => {
   rejectCredentials = false;
   wakeOnResume = true;
   vi.stubEnv("BOX_TOKEN", undefined);
-  vi.stubEnv("OMB_BOX_API", `${base}/boat/api/box/v1`);
+  vi.stubEnv("OMB_BOAT_API", `${base}/boat/api/v1`);
   vi.stubEnv("OMB_CLOUD_BOAT_URL", `${base}/relay/api/box/v1`);
   vi.stubEnv("OMB_CLOUD_BOAT_TOKEN", INCLUDED);
   boat ??= await import("./boat.ts");
@@ -124,9 +133,46 @@ describe("included Boat computers", () => {
     expect(requests[0]).toMatchObject({ path: `/relay/api/box/v1/boxes/${boxId}/commands`, auth: `Bearer ${INCLUDED}` });
   });
 
+  it("speaks v1 to Boat and the relay's own box dialect to a relay wired at /api/box/v1", async () => {
+    await boat.execOnBoat({ box: { token: "box_own" } }, botId, "true");
+    await boat.execOnBoat({}, botId, "true");
+    expect(underBoat().every((request) => request.path.startsWith("/boat/api/v1/sandboxes"))).toBe(true);
+    expect(underRelay().every((request) => request.path.startsWith("/relay/api/box/v1/boxes"))).toBe(true);
+    for (const side of [underBoat(), underRelay()]) {
+      expect(side.filter((request) => request.method === "POST" && request.path.endsWith(`/${boxId}/commands`))).toHaveLength(1);
+    }
+  });
+
+  it("follows a delete through the box-dialect relay to completion", async () => {
+    const owners = [{ botId, name: "Included", inUse: false }];
+    await expect(boat.deleteManagedBoat({}, owners, boxId, machineName, undefined, { pollDelaysMs: [] })).resolves.toEqual({ ok: true });
+    expect(requests.filter((request) => request.method === "DELETE").map((request) => request.path)).toEqual([`/relay/api/box/v1/boxes/${boxId}`]);
+    expect(underBoat()).toEqual([]);
+  });
+
+  it("speaks only v1 with an own key, whatever its base is called", async () => {
+    vi.stubEnv("OMB_BOAT_API", `${base}/boat/api/box/v1`);
+    await boat.runCommand({ box: { token: "box_own" } }, boxId, "true");
+    expect(requests).toEqual([{ method: "POST", path: `/boat/api/box/v1/sandboxes/${boxId}/commands`, auth: "Bearer box_own" }]);
+  });
+
+  it("speaks v1 to a relay once the Admin wires a v1 base", async () => {
+    vi.stubEnv("OMB_CLOUD_BOAT_URL", `${base}/relay/api/v1`);
+    await boat.runCommand({}, boxId, "true");
+    expect(requests).toEqual([{ method: "POST", path: `/relay/api/v1/sandboxes/${boxId}/commands`, auth: `Bearer ${INCLUDED}` }]);
+  });
+
   it("verifies a key being saved against Boat only, never the relay", async () => {
     expect(await boat.verifyToken("box_new")).toEqual({ ok: true });
-    expect(requests).toEqual([{ method: "GET", path: "/boat/api/box/v1/boxes", auth: "Bearer box_new" }]);
+    expect(requests).toEqual([{ method: "GET", path: "/boat/api/v1/sandboxes", auth: "Bearer box_new" }]);
+  });
+
+  it("tells a revoked Boat key (boat_, or box_ from before v1) from something that is no Boat key", async () => {
+    rejectCredentials = true;
+    const revoked = { ok: false, message: "boat.dev rejected that key — it may have been revoked or expired. Copy a fresh one from your boat.dev account." };
+    expect(await boat.verifyToken("boat_revoked")).toEqual(revoked);
+    expect(await boat.verifyToken("box_revoked")).toEqual(revoked);
+    expect(await boat.verifyToken("sk-ant-not-a-boat-key")).toEqual({ ok: false, message: expect.stringMatching(/^That doesn't look like a Boat API key: they start with boat_/) });
   });
 
   it("lists the computers with the included wording when the relay rejects its token", async () => {
@@ -203,6 +249,6 @@ describe("waking a sleeping computer", () => {
     resumeReplies = [{ status: 401, body: { ok: false, code: "unauthorized", message: "This cloud computer key is not valid." } }];
     await expect(boat.readyBoat({}, botId)).rejects.toThrow("The cloud computers included with your Cloud plan aren't available right now. Try again later.");
     // The same refusal on the person's own key still points them at Settings.
-    await expect(boat.readyBoat({ box: { token: "box_own" } }, botId)).rejects.toThrow(/paste a current token/);
+    await expect(boat.readyBoat({ box: { token: "box_own" } }, botId)).rejects.toThrow("boat.dev rejected your Boat API key — paste a current one in Settings → API keys");
   });
 });

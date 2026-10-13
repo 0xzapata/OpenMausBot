@@ -208,7 +208,9 @@ describe("control-omb command mapping", () => {
     await expect(runControlOmb(["wait", "--bot", "bot-1", "--timeout", "0"], {
       callTool: callTool as any,
       env: {},
-    })).rejects.toThrow("--timeout must be an integer from 1 to 120");
+    })).rejects.toThrow("--timeout must be a duration from 1s to 24h");
+    await expect(runControlOmb(["wait", "--bot", "bot-1", "--timeout", "25h"], { callTool: callTool as any, env: {} }))
+      .rejects.toThrow("--timeout must be a duration from 1s to 24h");
     expect(callTool).not.toHaveBeenCalled();
   });
 

@@ -7,6 +7,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import type { BeginTurnRequest, ComposedTurn, CoordinatorHost, HandoffOpener, HandoffOptions, HandoffView, HostTurnResult } from "./coordinator.ts";
@@ -241,6 +242,42 @@ describe("RuntimeCoordinator: the requesting turn and its tree", () => {
     expect(w.host.reports).toHaveLength(1);
   });
 
+  it("active() is all() without the ended nodes, with the same views", async () => {
+    const w = world();
+    const ended_ = new Set(["completed", "failed", "cancelled"]);
+    const same = () => expect(w.coordinator.active()).toEqual(w.coordinator.all().filter(n => !ended_.has(n.status)));
+    const { node } = send(w, chief, "gen-1", undefined, builder, "Build it");
+    same(); expect(w.coordinator.active().map(n => n.id)).toEqual(["gen-1", node.id]);
+    ended(w, "gen-1"); w.coordinator.tick(); await flush();
+    same(); expect(w.coordinator.active().map(n => n.id)).toEqual(["gen-1"]);
+    w.coordinator.tick(); await flush();
+    expect(w.coordinator.all()).toHaveLength(2);
+    expect(w.coordinator.active()).toEqual([]);
+  });
+
+  it("active() never reads an ended row: one that no longer parses stops all(), not active() (#2765)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "runtime-coordinator-active-"));
+    try {
+      const w = world(hold, {}, dir);
+      send(w, chief, "gen-1", undefined, tester, "Test it");
+      ended(w, "gen-1"); w.coordinator.tick(); await flush();
+      w.coordinator.tick(); await flush();
+      expect(w.coordinator.all().map(n => n.status)).toEqual(["completed", "completed"]);
+      const { node } = send(w, chief, "gen-2", undefined, builder, "Build it");
+      ended(w, "gen-2"); w.coordinator.tick();
+      // The settled tree's rows go bad on disk; nothing live reads them.
+      const db = new DatabaseSync(join(dir, "runtime.db"));
+      db.prepare("UPDATE assignments SET json = 'not json' WHERE root_id = ?").run("gen-1");
+      db.close();
+      expect(() => w.coordinator.all()).toThrow(/invalid JSON/);
+      expect(w.coordinator.active().map(n => [n.id, n.status])).toEqual([["gen-2", "waiting"], [node.id, "running"]]);
+      expect(w.coordinator.outstandingDirect("chief-chat").map(n => n.id)).toEqual([node.id]);
+      w.coordinator.close();
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
   it("a failed requesting turn keeps its accepted work and says so in its result; an unknown or settled id is logged and ignored", async () => {
     const w = world();
     const { node } = send(w, chief, "gen-1", undefined, builder, "Build it");
@@ -332,6 +369,21 @@ describe("RuntimeCoordinator: refusals in the legacy words", () => {
     const tight = world(undefined, { requests: 1 });
     send(tight, chief, "gen-1", undefined, builder, "Build it");
     expect(() => send(tight, chief, "gen-1", undefined, tester, "Test it")).toThrow("Room handoff budget exhausted");
+  });
+
+  it("lets one Chief turn brief a room of 25 visitors and starts every one of them", async () => {
+    // Launch Room: a Room Lead hands the site to up to 25 persona bots before
+    // any of them reports back; the 25th hand-off used to hit the budget.
+    const w = world((node) => node.botId.startsWith("visitor-") ? "hold" : undefined);
+    const visitors = Array.from({ length: 25 }, (_, i) => ({ botId: `visitor-${i + 1}`, threadId: `visitor-${i + 1}-work` }));
+    const nodes = visitors.map((visitor) => send(w, chief, "gen-1", undefined, visitor, "Visit the site and report").node);
+    expect(nodes.every((node) => node.status === "queued")).toBe(true);
+    ended(w, "gen-1");
+    w.coordinator.tick();
+    await flush();
+    expect(nodes.map((node) => w.coordinator.node(node.id)?.status)).toEqual(nodes.map(() => "running"));
+    for (const node of nodes) await w.host.release(node.id, { ok: true, text: "visited" });
+    expect(nodes.every((node) => w.coordinator.node(node.id)?.status === "completed")).toBe(true);
   });
 
   it("refuses when the originating task is not running or belongs to another speaker, and passes the host's refusal through", async () => {
@@ -503,6 +555,42 @@ describe("RuntimeCoordinator: read models", () => {
     ]);
     expect(w.coordinator.activeDirect("builder-work")).toBe(true);
     expect(w.coordinator.assignerOf("tester-work")).toMatchObject({ id: b.id, status: "waiting" });
+  });
+
+  it("job reads the work a conversation holds: its roots since a time, or the assignment running in it, with everything under each", async () => {
+    let now = 1_000;
+    const host = fakeHost(hold);
+    const coordinator = new RuntimeCoordinator({ dataDir: ":memory:", host, now: () => now });
+    const w: World = { host, coordinator, logs: [] };
+    // an earlier request in the Chief's chat, finished before the job began
+    begun(w, chief, "gen-0", "Say hello");
+    ended(w, "gen-0");
+    now = 2_000;
+    const { node: b } = send(w, chief, "gen-1", undefined, builder, "Build it");
+    const { node: n } = send(w, chief, "gen-1", undefined, tester, "FYI: release Friday", {});
+    coordinator.tick();
+    const { node: t } = send(w, builder, "gen-1", b.id, { botId: "tester", threadId: "tester-review" }, "Review it");
+    begun(w, { botId: "other", threadId: "other-chat" }, "gen-x", "Unrelated");
+    const ids = (job: { rows: Array<{ id: string }> }) => job.rows.map((row) => row.id);
+    expect(coordinator.job("chief-chat", 1_500)).toEqual({ scopes: ["gen-1"], rows: expect.any(Array) });
+    expect(ids(coordinator.job("chief-chat", 1_500))).toEqual(["gen-1", b.id, n.id, t.id]);
+    // from the start of time: both of its requests
+    expect(coordinator.job("chief-chat", 0).scopes).toEqual(["gen-0", "gen-1"]);
+    // the builder's own conversation holds its assignment and what it handed on
+    expect(coordinator.job("builder-work", 0, "builder")).toMatchObject({ scopes: [b.id] });
+    expect(ids(coordinator.job("builder-work", 0, "builder"))).toEqual([b.id, t.id]);
+    expect(coordinator.job("builder-work", 0).scopes).toEqual([]);
+    expect(coordinator.job("nobody-chat", 0)).toEqual({ scopes: [], rows: [] });
+    await host.release(b.id, { ok: true, text: "built" });
+  });
+
+  it("job in a room: a member's hand-off in the room's own thread belongs to the room's job, never a job of its own", () => {
+    const w = world(hold);
+    const { node } = send(w, inRoom("chief"), "room-gen-1", undefined, inRoom("builder"), "Review it");
+    expect(node).toMatchObject({ threadId: "room-1", groupId: "g1" });
+    const job = w.coordinator.job("room-1", 0);
+    expect(job.scopes).toEqual(["room-gen-1"]);
+    expect(job.rows.map((row) => row.id)).toEqual(["room-gen-1", node.id]);
   });
 
   it("sharedRequest batches one call's room recipients and nothing else", () => {
