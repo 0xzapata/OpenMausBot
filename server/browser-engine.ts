@@ -9,9 +9,9 @@
 // Fail closed, say why: a missing engine reports `unavailable` with a
 // reason a person can act on, never a silently browserless bot.
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
@@ -137,7 +137,7 @@ const closingBrowsers = new Map<string, Promise<boolean>>();
 export function closeBrowserSession(binaryPath: string, env: NodeJS.ProcessEnv, timeoutMs = 15_000): Promise<boolean> {
   const session = env.AGENT_BROWSER_SESSION;
   if (!session || !/^[A-Za-z0-9_.-]{1,96}$/.test(session)) return Promise.resolve(false);
-  const key = browserDaemonPidPath(env);
+  const key = browserDaemonFile(env, ".pid");
   const attempt = (closingBrowsers.get(key) ?? Promise.resolve(true)).then(() => closeOnce(binaryPath, env, session, timeoutMs)).catch(() => false).finally(() => {
     if (closingBrowsers.get(key) === attempt) closingBrowsers.delete(key);
   });
@@ -154,7 +154,7 @@ async function closeOnce(binaryPath: string, env: NodeJS.ProcessEnv, session: st
   const running = await runningBrowserSessions(binaryPath, closeEnv, deadline);
   if (!running) return false;
   if (!running.includes(session)) return true;
-  const pidFile = browserDaemonPidPath(env);
+  const pidFile = browserDaemonFile(env, ".pid");
   const daemonPid = () => { try { return readFileSync(pidFile, "utf8").trim(); } catch { return null; } };
   const closing = daemonPid();
   // Read before anything is asked to stop: once the daemon exits, its Chrome
@@ -206,16 +206,18 @@ export async function inRunningBrowser(binaryPath: string, env: NodeJS.ProcessEn
   throw new Error("The browser did not answer. Try again when the bot has finished.");
 }
 
-/** Where agent-browser 0.37 writes `<session>.pid`: AGENT_BROWSER_SOCKET_DIR,
- * else `$XDG_RUNTIME_DIR/agent-browser` or `~/.agent-browser`, with
+/** Where agent-browser (0.36 and 0.37) writes a running daemon's files —
+ * `<session>.pid`, and `<session>.stream` with its loopback relay port —
+ * which it deletes when it exits: AGENT_BROWSER_SOCKET_DIR, else
+ * `$XDG_RUNTIME_DIR/agent-browser` or `~/.agent-browser`, with
  * `namespaces/<name>/run` below it for a namespace. */
-export function browserDaemonPidPath(env: NodeJS.ProcessEnv): string {
+export function browserDaemonFile(env: NodeJS.ProcessEnv, suffix: ".pid" | ".stream"): string {
   const session = env.AGENT_BROWSER_SESSION ?? "";
-  if (env.AGENT_BROWSER_SOCKET_DIR) return join(env.AGENT_BROWSER_SOCKET_DIR, `${session}.pid`);
+  if (env.AGENT_BROWSER_SOCKET_DIR) return join(env.AGENT_BROWSER_SOCKET_DIR, `${session}${suffix}`);
   const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME) || homedir();
   const base = env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "agent-browser") : join(home, ".agent-browser");
   const namespace = env.AGENT_BROWSER_NAMESPACE;
-  return join(namespace ? join(base, "namespaces", namespace, "run") : base, `${session}.pid`);
+  return join(namespace ? join(base, "namespaces", namespace, "run") : base, `${session}${suffix}`);
 }
 
 const preparedBrowserSessions = new Map<string, Promise<void>>();
@@ -667,70 +669,6 @@ export function setBrowserViewport(binaryPath: string, env: NodeJS.ProcessEnv, t
     child.on("close", (code) => {
       try { finish(code === 0 && JSON.parse(output)?.success === true); }
       catch { finish(false); }
-    });
-  });
-}
-
-/** How long a settled-frame capture may take before the turn gives up on it.
- * The poller runs beside a live turn, so a hung browser must not hold the
- * transcript open; a missing picture is better than a stuck fold. */
-const FRAME_TIMEOUT_MS = 10_000;
-
-/** Preview frames are JPEG, as the cloud and VPS computers' frames already
- * are. A frame of a photo-heavy news page was ~400 KB as PNG in ~115 ms
- * and ~110 KB at quality 80 in ~30-70 ms. Frames repeat every few seconds
- * of a turn and go base64 to every connected stream. Text stays legible. */
-const FRAME_JPEG_QUALITY = 80;
-
-/** One JPEG of a bot's browser, for the live preview and the transcript's
- * settled frame.
- *
- * The Electron browser surface used to supply this and was removed with the
- * engine swap, leaving the computer surfaces as the only frame source — so a
- * bot whose only surface is the browser showed the reader nothing at all,
- * despite the panel promising screenshots in the chat.
- *
- * Runs the same binary with the same session env as the MCP mount, so it
- * attaches to the daemon the bot is already driving rather than starting a
- * second browser beside it. */
-export function agentBrowserFrame(input: {
-  binaryPath: string;
-  env: Record<string, string>;
-  timeoutMs?: number;
-}): Promise<{ png: string; format: string }> {
-  const file = join(tmpdir(), `openmausbot-browser-${randomUUID()}.jpg`);
-  return new Promise((settle, fail) => {
-    // Per-command flags, so the bot's own screenshot tool keeps its format.
-    const child = spawn(input.binaryPath, ["screenshot", file, "--screenshot-format", "jpeg", "--screenshot-quality", String(FRAME_JPEG_QUALITY)], {
-        env: browserRuntimeEnv(input.env),
-      stdio: ["ignore", "ignore", "pipe"],
-      windowsHide: true,
-    });
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderr.length < 2_000) stderr += String(chunk);
-    });
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      fail(new Error("the browser did not return a picture in time"));
-    }, input.timeoutMs ?? FRAME_TIMEOUT_MS);
-    const done = (error: Error | null): void => {
-      clearTimeout(timer);
-      try {
-        if (error) {
-          fail(error);
-          return;
-        }
-        settle({ png: readFileSync(file).toString("base64"), format: "jpeg" });
-      } catch {
-        fail(new Error("the browser reported a picture it did not write"));
-      } finally {
-        rmSync(file, { force: true });
-      }
-    };
-    child.on("error", (error: unknown) => done(error instanceof Error ? error : new Error(String(error))));
-    child.on("close", (code) => {
-      done(code === 0 ? null : new Error(`the browser could not be pictured${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ""}`));
     });
   });
 }

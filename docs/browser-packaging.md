@@ -140,8 +140,10 @@ node scripts/smoke-browser-bundle.mjs --resources /absolute/app/resources
 On macOS, use `/absolute/OpenMausBot.app/Contents/Resources`. On Linux, run as
 an unprivileged user against the installed `.deb` at
 `/opt/OpenMausBot/resources`. This check creates its own empty home and local
-web page, checks automatic discovery, navigation, typing/clicking, screenshot
-delivery and two-bot cookie/storage isolation, then removes only its fixture.
+web page, checks automatic discovery, navigation, typing/clicking, the
+loopback command relay the server reads, pictures and types through
+(`server/browser-relay.ts`), screenshot delivery and two-bot cookie/storage
+isolation, then removes only its fixture.
 No model account or user browser profile is used. Cross-target `--check-only`
 checks layout only and is not evidence of successful browser execution.
 

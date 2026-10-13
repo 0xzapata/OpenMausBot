@@ -93,7 +93,7 @@ describe("1Password logins", () => {
       candidates: async (host) => [...[saved].filter((login) => login.host === host), ...source.candidates(host)],
       available: async () => [{ host: saved.host, username: saved.username }, ...source.hosts()],
     }, {
-      engine: (args) => page!.engine(args), insertText: (port, text) => page!.insertText(port, text),
+      engine: (args) => page!.engine(args), insertText: (text) => page!.insertText(text),
       remember: (value) => { remembered.push(value); }, now: () => now, sleep: async () => undefined,
     });
     const outcome = await fill();

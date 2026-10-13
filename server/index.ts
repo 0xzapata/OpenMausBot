@@ -426,12 +426,12 @@ import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { HeldSecrets, LoginStore } from "./login-store.ts";
 import { OnePasswordLogins, sdkOnePasswordClient, type OnePasswordSdk } from "./onepassword.ts";
 import { nativeRequire } from "./data/engine.ts";
-import { fillLogin, streamInsertText, type FillCandidate } from "./login-fill.ts";
+import { fillLogin, type FillCandidate } from "./login-fill.ts";
+import { relayFrame, relayInsertText } from "./browser-relay.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
 import { BrowserLive } from "./browser-live.ts";
 import {
-  agentBrowserFrame,
   agentBrowserIntegration,
   browserEngineEncryptionKey,
   prepareBrowserSessionState,
@@ -11956,14 +11956,14 @@ async function startTurn(
         const selectedProfile = liveBot.browserProfile;
         browser = await browserIntegration(bot.id, selectedProfile, { threadId, generation: dispatchClaimId });
         if (browser) integrations.browser = browser.integration;
-        // The browser lost its frame source when the Electron surface was
-        // removed: previewCapture is set by the computer branches above, and
-        // nothing replaced it here. A bot with only a browser was pictured
-        // not at all; a bot with both was pictured on its desktop even while
-        // the work was a web page, because agent-browser runs its own headless
-        // Chrome on the host rather than inside that desktop.
+        // The browser's own frames, over its relay (browser-relay.ts), which
+        // never starts a browser: the CLI this replaced started a new Chrome
+        // after the bot closed its own, which then idled for an hour. A bot
+        // with a desktop too is pictured on the page it works on, since
+        // agent-browser runs its own headless Chrome on the host rather than
+        // inside that desktop.
         if (browser) {
-          const frame = { binaryPath: browser.spec.command, env: browser.spec.env };
+          const spec = browser.spec;
           const session = browser.session;
           // The preview shares the profile with tool calls: claim the same
           // exclusive browser:<session> resource the tools/call path claims,
@@ -11971,7 +11971,7 @@ async function startTurn(
           browserCapture = async () => {
             const owner = turnResourceOwners.get(threadId);
             if (!owner || !claimTurnResource(owner, `browser:${session}`)) throw new Error("another thread is using this browser");
-            return browserRuntime.previewFrame(session, () => agentBrowserFrame(frame));
+            return browserRuntime.previewFrame(session, () => relayFrame(spec, session));
           };
         }
       }
@@ -16680,7 +16680,7 @@ async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, 
       available: async () => availableLogins(bot.id),
     }, {
       engine: (args) => inRunningBrowser(spec.command, env, args),
-      insertText: streamInsertText,
+      insertText: (text) => relayInsertText(spec, session, text),
       remember: (value, kind) => heldSecrets.remember(value, kind),
     }));
     if (outcome.ok && outcome.loginId) {
