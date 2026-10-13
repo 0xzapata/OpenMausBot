@@ -12,9 +12,20 @@
 //
 // A row with no platform is asserted on all three. In BLOCKED, a row tagged
 // "win32" is a cmd, PowerShell or Git Bash spelling: it must block on Windows
-// and must NOT be blocked on macOS or Linux. In ALLOWED, "posix" means macOS
-// and Linux only; what Windows makes of those rows is pinned in NOT_CLEAR,
-// which lists what reading every line twice costs there.
+// and must NOT be blocked on macOS or Linux. "posix" means macOS and Linux
+// only; what Windows makes of those ALLOWED rows is pinned in NOT_CLEAR, which
+// lists what reading every line twice costs there.
+//
+// THE WINDOWS ROWS ARE NOT USED BY THE GATE YET. server/safety-floor-gate.ts
+// applies the floor on macOS and Linux only: reading every line as two shells
+// leaves too many ordinary Windows commands unread. The win32 rows keep the
+// Windows reading tested through the platform argument, for the piece that
+// will know which shell a request is for.
+//
+// One exception to "POSIX only" on macOS and Linux: PowerShell 7 runs there,
+// so what follows `pwsh -c` / `powershell -Command` is read both as a POSIX
+// line and as PowerShell deleting POSIX paths. Nothing outside that wrapper
+// gets a second reading.
 import { describe, expect, it } from "vitest";
 
 import { floorReading, floorVerdict, MAX_COMMAND_LENGTH } from "./safety-floor.ts";
@@ -22,7 +33,7 @@ import { floorReading, floorVerdict, MAX_COMMAND_LENGTH } from "./safety-floor.t
 type Platform = "darwin" | "linux" | "win32";
 const PLATFORMS: Platform[] = ["darwin", "linux", "win32"];
 const POSIX: Platform[] = ["darwin", "linux"];
-type Case = [command: string, rule: string, platform?: Platform];
+type Case = [command: string, rule: string, platform?: Platform | "posix"];
 
 const BLOCKED: Case[] = [
   // the filesystem root, in every flag spelling
@@ -180,7 +191,7 @@ const BLOCKED: Case[] = [
   ["ri -r C:\\Windows", "delete-system-directory", "win32"],
   ["remove-item -rec c:\\", "delete-root", "win32"],
   ['powershell -Command "Remove-Item -Recurse -Force C:\\"', "delete-root", "win32"],
-  ["pwsh -c 'Remove-Item -Recurse $HOME'", "delete-home", "win32"],
+  ["pwsh -c 'Remove-Item -Recurse $HOME'", "delete-home"],
   ["powershell.exe -NoProfile -Command Remove-Item -Recurse C:\\Users", "delete-system-directory", "win32"],
   ["rm -r -fo C:\\", "delete-root", "win32"],
   ["rm -Recurse -Force C:\\Windows", "delete-system-directory", "win32"],
@@ -266,6 +277,21 @@ const BLOCKED: Case[] = [
   ["rm -rf C:", "delete-root", "win32"],
   ["rm -rf C:/Users", "delete-system-directory", "win32"],
   ['rm -rf /c/Users\ncd "C:\\proj\\"', "delete-system-directory", "win32"],
+  // review round 3: PowerShell 7 on macOS and Linux, inside its own wrapper
+  ["pwsh -c 'rm -rf /'", "delete-root", "posix"],
+  ['pwsh -NoProfile -Command "rm -rf ~"', "delete-home", "posix"],
+  ["sudo pwsh -NoProfile -NonInteractive -c 'rm -rf /etc'", "delete-system-directory", "posix"],
+  ["pwsh -c 'Remove-Item -Recurse -Force $HOME'", "delete-home"],
+  ["pwsh -c 'Remove-Item -Recurse -Force /'", "delete-root"],
+  ['pwsh -NoProfile -Command "Remove-Item -Recurse -Force $HOME"', "delete-home"],
+  ["pwsh -c 'Remove-Item -Recurse -Force ~'", "delete-home"],
+  ["pwsh -c 'Remove-Item -Path /etc -Recurse'", "delete-system-directory", "posix"],
+  ["powershell -Command 'ri -r /usr'", "delete-system-directory", "posix"],
+  ["pwsh -c 'Set-Location /tmp; Remove-Item -Recurse -Force /'", "delete-root"],
+  ["pwsh -Command Remove-Item -Recurse -Force /", "delete-root"],
+  // review round 3: arithmetic, where `<<` shifts and starts no heredoc
+  ["(( x << 1 ))\nrm -rf /", "delete-root"],
+  ["echo $[1<<2]\nrm -rf /", "delete-root"],
   // spellings found by probing, kept so they stay blocked
   ["RM -rf /", "delete-root"],
   ["rm -rf / >/dev/null 2>&1 &", "delete-root"],
@@ -474,6 +500,16 @@ const ALLOWED: Array<[command: string, on?: Platform | "posix"]> = [
   ['docker run --rm \\\n  -v "$PWD":/w \\\n  img sh -c \'rm -rf /w/dist\''],
   ["rm -r \\\n  /tmp/build"],
   ["mkfs.ext4 /tmp/dev/sda.img"],
+  // review round 3: PowerShell that deletes nothing on the list, and arithmetic
+  ["pwsh -c 'Remove-Item -Recurse -Force ./build'"],
+  ["pwsh -c 'Get-ChildItem /'"],
+  ["pwsh -c 'Remove-Item -Force /etc/hosts.bak'"],
+  ["pwsh -c 'Remove-Item -Recurse -Force $env:TEMP/work'"],
+  ["pwsh -NoProfile -File cleanup.ps1"],
+  ["pwsh -c 'Write-Host deleting; Get-ChildItem ~'"],
+  ["(( count << 1 ))"],
+  ["echo $[1<<2]"],
+  ["for ((i=0; i<3; i++)); do echo $i; done"],
   // review round 2: ordinary cmd and PowerShell lines, clear on Windows too
   ["cd C:\\proj\\ ; npm test"],
   ["dir C:\\Users\\me\\ "],
@@ -491,7 +527,9 @@ const ALLOWED: Array<[command: string, on?: Platform | "posix"]> = [
  * reading, and a Windows path quoted with a trailing backslash ("C:\dir\")
  * leaves the POSIX reading with an open quote. Neither is caught on macOS or
  * Linux, where only the POSIX reading runs. */
-const NOT_CLEAR: Array<[command: string, on: Platform | "all", outcome: string]> = [
+const NOT_CLEAR: Array<[command: string, on: Platform | "posix" | "all", outcome: string]> = [
+  // PowerShell text that cannot be read, inside its wrapper on macOS and Linux
+  ['pwsh -c "Write-Host \'unfinished"', "posix", "unreadable"],
   // POSIX text the cmd/PowerShell reading takes for a command
   ["git commit -m 'don'\\''t allow cd C:\\; rd /s /q C:\\ when it'\\''s chained'", "win32", "delete-root"],
   ["echo 'it'\\''s documented; del /s /q C:\\Users isn'\\''t allowed'", "win32", "delete-system-directory"],
@@ -519,14 +557,14 @@ const NOT_CLEAR: Array<[command: string, on: Platform | "all", outcome: string]>
 describe("floorVerdict", () => {
   it("covers at least forty spellings each way, on every platform", () => {
     for (const host of PLATFORMS) {
-      expect(BLOCKED.filter(([, , platform]) => !platform || platform === host).length, host).toBeGreaterThanOrEqual(40);
+      expect(BLOCKED.filter(([, , platform]) => !platform || platform === host || (platform === "posix" && host !== "win32")).length, host).toBeGreaterThanOrEqual(40);
       expect(ALLOWED.filter(([, on]) => !on || on === host || (on === "posix" && host !== "win32")).length, host).toBeGreaterThanOrEqual(40);
     }
     expect(BLOCKED.filter(([, , platform]) => platform === "win32").length).toBeGreaterThanOrEqual(40);
   });
 
   it.each(BLOCKED)("blocks %j as %s", (command, rule, platform) => {
-    for (const host of platform ? [platform] : PLATFORMS) {
+    for (const host of !platform ? PLATFORMS : platform === "posix" ? POSIX : [platform]) {
       const verdict = floorVerdict(command, host);
       expect(verdict?.rule, host).toBe(rule);
       expect(verdict!.label).toMatch(/\S/);
@@ -546,7 +584,7 @@ describe("floorVerdict", () => {
   });
 
   it.each(NOT_CLEAR)("%j on %s: %s", (command, on, outcome) => {
-    for (const host of on === "all" ? PLATFORMS : [on]) {
+    for (const host of on === "all" ? PLATFORMS : on === "posix" ? POSIX : [on]) {
       const reading = floorReading(command, host);
       expect(reading.read ? reading.verdict?.rule ?? "clear" : "unreadable", host).toBe(outcome);
     }

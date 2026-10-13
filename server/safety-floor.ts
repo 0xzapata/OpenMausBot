@@ -33,11 +33,20 @@
 //   - On Windows a line is read twice, because Git Bash and WSL run there
 //     beside cmd and PowerShell: once as POSIX against the POSIX rules, once
 //     as cmd and PowerShell against theirs (`rd`, `del`, `Remove-Item`,
-//     `format`). A hit in either blocks.
+//     `format`). A hit in either blocks. Nothing applies this reading yet:
+//     it leaves too many ordinary Windows commands unread, so the gate is
+//     inert on a Windows server (server/safety-floor-gate.ts) until a
+//     request says which shell it is for.
 //
 // The two readings never look at each other. Neither one's quotes switch the
 // other on or off: a line both would misread differently is read twice, and
 // that is all.
+//
+// One wrapper gets a second reading on macOS and Linux as well. PowerShell 7
+// runs there, so what follows `pwsh -c` or `powershell -Command` is read as a
+// POSIX line (PowerShell on those hosts runs the real `rm`) and as PowerShell
+// deleting POSIX paths (`Remove-Item -Recurse /`). Nothing outside that
+// wrapper is read twice.
 //
 // WHAT COULD NOT BE READ. A reading that loses its place (a quote or heredoc
 // that never closes, nesting past what is followed) has not read the command.
@@ -206,6 +215,12 @@ function lex(source: string, windows: boolean): Reading {
       at += 2;
       return variable(balanced("{", "}", inDoubleQuotes));
     }
+    if (next === "[" && !windows) {
+      // $[ … ] is the old spelling of arithmetic.
+      at += 2;
+      balanced("[", "]", inDoubleQuotes);
+      return DYNAMIC;
+    }
     if (next === "'" && !windows && !inDoubleQuotes) {
       // $'…' decodes escapes such as \x2f, so its text is not read here.
       for (at += 2; at < source.length && source[at] !== "'"; at++) if (source[at] === "\\") at++;
@@ -372,6 +387,10 @@ function lex(source: string, windows: boolean): Reading {
         at++;
         balanced("(", ")", false);
         add(DYNAMIC);
+      } else if (c === "(" && after === "(" && word === null && !windows) {
+        // (( … )) is arithmetic: `<<` in it shifts, and nothing in it runs.
+        at++;
+        balanced("(", ")", false);
       } else if (c === "(" || c === ")") {
         // A subshell, or the parentheses of a function: what is inside runs.
         bare += c;
@@ -611,9 +630,10 @@ function windowsTarget(word: string, percent: boolean, host: Host): FloorVerdict
   return home && drive && home === `${drive}\\${parts.join("\\")}`.toLowerCase() ? DELETE_HOME : null;
 }
 
-/** How a script is read: as a POSIX shell line against the POSIX rules, or
- * as cmd and PowerShell would read it against theirs. */
-type Mode = "posix" | "windows";
+/** How a script is read: as a POSIX shell line against the POSIX rules; as
+ * cmd and PowerShell on Windows would read it, against theirs; or as
+ * PowerShell on macOS or Linux, where it deletes POSIX paths. */
+type Mode = "posix" | "windows" | "powershell";
 
 /** One reading of one command line. `synced` goes false, and stays false,
  * the moment any part of it (the line, or a script a wrapper hands on) could
@@ -643,6 +663,15 @@ function judge(command: Command, source: string, pass: Pass, mode: Mode, depth: 
 
   // A shell handed a command line runs it as a POSIX line, whoever calls it.
   if (SHELLS.has(program)) return run(inlineScript(args), "posix");
+  // PowerShell 7 on macOS or Linux. What it is handed is read both ways,
+  // and only here: as a POSIX line, because there `rm` is the real rm, and
+  // as PowerShell, whose own delete takes POSIX paths. The outer shell has
+  // already removed its quotes, so the words after the flag are the script.
+  if (!host.windows && mode === "posix" && (program === "pwsh" || program === "powershell")) {
+    const flag = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
+    const inner = flag < 0 ? "" : args.slice(flag + 1).join(" ");
+    return run(inner, "posix") ?? run(inner, "powershell");
+  }
   // cmd and PowerShell take a command line of their own kind. They exist
   // only on Windows, where Git Bash can call them too; there the line is
   // read as they read it even when the line around it is a POSIX one.
@@ -690,6 +719,20 @@ function judge(command: Command, source: string, pass: Pass, mode: Mode, depth: 
     return null;
   }
 
+  if (mode === "powershell") {
+    // Remove-Item and the names PowerShell keeps for it off Windows. (`rm`
+    // and `rmdir` are the real programs there; the POSIX reading has them.)
+    if (!["remove-item", "ri", "rd", "del", "erase"].includes(program)) return null;
+    const isSwitch = (arg: string) => /^-./.test(arg);
+    if (!args.some((arg) => isSwitch(arg) && "-recurse".startsWith(arg.toLowerCase()))) return null;
+    for (const target of args) {
+      // PowerShell takes either slash in a path.
+      const verdict = isSwitch(target) ? null : posixTarget(target.replace(/\\/g, "/"), host);
+      if (verdict) return verdict;
+    }
+    return null;
+  }
+
   // cmd's and PowerShell's own deletes. `rm` here is PowerShell's name for
   // Remove-Item, so it is recursive only the way PowerShell writes it
   // (-Recurse, -r): `rm -rf` is a POSIX spelling PowerShell rejects, and the
@@ -718,7 +761,7 @@ function judge(command: Command, source: string, pass: Pass, mode: Mode, depth: 
 
 /** One script read one way: the first rule any of its commands meets. */
 function scan(source: string, pass: Pass, mode: Mode, depth: number): FloorVerdict | null {
-  const reading = lex(source, mode === "windows");
+  const reading = lex(source, mode !== "posix");
   if (!reading.synced) pass.synced = false;
   if (mode === "posix" && FORK_BOMBS.some((bomb) => bomb.test(reading.bare))) return FORK_BOMB;
   for (const command of reading.commands) {
