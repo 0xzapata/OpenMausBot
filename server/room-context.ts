@@ -1,14 +1,18 @@
 // How full each bot's context is in a room, and when its next room turn
 // should start from a fresh provider session instead.
 //
-// A room turn never resumes a stored session: every turn re-sends the room's
-// bounded recent transcript (host/room-transcript.ts). What grows is a warm
-// provider process the driver keeps between one bot's consecutive turns in
-// the same room (Claude's idle session reuse), which re-reads that transcript
-// on top of everything it already holds. Starting the turn with the existing
-// `sessionReset` flag drops exactly that native backlog and nothing the room
-// relies on, so it is a room's compaction: the transcript stays whole, and
-// the fresh session gets the same bounded context every turn gets.
+// A room turn re-sends the room's bounded recent transcript
+// (host/room-transcript.ts) and resumes no stored session. What grows is a
+// warm provider process the driver keeps between one bot's consecutive turns
+// in the same room (Claude's idle session reuse), which re-reads that
+// transcript on top of everything it already holds. With
+// `context.roomSessions` on (host/room-sessions.ts), a member whose own
+// session is known to hold the room is sent only the lines it has not been
+// handed instead; the session still grows, more slowly. Starting the turn
+// with the existing `sessionReset` flag drops exactly that native backlog and
+// nothing the room relies on, so it is a room's compaction: the transcript
+// stays whole, and the fresh session gets the same bounded context a room
+// turn has always carried.
 //
 // Measurements live in memory on purpose. They describe a warm process, and
 // warm processes do not outlive this server either.

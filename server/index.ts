@@ -22,6 +22,8 @@ import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker } from "./room-context.ts";
 import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
+import { createRoomSessions } from "./host/room-sessions.ts";
+import { roomSessionsEnabled } from "./room-context-settings.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -9011,7 +9013,7 @@ bus.subscribe((event: RuntimeEvent) => {
   };
 
   if (coordinatorVisibleText) pushAssistantText(coordinatorVisibleText, completedTurnId);
-  if (bot) handoffs.onEvent(event);
+  if (bot) handoffs.onEvent(event); else roomSessions.onEvent(event);
 
   if (event.turnId) liveTurnByThread.set(event.threadId, event.turnId);
   const requestOwner = bot ? directRequestOwners.get(event.threadId) : undefined;
@@ -10072,6 +10074,7 @@ const handoffs = new Handoffs({
   replies: (threadId, turnId) => store.activePath(threadId)
     .filter((m) => m.role === "bot" && m.kind === "text" && !m.from && m.turnId === turnId).map((m) => m.id),
 });
+const roomSessions = createRoomSessions({ enabled: () => roomSessionsEnabled(cfg.context), messagesFor: (threadId) => store.messagesFor(threadId) });
 
 
 // A bot going in circles — the same call with the same arguments, over and
@@ -14410,7 +14413,8 @@ async function runClaimedGroupMemberTurn(
   const liveRosterBlock = !orchestration?.liveRoster || orchestration.resumed ? "" : `\n\n${orchestration.liveRoster}`;
   // What addressed this member while the person held it, now that it is back.
   const heldReplay = heldReplayFor(group.id, threadId, bot.id, userName, roomContext);
-  const text = `${roomContext}\n\n(Reply to the conversation above as ${bot.name}.)${learnBlock}${heldReplay.block}${cardContinuation ? `\n\n${cardContinuation}` : ""}${coordinationReminder}${liveRosterBlock}`;
+  const roomTail = `\n\n(Reply to the conversation above as ${bot.name}.)${learnBlock}${heldReplay.block}${cardContinuation ? `\n\n${cardContinuation}` : ""}${coordinationReminder}${liveRosterBlock}`;
+  const text = roomContext + roomTail;
 
   // same workspace + memory as a 1:1 turn — the room is a different
   // conversation, not a different bot
@@ -14636,11 +14640,20 @@ async function runClaimedGroupMemberTurn(
       });
       broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
     }
+    // Today's call, unless this member's own session is known to hold the
+    // room already: then that session, and only the lines it has not been
+    // handed (host/room-sessions.ts; `context.roomSessions`, off by default).
+    const clock = turnClockLine(Date.now(), hostTimeZone());
+    const roomSession = roomSessions.dispatch({
+      threadId, botId: readyBot.id, claimId: internalGeneration, instance, guestConfined: roomGuestConfined, reset: Boolean(roomReset),
+      config: [roomSystem.stable, cwd, readyBot.modelSelection, turnApprovalMode, readyBot.toolScope, integrations],
+      window: roomWindow, tail: roomTail, wrap: (body) => withTurnClock(clock, withRecalled(roomRecalled, body)),
+    });
     guardTurnDispatch(instance.adapter.sendTurn({
-        ...(roomReset ? { sessionReset: true } : {}),
+        ...roomSession.send,
         threadId,
         botId: readyBot.id,
-        text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text)),
+        text: roomSession.text,
         ...(roomRecalled ? { recalled: roomRecalled } : {}),
         images: turnImages,
         approvalMode: turnApprovalMode,
@@ -14665,6 +14678,7 @@ async function runClaimedGroupMemberTurn(
       })
       .then((dispatch) => {
         providerTurnId = dispatch.value.turnId;
+        roomSessions.bindTurn(threadId, internalGeneration, dispatch.value.turnId);
         bindInternalCapabilityToProviderTurn(threadId, internalGeneration, dispatch.value.turnId);
         orchestration?.onTurnStarted?.(dispatch.value.turnId);
         if (abandoned) {

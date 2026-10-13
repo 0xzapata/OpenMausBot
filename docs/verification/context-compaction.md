@@ -25,9 +25,10 @@ record is newer than the last reply).
 
 ## Rooms
 
-A room turn never resumes a stored session: every turn re-sends the room's
-bounded recent transcript. What grows is the warm provider process a driver
-keeps between one bot's consecutive turns in a room (Claude's idle reuse).
+A room turn resumes no stored session: every turn re-sends the room's
+bounded recent transcript (but see Room sessions below). What grows is the
+warm provider process a driver keeps between one bot's consecutive turns in
+a room (Claude's idle reuse).
 Each settled room turn records that bot's last measured prompt for the room's
 thread (in memory, like the warm process itself) and the room wire carries it
 as `memberContext`. From 80% the roster avatar gets a mark and a line under
@@ -45,6 +46,47 @@ pnpm exec vitest run server/room-context.e2e.test.ts server/room-context.test.ts
 
 The fixture proves a warm process is kept below the threshold or with
 automatic compaction off, and replaced after Compact now and above 90%.
+
+### Room sessions (off by default, Claude Code only)
+
+With `"context": { "roomSessions": true }` in config.json (or
+`PATCH /api/config`; `OMB_ROOM_SESSIONS=1` / `0` wins over the file), a room
+member whose own provider session is known to hold the room is sent only the
+lines that session has not been handed, under one note, instead of the
+bounded transcript again. The room remembers, in memory, which native session
+ran each member's last turn in a thread and what it was handed. Every other
+turn is the call described above, unchanged: a member's first turn, a turn
+after a server restart, after another member's turn on the same engine
+instance (the driver keeps one process per thread), after a turn that failed,
+was stopped, timed out or was held, after Compact now or the automatic
+threshold, after ten quiet minutes (the driver's own idle time), when the
+member missed more lines than the window holds, when its model, folder,
+instructions, approval level, tools or connections changed, and any guest's
+turn. If Claude Code cannot reopen the session, the driver starts a new one
+from the whole turn and says so in the room, as it does in a 1:1 chat.
+
+Only Claude Code is covered, and only a CLI new enough to declare strict
+resume (2.1.267): it is the engine that goes on in a warm session between
+room turns. Codex, ACP agents, Pi, Muse Code and the API models keep the call
+above whatever the setting says.
+
+```sh
+pnpm exec vitest run server/room-sessions.e2e.test.ts
+pnpm exec vitest run server/host/room-sessions.test.ts server/host/room-transcript.test.ts server/room-context-settings.test.ts
+```
+
+The fixture wraps the fake Claude so every launch records its `--resume` or
+`--session-id`, and reads the exact text each room turn's engine received.
+It proves: with the setting off a second turn is the whole transcript on the
+warm process, as before; with it on, the second turn holds only the new lines
+in the same process; a turn after another member's is the whole window on a
+new session; so is a turn after a failed one and after a stopped one; Compact
+now starts a fresh session with the usual line, and the next turn is a delta
+against it; a line posted with `post_to_room` while the member worked arrives
+once, in its next turn, under its provenance note; a refused `--resume` ends
+with the whole turn on a new session and the driver's notice. No real engine
+runs: what a live Claude Code session costs across a resume is not measured
+here.
 
 Evidence covers:
 
