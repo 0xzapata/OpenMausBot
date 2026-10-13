@@ -92,7 +92,7 @@ import { pendingApprovals } from "./PendingApproval";
 import { DataResultChip } from "./DataResultChip";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { dayLabel, localDay } from "@/lib/transcript-derivations";
-import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
+import { roomQueueLabel, roomSpeakerIds, roomThreadQueue, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 
 /** One finished tool step in a room. Same pill the 1:1 chat uses, minus the
  * status glyph — a room reads as a conversation, not a build log. A chip
@@ -619,6 +619,24 @@ export function RoomHoldsBanner({ group, members }: { group: Group; members: Bot
 }
 
 /** Under a reply in an Auto room: the decision model chose this speaker. */
+/** Who waits their turn in the open thread, and on whom: "Second: Queued ·
+ * waiting for First (2 of 3)". Same-room speakers take turns, so a member
+ * sent work while another runs is queued, not idle. */
+export function RoomQueueList({ group, members }: { group: Group; members: Bot[] }) {
+  const queued = roomThreadQueue(group, group.threadId);
+  if (!queued.length) return null;
+  const nameOf = (botId: string) => members.find((member) => member.id === botId)?.name;
+  return (
+    <ul data-testid="room-queue" className="flex flex-col gap-0.5 pl-12 text-[12.5px] text-ink-secondary">
+      {queued.map((entry) => (
+        <li key={`${entry.botId}:${entry.position}`}>
+          {t("room.queue.member", { name: nameOf(entry.botId) ?? t("sidebar.preview.aBot"), status: roomQueueLabel(entry, nameOf) })}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function RoutedByLine({ routedBy }: { routedBy: NonNullable<Message["routedBy"]> }) {
   const percent = Math.round(Math.min(1, Math.max(0, routedBy.probability)) * 100);
   return (
@@ -1335,8 +1353,13 @@ export function GroupView({ group }: { group: Group }) {
   // room gets the place icon instead of the plain dot, matching the 1:1
   // composer's PlaceChip live indicator.
   const contextWarnings = roomContextWarnings(group, members);
+  const nameOf = (botId: string) => members.find((member) => member.id === botId)?.name;
+  // Members waiting their turn in this thread: same-room speakers take
+  // turns, so one sent work while another runs is queued, not idle.
+  const queued = roomThreadQueue(group, group.threadId);
   const memberMauses = members.map((b) => {
     const busy = group.busyBotId === b.id;
+    const waitingTurn = busy ? undefined : queued.find((entry) => entry.botId === b.id);
     const contextWarning = contextWarnings.find((warning) => warning.bot.id === b.id);
     const busyElsewhere = !busy && speakersElsewhere.has(b.id);
     const held = !group.dm && Boolean(group.holds?.[b.id]);
@@ -1350,6 +1373,8 @@ export function GroupView({ group }: { group: Group }) {
         title={
           held
             ? t("room.holds.avatarHeld", { name: b.name })
+            : waitingTurn
+              ? t("room.queue.member", { name: b.name, status: roomQueueLabel(waitingTurn, nameOf) })
             : busyElsewhere
               ? t("room.memberWorkingElsewhere", { name: b.name })
               : `${b.name}${busy ? " — working…" : ""}${contextWarning ? ` — ${t("contextWarning.short", { percent: contextWarning.percent })}` : ""}`
@@ -1358,7 +1383,9 @@ export function GroupView({ group }: { group: Group }) {
           "relative inline-flex rounded-full",
           busy && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
           busyElsewhere && "ring-1 ring-hairline ring-offset-1 ring-offset-app",
+          waitingTurn && !busyElsewhere && "ring-1 ring-accent/30 ring-offset-1 ring-offset-app",
         )}
+        data-queued={waitingTurn ? `${waitingTurn.position}/${waitingTurn.of}` : undefined}
       >
         <span className={cn("inline-flex", held && "opacity-50 grayscale")}>
           <BotAvatar bot={b} state={normalizeState(b.mascotExpression) ?? "happy"} size={24} animated={false} />
@@ -1675,6 +1702,7 @@ export function GroupView({ group }: { group: Group }) {
               since={speaker ? group.turnStartedAt ?? null : null}
             />
           )}
+          <RoomQueueList group={group} members={members} />
           {/* Stop only the member that is working; the room carries on. */}
           {threadSpeaker && !group.dm && members.length > 1 && !group.holds?.[threadSpeaker.id] && (
             <div className="flex justify-start pl-12">

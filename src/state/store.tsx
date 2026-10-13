@@ -309,6 +309,8 @@ export interface Group {
   /** Members the person stopped in this room ("stop @Bot"), by bot id. */
   holds?: Record<string, import("../../shared/wire").RoomHold>;
   heldMessages?: Record<string, import("../../shared/wire").RoomHeldMessage[]>;
+  /** Who waits in each of the room's threads, and on whom (WireGroup.queue). */
+  queue?: import("../../shared/wire").RoomQueueEntry[];
   /** Separate conversations in this channel. DMs deliberately stay on one
    * thread and omit this collection. */
   tasks?: GroupTask[];

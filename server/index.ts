@@ -103,7 +103,7 @@ import { createDataRoutes } from "./data/routes.ts";
 import { DataSheetRegistry } from "./data/sheet.ts";
 import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
-import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
+import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type RoomQueueEntry, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, shouldSettleRequestCard } from "../shared/ask-question.ts";
 import { parseToolScope } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
@@ -295,6 +295,7 @@ import { threadModelFallback, type ThreadEngine } from "./thread-model.ts";
 import { computerEngineMoveText, removedComputerInstanceIds, writeComputerEngineMoveLines } from "./computer-engine-removal.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
+import { queuedJobDetail, roomQueue, sequentialRoomNotice, type RoomLineItem } from "./room-queue.ts";
 import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
 import {
@@ -4985,6 +4986,9 @@ type GroupTurnOperation = {
    * every burst line from the transcript by these stable queueIds, so each
    * line's context text and attachments survive the fold into one turn. */
   queuedQueueIds?: string[];
+  /** A round of @mentioned responders, in the order they reply: the one
+   * replying now and those still waiting (server/room-queue.ts). */
+  line?: { current?: string; pending: string[] };
   goalRun?: {
     runId: string;
     cardMessageId: string;
@@ -5903,7 +5907,32 @@ function publicGroupState(record: GroupRecord): WireGroup {
     // The room works while any of its tasks does, a background goal's too:
     // the sidebar, a call and Stop read this.
     working: groupIsWorking(record) || openHandoffs.length > 0,
+    // Always present, so a frame with nobody waiting clears the last one.
+    queue: roomLineOf(record),
   };
+}
+
+/** Who waits in each of the room's threads, in the order they will run: the
+ * round of @mentioned responders first (it holds the thread's queue), then
+ * work handed into the room, which runs after it one job at a time. */
+function roomLineOf(record: GroupRecord): RoomQueueEntry[] {
+  const items: RoomLineItem[] = [];
+  const speakers = new Map<string, string>();
+  for (const operation of groupTurnOperations.get(record.id) ?? []) {
+    if (operation.cancelled || !operation.line) continue;
+    const { current, pending } = operation.line;
+    if (current) items.push({ botId: current, threadId: operation.threadId, state: "running" });
+    for (const botId of pending) items.push({ botId, threadId: operation.threadId, state: "queued" });
+  }
+  const jobs = coordinator.all()
+    .filter(n => n.groupId === record.id && n.parentId !== undefined && (n.status === "queued" || n.status === "running"))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  for (const n of jobs) items.push({ botId: n.botId, threadId: n.threadId, state: n.status === "running" ? "running" : "queued", assignmentId: n.id });
+  for (const threadId of new Set(items.map(item => item.threadId))) {
+    const speaker = groupSpeakers.get(threadId);
+    if (speaker) speakers.set(threadId, speaker.botId);
+  }
+  return roomQueue(items, speakers);
 }
 
 function beginGroupTurnOperation(
@@ -15645,6 +15674,14 @@ function startGroupTurn(
       }
       const spoken = new Set<string>();
       const skillAuthoringClaim = { claimed: false };
+      // The round replies one member at a time: the room shows who waits.
+      if (round.length > 1) operation.line = { pending: round.map(responder => responder.id) };
+      const advanceLine = (current: string | undefined) => {
+        if (!operation.line) return;
+        operation.line = { ...(current ? { current } : {}), pending: operation.line.pending.filter(id => id !== current && !spoken.has(id)) };
+        const room = store.group(groupId);
+        if (room) broadcast({ kind: "group", group: publicGroupState(room) });
+      };
       for (const responder of round) {
         if (operation.cancelled) break;
         if (spoken.has(responder.id)) continue;
@@ -15661,6 +15698,7 @@ function startGroupTurn(
         // This speaker's first reply line says the decision model chose it.
         const stamp = routedBy ? { botId: responder.id, routedBy } : undefined;
         if (stamp) routedRoomReplies.set(threadId, stamp);
+        advanceLine(responder.id);
         let proceed: boolean;
         try {
           proceed = await runGroupMemberTurn(
@@ -19602,6 +19640,18 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           }
         }
         const sent = refused.length < receipts.length;
+        // Same-room jobs take turns: each receipt that waits says where it
+        // stands, and the message says they run in turn, so the requester
+        // does not tell the person five jobs are under way when one is.
+        const nameOf = (botId: string) => botId === internalSender.id ? "your own turn" : peerName(store.bot(botId)?.name ?? "") || "a teammate";
+        const roomLine = destination && sent ? roomLineOf(destination).filter(entry => entry.threadId === targets[0]?.threadId) : [];
+        for (const [index, receipt] of receipts.entries()) {
+          const entry = roomLine.find(candidate => candidate.assignmentId === receipt.requestId && candidate.state === "queued");
+          if (!entry || receipt.outcome !== "queued") continue;
+          receipts[index] = peerDeliveryReceipt({ ...receipt, detail: `${queuedJobDetail(entry, nameOf)}; ${returns}`,
+            queue: { position: entry.position, of: entry.of, ...(entry.waitingForBotId ? { waitingFor: nameOf(entry.waitingForBotId) } : {}) } });
+        }
+        const sequential = sequentialRoomNotice(roomLine, new Set(receipts.flatMap(receipt => receipt.requestId ? [receipt.requestId] : [])), nameOf);
         // The call was the external runtime's whole turn: its root now waits
         // on the work and completes, without a turn, once the work settles
         // (or ends now, with nothing sent).
@@ -19611,7 +19661,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           : reply === "poll"
             ? "Handed to the coordinator. Read each result with assignment_status (id: a receipt's requestId, or rootId for the whole call), long-polling with wait_ms."
             : "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait.";
-        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message } : { error: refused.join("; ") }),
+        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message: sequential ? `${sequential} ${message}` : message } : { error: refused.join("; ") }),
           ...(EXTERNAL && sent ? { rootId: generation } : {}) } };
       };
       // assignment_status: read-only. One assignment with its children and

@@ -189,6 +189,34 @@ conversation.
 
 ## Repeatable checks
 
+### Same-room jobs take turns, and say so
+
+Work handed to several members of one room runs in that room's thread one
+member at a time. Nothing hides that any more:
+
+- Each `coordinate_bots` receipt that has to wait carries
+  `queue: { position, of, waitingFor }` and a detail such as "queued 2 of 3
+  in this room: room jobs run one at a time, so it starts in turn, after
+  First". When anything the call sent waits behind other room work, the
+  message opens with "These run one at a time in this room, not in
+  parallel: …" and tells the requester not to report them as under way.
+- The room payload carries `queue` (`WireGroup.queue`,
+  `server/room-queue.ts`): every waiting member of each room thread with its
+  place in line and whom it waits on, for jobs and for a round of
+  @mentioned responders alike. The room shows "Second: Queued · waiting for
+  First (2 of 3)" under the transcript and on the member's avatar; the
+  sidebar row reads "First is working… · 2 queued".
+
+```sh
+pnpm exec vitest run server/room-queue.test.ts src/lib/room-threads.test.ts src/components/GroupView.queue.test.ts
+pnpm exec vitest run server/room-queue.e2e.test.ts -t "run in turn"
+```
+
+The e2e test launches the isolated scripted fixture, has a Lead hand three
+members work in one room, holds the first on a gate, and checks the Lead's
+receipts and the room's `group` frames (2 of 3 and 3 of 3, both waiting on
+the first), then that the line clears once all three settle.
+
 ### Rooms containing a supervising Chief
 
 A section bot can list and post to its room when an out-of-section Chief in

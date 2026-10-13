@@ -34,6 +34,9 @@ export interface PeerDeliveryReceipt {
   requestId?: string;
   /** The recipient's thread the work went into, for direct coordinate_bots sends. */
   threadId?: string;
+  /** Its place in a room's line, when room jobs run one at a time there
+   * (server/room-queue.ts): "2 of 5, after Ada". */
+  queue?: { position: number; of: number; waitingFor?: string };
 }
 
 // Detail lines are built from harness error text that can carry
@@ -51,6 +54,8 @@ export function peerDeliveryReceipt(receipt: PeerDeliveryReceipt): PeerDeliveryR
     ...(receipt.taskId ? { taskId: receipt.taskId } : {}),
     ...(receipt.requestId ? { requestId: receipt.requestId } : {}),
     ...(receipt.threadId ? { threadId: receipt.threadId } : {}),
+    ...(receipt.queue ? { queue: { position: receipt.queue.position, of: receipt.queue.of,
+      ...(receipt.queue.waitingFor ? { waitingFor: clip(receipt.queue.waitingFor, DETAIL_MAX) } : {}) } } : {}),
   };
 }
 
