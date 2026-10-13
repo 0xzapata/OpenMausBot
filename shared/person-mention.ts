@@ -78,7 +78,9 @@ function maskFences(text: string): string {
  * Null when the text does not tag the person. Code fences never count:
  * a tag quoted in code is not addressed to anyone. */
 export function personMentionExcerpt(text: string, options: PersonTagOptions = {}): string | null {
-  const prose = maskFences(text).replace(/`[^`\n]*`/g, (code) => " ".repeat(code.length));
+  // Code spans close on a backtick run of exactly the opening length and
+  // may cross line endings (CommonMark), so "``a @you b``" is code too.
+  const prose = maskFences(text).replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, (code) => code.replace(/[^\n]/g, " "));
   const hit = personMentionRanges(prose, options)[0];
   if (!hit) return null;
   const lineStart = text.lastIndexOf("\n", hit.start) + 1;

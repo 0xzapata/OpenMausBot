@@ -54,6 +54,9 @@ describe("the line a mention notification quotes", () => {
     expect(personMentionExcerpt("````\n```\n@you\n```\n````")).toBeNull();
     expect(personMentionExcerpt("~~~\n```\n~~~\n@you please check the export bucket")).toBe("@you please check the export bucket");
     expect(personMentionExcerpt("```\nunclosed @you")).toBeNull();
+    expect(personMentionExcerpt("See ``type @you here`` for the syntax.")).toBeNull();
+    expect(personMentionExcerpt("Wrap `the\n@you` tag in code.")).toBeNull();
+    expect(personMentionExcerpt("Use `code` and then @you decide which bucket wins")).toBe("Use `code` and then @you decide which bucket wins");
     expect(personMentionExcerpt("@you", { botNames: ["you"] })).toBeNull();
   });
 });
