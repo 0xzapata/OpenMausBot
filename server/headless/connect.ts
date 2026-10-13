@@ -4,7 +4,7 @@
 // you can read. On this computer's own server the code is minted here first
 // (POST /api/auth/pairing), as `openmausbot pair` does. The token is never
 // printed: pass the file to other verbs with --token-file.
-import { closeSync, existsSync, fstatSync, openSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fchmodSync, fstatSync, openSync, writeSync } from "node:fs";
 import { isatty } from "node:tty";
 
 import { EXIT, flag, HeadlessError, usageError } from "./args.ts";
@@ -30,6 +30,8 @@ export function writeTokenFile(path: string, token: string, force: boolean): voi
   const fd = openSync(path, force ? "w" : "wx", 0o600);
   try {
     if (isatty(fd) || fstatSync(fd).isCharacterDevice()) throw usageError("the token goes to a file, never to the terminal", "pass --out FILE");
+    // a file being replaced keeps its old mode unless told
+    if (process.platform !== "win32") fchmodSync(fd, 0o600);
     writeSync(fd, `${token}\n`);
   } finally {
     closeSync(fd);
@@ -47,13 +49,13 @@ export async function connectVerb(ctx: VerbContext): Promise<VerbOutcome> {
   } catch (error) {
     throw usageError(error instanceof Error ? error.message : String(error));
   }
+  let code = flag(ctx.flags, "code")?.replace(/\s+/g, "");
+  if (!code && !isLoopback(origin)) throw usageError("a workspace elsewhere needs a pairing code", "open Settings → Phone → Set up a phone there, then pass --code CODE");
   const unreachable = () => new HeadlessError(`no OpenMausBot server answers at ${origin}`, EXIT.unreachable, "check the address, and that the server is running");
   const described = await call(origin, "/.well-known/openmausbot/environment").catch(() => { throw unreachable(); });
   if (described.status !== 200 || typeof described.body.environmentId !== "string") throw unreachable();
   const label = flag(ctx.flags, "label")?.trim() || "openmausbot CLI";
-  let code = flag(ctx.flags, "code")?.replace(/\s+/g, "");
   if (!code) {
-    if (!isLoopback(origin)) throw usageError("a remote workspace needs a pairing code", "open Settings → Phone → Set up a phone there, then pass --code CODE");
     const minted = await call(origin, "/api/auth/pairing", { method: "POST", body: JSON.stringify({ label, ...(ctx.flags.client ? { scopes: ["client"] } : {}) }) });
     if (minted.status !== 200 || typeof minted.body.code !== "string") {
       throw new HeadlessError(`this server will not mint a pairing code for a command on this computer${minted.body.error ? ` (${minted.body.error})` : ""}`,
