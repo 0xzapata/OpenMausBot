@@ -207,7 +207,7 @@ export interface SendTurnInput {
      * registers the helper with its engine; the harness only ever observes
      * and injects context through this channel, never decides state. */
     hooks?: { url: string; token: string };
-    /** Peer-agent comms: an MCP proxy (list_bots / ask_bot) that routes back
+    /** Peer-agent comms: an MCP proxy (list_bots / coordinate_bots) that routes back
      * through the harness so this bot can message other bots. The harness
      * owns turns, permissions, and recursion limits; the proxy only forwards. */
     agents?: { command: string; args: string[]; env: Record<string, string> };
@@ -313,6 +313,11 @@ export interface ProviderAdapter {
      * others keep the queue-one-and-wait behaviour. Same rule as the other
      * flags: never show a control the driver cannot honour. */
     queueing?: boolean;
+    /** True when steer() delivers `images` into the running turn as
+     * structured provider input, the way sendTurn does for a new turn.
+     * Requires queueing and nativeImageInput. Without it, words that carry
+     * attachments wait in the queue for a real turn, as they always did. */
+    steerImages?: boolean;
     /** True only when local MCP calls can reach the human approval channel.
      * Full-auto/bypass provider instances must leave this false. */
     localComputerMcp?: boolean;
@@ -367,12 +372,36 @@ export interface ProviderAdapter {
    * - "indeterminate" — delivered, but the outcome is unknown (the RPC
    *   timed out after accept, transport failed, or the turn settled while
    *   the answer was in flight). The caller must NOT re-queue: the words
-   *   may already be running, and replaying them would execute them twice. */
-  steer?(threadId: ThreadId, text: string): Promise<SteerOutcome>;
+   *   may already be running, and replaying them would execute them twice.
+   *
+   * `images` are admitted attachments (as SendTurnInput.images). Callers pass
+   * them only to drivers with `capabilities.steerImages`; a driver that cannot
+   * read one refuses the whole steer rather than drop the picture. */
+  steer?(threadId: ThreadId, text: string, images?: readonly TurnImageInput[]): Promise<SteerOutcome>;
   hasSession(threadId: ThreadId): boolean;
   stopAll(): Promise<void>;
   onEvent(listener: RuntimeEventListener): () => void;
+  /** Prompt-cache keep-warm (server/cache-keepwarm.ts). Only drivers that
+   * keep a live native session per thread and can send one tool-less,
+   * forked request over its transcript implement it (Claude Code today).
+   * `ping` never changes the thread's own session; `hold` keeps that live
+   * session open until `until` (epoch ms), or releases the hold with null,
+   * and says whether a live session exists to hold. */
+  cacheKeepWarm?: {
+    ping(threadId: ThreadId, options?: { signal?: AbortSignal }): Promise<CacheWarmPingResult>;
+    hold(threadId: ThreadId, until: number | null): boolean;
+  };
 }
+
+/** One keep-warm ping as the engine reported it. Tokens are the request's
+ * own: `cacheRead` re-read from the prompt cache, `cacheWrite` written to it,
+ * `input` uncached input. `costUsd` is the engine's figure (on a subscription
+ * an equivalent, not a charge). A refusal says why; `busy` means the thread
+ * had a turn running and nothing was sent; `limit` means the account's usage
+ * limit refused the call. */
+export type CacheWarmPingResult =
+  | { ok: true; input: number; cacheRead: number; cacheWrite: number; output: number; costUsd: number | null; model: string | null }
+  | { ok: false; reason: string; busy?: boolean; limit?: boolean };
 
 /** The tri-state result of Adapter.steer — see the contract above. */
 export type SteerOutcome = "steered" | "refused" | "indeterminate";
@@ -565,10 +594,11 @@ export interface ProviderInstance {
    * The signal is a best-effort cap: drivers that can honor it abort the
    * underlying provider call; the rest keep their own timeout. */
   generateText?(prompt: string, options?: TextGenerationOptions): Promise<string>;
-  /** A one-shot text call for memory upkeep only, on an engine whose turns
-   * are a whole agent process (the ACP family). It starts a fresh tool-free
-   * session on the engine's own provider, so it is never offered to titles or
-   * compaction, which would then spawn a process for every new chat. */
+  /** A one-shot text call for the background steps only (memory upkeep, the
+   * skill review), on an engine whose turns are a whole agent process (the
+   * ACP family, Codex). It starts a fresh tool-free session on the engine's
+   * own provider, so it is never offered to titles or compaction, which would
+   * then spawn a process for every new chat. */
   generateMemoryText?(prompt: string, options?: TextGenerationOptions): Promise<string>;
   /** Isolated, tool-free permission review on this same provider. Kept
    * separate from generateText so the UI never infers a security capability

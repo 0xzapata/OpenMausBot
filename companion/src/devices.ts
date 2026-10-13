@@ -138,6 +138,8 @@ export class DeviceRegistry {
   private replay: PairingReplay | null = null;
   private replayExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSeenWrites = new Map<string, number>();
+  /** devices.json exists but could not be read: "no devices" is a guess. */
+  private unreadable = false;
 
   /** Load the paired fleet, normalising as it goes.
    *
@@ -158,9 +160,12 @@ export class DeviceRegistry {
               typeof (d as DeviceRecord)?.tokenHash === "string",
           )
           .map(normalizeDevice);
+      } else {
+        this.unreadable = true;
       }
-    } catch {
+    } catch (error) {
       /* first run, or a file we can't read — start with no paired devices */
+      this.unreadable = (error as NodeJS.ErrnoException)?.code !== "ENOENT";
     }
   }
 
@@ -169,11 +174,20 @@ export class DeviceRegistry {
   private persist() {
     ensureDataDir();
     writeFileAtomic(DEVICES_FILE, JSON.stringify({ devices: this.devices }, null, 2));
+    this.unreadable = false;
   }
 
   /** Every paired device, without the hash — this is what the page renders. */
   list(): PublicDevice[] {
     return this.devices.map(({ tokenHash: _tokenHash, ...rest }) => rest);
+  }
+
+  /** True when devices.json exists but could not be read or parsed, until
+   * the next successful save. The list is then empty only because nothing
+   * could be read, so the desktop must not take it as "nothing is paired"
+   * (it keeps this computer's secure address). */
+  devicesUnreadable(): boolean {
+    return this.unreadable;
   }
 
   /** How many phones are paired, against MAX_DEVICES. */

@@ -513,6 +513,9 @@ export function MemoryUpkeepCard({
           <div className="min-w-0">
             <div className="text-[13px] font-medium text-ink">{t("memory.learnFromRooms.title")}</div>
             <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-secondary">{t("memory.learnFromRooms.subtitle")}</p>
+            {status && !status.modelSteps && (
+              <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">{t("memory.learnFromRooms.noModelSteps")}</p>
+            )}
             {rooms.error && <p role="alert" className="mt-1 text-[12.5px] text-danger">{rooms.error}</p>}
           </div>
           <Switch
@@ -525,10 +528,7 @@ export function MemoryUpkeepCard({
         </div>
       )}
       {enabled && status && !status.modelSteps && (
-        <p className="mt-2 text-[12.5px] text-ink-secondary">
-          This bot's engine can't make the quick background model call upkeep uses, so it only archives expired notes and
-          merges exact duplicates. Claude and chat-model engines can do the rest.
-        </p>
+        <p className="mt-2 text-[12.5px] text-ink-secondary">{t("memory.upkeep.noModelSteps")}</p>
       )}
       {enabled && (
         <div className="mt-3 flex flex-wrap items-center gap-3">

@@ -187,8 +187,20 @@ export interface WireTask {
   surfaceAuto?: true;
   /** what this task has spent, banked once per turn */
   usage?: TaskUsage;
+  /** Prompt-cache keep-warm status for this thread (server/cache-keepwarm.ts),
+   * derived at projection and never stored; absent when no window is open. */
+  cacheKeepWarm?: CacheKeepWarmStatus;
   /** the folder this task's turns run in, pinned on its first turn. */
   cwd?: string | null;
+}
+
+/** One thread's keep-warm window as a client shows it. Times are epoch ms. */
+export interface CacheKeepWarmStatus {
+  state: "warm" | "stopped";
+  until?: number;
+  nextPingAt?: number;
+  last?: { at: number; read: number; write: number; costUsd: number | null };
+  stopped?: string;
 }
 
 /** A lightweight organizational label within one bot. */
@@ -351,6 +363,9 @@ export interface WireBot {
    * tidies nightly. On unless explicitly false; every change is journaled
    * and can be undone. */
   memoryUpkeep?: boolean;
+  /** Prompt-cache keep-warm for this bot's Claude threads: true or false
+   * overrides the workspace setting (Settings → Engines); absent follows it. */
+  cacheKeepWarm?: boolean;
   /** Which of the app-wide MCP servers this bot mounts, by name. */
   mcpServers?: string[];
   /** Owner-selected original tool identities. An empty allowlist permits none. */
@@ -520,7 +535,7 @@ export interface WireMessage {
    * not know it ignore it. */
   routedBy?: { provider: "jev"; probability: number };
   /** Set on the user-role line another bot delivered into this bot's own
-   * conversation (ask_bot, start_thread). `incident`: the line is
+   * conversation (coordinate_bots, start_thread). `incident`: the line is
    * OpenMausBot's Team incidents report about that bot's broken run in
    * `threadId` (server/incidents.ts), not its words; `notified`: that
    * failure already buzzed the person (a run that could not start, a
@@ -693,8 +708,9 @@ export interface SecretRequestCardData {
 }
 
 /** A bot asked the person to sign in to a website themselves
- * (shared/sign-in-request.ts). OpenMausBot never sees the password: the
- * person types it into the page, in the place the bot works. */
+ * (shared/sign-in-request.ts): they type the password into the page, in the
+ * place the bot works, or save a login the server fills for the bot. The
+ * bot never sees the password either way. */
 export interface SignInRequestCardData {
   /** The page to open, an http(s) address. */
   url: string;
@@ -709,6 +725,9 @@ export interface SignInRequestCardData {
   /** A newer request for the same site in this conversation replaced this
    * card; it no longer offers Done or Cancel. */
   superseded?: boolean;
+  /** Answered by saving a login (shared/logins.ts): the exact host it was
+   * saved for, which the bot then fills with fill_login. */
+  savedLogin?: string;
   resumed?: boolean;
   error?: string;
   /** Stop ended the turn this card paused: it offers no Done or Cancel,
@@ -765,6 +784,10 @@ export interface GroupTask {
 export interface WireGroup {
   /** Computed from the usage ledger, not stored in groups.json. */
   usage?: GroupThreadUsage | null;
+  /** transient: each member's context in the active thread, from its last
+   * turn there (server/room-context.ts), and whether its next turn there
+   * was asked to start compacted. Absent until a member reports one. */
+  memberContext?: Record<string, { tokens: number; window: number; compactRequested?: true }> | null;
   id: string;
   /** The active task's thread. Direct-message channels stay single-threaded. */
   threadId: string;
@@ -809,6 +832,26 @@ export interface WireGroup {
   /** A direct-message channel's turn ceiling. Null on the wire means the
    * global group limit. Channel conversations store theirs on each task. */
   turnTimeoutMinutes?: number | null;
+  /** Members the person stopped in this room ("stop @Bot"), by bot id.
+   * A held member gets no turn until it is @mentioned again or resumed.
+   * Room-wide, persisted (server/room-holds.ts). */
+  holds?: Record<string, RoomHold>;
+  /** Room messages addressed to a member while it was held, by bot id;
+   * its next turn is shown them, then they are cleared. */
+  heldMessages?: Record<string, RoomHeldMessage[]>;
+}
+
+/** One member's hold in a room: when the person stopped it, and whether the
+ * room has already said so (the held line is written once per hold). */
+export interface RoomHold {
+  at: number;
+  noted?: boolean;
+}
+
+/** A room message that reached a member while it was held. */
+export interface RoomHeldMessage {
+  threadId: string;
+  messageId: string;
 }
 
 // ── live wire frames ───────────────────────────────────────────────────

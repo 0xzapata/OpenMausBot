@@ -54,6 +54,8 @@ export interface HandoffView {
    * host holds it for): why, where the steps so far are, and how many
    * continuations so far including this one. */
   continuation?: { note: string; handoffPath?: string; count: number };
+  /** A root that is one step of a room goal run: that run's id. */
+  goalRunId?: string;
 }
 
 /** A person's or a routine's own turn, as a root (one per request). */
@@ -66,6 +68,8 @@ export interface BeginTurnRequest {
   level: Level;
   opener?: HandoffOpener;
   origin?: WorkOrigin;
+  /** A room goal run's step: the run's id (HandoffView.goalRunId). */
+  goalRunId?: string;
 }
 
 /** How a host-run turn ended. `cap` continues the same node in place (a
@@ -97,15 +101,9 @@ export interface HandoffOptions {
   approvalGranted?: boolean;
   /** Run a finished teammate again with new work. */
   rework?: boolean;
-  /** The requesting conversation's own request, for a fresh root's brief. */
-  sourceText?: string;
   /** A room brief shown once per call. */
   requestBatchKey?: string;
   doneWhen?: string;
-  /** For a fresh root; absent means a person's chat turn (peer-provenance origin). */
-  opener?: HandoffOpener;
-  /** The legacy origin of the requesting turn, used when no opener is given. */
-  origin?: WorkOrigin;
 }
 
 export type RoomAddress = Pick<HandoffView, "groupId" | "threadId" | "botId">;
@@ -153,8 +151,11 @@ export interface CoordinatorHost {
   park(node: HandoffView, question: string, restored?: boolean): void;
   /** The permission level the target thread will actually run with, after
    * the host applied any delegated level, and its engine kind. Recorded on
-   * the assignment so the envelope states the truth (invariant I6). */
-  levelOf(target: RoomAddress): { level: Level; driverKind?: string };
+   * the assignment so the envelope states the truth (invariant I6). For a
+   * hand-off, `source` is the requesting node's address: a Chief's level
+   * flows into a room with the hand-off (never onto the shared thread), so
+   * the host resolves it from the source, as the room turn will. */
+  levelOf(target: RoomAddress, source?: RoomAddress): { level: Level; driverKind?: string };
   /** The conversation is a Chief of Staff's. */
   chiefOf(address: RoomAddress): boolean;
   /** What the cut turn of this node already did outward (sent, posted,
@@ -170,7 +171,11 @@ export interface Coordinator {
   has(id: string): boolean;
   all(): HandoffView[];
   children(id: string): HandoffView[];
-  /** Throws an Error whose message is the typed refusal the caller shows the model. */
+  /** Hand work on from a running node: the requester's own root (its turn's
+   * generation, begun by beginTurn) or a teammate's node (`parentId`). Every
+   * turn has a root since PR 4 (direct) and PR 5 (rooms): a generation with
+   * none is refused. Throws an Error whose message is the typed refusal the
+   * caller shows the model. */
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, text: string,
     options?: HandoffOptions): { node: HandoffView; duplicate: boolean };
   /** One assignment with its children and inbox (assignment_status). */
@@ -195,14 +200,18 @@ export interface Coordinator {
   /** Remove terminal trees that finished before `before`. */
   prune(before: number): number;
   sharedRequest(node: HandoffView): { id: string; botIds: string[] };
-  sourceSettled(generation: string, ok: boolean): void;
   cancelRoom(groupId: string, threadId?: string, reason?: string, status?: "failed" | "cancelled"): void;
   cancelDirect(threadId: string, reason?: string): void;
   activeDirect(threadId: string): boolean;
   assignerOf(threadId: string): HandoffView | undefined;
   outstandingDirect(threadId: string): HandoffView[];
   liveEdges(): LiveHandoffEdge[];
+  /** The person stopped this conversation (a bot's thread or a room thread):
+   * its nodes stop being awaited (contract §2 "Stop awaiting"); returns the
+   * teammates left mid-turn. Thread-keyed, so a room thread is the same call. */
   stopAwaitingDirect(threadId: string, reason?: string): HandoffView[];
+  /** The turn running in this thread (a bot's or a room's) is one the next
+   * start goes on with, so a shutdown's "cut" line would be false. */
   continuesAfterRestart(threadId: string): boolean;
   /** The note a request arrived under (its envelope without the brief), for
    * a replay of that request line; undefined when the row is gone. */

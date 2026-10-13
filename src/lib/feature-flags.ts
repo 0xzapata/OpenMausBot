@@ -45,6 +45,20 @@ export function skillReviewSteps(config: FeatureFlagConfig | null | undefined): 
   return Math.min(MAX_SKILL_REVIEW_STEPS, Math.max(MIN_SKILL_REVIEW_STEPS, value));
 }
 
+/** The engines bots on this server use that cannot run the skill review,
+ * by name: it needs a quick background model call and the agents tools,
+ * the same two the server checks (server/index.ts, createSkillReview). */
+export function skillReviewUnavailableEngines(
+  bots: ReadonlyArray<{ modelSelection?: { instanceId?: string } }>,
+  instances: ReadonlyArray<{ instanceId: string; displayName: string; capabilities?: { backgroundText?: boolean; agentsMcp?: boolean } }>,
+): string[] {
+  const used = new Set(bots.map((bot) => bot.modelSelection?.instanceId).filter(Boolean));
+  return [...new Set(instances
+    .filter((instance) => used.has(instance.instanceId))
+    .filter((instance) => instance.capabilities?.backgroundText !== true || instance.capabilities?.agentsMcp !== true)
+    .map((instance) => instance.displayName))];
+}
+
 /** The review threshold the person typed, or null when it is not a whole
  * number in range. */
 export function parseSkillReviewSteps(value: string): number | null {

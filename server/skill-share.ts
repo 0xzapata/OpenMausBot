@@ -18,11 +18,20 @@
 // that started before it keeps that skill out of its skills index for good.
 // It learns about the skill instead from a one-time note added to its next
 // user turn. New conversations see the skill in the index like any other.
-import { existsSync, readdirSync, readFileSync, mkdirSync } from "node:fs";
+//
+// Audience. A skill carries what its bot learned where it learned it, so it
+// only reaches teammates that no more people can see than could see that
+// place (the author, narrowed to a room's audience when learned in one):
+// a wider teammate is skipped and named on the receipt, and an update is
+// refused while a wider bot has the skill assigned.
+import { readdirSync, readFileSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
+import { audienceWithin } from "./bot-visibility.ts";
+import { skillsLibraryEnabled, type AppConfig } from "./config.ts";
+import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
 import {
   installLibrarySkill,
@@ -37,17 +46,45 @@ import {
   updateLibrarySkill,
 } from "./skill-library.ts";
 import { archiveSkillDirectory, readPendingAssignments, writePendingAssignments } from "./skills-library-migration.ts";
-import { listMigratableSkills, listSkills, prepareLearnedSkillMd, removeManifestEntry } from "./skills.ts";
+import { listMigratableSkills, listSkills, preparedLearnedSkill, removeManifestEntry, STAGED_SKILL_FILE_MAX_BYTES } from "./skills.ts";
 import type { SkillShareRecord } from "../shared/skill-request.ts";
 
 export type ShareLearnedSkillsMode = "off" | "ask" | "auto";
+
+/** How learned skills reach the author's team. Always "off" while the
+ * skills library is off, so flag-off behavior stays byte-identical;
+ * otherwise "ask" unless set. */
+export function shareLearnedSkillsMode(cfg: AppConfig): ShareLearnedSkillsMode {
+  if (!skillsLibraryEnabled(cfg)) return "off";
+  return cfg.features?.shareLearnedSkills ?? "ask";
+}
 
 export interface ShareBot {
   id: string;
   name: string;
   section?: string;
   assignedSkills?: string[];
+  /** Who may see the bot (server/bot-visibility.ts); absent is everyone. */
+  visibility?: unknown;
 }
+
+/** A learned SKILL.md checked exactly as stageSkillWrite checks a staged
+ * one (secret scrub, size cap, frontmatter, scan warnings), for the shared
+ * library update, which writes the library copy instead of a revision. */
+export function prepareLearnedSkillMd(content: string):
+  | { content: string; name: string; description: string; sha256: string; warnings: string[] }
+  | { error: string } {
+  const redacted = redactSecretsInText(content);
+  if (Buffer.byteLength(redacted, "utf8") > STAGED_SKILL_FILE_MAX_BYTES) {
+    return { error: `learned SKILL.md files must be at most ${STAGED_SKILL_FILE_MAX_BYTES / 1024}KB` };
+  }
+  const prepared = preparedLearnedSkill([{ path: "SKILL.md", content: redacted }]);
+  if ("error" in prepared) return prepared;
+  const text = prepared.files[0]?.content ?? "";
+  return { content: text, name: prepared.parsed.name, description: prepared.parsed.description, sha256: sha256Hex(text), warnings: prepared.warnings };
+}
+
+const WIDER_AUDIENCE = "more people can see it than could see where the skill was learned";
 
 type PatchAssigned = (botId: string, assignedSkills: string[]) => void;
 
@@ -142,33 +179,56 @@ export function conversationAssignedSkills(
   return withheld.size ? assigned.filter((name) => !withheld.has(name)) : [...assigned];
 }
 
+function notedNames(root: string, botId: string, threadId: string): string[] {
+  const noted = readJsonRecord(shareNotesPath(root))[botId]?.[threadId];
+  return Array.isArray(noted) ? noted.filter((name): name is string => typeof name === "string") : [];
+}
+
+export interface ShareNote {
+  /** The note for the next user turn; empty when there is nothing new. */
+  text: string;
+  /** Remember the note as delivered. Called once the provider accepted the
+   * turn, so a dispatch that fails before that repeats it next turn. */
+  commit(): void;
+}
+
+const NO_NOTE: ShareNote = { text: "", commit: () => {} };
+
 /** The one-time note for skills shared into this bot after the
  * conversation started: added to the next user turn instead of the system
- * prompt, then remembered so it is never repeated in this conversation.
- * Empty when there is nothing new. */
-export function takeShareNote(
+ * prompt and, once committed, never repeated in this conversation. */
+export function prepareShareNote(
   botId: string,
   threadId: string,
   assigned: readonly string[] | undefined,
   startedAt: number | undefined,
   privateNames: readonly string[],
   root: string = skillsLibraryRoot(),
-): string {
-  if (!assigned?.length) return "";
+): ShareNote {
+  if (!assigned?.length) return NO_NOTE;
   const withheld = withheldForConversation(botId, startedAt, root);
-  if (!withheld.size) return "";
-  const notes = readJsonRecord(shareNotesPath(root));
-  const noted = new Set(Array.isArray(notes[botId]?.[threadId]) ? (notes[botId]![threadId] as unknown[]).filter((name): name is string => typeof name === "string") : []);
+  if (!withheld.size) return NO_NOTE;
+  const noted = new Set(notedNames(root, botId, threadId));
   const shadowed = new Set(privateNames);
   const assignedNow = new Set(assigned);
   const fresh = listLibrarySkills(root).filter((skill) =>
     skill.enabled && withheld.has(skill.name) && assignedNow.has(skill.name) && !noted.has(skill.name) && !shadowed.has(skill.name));
-  if (!fresh.length) return "";
-  notes[botId] = { ...notes[botId], [threadId]: sortedUnique([...noted, ...fresh.map((skill) => skill.name)]) };
-  writeJsonRecord(root, shareNotesPath(root), notes);
-  return `\n\n${fresh.map((skill) =>
+  if (!fresh.length) return NO_NOTE;
+  const text = `\n\n${fresh.map((skill) =>
     `New team skill available: ${skill.name} — ${skill.description} Read ${JSON.stringify(librarySkillFilePath(skill.name, root))} with your file tools before a task it covers.`,
   ).join("\n")}`;
+  let committed = false;
+  return {
+    text,
+    commit: () => {
+      if (committed) return;
+      committed = true;
+      // re-read: another conversation of this bot may have noted since
+      const latest = readJsonRecord(shareNotesPath(root));
+      latest[botId] = { ...latest[botId], [threadId]: sortedUnique([...notedNames(root, botId, threadId), ...fresh.map((skill) => skill.name)]) };
+      writeJsonRecord(root, shareNotesPath(root), latest);
+    },
+  };
 }
 
 // --- sharing -------------------------------------------------------------
@@ -181,6 +241,8 @@ function assignTeam(args: {
   at: number;
   root: string;
   assignAuthor: boolean;
+  /** Who could see where the skill was learned or changed. */
+  audience: unknown;
 }): Pick<SkillShareRecord, "assigned" | "skipped"> {
   const assigned: SkillShareRecord["assigned"] = [];
   const skipped: SkillShareRecord["skipped"] = [];
@@ -195,6 +257,10 @@ function assignTeam(args: {
       continue;
     }
     if (mate.assignedSkills?.includes(args.name)) continue;
+    if (!audienceWithin(mate.visibility, args.audience)) {
+      skipped.push({ botId: mate.id, name: mate.name, reason: WIDER_AUDIENCE });
+      continue;
+    }
     args.patchAssigned(mate.id, sortedUnique([...(mate.assignedSkills ?? []), args.name]));
     assigned.push({ botId: mate.id, name: mate.name });
     recorded.push({ botId: mate.id, name: args.name, at: args.at });
@@ -213,15 +279,23 @@ export function shareLearnedSkill(args: {
   bots: readonly ShareBot[];
   name: string;
   patchAssigned: PatchAssigned;
+  /** The SKILL.md sha256 a receipt applied: a skill changed since is not
+   * the one that receipt may share (`stale`). */
+  expectSha256?: string;
+  /** Who could see where it was learned; the author's audience if absent. */
+  audience?: unknown;
   now?: number;
   root?: string;
-}): SkillShareRecord | { error: string } {
+}): SkillShareRecord | { error: string; stale?: true } {
   const root = args.root ?? skillsLibraryRoot();
   const at = args.now ?? Date.now();
   const { author, name } = args;
+  const audience = args.audience === undefined ? author.visibility : args.audience;
   const copy = listMigratableSkills(author.id).find((skill) => skill.name === name);
+  const changed = { error: `"${name}" changed since this receipt — share it from its latest receipt`, stale: true as const };
   let library: SkillShareRecord["library"];
   if (copy) {
+    if (args.expectSha256 !== undefined && copy.sha256 !== args.expectSha256) return changed;
     if (!copy.source.startsWith(LEARN_SOURCE_PREFIX)) return { error: `"${name}" was imported, not learned — only learned skills are shared` };
     if (!copy.intact || !copy.directory) return { error: "the stored SKILL.md is missing or changed after review" };
     if (!copy.enabled) return { error: `"${name}" is switched off` };
@@ -261,17 +335,25 @@ export function shareLearnedSkill(args: {
     } catch (error) {
       return { error: `could not move the private copy into the library: ${error instanceof Error ? error.message : String(error)}` };
     }
-    const removed = removeManifestEntry(author.id, name, copy.sha256);
-    if ("error" in removed) return removed;
+    // The copy is archived and the library holds it: a manifest entry that
+    // moved on meanwhile (a newer private revision) stays the author's own,
+    // and the share completes rather than stopping half-applied.
+    try {
+      const removed = removeManifestEntry(author.id, name, copy.sha256);
+      if ("error" in removed) console.warn(`[skill-share] ${name}: ${removed.error}`);
+    } catch (error) {
+      console.warn(`[skill-share] ${name}: could not drop the private manifest entry: ${error instanceof Error ? error.message : String(error)}`);
+    }
   } else {
     const entry = readSkillLibraryIndex(root)[name];
     if (!entry || !author.assignedSkills?.includes(name)) return { error: `no learned skill named "${name}"` };
+    if (args.expectSha256 !== undefined && entry.sha256 !== args.expectSha256) return changed;
     if (!entry.source.startsWith(LEARN_SOURCE_PREFIX)) return { error: `"${name}" was imported, not learned — only learned skills are shared` };
     if (entry.reviewState !== "approved") return { error: `the library's "${name}" is switched off` };
     library = "assigned";
   }
   const sha256 = readSkillLibraryIndex(root)[name]?.sha256 ?? "";
-  const team = assignTeam({ ...args, at, root, assignAuthor: true });
+  const team = assignTeam({ ...args, at, root, assignAuthor: true, audience });
   if (copy) {
     const pending = readPendingAssignments(root);
     const rest = (pending[author.id] ?? []).filter((entry) => entry !== name);
@@ -299,6 +381,10 @@ export function updateSharedLearnedSkill(args: {
   skillMd: string;
   expectSha256?: string;
   patchAssigned: PatchAssigned;
+  /** features.shareLearnedSkills "auto": teammates that joined since get it. */
+  assignOnward?: boolean;
+  /** Who could see where it was changed; the bot's audience if absent. */
+  audience?: unknown;
   now?: number;
   root?: string;
 }):
@@ -310,6 +396,11 @@ export function updateSharedLearnedSkill(args: {
   if (!entry || !args.bot.assignedSkills?.includes(args.name)) return { error: `no shared skill named "${args.name}"` };
   if (!entry.source.startsWith(LEARN_SOURCE_PREFIX)) return { error: `skill "${args.name}" was imported — it cannot be rewritten` };
   if (entry.reviewState !== "approved") return { error: `the library's "${args.name}" is switched off` };
+  const audience = args.audience === undefined ? args.bot.visibility : args.audience;
+  const wider = args.bots.filter((other) => other.id !== args.bot.id && other.assignedSkills?.includes(args.name) && !audienceWithin(other.visibility, audience));
+  if (wider.length) {
+    return { error: `skill "${args.name}" is also assigned to ${wider.map((other) => other.name).join(", ")}, which more people can see than can see this conversation — it is not updated from here` };
+  }
   const prepared = prepareLearnedSkillMd(args.skillMd);
   if ("error" in prepared) return prepared;
   if (prepared.name !== args.name) return { error: `updated SKILL.md name must remain "${args.name}"` };
@@ -321,7 +412,9 @@ export function updateSharedLearnedSkill(args: {
   const updated = updateLibrarySkill({ name: args.name, instructions: prepared.content, expectSha256: base, root });
   if ("stale" in updated) return { error: `skill "${args.name}" changed since it was read — read it again first` };
   if ("error" in updated) return updated;
-  const team = assignTeam({ author: args.bot, bots: args.bots, name: args.name, patchAssigned: args.patchAssigned, at, root, assignAuthor: false });
+  const team = args.assignOnward
+    ? assignTeam({ author: args.bot, bots: args.bots, name: args.name, patchAssigned: args.patchAssigned, at, root, assignAuthor: false, audience })
+    : { assigned: [], skipped: [] };
   skillLibraryEvents.emit("invalidate", { kind: "share", name: args.name, botIds: team.assigned.map((bot) => bot.botId) });
   return {
     share: { library: "updated", sha256: prepared.sha256, sharedAt: at, ...team },
@@ -381,5 +474,6 @@ export function sharedSkillEditable(botId: string, assigned: readonly string[] |
   if (!assigned?.includes(name)) return false;
   if (listSkills(botId).some((skill) => skill.name === name)) return false;
   const entry = readSkillLibraryIndex(root)[name];
-  return Boolean(entry && entry.source.startsWith(LEARN_SOURCE_PREFIX) && entry.reviewState === "approved" && existsSync(join(root, "skills", name, "SKILL.md")));
+  // the same integrity check the update applies: a tampered copy is not offered
+  return Boolean(entry && entry.source.startsWith(LEARN_SOURCE_PREFIX) && entry.reviewState === "approved" && readLibrarySkillFile(name, root) !== null);
 }

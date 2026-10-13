@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { HandoffView } from "./coordinator.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { readHandoffs } from "./testing/handoff-rows.ts";
 import { freePortBlock } from "./testing/ports.ts";
@@ -18,8 +19,8 @@ import { openSse } from "./testing/sse.ts";
 //     dot, the section count, the dock badge and the phone's Updates row all
 //     opened a transcript where nothing had happened;
 //   • bot-to-bot coordination raised badges and OS banners for the hop
-//     behind one answer. A consultation (coordinate_bots with consult, or
-//     the ask_bot alias) is an assignment on the job runtime
+//     behind one answer. A consultation (coordinate_bots with consult) is
+//     an assignment on the job runtime
 //     (docs/runtime-contract.md §9): it runs in a work thread the asker's
 //     conversation has with the peer, never in the thread the person types
 //     into, and its answer resumes the asker.
@@ -244,11 +245,14 @@ describe("a room turn belongs to the room", () => {
     }
   }, 40_000);
 
-  it("sends a takeover raised mid-room to the room, not to the bot's DM", async () => {
+  it("sends a sign-in request raised mid-room to the room, not to the bot's DM", async () => {
     const bot = await createBot("Handsy", "stuck");
     let roomId: string | undefined;
-    let requestId: string | undefined;
     try {
+      // a sign-in needs a place to sign in on: this bot works in its built-in browser
+      expect((await api("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
+      const placed = await api("PATCH", `/api/bots/${bot.id}`, { computer: "browser" });
+      expect(placed.status, JSON.stringify(placed.body)).toBe(200);
       const room = (await api("POST", "/api/groups", {
         name: "War Room",
         memberIds: [bot.id],
@@ -256,46 +260,38 @@ describe("a room turn belongs to the room", () => {
       })).body.group;
       roomId = room.id;
       expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "take the wheel" })).status).toBe(202);
-      // the room must actually own the bot before it asks for hands
+      // the room must actually own the bot before it asks the person to sign in
       await expect.poll(async () => (await groupState(room.id))?.busyBotId, { timeout: 20_000 }).toBe(bot.id);
 
       const stream = await openSse(`${base}/api/events`);
       try {
         const asked = await api(
           "POST",
-          `/api/internal/computer-control?botId=${bot.id}`,
-          { reason: "the login page wants a code" },
-          await capability(bot.id, room.threadId, "computer"),
+          "/api/internal/request-sign-in",
+          { site: "example.com", reason: "the login page wants a code" },
+          await capability(bot.id, room.threadId),
         );
-        expect(asked.status).toBe(200);
-        requestId = asked.body.requestId;
+        expect(asked.status).toBe(201);
 
         const frame = await stream.until(
-          (candidate) => candidate.kind === "notify" && candidate.notification?.kind === "takeover",
+          (candidate) => candidate.kind === "notify" && candidate.notification?.kind === "sign-in",
           15_000,
         );
         expect(frame.notification).toMatchObject({
           botId: bot.id,
           threadId: room.threadId,
           groupId: room.id,
-          title: "Handsy in War Room needs your hands",
+          title: "Handsy in War Room needs you to sign in to example.com",
           body: "the login page wants a code",
         });
-        // the DM is exactly where the person must NOT be sent: the screen
-        // that needs hands is attached to the room's turn
+        // the DM is exactly where the person must NOT be sent: the page that
+        // needs signing in belongs to the room's turn
         expect(frame.notification.threadId).not.toBe(bot.threadId);
       } finally {
         stream.close();
       }
     } finally {
-      if (requestId) {
-        await api(
-          "DELETE",
-          `/api/internal/computer-control?botId=${bot.id}`,
-          { requestId },
-          await capability(bot.id, roomId ? (await groupState(roomId)).threadId : bot.threadId, "computer"),
-        ).catch(() => undefined);
-      }
+      await api("PATCH", "/api/config", { features: { browser: false } }).catch(() => undefined);
       await cleanup([roomId], [bot.id]);
     }
   }, 45_000);
@@ -331,9 +327,14 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
       await expect.poll(async () => ((await botState(asker.id))?.messages ?? []).some(
         (message: { text?: string }) => message.text === "woke after delegation: saw the result",
       ), { timeout: 40_000 }).toBe(true);
-      await expect.poll(() => handoffs().map((node) => node.status), { timeout: 20_000 }).toEqual(["completed", "completed"]);
-      const consult = handoffs().find((node) => node.parentId)!;
-      expect(consult).toMatchObject({ botId: peer.id, mode: "consult", reply: "resume", result: expect.stringContaining("hello from fake claude") });
+      // Every turn is a root (earlier tests' turns are rows here too): the
+      // person's message is Pen's root, and the consultation its one child.
+      const exchange = () => handoffs().filter((node) => node.botId === asker.id || node.botId === peer.id);
+      await expect.poll(() => exchange().map((node) => node.status), { timeout: 20_000 }).toEqual(["completed", "completed"]);
+      const [root, consult] = exchange() as [HandoffView, HandoffView];
+      expect(root).toMatchObject({ botId: asker.id, threadId: asker.threadId });
+      expect(root.parentId).toBeUndefined();
+      expect(consult).toMatchObject({ botId: peer.id, parentId: root.id, mode: "consult", reply: "resume", result: expect.stringContaining("hello from fake claude") });
 
       const current = await state(40);
       const ink = current.bots.find((candidate: { id: string }) => candidate.id === peer.id);
@@ -393,12 +394,11 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
     try {
       const asked = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: peer.id, message: "Vellum, is the branch green?" },
+        "/api/internal/coordinate-bots",
+        { botIds: [peer.id], message: "Vellum, is the branch green?", consult: true },
         await capability(asker.id, asker.threadId),
       );
       expect(asked.status, JSON.stringify(asked.body)).toBe(200);
-      expect(asked.body.deprecation).toContain("ask_bot is replaced by coordinate_bots(consult: true)");
       expect(asked.body.receipts[0]).toMatchObject({ botId: peer.id, outcome: "queued" });
       const consult = await consultation(asked.body.receipts[0].requestId);
       expect(consult.threadId).not.toBe(peer.threadId);
@@ -434,8 +434,8 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
       })).status).toBe(200);
       const asked = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: peer.id, message: "Folio, still there?" },
+        "/api/internal/coordinate-bots",
+        { botIds: [peer.id], message: "Folio, still there?", consult: true },
         await capability(asker.id, asker.threadId),
       );
       expect(asked.status, JSON.stringify(asked.body)).toBe(200);
@@ -472,8 +472,8 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
     const stream = await openSse(`${base}/api/events`);
     const asking = api(
       "POST",
-      "/api/internal/ask-bot",
-      { fromBotId: asker.id, toBotId: peer.id, message: "Dot, can you take the deploy?" },
+      "/api/internal/coordinate-bots",
+      { botIds: [peer.id], message: "Dot, can you take the deploy?", consult: true },
       await capability(asker.id, asker.threadId),
     );
     try {
@@ -518,8 +518,8 @@ describe("bot-to-bot coordination is recorded, not announced", () => {
       // its card in the work thread the consultation opened.
       const asked = await api(
         "POST",
-        "/api/internal/ask-bot",
-        { fromBotId: asker.id, toBotId: peer.id, message: "Sage, which colour?" },
+        "/api/internal/coordinate-bots",
+        { botIds: [peer.id], message: "Sage, which colour?", consult: true },
         await capability(asker.id, asker.threadId),
       );
       expect(asked.status, JSON.stringify(asked.body)).toBe(200);

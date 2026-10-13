@@ -930,6 +930,7 @@
   "task.switchWithUsage": "全部对话 · {label}（输入 {input} · 输出 {output}）",
   "task.switch": "全部对话",
   "task.otherActivity": "其他活动（{count}）",
+  "task.workingElsewhere": "其他话题进行中：{count}",
   "attention.title": "进行中的对话",
   "attention.empty": "没有进行中的对话",
   "attention.item": "{title} · {name} · {status}",
@@ -1801,6 +1802,7 @@
   "room.pinHint": "把这条消息置顶到群组开头",
   "room.fallbackBot": "机器人",
   "room.aBot": "某个机器人",
+  "room.memberWorkingElsewhere": "{name} 正在另一个话题中工作",
   "room.responder.everyone": "普通消息发给群组所有成员；@提及会覆盖此设置",
   "room.responder.mentions": "只有被明确 @ 提及的机器人才会回复",
   "room.responder.lead": "普通消息发给 {name}；@提及会覆盖此设置",
@@ -2540,5 +2542,10 @@
   "pro.name": "MausBot Cloud",
   "computer.files.homeFolder": "主目录",
   "computer.files.changeDefaultFolder": "更改默认目录",
-  "computer.files.pinnedFolderHint": "此对话会继续使用当前文件夹。可更改新对话使用的默认文件夹。"
+  "computer.files.pinnedFolderHint": "此对话会继续使用当前文件夹。可更改新对话使用的默认文件夹。",
+  "room.holds.banner": "你已停止：{names}。@提及某个机器人或发送 resume 即可让它回来。",
+  "room.holds.resume": "恢复 {name}",
+  "room.holds.stop": "停止 {name}",
+  "room.holds.stopTitle": "只停止 {name}，房间里的其他成员继续工作",
+  "room.holds.avatarHeld": "{name} — 已暂停（由你停止）"
 }

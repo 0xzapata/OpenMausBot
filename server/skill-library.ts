@@ -444,8 +444,9 @@ export function updateLibrarySkill(input: {
 }
 
 /** Take a skill out of the library (Undo of a shared learned skill that
- * this share created). The index entry goes first — it is the commit point
- * — and the bytes move to the write-once archive, never deleted. */
+ * this share created). The bytes move to the write-once archive first,
+ * never deleted; then the index entry goes. A failed move changes nothing
+ * and returns the error; a failed index write moves the bytes back. */
 export function retireLibrarySkill(
   name: string,
   expectSha256: string,
@@ -457,18 +458,28 @@ export function retireLibrarySkill(
   const index = indexRead.index;
   const entry = index[name];
   if (!entry || entry.sha256 !== expectSha256 || !libraryContentMatches(root, entry)) return { stale: true };
-  delete index[name];
-  writeSkillLibraryIndex(root, index);
+  const directory = librarySkillDirectory(root, name);
+  const base = join(root, "archive", "retired", `${name}.${expectSha256}`);
+  let destination = base;
   try {
-    const base = join(root, "archive", "retired", `${name}.${expectSha256}`);
     mkdirSync(join(root, "archive", "retired"), { recursive: true, mode: 0o700 });
-    let destination = base;
     let suffix = 1;
     while (existsSync(destination)) destination = `${base}.${suffix++}`;
-    renameSync(librarySkillDirectory(root, name), destination);
-  } catch {
-    // The entry is already gone, so the leftover bytes are unreferenced;
-    // a later install of the same name rewrites them.
+    renameSync(directory, destination);
+  } catch (error) {
+    return { error: `could not archive the library copy: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  delete index[name];
+  try {
+    writeSkillLibraryIndex(root, index);
+  } catch (error) {
+    try {
+      renameSync(destination, directory);
+    } catch {
+      // The index still lists the skill; its bytes read "changed after
+      // review" until a person restores them from the archive.
+    }
+    return { error: `could not update the skills library index: ${error instanceof Error ? error.message : String(error)}` };
   }
   skillLibraryEvents.emit("invalidate", { kind: "remove", name });
   return { retired: true };

@@ -35,6 +35,7 @@ export type BotUpdatePatch = Partial<
     | "browser"
     | "browserProfile"
     | "memoryUpkeep"
+    | "cacheKeepWarm"
     | "mcpServers"
     | "modelSelection"
   >
@@ -52,15 +53,20 @@ export type BotUpdatePatch = Partial<
    * reach the wire inside the coalesced body and must never fold into bot
    * state — the queue strips it from every overlay it hands back. */
   acknowledgeLocalAuto?: boolean;
-  /** With approvalMode "full": every existing thread takes Full too. It rides
-   * the PATCH body (or the desktop grant's scope), never a bot field. */
+  /** With approvalMode (any level but Custom): every existing thread takes
+   * that level too. It rides the PATCH body (or the desktop grant's scope),
+   * never a bot field. */
   applyToAllThreads?: boolean;
+  /** With modelSelection, from a bulk change: a thread with a model of its
+   * own keeps it, the selected one included; only followers move. Rides the
+   * PATCH body, never a bot field. */
+  keepThreadModels?: boolean;
 };
 
 /** A wire patch after clear-only values have been normalized for Bot state. */
 export type BotStatePatch = Omit<
   BotUpdatePatch,
-  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "applyToAllThreads"
+  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "applyToAllThreads" | "keepThreadModels"
 > & {
   computer?: Bot["computer"];
   connectorTools?: Bot["connectorTools"];
@@ -119,6 +125,7 @@ const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
   const {
     acknowledgeLocalAuto: _localAck,
     applyToAllThreads: _allThreads,
+    keepThreadModels: _keepThreadModels,
     computer,
     connectorTools,
     connectorScopes,
@@ -222,6 +229,9 @@ export function createBotPatchQueue(options: BotPatchQueueOptions): BotPatchQueu
       };
       entries.set(botId, entry);
       entry.pending = { ...entry.pending, ...patch };
+      // An all-threads scope belongs to the level it came with: a newer level
+      // without one (a quick switch from Full back to Ask) is the default only.
+      if (hasOwn(patch, "approvalMode") && !hasOwn(patch, "applyToAllThreads")) delete entry.pending.applyToAllThreads;
       // A private Full/Custom grant cannot be cancelled after it crosses the
       // Electron bridge. Signal the sender as soon as a newer level exists so
       // it can compensate a late grant back to Ask before this lane advances.

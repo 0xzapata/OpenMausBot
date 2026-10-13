@@ -110,6 +110,10 @@ export interface Assignment {
   brief: string;
   /** The requester's own completion criterion, if it gave one. */
   doneWhen?: string;
+  /** A root that is one step of a room goal run (the run's id): the run
+   * routes its steps, so the step neither parks nor continues in place and
+   * is not run again after a restart. Written at begin, never changed. */
+  goalRunId?: string;
   status: Status;
   outcome?: Outcome;
   outcomeDetail?: string;

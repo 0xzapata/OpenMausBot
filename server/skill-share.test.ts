@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,7 +15,7 @@ const { learnSource } = await import("./skill-learn.ts");
 const SKILL = (name: string, body = "Do the thing.") =>
   `---\nname: ${name}\ndescription: Cuts a rough edit the way this team does.\n---\n\n# ${name}\n\n${body}\n`;
 
-interface Bot { id: string; name: string; section?: string; assignedSkills?: string[] }
+interface Bot { id: string; name: string; section?: string; assignedSkills?: string[]; visibility?: unknown }
 
 let bots: Bot[];
 let author: Bot;
@@ -122,6 +122,75 @@ describe("sharing learned skills with the team", () => {
     expect(author.assignedSkills).toEqual(["rough-cut"]);
   });
 
+  it("asks by default and is off while the skills library is off", () => {
+    expect(share.shareLearnedSkillsMode({})).toBe("off");
+    expect(share.shareLearnedSkillsMode({ features: { shareLearnedSkills: "auto" } })).toBe("off");
+    expect(share.shareLearnedSkillsMode({ features: { skillsLibrary: true } })).toBe("ask");
+    expect(share.shareLearnedSkillsMode({ features: { skillsLibrary: true, shareLearnedSkills: "auto" } })).toBe("auto");
+  });
+
+  it("skips a teammate more people can see than could see where the skill was learned", () => {
+    author.visibility = "admins";
+    const wide = { id: id("wide"), name: "Assistant", section: "Editing", assignedSkills: [] as string[] };
+    const narrow = { id: id("narrow"), name: "Archivist", section: "Editing", assignedSkills: [] as string[], visibility: "admins" };
+    bots.push(wide, narrow);
+    learn(author.id, "rough-cut");
+    const result = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root });
+    if ("error" in result) throw new Error(result.error);
+    // mate and wide are seen by everyone: neither gets the admins-only bot's skill
+    expect(result.assigned.map((bot) => bot.botId)).toEqual([author.id, narrow.id]);
+    expect(result.skipped.map((bot) => bot.botId)).toEqual([mate.id, wide.id]);
+    expect(result.skipped[0]?.reason).toContain("more people can see it");
+    expect(wide.assignedSkills).toEqual([]);
+    // a room's narrower audience narrows it the same way for an open author
+    author.visibility = undefined;
+    learn(author.id, "color-pass");
+    const fromRoom = share.shareLearnedSkill({ author, bots, name: "color-pass", patchAssigned, root, audience: { people: ["ed@example.com"] } });
+    if ("error" in fromRoom) throw new Error(fromRoom.error);
+    expect(fromRoom.assigned.map((bot) => bot.botId)).toEqual([author.id, narrow.id]);
+  });
+
+  it("refuses an update while a bot more people can see has the shared skill", () => {
+    learn(author.id, "rough-cut");
+    const first = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root });
+    if ("error" in first) throw new Error(first.error);
+    const restricted = { ...mate, visibility: "admins" };
+    const refused = share.updateSharedLearnedSkill({ bot: restricted, bots: bots.map((bot) => bot.id === mate.id ? restricted : bot), name: "rough-cut", skillMd: SKILL("rough-cut", "secret way"), patchAssigned, root });
+    expect(refused).toEqual({ error: expect.stringContaining("Cutter") });
+    expect(library.readLibrarySkillFile("rough-cut", root)).toBe(SKILL("rough-cut"));
+  });
+
+  it("does not share from a receipt whose skill changed since it applied", () => {
+    const staged = learn(author.id, "rough-cut");
+    const stale = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root, expectSha256: "f".repeat(64) });
+    expect(stale).toMatchObject({ stale: true });
+    expect(skills.listSkills(author.id).map((skill) => skill.name)).toContain("rough-cut");
+    expect(mate.assignedSkills).toEqual(["existing-skill"]);
+    const shared = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root, expectSha256: staged.sha256 });
+    expect("error" in shared).toBe(false);
+  });
+
+  it("offers a shared skill for update only while its library bytes verify", () => {
+    learn(author.id, "rough-cut");
+    const result = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root });
+    if ("error" in result) throw new Error(result.error);
+    expect(share.sharedSkillEditable(mate.id, mate.assignedSkills, "rough-cut", root)).toBe(true);
+    writeFileSync(library.librarySkillFilePath("rough-cut", root), SKILL("rough-cut", "tampered"));
+    expect(share.sharedSkillEditable(mate.id, mate.assignedSkills, "rough-cut", root)).toBe(false);
+  });
+
+  it("an Undo whose archive move fails changes nothing and says so", () => {
+    learn(author.id, "rough-cut");
+    const result = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root });
+    if ("error" in result) throw new Error(result.error);
+    // a file where the archive folder belongs: the move cannot happen
+    writeFileSync(join(root, "archive", "retired"), "");
+    const undone = share.undoSharedLearnedSkill({ authorId: author.id, name: "rough-cut", action: "create", share: result, bots, patchAssigned, root });
+    expect(undone).toEqual({ error: expect.stringContaining("could not archive the library copy") });
+    expect(library.readLibrarySkillFile("rough-cut", root)).toBe(SKILL("rough-cut"));
+    expect(mate.assignedSkills).toContain("rough-cut");
+  });
+
   it("shares an already-library learned skill by assignment alone", () => {
     library.installLibrarySkill({ name: "rough-cut", instructions: SKILL("rough-cut"), source: learnSource("conversation"), reviewState: "approved", root });
     author.assignedSkills = ["rough-cut"];
@@ -160,18 +229,22 @@ describe("prompt-cache safety", () => {
     expect(systemPrompt(mate.id, 2000).text).toContain("rough-cut");
     expect(systemPrompt(mate.id, undefined).text).toContain("rough-cut");
     // the existing conversation hears about it on its next turn, once
-    const note = share.takeShareNote(mate.id, "thread-1", mate.assignedSkills, startedAt, [], root);
-    expect(note).toContain("New team skill available: rough-cut");
-    expect(note).toContain(library.librarySkillFilePath("rough-cut", root));
-    expect(share.takeShareNote(mate.id, "thread-1", mate.assignedSkills, startedAt, [], root)).toBe("");
+    const note = share.prepareShareNote(mate.id, "thread-1", mate.assignedSkills, startedAt, [], root);
+    expect(note.text).toContain("New team skill available: rough-cut");
+    expect(note.text).toContain(library.librarySkillFilePath("rough-cut", root));
+    // a dispatch that failed before the provider took the turn never
+    // committed it, so the next turn carries the note again
+    expect(share.prepareShareNote(mate.id, "thread-1", mate.assignedSkills, startedAt, [], root).text).toBe(note.text);
+    note.commit();
+    expect(share.prepareShareNote(mate.id, "thread-1", mate.assignedSkills, startedAt, [], root).text).toBe("");
     // a new conversation needs no note: the index already lists it
-    expect(share.takeShareNote(mate.id, "thread-2", mate.assignedSkills, 2000, [], root)).toBe("");
+    expect(share.prepareShareNote(mate.id, "thread-2", mate.assignedSkills, 2000, [], root).text).toBe("");
     expect(existsSync(join(root, "share-notes.json"))).toBe(true);
   });
 
   it("changes nothing for a bot no share touched", () => {
     expect(share.conversationAssignedSkills(other.id, ["a", "b"], 1, root)).toEqual(["a", "b"]);
     expect(share.conversationAssignedSkills(other.id, undefined, 1, root)).toBeUndefined();
-    expect(share.takeShareNote(other.id, "t", ["a"], 1, [], root)).toBe("");
+    expect(share.prepareShareNote(other.id, "t", ["a"], 1, [], root).text).toBe("");
   });
 });

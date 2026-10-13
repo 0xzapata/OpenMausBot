@@ -199,6 +199,37 @@ export function phonePairingGate(
   }
 }
 
+/** The desktop holds an HTTPS address only while something needs it, and a
+ * person pairing over it is that need. Automatic pairing says so: when it
+ * waits for an address (which creates one), and when it opens on one that is
+ * already there (so a release planned for an idle address cannot land
+ * mid-pairing). Explicit Wi-Fi and Tailscale pairing never do. */
+export function shouldPrepareSecureAddress(
+  routeMode: CompanionPairingRouteMode,
+  gate: PhonePairingGate,
+  account: CompanionAccountState | null,
+): boolean {
+  if (routeMode !== "automatic") return false;
+  if (gate === "open") return true;
+  return gate === "wait"
+    && account?.available === true
+    && (account.status === "ready" || account.status === "connecting");
+}
+
+/** The desktop stops retrying an address an hour after a person asked, and
+ * then reports a signed-in account with none: nothing is creating one.
+ * Automatic pairing still waiting for it asks again instead of showing a
+ * spinner with nothing behind it. */
+export function secureAddressRequestLapsed(
+  account: CompanionAccountState | null,
+  companion: PhoneSetupCompanionSnapshot | null,
+): boolean {
+  return account?.available === true
+    && account.status === "ready"
+    && !account.endpoint
+    && phonePairingGate(account, companion, false) === "wait";
+}
+
 export function newlyPairedDevice<T extends { id: string; name: string }>(
   baselineDeviceIds: string[],
   devices: T[],

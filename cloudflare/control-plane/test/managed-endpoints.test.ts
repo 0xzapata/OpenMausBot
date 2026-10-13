@@ -1114,6 +1114,82 @@ describe("managed companion endpoints", () => {
     vi.restoreAllMocks();
   });
 
+  it("gives an endpoint its owner released back behind the same hostname", async () => {
+    const cloudflare = new FakeCloudflare();
+    const worker = createWorker(cloudflare.fetch);
+    const owner = await signIn(worker, "managed-release@example.com");
+    const installation = await createInstallation(worker, owner.token, "managed-release");
+    const endpoint = () => call(worker, "/v1/installations/self/endpoint", {
+      method: "POST",
+      token: installation.credential,
+    });
+    const first = await endpoint();
+    expect(first.status).toBe(200);
+    const firstPayload = await first.json<{ endpoint: { hostname: string; url: string } }>();
+    const firstTunnel = [...cloudflare.tunnels.values()][0];
+    if (!firstTunnel) throw new Error("fake tunnel missing");
+
+    // The desktop gives the address back once nothing needs it.
+    expect((await call(worker, "/v1/installations/self/endpoint", {
+      method: "DELETE",
+      token: installation.credential,
+    })).status).toBe(204);
+    expect(cloudflare.tunnels.size).toBe(0);
+    expect(cloudflare.dns.size).toBe(0);
+    await expect((await call(worker, "/v1/installations/self/endpoint", {
+      token: installation.credential,
+    })).json()).resolves.toEqual({ endpoint: null });
+
+    // The next pairing asks again: a new tunnel behind the same hostname.
+    const again = await endpoint();
+    expect(again.status).toBe(200);
+    const againPayload = await again.json<{ connectorToken: string; endpoint: { url: string } }>();
+    expect(againPayload.endpoint.url).toBe(firstPayload.endpoint.url);
+    expect(againPayload.connectorToken).toBe(CONNECTOR_TOKEN);
+    const secondTunnel = [...cloudflare.tunnels.values()][0];
+    expect(secondTunnel?.id).toBeDefined();
+    expect(secondTunnel?.id).not.toBe(firstTunnel.id);
+    expect(cloudflare.dns.get(firstPayload.endpoint.hostname)).toMatchObject({
+      content: `${secondTunnel?.id}.cfargotunnel.com`,
+    });
+  });
+
+  it("refuses an endpoint while its owner's give-back is pending, until a DELETE finishes it", async () => {
+    const cloudflare = new FakeCloudflare();
+    const worker = createWorker(cloudflare.fetch);
+    const owner = await signIn(worker, "managed-release-pending@example.com");
+    const installation = await createInstallation(worker, owner.token, "managed-release-pending");
+    const endpoint = (method: "DELETE" | "POST") => call(worker, "/v1/installations/self/endpoint", {
+      method,
+      token: installation.credential,
+    });
+    const first = await endpoint("POST");
+    expect(first.status).toBe(200);
+    const firstPayload = await first.json<{ endpoint: { url: string } }>();
+
+    // The give-back half fails at Cloudflare and is left for the sweep.
+    cloudflare.failures.add("delete_tunnel");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const pending = await endpoint("DELETE");
+    expect(pending.status).toBe(503);
+    await expect(pending.json()).resolves.toEqual({ error: "endpoint_cleanup_pending" });
+
+    // Meanwhile no address is made for it (the desktop finishes the removal
+    // first: companion-account-service.mjs finishPendingRelease).
+    cloudflare.failures.clear();
+    const refused = await endpoint("POST");
+    expect(refused.status).toBe(409);
+    await expect(refused.json()).resolves.toEqual({ error: "endpoint_busy" });
+
+    expect((await endpoint("DELETE")).status).toBe(204);
+    const again = await endpoint("POST");
+    expect(again.status).toBe(200);
+    await expect(again.json<{ endpoint: { url: string } }>()).resolves.toMatchObject({
+      endpoint: { url: firstPayload.endpoint.url },
+    });
+    vi.restoreAllMocks();
+  });
+
   it("retains metadata and refuses to delete a repurposed DNS record", async () => {
     const cloudflare = new FakeCloudflare();
     const worker = createWorker(cloudflare.fetch);
@@ -2180,7 +2256,7 @@ function twoAccounts(entry: Record<string, unknown> = {}): AccountsFixture {
     }]),
     [SECOND_TOKEN_SECRET]: SECOND_TOKEN,
   };
-  return { env: { ...env, ...vars } as Env, first, second, vars, violations, worker: createWorker(fetch) };
+  return { env: { ...env, ...vars } as unknown as Env, first, second, vars, violations, worker: createWorker(fetch) };
 }
 
 interface SnapshotFields {
@@ -2935,7 +3011,7 @@ describe("managed endpoints in several Cloudflare accounts", () => {
     }]);
     expect(errors.mock.calls.flat().join(" ")).not.toContain(env.BETTER_AUTH_SECRET);
     expect(cloudflare.calls.every((entry) => entry.authorization === `Bearer ${env.CLOUDFLARE_API_TOKEN}`)).toBe(true);
-    const health = await call(worker, "/healthz", { env: { ...env, ...vars } as Env });
+    const health = await call(worker, "/healthz", { env: { ...env, ...vars } as unknown as Env });
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toMatchObject({ ok: true, capacity: { tunnels: { limit: 1000 } } });
   });

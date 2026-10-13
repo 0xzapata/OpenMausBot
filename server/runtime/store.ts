@@ -60,6 +60,7 @@ const assignmentSchema = z.object({
   reply: z.enum(["resume", "poll", "none"]),
   brief: z.string(),
   doneWhen: z.string().optional(),
+  goalRunId: z.string().optional(),
   status: z.enum(["queued", "running", "needs_input", "waiting", "resume", "completed", "failed", "cancelled"]),
   outcome: z.enum(["done", "needs_input", "cap_continued", "stalled", "interrupted", "budget", "provider_error", "denied",
     "expired", "stopped", "refused", "duplicate"]).optional(),

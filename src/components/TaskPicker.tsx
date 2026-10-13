@@ -8,6 +8,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Check, ChevronDown, FolderInput, Pencil, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
 import { useStore, type Bot, type BotProject, type Group, type Task } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { roomThreadsWorkingElsewhere } from "@/lib/room-threads";
 import { useMenuMotion } from "./MenuMotion";
 import { t } from "@/lib/i18n";
 import { COMPACT_BUBBLE } from "@/lib/compact-chip";
@@ -101,10 +102,14 @@ function ConversationTaskPicker({
   onPin,
   attention,
   onAttentionJump,
+  workingElsewhere = 0,
 }: {
   threadId: string;
   tasks: PickerTask[];
   busy: boolean;
+  /** Threads other than the open one working right now (a room's run side
+   * by side); the switcher marks them so background work stays visible. */
+  workingElsewhere?: number;
   bot?: Bot;
   onNew: () => void;
   onSwitch: (threadId: string) => void;
@@ -254,6 +259,15 @@ function ConversationTaskPicker({
         <span className="truncate @max-4xl/chathead:hidden">{t("task.switch")}</span>
         {/* folded: just the count in the bubble — the title rides the tooltip */}
         <span className="shrink-0 tabular-nums opacity-60 @max-4xl/chathead:opacity-100">{tasks.length}</span>
+        {workingElsewhere > 0 && (
+          <span
+            role="img"
+            data-working-elsewhere={workingElsewhere}
+            aria-label={t("task.workingElsewhere", { count: workingElsewhere })}
+            title={t("task.workingElsewhere", { count: workingElsewhere })}
+            className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+          />
+        )}
         <ChevronDown size={12} className="shrink-0 @max-4xl/chathead:hidden" />
       </button>
 
@@ -495,6 +509,7 @@ export function GroupTaskPicker({ group }: { group: Group }) {
       threadId={group.threadId}
       tasks={orderedThreadList(tasks)}
       busy={false}
+      workingElsewhere={roomThreadsWorkingElsewhere(group)}
       onNew={() => dispatch({ type: "newGroupTask", groupId: group.id })}
       onSwitch={(threadId) => dispatch({ type: "switchGroupTask", groupId: group.id, threadId })}
       onRename={(threadId, title) => dispatch({ type: "renameGroupTask", groupId: group.id, threadId, title })}

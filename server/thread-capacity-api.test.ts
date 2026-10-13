@@ -366,10 +366,10 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
     expect(created.status).toBe(201);
     const routineId = created.body.routine.id;
     const runState = async (id: string) => (await api("GET", "/api/routines")).body.runs.find((run: any) => run.id === id);
-    // A routine turn hands work on through the delegate_bot alias: an
-    // assignment on the job runtime (docs/runtime-contract.md §9) in the
-    // work thread the run's conversation has with the target. Its held turn
-    // supplies the internal comms capability the alias is called with.
+    // A routine turn hands work on with coordinate_bots: an assignment on
+    // the job runtime (docs/runtime-contract.md §9) in the work thread the
+    // run's conversation has with the target. Its held turn supplies the
+    // internal comms capability the route is called with.
     const delegatorTurn = async () => {
       const run = (await api("POST", `/api/routines/${routineId}/run`)).body.run;
       await expect.poll(async () => (await runState(run.id))?.status, { timeout: 15_000 }).toBe("running");
@@ -378,20 +378,19 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
       return { runId: run.id as string, threadId: started.threadId as string, token: launched.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN as string };
     };
     const delegate = async (turn: { threadId: string; token: string }) => {
-      const response = await fetch(`${fixture.info.url}/api/internal/delegate-bot`, {
+      const response = await fetch(`${fixture.info.url}/api/internal/coordinate-bots`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${turn.token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ toBotId: target.botId, message: "Delegated slot probe" }),
+        body: JSON.stringify({ botIds: [target.botId], message: "Delegated slot probe" }),
       });
       const result = { status: response.status, body: await response.json() as any };
       // The evidence records the authorization result, never the bearer.
-      evidence.push({ authority: "existing provider capability", path: "/api/internal/delegate-bot", threadId: turn.threadId, result });
+      evidence.push({ authority: "existing provider capability", path: "/api/internal/coordinate-bots", threadId: turn.threadId, result });
       expect(result.status, JSON.stringify(result.body)).toBe(200);
       expect(result.body.receipts).toEqual([expect.objectContaining({ botId: target.botId, outcome: "queued", threadId: expect.any(String), requestId: expect.any(String) })]);
-      expect(result.body.deprecation).toContain("delegate_bot is replaced by coordinate_bots");
       return { workThread: result.body.receipts[0].threadId as string, requestId: result.body.receipts[0].requestId as string };
     };
     // The resumed delegator's reply echoes the prompt its provider received.

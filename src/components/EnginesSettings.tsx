@@ -17,6 +17,7 @@ import { AddClaudeAccount, ClaudeAccountSettings } from "./ClaudeAccountSettings
 import { AddProviderAccount, CodexAccountSettings } from "./CodexAccountSettings";
 import { DEVICE_SIGN_IN_COPY, deviceSignInProvider } from "./DeviceSignIn";
 import { AntigravityFreeSpace } from "./AntigravityFreeSpace";
+import { CacheKeepWarmSettings } from "./CacheKeepWarmSettings";
 
 interface ProbeResult {
   ok: boolean;
@@ -386,6 +387,7 @@ export function EnginesSettings() {
         <RefreshEngines />
       </div>
       <EngineSections instances={rows} renderEngine={(instance) => <EngineRow instance={instance} />} />
+      <CacheKeepWarmSettings />
     </div>
   );
 }

@@ -4,9 +4,9 @@
 // approval is a decision about one concrete action, so it shows the tool
 // and the actual command/path in monospace, and the choices carry their
 // own behavior instead of being matched by their label text.
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { Check, ShieldCheck, Undo2, X } from "lucide-react";
-import { api, ApiError, useOptionalConfig, type Bot, type Message, type OptionCardData } from "@/state/store";
+import { api, ApiError, StoreContext, type Bot, type Message, type OptionCardData } from "@/state/store";
 import { shareLearnedSkillsMode } from "@/lib/feature-flags";
 import { cn } from "@/lib/cn";
 import { t, tFromServer } from "@/lib/i18n";
@@ -201,7 +201,7 @@ function AppliedChangeLine({
   const [undoing, setUndoing] = useState(false);
   const [error, setError] = useState<string>();
   const [sharing, setSharing] = useState(false);
-  const config = useOptionalConfig();
+  const config = useContext(StoreContext)?.state.config ?? null; // null where no store is mounted (previews)
   const undone = card.undone === true;
   const skill = card.skillRequest;
   const shared = skill?.shared;

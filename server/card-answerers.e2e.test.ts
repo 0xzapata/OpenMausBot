@@ -198,8 +198,8 @@ posixOnly("who may answer a card on a shared workspace", () => {
     const helper = await makeBot("Helper");
     const source = await cardFrom(opener, opener.threadId, ADA);
     // The opener, mid-way through Ada's request, hands work to a teammate in
-    // a fresh thread (the start_thread alias of coordinate_bots with thread
-    // "new": an assignment on the job runtime, opened for the same person).
+    // a fresh thread (the threads route: coordinate_bots with thread "new",
+    // an assignment on the job runtime, opened for the same person).
     const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
       method: "POST", headers: { "content-type": "application/json", "x-openmausbot-test-capability": CAPABILITY_KEY },
       body: JSON.stringify({ botId: opener.id, threadId: opener.threadId }),
@@ -210,7 +210,7 @@ posixOnly("who may answer a card on a shared workspace", () => {
       method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: JSON.stringify({ toBotId: helper.id, title: "Helper job", message: "run it" }),
     });
-    const openedBody = await opened.json() as { receipts: Array<{ threadId: string; outcome: string }>; deprecation?: string };
+    const openedBody = await opened.json() as { receipts: Array<{ threadId: string; outcome: string }> };
     expect(opened.status, JSON.stringify(openedBody)).toBe(200);
     expect(openedBody.receipts[0]).toMatchObject({ outcome: "queued", threadId: expect.any(String) });
     const helperThreadId = openedBody.receipts[0]!.threadId;

@@ -17,7 +17,8 @@
 // Every memory write is a journal row with actor "upkeep", so the Memory
 // panel shows it and Undo works. The model steps need a one-shot text call
 // (`generateText`: Claude and the chat-completion engines, or
-// `generateMemoryText`: the ACP engines, server/drivers/acp/background-text.ts); on any other
+// `generateMemoryText`: the ACP engines, server/drivers/acp/background-text.ts,
+// and Codex, server/drivers/codex-background-text.ts); on any other
 // engine they are skipped and only the deterministic tidy steps run.
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";

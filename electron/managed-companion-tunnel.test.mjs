@@ -8,6 +8,7 @@ import {
   createManagedCompanionTunnel,
   MANAGED_COMPANION_ORIGIN_VERSION,
   MANAGED_COMPANION_ORIGIN_VERSION_FIELD,
+  MANAGED_COMPANION_RELEASE_AT_FIELD,
   managedCompanionTunnelAccess,
   normalizeManagedCompanionEndpoint,
   resolveCloudflaredBinary,
@@ -133,6 +134,18 @@ describe("managed companion credentials", () => {
         connectorToken: TOKEN,
       }),
     ).toThrow(/invalid managed endpoint/);
+  });
+
+  it("drops a planned release with the address it belonged to", () => {
+    const credentials = { composioApiKey: "keep-me", [MANAGED_COMPANION_RELEASE_AT_FIELD]: 1_700_000_000_000 };
+    // A fresh address (or the same one again) starts with nothing planned.
+    const provisioned = withManagedCompanionTunnelAccess(credentials, {
+      endpoint: { url: ENDPOINT },
+      connectorToken: TOKEN,
+    });
+    expect(provisioned).not.toHaveProperty(MANAGED_COMPANION_RELEASE_AT_FIELD);
+    expect(withoutManagedCompanionTunnelAccess({ ...provisioned, [MANAGED_COMPANION_RELEASE_AT_FIELD]: 1 }))
+      .toEqual({ composioApiKey: "keep-me" });
   });
 });
 

@@ -17,13 +17,9 @@ the bundled MCP stdio bridge, `server/drivers/agents-proxy.ts`, with
 `OMB_EXTERNAL_RUNTIME=1`. The bridge offers the one tool surface every turn
 gets (docs/runtime-contract.md §9): `coordinate_bots` (work, or a question
 with `consult: true`, or a one-way notice with `reply: "none"`) and the
-read-only `assignment_status`, plus the deprecated aliases `delegate_bot`,
-`ask_bot`, `check_delegation` and `wait_delegation`, which map onto those two
-and add a deprecation line. The server accepts only `GET /api/internal/agents`,
-`POST /api/internal/coordinate-bots`, `GET /api/internal/assignment-status`
-and the alias routes (`POST /api/internal/ask-bot`,
-`POST /api/internal/delegate-bot`, `GET /api/internal/delegations/:id`) with
-that capability; every other internal route answers 403.
+read-only `assignment_status`. The server accepts only `GET /api/internal/agents`,
+`POST /api/internal/coordinate-bots` and `GET /api/internal/assignment-status`
+with that capability; every other internal route answers 403.
 
 Each `coordinate_bots` call from a standing capability is its own root on the
 job runtime: requester `external_runtime` (run id `external-runtime:<bot>:<thread>`),
@@ -44,8 +40,8 @@ directory and the fake Claude engine. They prove:
 - Explicit thread bindings survive sidebar selection; deleted or foreign
   bindings fail instead of adopting another conversation.
 - The real MCP stdio bridge can list, hand work on and read its result from
-  the same long-running process, through `coordinate_bots` and through the
-  aliases. Other internal routes remain unavailable.
+  the same long-running process, through `coordinate_bots` and
+  `assignment_status`. Other internal routes remain unavailable.
 - Busy-target hand-offs queue on the runtime without needing a source turn;
   a free slot admits them once. Human approval remains required where
   configured, asked before anything is written, and never twice.

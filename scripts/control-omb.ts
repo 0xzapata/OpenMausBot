@@ -373,14 +373,17 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     OMB_TEST_SEALED_PATH: "1",
   });
   // The fake engine's own knobs (mode, replies, tool calls) are the one thing
-  // a caller may script into the child: FAKE_CLAUDE_* crosses, nothing else.
+  // a caller may script into the child: FAKE_CLAUDE_* crosses, and the Codex
+  // fake's background-call knobs (FAKE_CODEX_TEXT_*); nothing else.
   for (const [key, value] of Object.entries(parentEnv)) {
     // FAKE_CLAUDE_DUMP stays the launcher's: assertions read fixtureDumpPath.
-    if (key.startsWith("FAKE_CLAUDE_") && key !== "FAKE_CLAUDE_DUMP" && value) childEnv[key] = value;
+    if ((key.startsWith("FAKE_CLAUDE_") || key.startsWith("FAKE_CODEX_TEXT_")) && key !== "FAKE_CLAUDE_DUMP" && value) childEnv[key] = value;
   }
   // A test's key for relaying an organization library into the fixture
   // (POST /api/testing/org-library); the route does not exist without it.
   if (parentEnv.OMB_TEST_ORG_LIBRARY_KEY) childEnv.OMB_TEST_ORG_LIBRARY_KEY = parentEnv.OMB_TEST_ORG_LIBRARY_KEY;
+  // One log line per browser call and preview frame (server/browser-runtime.ts).
+  if (parentEnv.OMB_BROWSER_TIMING === "1") childEnv.OMB_BROWSER_TIMING = "1";
   // Live calls against server/testing/fake-openai-live.ts only: a loopback
   // URL, and a key that only ever reaches that fake.
   const liveUrl = parentEnv.OMB_OPENAI_LIVE_URL?.trim() ?? "";

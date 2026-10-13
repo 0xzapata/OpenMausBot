@@ -1,6 +1,6 @@
 // A routine run's hand-offs on the job runtime (docs/runtime-contract.md §9):
-// the real server, the isolated fake Claude as every engine, the delegate_bot
-// alias and coordinate_bots from the run's own turn. A run that hands work on
+// the real server, the isolated fake Claude as every engine, coordinate_bots
+// from the run's own turn. A run that hands work on
 // goes waiting until the runtime resumes it with the reports, as a routine
 // turn; its hand-offs are rows in DATA_DIR/runtime.db, not a ledger of the
 // routine's own. Every teammate turn now carries the agents server, so the
@@ -71,12 +71,11 @@ describe("routine delegation through the isolated harness", () => {
     await expect.poll(async () => (await runState(run.id))?.status, { timeout: 15_000 }).toBe("running");
     return await runState(run.id);
   };
-  /** The delegate_bot alias from the run's own turn: coordinate_bots with the deprecation line. */
+  /** coordinate_bots from the run's own turn. */
   const delegate = async (threadId: string) => {
-    const result = await api("POST", "/api/internal/delegate-bot", { toBotId: peer.id, message: "Produce the fixture report." }, await token(threadId));
+    const result = await api("POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "Produce the fixture report." }, await token(threadId));
     expect(result.receipts).toHaveLength(1);
     expect(result.receipts[0]).toMatchObject({ botId: peer.id, outcome: "queued", requestId: expect.any(String) });
-    expect(result.deprecation).toContain("delegate_bot is replaced by coordinate_bots");
     expect(result.message).toContain("End your turn");
     return result;
   };
@@ -154,9 +153,9 @@ describe("routine delegation through the isolated harness", () => {
   it("completes the routine when the person denies its hand-off, instead of leaving it waiting", async () => {
     await api("PATCH", `/api/bots/${source.id}`, { approvePeerComms: true });
     const run = await start();
-    // The route asks the person before anything is queued, so the alias
-    // call stays open until the card is answered.
-    const pending = raw("POST", "/api/internal/delegate-bot", { toBotId: peer.id, message: "Produce the fixture report." }, await token(run.threadId));
+    // The route asks the person before anything is queued, so the call
+    // stays open until the card is answered.
+    const pending = raw("POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "Produce the fixture report." }, await token(run.threadId));
     await expect.poll(async () => (await messages(run.threadId)).some((message) => message.card?.tool === "delegate_bot"), { timeout: 15_000 }).toBe(true);
     const card = (await messages(run.threadId)).find((message) => message.card?.tool === "delegate_bot");
     // The run's own turn is a root (every turn is one, docs/runtime-contract.md
@@ -166,7 +165,6 @@ describe("routine delegation through the isolated harness", () => {
     const denied = await pending;
     expect(denied.status).toBe(403);
     expect(denied.body.error).toMatch(/denied by user/i);
-    expect(denied.body.deprecation).toContain("delegate_bot is replaced by coordinate_bots");
     finish(run.threadId);
     // Nothing was handed out, so the run's own turn is its last.
     await expect.poll(async () => (await runState(run.id))?.status, { timeout: 15_000 }).toBe("completed");
@@ -259,7 +257,7 @@ describe("routine delegation through the isolated harness", () => {
   it("does not dispatch an approved handoff after the routine was cancelled", async () => {
     await api("PATCH", `/api/bots/${source.id}`, { approvePeerComms: true });
     const run = await start();
-    const pending = raw("POST", "/api/internal/delegate-bot", { toBotId: peer.id, message: "Produce the fixture report." }, await token(run.threadId));
+    const pending = raw("POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "Produce the fixture report." }, await token(run.threadId));
     await expect.poll(async () => (await messages(run.threadId)).some((message) => message.card?.tool === "delegate_bot"), { timeout: 15_000 }).toBe(true);
     const card = (await messages(run.threadId)).find((message) => message.card?.tool === "delegate_bot");
     await api("POST", `/api/routine-runs/${run.id}/cancel`);

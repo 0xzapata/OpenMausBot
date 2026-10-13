@@ -4,6 +4,7 @@ import { cn } from "@/lib/cn";
 import { shareLearnedSkillsMode, skillAuthoringEnabled, skillsLibraryEnabled } from "@/lib/feature-flags";
 import { t } from "@/lib/i18n";
 import { api, useStore, type ConfigStatus } from "@/state/store";
+import { SkillReviewSettings } from "./SkillReviewSettings";
 
 const MODES = [
   { value: "off", label: "settings.experimental.shareSkillsOff" },
@@ -69,5 +70,16 @@ export function ShareLearnedSkillsSettings() {
       </div>
       {error ? <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p> : null}
     </div>
+  );
+}
+
+/** The learned-skill settings under the skill authoring switches: the
+ * automatic review, then sharing with the team. */
+export function LearnedSkillsSettings() {
+  return (
+    <>
+      <SkillReviewSettings />
+      <ShareLearnedSkillsSettings />
+    </>
   );
 }
