@@ -75,7 +75,6 @@ import { showWorkingDots } from "@/lib/turn-tail";
 import { lastNonReceipt } from "@/lib/receipts";
 import { liveActivityPhrases } from "@/lib/live-activity";
 import { ChatMarkdown } from "./ChatMarkdown";
-import type { MentionPerson } from "@/lib/mentions";
 import { VoiceNoteBubble, type VoiceNoteAttachment } from "./VoiceNoteBubble";
 import { RawMarkdownView, RawToggleAction } from "./RawMarkdownToggle";
 import { ThreadChip } from "./ThreadChip";
@@ -173,10 +172,8 @@ interface ChatRows {
   hasMore: boolean;
   /** Every bot, for who wrote a relayed line or sits across a bot⇄bot chip. */
   bots: readonly Bot[];
-  /** Every other bot, for @mentions. */
-  mentionPeers: readonly Bot[];
-  /** The person's own tag in bot replies (`@you`, `@<their name>`). */
-  mentionPerson: MentionPerson;
+  /** Every other bot, and the person's own tag (`@you`, their name), for @mentions. */
+  mentionPeers: readonly Bot[]; mentionPerson: { profileName?: string };
   /** A search hit or jump target in this thread. */
   focus: AppState["focusMessage"];
   showToolCalls: boolean;
@@ -1268,8 +1265,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   // What the rows read besides their own message (see ChatRows).
   const bots = useDrawnBots(state.bots);
   const mentionPeers = useMemo(() => bots.filter((peer) => peer.id !== bot.id), [bots, bot.id]);
-  const profileName = state.config?.profile?.name;
-  const mentionPerson = useMemo<MentionPerson>(() => ({ profileName }), [profileName]);
   const focus = state.focusMessage?.threadId === bot.threadId ? state.focusMessage : null;
   const showToolCalls = showToolCallsEnabled(state.config);
   const tts = state.config?.tts;
@@ -1287,8 +1282,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const bubbleStyle = useMemo(() => (colorMine ? userBubbleStyle(bot.color) : undefined), [colorMine, bot.color]);
   const hasMore = Boolean(bot.hasMore);
   const rows = useMemo<ChatRows>(
-    () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, mentionPerson, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle }),
-    [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, mentionPerson, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle],
+    () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, mentionPerson: { profileName: state.config?.profile?.name }, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle }),
+    [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, state.config?.profile?.name, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle],
   );
   // Where this conversation works, for the place icon on screen and page tools.
   const place = effectivePlace(bot, bot.tasks?.find((task) => task.threadId === bot.threadId));

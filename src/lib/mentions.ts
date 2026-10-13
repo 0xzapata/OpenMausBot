@@ -10,6 +10,11 @@ export type MentionRange = { start: number; end: number; color?: string; you?: t
  * keeps coloring only what routes to a bot. */
 export type MentionPerson = { profileName?: string | null };
 
+/** Whether two bubbles color the person's tag the same way (memo check). */
+export function sameMentionPerson(a?: MentionPerson, b?: MentionPerson): boolean {
+  return Boolean(a) === Boolean(b) && (a?.profileName ?? "") === (b?.profileName ?? "");
+}
+
 /** Filter the composer's mention roster without silently truncating it.
  * Large rooms stay fully reachable; the picker itself owns scrolling. */
 export function mentionChoicesForQuery<T extends { name: string }>(pool: readonly T[], query: string): T[] {

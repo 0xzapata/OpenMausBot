@@ -202,8 +202,7 @@ import { fleetAvailable, fleetSocketPath } from "./fleet-client.ts";
 import { entitled } from "./enterprise.ts";
 import { HOSTED_CONTRACT_HEADER, HOSTED_CONTRACT_METADATA, HOSTED_CONTRACT_VERSION } from "./hosted-contract.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
-import { buildNotification, buildSpendNotification, type Notification } from "./notify.ts";
-import { personMentionExcerpt } from "../shared/person-mention.ts";
+import { buildMentionNotification, buildNotification, buildSpendNotification, type Notification } from "./notify.ts";
 import {
   isModelVariant,
   TurnNotStartedError,
@@ -1824,7 +1823,6 @@ function adminAuditRows(
   return rows;
 }
 
-
 /** Who a request is, for the usage ledger: a paired or signed-in person, or
  * this machine. Captured when the message is accepted and carried with it. */
 function usageTriggerFor(auth: RequestAuth): UsageTrigger {
@@ -2519,7 +2517,6 @@ function agentsIntegration(
     },
   };
 }
-
 
 /** Engine lifecycle hooks (item 0.2): a turn-scoped bearer the engine's hook
  * helper presents on /api/internal/hook. OMB_HOOKS=0 turns the channel off. */
@@ -9665,18 +9662,8 @@ bus.subscribe((event: RuntimeEvent) => {
           });
         }
         liveTurnByThread.delete(event.threadId);
-        // A reply that tags the person (@you, or their profile name) is the
-        // room asking for them. Room turns never send "done", so this is the
-        // turn's one buzz; bot-to-bot channels have no person to ask.
-        if (event.ok && !stopped && !group.dm && speakingBot) {
-          const excerpt = roomPersonMention(group, event.threadId, speaker.botId, completedTurnId, reply);
-          if (excerpt) {
-            notify(buildNotification("mention", { ...speakingBot, threadId: event.threadId }, event.threadId, excerpt, {
-              avatarUrl: speakingBot.avatarUrl,
-              group: { id: group.id, name: group.name },
-            }));
-          }
-        }
+        if (event.ok && !stopped && !group.dm && speakingBot) notify(buildMentionNotification({ bot: { ...speakingBot, threadId: event.threadId }, group, turnId: completedTurnId, reply,
+          messages: store.activePath(event.threadId), members: group.memberIds.map((id) => store.bot(id)), profileName: cfg.profile?.name }));
       }
       if (speaker) {
         releaseTurnResources(turnResourceOwners.get(event.threadId));
@@ -9694,26 +9681,6 @@ bus.subscribe((event: RuntimeEvent) => {
     }
   }
 });
-
-/** The line of a settled room reply that tags the person, or null. Reads
- * every text the speaker posted this turn (a reply can arrive in parts), and
- * lets a room member's name win over the person's, as the renderer does. */
-function roomPersonMention(group: GroupRecord, threadId: string, botId: string, turnId: string | undefined, reply: string): string | null {
-  const texts = turnId
-    ? store.activePath(threadId)
-      .filter((message) => message.role === "bot" && message.kind === "text" && message.turnId === turnId && message.from?.botId === botId)
-      .map((message) => message.text ?? "")
-    : [reply];
-  const botNames = group.memberIds
-    .map((id) => store.bot(id))
-    .filter((member): member is BotRecord => Boolean(member && !member.hidden))
-    .map((member) => member.name);
-  for (const text of texts) {
-    const excerpt = personMentionExcerpt(text, { profileName: cfg.profile?.name, botNames });
-    if (excerpt) return excerpt;
-  }
-  return null;
-}
 
 /** The card in this thread that is waiting on the person: an approval, a
  * question or a proposal to review, newest first. */

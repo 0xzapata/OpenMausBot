@@ -56,13 +56,29 @@ export function personMentionRanges(text: string, options: PersonTagOptions = {}
   return ranges;
 }
 
+/** Blank out fenced code blocks, keeping offsets. A fence opens with three
+ * or more backticks or tildes and closes only on a line of the same
+ * character at least as long; an unclosed fence runs to the end. */
+function maskFences(text: string): string {
+  let open: { char: string; length: number } | null = null;
+  return text.split("\n").map((line) => {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (!open) {
+      if (!marker || (marker[0] === "`" && line.slice(line.indexOf(marker) + marker.length).includes("`"))) return line;
+      open = { char: marker[0]!, length: marker.length };
+    } else if (marker && marker[0] === open.char && marker.length >= open.length && !line.trim().slice(marker.length).trim()) {
+      open = null;
+    }
+    return " ".repeat(line.length);
+  }).join("\n");
+}
+
 /** The line that carries the first person tag, or its paragraph when the
  * line alone says little ("@you" on its own line, above the question).
  * Null when the text does not tag the person. Code fences never count:
  * a tag quoted in code is not addressed to anyone. */
 export function personMentionExcerpt(text: string, options: PersonTagOptions = {}): string | null {
-  const prose = text.replace(/```[\s\S]*?```/g, (fence) => " ".repeat(fence.length))
-    .replace(/`[^`\n]*`/g, (code) => " ".repeat(code.length));
+  const prose = maskFences(text).replace(/`[^`\n]*`/g, (code) => " ".repeat(code.length));
   const hit = personMentionRanges(prose, options)[0];
   if (!hit) return null;
   const lineStart = text.lastIndexOf("\n", hit.start) + 1;

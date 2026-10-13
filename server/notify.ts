@@ -19,6 +19,7 @@
 // notifications today, and closed-app APNs delivery once a relay exists.
 
 import type { Notification, NotifyKind } from "../shared/notification.ts";
+import { personMentionExcerpt } from "../shared/person-mention.ts";
 
 // The notification wire shape lives in shared/notification.ts now (part of
 // the wire model); re-exported here so existing importers keep working.
@@ -101,4 +102,31 @@ export function buildNotification(
   if (extra?.avatarUrl) notification.avatarUrl = extra.avatarUrl;
   if (extra?.group) notification.groupId = extra.group.id;
   return notification;
+}
+
+/** A settled room reply that tags the person (`@you`, or their profile name)
+ * is the room asking for them. Room turns never send "done", so this is the
+ * turn's one buzz; the caller leaves out bot-to-bot channels, which have no
+ * person to ask. Every text the speaker posted this turn counts (a reply can
+ * arrive in parts, and each part is shown to the person), and a visible room
+ * member's name wins over the person's, as the renderer does. */
+export function buildMentionNotification(input: {
+  bot: NotifyBot & { avatarUrl?: string };
+  group: { id: string; name: string };
+  turnId?: string;
+  reply: string;
+  messages: readonly { role: string; kind: string; text?: string; turnId?: string; from?: { botId: string } }[];
+  members: readonly ({ name: string; hidden?: boolean } | null | undefined)[];
+  profileName?: string;
+}): Notification | null {
+  const { bot, group, turnId } = input;
+  const texts = turnId
+    ? input.messages.filter((m) => m.role === "bot" && m.kind === "text" && m.turnId === turnId && m.from?.botId === bot.id).map((m) => m.text ?? "")
+    : [input.reply];
+  const botNames = input.members.flatMap((member) => (member && !member.hidden ? [member.name] : []));
+  for (const text of texts) {
+    const excerpt = personMentionExcerpt(text, { profileName: input.profileName, botNames });
+    if (excerpt) return buildNotification("mention", bot, bot.threadId, excerpt, { avatarUrl: bot.avatarUrl, group });
+  }
+  return null;
 }

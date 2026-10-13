@@ -50,6 +50,10 @@ describe("the line a mention notification quotes", () => {
   it("is null without a tag, and ignores tags quoted in code", () => {
     expect(personMentionExcerpt("All done, nothing for anyone.")).toBeNull();
     expect(personMentionExcerpt("Run `notify @you` or\n```\n@you\n```")).toBeNull();
+    expect(personMentionExcerpt("~~~\n@you\n~~~")).toBeNull();
+    expect(personMentionExcerpt("````\n```\n@you\n```\n````")).toBeNull();
+    expect(personMentionExcerpt("~~~\n```\n~~~\n@you please check the export bucket")).toBe("@you please check the export bucket");
+    expect(personMentionExcerpt("```\nunclosed @you")).toBeNull();
     expect(personMentionExcerpt("@you", { botNames: ["you"] })).toBeNull();
   });
 });
