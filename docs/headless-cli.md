@@ -75,7 +75,7 @@ one of its conversations.
 | `send TARGET TEXT` | Sends one message and returns at once. `--send-id ID` makes a retry safe: the same id never sends twice. |
 | `run TARGET TEXT` | Gives a bot or room one job and waits until it is done (below). |
 | `wait TARGET` | Waits on work already running. |
-| `interrupt TARGET [--tree]` | Presses Stop. `--tree` also stops every teammate still working on its job. |
+| `interrupt TARGET [--tree]` | Presses Stop. `--tree` also stops every teammate still working on its job, in that teammate's own conversation. |
 | `export TARGET --out DIR` | Writes a conversation's job to a folder (below). |
 | `events` | The server's live events as JSON lines (below). |
 | `team apply FILE`, `team export --out FILE` | Makes the workspace match a team file, or writes one (below). |
@@ -97,7 +97,8 @@ openmausbot run "Room Lead" --message-file brief.md --timeout 45m --on-input exi
 line) unless `--task current` or `--task ID` says otherwise, sends the message
 once, and waits for the whole job: the bot's own turn and every piece of work
 it handed to a teammate, and theirs in turn. Its first progress line names the
-conversation, so a later `openmausbot wait --thread ID` can pick it up again.
+conversation and when the job began (`since`), so a later `openmausbot wait
+--thread ID --since MS` can pick the same job up again.
 
 - `--wait job` (the default) waits for the bot and every teammate; `--wait turn`
   only for the bot's own turn; `--wait none` sends and returns.
@@ -106,13 +107,32 @@ conversation, so a later `openmausbot wait --thread ID` can pick it up again.
 - `--on-timeout leave` (the default) leaves the work running; `stop` stops it.
 - `--strict` fails the run (exit 1) if any teammate's part failed, even when
   the bot finished.
-- `--export DIR` writes the job to `DIR` once it is done.
+- `--export DIR` writes the job to `DIR` once it is done. `DIR` must be new or
+  empty, and that is checked before anything is sent; `--force` writes into a
+  folder that already has files.
 
 A teammate the bot sent a one-way notice to, or one still working after the
 bot was stopped, does not hold the job open: nobody is waiting on it.
 
+With `--json` the result carries the job's `state` (`completed`, `idle`,
+`needs-input`, `failed`, `stalled` or `timed-out`), which the exit code
+follows, the job tree, the final reply and the files it links. Its `status`
+keeps the words MCP clients already read: `settled` there only says the
+conversation stopped working, so a lead whose work failed is `settled` with
+`state: "failed"` and exit 1.
+
 `wait TARGET` takes the same options. If nothing is running it returns at
 once with exit 0. `--for turn` waits only for the conversation's own turn.
+`--since MS` (the number `run` prints, and puts in its "wait again" line)
+keeps watching the same job: if it ended while nobody was watching, `wait`
+says how it ended instead of "nothing is running". Ctrl-C prints that line too.
+
+Stopping a job (`interrupt --tree`, `--on-input stop`, `--on-timeout stop`)
+presses Stop in its conversation, then in each teammate's own conversation
+that still holds part of it: a turn still running, waiting on its own
+teammates, parked on an answer, or about to run again. Work that never
+started is dropped by the first Stop, and its teammate's conversation is left
+alone.
 
 The waiting is done by the server: each request is held until the job
 changes, so a long wait costs one request at a time, not a poll loop. The
@@ -137,9 +157,11 @@ openmausbot export --thread 3f2a… --out ./rehearsal --root ROOT_ID
 
 Each file is fetched under its own reply's permission, exactly as the app
 opens a link; a link to something outside that conversation's folders is
-skipped and listed in `manifest.json`. Limits: `--max-files 200`,
-`--max-screens 100`, `--max-bytes 500MB`. An existing folder with files in it
-is refused unless `--force`.
+skipped and listed in `manifest.json`. A reply that links a folder brings the
+files directly in it. Limits: `--max-files 200`, `--max-screens 100`,
+`--max-bytes 500MB` (counted on what is written, so a file that runs past it
+is skipped). A folder with files in it is refused unless `--force`, which
+replaces what an earlier export wrote there.
 
 ## events
 
@@ -153,7 +175,9 @@ live screen frames. `--thread ID` (repeatable) keeps one conversation's
 events; `--job ID` follows every conversation of that job as it grows, and
 `--until-settled` ends when the job does, with its exit code. After a dropped
 connection it resumes from where it was; the server's first line says whether
-it could (`"resumed": false` means read the state again).
+it could (`"resumed": false` means read the state again). A refusal (an
+expired token, a missing scope) ends it with exit 5 instead. The output is
+always JSON lines; `--jsonl` is accepted and changes nothing.
 
 ## engine
 
@@ -240,7 +264,7 @@ bots:                                       # at least one
     computer: auto | off | browser | local | vm | cloud
     cwd: /work/room                         # a full path that exists on the server
     browser: true | false | { enabled: true, profile: guest }
-    tools: { allow: [SELECTOR], deny: [SELECTOR] }   # docs/tool-selection.md
+    tools: { allow: [SELECTOR], deny: [SELECTOR] }   # docs/tool-selection.md; {} means every tool
     skills:
       - { file: skills/launch-report/SKILL.md, enabled: true }
 rooms:
@@ -255,10 +279,23 @@ Paths are relative to the team file. Apply refuses (exit 2), naming where:
 an unknown field, a duplicate name, two Chiefs in one team, `manages` without
 `chief`, a model not written as `INSTANCE/MODEL`, a `cwd` that is not a full
 path (`~` too: it would not mean the same on the server), a missing file or
-environment variable, and a key written into the file. It warns about a bot
-with no `computer`: on `auto` it may ask which computer to use, and nobody is
-there to answer a headless run. An engine's key is read only when it has to
-be written: when the engine has none yet, or with `--rotate-secrets`.
+environment variable, a key written into the file, and anything longer than
+the app takes (a name or title on more than one line or over 100 or 200
+characters, a soul or team brief over 24,000 bytes, a room brief over 12,000
+characters, a skill over 256 KiB). It warns about a bot with no `computer`: on
+`auto` it may ask which computer to use, and nobody is there to answer a
+headless run. An engine's key, and a base URL kept as a secret, are read only
+when they have to be written: when the engine has no key yet, or with
+`--rotate-secrets`.
+
+Before it writes anything, apply also checks the file against the server
+(exit 1): every `model` must be one its engine offers, every room member a bot
+that exists or that the file makes, and every `tools` selection one the bot's
+engine can hold. Claude, Codex and the other agent engines limit only MCP
+tools (`mcp:SERVER:TOOL`); a `native:` selector for one of them would stop
+every turn it runs, so apply refuses it (docs/tool-selection.md lists which
+engines can limit built-in tools). `tools: {}` or `{ deny: [] }` means every
+tool: the bot's selection is cleared.
 
 `team export` writes the workspace in this format, skills as `SKILL.md` files
 beside it and engine keys as `{ env: SET_ME }` placeholders, so applying an
@@ -287,7 +324,6 @@ defaults:
   computer: browser                          # works only in its own built-in browser
   browser: { enabled: true, profile: guest } # a fresh temporary profile per bot
   cwd: /work/visitors                        # where screenshots go (create it first)
-  tools: { deny: ["native:Bash"] }           # visitors read untrusted sites: no shell
 
 teams:
   - name: Launch Room
@@ -309,7 +345,6 @@ bots:
     computer: local
     cwd: /work/room
     browser: false
-    tools: { deny: [] }
     soul: { file: souls/room-lead.md }
     skills:
       - file: skills/launch-report/SKILL.md
@@ -337,19 +372,28 @@ openmausbot run "Room Lead" "Rehearse the launch of https://example.com with eve
 A Room Lead can brief up to 64 teammates in one turn before any of them
 reports back.
 
+The visitors read sites nobody vetted. A Claude bot keeps its built-in tools
+(a shell, file edits) whatever its `tools` say, so run them where those tools
+can do no harm, such as a throwaway sandbox like Launch Room's, or give them
+an engine that can limit built-in tools.
+
 ## In CI
 
 ```yaml
 # .github/workflows/rehearse.yml (a sketch)
-- run: npm install -g openmausbot
+- run: npm install -g openmausbot @anthropic-ai/claude-code
 - run: openmausbot serve --no-pair --data-dir "$RUNNER_TEMP/omb" &
-- run: openmausbot doctor --wait 2m
+  env: { OMB_ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}" }   # the workspace's Claude key from the start
+- run: openmausbot doctor --wait 2m          # the server answers and an engine is ready
 - run: openmausbot team apply team.yaml
-  env: { ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}" }
 - run: openmausbot run "Release checker" "Check the deploy at ${{ env.URL }}" --timeout 20m --strict --export ./out
 - uses: actions/upload-artifact@v4
   with: { name: release-check, path: ./out }
 ```
+
+`doctor --wait` waits for an engine too, so the server gets its key in its
+own environment, as here (`OMB_ANTHROPIC_API_KEY`; the team file's `engines:`
+section, or `openmausbot engine set`, can set it later instead).
 
 The step fails when the job fails (exit 1), needs someone (exit 3) or runs out
 of time (exit 4). To drive a workspace that is already running elsewhere, set

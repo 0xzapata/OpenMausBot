@@ -2,10 +2,14 @@
 
 Use an isolated fixture, never the live app or workspace. The end-to-end test
 runs the published `openmausbot` entry as a child process against its own
-fake-engine server (ports 19975-19999): a team file makes a Chief and two
-teammates, a second apply sends no write, `run --wait job` waits until the
-Chief and both teammates are done, and the export holds the job tree, three
-transcripts, the Chief's report and both screenshots.
+fake-engine server (ports 19975-19999): a team file makes a Chief, two
+teammates and a room, and a second apply sends no write; `run --wait job`
+waits until the Chief and both teammates are done, and the export holds the
+job tree, three transcripts, the Chief's report and both screenshots. Then
+`team export` applies back with no changes, a second file renames a bot
+(`was:`) and `--prune` deletes one made by hand, a `native:` tool selection on
+a Claude bot is refused before any write, and a job whose teammate hangs is
+stopped, teammate included, by `--on-timeout stop`.
 
 ```sh
 pnpm exec vitest run server/headless-cli.e2e.test.ts
