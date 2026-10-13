@@ -180,8 +180,15 @@ export const CREDENTIAL_PROMPT =
  * so the long-run paths are a raised per-call timeout or a detached job
  * that writes to a file. The Claude driver pins the 600000 ms cap it names
  * (CLAUDE_BASH_MAX_TIMEOUT_MS). */
-export const LONG_COMMANDS_PROMPT =
+const LONG_COMMANDS_TEXT =
   " Long-running shell commands: a shell call is stopped after a default limit (2 minutes for a Bash call) and the output of a stopped command is lost. Before running anything that can take more than a minute, such as transcription (whisper), ffmpeg or ffprobe over long media, renders, large builds or big file transfers, either pass a longer per-call timeout (Bash takes `timeout` in milliseconds, up to 600000) or start it detached with its output in a file (`nohup <command> > /tmp/<job>.log 2>&1 &`) and check that file in later calls. Never scan the whole disk with `find /` or similar: search by name with `mdfind -name` on macOS, or search a specific folder such as your workspace or home with a depth limit. If a command times out, do not rerun it the same way.";
+/** A Local VM's commands go through vm_exec, whose limit is its own: say so
+ * beside the Bash numbers rather than let the model pass Bash's milliseconds. */
+const VM_LONG_COMMANDS_TEXT =
+  " In your Local VM, vm_exec takes `timeout_seconds` instead (default 60, at most 300); start anything longer detached the same way, inside the VM, and check its log with later vm_exec calls.";
+export function longCommandsPrompt(computer: ComputerPromptKind | null): string {
+  return LONG_COMMANDS_TEXT + (computer === "vm-private" || computer === "vm-shared" ? VM_LONG_COMMANDS_TEXT : "");
+}
 export const THREADS_PROMPT =
   " A thread is one conversation with its own history and its own run; a bot can have several running at once, and the person sees them as rows under that bot. Use start_thread to open one on yourself for separate work; to hand a teammate a job in a fresh thread of its own, use coordinate_bots with thread \"new\". Use list_threads to see how the ones you opened are going. When you mention a thread to the person, write its title as #Title so it links. Do not use a ticket comment, a note, or a room post as a stand-in for a thread.";
 const PROPOSAL_RESULT_PROMPT =
