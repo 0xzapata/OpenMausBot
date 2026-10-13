@@ -100,8 +100,11 @@ export interface RuntimeStore {
   children(id: string): Assignment[];
   /** The root of this id's tree. */
   root(id: string): Assignment | undefined;
-  /** `assignee` reads one bot's rows in one conversation (an indexed lookup). */
-  all(filter?: { rootId?: string; nonTerminal?: boolean; ownerThreadId?: string; assignee?: { botId: string; threadId: string } }): Assignment[];
+  /** `assignee` reads one bot's rows in one conversation (an indexed lookup);
+   * `roots` only rows with no parent; `openSince` only rows not finished
+   * before that time. */
+  all(filter?: { rootId?: string; nonTerminal?: boolean; ownerThreadId?: string; assignee?: { botId: string; threadId: string };
+    roots?: boolean; openSince?: number }): Assignment[];
   /** Insert a new row and its event in one transaction. */
   insert(a: Assignment, event: { kind: EventKind; detail?: string; at?: number }): void;
   /** Write the whole row and (optionally) an event in one transaction. */
@@ -315,6 +318,8 @@ export function openRuntimeStore(path: string): RuntimeStore {
         where.push("assignee_bot_id = ? AND assignee_thread_id = ?");
         params.push(filter.assignee.botId, filter.assignee.threadId);
       }
+      if (filter.roots) where.push("parent_id IS NULL");
+      if (filter.openSince !== undefined) { where.push("(finished_at IS NULL OR finished_at >= ?)"); params.push(filter.openSince); }
       const sql = `SELECT id, json FROM assignments${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, rowid`;
       return (db.prepare(sql).all(...params) as Row[]).map(readAssignment);
     },

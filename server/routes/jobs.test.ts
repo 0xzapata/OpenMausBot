@@ -24,7 +24,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise((done) => server.close(done))));
 });
 
-interface Fixture { store: Store; rows: Assignment[]; reads: number; hidden: Set<string>; subscribers: () => number }
+interface Fixture { store: Store; rows: Assignment[]; reads: number; hidden: Set<string>; subscribers: () => number; failing?: boolean }
 
 async function serve(f: Fixture, recheckMs = 60_000): Promise<string> {
   let listeners = 0;
@@ -39,7 +39,11 @@ async function serve(f: Fixture, recheckMs = 60_000): Promise<string> {
   f.subscribers = () => listeners;
   const routes = [createJobRoutes({
     store,
-    coordinator: { job: () => { f.reads += 1; return { scopes: f.rows.filter((row) => !row.parentId).map((row) => row.id), rows: f.rows }; } },
+    coordinator: { job: () => {
+      f.reads += 1;
+      if (f.failing) throw new Error("runtime.db is not readable");
+      return { scopes: f.rows.filter((row) => !row.parentId).map((row) => row.id), rows: f.rows };
+    } },
     groupThreadIsWorking: () => false,
     viewerFor: () => ({ kind: "all" }),
     visibleTo: () => ({ thread: (threadId: string) => !f.hidden.has(threadId) }) as VisibleSet,
@@ -136,6 +140,18 @@ describe("GET /api/threads/:id/job", () => {
     await expect.poll(() => f.subscribers()).toBe(1);
     f.rows = [f.root({ status: "completed" })];
     expect((await held).body).toMatchObject({ state: "completed" });
+  });
+
+  it("answers a held read whose last look fails with that failure, instead of throwing from its timer and never answering", async () => {
+    const f = fixture();
+    f.rows = [f.root()];
+    const base = await serve(f);
+    const first = (await get(base, `/api/threads/${f.threadId}/job?since=0`)).body;
+    const held = get(base, `/api/threads/${f.threadId}/job?since=0&wait=200&version=${first.version}`);
+    await expect.poll(() => f.subscribers()).toBe(1);
+    f.failing = true;
+    expect(await held).toEqual({ status: 500, body: { error: "Error: runtime.db is not readable" } });
+    expect(f.subscribers()).toBe(0);
   });
 
   it("lets go of a held read whose client went away", async () => {

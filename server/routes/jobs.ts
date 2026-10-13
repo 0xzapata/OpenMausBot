@@ -94,15 +94,17 @@ export function createJobRoutes(deps: JobRouteDeps): RouteHandler {
     const known = params.get("version") ?? "";
     const visible = deps.visibleTo(deps.viewerFor(auth));
     if (!visible.thread(threadId)) return json(res, 404, { error: "no such conversation" });
-    let view = read(threadId, scope, since, full, visible);
+    const view = read(threadId, scope, since, full, visible);
     if (!view) return json(res, 404, { error: "no such conversation" });
     if (!wait || view.version !== known) return json(res, 200, view);
 
-    // Held: answer at the first change, or with the same view when the wait runs out.
-    view = await new Promise<JobView | null>((answer) => {
+    // Held: answer at the first change, or with the same view when the wait
+    // runs out. A read that throws in a timer ends the hold with that error
+    // (the route table answers it) rather than escaping the request.
+    const held = await new Promise<{ view: JobView | null } | { error: unknown }>((answer) => {
       let settleTimer: ReturnType<typeof setTimeout> | undefined;
       let done = false;
-      const finish = (next: JobView | null) => {
+      const finish = (next: { view: JobView | null } | { error: unknown }) => {
         if (done) return;
         done = true;
         clearTimeout(settleTimer);
@@ -112,25 +114,26 @@ export function createJobRoutes(deps: JobRouteDeps): RouteHandler {
         res.off("close", abandoned);
         answer(next);
       };
-      const look = () => {
+      const look = (always: boolean) => {
         if (done) return;
         let next: JobView | null;
-        try { next = read(threadId, scope, since, full, visible); } catch { next = null; }
-        if (!next || next.version !== known) finish(next);
+        try { next = read(threadId, scope, since, full, visible); } catch (error) { return finish({ error }); }
+        if (always || !next || next.version !== known) finish({ view: next });
       };
-      const abandoned = () => finish(null);
+      const abandoned = () => finish({ view: null });
       // A burst of changes (a streaming reply) is read once it pauses.
       const unsubscribe = store.onChange(() => {
         clearTimeout(settleTimer);
-        settleTimer = setTimeout(look, SETTLE_MS);
+        settleTimer = setTimeout(() => look(false), SETTLE_MS);
       });
-      const recheck = setInterval(look, deps.recheckMs ?? RECHECK_MS);
-      const deadline = setTimeout(() => finish(read(threadId, scope, since, full, visible)), wait);
+      const recheck = setInterval(() => look(false), deps.recheckMs ?? RECHECK_MS);
+      const deadline = setTimeout(() => look(true), wait);
       // The response closes before it is written only when the client went away.
       res.on("close", abandoned);
     });
     if (res.writableEnded || res.destroyed) return;
-    if (!view) return json(res, 404, { error: "no such conversation" });
-    return json(res, 200, view);
+    if ("error" in held) throw held.error;
+    if (!held.view) return json(res, 404, { error: "no such conversation" });
+    return json(res, 200, held.view);
   };
 }

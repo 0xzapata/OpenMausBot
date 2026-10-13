@@ -284,14 +284,14 @@ export class RuntimeCoordinator implements Coordinator {
 
   job(threadId: string, since: number, botId?: string): { scopes: string[]; rows: Assignment[] } {
     this.ready();
-    const open = (a: Assignment) => a.finishedAt === undefined || a.finishedAt >= since;
-    // Its own turns are roots requested from here (an indexed read); a
-    // teammate's assignment running here is read by its bot and thread.
+    // Its own turns are roots requested from here; a teammate's assignment
+    // running here is read by its bot and thread. Both are indexed reads of
+    // only the rows still open at `since`.
     const given = new Map<string, Assignment>();
-    for (const a of this.store.all({ ownerThreadId: threadId })) {
-      if (!a.parentId && a.assignee.destination.threadId === threadId && open(a)) given.set(a.id, a);
+    for (const a of this.store.all({ ownerThreadId: threadId, roots: true, openSince: since })) {
+      if (a.assignee.destination.threadId === threadId) given.set(a.id, a);
     }
-    if (botId) for (const a of this.store.all({ assignee: { botId, threadId } })) if (open(a)) given.set(a.id, a);
+    if (botId) for (const a of this.store.all({ assignee: { botId, threadId }, openSince: since })) given.set(a.id, a);
     const rows = new Map<string, Assignment>();
     const scopes: string[] = [];
     for (const start of [...given.values()].sort((a, b) => a.createdAt - b.createdAt)) {

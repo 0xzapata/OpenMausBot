@@ -584,6 +584,15 @@ describe("RuntimeCoordinator: read models", () => {
     await host.release(b.id, { ok: true, text: "built" });
   });
 
+  it("job in a room: a member's hand-off in the room's own thread belongs to the room's job, never a job of its own", () => {
+    const w = world(hold);
+    const { node } = send(w, inRoom("chief"), "room-gen-1", undefined, inRoom("builder"), "Review it");
+    expect(node).toMatchObject({ threadId: "room-1", groupId: "g1" });
+    const job = w.coordinator.job("room-1", 0);
+    expect(job.scopes).toEqual(["room-gen-1"]);
+    expect(job.rows.map((row) => row.id)).toEqual(["room-gen-1", node.id]);
+  });
+
   it("sharedRequest batches one call's room recipients and nothing else", () => {
     const w = world();
     const { node: b } = send(w, chief, "gen-1", undefined, inRoom("builder"), "Review it", { batchKey: "call-1" });
