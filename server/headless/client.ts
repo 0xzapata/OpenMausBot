@@ -133,11 +133,24 @@ export async function openClient(flags: Flags, deps: ClientDeps, mutating: boole
   };
 }
 
+/** A refusal's own words: the server's `error`, not the raw body around it
+ * ("OpenMausBot API error (409): {"error":"…"}" reads as "…"). */
+export function serverWords(message: string): string {
+  const body = /^OpenMausBot API error \(\d+\): ([\s\S]*)$/.exec(message)?.[1];
+  if (body === undefined) return message;
+  try {
+    const said = (JSON.parse(body) as { error?: unknown }).error;
+    return typeof said === "string" && said.trim() ? said.trim() : message;
+  } catch {
+    return message;
+  }
+}
+
 /** Any failure as the error a verb reports: its words, what to do, and the exit code. */
 export async function explain(error: unknown, baseUrl?: string): Promise<HeadlessError> {
   if (error instanceof HeadlessError) return error;
   const mcp = await loadMcp().catch(() => undefined);
-  const message = error instanceof Error ? error.message : String(error);
+  const message = serverWords(error instanceof Error ? error.message : String(error));
   if (mcp && error instanceof mcp.ToolInputError) return usageError(message);
   const status = typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
   if (status === 401) {

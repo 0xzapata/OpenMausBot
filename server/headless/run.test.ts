@@ -1,6 +1,9 @@
 // run and wait through the real command line handling, against stand-in MCP
 // tools and API reads: what is sent, how a long wait is carried across tool
 // calls, what each --on-input and --on-timeout does, and the exit codes.
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { HeadlessIo } from "./output.ts";
@@ -80,6 +83,34 @@ describe("run", () => {
     expect(result).toMatchObject({ ok: true, threadId: "t0" });
   });
 
+  it("refuses an export folder that already has files before sending anything (exit 2), unless --force", async () => {
+    const used = mkdtempSync(join(tmpdir(), "omb-run-export-"));
+    try {
+      writeFileSync(join(used, "earlier.txt"), "from an earlier run");
+      const h = harness([waited("settled", "completed", job("completed", "v1"))]);
+      const { code, result } = await h.run(["run", "Room Lead", "Go", "--export", used, "--json"]);
+      expect(code).toBe(2);
+      expect(result).toMatchObject({ ok: false, exitCode: 2, error: `${used} already has files in it` });
+      expect(h.calls).toEqual([]);
+      expect(h.requests).toEqual([]);
+      const forced = harness([waited("settled", "completed", job("completed", "v1"))]);
+      expect((await forced.run(["run", "Room Lead", "Go", "--export", used, "--force", "--json"])).result).toMatchObject({ ok: true });
+      expect(forced.calls.map((call) => call.name)).toEqual(["create_task", "send_bot_message", "wait_for_conversation"]);
+    } finally {
+      rmSync(used, { recursive: true, force: true });
+    }
+  });
+
+  it("stops waiting on Ctrl-C (130), and says how to wait on the same job from the same moment", async () => {
+    const controller = new AbortController();
+    const h = harness([waited("settled", "completed", job("completed", "v1"))], { delayMs: 10_000 });
+    setTimeout(() => controller.abort(), 50);
+    const { code, result } = await h.run(["run", "--bot", "lead", "Go", "--json"], controller.signal);
+    expect(code).toBe(130);
+    expect(result).toMatchObject({ exitCode: 130, error: "stopped waiting; the work keeps running", hint: "wait again: openmausbot wait --thread t1 --since 1000" });
+    expect(h.calls.some((call) => call.name === "interrupt_conversation")).toBe(false);
+  });
+
   it("refuses a server that cannot report a job before sending anything (exit 5)", async () => {
     const h = harness([], { jobRead: () => { throw Object.assign(new Error("OpenMausBot API error (404): not found"), { status: 404 }); } });
     const { code, result } = await h.run(["run", "--bot", "lead", "Go", "--json"]);
@@ -121,15 +152,26 @@ describe("wait", () => {
     // still waiting on the answer when the time runs out: that is a timeout
     expect((await harness([needs], { delayMs: 50 }).run(["wait", "--bot", "lead", "--on-input", "wait", "--timeout", "1", "--json"])).code).toBe(4);
 
-    const stopped = harness([needs], { jobRead: () => job("needs-input", "v1", { nodes: needs.job.nodes }) });
+    // After the Stop the job is read again from the same moment: what the Stop
+    // left is stopped in each teammate's own conversation, once per
+    // conversation; queued work (dropped by the Stop) never is, since its
+    // conversation may be busy with something else.
+    const left = [...needs.job.nodes,
+      { id: "a4", botId: "lena", botName: "Lena", threadId: "l1", status: "queued" },
+      { id: "a5", botId: "priya", botName: "Priya", threadId: "p1", status: "running" },
+      { id: "a6", botId: "kenji", botName: "Kenji", threadId: "k2", status: "resume" }];
+    const stopped = harness([needs], { jobRead: () => job("needs-input", "v1", { nodes: left }) });
     const { code, result } = await stopped.run(["wait", "--bot", "lead", "--on-input", "stop", "--json"]);
     expect(code).toBe(3);
     expect(stopped.calls.at(-1)).toEqual({ name: "interrupt_conversation", args: { target_type: "bot", target_id: "lead", task_id: "t1" } });
+    expect(stopped.requests.filter((request) => request.path.startsWith("/api/threads/t1/job")).map((request) => request.path))
+      .toEqual(["/api/threads/t1/job?", "/api/threads/t1/job?since=1000"]);
     expect(stopped.requests.filter((request) => request.method === "POST")).toEqual([
       { path: "/api/bots/priya/interrupt", method: "POST", body: { threadId: "p1" } },
       { path: "/api/groups/g1/interrupt", method: "POST", body: { threadId: "m1" } },
+      { path: "/api/bots/kenji/interrupt", method: "POST", body: { threadId: "k2" } },
     ]);
-    expect(result.stopped.map((node: Rec) => node.botName)).toEqual(["Priya", "Marcus"]);
+    expect(result.stopped.map((node: Rec) => node.botName)).toEqual(["Priya", "Marcus", "Kenji"]);
   });
 
   it("times out (4) and leaves the work running unless --on-timeout stop; --strict fails a run whose teammate failed", async () => {

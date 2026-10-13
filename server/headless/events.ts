@@ -91,6 +91,11 @@ export async function eventsVerb(ctx: VerbContext): Promise<VerbOutcome> {
     try {
       const query = new URLSearchParams({ screens: screens ? "on" : "off", ...(cursor ? { since: cursor } : {}) });
       response = await client.raw(`/api/events?${query.toString()}`, { stream: true, headers: { accept: "text/event-stream" }, signal });
+      // A refusal (an expired token, a missing scope) does not go away by asking again.
+      if (response.status >= 400 && response.status < 500) {
+        const said = ((await response.json().catch(() => ({}))) as Frame).error;
+        throw Object.assign(new Error(`the event stream was refused${typeof said === "string" ? `: ${said}` : ` (${response.status})`}`), { status: response.status });
+      }
       if (!response.ok || !response.body) throw new Error(`the event stream answered ${response.status}`);
       attempt = 0;
       for await (const { id, data } of sseFrames(response.body as unknown as AsyncIterable<Uint8Array>)) {
@@ -104,7 +109,8 @@ export async function eventsVerb(ctx: VerbContext): Promise<VerbOutcome> {
       }
     } catch (error) {
       if (signal.aborted) break;
-      if ((error as { status?: number }).status === 401 || (error as { status?: number }).status === 403) throw error;
+      const status = (error as { status?: number }).status;
+      if (status !== undefined && status >= 400 && status < 500) throw error;
     }
     if (signal.aborted) break;
     const delay = Math.min(10_000, 1_000 * 2 ** Math.min(attempt, 4));

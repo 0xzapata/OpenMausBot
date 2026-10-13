@@ -8,19 +8,29 @@ import { messageFileTargets } from "../message-file.ts";
 import { EXIT, flag, HeadlessError, oneOf, parseCount, usageError } from "./args.ts";
 import { readJob, type HeadlessClient } from "./client.ts";
 import { newSendId, readMessage, resolveTarget, waitPolicy, type Target, type VerbContext, type VerbOutcome } from "./context.ts";
-import { exportJob } from "./export.ts";
+import { exportFolder, exportJob } from "./export.ts";
 import { oneLine } from "./output.ts";
 
 type Rec = Record<string, any>;
-const ENDED = new Set(["completed", "failed", "cancelled"]);
 const MCP_WAIT_MAX_S = 120;
 const enc = encodeURIComponent;
 
-/** Stop every teammate still working on a job, after its own conversation was stopped. */
+/** The work a Stop in its teammate's own conversation still has to end: a
+ * turn running, one waiting on its own teammates, one parked on someone's
+ * answer, one about to run again. Never a queued one: Stop in the
+ * conversation that asked drops work that never started, and its
+ * destination may be busy with something else entirely. */
+const STOPPABLE = new Set(["running", "waiting", "needs_input", "resume"]);
+
+/** Press Stop in each teammate's own conversation that still holds part of
+ * a job, after the job's own conversation was stopped (which leaves a
+ * teammate mid-turn running; docs/runtime-contract.md). */
 export async function stopTeammates(client: HeadlessClient, threadId: string, nodes: readonly Rec[]): Promise<Rec[]> {
   const stopped: Rec[] = [];
+  const done = new Set<string>();
   for (const node of nodes) {
-    if (ENDED.has(node.status) || node.threadId === threadId) continue;
+    if (!STOPPABLE.has(node.status) || node.threadId === threadId || done.has(node.threadId)) continue;
+    done.add(node.threadId);
     const route = node.groupId ? `/api/groups/${enc(node.groupId)}/interrupt` : `/api/bots/${enc(node.botId)}/interrupt`;
     try {
       await client.json(route, { method: "POST", body: JSON.stringify({ threadId: node.threadId }) });
@@ -32,17 +42,20 @@ export async function stopTeammates(client: HeadlessClient, threadId: string, no
   return stopped;
 }
 
-/** Stop a conversation, and with `tree` every teammate still working on
- * its open job: the job is read first, since the stop ends it. */
+/** Stop a conversation, and with `tree` every teammate still working on its
+ * job: the job is read before the Stop (for its since, which the Stop moves
+ * past) and again after it, so only what the Stop left running is stopped. */
 export async function stopConversation(client: HeadlessClient, target: Target, tree: boolean): Promise<{ result: Rec; stopped: Rec[] }> {
   let threadId = target.taskId;
   if (tree && !threadId) {
     const fleet = await client.json<Rec>("/api/bots?messages=0");
     threadId = (target.type === "bot" ? fleet.bots : fleet.groups)?.find((record: Rec) => record.id === target.id)?.threadId;
   }
-  const open = tree && threadId ? (await readJob(client, threadId)).nodes ?? [] : [];
+  const before = tree && threadId ? await readJob(client, threadId) : undefined;
   const result = await client.tool("interrupt_conversation", { target_type: target.type, target_id: target.id, ...(threadId ? { task_id: threadId } : {}) });
-  return { result, stopped: tree ? await stopTeammates(client, result.taskId, open) : [] };
+  if (!before) return { result, stopped: [] };
+  const after = await readJob(client, result.taskId, { since: String(before.since) });
+  return { result, stopped: await stopTeammates(client, result.taskId, after.nodes ?? []) };
 }
 
 const exitFor = (result: Rec, strict: boolean): number => {
@@ -55,28 +68,35 @@ const exitFor = (result: Rec, strict: boolean): number => {
 
 interface Waited { result: Rec; exitCode: number; stopped?: Rec[] }
 
+/** What a wait knows so far, kept where a Ctrl-C can read it: the
+ * conversation and the job's since, for the command that picks it up again. */
+interface Watching { threadId?: string; since?: number }
+
 /** Wait on one conversation's job until it ends, needs the person (unless
  * --on-input wait), or the timeout passes; then apply --on-input stop and
  * --on-timeout stop. Progress goes to stderr as each new state arrives. */
 async function waitOnJob(ctx: VerbContext, client: HeadlessClient, target: Target,
-  options: { scope: "job" | "turn"; since?: number; taskId?: string }): Promise<Waited> {
+  options: { scope: "job" | "turn" }, watching: Watching): Promise<Waited> {
   const policy = waitPolicy(ctx);
   const deadline = Date.now() + policy.timeoutMs;
-  let since = options.since;
   let after: string | undefined;
-  let taskId = options.taskId ?? target.taskId;
   let result: Rec;
   for (;;) {
     const seconds = Math.min(MCP_WAIT_MAX_S, Math.max(1, Math.ceil((deadline - Date.now()) / 1_000)));
+    const { threadId, since } = watching;
     result = await client.tool("wait_for_conversation", {
-      target_type: target.type, target_id: target.id, ...(taskId ? { task_id: taskId } : {}), timeout_seconds: seconds, scope: options.scope,
+      target_type: target.type, target_id: target.id, ...(threadId ? { task_id: threadId } : {}), timeout_seconds: seconds, scope: options.scope,
       ...(since !== undefined ? { since_ms: since } : {}), ...(after !== undefined ? { after_version: after } : {}),
     }, {
-      onProgress: (job) => ctx.output.progress({ event: "job", threadId: job.threadId, state: job.state, reason: job.reason, counts: job.counts,
-        ...(job.needsInput?.length ? { needsInput: job.needsInput } : {}) }),
+      onProgress: (job) => {
+        if (typeof job.threadId === "string") watching.threadId ??= job.threadId;
+        if (typeof job.since === "number") watching.since = job.since;
+        ctx.output.progress({ event: "job", threadId: job.threadId, state: job.state, reason: job.reason, counts: job.counts,
+          ...(job.needsInput?.length ? { needsInput: job.needsInput } : {}) });
+      },
     }, ctx.signal);
-    taskId ??= result.taskId;
-    if (typeof result.job?.since === "number") since = result.job.since;
+    watching.threadId ??= result.taskId;
+    if (typeof result.job?.since === "number") watching.since = result.job.since;
     const more = Date.now() < deadline && (result.status === "timed-out" || (result.status === "needs-user" && policy.onInput === "wait"));
     if (!more) break;
     after = result.job?.version;
@@ -100,6 +120,9 @@ function finalReply(messages: readonly Rec[] | undefined): { text: string; from?
   return reply ? { text: reply.text, ...(reply.from?.name ? { from: reply.from.name } : {}), files: messageFileTargets(reply.text) } : undefined;
 }
 
+/** The command that waits on the same job again: the same conversation, from the same moment. */
+const waitAgain = (watching: Watching): string => `openmausbot wait --thread ${watching.threadId}${watching.since !== undefined ? ` --since ${watching.since}` : ""}`;
+
 function report(waited: Waited, threadId: string, extra: Rec = {}): { result: Rec; human: string[] } {
   const { result, exitCode } = waited;
   const reply = finalReply(result.messages);
@@ -110,7 +133,7 @@ function report(waited: Waited, threadId: string, extra: Rec = {}): { result: Re
     ...(reply?.files.length ? [`Files: ${reply.files.join(", ")}`] : []),
     ...(job.needsInput?.length ? job.needsInput.map((item: Rec) => `${item.botName} asks: ${oneLine(item.question, 300)}`) : []),
     ...(waited.stopped ? [`Stopped the conversation${waited.stopped.length ? ` and ${waited.stopped.length} teammate task${waited.stopped.length === 1 ? "" : "s"}` : ""}.`] : []),
-    `Thread: ${threadId}${exitCode === EXIT.done ? "" : ` (wait again: openmausbot wait --thread ${threadId})`}`,
+    `Thread: ${threadId}${exitCode === EXIT.done ? "" : ` (wait again: ${waitAgain({ threadId, ...(typeof job.since === "number" ? { since: job.since } : {}) })})`}`,
   ];
   return {
     result: { ...result, ok: exitCode === EXIT.done, exitCode, threadId, ...(reply ? { reply } : {}), ...(waited.stopped ? { stopped: waited.stopped } : {}), ...extra },
@@ -118,10 +141,10 @@ function report(waited: Waited, threadId: string, extra: Rec = {}): { result: Re
   };
 }
 
-/** Ctrl-C while waiting: the work goes on; say how to pick it up again. */
-const interrupted = (threadId: string | undefined): HeadlessError =>
+/** Ctrl-C while waiting: the work goes on; say how to pick the same job up again. */
+const interrupted = (watching: Watching): HeadlessError =>
   new HeadlessError("stopped waiting; the work keeps running", EXIT.interrupted,
-    threadId ? `wait again: openmausbot wait --thread ${threadId}` : "openmausbot wait TARGET picks it up again");
+    watching.threadId ? `wait again: ${waitAgain(watching)}` : "openmausbot wait TARGET picks it up again");
 
 export async function runVerb(ctx: VerbContext): Promise<VerbOutcome> {
   const named = Boolean(flag(ctx.flags, "bot") ?? flag(ctx.flags, "channel") ?? flag(ctx.flags, "thread"));
@@ -129,6 +152,9 @@ export async function runVerb(ctx: VerbContext): Promise<VerbOutcome> {
   const text = await readMessage(ctx, named ? first : second);
   const mode = oneOf(flag(ctx.flags, "wait"), "--wait", ["job", "turn", "none"] as const, "job");
   waitPolicy(ctx); // usage errors before anything is sent
+  // A folder the export cannot use is refused now, not after the job has run.
+  const out = flag(ctx.flags, "export")?.trim();
+  if (out) exportFolder(out, ctx.flags.force === true);
   const task = flag(ctx.flags, "task")?.trim() || (flag(ctx.flags, "thread") ? undefined : "new");
   const target = await resolveTarget({ ...ctx, flags: { ...ctx.flags, task: undefined } }, named ? undefined : first);
   const client = await ctx.client();
@@ -169,16 +195,17 @@ export async function runVerb(ctx: VerbContext): Promise<VerbOutcome> {
     };
   }
   let waited: Waited;
+  const watching: Watching = { threadId, since };
   try {
-    waited = await waitOnJob(ctx, client, target, { scope: mode, since, taskId: threadId });
+    waited = await waitOnJob(ctx, client, target, { scope: mode }, watching);
   } catch (error) {
-    if (ctx.signal.aborted) throw interrupted(threadId);
+    if (ctx.signal.aborted) throw interrupted(watching);
     throw error;
   }
   let exported: Rec | undefined;
-  const out = flag(ctx.flags, "export");
   if (out) {
     try {
+      // checked before the job was sent; nothing of this run is in it yet
       exported = await exportJob(client, { threadId, out, since, force: true }, ctx.output);
     } catch (error) {
       exported = { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -197,13 +224,13 @@ export async function waitVerb(ctx: VerbContext): Promise<VerbOutcome> {
   const target = await resolveTarget(ctx, ctx.positionals[0]);
   const client = await ctx.client();
   let waited: Waited;
+  const watching: Watching = { ...(target.taskId ? { threadId: target.taskId } : {}), ...(since !== undefined ? { since } : {}) };
   try {
-    waited = await waitOnJob(ctx, client, target, { scope, ...(since !== undefined ? { since } : {}) });
+    waited = await waitOnJob(ctx, client, target, { scope }, watching);
   } catch (error) {
-    if (ctx.signal.aborted) throw interrupted(target.taskId);
+    if (ctx.signal.aborted) throw interrupted(watching);
     throw error;
   }
-  if (typeof waited.result.status !== "string") return { result: waited.result, exitCode: EXIT.done, human: [] };
   const { human } = report(waited, waited.result.taskId);
   // control-omb and MCP read the tool's own result: keep it as it came.
   return { result: waited.stopped ? { ...waited.result, stopped: waited.stopped } : waited.result, exitCode: waited.exitCode, human };

@@ -1,8 +1,15 @@
-// The event stream as JSON lines: which frames a filter keeps, and the
-// server-sent events read out of a byte stream however it is chunked.
-import { describe, expect, it } from "vitest";
+// The event stream as JSON lines: which frames a filter keeps, the
+// server-sent events read out of a byte stream however it is chunked, and
+// against a stand-in server: a refusal ends it, a drop resumes from the cursor.
+import "../testing/scrub-ambient-omb-env.ts";
+
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { DEFAULT_EVENT_KINDS, frameThreads, sseFrames, wantFrame } from "./events.ts";
+import { runHeadless } from "./main.ts";
+import type { HeadlessIo } from "./output.ts";
 
 const kinds = new Set(DEFAULT_EVENT_KINDS);
 
@@ -42,4 +49,61 @@ describe("sseFrames", () => {
       { id: "s1:8", data: '{"kind":"thread",\n"threadId":"t2"}' },
     ]);
   });
+});
+
+describe("events against a server", () => {
+  let server: Server;
+  let origin: string;
+  let answer: (req: IncomingMessage, res: ServerResponse, n: number) => void = () => undefined;
+  const asked: string[] = [];
+  beforeAll(async () => {
+    server = createServer((req, res) => { asked.push(req.url ?? ""); answer(req, res, asked.length); });
+    await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+    origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(async () => {
+    server.closeAllConnections();
+    await new Promise((done) => server.close(done));
+  });
+  const capture = () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const io: HeadlessIo = { out: (text) => out.push(text), err: (text) => err.push(text), readStdin: async () => "" };
+    return { io, out, err };
+  };
+  const stream = (res: ServerResponse, frames: string[], end: boolean) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    for (const frame of frames) res.write(frame);
+    if (end) res.end();
+  };
+
+  it("ends with the refusal when the stream is refused (an expired token), instead of asking again forever", async () => {
+    asked.length = 0;
+    answer = (_req, res) => { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized: this session has expired or was revoked" })); };
+    const { io, out } = capture();
+    const code = await runHeadless(["events", "--json"], { io, env: { OPENMAUSBOT_URL: origin, OPENMAUSBOT_TOKEN: "omb_sess_expired" } });
+    expect(code).toBe(5);
+    expect(JSON.parse(out.join("\n"))).toMatchObject({ ok: false, exitCode: 5, error: "this server needs a credential and did not accept the one given" });
+    expect(asked).toHaveLength(1);
+  });
+
+  it("asks again after a dropped stream or a server error, from where it was, and keeps only the conversations named", async () => {
+    asked.length = 0;
+    answer = (_req, res, n) => {
+      if (n === 1) return stream(res, ['id: c1\ndata: {"kind":"hello","resumed":false}\n\n', 'id: c2\ndata: {"kind":"message","threadId":"t1","n":1}\n\n'], true);
+      if (n === 2) { res.writeHead(503); return res.end(); }
+      stream(res, ['id: c3\ndata: {"kind":"hello","resumed":true}\n\n', 'id: c4\ndata: {"kind":"message","threadId":"t2"}\n\n',
+        'id: c5\ndata: {"kind":"message","threadId":"t1","n":2}\n\n'], false);
+    };
+    const { io, out, err } = capture();
+    const controller = new AbortController();
+    const ran = runHeadless(["events", "--thread", "t1"], { io, env: { OPENMAUSBOT_URL: origin }, signal: controller.signal });
+    await expect.poll(() => out.length, { timeout: 10_000 }).toBe(4);
+    controller.abort();
+    expect(await ran).toBe(130);
+    expect(out.map((line) => JSON.parse(line))).toEqual([
+      { kind: "hello", resumed: false }, { kind: "message", threadId: "t1", n: 1 }, { kind: "hello", resumed: true }, { kind: "message", threadId: "t1", n: 2 }]);
+    expect(asked).toEqual(["/api/events?screens=off", "/api/events?screens=off&since=c2", "/api/events?screens=off&since=c2"]);
+    expect(err.map((line) => JSON.parse(line).event)).toEqual(["reconnecting", "reconnecting"]);
+  }, 15_000);
 });

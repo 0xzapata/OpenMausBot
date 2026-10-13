@@ -32,15 +32,17 @@ export const VERB_HELP: Record<string, string> = {
   "send-channel": "openmausbot send-channel --channel ID (TEXT | --text TEXT) [--task ID] [--dry-run]\n  The same as send, for a room named by id.",
   run: `openmausbot run TARGET (TEXT | --message-file FILE | -) [--task new|current|ID] [--title T]
                 [--wait job|turn|none] [--timeout 30m] [--on-input exit|wait|stop] [--on-timeout leave|stop]
-                [--strict] [--export DIR]
+                [--strict] [--export DIR [--force]]
   Give a bot or room one job and wait until it, and every teammate it asked, is done.
   It starts a new conversation unless --task says otherwise, prints progress to stderr,
-  then the final reply and the files it links. --export writes the job to DIR.
+  then the final reply and the files it links. --export writes the job to DIR once it ends
+  (a new or empty folder, checked before anything is sent; --force writes into a used one).
   --on-input: exit (3) when someone must answer, wait for the answer, or stop the job.
   --on-timeout: leave the work running, or stop it. --strict: a teammate that failed fails the run.
   Exit 0 done, 1 failed or stopped, 3 needs you, 4 timed out, 130 Ctrl-C (the work keeps running). ${T}`,
   wait: `openmausbot wait TARGET [--for job|turn] [--timeout 30m] [--on-input …] [--on-timeout …] [--strict] [--since MS]
   Wait on a conversation already running (after run --wait none, Ctrl-C or a restarted CI step).
+  --since MS (which run prints) keeps watching the same job, so one that ended meanwhile reports how.
   Nothing running: it returns at once (exit 0). Same exit codes as run. ${T}`,
   interrupt: `openmausbot interrupt TARGET [--tree] [--dry-run]\n  Press Stop on a conversation. --tree also stops every teammate still working on its job. ${T}`,
   "new-bot": "openmausbot new-bot NAME [--title T] [--team T] [--model INSTANCE/MODEL] [--effort E]\n  Make a bot.",
@@ -50,8 +52,8 @@ export const VERB_HELP: Record<string, string> = {
   export: `openmausbot export TARGET --out DIR [--root ID] [--since MS] [--max-files 200] [--max-screens 100] [--max-bytes 500MB] [--force]
   Write a conversation's job to DIR: the job tree, every transcript (secrets removed),
   the files its replies link to, and screen captures. --root keeps one job. ${T}`,
-  events: `openmausbot events [--thread ID]… [--job THREAD_ID [--until-settled]] [--kind K,…] [--since CURSOR] [--screens]
-  The server's live events as JSON lines (messages, threads, bots, rooms; --kind runtime adds token-level events).
+  events: `openmausbot events [--thread ID]… [--job THREAD_ID [--until-settled]] [--kind K,…] [--since CURSOR] [--screens] [--jsonl]
+  The server's live events, one JSON line each (messages, threads, bots, rooms; --kind runtime adds token-level events).
   --job follows the threads of one conversation's job; --until-settled ends with it.`,
   team: "openmausbot team apply FILE | team export --out FILE   (see help team apply, help team export)",
   "team apply": `openmausbot team apply FILE [--dry-run | --check] [--prune] [--rotate-secrets] [--wait-idle 2m]
@@ -131,12 +133,17 @@ export async function runHeadlessCommand(argv: readonly string[], options: Headl
   return outcome.result;
 }
 
+/** The verbs that answer Ctrl-C themselves: they stop waiting (the work goes
+ * on) and say how to pick it up again. Every other verb, mcp included, ends
+ * on Ctrl-C as any command does. */
+const STOPS_WAITING_ON_CTRL_C: ReadonlySet<string> = new Set(["run", "wait", "events"]);
+
 /** The verbs on the command line: prints the result (or the error) and returns the exit code. */
 export async function runHeadless(argv: readonly string[], options: HeadlessOptions = {}): Promise<number> {
   const io = options.io ?? processIo();
   const controller = new AbortController();
   const onSignal = () => controller.abort();
-  process.once("SIGINT", onSignal);
+  if (STOPS_WAITING_ON_CTRL_C.has(argv[0] ?? "")) process.once("SIGINT", onSignal);
   const json = argv.includes("--json");
   try {
     const { outcome, output } = await execute(argv, { ...options, signal: options.signal ?? controller.signal }, io);

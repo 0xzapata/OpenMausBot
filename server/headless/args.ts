@@ -68,7 +68,8 @@ const VERBS: Record<string, { options: ParseArgsOptionsConfig; positionals: numb
   send: { options: { ...TARGET, ...TEXT, "send-id": { type: "string" }, "dry-run": { type: "boolean" } }, positionals: 2 },
   "send-channel": { options: { ...TARGET, ...TEXT, "send-id": { type: "string" }, "dry-run": { type: "boolean" } }, positionals: 2 },
   run: {
-    options: { ...TARGET, ...TEXT, ...WAITING, title: { type: "string" }, wait: { type: "string" }, export: { type: "string" }, "send-id": { type: "string" } },
+    options: { ...TARGET, ...TEXT, ...WAITING, title: { type: "string" }, wait: { type: "string" }, export: { type: "string" }, force: { type: "boolean" },
+      "send-id": { type: "string" } },
     positionals: 2,
   },
   wait: { options: { ...TARGET, ...WAITING, for: { type: "string" }, since: { type: "string" } }, positionals: 1 },
@@ -88,7 +89,9 @@ const VERBS: Record<string, { options: ParseArgsOptionsConfig; positionals: numb
   },
   events: {
     options: { thread: { type: "string", multiple: true }, job: { type: "string" }, "until-settled": { type: "boolean" },
-      kind: { type: "string" }, since: { type: "string" }, screens: { type: "boolean" } },
+      kind: { type: "string" }, since: { type: "string" }, screens: { type: "boolean" },
+      // the output is always JSON lines; --jsonl says so and changes nothing
+      jsonl: { type: "boolean" } },
     positionals: 0,
   },
   "team apply": {

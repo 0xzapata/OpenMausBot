@@ -3,7 +3,7 @@
 // everything printed; and the published `openmausbot` reaching the verbs.
 import "../testing/scrub-ambient-omb-env.ts";
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -69,4 +69,23 @@ describe("the headless command line", () => {
     expect(usage.stdout).toContain("openmausbot serve [--port 8799]");
     expect(usage.stdout).toContain("Drive a running workspace");
   });
+
+  it("serves MCP through the published entry, and Ctrl-C ends it like any command", async () => {
+    const entry = join(import.meta.dirname, "..", "openmausbot.ts");
+    const child = spawn(process.execPath, ["--experimental-strip-types", entry, "mcp"], {
+      env: { ...process.env, OPENMAUSBOT_URL: "http://127.0.0.1:19998", OPENMAUSBOT_TOKEN: "" }, stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done) => child.on("exit", (code, signal) => done({ code, signal })));
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } } })}\n`);
+    await vi.waitFor(() => expect(stdout).toContain('"id":1'), { timeout: 10_000 });
+    expect(JSON.parse(stdout.split("\n")[0]!)).toMatchObject({ id: 1, result: { serverInfo: { name: expect.stringContaining("openmausbot") } } });
+    child.kill("SIGINT");
+    const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+    const { signal } = await exited;
+    clearTimeout(timer);
+    expect(signal).toBe("SIGINT");
+  }, 20_000);
 });
