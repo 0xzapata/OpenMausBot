@@ -135,7 +135,7 @@ import { ShortcutHint } from "./ShortcutHint";
 import { citationPreviewText } from "@/lib/citations";
 import { plainPreviewText } from "@/lib/plain-preview";
 import { isClientCancellation } from "../../shared/client-cancel";
-import { roomQueueLabel, roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
+import { roomThreadSpeakerId, roomThreadWorking, roomWorkingPreview } from "@/lib/room-threads";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { useAdvancedMode } from "@/lib/interface-mode";
 
@@ -200,21 +200,8 @@ function openBotContextMenu(onMenu: (menu: MenuState) => void, botId: string, ev
 }
 
 function groupPreview(group: Group, bots: Bot[], instances: InstanceInfo[]): string {
-  // the open thread's speaker first, else one working in another thread
-  const speakerId = group.busyBotId ?? roomSpeakerIds(group)[0];
-  // Members waiting their turn (same-room speakers take turns) are counted,
-  // so a room of five jobs does not read as one bot working alone.
-  const queued = (group.queue ?? []).filter((entry) => entry.state === "queued");
-  const nameOf = (botId: string) => bots.find((b) => b.id === botId)?.name;
-  if (speakerId) {
-    const name = nameOf(speakerId) ?? t("sidebar.preview.aBot");
-    return queued.length
-      ? t("sidebar.preview.botWorkingQueued", { name, count: queued.length })
-      : t("sidebar.preview.botWorking", { name });
-  }
-  if (queued[0]) {
-    return t("room.queue.member", { name: nameOf(queued[0].botId) ?? t("sidebar.preview.aBot"), status: roomQueueLabel(queued[0], nameOf) });
-  }
+  const working = roomWorkingPreview(group, (botId) => bots.find((b) => b.id === botId)?.name);
+  if (working) return working;
   if (group.working) return t("sidebar.preview.teamWorking");
   const last = lastNonReceipt(group.messages);
   if (!last) return t("sidebar.preview.noMessages");

@@ -13,7 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, LiveSettings, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
+import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, LiveSettings, ServerFrame, GroupThreadUsage, SteerQueueReason, WireGroup } from "../../shared/wire";
 import { DATA_ROUTES, type DataSheet, type DataTable } from "../../shared/data-surface";
 import type { TurnDigest } from "../../shared/digest";
 import type { ToolScope } from "../../shared/tool-scope";
@@ -266,11 +266,10 @@ export interface Message {
 
 export type GroupDefaultResponder = import("../../shared/wire").GroupDefaultResponder;
 
-/** A room: several bots + you in one shared thread. */
-export interface Group {
+/** A room: several bots + you in one shared thread. Each member's context
+ * in the active thread and who waits in each thread are the wire's. */
+export interface Group extends Pick<WireGroup, "memberContext" | "queue"> {
   usage?: GroupThreadUsage | null;
-  /** Each member's context in the active thread (WireGroup.memberContext). */
-  memberContext?: import("../../shared/wire").WireGroup["memberContext"];
   id: string;
   threadId: string;
   name: string;
@@ -309,8 +308,6 @@ export interface Group {
   /** Members the person stopped in this room ("stop @Bot"), by bot id. */
   holds?: Record<string, import("../../shared/wire").RoomHold>;
   heldMessages?: Record<string, import("../../shared/wire").RoomHeldMessage[]>;
-  /** Who waits in each of the room's threads, and on whom (WireGroup.queue). */
-  queue?: import("../../shared/wire").RoomQueueEntry[];
   /** Separate conversations in this channel. DMs deliberately stay on one
    * thread and omit this collection. */
   tasks?: GroupTask[];

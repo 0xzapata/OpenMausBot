@@ -343,10 +343,7 @@ const featureConfigSchema = z.object({
   /** Learn from group chats: memory upkeep also reads a member bot's room
    * turns. Off until explicitly enabled — see roomMemoryCaptureEnabled. */
   roomMemoryCapture: z.boolean().optional(),
-  /** Work handed to several members of one room runs side by side, each
-   * job in a thread of its own, instead of one member at a time in the
-   * room. Off until explicitly enabled — see parallelRoomJobsEnabled. */
-  parallelRoomJobs: z.boolean().optional(),
+  parallelRoomJobs: z.boolean().optional(), // opt-in: room jobs side by side (server/host/room-jobs.ts)
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
  * it survives cleared site data and is shared by every paired client. Hint
@@ -828,7 +825,6 @@ export function liveSettingsFor(cfg: AppConfig): LiveSettings {
   };
 }
 
-
 /** Accepts a full config or a parsed patch: the concurrency limit may be
  * read from either, and a patch may legitimately omit it. */
 export function maxConcurrentBotThreads(cfg: { threads?: { maxConcurrentPerBot?: number } }): number {
@@ -901,18 +897,6 @@ export function roomMemoryCaptureEnabled(cfg: AppConfig): boolean {
   return cfg.features?.roomMemoryCapture === true;
 }
 
-/** Parallel room jobs: when a requester hands work to several members of a
- * room at once (or into a room whose members are already working through
- * a line of jobs), each job runs in a thread of its own on that member,
- * beside the room, and posts its result card back into the room; the
- * requester resumes once with every result. Off by default, where same-room
- * jobs take turns in the room's own thread. Enabled in
- * ~/.openmausbot/config.json (`{"features": {"parallelRoomJobs": true}}`)
- * or with PATCH /api/config. */
-export function parallelRoomJobsEnabled(cfg: AppConfig): boolean {
-  return cfg.features?.parallelRoomJobs === true;
-}
-
 export const DEFAULT_CAPTURE_QUIET_MS = 2 * 60_000;
 export const DEFAULT_TIDY_HOUR = 3;
 
@@ -971,7 +955,6 @@ export function claudeUserMcpEnabled(cfg: AppConfig): boolean {
 export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
   return cfg.features?.llmThreadTitles === true;
 }
-
 
 /** Opt-in shared skills library (skills lane S1): one store at the data dir
  * that bots reference by assignment instead of per-workspace copies. Off

@@ -18,7 +18,7 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
 }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
 
-const { RoomQueueList } = await import("./GroupView");
+const { RoomQueueList } = await import("./RoomQueueList");
 
 const members = [
   { id: "first", name: "First", color: "blue" },

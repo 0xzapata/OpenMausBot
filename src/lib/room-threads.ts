@@ -60,3 +60,18 @@ export function roomQueueLabel(entry: RoomQueueEntry, nameOf: (botId: string) =>
     ? t("room.queue.waitingFor", { name, position: entry.position, of: entry.of })
     : t("room.queue.waiting", { position: entry.position, of: entry.of });
 }
+
+/** A room row's preview while anyone works or waits in it: the open
+ * thread's speaker first, else one working in another thread, with the
+ * members waiting their turn counted ("First is working… · 2 queued"), so
+ * a room of five jobs does not read as one bot working alone. */
+export function roomWorkingPreview(group: RoomThreads & Pick<Group, "queue">, nameOf: (botId: string) => string | undefined): string | undefined {
+  const speakerId = group.busyBotId ?? roomSpeakerIds(group)[0];
+  const queued = (group.queue ?? []).filter((entry) => entry.state === "queued");
+  if (speakerId) {
+    const name = nameOf(speakerId) ?? t("sidebar.preview.aBot");
+    return queued.length ? t("sidebar.preview.botWorkingQueued", { name, count: queued.length }) : t("sidebar.preview.botWorking", { name });
+  }
+  if (queued[0]) return t("room.queue.member", { name: nameOf(queued[0].botId) ?? t("sidebar.preview.aBot"), status: roomQueueLabel(queued[0], nameOf) });
+  return undefined;
+}
