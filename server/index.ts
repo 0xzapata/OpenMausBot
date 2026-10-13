@@ -21,6 +21,7 @@ import { draftSummary, foldPoint } from "./compaction-summary.ts";
 import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker } from "./room-context.ts";
+import { sessionIdlePolicy } from "./drivers/session-idle.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -5005,7 +5006,16 @@ type GroupTurnOperation = {
 const groupTurnOperations = new Map<string, Set<GroupTurnOperation>>();
 const groupSpeakers = new Map<string, { botId: string; name: string; color: string; since?: number }>();
 /** Each bot's context in each room, and its "Compact now" (room-context.ts). */
-const roomMemberContexts = new RoomContextTracker();
+const roomMemberContexts = new RoomContextTracker({
+  // A reading lasts as long as its warm process can: the longest pooled idle
+  // close, or the room's keep-warm hold.
+  idleMs: Math.max(sessionIdlePolicy("CLAUDE").idleMs, sessionIdlePolicy("ACP").idleMs),
+  heldUntil: (threadId) => cacheKeepWarmStatus(threadId)?.until,
+  expired: (threadId) => {
+    const group = store.groupByThread(threadId);
+    if (group) broadcast({ kind: "group", group: publicGroupState(group) });
+  },
+});
 /** A room's threads run in parallel, but each member works one thread at a
  * time: the thread a waiting member was handed to holds it until that
  * member's turn has marked the bot busy (room-member-lock.ts). */
@@ -14672,6 +14682,9 @@ async function runClaimedGroupMemberTurn(
     // asked to compact) starts this turn on a fresh provider session; the
     // room's recent transcript below is what every turn carries anyway.
     const roomReset = roomMemberContexts.takeReset(threadId, readyBot.id, cfg.context);
+    // This turn takes the thread's warm process on its engine, so another
+    // member's process there closes, and its reading with it.
+    const displaced = roomMemberContexts.dispatched(threadId, readyBot.id, instance.instanceId);
     if (roomReset) {
       store.appendMessage(threadId, {
         role: "bot", kind: "activity", from: { botId: readyBot.id, name: readyBot.name, color: readyBot.color },
@@ -14679,8 +14692,8 @@ async function runClaimedGroupMemberTurn(
           ? `compacted ${readyBot.name}'s context (${roomReset.percent}% full): fresh session with the room's recent messages`
           : `${readyBot.name}'s context was ${roomReset.percent}% full: compacted to a fresh session with the room's recent messages`, ok: true },
       });
-      broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
     }
+    if (roomReset || displaced) broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
     guardTurnDispatch(instance.adapter.sendTurn({
         ...(roomReset ? { sessionReset: true } : {}),
         threadId,
