@@ -1,7 +1,7 @@
 // The guard index.ts built once per request for every bot route that takes
 // a threadId: the store once, then who is asking and the request's headers
-// per request. One copy, shared by index.ts's remaining inline bot routes
-// and the bot route modules (bot-messages.ts).
+// per request. One copy, shared by the bot route modules (bot-settings.ts,
+// bot-patch.ts, bot-messages.ts).
 import type { IncomingMessage } from "node:http";
 
 import type { RequestAuth } from "../request-auth.ts";
