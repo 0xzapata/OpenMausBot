@@ -61,21 +61,16 @@ import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin,
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
 import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
-import { updateClaudeCli } from "./claude-update.ts";
-import { configuredAccountDirectory, assertSeparateClaudeAccount, claudeAccountInfo, createClaudeAccountSchema, instanceSettingsSchema, newClaudeAccount } from "./claude-accounts.ts";
-import { providerIconPatchSchema, withInstanceIcon } from "./provider-icon.ts";
-import { providerIconError } from "../shared/provider-icon.ts";
+import { claudeAccountInfo } from "./claude-accounts.ts";
 import {
   BrowserCleanupCoordinator,
-  finalizeBrowserCleanupMutation,
   requireBrowserCleanupAcknowledged,
-  type BrowserCleanupRequest,
   type BrowserCleanupWireRequest,
 } from "./browser-lifecycle-cleanup.ts";
 import * as checkpoints from "./checkpoints.ts";
 import { commandReceipt } from "./commands.ts";
 import { buildTurnDigest, coverageForDriver, digestPromptLine, renderDigest, toolEvidence } from "./digest.ts";
-import { appendDecision, bindDecisionRetention, boundRetentionDays, decisionRetentionDays, decisionsCsv, flushDecisionLog, pruneDecisions, readDecisionRange, readDecisions, withDecisionActor, type DecisionActor } from "./decision-log.ts";
+import { appendDecision, bindDecisionRetention, decisionRetentionDays, flushDecisionLog, pruneDecisions, withDecisionActor, type DecisionActor } from "./decision-log.ts";
 import { validateBotCwd } from "./bot-cwd.ts";
 import {
   ATTACHMENTS_DIR,
@@ -129,18 +124,16 @@ import { DATA_INTERNAL_MCP_PATH, dataRpc } from "./data/rpc.ts";
 import { createDataRoutes } from "./data/routes.ts";
 import { DataSheetRegistry } from "./data/sheet.ts";
 import { DataFailure } from "./data/types.ts";
-import { TeamComputers, teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
+import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
 import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
-import { boatCreateRecoverySnapshot, retireDeletedBoatCreate } from "./boat-create-idempotency.ts";
+import { boatCreateRecoverySnapshot } from "./boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "./boat-delete-journal.ts";
 import { liveCardKind, liveDecisionRefusal } from "../shared/live-approval.ts";
 import {
-  boatAccountResourceChangeError,
   cloudBackendChangeError,
-  vpsAliasResourceChangeError,
 } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
 import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
@@ -156,10 +149,8 @@ import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts"
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
 import {
   containerComputerAction,
-  containerComputerExists,
   containerComputerFrame,
   containerComputerMcp,
-  containerComputerScreenshot,
   containerComputerStatus,
   containerExec,
   containerRuntimeStatus,
@@ -184,7 +175,6 @@ import {
   localVmIdleTimeoutMinutes,
   localVmMaxInstances,
   localVmMode,
-  parseConfigPatch,
   roomTurnTimeoutMinutes,
   mcpCallTimeoutMinutes,
   cacheKeepWarmSettings,
@@ -205,41 +195,33 @@ import {
   sharedComputersEnabled,
   builtInBrowserEnabled,
   llmThreadTitlesEnabled,
-  browserProfileReplacementConflict,
   browserProfilePartitionTarget,
-  syncCredentialEnv,
   stripWorkspaceCredentialEnv,
   PROVIDER_CREDENTIAL_ENV,
-  withInstanceCli,
   persistableInstanceConfigs,
   type AppConfig,
   vpsSshAlias,
   browserEngineAttachCdpUrl,
   DATA_DIR,
   skillsLibraryEnabled,
-  EVENTS_DIR,
-  NATIVE_DIR,
   customMcpServers,
   onConfigSaved,
   CLAUDE_API_INSTANCE,
   liveSettingsFor,
-  mergeOpenCodeProviderKeys,
   openCodeProviderKeys,
 } from "./config.ts";
 import { sweepThreadEventLogs, type ThreadLogRetentionCandidate } from "./thread-retention.ts";
 import { ComputerControl } from "./computer-control.ts";
-import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
+import { augmentedPath, resetPathCache } from "./env-path.ts";
 import { registerEnginesBinDir } from "./engine-install.ts";
-import { appendUsage, parseUsageRange, flushUsageLedger, type UsageRow, type UsageTrigger } from "./usage-ledger.ts";
-import { loadPlanUsage, planAccountsFromInstances } from "./plan-usage.ts";
+import { appendUsage, flushUsageLedger, type UsageRow, type UsageTrigger } from "./usage-ledger.ts";
 import { GroupUsageReader } from "./group-thread-usage.ts";
 import { ledgerCost } from "./model-prices.ts";
 import type { PriceList } from "./prices.ts";
 import type { RequestAuth } from "./request-auth.ts";
-import { checkProviderKey, PROVIDER_KEY_KINDS, providerBaseUrl, type ProviderKeyKind } from "./provider-key-check.ts";
-import { forgetKey, noteKeyAccepted, noteKeyRejected, onKeyRejectionChange } from "./key-rejections.ts";
+import { onKeyRejectionChange } from "./key-rejections.ts";
 import { assertWithinBudget, noteSpend, spendAlertText, spendState, takeSpendAlert } from "./spend.ts";
-import { fleetAvailable, fleetRequest, fleetSocketPath } from "./fleet-client.ts";
+import { fleetAvailable, fleetSocketPath } from "./fleet-client.ts";
 import { entitled } from "./enterprise.ts";
 import { HOSTED_CONTRACT_HEADER, HOSTED_CONTRACT_METADATA, HOSTED_CONTRACT_VERSION } from "./hosted-contract.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
@@ -263,12 +245,9 @@ import {
   isRemoteMcpServer,
   listMcpServers,
   mcpServerNameError,
-  parseMcpServerMutation,
-  parseMcpServersImport,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
-import { MCP_OAUTH_CALLBACK_PATH, McpOAuthError, McpSignInError, McpOAuthManager, mcpCallbackOrigin, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
-import { probeMcpServer } from "./mcp-probe.ts";
+import { MCP_OAUTH_CALLBACK_PATH, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
   groupGoalAssignmentKey,
@@ -335,7 +314,7 @@ import { ProviderRegistry } from "./harness/registry.ts";
 import { ManagedDesktopProviders } from "./managed-desktop.ts";
 import { mainThread, wasOldestThread } from "./main-thread.ts";
 import { computerKindForResource, ManagedDesktopPolicy, type ComputerKind } from "./managed-policy.ts";
-import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER, HOSTED_PROVIDER_SETTINGS_ERROR } from "./hosted-models.ts";
+import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER } from "./hosted-models.ts";
 import {
   CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_PATH, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal,
   createCloudPairing, firstCloudTurnPatch, readSignedBody,
@@ -371,7 +350,7 @@ import {
   toWireTask,
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
-import { createDecider, deciderIncludedHere, deciderReady, deciderSavePatch, describeDecider } from "./decider/index.ts";
+import { createDecider, deciderReady, describeDecider } from "./decider/index.ts";
 import { decideRoomResponder, type RoomRoutingInput } from "./decider/room-routing.ts";
 import { createLiveSession, liveAttachUrl, liveHistoryFrom, LiveSessionError, type LiveBot, type LiveHistoryMessage } from "./live-call.ts";
 import { LiveCallController, LiveCallSignedOutError, type LiveSocket } from "./live-call-controller.ts";
@@ -502,9 +481,6 @@ import {
   prepareBrowserSessionState,
   clearBrowserSessionState,
   closeBrowserSession,
-  ensureChrome,
-  installAgentBrowserBinary,
-  resolveAgentBrowserBinary,
   browserEngineStatus,
   browserSessionId,
   describeBrowserEngine,
@@ -528,9 +504,8 @@ import { scoutProject, suggestTeam } from "./project-scout.ts";
 import { fetchGithubTeam, fetchLibraryTeam, fetchTeamCatalog } from "./team-library.ts";
 import { BOT_PACKAGE_MAX_SKILLS, isBotPackage, packageSummary, parsePackageDocument, renderBotPackageMarkdown, type PackageDocument } from "./bot-package.ts";
 import { createTeamManifest, parseTeamManifest } from "./team-manifest.ts";
-import { readThreadEvents } from "./thread-events.ts";
 import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
-import { describeTool, readBotActivity } from "./activity.ts";
+import { describeTool } from "./activity.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
 import { OutboundRequestService } from "./outbound-requests.ts";
 import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, normalizeOutboundPolicy, outboundCallsIn } from "../shared/outbound.ts";
@@ -584,7 +559,7 @@ import {
 } from "./turn-dispatch-guard.ts";
 import { createGracefulShutdown } from "./graceful-shutdown.ts";
 import { acquireDataDirLeaseForProcess } from "./data-dir-lease.ts";
-import { createWorkspaceAccess, describeEdition, editionStatus, hostedWorkspaceConfiguration, hostedWorkspaceConfigured, editionForMembers, LICENSE_WARN_DAYS, licenseWarning, sharedWorkspaceFullAccessConfigured, loadEnterpriseLayer, workspaceMembership, type EditionStatus, type WorkspaceAccess } from "./enterprise.ts";
+import { createWorkspaceAccess, describeEdition, editionStatus, hostedWorkspaceConfiguration, hostedWorkspaceConfigured, LICENSE_WARN_DAYS, licenseWarning, sharedWorkspaceFullAccessConfigured, loadEnterpriseLayer, workspaceMembership, type EditionStatus, type WorkspaceAccess } from "./enterprise.ts";
 import { environmentDescriptor, loadEnvironmentId, serverVersion } from "./environment.ts";
 import { WorkspaceBackupMaintenance } from "./workspace-backup-maintenance.ts";
 import { createWorkspaceBackupRoutes, isWorkspaceBackupSessionControl } from "./workspace-backup-http.ts";
@@ -599,7 +574,6 @@ import {
   isLoopbackHost,
   isProxied,
   labelFromUserAgent,
-  provesSameOrigin,
   requestOrigin,
   requestSource,
   requiredScope,
@@ -612,16 +586,12 @@ import {
 import { cookieMaxAgeSeconds, formatPairingCode, SessionRegistry, type Scope, type SessionRecord } from "./sessions.ts";
 import { ThreadStarters } from "./thread-starters.ts";
 import {
-  activityCsv,
-  activityEntries,
   appendAdminAction,
   botAuditSnapshot,
   botChangeRows,
   configChangeRows,
-  parseActivityWhat,
   flushAdminActivity,
   pruneAdminActivity,
-  readAdminActivityRange,
   sharedSignIn,
   signInListsOf,
   type AdminActionRow,
@@ -677,6 +647,11 @@ import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.t
 import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./desktop-viewer-targets.ts";
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
 import { createAntigravityAccountRoutes } from "./routes/antigravity-accounts.ts";
+import { createConfigRoutes } from "./routes/config.ts";
+import { createInstanceRoutes } from "./routes/instances.ts";
+import { createMcpServerRoutes } from "./routes/mcp-servers.ts";
+import { createComputerRoutes } from "./routes/computers.ts";
+import { createStatusRoutes } from "./routes/status.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
 import { createUsageRoutes } from "./routes/usage.ts";
@@ -17371,11 +17346,6 @@ async function reloadProviders(before: Record<string, unknown>) {
 let providerConfigBusy = false;
 const providerInstancesChanging = new Set<string>();
 let mcpConfigBusy = false;
-const MAX_CONCURRENT_MCP_PROBES = 2;
-let mcpProbesInFlight = 0;
-// One updater per executable: multiple Claude instances can point at the same
-// install, and running two self-updates against it would race its files.
-const claudeUpdatesInFlight = new Set<string>();
 
 // ── HTTP plumbing ─────────────────────────────────────────────────────
 /** The web UI's pages: never framed by another page (a hidden frame could
@@ -17617,6 +17587,55 @@ ROUTES.push(createAntigravityAccountRoutes({
     providerConfigBusy = true;
     return work().finally(() => { providerConfigBusy = false; });
   },
+}));
+// The app settings: the same provider-settings lock as the account routes, and the Local VM flags, as live views.
+ROUTES.push(createConfigRoutes({
+  store, cfg, registry, sessions, browserCleanup, browserLive, browserRuntime, usedBrowserSessions, decider,
+  sharedComputers, sharedComputerControl,
+  hostedModels: Boolean(hostedModels),
+  cloudHome: Boolean(CLOUD_HOME),
+  lendingEnabled, providerConfigs, localVmIdleMs, localVmIdles, localVmActiveThreads, localVmLifecycleBusy,
+  localVmImageBusy: { get: () => localVmImageBusy },
+  localVmModeChangeBusy: { set: (busy) => { localVmModeChangeBusy = busy; } },
+  providerConfigBusy: { get: () => providerConfigBusy, set: (busy) => { providerConfigBusy = busy; } },
+  computerProviderConfigTransitions, managedBoatOwners, providerOperationConflict, perBotLocalVmCountForModeChange,
+  checkedModelSelection, policyModelRefusal, browserSessionSpec, configStatus, configForAccess,
+  resyncOpenCodeProviderKeys, revokeEngineCapabilities, reloadProviders, broadcast, drainQueuedSends,
+}));
+ROUTES.push(createInstanceRoutes({
+  store, cfg, registry, sessions, providerAuthSessions,
+  hostedModels: Boolean(hostedModels),
+  providerConfigBusy: { get: () => providerConfigBusy, set: (busy) => { providerConfigBusy = busy; } },
+  providerInstancesChanging, describeInstances, persistProviderInstance, configStatus, broadcast, testCliBinary,
+  cliProbeEnvironment, threadBusy, botForThread, activeGroupTurnForBot,
+}));
+ROUTES.push(createMcpServerRoutes({
+  cfg, sessions, mcpOAuth,
+  cloudHome: CLOUD_HOME,
+  fallbackPublicUrl: FALLBACK_PUBLIC_URL,
+  mcpConfigBusy: { get: () => mcpConfigBusy, set: (busy) => { mcpConfigBusy = busy; } },
+  mcpServerResponse, mcpServerBody, mcpPolicyRefusal, persistMcpServers, savedCustomDomain,
+}));
+ROUTES.push(createComputerRoutes({
+  store, cfg, sessions, teamComputers, computerControl,
+  routines: () => routines,
+  controlLeaseIdSchema, boatLifecycleBusyBots, computerProviderConfigTransitions, localVmActiveThreads,
+  localVmLifecycleBusy, localVmSeen,
+  localVmImageBusy: { get: () => localVmImageBusy, set: (busy) => { localVmImageBusy = busy; } },
+  localVmProvisionBusy: { get: () => localVmProvisionBusy, set: (busy) => { localVmProvisionBusy = busy; } },
+  localVmModeChangeBusy: { get: () => localVmModeChangeBusy },
+  localVmOwnerBusy, localVmIdleMs, localVmLeaseFor, localVmIdleFor, localVmTargetForBot, localVmTargetForStatus,
+  localVmPayload, localVmInventoryPayload, existingPerBotLocalVmCount, teamComputersPayload, teamComputerInUse,
+  managedBoatOwners, providerTransitionMessage, botHasActiveTurn, botComputerControlKey, botComputerControlSnapshot,
+  computerPreviewBot, computerPreviewSurface, claimTeamComputerLifecycle, claimBotComputerLifecycle,
+  claimBoatInventoryRequest, claimManagedBoatMutation, claimManagedVpsMutation,
+}));
+ROUTES.push(createStatusRoutes({
+  store, cfg, outboundCounts,
+  staticDir: STATIC_DIR,
+  sharedWorkspaceFullAccessEnabled, adminActivityRecording, configStatus, broadcast,
+  browserEngineInstall: { get: () => browserEngineInstall, set: (install) => { browserEngineInstall = install; } },
+  browserEngineInstallError: { set: (error) => { browserEngineInstallError = error; } },
 }));
 
 ROUTES.push(desktopViewer.route);
@@ -24808,1678 +24827,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 200, { task: wireTask(task, store.bot(m[1])!.modelSelection) });
       } finally {
         titleRegenerations.delete(m[2]);
-      }
-    }
-
-    // Named team Boats use real independent ownership, never a hidden bot or
-    // an arbitrary provider id. These new routes remain admin-only by default.
-    if (path === "/api/team-computers" && method === "GET") {
-      res.setHeader("cache-control", "private, no-store");
-      return json(res, 200, await teamComputersPayload());
-    }
-    m = path.match(/^\/api\/team-computers(?:\/([\w-]+)(?:\/(provision|join|sleep|control))?)?$/);
-    if (m) {
-      const computerId = m[1];
-      const action = m[2];
-      let found = computerId ? teamComputers.get(computerId) : undefined;
-      if (computerId && !found) return json(res, 404, { error: "No such team computer" });
-      if (method === "GET" && action === "control" && found) {
-        return json(res, 200, computerControl.snapshot(teamComputerOwner(found.id)));
-      }
-      // A GET carries no body, so the content-type gate below can only
-      // mislead: the control snapshot is the sole GET on this subtree.
-      if (method === "GET" && action !== "control") {
-        return json(res, 404, { error: "unknown team computer action" });
-      }
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) return json(res, 415, { error: "content-type must be application/json" });
-      const body = await readBody(req);
-      found = computerId ? teamComputers.get(computerId) : undefined;
-      const assertCurrentOwner = () => {
-        if (auth.kind === "session" && !sessions.isLive(auth.session.id)) throw Object.assign(new Error("Your session ended; sign in again"), { status: 401 });
-        if (computerProviderConfigTransitions.has("box")) throw Object.assign(new Error(providerTransitionMessage("box")), { status: 409 });
-      };
-      assertCurrentOwner();
-      if (action === "control" && method === "POST" && found) {
-        const parsed = z.object({ action: z.enum(["take", "release"]), controlLeaseId: controlLeaseIdSchema.optional() }).strict().safeParse(body);
-        if (!parsed.success) return json(res, 400, { error: "Choose take or release with a valid optional controlLeaseId" });
-        const key = teamComputerOwner(found.id);
-        if (parsed.data.action === "take" && boatLifecycleBusyBots.has(key)) return json(res, 409, { error: "Wait for this computer's action to finish before taking control" });
-        if (parsed.data.controlLeaseId) {
-          const result = parsed.data.action === "take"
-            ? computerControl.acquireLease(key, parsed.data.controlLeaseId)
-            : computerControl.releaseLease(key, parsed.data.controlLeaseId);
-          return json(res, 200, { ...result.snapshot, ...result });
-        }
-        return json(res, 200, parsed.data.action === "take" ? computerControl.take(key) : computerControl.release(key));
-      }
-      if (method === "PATCH" && found && !action) {
-        const parsed = teamComputerAssignment.safeParse(body);
-        if (!parsed.success) return json(res, 400, { error: "Confirm shared desktop access with section and acknowledgeSharedAccess: true" });
-        const section = parsed.data.section;
-        const checkAssignment = () => {
-          assertCurrentOwner();
-          if (section !== null && section !== "" && !store.sections.includes(section)) throw Object.assign(new Error("Create the team before assigning a computer"), { status: 404 });
-          if (section !== null && store.bots.some(bot => sectionKey(bot.section) === section && (
-            botHasActiveTurn(bot.id) || routines?.activeRunForBot(bot.id) || botComputerControlSnapshot(bot.id).held || boatLifecycleBusyBots.has(bot.id)
-          ))) throw Object.assign(new Error("Stop the target team's work and release computer control before assigning this computer"), { status: 409 });
-        };
-        checkAssignment();
-        const release = claimTeamComputerLifecycle(found);
-        try {
-          if (section !== null && !(await boat.findBoat(cfg, teamComputerOwner(found.id)))) return json(res, 409, { error: "Create or retry this computer before assigning it to a team" });
-          checkAssignment();
-          if (teamComputerInUse(found)) return json(res, 409, { error: "This team computer became busy; stop its work before assigning it" });
-          teamComputers.assign(found.id, section);
-          return json(res, 200, { ok: true });
-        } finally { release(); }
-      }
-      if (method === "POST" && !computerId) {
-        const parsed = teamComputerCreate.safeParse(body);
-        if (!parsed.success) return json(res, 400, { error: "Provide requestId (UUID), a name, and acknowledgeCost: true to create a paid cloud computer" });
-        if (!boat.boatConfigured(cfg)) return json(res, 409, { error: "Configure Boat in Settings before creating a cloud computer" });
-        const computer = teamComputers.create(parsed.data.name, parsed.data.requestId);
-        const release = claimTeamComputerLifecycle(computer);
-        try {
-          await boat.provisionBoat(cfg, teamComputerOwner(computer.id), computer.name);
-          teamComputers.setProblem(computer.id);
-          return json(res, 201, { id: computer.id });
-        } catch (error) {
-          teamComputers.setProblem(computer.id, redactSecretsInText(error instanceof Error ? error.message : String(error)));
-          throw error;
-        } finally { release(); }
-      }
-      if (method === "POST" && found && action && action !== "control") {
-        if (action === "provision" && body?.acknowledgeCost !== true) return json(res, 400, { error: "Confirm cloud computer creation or wake costs with acknowledgeCost: true" });
-        // A ready-only join never wakes, provisions or steals an agent's turn.
-        // The caller takes a separate explicit human-control lease first.
-        if (action === "join") {
-          const key = teamComputerOwner(found.id);
-          if (boatLifecycleBusyBots.has(key)) return json(res, 409, { error: "Wait for this computer's action to finish" });
-          if (!computerControl.snapshot(key).held) return json(res, 409, { error: "Take control before opening this shared desktop" });
-          const release = claimBotComputerLifecycle(key);
-          try { return json(res, 200, await boat.joinReadyBoat(cfg, key)); }
-          finally { release(); }
-        }
-        const release = claimTeamComputerLifecycle(found);
-        try {
-          const result = action === "provision"
-            ? await boat.provisionBoat(cfg, teamComputerOwner(found.id), found.name)
-            : await boat.sleepBoat(cfg, teamComputerOwner(found.id));
-          teamComputers.setProblem(found.id);
-          return json(res, 200, result);
-        } catch (error) {
-          teamComputers.setProblem(found.id, redactSecretsInText(error instanceof Error ? error.message : String(error)));
-          throw error;
-        } finally { release(); }
-      }
-      return json(res, 405, { error: "method not allowed" });
-    }
-
-    // Account-wide Boat inventory is a Settings surface, never a provisioning
-    // path. Listing remains read-only; lifecycle changes require explicit
-    // JSON actions and are revalidated against a fresh provider listing.
-    // The REST path keeps its historical /boxes segment.
-    if (method === "GET" && path === "/api/computers/boxes") {
-      res.setHeader("cache-control", "private, no-store");
-      return json(res, 200, await boat.listManagedBoats(cfg, managedBoatOwners()));
-    }
-    m = path.match(/^\/api\/computers\/boxes\/([\w-]+)\/(sleep|delete)$/);
-    if (m && method === "POST") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const body = await readBody(req);
-      if (computerProviderConfigTransitions.has("box")) {
-        return json(res, 409, { error: providerTransitionMessage("box") });
-      }
-      const releaseInventoryRequest = claimBoatInventoryRequest(m[1]);
-      try {
-        const owners = managedBoatOwners();
-        if (m[2] === "sleep") {
-          return json(res, 200, await boat.sleepManagedBoat(cfg, owners, m[1], claimManagedBoatMutation));
-        }
-        if (typeof body?.confirmName !== "string" || body.confirmName.length > 100) {
-          return json(res, 400, { error: "confirmName must be the cloud computer name shown in Settings" });
-        }
-        return json(res, 202, await boat.deleteManagedBoat(
-          cfg,
-          owners,
-          m[1],
-          body.confirmName,
-          claimManagedBoatMutation,
-        ));
-      } finally {
-        releaseInventoryRequest();
-      }
-    }
-    if (method === "GET" && path === "/api/computers/vps") {
-      res.setHeader("cache-control", "private, no-store");
-      return json(res, 200, await vps.listManagedVpsComputers(cfg, managedBoatOwners()));
-    }
-    m = path.match(/^\/api\/computers\/vps\/([\w-]+)\/remove$/);
-    if (m && method === "POST") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const body = await readBody(req);
-      if (computerProviderConfigTransitions.has("vps")) {
-        return json(res, 409, { error: providerTransitionMessage("vps") });
-      }
-      if (typeof body?.confirmName !== "string" || body.confirmName.length > 100) {
-        return json(res, 400, { error: "confirmName must be the VPS computer name shown in Settings" });
-      }
-      const releaseComputerLifecycle = claimManagedVpsMutation(m[1]);
-      try {
-        return json(res, 200, await vps.removeManagedVpsComputer(
-          cfg,
-          managedBoatOwners(),
-          m[1],
-          body.confirmName,
-        ));
-      } finally {
-        releaseComputerLifecycle();
-      }
-    }
-
-    // what the user's machine can host: which runtime is installed, whether
-    // its daemon is up, and whether the desktop image and container exist
-    if (method === "GET" && path === "/api/local-computer") {
-      return json(res, 200, await localVmPayload(SHARED_LOCAL_VM_TARGET, auth));
-    }
-    if (method === "GET" && path === "/api/local-computer/instances") {
-      res.setHeader("cache-control", "private, no-store");
-      return json(res, 200, await localVmInventoryPayload());
-    }
-    m = path.match(/^\/api\/local-computer\/(pull|run|start|stop|remove)$/);
-    if (m && method === "POST") {
-      // Requiring JSON makes these localhost lifecycle mutations non-simple
-      // browser requests. A hostile web page cannot submit them with a form,
-      // and its cross-origin JSON request is stopped by the browser preflight
-      // because this server deliberately emits no CORS permission.
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const action = z.enum(["pull", "run", "start", "stop", "remove"]).parse(m[1]);
-      if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(SHARED_LOCAL_VM_TARGET.key)) {
-        return json(res, 409, { error: "another Local VM setup action is still running" });
-      }
-      if (localVmMode(cfg) === "per-bot" && action === "run") {
-        return json(res, 409, { error: "Per-bot mode creates each desktop from that bot's Computer panel" });
-      }
-      if (localVmMode(cfg) === "pool" && action === "run") {
-        return json(res, 409, { error: "Pool mode creates its desktops automatically from conversation turns" });
-      }
-      const vmOwner = localVmLeaseFor(SHARED_LOCAL_VM_TARGET).current(localVmOwnerBusy);
-      if (vmOwner && (action === "stop" || action === "remove" || action === "run")) {
-        return json(res, 409, { error: "the Local VM is being used by a bot — stop that turn first" });
-      }
-      // A lease can lapse under a long, quiet turn whose thread still holds
-      // the desktop, so stop/remove must also refuse while the thread
-      // registry or a setup action pins it — the same guard bot deletion uses.
-      if ((action === "stop" || action === "remove") && (localVmActiveThreads.has(SHARED_LOCAL_VM_TARGET.key) || localVmLifecycleBusy.has(SHARED_LOCAL_VM_TARGET.key))) {
-        return json(res, 409, { error: localVmActiveThreads.has(SHARED_LOCAL_VM_TARGET.key) ? "the Local VM is being used by a bot — stop that turn first" : "another Local VM setup action is still running" });
-      }
-      if (action === "pull") localVmImageBusy = true;
-      else localVmLifecycleBusy.add(SHARED_LOCAL_VM_TARGET.key);
-      try {
-        const status = await containerComputerAction(action, undefined, undefined, SHARED_LOCAL_VM_TARGET);
-        if (action === "run" || action === "start") {
-          localVmSeen.add(SHARED_LOCAL_VM_TARGET.key);
-          localVmIdleFor(SHARED_LOCAL_VM_TARGET).touch();
-        }
-        if (action === "stop" || action === "remove") localVmIdleFor(SHARED_LOCAL_VM_TARGET).cancel();
-        return json(res, 200, {
-          ...localVmViewerStatus(status, auth),
-          commands: setupCommands(status.runtime, process.platform, SHARED_LOCAL_VM_TARGET),
-          idle_timeout_ms: localVmIdleMs(),
-          mode: localVmMode(cfg),
-          max_instances: localVmMaxInstances(cfg),
-        });
-      } finally {
-        if (action === "pull") localVmImageBusy = false;
-        else localVmLifecycleBusy.delete(SHARED_LOCAL_VM_TARGET.key);
-      }
-    }
-    if (method === "POST" && path === "/api/local-computer/screenshot") {
-      localVmIdleFor(SHARED_LOCAL_VM_TARGET).touch();
-      res.setHeader("cache-control", "private, no-store");
-      return json(res, 200, {
-        image: await containerComputerScreenshot(undefined, undefined, SHARED_LOCAL_VM_TARGET),
-      });
-    }
-
-    m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer$/);
-    if (m && method === "GET") {
-      const bot = computerPreviewBot(m[1], url);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      return json(res, 200, await localVmPayload(localVmTargetForStatus(bot.id, bot.threadId), auth));
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/(run|start|stop|remove)$/);
-    if (m && method === "POST") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      if (boatLifecycleBusyBots.has(bot.id)) {
-        return json(res, 409, { error: "this bot's computer is being changed or deleted — wait for it to finish" });
-      }
-      const action = z.enum(["run", "start", "stop", "remove"]).parse(m[2]);
-      const target = localVmTargetForBot(bot.id);
-      if (target.key === SHARED_LOCAL_VM_TARGET.key) {
-        return json(res, 409, { error: "Shared mode manages this desktop in App Settings → Computers" });
-      }
-      if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(target.key)) {
-        return json(res, 409, { error: "this bot's Local VM setup action is still running" });
-      }
-      if (action === "run" && localVmProvisionBusy) {
-        return json(res, 409, { error: "another per-bot Local VM is being created — retry after it finishes" });
-      }
-      const vmOwner = localVmLeaseFor(target).current(localVmOwnerBusy);
-      if (vmOwner) return json(res, 409, { error: "this bot is using its Local VM — stop the turn first" });
-      // Mirrors the shared-target guard above: the lease alone can miss a
-      // long, quiet turn, and a setup action must not be torn down mid-call.
-      if ((action === "stop" || action === "remove") && (localVmActiveThreads.has(target.key) || localVmLifecycleBusy.has(target.key))) {
-        return json(res, 409, { error: localVmActiveThreads.has(target.key) ? "this bot is using its Local VM — stop the turn first" : "this bot's Local VM setup action is still running" });
-      }
-      // Fence this target, and the cross-target capacity decision for creates,
-      // before the first await so two requests cannot both pass the limit.
-      localVmLifecycleBusy.add(target.key);
-      if (action === "run") localVmProvisionBusy = true;
-      try {
-        if (action === "run") {
-          const before = await containerComputerStatus(undefined, undefined, target);
-          if (!before.runtime) return json(res, 409, { error: before.problem ?? "No container runtime is installed" });
-          if (!(await containerComputerExists(before.runtime, target))) {
-            const count = await existingPerBotLocalVmCount(before.runtime);
-            if (count >= localVmMaxInstances(cfg)) {
-              return json(res, 409, {
-                error: `The per-bot Local VM limit is ${localVmMaxInstances(cfg)} — delete an unused bot VM or raise the limit in App Settings`,
-              });
-            }
-          }
-        }
-        const status = await containerComputerAction(action, undefined, undefined, target);
-        if (action === "run" || action === "start") {
-          localVmSeen.add(target.key);
-          localVmIdleFor(target).touch();
-        }
-        if (action === "stop" || action === "remove") localVmIdleFor(target).cancel();
-        return json(res, 200, {
-          ...localVmViewerStatus(status, auth),
-          commands: setupCommands(status.runtime, process.platform, target),
-          idle_timeout_ms: localVmIdleMs(),
-          mode: localVmMode(cfg),
-          max_instances: localVmMaxInstances(cfg),
-        });
-      } finally {
-        if (action === "run") localVmProvisionBusy = false;
-        localVmLifecycleBusy.delete(target.key);
-      }
-    }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/screenshot$/);
-    if (m && method === "POST") {
-      const bot = computerPreviewBot(m[1], url);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      if (url.searchParams.has("threadId") && await computerPreviewSurface(bot, bot.threadId) !== "vm") {
-        return json(res, 409, { error: "This conversation is not using the Local VM" });
-      }
-      const target = localVmTargetForStatus(bot.id, url.searchParams.has("threadId") ? bot.threadId : undefined);
-      localVmIdleFor(target).touch();
-      res.setHeader("cache-control", "private, no-store");
-      return json(res, 200, {
-        image: await containerComputerScreenshot(undefined, undefined, target),
-      });
-    }
-    // The Local VM's live desktop for a phone, granted only to the control
-    // lease that holds this bot's computer right now. Two callers:
-    //
-    // The companion sidecar (a loopback caller) gets the VM's own noVNC
-    // address, VNC password included, relays it to a paired phone the owner
-    // has allowed computer access, keeps re-checking the lease with
-    // `action: "check"`, and cuts the relay when it no longer holds.
-    //
-    // A phone paired with this server directly (`openmausbot serve`, no
-    // sidecar) never sees that address. It gets this server's own
-    // authenticated desktop proxy, bound to its lease: the proxy re-checks
-    // the lease and the session every few seconds and closes the socket when
-    // either lapses. Reaching here at all took the admin scope, which a
-    // chat-only pairing (`openmausbot pair --client`) does not have, so
-    // computer access is the same explicit choice the owner's browser makes.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/join$/);
-    if (m && method === "POST") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const bot = computerPreviewBot(m[1], url);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      const threadId = url.searchParams.has("threadId") ? bot.threadId : undefined;
-      if (threadId && await computerPreviewSurface(bot, threadId) !== "vm") {
-        return json(res, 409, { error: "This conversation is not using the Local VM" });
-      }
-      // A bot's human-control hold does not reserve a shared desktop or pool
-      // seat. Another bot could drive it while the phone is holding this bot.
-      if (localVmMode(cfg) !== "per-bot") {
-        return json(res, 409, { error: "Phone control requires a per-bot Local VM. Select per-bot mode in Settings → Computers." });
-      }
-      const lease = controlLeaseIdSchema.safeParse(url.searchParams.get("controlLeaseId") ?? undefined);
-      if (!lease.success) return json(res, 400, { error: "controlLeaseId is required" });
-      const controlBot = store.bot(bot.id);
-      if (!controlBot || !computerControl.ownsLease(botComputerControlKey(controlBot), lease.data)) {
-        return json(res, 409, { error: "Take control of this computer first" });
-      }
-      const target = localVmTargetForStatus(bot.id, threadId);
-      const status = await containerComputerStatus(undefined, undefined, target);
-      if (!status.ready || !status.managed || status.container !== "running" || status.network !== "loopback"
-        || !status.viewer_url) {
-        return json(res, 409, { error: status.problem ?? "The Local VM is not ready" });
-      }
-      localVmIdleFor(target).touch();
-      res.setHeader("cache-control", "private, no-store");
-      if (auth.kind === "loopback") return json(res, 200, { joinUrl: status.viewer_url });
-      const socket = new URLSearchParams({ botId: bot.id, ...(threadId ? { threadId } : {}), controlLeaseId: lease.data });
-      return json(res, 200, {
-        socketPath: `api/desktop-viewer/${viewerTargetId(target)}/websockify?${socket}`,
-        password: new URLSearchParams(new URL(status.viewer_url).hash.slice(1)).get("password"),
-      });
-    }
-
-    // identity handshake for the packaged app's port fallback: the forked
-    // child proves it is OURS by echoing its pid (a stray dev server has
-    // the same API shape but a different pid)
-    if (method === "GET" && path === "/api/health") {
-      return json(res, 200, { app: "openmausbot", pid: process.pid, static: Boolean(STATIC_DIR), capabilities: {
-        guardedMessages: 1, guardedRequests: 1, guardedFullAccess: 1, guardedOnBehalfOf: 1,
-        ...(sharedWorkspaceFullAccessEnabled() ? { sharedWorkspaceFullAccess: 1 } : {}),
-      } });
-    }
-    // The bots' browser engine: install it on this machine (agent-browser +
-    // a Chrome for Testing, a one-time download), or ask how that is going.
-    // One install at a time; the config frame's browserEngine tells the rest.
-    // JSON only, so a form posted from another local page cannot start it.
-    if (method === "POST" && path === "/api/browser-engine/install") {
-      const mediaType = String(req.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
-      if (mediaType !== "application/json") {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      if (!browserEngineInstall) {
-        const status = browserEngineStatus();
-        if (status.kind === "unavailable" && !status.installable) return json(res, 409, { error: status.reason });
-        browserEngineInstallError = null;
-        browserEngineInstall = (async () => {
-          const binary = resolveAgentBrowserBinary() ?? await installAgentBrowserBinary({ log: (line) => console.log(line) });
-          await ensureChrome(binary, { log: (line) => console.log(line) });
-        })().then(
-          () => { browserEngineInstallError = null; },
-          (error: unknown) => { browserEngineInstallError = error instanceof Error ? error.message : String(error); },
-        ).finally(() => {
-          browserEngineInstall = null;
-          broadcast({ kind: "config", ...configStatus() });
-        });
-        broadcast({ kind: "config", ...configStatus() });
-      }
-      return json(res, 202, { installing: true });
-    }
-    // ── the fleet: client workspaces on this server, through the root agent ──
-    // Admin scope by default plus the `admin` entitlement; the socket's own
-    // permissions decide whether this workspace may drive the agent at all.
-    const fleetRoute = /^\/api\/fleet(?:\/(workspaces(?:\/([a-z0-9-]+)(?:\/(users|suspend|resume))?)?|upgrade))?$/.exec(path);
-    if (fleetRoute) {
-      if (!entitled("admin")) return json(res, 403, { error: "Workspaces need an enterprise licence with the admin feature." });
-      const socket = fleetSocketPath();
-      if (!fleetAvailable(socket)) return json(res, 404, { error: "No fleet agent on this server. Run `openmausbot fleet init --domain … --operator <this user>` as root." });
-      const [, resource, slug, sub] = fleetRoute;
-      let forward: { method: string; path: string; body?: unknown } | null = null;
-      if (method === "GET" && !resource) forward = { method: "GET", path: "/workspaces" };
-      else if (method === "POST" && resource === "workspaces") forward = { method: "POST", path: "/workspaces", body: await readBody(req, 256 * 1024) };
-      else if (method === "POST" && resource === "upgrade") forward = { method: "POST", path: "/upgrade" };
-      else if (slug && method === "POST" && (sub === "users" || sub === "suspend" || sub === "resume")) forward = { method: "POST", path: `/workspaces/${slug}/${sub}`, ...(sub === "users" ? { body: await readBody(req, 8192) } : {}) };
-      else if (slug && method === "DELETE" && !sub) forward = { method: "DELETE", path: `/workspaces/${slug}`, body: await readBody(req, 8192) };
-      if (!forward) return json(res, 405, { error: "no such fleet operation" });
-      res.setHeader("cache-control", "no-store");
-      try {
-        const reply = await fleetRequest(socket, forward.method, forward.path, forward.body);
-        return json(res, reply.status, reply.body ?? {});
-      } catch (error) {
-        return json(res, 502, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-
-    // Which edition this server runs and why (see server/enterprise.ts). Read-only.
-    if (method === "GET" && path === "/api/edition") {
-      // A member learns what is entitled; when the key lapses is for admins.
-      const status = editionStatus();
-      return json(res, 200, auth.scopes.includes("admin") ? status : editionForMembers(status));
-    }
-    // The brand for this deployment (server/brand.ts): read per request so edits show on reload.
-    if (method === "GET" && path === "/api/brand") {
-      return json(res, 200, loadBrand());
-    }
-
-    // ── inspector: a thread's runtime events + native protocol tee ──
-    // Both logs already exist on disk; this only reads them back. Threads
-    // belong to bots or rooms — anything else is not a thread we know.
-    m = path.match(/^\/api\/threads\/([\w-]+)\/events$/);
-    if (m && method === "GET") {
-      const threadId = m[1];
-      const known =
-        store.bots.some((b) => store.tasks(b.id).some((t) => t.threadId === threadId)) ||
-        Boolean(store.groupByThread(threadId));
-      if (!known) return json(res, 404, { error: "no such thread" });
-      const rawLimit = url.searchParams.get("limit");
-      const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
-      if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
-        return json(res, 400, { error: "limit must be a positive whole number" });
-      }
-      const limit = parsedLimit;
-      return json(res, 200, readThreadEvents({ eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR, threadId, limit }));
-    }
-
-    // ── the fleet-wide authorization decision log ──
-    // Read-only like the inspector above: the rows were written at the
-    // request.opened fold and in answerRequest; this only reads them back,
-    // newest last, same order as thread events.
-
-    // Subscription windows (5-hour and weekly), not the token ledger above.
-    // Same admin gate as /api/usage: this route is unlisted, so it stays admin.
-    if (method === "GET" && path === "/api/plan-usage") {
-      res.setHeader("cache-control", "no-store");
-      const report = await loadPlanUsage({
-        accounts: planAccountsFromInstances(instanceConfigs(cfg)),
-        refresh: url.searchParams.get("refresh") === "1",
-      });
-      return json(res, 200, report);
-    }
-
-    // ── provider key check: does a pasted or saved key open the provider's door ──
-    // One read-only request from this server; the verdict never carries the
-    // key. Admin scope by default, like every route not opened to clients.
-    if (method === "POST" && path === "/api/keys/test") {
-      const body = await readBody(req, 8192);
-      const provider = body?.provider;
-      if (!PROVIDER_KEY_KINDS.includes(provider as ProviderKeyKind)) {
-        return json(res, 400, { error: `provider must be one of ${PROVIDER_KEY_KINDS.join(", ")}` });
-      }
-      const kind = provider as ProviderKeyKind;
-      const saved = { anthropic: cfg.anthropic, openai: cfg.openai, openrouter: cfg.openrouter, openaiCompat: cfg.openaiCompat, mistral: cfg.mistral, cerebras: cfg.cerebras, groq: cfg.groq, meta: cfg.meta, xai: cfg.xai }[kind];
-      if (body?.key !== undefined && typeof body.key !== "string") {
-        return json(res, 400, { error: "key must be a string" });
-      }
-      const key = typeof body?.key === "string" ? body.key.trim() : saved?.key?.trim() || "";
-      if (!key) return json(res, 400, { error: "No key to test. Paste one or save one first." });
-      if (key.length > 512) return json(res, 400, { error: "That does not look like an API key." });
-      const url = typeof body?.url === "string" && body.url.trim() ? body.url.trim() : (saved && "url" in saved ? saved.url : undefined);
-      res.setHeader("cache-control", "no-store");
-      const verdict = await checkProviderKey({ provider: kind, key, url });
-      // A Test is a real use the person chose: the engines on this key agree
-      // with its verdict. Claude runs its key through its CLI, not here.
-      if (kind !== "anthropic") {
-        const base = providerBaseUrl(kind, url);
-        if (verdict.ok) noteKeyAccepted(base, key);
-        else if (verdict.reason === "rejected") noteKeyRejected(base, key);
-      }
-      return json(res, 200, verdict);
-    }
-
-    if (method === "GET" && path === "/api/decisions") {
-      const rawLimit = url.searchParams.get("limit");
-      const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
-      if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
-        return json(res, 400, { error: "limit must be a positive whole number" });
-      }
-      return json(res, 200, { decisions: readDecisions(DATA_DIR, parsedLimit ?? 200) });
-    }
-    // Settings → Activity: admin actions and approvals together, filtered by
-    // who, what and when; the same list as CSV. Admin scope by default.
-    if (method === "GET" && (path === "/api/admin-activity" || path === "/api/admin-activity.csv")) {
-      const fromParam = url.searchParams.get("from") || new Date(Date.now() - 29 * 24 * 60 * 60_000).toISOString().slice(0, 10);
-      const range = parseUsageRange(fromParam, url.searchParams.get("to"));
-      if (!range) return json(res, 400, { error: "from and to must be dates (YYYY-MM-DD), from no later than to, at most a year apart" });
-      const what = parseActivityWhat(url.searchParams.get("what"));
-      if (!what) return json(res, 400, { error: "what must be all, approvals, decisions, config, people, session, webhook, mcp, engine, bot, budget or visibility" });
-      const entries = activityEntries(readDecisionRange(DATA_DIR, range), readAdminActivityRange(DATA_DIR, range), {
-        what,
-        who: (url.searchParams.get("who") ?? "").slice(0, 200),
-      });
-      if (path.endsWith(".csv")) {
-        const stamp = (date: Date) => date.toISOString().slice(0, 10);
-        res.writeHead(200, {
-          "content-type": "text/csv; charset=utf-8",
-          "content-disposition": `attachment; filename="activity-${stamp(range.from)}-${stamp(range.to)}.csv"`,
-          "cache-control": "no-store",
-        });
-        res.end(activityCsv(entries));
-        return;
-      }
-      const rawLimit = Number(url.searchParams.get("limit") ?? 500);
-      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 5_000) : 500;
-      res.setHeader("cache-control", "no-store");
-      return json(res, 200, {
-        entries: entries.slice(0, limit),
-        total: entries.length,
-        from: range.from.toISOString(),
-        to: range.to.toISOString(),
-        retentionDays: boundRetentionDays(),
-        recording: adminActivityRecording(),
-      });
-    }
-    // The same rows for an auditor's spreadsheet, over a date range. Admin
-    // scope by default (not in CLIENT_ALLOW, not a service route).
-    if (method === "GET" && path === "/api/decisions.csv") {
-      const range = parseUsageRange(url.searchParams.get("from"), url.searchParams.get("to"));
-      if (!range) return json(res, 400, { error: "from and to must be YYYY-MM-DD, from no later than to, at most a year apart" });
-      const stamp = (date: Date) => date.toISOString().slice(0, 10);
-      res.writeHead(200, {
-        "content-type": "text/csv; charset=utf-8",
-        "content-disposition": `attachment; filename="decisions-${stamp(range.from)}-${stamp(range.to)}.csv"`,
-        "cache-control": "no-store",
-      });
-      res.end(decisionsCsv(readDecisionRange(DATA_DIR, range)));
-      return;
-    }
-
-    // ── a bot's activity: what it did, with the outcome ──
-    // Read-only over the same two logs as the inspector and the decision
-    // route above. The bot's own threads (its DM and every task) carry the
-    // tool runs; the decision log carries the bot's requests wherever they
-    // happened, since those rows name the bot.
-    m = path.match(/^\/api\/bots\/([\w-]+)\/activity$/);
-    if (m && method === "GET") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      const rawLimit = url.searchParams.get("limit");
-      const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
-      if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
-        return json(res, 400, { error: "limit must be a positive whole number" });
-      }
-      const threadIds = [...new Set([bot.threadId, ...store.tasks(bot.id).map((task) => task.threadId)])];
-      return json(res, 200, {
-        rows: readBotActivity({ dataDir: DATA_DIR, eventsDir: EVENTS_DIR, botId: bot.id, threadIds, limit: parsedLimit ?? 300 }),
-      });
-    }
-
-    // ── a bot's outbound allowance: the policy, and how much of it is spent ──
-    m = path.match(/^\/api\/bots\/([\w-]+)\/outbound$/);
-    if (m && method === "GET") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      return json(res, 200, { policy: bot.outbound ?? DEFAULT_OUTBOUND_POLICY, today: outboundCounts.today(bot.id) });
-    }
-
-    // ── provider instances (model picker) ──
-    if (method === "GET" && path === "/api/instances") {
-      // Rescan PATH first: this endpoint is how the app answers "what can I
-      // run?", and the interesting case is a CLI installed since launch.
-      // Windows never pushes PATH changes into a live process, so without
-      // this the answer is frozen at boot and "check again" is a no-op.
-      resetPathCache();
-      return json(res, 200, { instances: await describeInstances() });
-    }
-    const companyMutation = /^\/api\/instances\/(company\.[\w.-]+)(?:\/|$)/.exec(path);
-    if (hostedModels && path.startsWith("/api/instances/") && method !== "GET") return json(res, 403, { error: HOSTED_PROVIDER_SETTINGS_ERROR });
-    if (companyMutation && method !== "GET") return json(res, 403, { error: "Company accounts are read-only here. Manage this connection in desktop Settings." });
-
-    const instanceIconPatch = /^\/api\/instances\/([\w.-]+)\/icon$/.exec(path);
-    if (method === "PATCH" && instanceIconPatch) {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const parsed = providerIconPatchSchema.safeParse(await readBody(req, 192 * 1024));
-      if (!parsed.success) {
-        const detail = parsed.error.issues[0]?.message;
-        return json(res, 400, { error: detail && detail !== "Invalid input" ? detail : "Choose a built-in icon or upload a PNG, JPEG, or WebP image up to 128 KB." });
-      }
-      if (parsed.data.icon) {
-        const invalid = providerIconError(parsed.data.icon);
-        if (invalid) return json(res, 400, { error: invalid });
-      }
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      providerConfigBusy = true;
-      try {
-        const changed = withInstanceIcon(cfg, instanceIconPatch[1], parsed.data.icon);
-        if (!changed.ok) return json(res, 404, { error: `unknown instance "${instanceIconPatch[1]}"` });
-        saveConfig({ instances: changed.instances }, { replaceInstances: true });
-        cfg.instances = changed.instances;
-        broadcast({ kind: "config", ...configStatus() });
-        return json(res, 200, { instances: await describeInstances() });
-      } finally { providerConfigBusy = false; }
-    }
-
-    if (method === "POST" && path === "/api/instances/chatgpt-accounts") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) return json(res, 415, { error: "content-type must be application/json" });
-      const parsed = createClaudeAccountSchema.pick({ displayName: true }).safeParse(await readBody(req, 8192));
-      if (!parsed.success) return json(res, 400, { error: "Enter an account name (up to 80 characters)." });
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      providerConfigBusy = true;
-      try {
-        const instances = persistableInstanceConfigs(cfg);
-        const instanceId = `chatgpt-${randomUUID()}`;
-        // Reuse the selected executable, never another account's environment.
-        const cli = (instances.chatgpt?.config as { cli?: unknown } | undefined)?.cli
-          ?? (instances.codex?.config as { cli?: unknown } | undefined)?.cli;
-        instances[instanceId] = { driver: "codex", displayName: parsed.data.displayName,
-          config: { authMode: "chatgpt-plan", ...(typeof cli === "string" && cli ? { cli } : {}) } };
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 201, { instanceId, instances: await describeInstances() });
-      } finally { providerConfigBusy = false; }
-    }
-
-    if (method === "POST" && path === "/api/instances/claude-accounts") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const parsed = createClaudeAccountSchema.safeParse(await readBody(req, 8192));
-      if (!parsed.success) return json(res, 400, { error: "Enter an account name (up to 80 characters) and an optional configuration directory." });
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      providerConfigBusy = true;
-      try {
-        const { instanceId, instances } = newClaudeAccount(cfg, parsed.data);
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 201, { instanceId, instances: await describeInstances() });
-      } finally { providerConfigBusy = false; }
-    }
-
-    const authStatus = /^\/api\/instances\/([\w.-]+)\/auth\/status$/.exec(path);
-    if (method === "GET" && authStatus) {
-      res.setHeader("cache-control", "no-store");
-      const state = await providerAuthSessions.status(authStatus[1], auth.kind === "session" ? auth.session.id : "loopback", url.searchParams.get("flowId") ?? "");
-      return json(res, 200, { auth: state });
-    }
-    const instanceAction = /^\/api\/instances\/([\w.-]+)\/(refresh-models|install|auth\/start|auth\/complete|auth\/cancel|auth\/sign-out)$/.exec(path);
-    if (method === "POST" && instanceAction) {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const instanceId = instanceAction[1];
-      const action = instanceAction[2];
-      const owner = auth.kind === "session" ? auth.session.id : "loopback";
-      if (action.startsWith("auth/")) res.setHeader("cache-control", "no-store");
-      try {
-        if (action === "refresh-models") {
-          if (!(await registry.refreshModels(instanceId))) return json(res, 404, { error: "unknown instance" });
-          return json(res, 200, { instances: await describeInstances() });
-        }
-        if (action === "install") {
-          if (!(await registry.installRuntime(instanceId))) return json(res, 404, { error: "Installing this engine from Settings is not available on this server. Use the install command on the machine running OpenMausBot." });
-          return json(res, 200, { instances: await describeInstances() });
-        }
-        if (action === "auth/start") {
-          const instance = registry.get(instanceId);
-          if (!instance) return json(res, 404, { error: "unknown instance" });
-          // The official local OAuth callback terminates on this machine,
-          // not a phone or the browser visiting a remotely hosted workspace.
-          if (instance.authenticationMethod === "browser-pkce" && (isProxied(req) || !isLoopbackHost(req.socket.remoteAddress))) {
-            return json(res, 403, { error: "Continue with ChatGPT on the computer running OpenMausBot. Hosted Pro sign-in requires OpenAI's hosted-app approval." });
-          }
-          const started = await providerAuthSessions.start(instance, owner);
-          // Revocation can arrive while the CLI is obtaining a device code.
-          if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-            providerAuthSessions.revokeOwner(owner);
-            return json(res, 401, { error: "Your session ended. Start a new sign-in." });
-          }
-          return json(res, 200, { auth: started });
-        }
-        if (action === "auth/sign-out") {
-          const instance = registry.get(instanceId);
-          if (!instance) return json(res, 404, { error: "unknown instance" });
-          await providerAuthSessions.signOut(instance, owner);
-          return json(res, 200, { instances: await describeInstances() });
-        }
-        if (action === "auth/complete") {
-          const body = await readBody(req);
-          const flowId = typeof body?.flowId === "string" ? body.flowId : "";
-          // `code` for a pasted sign-in code (Claude), `callbackUrl` for a browser callback
-          const callbackUrl = typeof body?.callbackUrl === "string" ? body.callbackUrl : typeof body?.code === "string" ? body.code : "";
-          if (!flowId || !callbackUrl) return json(res, 400, { error: "flowId and a code or callbackUrl are required" });
-          await providerAuthSessions.complete(instanceId, owner, flowId, callbackUrl);
-          return json(res, 200, { ok: true });
-        }
-        const body = await readBody(req, 4096);
-        await providerAuthSessions.cancel(instanceId, owner, typeof body?.flowId === "string" ? body.flowId : "");
-        return json(res, 200, { ok: true });
-      } catch (error) {
-        const requestedStatus = error && typeof error === "object" ? (error as { status?: unknown }).status : undefined;
-        const status = typeof requestedStatus === "number" && [400, 401, 404, 409, 413, 415].includes(requestedStatus) ? requestedStatus : 500;
-        return json(res, status, { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-
-    // ── CLI binary discovery for the Engines "detected" dropdown ──
-    // ?name=claude → absolute paths of every `claude` on the augmented PATH,
-    // in PATH order (first = what a bare name runs). Polled when the user
-    // opens the Custom picker so a just-installed CLI appears without a restart.
-    if (method === "GET" && path === "/api/cli-candidates") {
-      const name = url.searchParams.get("name") ?? "";
-      resetPathCache();
-      return json(res, 200, { candidates: findCliCandidates(name) });
-    }
-
-    // ── pre-save CLI probe: does this path actually run? ──
-    // POST {cli, driver} → spawn `<cli> --version` with the same PATH the
-    // turn itself would use. A miss here (typo, missing exec bit, a binary
-    // the GUI app can't see) means every turn would fail, so the UI asks
-    // before saving rather than registering a dead engine.
-    if (method === "POST" && path === "/api/cli-test") {
-      // same gate as the local-VM lifecycle routes: this executes a local
-      // binary, so a hostile page must not be able to submit it as a simple
-      // text/plain cross-origin request
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const body = await readBody(req);
-      const cli = typeof body?.cli === "string" ? body.cli.trim() : "";
-      if (!cli || /[\n\r]/.test(cli)) return json(res, 400, { error: "cli must be a non-empty path" });
-      const driver = typeof body?.driver === "string" ? BUILT_IN_DRIVERS.find((d) => d.driverKind === body.driver) : undefined;
-      // Probe the exact configured wrapper plus --version. testCliBinary uses
-      // a credential-redacted environment, so fixed wrapper arguments cannot
-      // turn this endpoint into an inherited-secret reader.
-      const probe = await testCliBinary(cli, driver);
-      return json(res, 200, probe);
-    }
-
-    // ── instance-scoped Claude Code update ──
-    // No command or path comes from the request: the registry supplies the
-    // executable already configured for this Claude instance. The JSON gate
-    // keeps a hostile page from triggering a local process with a simple
-    // cross-origin form request.
-    const busyProviderSelections = () => store.bots.flatMap((bot) => {
-      const busyTasks = store.tasks(bot.id).filter((task) => threadBusy(bot.id, task.threadId));
-      const selections = busyTasks.map((task) => botForThread(bot.id, task.threadId)!.modelSelection);
-      // Rooms still run from the profile default; a direct thread does not.
-      if (activeGroupTurnForBot(bot.id) || (bot.busy && busyTasks.length === 0)) selections.push(bot.modelSelection);
-      return selections;
-    });
-    const claudeUpdate = /^\/api\/instances\/([\w.-]+)\/claude-update$/.exec(path);
-    if (method === "POST" && claudeUpdate) {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      await readBody(req);
-      const target = registry.cliTarget(claudeUpdate[1]);
-      if (!target) return json(res, 404, { error: "no such provider instance" });
-      if (target.driverKind !== "claudeAgent") {
-        return json(res, 400, { error: "only Claude Code instances can be updated here" });
-      }
-      if (!target.cli) return json(res, 409, { error: "this Claude instance has no configured executable" });
-      if (claudeUpdatesInFlight.has(target.cli)) {
-        return json(res, 409, { error: "this Claude installation is already updating" });
-      }
-      const active = busyProviderSelections().some((selection) => registry.cliTarget(selection.instanceId)?.cli === target.cli);
-      if (active) {
-        return json(res, 409, { error: "wait for running Claude tasks to finish before updating" });
-      }
-
-      claudeUpdatesInFlight.add(target.cli);
-      try {
-        const result = await updateClaudeCli(target.cli, cliProbeEnvironment());
-        resetPathCache();
-        return json(res, 200, { ok: true, version: result.version });
-      } catch (error) {
-        return json(res, 500, { error: error instanceof Error ? error.message : String(error) });
-      } finally {
-        claudeUpdatesInFlight.delete(target.cli);
-      }
-    }
-
-    // ── per-instance settings (CLI/account or API tool support) ──
-    // PATCH /api/instances/:id {cli: "/path/to/cli" | ""} — "" reverts to the
-    // driver default. Only this idle instance is replaced; siblings keep running.
-    const instancePatch = /^\/api\/instances\/([\w.-]+)$/.exec(path);
-    if (method === "PATCH" && instancePatch) {
-      // same non-simple-request gate as the local-VM lifecycle routes
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      const parsed = instanceSettingsSchema.safeParse(await readBody(req, 16384));
-      if (!parsed.success) return json(res, 400, { error: "Supply a valid CLI path, account name, configuration directory or boolean tools setting." });
-      const body = parsed.data;
-      const instanceId = instancePatch[1];
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      if (busyProviderSelections().some((selection) => selection.instanceId === instanceId)) {
-        return json(res, 409, { error: "Wait for bots using this account to finish before changing its settings." });
-      }
-      providerConfigBusy = true;
-      providerInstancesChanging.add(instanceId);
-      try {
-        const result = body.cli === undefined ? { ok: true, config: cfg } : withInstanceCli(cfg, instanceId, body.cli);
-        const instances = persistableInstanceConfigs(result.config);
-        if (!result.ok || !Object.hasOwn(instances, instanceId)) return json(res, 404, { error: `unknown instance "${instanceId}"` });
-        const entry = instances[instanceId];
-        if ((body.displayName !== undefined || body.configDir !== undefined) && entry.driver !== "claudeAgent") {
-          return json(res, 400, { error: "Account settings are currently available for Claude only." });
-        }
-        if (body.tools !== undefined) {
-          if (!["openai-compat", "grok", "minimax", "mistral", "cerebras", "groq", "meta"].includes(entry.driver)) {
-            return json(res, 400, { error: "The tools setting is available for OpenAI-compatible, Grok API, MiniMax API, Mistral API, Cerebras API, Groq API and Meta API instances only." });
-          }
-          entry.config = { ...entry.config as Record<string, unknown>, tools: body.tools };
-        }
-        if (body.displayName !== undefined) entry.displayName = body.displayName;
-        if (body.configDir !== undefined) {
-          let previousDir: string | undefined;
-          try { previousDir = configuredAccountDirectory(entry); } catch { /* Allow repairing an unused malformed account. */ }
-          entry.config = { ...entry.config as Record<string, unknown>, configDir: body.configDir };
-          if (previousDir !== configuredAccountDirectory(entry)) {
-            const used = store.bots.some((bot) => bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) =>
-              task.modelSelection?.instanceId === instanceId || task.resumeCursors[instanceId] || task.lastInstanceId === instanceId));
-            if (used) return json(res, 409, { error: "This account is used by bots or conversation history. Add another account and select it for the bot instead." });
-            assertSeparateClaudeAccount(instances, instanceId, entry);
-          }
-        }
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 200, { instances: await describeInstances() });
-      } finally {
-        providerInstancesChanging.delete(instanceId);
-        providerConfigBusy = false;
-      }
-    }
-
-    if (method === "DELETE" && instancePatch) {
-      const instanceId = instancePatch[1];
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      const instances = persistableInstanceConfigs(cfg);
-      if (!Object.hasOwn(instances, instanceId)) return json(res, 404, { error: "unknown instance" });
-      if (instances[instanceId].driver !== "claudeAgent" || instanceId === "claude") {
-        return json(res, 400, { error: "Only added Claude accounts can be removed here." });
-      }
-      if (cfg.defaultModelSelection?.instanceId === instanceId || store.bots.some((bot) =>
-        bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) => task.modelSelection?.instanceId === instanceId)) ||
-        busyProviderSelections().some((selection) => selection.instanceId === instanceId)) {
-        return json(res, 409, { error: "Choose another account for the bots and default model using this account before removing it." });
-      }
-      providerConfigBusy = true;
-      providerInstancesChanging.add(instanceId);
-      try {
-        delete instances[instanceId];
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 200, { instances: await describeInstances() });
-      } finally {
-        providerInstancesChanging.delete(instanceId);
-        providerConfigBusy = false;
-      }
-    }
-
-    // ── custom MCP servers (a local command or a URL; secrets write-only) ──
-    if (method === "GET" && path === "/api/mcp/servers") {
-      return json(res, 200, mcpServerResponse());
-    }
-
-    const mcpTest = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})\/test$/.exec(path);
-    if (method === "POST" && mcpTest) {
-      const raw = cfg.mcpServers?.[mcpTest[1]];
-      if (raw === undefined) return json(res, 404, { error: "MCP server not found." });
-      const parsed = parseStoredMcpServer(mcpTest[1], raw);
-      if (!parsed.ok) return json(res, 400, { error: parsed.error });
-      if (mcpProbesInFlight >= MAX_CONCURRENT_MCP_PROBES) {
-        return json(res, 429, { error: "Two MCP connection tests are already running." });
-      }
-      const controller = new AbortController();
-      const disconnect = () => {
-        if (!res.writableEnded) controller.abort();
-      };
-      res.once("close", disconnect);
-      mcpProbesInFlight += 1;
-      try {
-        const name = mcpTest[1];
-        let target = parsed.server;
-        if (isRemoteMcpServer(target) && mcpOAuth.authState(name, target.url) === "signed-in") {
-          const signedIn = (await withMcpSignIn({ [name]: target }, mcpOAuth))[name];
-          if (signedIn) target = { ...signedIn, enabled: target.enabled } as typeof target;
-        }
-        const result = await probeMcpServer(target, undefined, controller.signal);
-        if (!result.ok && result.auth === "required" && isRemoteMcpServer(target)) mcpOAuth.markNeedsSignIn(name, target.url);
-        return json(res, 200, result);
-      } finally {
-        res.off("close", disconnect);
-        mcpProbesInFlight -= 1;
-      }
-    }
-
-    // The loopback listener, the public callback and authenticated paste-back complete the same flow.
-    const mcpSignIn = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})\/(sign-in|sign-out)(?:\/([0-9a-f-]{36}))?$/.exec(path);
-    if (mcpSignIn) {
-      const [, name, action, flowId] = mcpSignIn;
-      const raw = cfg.mcpServers?.[name!];
-      const parsed = raw === undefined ? null : parseStoredMcpServer(name!, raw);
-      if (!parsed?.ok) return json(res, 404, { error: "MCP server not found." });
-      if (!isRemoteMcpServer(parsed.server)) return json(res, 400, { error: "Only servers reached by URL can be signed in to." });
-      const url = parsed.server.url;
-      if (action === "sign-out" && method === "POST" && !flowId) {
-        await mcpOAuth.signOut(name!, url);
-        return json(res, 200, mcpServerResponse());
-      }
-      const owner = auth.kind === "session" ? auth.session.id : "loopback";
-      res.setHeader("Cache-Control", "no-store");
-      try {
-        if (action === "sign-in" && method === "GET" && flowId) {
-          const status = mcpOAuth.status(name!, flowId, owner);
-          return status ? json(res, 200, { auth: status }) : json(res, 404, { error: "This sign-in is no longer available in this browser. Start again." });
-        }
-        if (action === "sign-in" && method === "DELETE") {
-          mcpOAuth.cancelFlow(name!, owner, flowId);
-          return json(res, 200, { ok: true });
-        }
-        if (action === "sign-in" && method === "POST" && flowId) {
-          if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-            return json(res, 415, { error: "content-type must be application/json" });
-          }
-          const body = await readBody(req, 20_480);
-          if (typeof body?.callbackUrl !== "string") return json(res, 400, { error: "A complete callbackUrl is required." });
-          return json(res, 200, { auth: await mcpOAuth.completeCallback(name!, flowId, body.callbackUrl, owner) });
-        }
-        if (action === "sign-in" && method === "POST" && !flowId) {
-          // A browser on another computer cannot reach this machine's
-          // loopback: it comes back to the https address it is using now,
-          // when that is one this server vouches for (mcpCallbackOrigin).
-          const remote = auth.kind === "session" && (isProxied(req) || !isLoopbackHost(req.headers.host));
-          const origin = remote
-            ? mcpCallbackOrigin(provesSameOrigin(req) ? requestOrigin(req) : null,
-              [CLOUD_HOME?.publicOrigin, hostedWorkspaceConfiguration()?.tenant.origin, savedCustomDomain(), FALLBACK_PUBLIC_URL])
-            : null;
-          const started = await mcpOAuth.start(name!, url, undefined, owner, { remote, origin });
-          if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-            mcpOAuth.revokeOwner(owner);
-            return json(res, 401, { error: "Your session ended. Start a new sign-in." });
-          }
-          return json(res, 200, { auth: started });
-        }
-      } catch (error) {
-        if (error instanceof McpSignInError) return json(res, error.status, { error: error.message });
-        if (error instanceof McpOAuthError) return json(res, 400, { error: error.message, code: error.code });
-        if (method === "POST" && !flowId) return json(res, 502, { error: error instanceof Error ? error.message : "Sign-in could not start." });
-        throw error;
-      }
-      return json(res, 405, { error: "method not allowed" });
-    }
-
-    if (method === "POST" && path === "/api/mcp/servers") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      if (mcpConfigBusy) return json(res, 409, { error: "MCP servers are already being updated." });
-      mcpConfigBusy = true;
-      try {
-        const body = await readBody(req);
-        const name = typeof body?.name === "string" ? body.name : "";
-        const current = cfg.mcpServers ?? {};
-        if (Object.hasOwn(current, name)) return json(res, 409, { error: "An MCP server with that name already exists." });
-        if (Object.keys(current).length >= MAX_MCP_SERVERS) {
-          return json(res, 400, { error: `You can add at most ${MAX_MCP_SERVERS} MCP servers.` });
-        }
-        const parsed = parseMcpServerMutation(name, mcpServerBody(body));
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        const refusal = mcpPolicyRefusal(name, parsed.server);
-        if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
-        persistMcpServers({ ...current, [name]: parsed.server });
-        return json(res, 201, mcpServerResponse());
-      } finally {
-        mcpConfigBusy = false;
-      }
-    }
-
-    // Paste-to-add: the {"mcpServers": {...}} block every other agent tool
-    // writes. Same rules as POST: disabled until explicitly enabled.
-    if (method === "POST" && path === "/api/mcp/servers/import") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      if (mcpConfigBusy) return json(res, 409, { error: "MCP servers are already being updated." });
-      mcpConfigBusy = true;
-      try {
-        const body = await readBody(req);
-        const text = typeof body?.json === "string" ? body.json : "";
-        if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
-          return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
-        }
-        if (!text.trim()) return json(res, 400, { error: "Paste the JSON block first." });
-        const parsed = parseMcpServersImport(text);
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        const current = cfg.mcpServers ?? {};
-        const names = Object.keys(parsed.servers);
-        const taken = names.filter((name) => Object.hasOwn(current, name));
-        if (taken.length) {
-          return json(res, 409, { error: `Already added: ${taken.join(", ")}. Remove or rename ${taken.length === 1 ? "it" : "them"} first.` });
-        }
-        if (Object.keys(current).length + names.length > MAX_MCP_SERVERS) {
-          return json(res, 400, { error: `You can add at most ${MAX_MCP_SERVERS} MCP servers.` });
-        }
-        const refused = names.filter(name => mcpPolicyRefusal(name, parsed.servers[name] as object));
-        if (refused.length) return json(res, 403, { error: `${mcpPolicyRefusal(refused[0]!, parsed.servers[refused[0]!] as object)} Not approved: ${refused.join(", ")}.`, code: "managed_policy" });
-        persistMcpServers({ ...current, ...parsed.servers });
-        return json(res, 201, { ...mcpServerResponse(), added: names });
-      } finally {
-        mcpConfigBusy = false;
-      }
-    }
-
-    const mcpServerRoute = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})$/.exec(path);
-    if (mcpServerRoute && ["PUT", "PATCH", "DELETE"].includes(method)) {
-      if (method !== "DELETE" && !String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-        return json(res, 415, { error: "content-type must be application/json" });
-      }
-      if (mcpConfigBusy) return json(res, 409, { error: "MCP servers are already being updated." });
-      mcpConfigBusy = true;
-      try {
-        const name = mcpServerRoute[1];
-        const current = cfg.mcpServers ?? {};
-        if (!Object.hasOwn(current, name)) return json(res, 404, { error: "MCP server not found." });
-        if (method === "DELETE") {
-          const next = { ...current };
-          delete next[name];
-          persistMcpServers(next);
-          mcpOAuth.forget(name);
-          return json(res, 200, mcpServerResponse());
-        }
-
-        const existing = parseStoredMcpServer(name, current[name]);
-        if (!existing.ok) return json(res, 400, { error: existing.error });
-        const body = await readBody(req);
-        if (method === "PATCH") {
-          if (!body || typeof body !== "object" || Array.isArray(body)
-            || Object.keys(body).length !== 1 || typeof body.enabled !== "boolean") {
-            return json(res, 400, { error: "Only an enabled boolean can be changed here." });
-          }
-          persistMcpServers({ ...current, [name]: { ...existing.server, enabled: body.enabled } });
-          return json(res, 200, mcpServerResponse());
-        }
-
-        const parsed = parseMcpServerMutation(name, body, existing.server);
-        if (!parsed.ok) return json(res, 400, { error: parsed.error });
-        const refusal = mcpPolicyRefusal(name, parsed.server);
-        if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
-        persistMcpServers({ ...current, [name]: parsed.server });
-        // a sign-in belongs to one address; a token never follows the entry elsewhere
-        const before = isRemoteMcpServer(existing.server) ? existing.server.url : null;
-        const after = isRemoteMcpServer(parsed.server) ? parsed.server.url : null;
-        // ...and to one sign-in app with its scopes; a new secret for the same app keeps it
-        const app = (server: typeof existing.server) => isRemoteMcpServer(server) && server.oauth
-          ? JSON.stringify([server.oauth.clientId, server.oauth.scopes ?? []]) : null;
-        // Any other edit (a new header, say) drops a sign-in request that has
-        // no tokens behind it; the next Test asks again if it still applies.
-        if (before !== after || app(existing.server) !== app(parsed.server)
-          || (after && mcpOAuth.authState(name, after) === "needs-sign-in")) mcpOAuth.forget(name);
-        return json(res, 200, mcpServerResponse());
-      } finally {
-        mcpConfigBusy = false;
-      }
-    }
-
-    // ── app config (API keys — never echoed back, booleans only) ──
-    if (method === "GET" && path === "/api/config") {
-      return json(res, 200, configForAccess(configStatus(), auth.scopes.includes("admin")));
-    }
-    if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
-      const body = await readBody(req);
-      if (hostedModels && ["instances", "anthropic", "openai", "openrouter", "openaiCompat", "xai", "mistral", "cerebras", "groq", "meta", "opencodeGo"].some(key => Object.hasOwn(body, key))) return json(res, 403, { error: HOSTED_PROVIDER_SETTINGS_ERROR });
-      const patch = parseConfigPatch(body);
-      // A Cloud home is personal: nobody is invited to sign in to it.
-      if (CLOUD_HOME && (patch.signIn?.admins?.length || patch.signIn?.members?.length)) {
-        return json(res, 403, { error: CLOUD_PERSONAL_REFUSAL, code: "cloud_personal" });
-      }
-      if (patch.newBotDefaults) {
-        if (patch.newBotDefaults.profile.modelSelection) {
-          const checked = checkedModelSelection(patch.newBotDefaults.profile.modelSelection);
-          if (!checked.ok) return json(res, checked.status, { error: checked.error });
-          patch.newBotDefaults.profile.modelSelection = checked.selection;
-        }
-        for (const skill of patch.newBotDefaults.skills) {
-          const parsed = parseSkillMd(skill.text);
-          if ("error" in parsed || parsed.name !== skill.name) return json(res, 400, { error: "Skill name does not match its contents" });
-        }
-      }
-      if (hostedModels && patch.defaultModelSelection) {
-        const checked = checkedModelSelection(patch.defaultModelSelection);
-        if (!checked.ok) return json(res, checked.status, { error: checked.error });
-      }
-      if (patch.automaticRecovery?.enabled) {
-        const checked = checkedModelSelection(patch.automaticRecovery.backup, undefined, true);
-        if (!checked.ok) return json(res, checked.status, { error: checked.error });
-        const target = registry.get(checked.selection.instanceId)!;
-        if (!target.enabled) return json(res, 400, { error: "Enable the backup engine before selecting it for recovery." });
-        const refusal = policyModelRefusal(target);
-        if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
-        patch.automaticRecovery.backup = checked.selection;
-      }
-      if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
-      if (patch.decider) {
-        // Saving a key is the "turn it on"; clearing it turns it off, or
-        // falls back to Cloud Pro's included decisions where there are some.
-        const planned = deciderSavePatch(patch.decider, cfg.decider, deciderIncludedHere());
-        if (!planned.ok) return json(res, 400, { error: planned.error });
-        patch.decider = planned.patch;
-      }
-      const changingVoiceProvider = patch.tts?.provider !== undefined
-        && patch.tts.provider !== tts.voiceProvider(cfg);
-      if (changingVoiceProvider && patch.tts?.voice === undefined) {
-        // Voice ids are provider-owned opaque values. Never carry a default
-        // from one catalog into another. A caller may explicitly supply a
-        // voice for the newly selected provider in this same atomic patch.
-        patch.tts = { ...patch.tts, voice: "" };
-      }
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      if (patch.browserProfiles !== undefined && body.expectedBrowserProfiles !== undefined) {
-        const current = (cfg.browserProfiles ?? []).map(({ id, name, browser }) => ({ id, name, ...(browser ? { browser } : {}) }));
-        if (JSON.stringify(body.expectedBrowserProfiles) !== JSON.stringify(current)) {
-          return json(res, 409, { error: "Browser profiles changed in another window. Review the refreshed list and try again." });
-        }
-      }
-      const disablingBuiltInBrowser = patch.features?.browser === false && builtInBrowserEnabled(cfg);
-      const removedBrowserProfileIds = patch.browserProfiles === undefined
-        ? []
-        : (cfg.browserProfiles ?? [])
-            .map((profile) => profile.id)
-            .filter((id) => !patch.browserProfiles!.some((profile) => profile.id === id));
-      // Profiles whose browser changes between built-in and My Chrome: their
-      // open browser closes after the save, so the next turn uses the new one.
-      const browserChoiceChanged = (patch.browserProfiles ?? []).filter((profile) => {
-        const current = cfg.browserProfiles?.find((candidate) => candidate.id === profile.id);
-        return current !== undefined && (current.browser ?? null) !== (profile.browser ?? null);
-      }).map((profile) => profile.id);
-      const profileControlConflict = () => removedBrowserProfileIds.some((id) => {
-        const target = browserProfilePartitionTarget(cfg, id);
-        return target && browserRuntime.heldBy(browserSessionId("", target.partitionId));
-      });
-      if (profileControlConflict()) return json(res, 409, { error: "Release browser control before deleting its profile." });
-      if (browserChoiceChanged.some((id) => {
-        const target = browserProfilePartitionTarget(cfg, id);
-        return target && browserRuntime.heldBy(browserSessionId("", target.partitionId));
-      })) return json(res, 409, { error: "Release browser control before changing its browser." });
-      if (patch.browserProfiles !== undefined) {
-        const currentProfiles = new Map((cfg.browserProfiles ?? []).map((profile) => [profile.id, profile]));
-        const nextProfiles = patch.browserProfiles.map((profile) => {
-          const partitionId = currentProfiles.get(profile.id)?.partitionId;
-          return partitionId ? { ...profile, partitionId } : profile;
-        });
-        const routingConflict = browserProfileReplacementConflict(cfg.browserProfiles ?? [], nextProfiles);
-        if (routingConflict) return json(res, 409, { error: routingConflict });
-        const currentIds = new Set((cfg.browserProfiles ?? []).map((profile) => profile.id));
-        const pendingReuse = patch.browserProfiles.find(
-          (profile) => !currentIds.has(profile.id) && browserCleanup.hasPendingProfile(profile.id),
-        );
-        if (pendingReuse) {
-          return json(res, 409, {
-            error: `the previous “${pendingReuse.name}” browser session is still being erased — wait before reusing it`,
-          });
-        }
-      }
-      if (patch.browserProfiles !== undefined) {
-        const retained = new Set(patch.browserProfiles.map((profile) => profile.id));
-        const activeReference = store.bots.find(
-          (bot) => bot.busy && bot.browserProfile && bot.browserProfile !== "guest" && !retained.has(bot.browserProfile),
-        );
-        if (activeReference) {
-          return json(res, 409, {
-            error: `stop ${activeReference.name}'s turn before removing its browser profile`,
-          });
-        }
-      }
-      if (patch.box?.token !== undefined) patch.box.token = patch.box.token.trim();
-      const currentBoatToken = cfg.box?.token?.trim() ?? "";
-      const nextBoatToken = patch.box?.token === undefined ? currentBoatToken : patch.box.token;
-      const changingBoatToken = patch.box?.token !== undefined && nextBoatToken !== currentBoatToken;
-      const currentVpsAlias = vpsSshAlias(cfg);
-      const nextVpsAlias = patch.vps === undefined
-        ? currentVpsAlias
-        : vpsSshAlias({ ...cfg, vps: patch.vps });
-      const changingVpsAlias = patch.vps !== undefined && nextVpsAlias !== currentVpsAlias;
-      const transitioningProviders: RemoteComputerProvider[] = [
-        ...(changingBoatToken ? ["box" as const] : []),
-        ...(changingVpsAlias ? ["vps" as const] : []),
-      ];
-      providerConfigBusy = true;
-      const changingLocalVmMode = patch.localVm?.mode !== undefined && patch.localVm.mode !== localVmMode(cfg);
-      if (changingLocalVmMode) localVmModeChangeBusy = true;
-      try {
-        for (const provider of transitioningProviders) {
-          const conflict = providerOperationConflict(provider);
-          if (conflict) return json(res, 409, { error: conflict });
-        }
-        for (const provider of transitioningProviders) computerProviderConfigTransitions.add(provider);
-
-        if (changingVpsAlias && currentVpsAlias) {
-          const inventory = await vps.listManagedVpsComputers(
-            { vps: { sshAlias: currentVpsAlias } },
-            managedBoatOwners(),
-          );
-          if (!inventory.available) {
-            return json(res, 503, {
-              error: `${inventory.problem ?? "VPS computer inventory is unavailable"}. Keep the current SSH config alias and retry`,
-            });
-          }
-          const resourceError = vpsAliasResourceChangeError(inventory.instances.length);
-          if (resourceError) return json(res, 409, { error: resourceError });
-        }
-
-        let boatRecovery = changingBoatToken ? boatCreateRecoverySnapshot() : [];
-        let boatDeletions = changingBoatToken ? boatDeletionSnapshot() : [];
-        if (changingBoatToken && boatDeletions.length > 0 && !nextBoatToken) {
-          return json(res, 409, {
-            error: "finish or retry pending cloud computer deletion before removing the Boat account",
-          });
-        }
-        let replacementProvedByDeletion = false;
-        if (changingBoatToken && boatDeletions.length > 0 && nextBoatToken) {
-          try {
-            await boat.verifyBoatDeletionCredential({ box: { token: nextBoatToken } });
-            replacementProvedByDeletion = true;
-            // Verification can observe a completed operation and retire both
-            // its deletion fence and matching create receipt. Never continue
-            // with the pre-verification snapshots: they would demand access
-            // to a Boat whose exact operation just proved it was deleted.
-            boatRecovery = boatCreateRecoverySnapshot();
-            boatDeletions = boatDeletionSnapshot();
-          } catch (error) {
-            return json(res, (error as { status?: number })?.status ?? 503, {
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-        let currentBoatInventory: boat.ManagedBoatInventory | null = null;
-        let replacingRejectedBoatToken = false;
-        let currentBoatResources: Array<{ boxId: string; name: string }> | null = null;
-        const journalBoatResources: Array<{ boxId: string; name: string }> = [];
-        const deletingBoatIds = new Set(boatDeletions.map((entry) => entry.boxId));
-        if (changingBoatToken && currentBoatToken) {
-          currentBoatInventory = await boat.listManagedBoats(
-            { box: { token: currentBoatToken } },
-            managedBoatOwners(),
-          );
-          if (!currentBoatInventory.available) {
-            replacingRejectedBoatToken = currentBoatInventory.credentialRejected === true && Boolean(nextBoatToken);
-            if (!replacementProvedByDeletion && !replacingRejectedBoatToken) {
-              return json(res, 503, {
-                error: `${currentBoatInventory.problem ?? "cloud computer inventory is unavailable"}. Keep the current Boat account and retry`,
-              });
-            }
-            // A rejected old key cannot authorize its own rotation. Below,
-            // validate the replacement and prove access to remembered Boats;
-            // pending deletions retain their target-bound verification.
-            currentBoatInventory = null;
-          }
-          if (currentBoatInventory) {
-            const currentById = new Map(
-              currentBoatInventory.instances.map((instance) => [instance.boxId, { boxId: instance.boxId, name: instance.name }]),
-            );
-            for (const recovery of boatRecovery) {
-              if (!recovery.boxId) continue;
-              // A failed provisioning attempt may never have reached the
-              // deterministic rename. The replacement credential already
-              // proved the exact deletion target, so its in-flight resource
-              // is governed by that stronger target-bound receipt rather
-              // than an OpenMausBot name check.
-              if (replacementProvedByDeletion && deletingBoatIds.has(recovery.boxId)) continue;
-              const inspected = await boat.inspectBoatIdentity({ box: { token: currentBoatToken } }, recovery.boxId);
-              if (!inspected.available) {
-                return json(res, 503, {
-                  error: `${inspected.problem ?? "a remembered cloud computer could not be verified"}. Keep the current Boat account and retry`,
-                });
-              }
-              if (!inspected.identity) {
-                // Reconcile exact stale receipts while the current credential is
-                // still available. Leaving one behind would make a later token
-                // addition demand access to a Boat the provider proved is gone.
-                retireDeletedBoatCreate(recovery.boxId);
-                continue;
-              }
-              const listed = currentById.get(inspected.identity.boxId);
-              if (listed && listed.name !== inspected.identity.name) {
-                return json(res, 503, { error: "boat.dev returned conflicting cloud computer identities; keep the current Boat account and retry" });
-              }
-              currentById.set(inspected.identity.boxId, inspected.identity);
-              journalBoatResources.push(inspected.identity);
-            }
-            currentBoatResources = [...currentById.values()];
-          }
-        }
-
-        if (changingLocalVmMode) {
-          if (localVmActiveThreads.size > 0 || localVmLifecycleBusy.size > 0 || localVmImageBusy) {
-            return json(res, 409, { error: "stop Local VM turns and setup actions before changing the Local VM isolation mode" });
-          }
-          if (localVmMode(cfg) === "per-bot" && patch.localVm?.mode === "shared") {
-            const existing = await perBotLocalVmCountForModeChange();
-            if (existing === null) {
-              return json(res, 409, {
-                error: "start the container runtime and delete every per-bot VM before switching to shared mode",
-              });
-            }
-            if (existing > 0) {
-              return json(res, 409, {
-                error: `delete the ${existing} per-bot Local VM${existing === 1 ? "" : "s"} before switching to shared mode`,
-              });
-            }
-          }
-        }
-      // A project key is useful only if it can create/reuse the Session that
-      // powers both the connections UI and the agent MCP. Validate it before
-      // persisting, and save the non-secret ids needed to reuse that Session.
-      const requestedComposioKey = patch.composio?.apiKey;
-      if (requestedComposioKey !== undefined) {
-        if (requestedComposioKey.trim()) {
-          try {
-            const prepared = await composio.prepareProjectSession(requestedComposioKey, cfg.composio);
-            patch.composio = { ...patch.composio, ...prepared };
-          } catch (error) {
-            return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
-          }
-        } else {
-          patch.composio = { ...patch.composio, apiKey: "", sessionId: "" };
-        }
-      }
-      // check a boat token against the provider before storing it: a
-      // rejected token used to save happily and only surface as a 401 in
-      // another panel later, with nothing the user could act on
-      const newBoatToken = patch.box?.token;
-      if (newBoatToken?.trim()) {
-        const check = await boat.verifyToken(newBoatToken);
-        if (!check.ok) return json(res, 400, { error: check.message });
-      }
-      if (replacingRejectedBoatToken) {
-        // An expired credential cannot authorize its own replacement. Probe
-        // the new account without adopting or retiring any local identities.
-        const replacement = await boat.listManagedBoats(
-          { box: { token: nextBoatToken } }, managedBoatOwners(), { adoptLegacy: false },
-        );
-        if (!replacement.available) return json(res, 503, { error: replacement.problem ?? "Could not verify the replacement Boat key. Your saved key and computers are unchanged." });
-      }
-      if (changingBoatToken && (!currentBoatToken || replacementProvedByDeletion || replacingRejectedBoatToken) && boatRecovery.length > 0) {
-        if (!nextBoatToken) {
-          return json(res, 409, { error: "restore the Boat account that owns the remembered cloud computers before clearing it" });
-        }
-        for (const recovery of boatRecovery) {
-          if (!recovery.boxId) {
-            return json(res, 409, { error: "finish reconciling pending cloud computer creation before changing the Boat account" });
-          }
-          if (replacementProvedByDeletion && deletingBoatIds.has(recovery.boxId)) continue;
-          const inspected = await boat.inspectBoatIdentity({ box: { token: nextBoatToken } }, recovery.boxId);
-          if (!inspected.available) {
-            return json(res, 503, {
-              error: `${inspected.problem ?? "a remembered cloud computer could not be verified"}. Retry with the Boat account that created it`,
-            });
-          }
-          if (!inspected.identity || !(await boat.boatNameMatchesBot(recovery.botId, inspected.identity.name))) {
-            return json(res, 409, { error: "that Boat token cannot access the remembered cloud computers from this installation" });
-          }
-        }
-      }
-      if (changingBoatToken && currentBoatInventory && currentBoatResources) {
-        let replacementResources: Array<{ boxId: string; name: string }> | null = null;
-        if (nextBoatToken) {
-          const replacementInventory = await boat.listManagedBoats(
-            { box: { token: nextBoatToken } },
-            managedBoatOwners(),
-            { adoptLegacy: false },
-          );
-          if (!replacementInventory.available) {
-            return json(res, 503, {
-              error: `${replacementInventory.problem ?? "cloud computer inventory is unavailable"}. Keep the current Boat account and retry`,
-            });
-          }
-          replacementResources = replacementInventory.instances.map((instance) => ({
-            boxId: instance.boxId,
-            name: instance.name,
-          }));
-          const replacementById = new Map(
-            replacementResources.map((instance) => [instance.boxId, { boxId: instance.boxId, name: instance.name }]),
-          );
-          for (const identity of journalBoatResources) {
-            const inspected = await boat.inspectBoatIdentity({ box: { token: nextBoatToken } }, identity.boxId);
-            if (!inspected.available) {
-              return json(res, 503, {
-                error: `${inspected.problem ?? "a remembered cloud computer could not be verified"}. Keep the current Boat account and retry`,
-              });
-            }
-            if (!inspected.identity || inspected.identity.name !== identity.name) {
-              return json(res, 409, { error: "the replacement Boat token does not access the same cloud computers" });
-            }
-            replacementById.set(inspected.identity.boxId, inspected.identity);
-          }
-          replacementResources = [...replacementById.values()];
-        }
-        const resourceError = boatAccountResourceChangeError(
-          currentBoatResources,
-          replacementResources,
-        );
-        if (resourceError) return json(res, 409, { error: resourceError });
-      }
-      // Each cloud voice provider owns its own credential. Validate the field
-      // against that provider rather than whichever provider happens to be
-      // selected, so switching engines never sends one service another's key.
-      const newTts = patch.tts;
-      if (newTts?.key?.trim()) {
-        const check = await tts.verifyKey("elevenlabs", newTts.key.trim());
-        if (!check.ok) return json(res, 400, { error: check.message });
-      }
-      if (newTts?.fishKey?.trim()) {
-        const check = await tts.verifyKey("fish", newTts.fishKey.trim());
-        if (!check.ok) return json(res, 400, { error: check.message });
-      }
-      // A pasted decision-model key is tried once (one tiny yes/no call).
-      // Only a refusal blocks the save: an offline or overloaded service must
-      // not stop a person saving a key that may well be fine.
-      if (patch.decider?.key) {
-        const check = await decider.testKey({ key: patch.decider.key });
-        if (!check.ok && check.reason === "rejected") {
-          return json(res, 400, { error: "Jev rejected this key. Check it at typesafe.ai and paste it again.", code: "decider_rejected" });
-        }
-      }
-      if (patch.browserProfiles !== undefined) {
-        // Provider/credential validation above may await the network. A turn
-        // can start during that window and claim a profile which looked idle
-        // at the route's first check, so validate again at the mutation
-        // boundary. Keep this check and the synchronous save/reference cleanup
-        // below free of awaits.
-        const retained = new Set(patch.browserProfiles.map((profile) => profile.id));
-        const activeReference = store.bots.find(
-          (bot) => bot.busy && bot.browserProfile && bot.browserProfile !== "guest" && !retained.has(bot.browserProfile),
-        );
-        if (activeReference) {
-          return json(res, 409, {
-            error: `stop ${activeReference.name}'s turn before removing its browser profile`,
-          });
-        }
-        // Built-in and My Chrome are different browsers: a turn keeps the
-        // one it started with, so the switch waits for it.
-        const switching = store.bots.find((bot) => bot.busy && bot.browserProfile && browserChoiceChanged.includes(bot.browserProfile));
-        if (switching) return json(res, 409, { error: `stop ${switching.name}'s turn before changing its browser` });
-      }
-      // Provider validation above awaits remote services. The transition flag
-      // blocks new work, while this second observation catches any operation
-      // that already held a claim at the initial boundary.
-      for (const provider of transitioningProviders) {
-        const conflict = providerOperationConflict(provider);
-        if (conflict) return json(res, 409, { error: conflict });
-      }
-      // A change names only the OpenCode provider keys it saves or removes;
-      // the rest stay. Merged with no await before the save below, so it
-      // starts from what is saved at that moment.
-      if (patch.opencodeGo?.providerKeys) {
-        const merged = mergeOpenCodeProviderKeys(cfg, patch.opencodeGo.providerKeys);
-        if (!merged.ok) return json(res, 400, { error: merged.error });
-        patch.opencodeGo = { ...patch.opencodeGo, providerKeys: merged.keys };
-      }
-      const browserCleanupRequests: BrowserCleanupRequest[] = [];
-      if (profileControlConflict()) return json(res, 409, { error: "Release browser control before deleting its profile." });
-      try {
-        for (const profileId of removedBrowserProfileIds) {
-          const target = browserProfilePartitionTarget(cfg, profileId);
-          if (!target) throw new Error(`browser profile cleanup target “${profileId}” is unavailable`);
-          browserCleanupRequests.push(
-            browserCleanup.prepare("profile", target.profileId, target.partitionId),
-          );
-        }
-      } catch (error) {
-        for (const request of browserCleanupRequests) browserCleanup.abort(request);
-        throw error;
-      }
-      // A saved or cleared key starts over: neither it nor the key it
-      // replaced stays marked as rejected.
-      const resetKeys = PROVIDER_KEY_KINDS.flatMap((kind) => {
-        const next = patch[kind]?.key;
-        return next === undefined ? [] : [cfg[kind]?.key, next];
-      });
-      const engineForSwitch = browserEngineStatus();
-      const browsersToClose = engineForSwitch.kind === "ready" ? browserChoiceChanged.flatMap((id) => {
-        const target = browserProfilePartitionTarget(cfg, id);
-        if (!target) return [];
-        const session = browserSessionId("", target.partitionId);
-        return [{ session, spec: usedBrowserSessions.get(session) ?? browserSessionSpec(engineForSwitch.binaryPath, session, id) }];
-      }) : [];
-      let configWriteCommitted = false;
-      // What each engine is launched with before this write (reloadProviders).
-      const enginesBefore = engineLaunches(providerConfigs());
-      const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
-      try {
-        // Provider-owned voice ids must be invalidated before the provider
-        // commit. If bots.json cannot be written, leave the old provider in
-        // place rather than committing a new provider with stale bot voices.
-        // A later config-write failure may leave voices cleared, which is the
-        // safe side of this cross-file mutation: no foreign id can be spoken.
-        if (changingVoiceProvider) store.clearVoiceSelections();
-        if (externalSecretStorage) {
-          // The packaged Electron caller commits supplied credentials to the
-          // OS-encrypted store before entering this route. Persist every
-          // non-secret sibling in the same request, but replace each supplied
-          // credential with an empty tombstone so an older plaintext value can
-          // never survive the merge in config.json.
-          const persisted = structuredClone(patch);
-          if (persisted.xai?.key !== undefined) persisted.xai.key = "";
-          if (persisted.composio?.apiKey !== undefined) persisted.composio.apiKey = "";
-          if (persisted.box?.token !== undefined) persisted.box.token = "";
-          if (persisted.opencodeGo?.apiKey !== undefined) persisted.opencodeGo.apiKey = "";
-          if (persisted.tts?.key !== undefined) persisted.tts.key = "";
-          if (persisted.tts?.fishKey !== undefined) persisted.tts.fishKey = "";
-          if (persisted.decider?.key !== undefined) persisted.decider.key = "";
-          if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
-          if (persisted.imageGen?.customApiKey !== undefined) persisted.imageGen.customApiKey = "";
-          if (persisted.live?.key !== undefined) persisted.live.key = "";
-          saveConfig(persisted);
-          configWriteCommitted = true;
-          syncCredentialEnv(patch);
-          Object.assign(cfg, loadConfig());
-        } else {
-          saveConfig(patch);
-          configWriteCommitted = true;
-          // loadConfig prefers env over the file for credentials, so the env
-          // must follow the save — otherwise the value injected at boot would
-          // shadow the new key until the next launch
-          syncCredentialEnv(patch);
-          Object.assign(cfg, loadConfig());
-        }
-      } catch (error) {
-        if (configWriteCommitted) {
-          for (const request of browserCleanupRequests) {
-            const committed = browserCleanup.commit(request);
-            void browserCleanup.ensure(committed);
-          }
-        } else {
-          for (const request of browserCleanupRequests) browserCleanup.abort(request);
-        }
-        throw error;
-      }
-      for (const key of resetKeys) if (key) forgetKey(key);
-      // Desktops already counting down move to the new window at once, in
-      // every isolation mode; busy work still defers its expiry.
-      if (patch.localVm?.idleTimeoutMinutes !== undefined) {
-        for (const idle of localVmIdles.values()) idle.setIdleMs(localVmIdleMs());
-      }
-      let browserReferenceCleanupError: unknown = null;
-      if (patch.signIn !== undefined) {
-        sessions.revalidateEmailSessions();
-        resyncOpenCodeProviderKeys();
-      }
-      if (!lendingEnabled()) {
-        sharedComputers.close();
-        sharedComputerControl.close();
-      }
-      if (disablingBuiltInBrowser) browserLive.closeAll();
-      for (const request of browserCleanupRequests) {
-        if (request.kind === "profile") browserLive.closeForSession(browserSessionId("", request.partitionId));
-      }
-      for (const { session, spec } of browsersToClose) {
-        browserLive.closeForSession(session);
-        usedBrowserSessions.delete(session);
-        // Closing a built-in browser saves its sign-ins for when it comes
-        // back; closing an attached one only lets go of the person's Chrome.
-        void closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })).then((closed) => {
-          if (!closed) console.warn(`browser ${session}: could not close it after its browser changed; the next turn may still use the old one`);
-        });
-      }
-      if (patch.browserProfiles !== undefined) {
-        const retained = new Set(patch.browserProfiles.map((profile) => profile.id));
-        try {
-          for (const bot of store.bots) {
-            if (bot.browserProfile && bot.browserProfile !== "guest" && !retained.has(bot.browserProfile)) {
-              // The profile list and every bot reference change in the same
-              // config request. Non-renderer clients therefore cannot leave a
-              // bot pointing at a deleted cookie partition.
-              store.patchBot(bot.id, { browserProfile: undefined });
-            }
-          }
-        } catch (error) {
-          // Config is already durable. Keep the cleanup intent prepared (so
-          // it cannot wipe ambiguous state and its id remains locked), but do
-          // not let this secondary write failure skip revocation/reload below.
-          browserReferenceCleanupError = error;
-        }
-      }
-      // Only an engine whose launch config this write changed is rebuilt: a
-      // provider key, URL or model default reaches its own engines and no
-      // others, and a setting no driver reads (profile, language, voice, VPS,
-      // room timeout, onboarding progress), or the same values saved again,
-      // rebuilds nothing and interrupts no turn.
-      const changedEngines = new Set(changedInstanceIds(enginesBefore, engineLaunches(providerConfigs())));
-      // Config is already durable. A changed engine's old children are
-      // invalid immediately, including when browser cleanup below has to
-      // await Electron before reloadProviders begins.
-      revokeEngineCapabilities(changedEngines);
-      // The cleanup marker becomes committed only after both pieces of durable
-      // application state agree. Commit/ACK failures are deferred until every
-      // mandatory consequence of the config write has run: no journal I/O
-      // failure may leave a two-hour bearer or stale provider fleet active.
-      const finalized = await finalizeBrowserCleanupMutation({
-        requests: browserCleanupRequests,
-        referenceError: browserReferenceCleanupError,
-        commit: (request) => browserCleanup.commit(request),
-        ensure: (request) => browserCleanup.ensure(request),
-        mandatory: async () => {
-          let mandatoryError: unknown = null;
-          if (disablingBuiltInBrowser) {
-            try {
-            } catch (error) {
-              mandatoryError = error;
-            }
-          }
-          if (changedEngines.size > 0) {
-            try {
-              await reloadProviders(enginesBefore);
-            } catch (error) {
-              if (!mandatoryError) mandatoryError = error;
-            }
-          }
-          const status = configStatus();
-          broadcast({ kind: "config", ...status });
-          if (patch.threads !== undefined) {
-            drainQueuedSends();
-          }
-          if (mandatoryError) throw mandatoryError;
-          return status;
-        },
-      });
-      // Normal desktop deletes wait for Electron's acknowledgement. If
-      // Electron is restarting, the committed journal keeps retrying and the
-      // id-reuse guard above prevents stale logins from resurfacing. Delaying
-      // this assertion until after every mandatory post-commit effect keeps
-      // the runtime aligned with the config even on a truthful 503 response.
-      requireBrowserCleanupAcknowledged(
-        finalized.acknowledgements.every(Boolean),
-        removedBrowserProfileIds.length === 1 ? "The browser profile" : "The browser profiles",
-      );
-      return json(res, 200, finalized.value);
-      } finally {
-        for (const provider of transitioningProviders) computerProviderConfigTransitions.delete(provider);
-        if (changingLocalVmMode) localVmModeChangeBusy = false;
-        providerConfigBusy = false;
       }
     }
 
