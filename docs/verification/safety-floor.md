@@ -8,9 +8,11 @@ a fork bomb. It is off by default (`safetyFloor.enabled` in `config.json`, or
 classifier only reads text, and every permission request is a fake one.
 
 It is not applied on a Windows server yet. There the setting is accepted and
-does nothing, the server says so once at startup, and every check below that
-expects a denial is run with the server's platform given as Linux, so the
-suites say the same thing on a Windows runner.
+does nothing, and the server says so once at startup. The classifier, gate,
+chat-runtime and driver suites give the server's platform explicitly (Linux)
+wherever they expect a denial, so they say the same thing on a Windows
+runner. The real-server test uses the machine's own platform: on a Windows
+runner it checks that nothing is applied, and stops there.
 
 ## Run
 
@@ -98,6 +100,14 @@ not evaluated, so a Mac or Linux server driving a Windows machine gets no
 protection for what runs there. What follows `pwsh -c` or
 `powershell -Command` is the one exception: it is read both as a POSIX line
 and as PowerShell deleting POSIX paths.
+
+Known limitation: a bare arithmetic shift, `(( x << 1 ))` or `echo $[1<<2]`,
+is "could not read". The reader takes `<<` for the start of a heredoc that
+then never ends, so the request goes to a person instead of being approved.
+Text inside `(( … ))` and `$[ … ]` can run (a substitution, or a `((` that is
+really two subshells), so it is read like any other text and not skipped;
+the tables pin both the block and the "could not read". The same shape
+inside `$(( … ))` is skipped, and a substitution there is not read.
 
 These checks prove the places the server answers by itself: the
 `request.opened` fold, the chat runtime's own tool gate, and the Codex and
