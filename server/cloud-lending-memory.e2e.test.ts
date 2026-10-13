@@ -118,12 +118,23 @@ let macAway = false;
  * owner's session survives it; the lent Mac's connector reconnects by itself
  * a few seconds later (see macOnline). `stopped` changes other records then. */
 async function leftBehind(of: { threadIds?: string[]; routineIds?: string[] }, stopped?: () => void) {
+  await stopRunningTurns();
   for (const proxy of proxies.splice(0)) proxy.kill();
   await waitForExit(child, { signal: "SIGTERM" });
   markLeftBehind(join(home, ".openmausbot"), of);
   stopped?.();
   await boot();
   macAway = true;
+}
+/** Stop every turn still running (an earlier test's held turn) before a
+ * restart. A turn a restart cuts runs again once at the next start
+ * (docs/runtime-contract.md §5): on the held engine that rerun would start
+ * beside the test's own next turn and could be the one toolsFor connects to. */
+async function stopRunningTurns() {
+  const running = async () => ((await api("GET", "/api/bots?messages=0", { token: owner })).body.bots as Array<{ id: string; tasks?: Array<{ threadId: string; busy?: boolean }> }>)
+    .flatMap((bot) => (bot.tasks ?? []).filter((task) => task.busy).map((task) => ({ bot, threadId: task.threadId })));
+  for (const { bot, threadId } of await running()) await stop(bot, threadId);
+  await expect.poll(async () => (await running()).length, { timeout: 10_000 }).toBe(0);
 }
 /** Before anything asks about the lent Mac: after a restart, wait until its
  * connector is back, so what a turn is (or is not) offered is never just the
