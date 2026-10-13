@@ -489,6 +489,35 @@ describe("MCP tool execution", () => {
     expect(fetcher.mock.calls.filter(([path]) => path.endsWith("/interrupt"))).toHaveLength(1);
   });
 
+  it("guards a bot speaking in a room thread, sends to a room's parallel thread, and stops a room on its exact thread", async () => {
+    const sent: Array<{ path: string; body: unknown }> = [];
+    const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
+      if (path === "/api/bots?messages=0") return {
+        bots: [{ id: "bot-1", threadId: "own", busy: true, activity: "working", tasks: [] }],
+        groups: [{ id: "channel-1", name: "Launch", memberIds: ["bot-1"], threadId: "task-1", busyBotId: null, tasks: [
+          { threadId: "task-1", title: "Open", working: false, busyBotId: null },
+          { threadId: "task-2", title: "Background", working: true, busyBotId: "bot-1" },
+        ] }],
+      };
+      if (path === "/api/groups/channel-1/messages" || path === "/api/groups/channel-1/interrupt") {
+        sent.push({ path, body: JSON.parse(String(options?.body)) });
+        return { ok: true };
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    // the bot speaks in a room thread that is not the room's open one
+    await expect(handleToolCall("send_bot_message", { bot_id: "bot-1", text: "hi" }, fetcher)).rejects.toThrow("is working in channel 'channel-1'");
+    // a server that runs a room's threads side by side takes a message for any of them
+    await expect(handleToolCall("send_channel_message", { channel_id: "channel-1", task_id: "task-2", text: "More" }, fetcher))
+      .resolves.toMatchObject({ success: true, taskId: "task-2" });
+    await expect(handleToolCall("interrupt_conversation", { target_type: "channel", target_id: "channel-1", task_id: "task-2" }, fetcher))
+      .resolves.toEqual({ success: true, targetType: "channel", targetId: "channel-1", taskId: "task-2" });
+    expect(sent).toEqual([
+      { path: "/api/groups/channel-1/messages", body: { text: "More", threadId: "task-2" } },
+      { path: "/api/groups/channel-1/interrupt", body: { threadId: "task-2" } },
+    ]);
+  });
+
   it("does not expose executable paths from the model catalog", async () => {
     const fetcher = vi.fn(async () => ({ instances: [{
       instanceId: "codex", displayName: "Codex", snapshot: { state: "available" }, models: {}, capabilities: {},
