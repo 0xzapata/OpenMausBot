@@ -852,10 +852,9 @@ export async function waitForJob(
     const params = new URLSearchParams({ scope: options.scope, ...(since !== undefined ? { since: String(since) } : {}),
       ...(wait > 0 ? { wait: String(wait) } : {}), ...(version !== undefined ? { version } : {}) });
     const job: Record<string, any> = await fetcher(`/api/threads/${encodeURIComponent(threadId)}/job?${params.toString()}`,
-      options.signal ? { signal: options.signal } : {}).catch((error: unknown) => {
-      throw error instanceof OpenMausBotApiError && error.status === 404
-        ? new OpenMausBotApiError(404, "This OpenMausBot server cannot report a conversation's job (GET /api/threads/:id/job); update it, then wait again.")
-        : error;
+      options.signal ? { signal: options.signal } : {}).catch((error: unknown) => { // a server without the route; a gone conversation is itself
+      throw error instanceof OpenMausBotApiError && error.status === 404 && !/no such conversation/.test(error.message)
+        ? new OpenMausBotApiError(404, "This OpenMausBot server cannot report a conversation's job (GET /api/threads/:id/job); update it, then wait again.") : error;
     });
     since = Number(job.since);
     if (job.version !== version) options.onProgress?.(job);

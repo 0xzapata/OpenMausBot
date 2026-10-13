@@ -614,13 +614,16 @@ describe("waiting on a conversation's job", () => {
       .rejects.toThrow("does not belong");
   });
 
-  it("names an older server that cannot report a job", async () => {
-    const fetcher = vi.fn(async (path: string) => {
+  it("names an older server that cannot report a job, and a conversation that is gone as gone", async () => {
+    const answering = (body: string) => vi.fn(async (path: string) => {
       if (path === "/api/bots?messages=0") return bot();
-      throw new OpenMausBotApiError(404, "OpenMausBot API error (404): not found");
+      throw new OpenMausBotApiError(404, `OpenMausBot API error (404): ${body}`);
     });
-    await expect(handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1" }, fetcher))
+    await expect(handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1" }, answering("not found")))
       .rejects.toThrow("cannot report a conversation's job");
+    // deleted while it was being waited on: not a reason to update the server
+    await expect(handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1" }, answering('{"error":"no such conversation"}')))
+      .rejects.toThrow('OpenMausBot API error (404): {"error":"no such conversation"}');
   });
 
   it("sends with the caller's send id, returns the receipt, and refuses a malformed id before sending", async () => {
