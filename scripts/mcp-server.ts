@@ -1441,9 +1441,10 @@ export async function processMcpMessage(
   }
 }
 
-/** Serve MCP on this process's stdin and stdout until stdin closes: what
- * `pnpm mcp`, dist-server/mcp-server.js and `openmausbot mcp` run. */
-export function runStdio(): void {
+/** Serve MCP on this process's stdin and stdout until stdin closes (then
+ * resolves): what `pnpm mcp`, dist-server/mcp-server.js and `openmausbot mcp` run. */
+export function runStdio(): Promise<void> {
+  log("OpenMausBot MCP server running on stdio");
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -1469,7 +1470,7 @@ export function runStdio(): void {
     });
   });
 
-  rl.on("close", async () => {
+  return new Promise((closed) => rl.on("close", async () => {
     for (const controller of activeMcpControllers) {
       controller.abort(new DOMException("Request cancelled", "AbortError"));
     }
@@ -1480,10 +1481,9 @@ export function runStdio(): void {
     // JSON-RPC frame. With stdin and readline closed, Node exits naturally
     // once that buffered write has drained.
     process.exitCode = 0;
-  });
-
-  log("OpenMausBot MCP server running on stdio");
+    closed();
+  }));
 }
 
 // Start stdio interface when executed directly
-if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.argv[1].endsWith("mcp-server.js"))) runStdio();
+if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.argv[1].endsWith("mcp-server.js"))) void runStdio();

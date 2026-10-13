@@ -1,0 +1,234 @@
+// team apply against a stand-in server that echoes back what it stores:
+// the plan, the writes it takes, and that a second apply of the same file
+// finds nothing to do and sends no write. botPatch is checked field by field.
+import { createHash } from "node:crypto";
+import { describe, expect, it } from "vitest";
+
+import type { HeadlessClient } from "./client.ts";
+import { botPatch, reconcile, type ApplyOptions } from "./team-apply.ts";
+import type { DesiredBot, TeamFile } from "./team-file.ts";
+
+type Rec = Record<string, any>;
+
+/** A workspace in memory, served through the routes apply uses. */
+function workspace(seed: { bots?: Rec[]; groups?: Rec[]; sections?: string[]; config?: Rec } = {}) {
+  const state = {
+    bots: (seed.bots ?? []).map((bot) => ({ busy: false, title: "", description: "", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, ...bot })) as Rec[],
+    groups: seed.groups ?? [],
+    sections: seed.sections ?? [],
+    briefs: {} as Record<string, string>,
+    skills: {} as Record<string, Record<string, { text: string; enabled: boolean }>>,
+    config: seed.config ?? { anthropic: { configured: false, everyClaudeBot: true } },
+  };
+  const writes: string[] = [];
+  let ids = 0;
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const json = async (path: string, init: RequestInit = {}): Promise<any> => {
+    const method = init.method ?? "GET";
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    if (method !== "GET") writes.push(`${method} ${path}`);
+    const url = new URL(path, "http://omb");
+    const m = url.pathname.split("/").slice(1);
+    if (url.pathname === "/api/config") {
+      if (method === "PUT") for (const [name, value] of Object.entries(body as Rec)) state.config[name] = { ...state.config[name], configured: true, ...(value.everyClaudeBot !== undefined ? { everyClaudeBot: value.everyClaudeBot } : {}) };
+      return state.config;
+    }
+    if (url.pathname === "/api/instances") return { instances: [{ instanceId: "claude", snapshot: { state: "available" }, models: { default: "claude-sonnet-5", options: [{ id: "claude-sonnet-5" }, { id: "claude-haiku-5" }] } }] };
+    if (url.pathname === "/api/sidebar-sections") {
+      if (method === "POST") state.sections.push(body.name);
+      return { sections: state.sections };
+    }
+    if (url.pathname === "/api/section-context") {
+      const section = url.searchParams.get("section")!;
+      if (method === "PUT") state.briefs[section] = body.text;
+      return { text: state.briefs[section] ?? "" };
+    }
+    if (url.pathname === "/api/bots" && method === "GET") return { bots: state.bots, groups: state.groups };
+    if (url.pathname === "/api/bots" && method === "POST") {
+      const bot = { id: `bot-${++ids}`, busy: false, name: body.name, title: body.title ?? "", description: body.description ?? "",
+        ...(body.section ? { section: body.section } : {}), modelSelection: body.modelSelection ?? { instanceId: "claude", model: "claude-sonnet-5" } };
+      state.bots.push(bot);
+      return { bot };
+    }
+    const bot = state.bots.find((candidate) => candidate.id === m[2]);
+    if (m[1] === "bots" && m.length === 3 && method === "PATCH") {
+      const { applyToAllThreads: _all, requireAvailableModel: _require, acknowledgePeerScope: _peer, acknowledgeLocalAuto: _local, ...fields } = body;
+      Object.assign(bot!, fields);
+      if (fields.computer === null) delete bot!.computer;
+      return { bot };
+    }
+    if (m[1] === "bots" && m.length === 3 && method === "DELETE") { state.bots = state.bots.filter((candidate) => candidate !== bot); return { ok: true }; }
+    if (m[1] === "bots" && m[3] === "skills" && m.length === 4) {
+      return { skills: Object.entries(state.skills[bot!.id] ?? {}).map(([name, skill]) => ({ name, enabled: skill.enabled, sha256: sha(skill.text) })) };
+    }
+    if (m[1] === "bots" && m[3] === "skills" && m.length === 5) {
+      const skills = state.skills[bot!.id] ??= {};
+      if (method === "DELETE") delete skills[m[4]!];
+      if (method === "PATCH") skills[m[4]!]!.enabled = body.enabled;
+      return { text: skills[m[4]!]?.text };
+    }
+    if (m[1] === "bots" && m[3] === "skill-template") { (state.skills[bot!.id] ??= {})[body.name] = { text: body.text, enabled: body.enabled }; return {}; }
+    if (m[1] === "groups" && method === "DELETE") { state.groups = state.groups.filter((group) => group.id !== m[2]); return { ok: true }; }
+    throw new Error(`no route for ${method} ${path}`);
+  };
+  const client: HeadlessClient = {
+    baseUrl: "http://omb", explicit: true, json, raw: async () => { throw new Error("no raw reads here"); },
+    tool: async (name, args: Rec) => {
+      writes.push(`tool ${name}`);
+      if (name === "create_channel") state.groups.push({ id: `room-${++ids}`, name: args.name, memberIds: args.member_ids, section: args.section,
+        bulletin: args.bulletin ?? "", defaultResponder: args.default_responder ? { kind: args.default_responder.kind, botId: args.default_responder.bot_id } : { kind: "member", botId: args.member_ids[0] } });
+      if (name === "update_channel") Object.assign(state.groups.find((group) => group.id === args.channel_id)!, { ...(args.member_ids ? { memberIds: args.member_ids } : {}),
+        ...(args.bulletin !== undefined ? { bulletin: args.bulletin } : {}), ...(args.section ? { section: args.section } : {}) });
+      return {};
+    },
+  };
+  return { state, writes, client };
+}
+
+const lead: DesiredBot = {
+  name: "Room Lead", team: "Launch Room", chief: true, manages: [], title: "Launch rehearsal lead", soul: "Lead the rehearsal.\n",
+  model: { instanceId: "claude", model: "claude-sonnet-5" }, approval: "full", computer: "off", cwd: "/work/room", tools: { deny: [] },
+  skills: [{ name: "launch-report", description: "Write it.", text: "---\nname: launch-report\ndescription: Write it.\n---\nBody\n", enabled: true, file: "skills/launch-report/SKILL.md" }],
+};
+const priya: DesiredBot = { name: "Priya", team: "Launch Room", manages: [], title: "Skeptical buyer", approval: "full", computer: "browser",
+  browser: { enabled: true, profile: "guest" }, tools: { deny: ["native:Bash"] }, skills: [] };
+const file = (patch: Partial<TeamFile> = {}): TeamFile => ({
+  path: "/files/launch-room.yaml", engines: [], warnings: [],
+  teams: [{ name: "Launch Room", brief: "We rehearse a launch.", prune: true }],
+  bots: [lead, priya], rooms: [{ name: "Rehearsal", team: "Launch Room", members: ["Room Lead", "Priya"], brief: "The room.", responder: "Room Lead" }],
+  ...patch,
+});
+const options = (patch: Partial<ApplyOptions> = {}): ApplyOptions => ({ apply: true, prune: false, rotateSecrets: false, waitIdleMs: 0, env: {}, ...patch });
+
+describe("team apply", () => {
+  it("plans without writing, applies what it planned, and then has nothing left to do", async () => {
+    const { client, writes, state } = workspace();
+    const plan = await reconcile(client, file(), options({ apply: false }));
+    expect(plan.lines).toEqual([
+      'team "Launch Room": create · brief set (1 line)',
+      'bot "Room Lead": create (Chief of Launch Room · claude/claude-sonnet-5 · Full access · computer off)',
+      'bot "Priya": create (team Launch Room · Full access · computer browser)',
+      'room "Rehearsal": create (2 members, team Launch Room)',
+    ]);
+    expect(plan).toMatchObject({ created: 4, changed: 0, deleted: 0, writes: 0 });
+    expect(writes).toEqual([]);
+
+    const applied = await reconcile(client, file(), options());
+    expect(applied.lines).toEqual(plan.lines);
+    expect(writes).toEqual([
+      "POST /api/sidebar-sections", "PUT /api/section-context?section=Launch%20Room",
+      "POST /api/bots", "PATCH /api/bots/bot-1", "POST /api/bots", "PATCH /api/bots/bot-2",
+      "POST /api/bots/bot-1/skill-template", "PATCH /api/bots/bot-1", "tool create_channel",
+    ]);
+    expect(state.bots.find((bot) => bot.name === "Priya")).toMatchObject({ section: "Launch Room", approvalMode: "full", computer: "browser",
+      browserProfile: "guest", toolScope: { deny: ["native:Bash"] } });
+    expect(state.bots.find((bot) => bot.name === "Room Lead")).toMatchObject({ chiefOfStaff: true, managedSections: [], soul: "Lead the rehearsal.", cwd: "/work/room" });
+
+    writes.length = 0;
+    const second = await reconcile(client, file(), options());
+    expect(second).toMatchObject({ lines: [], created: 0, changed: 0, deleted: 0, writes: 0 });
+    expect(writes).toEqual([]);
+  });
+
+  it("changes only what differs, with the words for it", async () => {
+    const { client, writes } = workspace();
+    await reconcile(client, file(), options());
+    writes.length = 0;
+    const changed = file({ bots: [{ ...lead, soul: "Lead the rehearsal.\nWrite report.md.\n" }, { ...priya, title: "Careful buyer", approval: "auto" }] });
+    const result = await reconcile(client, changed, options());
+    expect(result.lines).toEqual([
+      'bot "Room Lead": update soul 1 line changed',
+      'bot "Priya": update title "Skeptical buyer" → "Careful buyer"; approval Full access → Auto',
+    ]);
+    expect(writes).toEqual(["PATCH /api/bots/bot-1", "PATCH /api/bots/bot-2"]);
+  });
+
+  it("keeps bots and rooms the file leaves out, and deletes them only with --prune in a team marked prune", async () => {
+    const { client, writes, state } = workspace();
+    await reconcile(client, file(), options());
+    state.bots.push({ id: "old", name: "Old visitor", section: "Launch Room", busy: false });
+    writes.length = 0;
+    const kept = await reconcile(client, file(), options());
+    expect(kept.lines).toEqual(['bot "Old visitor": not in file (kept; --prune deletes it)']);
+    expect(writes).toEqual([]);
+    const unmarked = await reconcile(client, file({ teams: [{ name: "Launch Room", prune: false }] }), options({ prune: true }));
+    expect(unmarked.lines).toEqual(['bot "Old visitor": not in file (kept)']);
+    const pruned = await reconcile(client, file(), options({ prune: true }));
+    expect(pruned.lines).toEqual(['bot "Old visitor": delete (not in file)']);
+    expect(writes).toEqual(["DELETE /api/bots/old"]);
+  });
+
+  it("replaces a skill whose SKILL.md changed and turns one on or off, keeping skills the file does not list", async () => {
+    const { client, writes, state } = workspace();
+    await reconcile(client, file(), options());
+    state.skills["bot-1"]!["own-skill"] = { text: "mine", enabled: true };
+    writes.length = 0;
+    const edited = { ...lead.skills[0]!, text: `${lead.skills[0]!.text}More.\n` };
+    expect((await reconcile(client, file({ bots: [{ ...lead, skills: [edited] }, priya] }), options())).lines)
+      .toEqual(['skill "launch-report" for "Room Lead": replace with skills/launch-report/SKILL.md']);
+    expect(writes).toEqual(["DELETE /api/bots/bot-1/skills/launch-report", "POST /api/bots/bot-1/skill-template"]);
+    writes.length = 0;
+    expect((await reconcile(client, file({ bots: [{ ...lead, skills: [{ ...edited, enabled: false }] }, priya] }), options())).lines)
+      .toEqual(['skill "launch-report" for "Room Lead": turn off']);
+    expect(writes).toEqual(["PATCH /api/bots/bot-1/skills/launch-report"]);
+    expect(state.skills["bot-1"]!["own-skill"]).toEqual({ text: "mine", enabled: true });
+  });
+
+  it("writes an engine key only when none is set (or to rotate it), and never says it", async () => {
+    const engine = { kind: "claude", key: { env: "ANTHROPIC_API_KEY" } };
+    const env = { ANTHROPIC_API_KEY: "sk-ant-test-0123456789abcdefghij" };
+    const { client, writes } = workspace();
+    const first = await reconcile(client, file({ engines: [engine] }), options({ env }));
+    expect(first.lines[0]).toBe("engine claude: key «redacted 32 chars»");
+    expect(JSON.stringify(first)).not.toContain("sk-ant-test");
+    expect(writes[0]).toBe("PUT /api/config");
+    writes.length = 0;
+    expect((await reconcile(client, file({ engines: [engine] }), options({ env: {} }))).lines).toEqual([]);
+    expect(writes).toEqual([]);
+    expect((await reconcile(client, file({ engines: [engine] }), options({ env, rotateSecrets: true }))).lines[0]).toMatch(/^engine claude: key «redacted 32 chars»/);
+    await expect(reconcile(client, file({ engines: [engine] }), options({ env: {}, rotateSecrets: true }))).rejects.toThrow("ANTHROPIC_API_KEY is not set");
+  });
+
+  it("waits for a busy bot, then reports it unchanged", async () => {
+    const { client, state } = workspace();
+    await reconcile(client, file(), options());
+    state.bots.find((bot) => bot.name === "Priya")!.busy = true;
+    await expect(reconcile(client, file({ bots: [lead, { ...priya, title: "Changed" }] }), options({ waitIdleMs: 0 })))
+      .rejects.toThrow('"Priya" is still working after 0s, so it was not changed');
+  });
+
+  it("refuses an engine or model the server does not have", async () => {
+    const { client } = workspace();
+    await expect(reconcile(client, file({ bots: [{ ...priya, model: { instanceId: "codex", model: "gpt-6" } }] }), options({ apply: false })))
+      .rejects.toThrow('bot "Priya": no engine "codex" here');
+    await expect(reconcile(client, file({ bots: [{ ...priya, model: { instanceId: "claude", model: "claude-opus-9" } }] }), options({ apply: false })))
+      .rejects.toThrow('claude offers no model "claude-opus-9"');
+  });
+});
+
+describe("botPatch", () => {
+  const echo = { id: "b1", name: "Priya", section: "Launch Room", title: "Skeptical buyer", description: "", approvalMode: "full",
+    computer: "browser", browserProfile: "guest", toolScope: { deny: ["native:Bash", "native:Write"] }, modelSelection: { instanceId: "claude", model: "claude-sonnet-5", effort: "high" } };
+
+  // the same bot as the echo, its tool selectors in another order
+  const same: DesiredBot = { ...priya, tools: { deny: ["native:Write", "native:Bash"] } };
+
+  it("finds nothing to change when the echo already matches, whatever the order of tool selectors", () => {
+    expect(botPatch({ ...same, model: { instanceId: "claude", model: "claude-sonnet-5" } }, echo, "Launch Room")).toEqual({ patch: {}, changes: [] });
+    expect(botPatch(priya, echo, "Launch Room")).toEqual({ patch: { toolScope: { deny: ["native:Bash"] } }, changes: ["tools changed"] });
+  });
+
+  it("sends Auto on this computer's confirmation only when the file itself says so", () => {
+    expect(botPatch({ ...same, computer: "local", approval: "auto" }, echo, "Launch Room").patch).toMatchObject({
+      computer: "local", approvalMode: "auto", applyToAllThreads: true, acknowledgeLocalAuto: true });
+    expect(botPatch({ ...same, computer: "local" }, echo, "Launch Room").patch).not.toHaveProperty("acknowledgeLocalAuto");
+  });
+
+  it("changes the model, keeps an effort the file does not name, and moves a bot to Auto computer with null", () => {
+    expect(botPatch({ ...same, model: { instanceId: "claude", model: "claude-haiku-5" } }, echo, "Launch Room")).toEqual({
+      patch: { modelSelection: { instanceId: "claude", model: "claude-haiku-5" }, requireAvailableModel: true },
+      changes: ["model claude/claude-sonnet-5 (high) → claude/claude-haiku-5"] });
+    expect(botPatch({ ...same, effort: "low" }, echo, "Launch Room").patch.modelSelection).toEqual({ instanceId: "claude", model: "claude-sonnet-5", effort: "low" });
+    expect(botPatch({ ...same, computer: "auto" }, echo, "Launch Room")).toEqual({ patch: { computer: null }, changes: ["computer browser → auto"] });
+  });
+});

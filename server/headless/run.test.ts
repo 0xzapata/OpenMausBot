@@ -1,0 +1,158 @@
+// run and wait through the real command line handling, against stand-in MCP
+// tools and API reads: what is sent, how a long wait is carried across tool
+// calls, what each --on-input and --on-timeout does, and the exit codes.
+import { describe, expect, it, vi } from "vitest";
+
+import type { HeadlessIo } from "./output.ts";
+import { runHeadless } from "./main.ts";
+
+type Rec = Record<string, any>;
+const URL_ENV = { OPENMAUSBOT_URL: "http://127.0.0.1:19999" };
+
+const job = (state: string, version: string, extra: Rec = {}) => ({ threadId: "t1", state, version, since: 1_000, reason: `${state} now`, counts: {}, nodes: [], needsInput: [], ...extra });
+const waited = (status: string, state: string, jobView: Rec, extra: Rec = {}) => ({
+  status, state, targetType: "bot", targetId: "lead", taskId: "t1", target: { id: "lead" }, hasMore: false, job: jobView,
+  messages: [{ role: "user", kind: "text", text: "Rehearse" }, { role: "bot", kind: "text", text: "Report: [report](report.md) and ![shot](shots/1.png) at [site](https://example.com)" }],
+  ...extra,
+});
+
+function harness(waits: Rec[], options: { jobRead?: () => unknown; delayMs?: number } = {}) {
+  const calls: Array<{ name: string; args: Rec }> = [];
+  const requests: Array<{ path: string; method: string; body?: unknown }> = [];
+  let wait = 0;
+  const callTool = vi.fn(async (name: string, args: Rec, _fetcher: unknown, signal?: AbortSignal, hooks?: { onProgress?(job: Rec): void }) => {
+    calls.push({ name, args });
+    if (name === "create_task") return { success: true, task: { taskId: "t1" } };
+    if (name === "send_bot_message") return { success: true, botId: "lead", taskId: "t1", messageId: "m1", at: 5 };
+    if (name === "interrupt_conversation") return { success: true, targetType: "bot", targetId: "lead", taskId: "t1" };
+    if (name === "wait_for_conversation") {
+      // held like the real tool, which gives up when its signal is aborted
+      if (options.delayMs) await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, options.delayMs);
+        signal?.addEventListener("abort", () => { clearTimeout(timer); reject(Object.assign(new Error("Request cancelled"), { name: "AbortError" })); }, { once: true });
+      });
+      const result = waits[Math.min(wait++, waits.length - 1)]!;
+      hooks?.onProgress?.(result.job);
+      return result;
+    }
+    throw new Error(`unexpected tool ${name}`);
+  });
+  const request = vi.fn(async (path: string, init: RequestInit = {}) => {
+    requests.push({ path, method: init.method ?? "GET", ...(init.body ? { body: JSON.parse(String(init.body)) } : {}) });
+    if (path === "/api/bots?messages=0") return { bots: [{ id: "lead", name: "Room Lead", threadId: "t0", tasks: [{ threadId: "t0" }, { threadId: "t1" }] }], groups: [] };
+    if (/^\/api\/threads\/t[01]\/job/.test(path)) return options.jobRead ? options.jobRead() : job("idle", "v0", { now: 1_000 });
+    if (path.endsWith("/interrupt")) return { ok: true };
+    throw new Error(`unexpected path ${path}`);
+  });
+  const out: string[] = [];
+  const err: string[] = [];
+  const io: HeadlessIo = { out: (text) => out.push(text), err: (text) => err.push(text), readStdin: async () => "from stdin" };
+  const run = async (argv: string[], signal?: AbortSignal) => {
+    const code = await runHeadless(argv, { env: URL_ENV, io, callTool: callTool as any, request: request as any, ...(signal ? { signal } : {}) });
+    return { code, result: out.length ? JSON.parse(out.at(-1)!) : undefined, progress: err.map((line) => JSON.parse(line)) };
+  };
+  return { calls, requests, run };
+}
+
+describe("run", () => {
+  it("opens a conversation, pins the job to the server's clock, sends once with a send id, and waits for the whole job", async () => {
+    const h = harness([waited("settled", "completed", job("completed", "v2", { nodes: [{ id: "root", status: "completed" }] }))]);
+    const { code, result, progress } = await h.run(["run", "Room Lead", "Rehearse the launch\nof example.com", "--json"]);
+    expect(code).toBe(0);
+    expect(h.calls.map((call) => call.name)).toEqual(["create_task", "send_bot_message", "wait_for_conversation"]);
+    expect(h.calls[0]!.args).toEqual({ target_type: "bot", target_id: "lead", title: "Rehearse the launch" });
+    expect(h.calls[1]!.args).toEqual({ bot_id: "lead", task_id: "t1", text: "Rehearse the launch\nof example.com", send_id: expect.stringMatching(/^cli-[\w-]{16}$/) });
+    expect(h.calls[2]!.args).toEqual({ target_type: "bot", target_id: "lead", task_id: "t1", timeout_seconds: 120, scope: "job", since_ms: 1_000 });
+    // the job was read (for its since) before anything was sent
+    expect(h.requests.map((request) => request.path)).toEqual(["/api/bots?messages=0", "/api/threads/t1/job?"]);
+    expect(result).toMatchObject({ ok: true, exitCode: 0, threadId: "t1", since: 1_000, state: "completed",
+      reply: { text: expect.stringContaining("Report:"), files: ["report.md", "shots/1.png"] } });
+    expect(progress[0]).toMatchObject({ event: "started", threadId: "t1", messageId: "m1", since: 1_000 });
+    expect(progress[1]).toMatchObject({ event: "job", state: "completed" });
+  });
+
+  it("reads the message from stdin with -, and does not wait with --wait none", async () => {
+    const h = harness([]);
+    const { code, result } = await h.run(["run", "Room Lead", "-", "--wait", "none", "--task", "current", "--json"]);
+    expect(code).toBe(0);
+    expect(h.calls.map((call) => call.name)).toEqual(["send_bot_message"]);
+    expect(h.calls[0]!.args).toMatchObject({ task_id: "t0", text: "from stdin" });
+    expect(result).toMatchObject({ ok: true, threadId: "t0" });
+  });
+
+  it("refuses a server that cannot report a job before sending anything (exit 5)", async () => {
+    const h = harness([], { jobRead: () => { throw Object.assign(new Error("OpenMausBot API error (404): not found"), { status: 404 }); } });
+    const { code, result } = await h.run(["run", "--bot", "lead", "Go", "--json"]);
+    expect(code).toBe(5);
+    expect(result).toMatchObject({ ok: false, exitCode: 5, error: "this OpenMausBot server cannot report a conversation's job" });
+    expect(h.calls.map((call) => call.name)).toEqual(["create_task"]);
+  });
+});
+
+describe("wait", () => {
+  it("carries a long wait across tool calls, keeping the same job and asking only for a change", async () => {
+    const h = harness([
+      waited("timed-out", "timed-out", job("running", "v1")),
+      waited("timed-out", "timed-out", job("running", "v2")),
+      waited("settled", "completed", job("completed", "v3")),
+    ]);
+    const { code } = await h.run(["wait", "--bot", "lead", "--task", "t1", "--timeout", "10m", "--json"]);
+    expect(code).toBe(0);
+    expect(h.calls.map((call) => call.args)).toEqual([
+      { target_type: "bot", target_id: "lead", task_id: "t1", timeout_seconds: 120, scope: "job" },
+      { target_type: "bot", target_id: "lead", task_id: "t1", timeout_seconds: 120, scope: "job", since_ms: 1_000, after_version: "v1" },
+      { target_type: "bot", target_id: "lead", task_id: "t1", timeout_seconds: 120, scope: "job", since_ms: 1_000, after_version: "v2" },
+    ]);
+  });
+
+  it("exits 3 when someone must answer, waits through it with --on-input wait, and stops the job with --on-input stop", async () => {
+    const needs = waited("needs-user", "needs-input", job("needs-input", "v1", { nodes: [
+      { id: "root", botId: "lead", threadId: "t1", status: "waiting" },
+      { id: "a1", botId: "priya", botName: "Priya", threadId: "p1", status: "needs_input" },
+      { id: "a2", botId: "marcus", botName: "Marcus", threadId: "m1", groupId: "g1", status: "running" },
+      { id: "a3", botId: "kenji", botName: "Kenji", threadId: "k1", status: "completed" },
+    ], needsInput: [{ botName: "Priya", question: "Which tier?" }] }));
+    expect((await harness([needs]).run(["wait", "--bot", "lead", "--json"])).code).toBe(3);
+
+    const answered = harness([needs, waited("settled", "completed", job("completed", "v2"))]);
+    expect((await answered.run(["wait", "--bot", "lead", "--on-input", "wait", "--json"])).code).toBe(0);
+    expect(answered.calls[1]!.args).toMatchObject({ after_version: "v1" });
+
+    // still waiting on the answer when the time runs out: that is a timeout
+    expect((await harness([needs], { delayMs: 50 }).run(["wait", "--bot", "lead", "--on-input", "wait", "--timeout", "1", "--json"])).code).toBe(4);
+
+    const stopped = harness([needs], { jobRead: () => job("needs-input", "v1", { nodes: needs.job.nodes }) });
+    const { code, result } = await stopped.run(["wait", "--bot", "lead", "--on-input", "stop", "--json"]);
+    expect(code).toBe(3);
+    expect(stopped.calls.at(-1)).toEqual({ name: "interrupt_conversation", args: { target_type: "bot", target_id: "lead", task_id: "t1" } });
+    expect(stopped.requests.filter((request) => request.method === "POST")).toEqual([
+      { path: "/api/bots/priya/interrupt", method: "POST", body: { threadId: "p1" } },
+      { path: "/api/groups/g1/interrupt", method: "POST", body: { threadId: "m1" } },
+    ]);
+    expect(result.stopped.map((node: Rec) => node.botName)).toEqual(["Priya", "Marcus"]);
+  });
+
+  it("times out (4) and leaves the work running unless --on-timeout stop; --strict fails a run whose teammate failed", async () => {
+    const running = waited("timed-out", "timed-out", job("running", "v1"));
+    const left = harness([running], { delayMs: 20 });
+    expect((await left.run(["wait", "--bot", "lead", "--timeout", "1", "--json"])).code).toBe(4);
+    expect(left.calls.some((call) => call.name === "interrupt_conversation")).toBe(false);
+    const stopped = harness([running], { delayMs: 20, jobRead: () => job("running", "v1") });
+    expect((await stopped.run(["wait", "--bot", "lead", "--timeout", "1", "--on-timeout", "stop", "--json"])).code).toBe(4);
+    expect(stopped.calls.at(-1)!.name).toBe("interrupt_conversation");
+    const failedTeammate = waited("settled", "completed", job("completed", "v1", { nodes: [{ id: "root", status: "completed" }, { id: "a1", status: "failed" }] }));
+    expect((await harness([failedTeammate]).run(["wait", "--bot", "lead", "--json"])).code).toBe(0);
+    expect((await harness([failedTeammate]).run(["wait", "--bot", "lead", "--strict", "--json"])).code).toBe(1);
+    expect((await harness([waited("failed", "failed", job("failed", "v1"))]).run(["wait", "--bot", "lead", "--json"])).code).toBe(1);
+  });
+
+  it("stops waiting on Ctrl-C (130), leaves the work running, and says how to pick it up again", async () => {
+    const controller = new AbortController();
+    const h = harness([waited("settled", "completed", job("completed", "v1"))], { delayMs: 10_000 });
+    setTimeout(() => controller.abort(), 50);
+    const { code, result } = await h.run(["wait", "--thread", "t1", "--json"], controller.signal);
+    expect(code).toBe(130);
+    expect(result).toMatchObject({ ok: false, exitCode: 130, error: "stopped waiting; the work keeps running", hint: "wait again: openmausbot wait --thread t1" });
+    expect(h.calls.some((call) => call.name === "interrupt_conversation")).toBe(false);
+  });
+});
