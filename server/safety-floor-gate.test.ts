@@ -5,11 +5,11 @@ import { homedir } from "node:os";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DATA_DIR, ensureDirs, loadConfig, parseConfigPatch, parseStoredConfig, safetyFloorEnabled, saveConfig, type AppConfig } from "./config.ts";
+import { DATA_DIR, ensureDirs, loadConfig, parseConfigPatch, parseStoredConfig, saveConfig, type AppConfig } from "./config.ts";
 import type { RequestOutcome } from "./contracts.ts";
 import { flushDecisionLog, readDecisions } from "./decision-log.ts";
 import { autoVerdict } from "./auto-approve.ts";
-import { bindSafetyFloor, denyAtSafetyFloor, floorBlockForToolCall, heldAtSafetyFloor, safetyFloorBlock, safetyFloorClears, safetyFloorOn, shellCommandOfToolCall } from "./safety-floor-gate.ts";
+import { bindSafetyFloor, denyAtSafetyFloor, floorBlockForToolCall, heldAtSafetyFloor, safetyFloorBlock, safetyFloorClears, safetyFloorEnabled, safetyFloorOn, shellCommandOfToolCall } from "./safety-floor-gate.ts";
 import { floorReading } from "./safety-floor.ts";
 
 const ON: AppConfig = { safetyFloor: { enabled: true } };

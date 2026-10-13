@@ -11,15 +11,18 @@
 //     Full access and under "Always allow this session" (floorBlockForToolCall);
 //   - a driver that answers a request inside the driver: Codex and Muse Code
 //     at Full access, an ACP agent's kept "Always allow this session". Each
-//     asks safetyFloorClears first and, unless the command is cleared, does
-//     not answer: the request is raised like any other and lands in the fold.
+//     asks first (answersAlone in server/drivers/permission-command.ts) and,
+//     unless the command is cleared, does not answer: the request is raised
+//     like any other and lands in the fold.
 //
 // The driver and the fold must judge the same text. Every driver that knows
 // the command line an engine asked to run puts it on the request as
-// `commandLine`, whether or not it also knows the working directory that the
-// `command` descriptor needs, and both sides read that one string.
+// `commandLine` (shellRequest in permission-command.ts), whether or not it
+// also knows the working directory that the `command` descriptor needs, and
+// both sides read that one string.
 //
-// A command the reader could not read is neither on the list nor cleared.
+// A command the reader could not read (a quote that never closes, a line
+// over the size cap) is neither on the list nor cleared.
 // Nothing answers for it automatically: the fold turns the grant's verdict
 // into a card for the person (heldAtSafetyFloor), and a runtime with no card
 // to show refuses the call.
@@ -36,10 +39,20 @@ import { homedir } from "node:os";
 
 import type { RuntimeEvent } from "../shared/runtime-events.ts";
 import type { AutoVerdict } from "./auto-approve.ts";
-import { DATA_DIR, safetyFloorEnabled, type AppConfig } from "./config.ts";
+import { DATA_DIR, type AppConfig } from "./config.ts";
 import type { ProviderAdapter } from "./contracts.ts";
 import { appendDecision } from "./decision-log.ts";
 import { floorReading, type FloorRule } from "./safety-floor.ts";
+
+/** Whether the safety floor is switched on. Off unless somebody chose it: it
+ * denies commands that Full access, or a command the person saved, would
+ * otherwise have run. `safetyFloor.enabled` in config.json (or PUT
+ * /api/config) turns it on, and so does OMB_SAFETY_FLOOR=1 whatever the file
+ * says. The variable can only add the floor: no value of it switches off one
+ * the file enabled. */
+export function safetyFloorEnabled(cfg: AppConfig, env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OMB_SAFETY_FLOOR?.trim() === "1" || cfg.safetyFloor?.enabled === true;
+}
 
 /** Read per request, so a settings save applies to the next one. Until the
  * server binds its config, only OMB_SAFETY_FLOOR can switch the floor on. */

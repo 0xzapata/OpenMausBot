@@ -584,10 +584,7 @@ const appConfigSchema = z.object({
   /** The authorization decision log (server/decision-log.ts): days of month
    * files kept, at least; OMB_DECISION_RETENTION_DAYS wins when set. */
   decisions: z.object({ retentionDays: z.number().int().min(1).max(3650).optional() }).strict().optional(),
-  /** The safety floor (server/safety-floor.ts): a short never-list of shell
-   * commands the server will not approve by itself at any approval level.
-   * Off unless enabled here; OMB_SAFETY_FLOOR=1 switches it on as well. */
-  safetyFloor: z.object({ enabled: z.boolean().optional() }).strict().optional(),
+  safetyFloor: z.object({ enabled: z.boolean().optional() }).strict().optional(), // off by default: safetyFloorEnabled in server/safety-floor-gate.ts
   localVm: localVmConfigSchema.optional(),
   features: featureConfigSchema.optional(),
   onboarding: onboardingConfigSchema.optional(),
@@ -650,7 +647,6 @@ export interface AppConfig {
   openrouter?: { key?: string };
   budgets?: { monthlyUsd?: number; warnAtPercent?: number };
   decisions?: { retentionDays?: number };
-  /** Off by default; see safetyFloorEnabled. */
   safetyFloor?: { enabled?: boolean };
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };
@@ -812,16 +808,6 @@ export function mcpCallTimeoutMinutes(cfg: AppConfig): number {
   return cfg.mcp?.callTimeoutMinutes ?? DEFAULT_MCP_CALL_TIMEOUT_MINUTES;
 }
 
-/** Whether the safety floor is on (server/safety-floor.ts). Off unless
- * switched on: it denies commands that Full access, or a command the person
- * saved, would otherwise have run, so nobody gets it without choosing it.
- * `safetyFloor.enabled` in config.json (or PUT /api/config) turns it on, and
- * so does OMB_SAFETY_FLOOR=1 whatever the file says. The variable can only
- * add the floor: no value of it switches off one the file enabled. */
-export function safetyFloorEnabled(cfg: AppConfig, env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.OMB_SAFETY_FLOOR?.trim() === "1" || cfg.safetyFloor?.enabled === true;
-}
-
 /** The workspace keep-warm setting with its defaults filled in. */
 export function cacheKeepWarmSettings(cfg: AppConfig): { enabled: boolean; windowMinutes: number } {
   return { enabled: cfg.cacheKeepWarm?.enabled === true, windowMinutes: cfg.cacheKeepWarm?.windowMinutes ?? DEFAULT_WINDOW_MINUTES };
@@ -839,7 +825,6 @@ export function liveSettingsFor(cfg: AppConfig): LiveSettings {
     idleMinutes: Number.isInteger(minutes) && minutes! >= 1 && minutes! <= 60 ? minutes! : LIVE_IDLE_MINUTES_DEFAULT,
   };
 }
-
 
 /** Accepts a full config or a parsed patch: the concurrency limit may be
  * read from either, and a patch may legitimately omit it. */
@@ -971,7 +956,6 @@ export function claudeUserMcpEnabled(cfg: AppConfig): boolean {
 export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
   return cfg.features?.llmThreadTitles === true;
 }
-
 
 /** Opt-in shared skills library (skills lane S1): one store at the data dir
  * that bots reference by assignment instead of per-workspace copies. Off

@@ -53,7 +53,7 @@ import {
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { runKeepWarmPing, type KeepWarmContract } from "./claude-keepwarm.ts";
-import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
+import { permissionLaunchCwd, shellRequest } from "./permission-command.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import {
@@ -1934,9 +1934,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 requestType: ask.kind,
                 tool: ask.tool,
                 summary: askSummary(ask),
-                command: ask.kind === "permission" && ask.tool === "Bash"
-                  ? permissionCommand(ask.input.command, commandCwd) : undefined,
-                commandLine: ask.kind === "permission" && ask.tool === "Bash" && typeof ask.input.command === "string" ? ask.input.command : undefined,
+                // The Bash command, for exact-command grants and for the safety floor.
+                ...shellRequest(ask.kind === "permission" && ask.tool === "Bash" ? ask.input.command : undefined, commandCwd),
                 requiresExplicitApproval: ask.kind === "permission" && ask.tool === "Bash" && ask.input.dangerouslyDisableSandbox === true || undefined,
                 nativeReview,
                 // the proxy hands Claude its own suggested rules on `always`;

@@ -1,7 +1,9 @@
 // Per-turn ask gate, adapted from the approval lifecycle in #780.
 // Register before publishing: a harness listener may answer synchronously.
 import { newId, type RequestOutcome } from "../contracts.ts";
+import { floorBlockForToolCall, type FloorBlock } from "../safety-floor-gate.ts";
 import type { AskQuestion } from "../../shared/ask-question.ts";
+import type { ChatToolCallView } from "./chat-mcp-tools.ts";
 
 /** `grant`: what "Always allow this session" on this card would keep allowed
  * (ChatToolCallView.grant). Absent when the card can only allow once. */
@@ -13,6 +15,14 @@ interface Card {
   ask: Ask;
   /** Exactly-once: a second finish is a no-op because the card left the map. */
   finish(source: Source, decision?: { allowed?: boolean; always?: boolean; message?: string }): void;
+}
+
+/** What a refused call hands back to the model. A call the safety floor
+ * refused says why, and `notice` raises the one line the person sees. */
+export function refusal(block: FloorBlock | null, notice: (line: string) => void): string {
+  if (!block) return "Permission denied or expired; the tool was not executed.";
+  notice(block.line);
+  return block.reason;
 }
 
 export function createChatToolApproval(options: {
@@ -30,11 +40,19 @@ export function createChatToolApproval(options: {
   const pending = new Map<string, Card>();
   let closed = false;
   /** Whether an earlier "Always allow this session" already covers an ask,
-   * so `ask` would answer it with no card. The caller reads it to know that
-   * no person will see the call (the safety floor, safety-floor-gate.ts). */
+   * so `ask` would answer it with no card. */
   const covered = (grant?: string): boolean => grant !== undefined && options.granted?.has(grant) === true;
   return {
     covered,
+    /** The safety floor, one more condition before this gate answers itself.
+     * At Full access, or where a kept session allow would answer, nobody
+     * sees the call: a command on the never-list, or one the floor could not
+     * read, is refused there (the block is returned, already logged). A card
+     * a person answers is theirs to decide and is not touched. */
+    floored(call: { full: boolean; threadId: string; botId?: string; shown: ChatToolCallView; summary?: string }): FloorBlock | null {
+      if (!call.shown.ask || !(call.full || covered(call.shown.grant))) return null;
+      return floorBlockForToolCall({ threadId: call.threadId, botId: call.botId, tool: call.shown.title, summary: call.summary, input: call.shown.input });
+    },
     ask(tool: string, summary: string, grant?: string): Promise<boolean> {
       if (closed || options.signal.aborted) return Promise.resolve(false);
       if (covered(grant)) return Promise.resolve(true);

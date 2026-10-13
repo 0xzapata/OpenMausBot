@@ -45,7 +45,7 @@ import { codexBackgroundModel, runCodexOneShot } from "./codex-background-text.t
 import { augmentedPath, splitCliString } from "../env-path.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { appendNative } from "./native.ts";
-import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
+import { answersAlone, permissionLaunchCwd, shellRequest } from "./permission-command.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { codexDeveloperInstructions, syncCodexInstructions } from "./codex-instructions.ts";
 import { volatileContextNote, withContextNote } from "./prompt-split.ts";
@@ -54,7 +54,6 @@ import { CodexDeviceAuthController } from "./codex-device-auth.ts";
 import { codexAccountEmail, codexHome } from "./codex-identity.ts";
 import { keyRejected, noteKeyAccepted, noteKeyRejected } from "../key-rejections.ts";
 import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
-import { safetyFloorClears } from "../safety-floor-gate.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
 import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
@@ -1283,14 +1282,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             : isAdditionalPermission
               ? { permissions: allow ? grantedPermissions(params.permissions) : {}, scope: "turn" }
               : { decision: allow ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" };
-        // Full access answers here, inside the driver, with nobody looking.
-        // A shell command the safety floor does not clear is not answered:
-        // it is raised below like any other request, carrying the same
-        // command line, and the harness decides there
-        // (server/safety-floor-gate.ts).
-        const commandLine = (method === "execCommandApproval" || method === "item/commandExecution/requestApproval") &&
-          typeof params.command === "string" ? params.command as string : undefined;
-        if (autoAcceptPermissions && isPermission && safetyFloorClears(commandLine)) {
+        const shell = method === "execCommandApproval" || method === "item/commandExecution/requestApproval" ? params.command : undefined;
+        if (autoAcceptPermissions && isPermission && answersAlone(shell)) { // not for a safety-floor command: permission-command.ts
           return send({
             jsonrpc: "2.0",
             id: msg.id,
@@ -1362,12 +1355,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           requestType: isQuestion ? "question" : "permission",
           tool,
           summary,
-          command: method === "execCommandApproval" || method === "item/commandExecution/requestApproval"
-            ? permissionCommand(params.command, params.cwd ?? (
-              // Helpers may have a different workspace from their parent.
-              !params.threadId || params.threadId === codexThreadId ? commandCwd : undefined
-            )) : undefined,
-          commandLine,
+          ...shellRequest(shell, params.cwd ?? (
+            // Helpers may have a different workspace from their parent.
+            !params.threadId || params.threadId === codexThreadId ? commandCwd : undefined
+          )),
           choices,
           ...(protocolQuestions ? { questions: protocolQuestions.map((pair) => pair.question) } : {}),
           approvalScope: controlsHost ? "local-computer" : undefined,
