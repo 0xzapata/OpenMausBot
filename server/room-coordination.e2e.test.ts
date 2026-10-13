@@ -244,6 +244,7 @@ it.each(["rename", "delete"])("withholds an in-flight result after team %s and r
   f.plan[f.target.id] = { gateFile, reply: "PRIVATE_RESULT_AFTER_TEAM_RECREATION" };
   await f.start();
   await expect.poll(() => f.nodes().find((n: any) => n.parentId)?.status, { timeout: 30_000 }).toBe("running");
+  await expect.poll(async () => (await f.api("/api/bots?messages=0")).bots.find((bot: any) => bot.id === f.sender.id).busy, { timeout: 30_000 }).toBe(false);
   // The owner empties the team while this particular task is in flight,
   // removes its old identity, then puts the same bot under the reused name.
   const move = (section: string) => request(`/api/bots/${f.target.id}`, { method: "PATCH", headers: { Origin: f.session.info.url },
