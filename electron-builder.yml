@@ -71,6 +71,11 @@ extraResources:
     to: licenses/models-dev-LICENSE.txt
   - from: third_party/opencode/LICENSE
     to: licenses/opencode-LICENSE.txt
+  # The 1Password SDK and its WebAssembly core (MIT; saved logins from
+  # 1Password, staged in the duckdb resource tree). Neither npm package
+  # carries its license text, so the upstream file travels here.
+  - from: third_party/onepassword-sdk/LICENSE
+    to: licenses/1password-sdk-LICENSE.txt
   - from: dist
     to: ui
   - from: dist-server

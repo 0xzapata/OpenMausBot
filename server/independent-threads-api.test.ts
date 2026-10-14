@@ -1,5 +1,4 @@
-// Real harness + its isolated fake-engine launcher. Gates are per model so
-// two tasks on one bot stay in flight until this test completes or stops each.
+// Gates are per model, so two tasks on one bot stay in flight until the test completes or stops each.
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
@@ -9,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { launchVerificationServer, runControlOmb, type VerificationServer } from "../scripts/control-omb.ts";
 import { handleToolCall, request } from "../scripts/mcp-server.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 import { memoryDate } from "./workspace.ts";
 
 describe("independent bot tasks through the isolated control surface", () => {
@@ -67,8 +67,7 @@ describe("independent bot tasks through the isolated control surface", () => {
   };
 
   beforeEach(async () => {
-    // The broker's "nobody answered" deadline fires on a marker file
-    // (server/testing/approval-clock-hooks.mjs), never on its own.
+    // The approval deadline fires only on a marker file.
     session = await launchVerificationServer({ ...process.env, OMB_TEST_APPROVAL_CLOCK: "1" });
     evidence = [{ fixture: session.info }];
     const wrapper = join(session.info.dataDir, "gated-claude.mjs");
@@ -120,8 +119,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     });
     expect(queued.status).toBe(200);
     const requestId = queued.body.receipts[0].requestId;
-    // The receipt is the sender's honest answer at send time: nothing has
-    // been delivered yet.
     expect(queued.body.receipts).toEqual([{
       botId: peer.id,
       botName: "Mailbox Peer",
@@ -130,35 +127,28 @@ describe("independent bot tasks through the isolated control surface", () => {
       requestId: expect.any(String),
       threadId: expect.any(String),
     }]);
-    const handoff = () => JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8"))
-      .find((node: any) => node.id === requestId);
-    const peerThread = handoff().threadId;
+    const handoff = () => readHandoffs(session.info.dataDir).find((node) => node.id === requestId);
+    const peerThread = handoff()!.threadId;
     expect(peerThread).not.toBe(peer.activeTaskId);
     expect(queued.body.receipts[0].threadId).toBe(peerThread);
     writeFileSync(modelFile(models[0], "gate"), "finish");
-    // From the Chief's conversation the wait would look like a teammate that
-    // never starts: it says, once, whose card holds the slot and where.
     const chiefMessages = async () => (await api("GET", "/api/bots")).body.bots.find((bot: any) => bot.id === chief.id).messages as any[];
     const queuedChips = async () => (await chiefMessages()).filter((message: any) => message.tool?.name?.startsWith("Queued for @Mailbox Peer"));
     await expect.poll(async () => (await queuedChips()).length).toBe(1);
     const [chip] = await queuedChips();
     expect(chip.threadRef).toMatchObject({ botId: peer.id, threadId: peer.activeTaskId });
     expect(chip.tool.name).toBe(`Queued for @Mailbox Peer behind your approval in “${chip.threadRef.title}”`);
-    // a notice nothing settles: never a step left running
     expect(chip.tool.ok).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     expect(handoff()?.status).toBe("queued");
     expect(await queuedChips()).toHaveLength(1);
     expect((await chiefMessages()).filter((message: any) => message.tool?.name === "Sent to Mailbox Peer")).toHaveLength(1);
-    // Asked again meanwhile, the Chief is told the same, not "free soon".
     await expect.poll(async () => (await botState(chief.id)).busy).toBe(false);
     await control(["send", "--bot", chief.id, "--text", "Is the review moving?"]);
     const told = async () => JSON.stringify((await dump(models[0])).prompt ?? "");
     await expect.poll(told).toContain("waiting for a free slot: that teammate is waiting on the person's approval in its thread");
     expect(await told()).toContain(chip.threadRef.title);
     await expect.poll(async () => (await botState(chief.id)).busy).toBe(false);
-    // A card holds only its own thread: with a slot free, the work starts
-    // beside it while the card still waits.
     expect((await api("PATCH", "/api/config", { threads: { maxConcurrentPerBot: 3 } })).status).toBe(200);
     await expect.poll(() => handoff()?.status, { timeout: 10_000 }).toBe("running");
     const peerNow = (await api("GET", "/api/bots")).body.bots.find((bot: any) => bot.id === peer.id);
@@ -200,18 +190,15 @@ describe("independent bot tasks through the isolated control surface", () => {
     });
     expect(sent.status).toBe(200);
     const requestId = sent.body.receipts[0].requestId;
-    const handoff = () => JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8"))
-      .find((node: any) => node.id === requestId);
-    const workThread = handoff().threadId;
+    const handoff = () => readHandoffs(session.info.dataDir).find((node) => node.id === requestId);
+    const workThread = handoff()!.threadId;
     writeFileSync(modelFile(models[0], "gate"), "finish");
-    // The teammate's own chips about its cards, not the Chief's "Sent to" receipt.
     const chiefChips = async () => (await api("GET", `/api/threads/${chief.activeTaskId}/messages?limit=100`)).body.messages
       .filter((message: any) => message.kind === "activity" && message.from?.botId === peer.id && message.threadRef?.threadId === workThread
         && message.tool && !message.roomRequest) as any[];
     const card = async (id: string) => (await api("GET", `/api/threads/${workThread}/messages?limit=100`)).body.messages
       .find((message: any) => message.card?.requestId === id);
 
-    // The person denies one step of the teammate's work turn...
     const deniedAnswers = await permission(models[1], "denied-approval", { command: "git push --force" });
     await expect.poll(async () => (await chiefChips()).map((chip) => chip.tool.name)).toEqual(["Waiting on your approval in @Release Peer"]);
     expect((await api("POST", `/api/threads/${workThread}/respond`, { requestId: "denied-approval", behavior: "deny" })).status).toBeLessThan(300);
@@ -219,7 +206,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     await expect.poll(async () => (await chiefChips()).map((chip) => [chip.tool.name, chip.tool.ok]))
       .toEqual([["@Release Peer's request was denied", false]]);
 
-    // ...and nobody answers the next, which the engine denies on its timer.
     const unanswered = await permission(models[1], "unanswered-approval", { command: "npm run release-check" });
     await expect.poll(async () => Boolean(await card("unanswered-approval"))).toBe(true);
     expect((await chiefChips()).at(-1).tool.name).toBe("Waiting on your approval in @Release Peer");
@@ -233,8 +219,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     ]);
     expect((await card("unanswered-approval")).card).toMatchObject({ answered: "deny", dismissed: true });
 
-    // One more goes unanswered, but the model asks again once the person is
-    // back and is allowed: that one ran, so the note must not claim it.
     const lint = await permission(models[1], "lint-approval", { command: "npm run lint" });
     await expect.poll(async () => Boolean(await card("lint-approval"))).toBe(true);
     writeFileSync(expiry, "expire");
@@ -251,11 +235,9 @@ describe("independent bot tasks through the isolated control surface", () => {
       ["@Release Peer got your approval", true],
     ]);
 
-    // The turn carries on and finishes; its result tells the Chief which
-    // action never ran, ahead of the teammate's own words.
     writeFileSync(modelFile(models[1], "gate"), "finish");
     await expect.poll(() => handoff()?.status, { timeout: 20_000 }).toBe("completed");
-    const result: string = handoff().result;
+    const result: string = handoff()!.result;
     expect(result.startsWith("[OpenMausBot: nobody answered the approval for “Bash: npm run release-check” in time, so it did not run. Do not report it as done;")).toBe(true);
     expect(result).toContain("reply to:");
     expect(result).not.toContain("git push");
@@ -270,7 +252,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     const chief = (await tool("create_bot", { name: "Delegating Chief", instance_id: "claude", model: models[0] })).bot;
     const peer = (await tool("create_bot", { name: "Delegated Peer", instance_id: "claude", model: models[1] })).bot;
     expect((await api("PATCH", `/api/bots/${peer.id}`, { approvalMode: "ask" })).status).toBe(200);
-    // delegate_bot is a routine's tool; a direct chat coordinates instead
     const routine = await api("POST", "/api/routines", {
       name: "Release checks", prompt: "Delegate the release checks to the reviewer.", botId: chief.id, enabled: false,
       schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 },
@@ -280,10 +261,12 @@ describe("independent bot tasks through the isolated control surface", () => {
     const runThread = async () => (await api("GET", "/api/routines")).body.runs.find((candidate: any) => candidate.id === run.id)?.threadId as string | undefined;
     await expect.poll(runThread).toBeTruthy();
     const token = (await dump(models[0])).mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
-    const delegated = await internal(token, "POST", "/api/internal/delegate-bot", { toBotId: peer.id, message: "RELEASE_CHECKS: run the release checks." });
+    const delegated = await internal(token, "POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "RELEASE_CHECKS: run the release checks." });
     expect(delegated.status).toBe(200);
-    expect(delegated.body).toMatchObject({ queued: true, taskId: expect.any(String) });
-    // the delegation starts once the Chief's turn ends
+    expect(delegated.body.receipts).toEqual([expect.objectContaining({ botId: peer.id, outcome: "queued", requestId: expect.any(String) })]);
+    const requestId = delegated.body.receipts[0].requestId as string;
+    const handoff = () => readHandoffs(session.info.dataDir).find((node) => node.id === requestId);
+    expect(handoff()).toMatchObject({ botId: peer.id, mode: "work", reply: "resume" });
     writeFileSync(modelFile(models[0], "gate"), "finish");
     const unanswered = await permission(models[1], "unanswered-delegated", { command: "npm run release-check" });
     const peerCard = async () => {
@@ -304,19 +287,22 @@ describe("independent bot tasks through the isolated control surface", () => {
     renameSync(`${modelFile(models[1], "gate")}.tmp`, modelFile(models[1], "gate"));
     const note = "[OpenMausBot: nobody answered the approval for “Bash: npm run release-check” in time, so it did not run.";
     const runMessages = async () => (await api("GET", `/api/threads/${await runThread()}/messages?limit=100`)).body.messages as any[];
+    const reported = async () => (await runMessages()).find((message: any) => message.roomRequest?.id === requestId && message.roomRequest.phase === "result")?.tool;
     if (ending === "finish") {
-      const replied = async () => (await runMessages())
-        .find((message: any) => message.kind === "text" && message.text?.startsWith("@Delegated Peer replied to the delegated task:"))?.text as string | undefined;
-      await expect.poll(replied, { timeout: 20_000 }).toBeTruthy();
-      expect((await replied())!.startsWith(`@Delegated Peer replied to the delegated task:\n\n${note}`)).toBe(true);
+      await expect.poll(reported, { timeout: 20_000 }).toBeTruthy();
+      expect(await reported()).toMatchObject({ name: "Delegated Peer replied", ok: true });
+      expect(String((await reported())!.output).startsWith(note)).toBe(true);
+      await expect.poll(() => handoff()?.status, { timeout: 20_000 }).toBe("completed");
+      expect(handoff()!.result.startsWith(note)).toBe(true);
     } else {
-      // A failed turn reports only its failure: the note rides on it.
-      const failed = async () => (await runMessages())
-        .find((message: any) => message.tool?.name?.startsWith("Delegation to @Delegated Peer failed"))?.tool as { name: string; ok: boolean } | undefined;
-      await expect.poll(failed, { timeout: 20_000 }).toBeTruthy();
-      expect(await failed()).toMatchObject({ ok: false });
-      expect((await failed())!.name).toBe(`Delegation to @Delegated Peer failed — Delegated turn did not finish — error\n\n${note} Do not report it as done; it needs the person's approval.]`);
+      await expect.poll(reported, { timeout: 20_000 }).toBeTruthy();
+      expect(await reported()).toMatchObject({ ok: false });
+      expect((await reported())!.name).toBe("Delegated Peer — failed: Fixture turn failed. Before it stopped it made 1 tool call: Bash ×1.");
+      await expect.poll(() => handoff()?.status, { timeout: 20_000 }).toBe("failed");
     }
+    const woken = async () => JSON.stringify((await dump(models[0])).prompt);
+    await expect.poll(woken, { timeout: 20_000 }).toContain("[OpenMausBot report from @Delegated Peer on assignment");
+    expect(await woken()).toContain("nobody answered the approval for “Bash: npm run release-check” in time, so it did not run. Do not report it as done; it needs the person's approval.");
   }, 60_000);
 
   it("tells a room's coordinator that a member's approval went unanswered, so the step did not run", async () => {
@@ -334,8 +320,7 @@ describe("independent bot tasks through the isolated control surface", () => {
     const sent = await internal(token, "POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "RELEASE_CHECKS: run the release checks." });
     expect(sent.status).toBe(200);
     const requestId = sent.body.receipts[0].requestId;
-    const handoff = () => JSON.parse(readFileSync(join(session.info.dataDir, "room-handoffs.json"), "utf8"))
-      .find((node: any) => node.id === requestId);
+    const handoff = () => readHandoffs(session.info.dataDir).find((node) => node.id === requestId);
     expect(handoff()).toMatchObject({ groupId: room.id });
     writeFileSync(modelFile(models[0], "gate"), "finish");
     const unanswered = await permission(models[1], "unanswered-room", { command: "npm run release-check" });
@@ -347,32 +332,48 @@ describe("independent bot tasks through the isolated control surface", () => {
     rmSync(expiry, { force: true });
     writeFileSync(modelFile(models[1], "gate"), "finish");
     await expect.poll(() => handoff()?.status, { timeout: 20_000 }).toBe("completed");
-    expect(handoff().result.startsWith("[OpenMausBot: nobody answered the approval for “Bash: npm run release-check” in time, so it did not run.")).toBe(true);
+    expect(handoff()!.result.startsWith("[OpenMausBot: nobody answered the approval for “Bash: npm run release-check” in time, so it did not run.")).toBe(true);
   }, 60_000);
 
-  it("reports a deleted one-way recipient thread in its surviving source without restarting the sender", async () => {
+  it("ends a one-way notice whose recipient thread was deleted before it started, without restarting the sender", async () => {
     const sender = (await tool("create_bot", { name: "Independent sender", instance_id: "claude", model: models[0] })).bot;
     const recipient = (await tool("create_bot", { name: "Independent recipient", instance_id: "claude", model: models[1] })).bot;
-    await control(["send", "--bot", sender.id, "--text", "Prepare independent work."]);
-    const launched = await dump(models[0]);
-    const token = launched.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
-    const sent = await internal(token, "POST", "/api/internal/threads", {
-      toBotId: recipient.id, title: "Deleted independent work", message: "Own this work.", oneWay: true,
-    });
-    expect(sent.status).toBe(201);
-    const threadId = sent.body.threadId;
-    expect((await api("DELETE", `/api/bots/${recipient.id}/tasks/${threadId}`)).status).toBe(200);
-    writeFileSync(modelFile(models[0], "gate"), "finish sender");
-    expect((await control(["wait", "--bot", sender.id, "--timeout", "15"])).status).toBe("settled");
-    await expect.poll(async () => (await api("GET", `/api/threads/${sender.activeTaskId}/messages`)).body.messages
-      .some((message: any) => message.tool?.ok === false && message.tool.name.includes("deleted before it could start")),
-    { timeout: 5_000 }).toBe(true);
-    expect((await api("GET", `/api/threads/${threadId}/messages`)).status).toBe(404);
-    expect((await botState(recipient.id)).tasks.some((task: any) => task.threadId === threadId)).toBe(false);
-    expect((await botState(sender.id)).busy).toBe(false);
-    expect((await dump(models[0])).pid).toBe(launched.pid);
-    expect(existsSync(modelFile(models[1], "json"))).toBe(false);
-  }, 30_000);
+    // One slot, held by the recipient's own turn, so the notice queues.
+    const capacity = (await api("GET", "/api/config")).body.threads?.maxConcurrentPerBot ?? 2;
+    expect((await api("PATCH", "/api/config", { threads: { maxConcurrentPerBot: 1 } })).status).toBe(200);
+    try {
+      await control(["send", "--bot", recipient.id, "--text", "Hold the recipient's slot."]);
+      await expect.poll(async () => (await botState(recipient.id)).busy, { timeout: 15_000 }).toBe(true);
+      await control(["send", "--bot", sender.id, "--text", "Prepare independent work."]);
+      const launched = await dump(models[0]);
+      const token = launched.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
+      const sent = await internal(token, "POST", "/api/internal/coordinate-bots", {
+        botIds: [recipient.id], message: "Own this work.", thread: "new", reply: "none",
+      });
+      expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+      const receipt = sent.body.receipts[0];
+      expect(receipt).toMatchObject({ botId: recipient.id, outcome: "queued", threadId: expect.any(String), requestId: expect.any(String) });
+      const threadId = receipt.threadId as string;
+      const notice = () => readHandoffs(session.info.dataDir).find((node) => node.id === receipt.requestId);
+      expect(notice()).toMatchObject({ mode: "notify", reply: "none", status: "queued", threadId });
+      expect((await api("DELETE", `/api/bots/${recipient.id}/tasks/${threadId}`)).status).toBe(200);
+      await expect.poll(() => notice()?.status, { timeout: 15_000 }).toMatch(/^(failed|cancelled)$/);
+      expect(notice()!.executions).toBe(0);
+      writeFileSync(modelFile(models[0], "gate"), "finish sender");
+      expect((await control(["wait", "--bot", sender.id, "--timeout", "15"])).status).toBe("settled");
+      const after = (await api("GET", `/api/threads/${sender.activeTaskId}/messages`)).body.messages as any[];
+      expect(after.filter((message: any) => message.tool?.ok === false)).toEqual([]);
+      expect(after.filter((message: any) => message.roomRequest?.phase === "result")).toEqual([]);
+      expect((await api("GET", `/api/threads/${threadId}/messages`)).status).toBe(404);
+      expect((await botState(recipient.id)).tasks.some((task: any) => task.threadId === threadId)).toBe(false);
+      expect((await botState(sender.id)).busy).toBe(false);
+      expect((await dump(models[0])).pid).toBe(launched.pid);
+      writeFileSync(modelFile(models[1], "gate"), "finish recipient");
+      await expect.poll(async () => (await botState(recipient.id)).busy, { timeout: 15_000 }).toBe(false);
+    } finally {
+      expect((await api("PATCH", "/api/config", { threads: { maxConcurrentPerBot: capacity } })).status).toBe(200);
+    }
+  }, 45_000);
 
   it("replaces the final worked thread with blank context but refuses to delete it while running", async () => {
     const created = await tool("create_bot", { name: "Last thread fixture", instance_id: "claude", model: models[0] });
@@ -423,7 +424,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     expect((await internal(token, "POST", "/api/internal/memory", { action: "append", text: "A unique saved fact." })).status).toBe(200);
     for (const text of ["", " \n\t "]) {
       expect((await internal(token, "POST", "/api/internal/memory", { action: "replace", oldText: "unique saved fact", text })).status).toBe(400);
-      // the append landed as one dated entry naming the thread it came from
       expect((await api("GET", `/api/bots/${botId}/memory`)).body.text).toBe(`- ${memoryDate()} · from chat "${"t".repeat(60)}…" · A unique saved fact.\n`);
     }
     const project = join(session.info.dataDir, "task-workspaces", botId, threadId, "result.txt");
@@ -472,7 +472,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     const background = await paired("GET", `/api/threads/${threadB}/messages?limit=50`);
     expect(background.body.messages.some((message: any) => message.card?.requestId === "phone-approval-b" && !message.card.answered)).toBe(true);
 
-    // A stale island's immutable A target must never authorize B's request.
     const stale = await paired("POST", `/api/threads/${threadA}/respond`, { requestId: "phone-approval-b", behavior: "allow" });
     expect(stale.body.outcome).toBe("unavailable");
     expect(answersA).toEqual([]);
@@ -499,8 +498,7 @@ describe("independent bot tasks through the isolated control surface", () => {
     const second = await tool("create_task", { target_type: "bot", target_id: botId, title: "Independent B" });
     const taskB = second.task.taskId;
     await control(["set-model", "--bot", botId, "--task", taskB, "--instance", "claude", "--model", models[1]]);
-    // Loosening approval from an originless agent request stays forbidden;
-    // this settings action models the trusted app's same-origin request.
+    // This settings action models the trusted app's same-origin request.
     expect((await api("PATCH", `/api/bots/${botId}/tasks/${taskB}`, { approvalMode: "auto" })).status).toBe(409);
     expect((await api("PATCH", `/api/bots/${botId}/tasks/${taskB}`, { approvalMode: "auto" }, true)).status).toBe(200);
     await control(["send", "--bot", botId, "--task", taskB, "--text", "ONLY_B"]);
@@ -563,8 +561,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     expect((await api("POST", `/api/bots/${botId}/messages/${userA.id}/edit`, { threadId: taskB, text: "wrong task" })).status).toBe(404);
     expect((await api("POST", `/api/bots/${botId}/active-branch`, { threadId: taskB, messageId: userA.id })).status).toBe(404);
 
-    // Changing the profile model moves the selected idle task (A, which
-    // follows the bot) and never the independently configured sibling.
     await tool("switch_task", { target_type: "bot", target_id: botId, task_id: taskA });
     const legacyModel = models.at(-1)!;
     expect((await api("PATCH", `/api/bots/${botId}`, { modelSelection: { instanceId: "claude", model: legacyModel } })).status).toBe(200);
@@ -588,16 +584,12 @@ describe("independent bot tasks through the isolated control surface", () => {
     const run = (await api("GET", "/api/routines")).body.runs.find((item: any) => item.id === launched.body.run.id);
     expect(run.threadId).not.toBe(selectedThread);
     expect((await botState(botId)).tasks.find((task: any) => task.taskId === run.threadId)?.busy).toBe(true);
-    // An offline profile default is supported; it must not become the
-    // cancellation target for an already-running task on Claude.
     expect((await api("PATCH", `/api/bots/${botId}`, {
       modelSelection: { instanceId: "offline-fixture", model: "offline-model" },
     })).status).toBe(200);
     expect((await api("POST", `/api/routine-runs/${run.id}/cancel`)).status).toBe(200);
     await expect.poll(async () => (await botState(botId)).tasks.find((task: any) => task.taskId === run.threadId)?.busy,
       { timeout: 10_000 }).toBe(false);
-    // The cancel reached Claude, which ran the turn; the run's thread, with no
-    // model of its own, now follows the bot's new default like the rest.
     const final = await botState(botId);
     expect(final.tasks.find((task: any) => task.taskId === run.threadId)?.modelSelection.instanceId).toBe("offline-fixture");
     expect(final.tasks.find((task: any) => task.taskId === selectedThread)?.modelSelection.instanceId).toBe("offline-fixture");
@@ -616,8 +608,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     await dump(models[0]);
     const selection = { instanceId: "claude", model: models[1] };
     expect((await api("PATCH", `/api/bots/${botId}/tasks/${threadId}`, { modelSelection: selection })).status).toBe(200);
-    // The selected task already has B, but the Group still owns default A:
-    // a no-op relative to the task is not a no-op relative to the Group.
     expect((await api("PATCH", `/api/bots/${botId}/model`, selection)).status).toBe(409);
     expect((await api("PATCH", `/api/bots/${botId}`, { modelSelection: selection })).status).toBe(409);
     expect((await api("PATCH", `/api/bots/${botId}/tasks/${threadId}`, { modelSelection: selection, updateBotDefault: true })).status).toBe(409);
@@ -644,9 +634,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     const taskB = second.task.taskId;
     await control(["set-model", "--bot", botId, "--task", taskB, "--instance", "claude", "--model", models[1]]);
     await control(["send", "--bot", botId, "--task", taskB, "--text", "PROJECT_B_PARALLEL"]);
-    // Like two Claude Code sessions open in one repo: the second engine starts
-    // in the same folder while the first still works there. The per-turn
-    // snapshot queues per folder on its own (server/checkpoints.ts).
     expect((await dump(models[1])).env.OMB_FIXTURE_CWD).toBe(realpathSync(cwd));
     const both = await botState(botId);
     expect(both.tasks.find((task: any) => task.taskId === taskA)?.busy).toBe(true);
@@ -658,8 +645,7 @@ describe("independent bot tasks through the isolated control surface", () => {
   }, 45_000);
 
   it.skipIf(process.platform !== "darwin")("claims the shared computer only on first use and keeps a sibling stop from releasing it", async () => {
-    // The fake provider only receives this inert descriptor; no UI driver is
-    // launched and the descriptor lives inside the fixture's disposable home.
+    // The fake provider only receives this inert descriptor; no UI driver is launched.
     const descriptorDir = join(session.info.dataDir, "Library", "Application Support", "OpenMausBot");
     mkdirSync(descriptorDir, { recursive: true });
     writeFileSync(join(descriptorDir, "cua-connection.json"), JSON.stringify({
@@ -683,11 +669,12 @@ describe("independent bot tasks through the isolated control surface", () => {
       expect(url.origin).toBe(session.info.url);
       return internal(env.OMB_CONTROL_TOKEN, "GET", `${url.pathname}${url.search}`);
     };
-    // B acquires first although A started first: mounting the tool did not
-    // lock the shared computer. A receives an actionable hold, not authority.
     expect((await gate(launchedB)).body.held).toBe(false);
-    expect((await gate(launchedA)).body).toMatchObject({ held: true, blockedReason: expect.stringContaining("Another thread") });
+    const waitingA = gate(launchedA);
+    await expect.poll(async () => ((await api("GET", `/api/threads/${taskA}/messages`)).body.messages as any[])
+      .some((message) => String(message.tool?.name ?? "").startsWith("Waiting for its turn on this computer")), { timeout: 15_000 }).toBe(true);
     await control(["interrupt", "--bot", botId, "--task", taskA]);
+    expect((await waitingA).body.held).toBe(true);
     expect((await gate(launchedA)).status).toBe(401);
     expect((await gate(launchedB)).body.held).toBe(false);
     await control(["interrupt", "--bot", botId, "--task", taskB]);
@@ -720,9 +707,6 @@ describe("independent bot tasks through the isolated control surface", () => {
     await control(["set-model", "--bot", botId, "--task", attendedTask, "--instance", "claude", "--model", models[1]]);
     await control(["send", "--bot", botId, "--task", attendedTask, "--text", "ATTENDED_ONLY"]);
     const attendedLaunch = await dump(models[1]);
-    // Approval levels are the provider's own modes, passed through: a turn a
-    // webhook started runs in the bot's level like any other, and a request
-    // Claude's reviewer leaves for a person is carded, not answered.
     expect(unattendedLaunch.argv[unattendedLaunch.argv.indexOf("--permission-mode") + 1]).toBe("auto");
     expect(attendedLaunch.argv[attendedLaunch.argv.indexOf("--permission-mode") + 1]).toBe("auto");
 

@@ -1,7 +1,5 @@
-// SKILL.md reading shared by the server skill store, the package format and
-// the renderer. Pure text only: no filesystem, no Node globals, so the same
-// rules validate a skill wherever it is read (server/skills.ts re-exports
-// these under their historical names).
+// SKILL.md reading for the server skill store, the package format and the
+// renderer. Pure text, so the same rules validate a skill wherever it is read.
 
 /** Spec rule: lowercase alphanumerics with single hyphens, 1-64 chars,
  * folder name must equal it. The regex IS the traversal gate — no dots, no

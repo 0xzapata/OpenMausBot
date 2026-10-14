@@ -29,8 +29,7 @@ test("a server tree without the bootstrap forks index.js with no cache, as befor
 });
 
 test("no cache where the app's path changes every launch: AppImage and App Translocation", () => {
-  // Node keys cache entries by full path, so these would never hit and would
-  // add a new entry on every launch.
+  // Node keys cache entries by full path, so these would never hit and would add an entry every launch.
   const appImage = serverChildLaunch({
     resourcesPath: "/tmp/.mount_OpenMaXk3f9a/resources",
     userData: "/home/someone/.config/OpenMausBot",
@@ -50,15 +49,24 @@ test("no cache where the app's path changes every launch: AppImage and App Trans
 
 test("main forks what the helper picks and hands only the server the cache directory", () => {
   const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  const start = main.indexOf("async function startServerOn(port)");
+  const start = main.indexOf("async function startServerOn(port,");
   const body = main.slice(start, main.indexOf("utilityProcess.fork(entry", start));
   assert.match(body, /const \{ entry, compileCacheDir \} = serverChildLaunch\(\{\n\s+resourcesPath: process\.resourcesPath,\n\s+userData: app\.getPath\("userData"\),/);
   assert.match(body, /delete childEnv\.OMB_SERVER_COMPILE_CACHE;\n\s+if \(compileCacheDir\) childEnv\.OMB_SERVER_COMPILE_CACHE = compileCacheDir;/);
   assert.doesNotMatch(body, /path\.join\(process\.resourcesPath, "server", "index\.js"\)/);
 });
 
-// A staged copy of the bootstrap beside a stand-in index.js, run on this
-// Node. The stand-in reports what the server would see.
+test("every server child of one launch gets that launch's id, never one from the shell", () => {
+  const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(main, /\nconst desktopLaunchId = randomUUID\(\);\n/);
+  const start = main.indexOf("async function startServerOn(port,");
+  const body = main.slice(start, main.indexOf("utilityProcess.fork(entry", start));
+  const spread = body.indexOf("...process.env,");
+  const launch = body.indexOf("OMB_DESKTOP_LAUNCH_ID: desktopLaunchId,");
+  assert.ok(spread > 0 && launch > spread, "the launch id is set after, so over, the inherited environment");
+});
+
+// A staged copy of the bootstrap beside a stand-in index.js that reports what the server would see.
 function stage(t, indexSource = REPORTING_INDEX) {
   const dir = mkdtempSync(path.join(tmpdir(), "omb-server-entry-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -68,8 +76,7 @@ function stage(t, indexSource = REPORTING_INDEX) {
   return dir;
 }
 
-// Runs the bootstrap's after-start timer right away instead of in 10 s, and
-// stays alive long enough for it to finish.
+// Runs the bootstrap's after-start timer at once instead of in 10 s, and stays alive for it to finish.
 const REPORTING_INDEX = `
 import module from "node:module";
 import { execFileSync } from "node:child_process";
@@ -226,8 +233,7 @@ test("nothing is pruned when Node keeps its cache somewhere else", (t) => {
   mkdirSync(stale);
   const old = new Date(Date.now() - 3 * DAY_MS);
   utimesSync(stale, old, old);
-  // NODE_COMPILE_CACHE from the launching environment wins: Node reports
-  // ALREADY_ENABLED and the bootstrap leaves its directory alone.
+  // NODE_COMPILE_CACHE from the launching environment wins: Node reports ALREADY_ENABLED.
   const result = runEntry(dir, cacheRoot, { NODE_COMPILE_CACHE: path.join(dir, "elsewhere") });
   assert.equal(result.status, 0, result.stderr);
   assert.ok(existsSync(stale));

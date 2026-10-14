@@ -1,9 +1,4 @@
-// POST /api/bots/:botId/tasks/delete: delete many of a bot's tasks in one
-// request. Partial success is normal (a running or unknown thread is
-// refused per id, the rest still go), and it must never be swallowed by the
-// "switch to task :id" route that shares its prefix.
-//
-// POSIX-gated like the other CLI e2es (the fakes are shebang scripts).
+// POSIX only: the fake engines are shebang scripts.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -188,23 +183,23 @@ posixOnly("bulk delete tasks e2e", () => {
     expect((await roomTaskIds(room.id)).sort()).toEqual([room.threadId, second].sort());
   });
 
-  it("refuses the whole channel request while a turn is running, then works after it finishes", async () => {
+  it("refuses a channel thread with a running turn per id but still deletes the others", async () => {
     rmSync(finishGate, { force: true });
     const bot = await newBot("Bulk J", { instanceId: "claudeSlow", model: "claude-fake" });
     const room = await newRoom("Bulk room busy", bot);
     const second = (await api("POST", `/api/groups/${room.id}/tasks`, {})).body.task.threadId;
+    const third = (await api("POST", `/api/groups/${room.id}/tasks`, {})).body.task.threadId;
     expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "go", threadId: room.threadId })).status).toBe(202);
     await waitUntil(async () => (await api("GET", "/api/bots")).body.groups.find((g: any) => g.id === room.id)?.working === true, 15_000, "room turn never started");
 
-    const blocked = await api("POST", `/api/groups/${room.id}/tasks/delete`, { threadIds: [second] });
+    const res = await api("POST", `/api/groups/${room.id}/tasks/delete`, { threadIds: [room.threadId, second] });
 
-    expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
-    expect((await roomTaskIds(room.id)).sort()).toEqual([room.threadId, second].sort());
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.deleted).toEqual([second]);
+    expect(res.body.refused).toEqual([{ threadId: room.threadId, reason: "busy" }]);
+    expect((await roomTaskIds(room.id)).sort()).toEqual([room.threadId, third].sort());
     writeFileSync(finishGate, "go");
     await waitUntil(async () => (await api("GET", "/api/bots")).body.groups.find((g: any) => g.id === room.id)?.working === false, 15_000, "room turn never finished");
-    const after = await api("POST", `/api/groups/${room.id}/tasks/delete`, { threadIds: [second] });
-    expect(after.status, JSON.stringify(after.body)).toBe(200);
-    expect(after.body.deleted).toEqual([second]);
   });
 
   it("rejects malformed channel bodies, unknown channels and bot-to-bot channels", async () => {

@@ -1,8 +1,9 @@
-// Where "is Claude signed in?" is answered. These tests inject the CLI
-// runner, so they never read or mutate the developer's real credentials.
+// These tests inject the CLI runner, so they never read or change the developer's real credentials.
 import { describe, expect, it } from "vitest";
 
-import { claudeAuthFailure, claudeLimitMessage, claudeLimitRefusal, claudeResultError, claudeSignedIn, claudeUsageLimit, claudeVersionTooOld } from "./claude.ts";
+import { claudeSignedIn } from "./claude-auth-status.ts";
+import { claudeAuthFailure, claudeResultError, claudeVersionTooOld } from "./claude.ts";
+import { claudeLimitMessage, claudeLimitRefusal, claudeUsageLimit } from "./claude-limits.ts";
 
 describe("claudeSignedIn", () => {
   it("uses the CLI's machine-readable auth status", async () => {
@@ -51,8 +52,6 @@ describe("claudeAuthFailure", () => {
   });
 
   it("leaves a model's own words alone", () => {
-    // the flag is the gate: a reply that merely discusses logging in is a
-    // reply, and must keep rendering as one
     expect(claudeAuthFailure({}, LOGIN_TEXT)).toBe(false);
     expect(claudeAuthFailure({}, "You are not logged in to npm; run npm login.")).toBe(false);
   });
@@ -77,12 +76,8 @@ describe("claudeVersionTooOld", () => {
   });
 });
 
-// An account past its usage limit was reported as "update required" and
-// then "stop_sequence", and the Chief told the person three times to finish
-// the bot's setup (Pesto, Oct 8-10). The CLI said what it was all along.
 describe("Claude usage limits", () => {
-  // captured from 2.1.295: the rate_limit_event, and the same window on the
-  // refused call's api-error frame (api_error_params.rate_limit_info)
+  // Captured from 2.1.295: the rate_limit_event, and the same window on the refused call's api_error_params.
   const WEEKLY = { status: "rejected", resetsAt: 1791795600, rateLimitType: "seven_day", overageStatus: "rejected", overageDisabledReason: "org_level_disabled", isUsingOverage: false };
   const WEEKLY_TEXT = "You've hit your weekly limit \u00b7 resets Oct 12 at 2:30pm (Asia/Calcutta)";
   const BEFORE_RESET = Date.parse("2026-10-09T17:48:32Z");
@@ -91,7 +86,6 @@ describe("Claude usage limits", () => {
     expect(claudeLimitRefusal(WEEKLY)).toEqual({ window: "seven_day", resetsAt: 1791795600 });
     expect(claudeLimitRefusal({ ...WEEKLY, rateLimitType: "five_hour" })).toEqual({ window: "five_hour", resetsAt: 1791795600 });
     expect(claudeLimitRefusal({ status: "rejected" })).toEqual({ window: null, resetsAt: null });
-    // near a limit, under it, or past it on extra usage, the turn still runs
     expect(claudeLimitRefusal({ ...WEEKLY, status: "allowed_warning" })).toBeNull();
     expect(claudeLimitRefusal({ ...WEEKLY, status: "allowed" })).toBeNull();
     expect(claudeLimitRefusal({ ...WEEKLY, isUsingOverage: true })).toBeNull();
@@ -107,7 +101,6 @@ describe("Claude usage limits", () => {
     const tooOld = "API Error: 400 Claude Code 2.1.272 does not support this model; version 2.1.280 or newer is required.";
     expect(claudeUsageLimit({ error: "invalid_request", is_api_error_message: true }, tooOld, true)).toBe(true);
     expect(claudeUsageLimit({ error: "invalid_request", is_api_error_message: true }, tooOld)).toBe(false);
-    // a model's own words, and a per-minute rate limit, are not the account's limit
     expect(claudeUsageLimit({}, WEEKLY_TEXT)).toBe(false);
     expect(claudeUsageLimit({ is_api_error_message: true }, "API Error: 429 You've hit your rate limit, retry in 5s")).toBe(false);
   });
@@ -117,15 +110,12 @@ describe("Claude usage limits", () => {
       .toBe("This Claude account has reached its weekly limit, which resets Oct 12, 2:30 PM (Asia/Calcutta). Until then, switch this bot to another engine or Claude account.");
     expect(claudeLimitMessage({ window: "five_hour", resetsAt: 1791795600 }, undefined, BEFORE_RESET, "UTC"))
       .toBe("This Claude account has reached its 5-hour limit, which resets Oct 12, 9:00 AM (UTC). Until then, switch this bot to another engine or Claude account.");
-    // a model's own weekly limit leaves the account's other models running
     expect(claudeLimitMessage({ window: "seven_day_opus", resetsAt: 1791795600 }, undefined, BEFORE_RESET, "UTC"))
       .toBe("This Claude account has reached its weekly Opus limit, which resets Oct 12, 9:00 AM (UTC). Until then, choose another model for this bot.");
     expect(claudeLimitMessage({ window: "seven_day_sonnet", resetsAt: null })).toBe("This Claude account has reached its weekly Sonnet limit. For now, choose another model for this bot.");
-    // no reset to write: the CLI's words carry what it knows
     expect(claudeLimitMessage({ window: "overage", resetsAt: null }, "You're out of usage credits. Contact your admin to add more."))
       .toBe("This Claude account has reached its usage limit (Claude says: \"You're out of usage credits. Contact your admin to add more\"). For now, switch this bot to another engine or Claude account.");
     expect(claudeLimitMessage(claudeLimitRefusal(WEEKLY), WEEKLY_TEXT, 1791795600_000 + 1, "UTC")).toContain(`(Claude says: "${WEEKLY_TEXT}")`);
-    // an unknown zone still writes the reset
     expect(claudeLimitMessage(claudeLimitRefusal(WEEKLY), undefined, BEFORE_RESET, "Mars/Olympus")).toContain("which resets 2026-10-12 09:00 UTC.");
   });
 });

@@ -60,7 +60,6 @@ it("is a switch, off by default; turning it on shows the choices and lends nothi
   expect(view.html).toContain("If someone else writes in a conversation, it can no longer use your Mac.");
   expect(view.html).toContain("Apps and screen");
   expect(bridge.save).not.toHaveBeenCalled();
-  // Adding a folder lends it at once, read-only, with no confirmation.
   view.nodes.find(node => node.type === "button" && Children.toArray(node.props.children).includes("Add folder"))!.props.onClick!();
   await flush();
   expect(bridge.save).toHaveBeenCalledExactlyOnceWith({ folders: [folder], screen: false });

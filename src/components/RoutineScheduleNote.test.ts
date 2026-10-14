@@ -36,7 +36,6 @@ describe("the note's way to My Cloud", () => {
     const { RoutineScheduleNote } = await import("./RoutineScheduleNote");
     const html = renderToStaticMarkup(createElement(RoutineScheduleNote));
     expect(html.replace(/<[^>]+>/g, "")).toContain("To run routines 24/7, create them on My Cloud. Open My Cloud");
-    // The sentence itself is no link; only "Open My Cloud" is.
     expect(html.match(/<button[^>]*>([^<]*)<\/button>/)?.[1]).toBe("Open My Cloud");
     const tree = RoutineScheduleNote() as { props: { children: unknown } };
     const find = (node: unknown): { props: { onClick(): void } } | undefined => {

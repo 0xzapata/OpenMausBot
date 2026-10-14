@@ -1,43 +1,60 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { t } from "@/lib/i18n";
-import { archivedIds, clearSelection, clickRow, isTickable, olderThanIds, selectAll, summarizeDelete, type SelectableRow } from "@/lib/bulk-select";
-import type { BulkDeleteResult } from "@/state/store";
+import { archivedIds, chunkIds, clearSelection, clickRow, isTickable, olderThanIds, selectAll, summarizeDelete, type DeleteResponse, type SelectableRow } from "@/lib/bulk-select";
+import { api, type Action, type BotAnnouncement, type Group } from "@/state/store";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+export type BulkDeleteResult = { responses: DeleteResponse[]; error?: string };
+type Selection = ReadonlySet<string>;
+
+/** One request per chunk, in order; a failed chunk stops the rest, and earlier chunks stay deleted. */
+export async function deleteThreadsInBulk(owner: { botId: string } | { groupId: string }, threadIds: string[], dispatch: (action: Action) => void): Promise<BulkDeleteResult> {
+  const url = "botId" in owner ? `/api/bots/${owner.botId}/tasks/delete` : `/api/groups/${owner.groupId}/tasks/delete`;
+  const responses: DeleteResponse[] = [];
+  try {
+    for (const part of chunkIds(threadIds)) {
+      const response = await api<DeleteResponse & { bot?: BotAnnouncement; group?: Partial<Group> & { id: string } }>(url, { method: "POST", body: JSON.stringify({ threadIds: part }) });
+      responses.push(response);
+      if (response.bot) dispatch({ type: "botPatched", bot: response.bot });
+      if (response.group) dispatch({ type: "groupPatched", group: response.group });
+    }
+    return { responses };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    dispatch({ type: "error", message });
+    return { responses, error: message };
+  }
+}
 
 const OLDER_DAYS = 30;
 
 const chip = "rounded-full border border-hairline/50 px-2.5 py-0.5 text-[11px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40";
 
-/** Select mode state for one thread list. Each render hands `forRows` the
- * rows the list shows, in display order: shift-click ranges and the quick
- * filters then only touch rows the person can see, and ids that vanish or
- * start running drop out of the selection. */
+/** Each render hands `forRows` the rows the list shows, in display order, so ranges and filters touch only visible rows. */
 export function useBulkSelect() {
   const [active, setActive] = useState(false);
-  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const [picked, setPicked] = useState<Selection>(new Set());
   const anchor = useRef<string | null>(null);
   const shown = useRef<readonly SelectableRow[]>([]);
   const toggle = useCallback((task: { threadId: string }, shiftKey: boolean) => {
-    // Read the anchor now: the updater below runs later, after it moves on.
     const from = anchor.current;
     anchor.current = task.threadId;
     setPicked((previous) => clickRow(previous, shown.current, from, task.threadId, shiftKey));
   }, []);
   const start = useCallback(() => setActive(true), []);
   const finish = useCallback(() => { setActive(false); setPicked(new Set()); anchor.current = null; }, []);
-  const forRows = (rows: readonly SelectableRow[]): ReadonlySet<string> => {
+  const forRows = (rows: readonly SelectableRow[]): Selection => {
     shown.current = rows;
     return new Set(rows.filter((row) => picked.has(row.threadId) && isTickable(row)).map((row) => row.threadId));
   };
   return { active, start, finish, forRows, setSelected: setPicked, toggle };
 }
 
-/** The quick filters at the top of a thread list in Select mode. */
 export function BulkSelectFilters({ rows, selected, now, onChange, onDone }: {
   rows: readonly SelectableRow[];
-  selected: ReadonlySet<string>;
+  selected: Selection;
   now: number;
-  onChange: (next: Set<string>) => void;
+  onChange: Dispatch<SetStateAction<Selection>>;
   onDone: () => void;
 }) {
   const add = (ids: string[]) => onChange(new Set([...selected, ...ids]));
@@ -50,17 +67,15 @@ export function BulkSelectFilters({ rows, selected, now, onChange, onDone }: {
   </div>;
 }
 
-/** The sticky bar with the count, Cancel, and Delete, plus the one
- * confirmation and one result line for the whole batch. */
 export function BulkSelectBar({ rows, selected, maxDeletable, freshConversation, onChange, onDelete }: {
   rows: readonly SelectableRow[];
-  selected: ReadonlySet<string>;
+  selected: Selection;
   /** A channel must keep one thread; omit for no limit. */
   maxDeletable?: number;
   /** Deleting every thread of a bot starts a new empty conversation. */
   freshConversation: boolean;
-  onChange: (next: Set<string>) => void;
-  onDelete: (threadIds: string[], onSettled: (result: BulkDeleteResult) => void) => void;
+  onChange: Dispatch<SetStateAction<Selection>>;
+  onDelete: (threadIds: string[]) => Promise<BulkDeleteResult>;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
@@ -78,7 +93,7 @@ export function BulkSelectBar({ rows, selected, maxDeletable, freshConversation,
     const ids = [...selected];
     setPending(true);
     setResult(null);
-    onDelete(ids, (outcome) => {
+    void onDelete(ids).then((outcome) => {
       const done = summarizeDelete(outcome.responses);
       const gone = new Set(outcome.responses.flatMap((response) => response.deleted));
       const lines = [
@@ -87,7 +102,7 @@ export function BulkSelectBar({ rows, selected, maxDeletable, freshConversation,
         done.missing > 0 ? t("task.bulk.resultMissing", { count: done.missing }) : null,
         outcome.error ? t("task.bulk.resultError", { message: outcome.error }) : null,
       ].filter(Boolean);
-      onChange(new Set([...selected].filter((id) => !gone.has(id))));
+      onChange((previous) => new Set([...previous].filter((id) => !gone.has(id))));
       setResult(lines.join(" "));
       setPending(false);
       setConfirming(false);
@@ -108,5 +123,28 @@ export function BulkSelectBar({ rows, selected, maxDeletable, freshConversation,
     </div>
     <ConfirmDialog open={confirming} title={t("task.bulk.confirmTitle", { count })} body={body} confirmLabel={t("task.bulk.delete", { count })}
       pending={pending} onCancel={() => { if (!pending) setConfirming(false); }} onConfirm={run} />
+  </div>;
+}
+
+export function ThreadListFooter({ bulk, rows, selected, total, canShowAll, canSelect, onShowAll, maxDeletable, freshConversation, onDelete }: {
+  bulk: ReturnType<typeof useBulkSelect>;
+  rows: readonly SelectableRow[];
+  selected: Selection;
+  total: number;
+  canShowAll: boolean;
+  canSelect: boolean;
+  onShowAll: () => void;
+  maxDeletable?: number;
+  freshConversation: boolean;
+  onDelete: (threadIds: string[]) => Promise<BulkDeleteResult>;
+}) {
+  if (bulk.active) {
+    return <BulkSelectBar rows={rows} selected={selected} maxDeletable={maxDeletable} freshConversation={freshConversation} onChange={bulk.setSelected} onDelete={onDelete} />;
+  }
+  if (!canShowAll && !canSelect) return null;
+  const link = "inline-flex h-7 items-center text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink";
+  return <div className="flex items-center justify-between pl-6 pr-2">
+    {canShowAll ? <button type="button" onClick={onShowAll} className={link}>{t("task.showAll", { count: total })}</button> : <span />}
+    {canSelect && <button type="button" onClick={bulk.start} className={link}>{t("task.bulk.select")}</button>}
   </div>;
 }

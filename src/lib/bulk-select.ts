@@ -1,5 +1,3 @@
-// Pure selection logic for the sidebar's "Select" mode (bulk delete threads).
-
 export type SelectableRow = {
   threadId: string;
   busy?: boolean;
@@ -27,8 +25,7 @@ export function toggleId(selected: ReadonlySet<string>, id: string): Set<string>
   return next;
 }
 
-/** Shift-click: tick or untick every tickable row between the anchor and the
- * target in list order. An unknown anchor degrades to the target alone. */
+/** An unknown anchor degrades to the target alone. */
 export function rangeSelect(selected: ReadonlySet<string>, rows: readonly SelectableRow[], anchor: string | null, target: string, check: boolean): Set<string> {
   const next = new Set(selected);
   const to = rows.findIndex((row) => row.threadId === target);
@@ -42,8 +39,7 @@ export function rangeSelect(selected: ReadonlySet<string>, rows: readonly Select
   return next;
 }
 
-/** One click on a row: a plain click flips it, shift-click flips the whole
- * range from the anchor to the same state the clicked row is moving to. */
+/** Shift-click sets the whole range from the anchor to the state the clicked row is moving to. */
 export function clickRow(selected: ReadonlySet<string>, rows: readonly SelectableRow[], anchor: string | null, threadId: string, shiftKey: boolean): Set<string> {
   return shiftKey && anchor !== null
     ? rangeSelect(selected, rows, anchor, threadId, !selected.has(threadId))
@@ -90,7 +86,5 @@ export function summarizeDelete(responses: readonly DeleteResponse[]): { deleted
   return summary;
 }
 
-/** The keyboard shortcuts that open a thread row's actions menu. Select mode
- * owns the row, so they are inert there. */
 export const opensRowMenuFromKey = (key: string, shiftKey: boolean, selectMode: boolean): boolean =>
   !selectMode && (key === "ContextMenu" || (shiftKey && key === "F10"));

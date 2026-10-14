@@ -1,6 +1,4 @@
-// Paste-a-key rows. Packaged Electron saves secrets in the OS-backed store;
-// browser development falls back to PUT /api/config. Secrets are write-only
-// either way — GET /api/config returns configured flags, never values.
+// Security: secrets are write-only; GET /api/config returns configured flags, never values.
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
@@ -9,18 +7,14 @@ import { useMenuMotion } from "./MenuMotion";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 
-export type ConfigSection = "composio" | "box" | "opencodeGo" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq";
-/** Sections whose key can be tried against the provider from the server. */
-export type TestableProvider = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq";
+export type ConfigSection = "composio" | "box" | "opencodeGo" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
+export type TestableProvider = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
 
 const SECTIONS: Record<
   ConfigSection,
   {
-    /** `firstKey`: nothing was saved before this value. */
     body: (value: string, firstKey: boolean) => unknown;
-    /** A key is saved. */
     flag: (config: ConfigStatus) => boolean;
-    /** Works with no saved key: Cloud Pro includes it. */
     included?: (config: ConfigStatus) => boolean;
   }
 > = {
@@ -34,8 +28,6 @@ const SECTIONS: Record<
     included: (c) => c.box.included === true,
   },
   opencodeGo: { body: (v) => ({ opencodeGo: { apiKey: v } }), flag: (c) => c.opencodeGo?.configured ?? false },
-  // A key first saved here runs only "Claude (API key)"; signed-in Claude
-  // bots stay on their plan unless the person turns that on below the row.
   anthropic: {
     body: (v, firstKey) => ({ anthropic: { key: v, ...(firstKey && v ? { everyClaudeBot: false } : {}) } }),
     flag: (c) => c.anthropic?.configured ?? false,
@@ -46,11 +38,11 @@ const SECTIONS: Record<
   mistral: { body: (v) => ({ mistral: { key: v } }), flag: (c) => c.mistral?.configured ?? false },
   cerebras: { body: (v) => ({ cerebras: { key: v } }), flag: (c) => c.cerebras?.configured ?? false },
   groq: { body: (v) => ({ groq: { key: v } }), flag: (c) => c.groq?.configured ?? false },
+  meta: { body: (v) => ({ meta: { key: v } }), flag: (c) => c.meta?.configured ?? false },
   xai: { body: (v) => ({ xai: { key: v } }), flag: (c) => c.xai?.configured ?? false },
 };
 
-// Provider keys have no desktop-shell slot yet and go through the server's
-// own 0600 config, the same place they live on a hosted server.
+// Provider keys have no desktop-shell slot yet; they go to the server's own 0600 config.
 const ELECTRON_CREDENTIAL: Partial<Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey">> = {
   composio: "composioApiKey",
   box: "boxToken",
@@ -61,17 +53,13 @@ const CREDENTIALS: Record<
   ConfigSection,
   {
     labelKey: LocaleKey;
-    /** a literal placeholder that is not copy — an example key shape */
     placeholder?: string;
     placeholderKey?: LocaleKey;
     descriptionKey: LocaleKey;
     href: string;
     linkLabelKey: LocaleKey;
     optional: boolean;
-    /** Shown under the field, not tucked into the help popover: it changes
-     * what the key does to people's existing logins or bills. */
     warningKey?: LocaleKey;
-    /** A quieter line under the field. */
     noteKey?: LocaleKey;
   }
 > = {
@@ -157,6 +145,14 @@ const CREDENTIALS: Record<
     linkLabelKey: "keys.groq.link",
     optional: true,
   },
+  meta: {
+    labelKey: "keys.meta.label",
+    placeholder: "LLM|…",
+    descriptionKey: "keys.meta.desc",
+    href: "https://dev.meta.ai/docs/authentication",
+    linkLabelKey: "keys.meta.link",
+    optional: true,
+  },
   xai: {
     labelKey: "keys.xai.label",
     placeholder: "xai-…",
@@ -218,7 +214,7 @@ function CredentialHelp({ section }: { section: ConfigSection }) {
         aria-expanded={open}
         aria-controls={popoverId}
         onClick={() => setOpen((current) => !current)}
-        className="flex size-6 items-center justify-center rounded-md text-ink-secondary outline-none transition-colors hover:bg-control hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/70"
+        className="cursor-pointer flex size-6 items-center justify-center rounded-md text-ink-secondary outline-none transition-colors hover:bg-control hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/70"
       >
         <CircleHelp size={14} aria-hidden="true" />
       </button>
@@ -246,9 +242,6 @@ function CredentialHelp({ section }: { section: ConfigSection }) {
   );
 }
 
-/** A paste saves at once, so a clipboard holding a sentence instead of the
- * key would otherwise be stored and then "rejected". No provider key or
- * token has spaces in it. */
 export function looksLikeKey(value: string): boolean {
   return value.length > 0 && !/\s/.test(value);
 }
@@ -259,10 +252,7 @@ export function ApiKeyRow({
   testProvider,
 }: {
   section: ConfigSection;
-  /** Called after a successful save with the section's new configured flag. */
   onSaved?: (configured: boolean) => void;
-  /** Check the key against the provider as soon as it saves, and offer a
-   * Test button to check the saved key again. */
   testProvider?: TestableProvider;
 }) {
   const { state, dispatch } = useStore();
@@ -303,7 +293,6 @@ export function ApiKeyRow({
     }
   };
 
-  /** Saves the draft, or removes the saved key when `remove` is set. */
   const save = (remove = false) => {
     const next = remove ? "" : value.trim();
     if (savingRef.current || (!remove && !next)) return;
@@ -335,7 +324,6 @@ export function ApiKeyRow({
       .finally(() => { savingRef.current = false; setSaving(false); });
   };
 
-  // A paste is the whole key: save it once the field holds it.
   useEffect(() => {
     if (!saveAfterPaste.current) return;
     saveAfterPaste.current = false;
@@ -380,7 +368,7 @@ export function ApiKeyRow({
             type="button"
             onClick={() => save(true)}
             disabled={saving}
-            className="flex w-[72px] shrink-0 items-center justify-center rounded-lg bg-control py-2 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className="cursor-pointer flex w-[72px] shrink-0 items-center justify-center rounded-lg bg-control py-2 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
             title={t("keys.removeKey")}
           >
             {t("keys.clear")}
@@ -391,7 +379,7 @@ export function ApiKeyRow({
             type="button"
             onClick={() => void test()}
             disabled={testing || saving}
-            className="flex shrink-0 items-center justify-center rounded-lg border border-hairline/40 px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised/50 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            className="cursor-pointer flex shrink-0 items-center justify-center rounded-lg border border-hairline/40 px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised/50 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             {testing ? t("keys.testing") : t("keys.test")}
           </button>
@@ -410,10 +398,7 @@ export function ApiKeyRow({
   );
 }
 
-/** Keys for OpenCode's other providers (Venice, Groq, DeepSeek…), each under
- * the name OpenCode reads it from. Write-only like every key: the server sends
- * back names, never keys, and hands the keys to OpenCode alone. Saved in the
- * server's own config, on the desktop and on a Cloud alike. */
+/** Security: write-only; the server returns names, never keys, and hands the keys to OpenCode alone. */
 export function OpenCodeProviderKeys() {
   const { state, dispatch } = useStore();
   const names = state.config?.opencodeGo?.providerKeys ?? [];
@@ -468,7 +453,7 @@ export function OpenCodeProviderKeys() {
               onClick={() => remove(saved)}
               disabled={busy}
               aria-label={t("keys.opencode.otherProviders.removeAria", { name: saved })}
-              className="flex w-[72px] shrink-0 items-center justify-center rounded-lg bg-control py-1.5 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="cursor-pointer flex w-[72px] shrink-0 items-center justify-center rounded-lg bg-control py-1.5 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {removing === saved ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : t("keys.clear")}
             </button>
@@ -502,7 +487,7 @@ export function OpenCodeProviderKeys() {
             type="button"
             onClick={add}
             disabled={busy || !name.trim() || !key.trim()}
-            className="flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className="cursor-pointer flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {adding ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <><Check size={13} aria-hidden="true" />{t("common.save")}</>}
           </button>
@@ -513,8 +498,6 @@ export function OpenCodeProviderKeys() {
   );
 }
 
-/** Whether the Anthropic key also runs signed-in Claude bots. Off, only
- * "Claude (API key)" bills per token; on, every Claude bot does. */
 export function AnthropicEveryClaudeBot() {
   const { state, dispatch } = useStore();
   const [saving, setSaving] = useState(false);
@@ -617,7 +600,7 @@ export function VpsConnection() {
           onClick={save}
           disabled={saving || (!alias.trim() && !configured)}
           className={cn(
-            "flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg py-2 text-[13px]",
+            "cursor-pointer flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg py-2 text-[13px]",
             !alias.trim() && configured ? "bg-control text-danger hover:bg-raised-hover" : "bg-control text-ink hover:bg-raised-hover",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
@@ -631,9 +614,6 @@ export function VpsConnection() {
   );
 }
 
-/** The OpenAI-compatible engine's base URL: a setting next to its key, so
- * OpenRouter, Groq, Together or OpenAI itself are one field away. Saves when
- * the field is left or Enter is pressed, like the key above it. */
 export function OpenAiCompatUrl() {
   const { state, dispatch } = useStore();
   const saved = state.config?.openaiCompat?.url ?? "";
