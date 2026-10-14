@@ -1,7 +1,8 @@
 // These tests inject the CLI runner, so they never read or change the developer's real credentials.
 import { describe, expect, it } from "vitest";
 
-import { claudeAuthFailure, claudeResultError, claudeSignedIn, claudeVersionTooOld } from "./claude.ts";
+import { claudeSignedIn } from "./claude-auth-status.ts";
+import { claudeAuthFailure, claudeResultError, claudeVersionTooOld } from "./claude.ts";
 import { claudeLimitMessage, claudeLimitRefusal, claudeUsageLimit } from "./claude-limits.ts";
 
 describe("claudeSignedIn", () => {
