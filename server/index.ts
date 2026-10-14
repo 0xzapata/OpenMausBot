@@ -583,6 +583,8 @@ import { createSkillShareRoutes } from "./routes/skill-share.ts";
 import { createTeamContextRoutes } from "./routes/team-context.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
+import { createInternalSignInRoutes } from "./routes/sign-in.ts";
+import { createInternalThreadRoutes } from "./routes/internal-threads.ts";
 import { createBrowserEvidenceRoutes } from "./routes/browser-evidence.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
 import { createRoomHoldRoutes } from "./routes/room-holds.ts";
@@ -15059,85 +15061,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           });
         return json(res, 200, { bots });
       }
-      // list_threads: the caller's own threads plus, on reachable peers, only threads it opened; a peer's other threads are its own business.
-      if (method === "GET" && path === "/api/internal/threads") {
-        const from = internalSender;
-        const fromThreadId = internalCapability.threadId;
-        if (!connectorThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source conversation does not belong to sender" });
-        }
-        const rows: Array<{
-          threadId: string; botId: string; botName: string; title: string;
-          state: "running" | "waiting-on-you" | "queued" | "idle" | "closed";
-          unread: boolean; openedAt: number; delegationId?: string; own: boolean;
-        }> = [];
-        const stateOf = (bot: BotRecord, task: TaskRecord) => {
-          if (task.activity === "waiting-on-you" || coordinator.awaitingAnswer(task.threadId)) return "waiting-on-you" as const;
-          if (threadBusy(bot.id, task.threadId)) return "running" as const;
-          if (coordinator.parkedDirect(task.threadId)) return "waiting-on-you" as const;
-          if (queuedThreadPosition(bot.id, task.threadId) !== null) return "queued" as const;
-          if (coordinator.activeDirect(task.threadId)) return "queued" as const;
-          if (task.closedBy) return "closed" as const;
-          return "idle" as const;
-        };
-        // A turn that may use the lent Mac sees only owner-only conversations: a title is words too.
-        const shown = cloudLendingView(internalCapability) ? cloudOwnerOnlyThread : () => true;
-        for (const task of store.tasks(from.id)) {
-          if (!shown(task.threadId)) continue;
-          rows.push({
-            threadId: task.threadId, botId: from.id, botName: from.name, title: task.title,
-            state: stateOf(from, task), unread: task.unread === true, openedAt: task.openedBy?.at ?? task.createdAt,
-            delegationId: task.openedBy?.delegationId, own: true,
-          });
-        }
-        for (const peer of reachablePeers(store.bots, from)) {
-          for (const task of store.tasks(peer.id)) {
-            if (task.openedBy?.botId !== from.id || !shown(task.threadId)) continue;
-            rows.push({
-              threadId: task.threadId, botId: peer.id, botName: peer.name, title: task.title,
-              state: stateOf(peer, task), unread: task.unread === true, openedAt: task.openedBy.at,
-              delegationId: task.openedBy.delegationId, own: false,
-            });
-          }
-        }
-        rows.sort((a, b) => b.openedAt - a.openedAt);
-        return json(res, 200, { threads: rows.slice(0, 100) });
-      }
-      // close_thread folds a thread, never deletes it (a person's confirmed action), and never while it runs.
-      const closeMatch = method === "POST" ? path.match(/^\/api\/internal\/threads\/([\w-]+)\/close$/) : null;
-      if (closeMatch) {
-        const from = internalSender;
-        const fromThreadId = internalCapability.threadId;
-        if (!connectorThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source conversation does not belong to sender" });
-        }
-        const threadId = closeMatch[1]!;
-        const owner = [from, ...reachablePeers(store.bots, from)].find((bot) => store.taskByThread(bot.id, threadId));
-        const task = owner ? store.taskByThread(owner.id, threadId) : undefined;
-        if (!owner || !task) return json(res, 404, { error: "no such thread — call list_threads for the ones you can see" });
-        if (owner.id !== from.id && task.openedBy?.botId !== from.id) {
-          return json(res, 403, { error: "that thread is not yours to close — only the bot that opened it, or its own bot, can" });
-        }
-        if (threadId === fromThreadId) return json(res, 400, { error: "you cannot close the thread you are speaking in — finish your turn instead" });
-        if (coordinator.awaitingAnswer(threadId)) {
-          return json(res, 409, { error: `#${task.title} is waiting on the person's answer to its question — it continues once they reply there, so leave it open` });
-        }
-        if (threadBusy(owner.id, threadId) || queuedThreadPosition(owner.id, threadId) !== null || coordinator.activeDirect(threadId)) {
-          return json(res, 409, { error: `#${task.title} is still running — wait for it to finish (list_threads), or the person can stop it from the app` });
-        }
-        if (task.closedBy) {
-          return json(res, 200, { closed: true, alreadyClosed: true, threadId, title: task.title, botName: owner.name, closedBy: task.closedBy.name });
-        }
-        store.appendMessage(threadId, {
-          role: "bot",
-          kind: "activity",
-          from: { botId: from.id, name: from.name, color: from.color },
-          tool: { name: `Closed by @${from.name}`, ok: true },
-        });
-        if (task.unread) store.patchTask(owner.id, threadId, { unread: false });
-        store.setTaskClosedBy(owner.id, threadId, { botId: from.id, name: from.name, at: Date.now() });
-        return json(res, 200, { closed: true, threadId, title: task.title, botName: owner.name });
-      }
+      if (await dispatchRoutes([createInternalThreadRoutes({
+        store, coordinator, from: internalSender, fromThreadId: internalCapability.threadId,
+        ownsThread: (botId, threadId) => Boolean(connectorThread(botId, threadId)),
+        shown: cloudLendingView(internalCapability) ? cloudOwnerOnlyThread : () => true,
+        threadBusy, queuedThreadPosition,
+      })], { req, res, url, path, method, auth, json, readBody })) return;
       if (method === "POST" && path === "/api/internal/attach-file") {
         const from = internalSender;
         const threadId = internalCapability.threadId;
@@ -16368,11 +16297,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         return json(res, 201, { messageId: message.id, label: target.label });
       }
-      if (method === "POST" && path === "/api/internal/request-sign-in") {
-        const body = await readInternalBody();
-        const result = requestSignIn(internalSender, internalCapability.threadId, body.site, body.reason);
-        return "error" in result ? json(res, result.status, { error: result.error }) : json(res, 201, result);
-      }
+      if (await dispatchRoutes([createInternalSignInRoutes({
+        readBody: readInternalBody,
+        request: (site, reason) => requestSignIn(internalSender, internalCapability.threadId, site, reason),
+      })], { req, res, url, path, method, auth, json, readBody })) return;
       if (method === "POST" && path === "/api/internal/fill-login") {
         const body = await readInternalBody();
         const outcome = await fillLoginForTurn(internalSender, internalCapability, body.username);
