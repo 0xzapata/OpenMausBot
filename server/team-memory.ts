@@ -1,4 +1,4 @@
-// Bot-proposed, admin-reviewed facts a section shares; nothing enters shared prompts unreviewed.
+// Bot-proposed, admin-reviewed facts a section shares; nothing enters shared prompts unreviewed, and secrets are masked before storing.
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { z } from "zod";

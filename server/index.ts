@@ -290,6 +290,7 @@ import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerC
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
 import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
+import { pageSize, slimMessage } from "./host/message-pages.ts";
 import {
   mentionedBots,
   roomResponders,
@@ -5304,22 +5305,7 @@ store.onChange((change) => {
   }
 });
 
-const MESSAGE_PAGE_MAX = 200;
 const DEFAULT_PAGE = 50;
-
-/** undefined = absent, null = present but unusable (the caller answers 400). */
-function pageSize(raw: string | null): number | null | undefined {
-  if (raw === null) return undefined;
-  const size = Number(raw);
-  if (!Number.isInteger(size) || size < 0) return null;
-  return Math.min(size, MESSAGE_PAGE_MAX);
-}
-
-function slimMessage(message: Message): Message | Record<string, unknown> {
-  if (message.kind !== "screen" || !message.png) return message;
-  const { png: _png, ...rest } = message;
-  return { ...rest, hasImage: true };
-}
 
 function messagePage(threadId: string, limit: number | undefined, before?: string | null) {
   if (limit === undefined) {
@@ -10275,6 +10261,7 @@ async function deleteBotWithLifecycle(botId: string, revalidate: () => void = ()
           revalidate();
           store.deleteBot(bot.id, setupRequest);
           skillReview.dropBot(bot.id);
+          memoryUpkeep.forgetBot(bot.id);
           routines!.disableForBot(bot.id);
           webhooks.disableForBot(bot.id);
           calendarCalls!.removeBot(bot.id);

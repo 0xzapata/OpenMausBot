@@ -151,6 +151,24 @@ function takePending(): PendingCapture["batches"] {
   }
 }
 
+function dropPending(botId: string): void {
+  let parsed: Partial<PendingCapture>;
+  try {
+    parsed = JSON.parse(readFileSync(pendingPath(), "utf8")) as Partial<PendingCapture>;
+  } catch {
+    return;
+  }
+  if (!Array.isArray(parsed?.batches)) return;
+  const kept = parsed.batches.filter((batch) => batch?.botId !== botId);
+  if (kept.length === parsed.batches.length) return;
+  try {
+    if (kept.length) writeFileAtomic(pendingPath(), `${JSON.stringify({ batches: kept })}\n`, { mode: 0o600 });
+    else rmSync(pendingPath(), { force: true });
+  } catch {
+    // best effort: a deleted bot's saved turns are refused at capture anyway
+  }
+}
+
 function readRaw(botId: string, relative: string): string | null {
   try {
     return readMemoryText(join(workspaceDir(botId), relative));
@@ -179,6 +197,7 @@ export interface MemoryUpkeep {
   noteTurn(botId: string, threadId: string, turn: CaptureTurn): void;
   flushThread(threadId: string): void;
   dropBot(botId: string): void;
+  forgetBot(botId: string): void;
   capture(batch: CaptureBatch): Promise<CaptureReport>;
   tidy(botId: string): Promise<TidyReport>;
   status(botId: string): { lastTidy?: TidyReport; lastCapture?: CaptureReport; modelSteps: boolean };
@@ -200,6 +219,8 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
   const deferred: CaptureBatch[] = [];
 
   const record = (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport; topicCursor?: string }) => {
+    // a capture or tidy that was out when its bot was deleted leaves nothing behind
+    if (!deps.bot(botId)) return;
     const state = loadState();
     state.bots[botId] = { ...state.bots[botId], ...patch };
     saveState(state);
@@ -518,6 +539,15 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     },
     flushThread: (threadId) => buffer.flush(threadId),
     dropBot: (botId) => buffer.dropBot(botId),
+    forgetBot(botId) {
+      buffer.dropBot(botId);
+      for (let i = deferred.length - 1; i >= 0; i--) if (deferred[i]!.botId === botId) deferred.splice(i, 1);
+      dropPending(botId);
+      const state = loadState();
+      if (!state.bots[botId]) return;
+      delete state.bots[botId];
+      saveState(state);
+    },
     capture: (batch) => track(capture(batch)),
     tidy,
     status(botId) {

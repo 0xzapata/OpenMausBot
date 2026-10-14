@@ -60,6 +60,13 @@ describe("propose", () => {
     expect(memory.list("").filter(entry => entry.status === "accepted")).toHaveLength(1);
   });
 
+  it("masks a secret a bot put into an entry before it is stored or shown", () => {
+    const key = "sk-ant-api03-" + "a1B2c3D4e5F6g7H8i9J0".repeat(3);
+    const proposed = memory.propose("", { kind: "place", name: "Billing API", detail: `the key is ${key}`, aliases: [] }, source);
+    expect(proposed.entry.detail).not.toContain(key);
+    expect(readFileSync(join(dir, "team-memory.json"), "utf8")).not.toContain(key);
+  });
+
   it("rejects aliases that would make persisted entries unreadable", () => {
     expect(() => memory.propose("", { kind: "term", name: "OMB", detail: "app", aliases: ["x".repeat(121)] }, source)).toThrow(/aliases/);
     expect(memory.list("")).toEqual([]);
