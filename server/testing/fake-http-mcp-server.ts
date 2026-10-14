@@ -1,15 +1,7 @@
-// A tiny MCP server over HTTP for tests: streamable HTTP by default — the
-// answer as plain JSON or as a short event stream — or the older SSE
-// transport. It records the headers it saw so a test can prove a token
-// arrived, and can hold a request open so a probe's timeout is exercised.
-//
-// `strictInitialize` makes it behave like a server whose MCP types are
-// deserialized strictly (a Java server on Jackson with unknown properties
-// failing): an initialize carrying any field outside the 2025-06-18 base
-// schema is refused with "Unrecognized field '<name>'", as a
-// Voluum server refuses an engine that adds capabilities.elicitation
-// .schemaValidation. The spec says unknown fields are ignored; such servers
-// do not, and every handshake a client sends is recorded in `initializes`.
+// A tiny MCP server over HTTP for tests: streamable HTTP (plain JSON or a short event stream) or the
+// older SSE transport; it records headers and can hold requests open. `strictInitialize` refuses any
+// initialize field outside the base schema with "Unrecognized field '<name>'", as Jackson-strict
+// servers do although the spec says unknown fields are ignored.
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
@@ -27,20 +19,17 @@ export interface FakeHttpMcpOptions {
   wwwAuthenticate?: string;
   /** never answer tools/list (initialize still works) */
   silentTools?: boolean;
-  /** answer tools/list only after this many milliseconds, like a server
-   * listing tools for every business an account manages */
+  /** answer tools/list only after this many milliseconds */
   toolsDelayMs?: number;
   description?: string;
   tools?: FakeHttpMcpTool[];
   /** what tools/call answers (default: one "remote execution recorded" text) */
   callResult?: (params: unknown) => unknown;
-  /** answer a tools/call with this JSON-RPC error instead, as a strict
-   * server reports a bad argument */
+  /** answer a tools/call with this JSON-RPC error instead */
   callError?: (params: unknown) => { code: number; message: string } | undefined;
   /** answer each tools/call only after this many milliseconds */
   callDelayMs?: number;
-  /** answer each tools/call as an event stream that first says the tool
-   * list changed, as a server does after it adds or removes tools */
+  /** answer each tools/call as an event stream that first says the tool list changed */
   listChangedOnCall?: boolean;
   /** the server's own initialize instructions */
   instructions?: string;
@@ -48,29 +37,21 @@ export interface FakeHttpMcpOptions {
   pageSize?: number;
   /** with pageSize: hand out the same cursor again and again */
   cursorLoop?: boolean;
-  /** during each tools/call, first send the client a request with this
-   * method (elicitation/create, sampling/createMessage…) and answer the call
-   * only after the client has replied to it */
+  /** during each tools/call, first send the client a request with this method and wait for its reply */
   askOnCall?: string;
-  /** serve https:// with this key and certificate (testing/test-tls.ts) */
+  /** serve https:// with this key and certificate */
   tls?: { key: string; cert: string };
   /** the loopback address to listen on (default 127.0.0.1; "::1" for IPv6) */
   host?: "127.0.0.1" | "::1";
-  /** refuse an initialize with any field outside the 2025-06-18 base schema
-   * (STRICT_INITIALIZE_FIELDS): "http-400" answers HTTP 400 with a JSON-RPC
-   * error, as a Jackson-based streamable HTTP server does on a body it cannot
-   * deserialize; "jsonrpc-error" answers HTTP 200 with the error */
+  /** refuse an initialize with any field outside the base schema: "http-400" answers HTTP 400 with a
+   * JSON-RPC error, as a Jackson-based server does; "jsonrpc-error" answers HTTP 200 with the error */
   strictInitialize?: "http-400" | "jsonrpc-error";
-  /** with strictInitialize: which schema the server knows (default
-   * "2025-06-18"). "2025-11-25" also knows elicitation.form/url and the
-   * longer clientInfo, yet still not form.schemaValidation, which is where
-   * a Voluum server failed */
+  /** with strictInitialize: the schema the server knows (default "2025-06-18"); "2025-11-25" adds
+   * elicitation.form/url but still not form.schemaValidation */
   strictSchema?: keyof typeof STRICT_INITIALIZE_SCHEMAS;
 }
 
-/** The initialize params a strict 2025-06-18 server knows, field by field:
- * an object lists its known fields, `true` is a free-form value (any JSON),
- * and `{}` is an object that must stay empty. */
+/** Known initialize fields: an object lists its fields, `true` is any JSON, `{}` must stay empty. */
 type FieldShape = true | { [field: string]: FieldShape };
 export const STRICT_INITIALIZE_SCHEMAS = {
   "2025-06-18": {
@@ -97,8 +78,6 @@ export const STRICT_INITIALIZE_SCHEMAS = {
 } satisfies Record<string, { [field: string]: FieldShape }>;
 export const STRICT_INITIALIZE_FIELDS: { [field: string]: FieldShape } = STRICT_INITIALIZE_SCHEMAS["2025-06-18"];
 
-/** The first field, in document order, a strict server does not know, as a
- * dotted path (capabilities.elicitation.schemaValidation), or undefined. */
 export function unrecognizedField(value: unknown, shape: FieldShape = STRICT_INITIALIZE_FIELDS, path = ""): string | undefined {
   if (shape === true || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
   for (const [field, inner] of Object.entries(value)) {
@@ -213,7 +192,6 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
         return;
       }
       const frame = JSON.parse((await readBody(req)) || "{}") as { id?: unknown; method?: unknown; params?: unknown };
-      // the client answering a request this server sent it
       if (frame.method === undefined && frame.id !== undefined) {
         replies.push(frame);
         replied?.();
@@ -240,7 +218,6 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
           return;
         }
       }
-      // hold the request open: the client's own timeout has to end it
       if (frame.method === "tools/list" && options.silentTools) return;
       if (frame.method === "tools/call" && options.callDelayMs) {
         await new Promise((resolve) => setTimeout(resolve, options.callDelayMs));
@@ -251,8 +228,6 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
         await delayed;
       }
       let answer: object | null = answerFor(frame);
-      // a strict server answers a request it does not know, as servers do;
-      // the lenient default only accepts it
       if (!answer && options.strictInitialize && typeof frame.method === "string" && frame.id !== undefined) {
         answer = { jsonrpc: "2.0", id: frame.id, error: { code: -32601, message: `Method not found: ${frame.method}` } };
       }

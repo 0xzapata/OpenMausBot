@@ -1,17 +1,9 @@
-// One tool-free ACP exchange for memory upkeep: spawn the engine's own CLI,
-// initialize, sign in, open a fresh session with no MCP servers in an empty
-// folder, send one prompt and return the text it answers. Nothing here reuses
-// a chat's process or session, so a capture never lands in a conversation's
-// history, and the prompt reaches only the provider the bot already uses.
-//
-// It fails closed: any request from the agent (a permission, a file read, a
-// terminal) is refused and ends the call, and so does any tool call the agent
-// reports, before its result is read. The caller keeps its own timeout too.
+// One tool-free ACP exchange for memory upkeep: a fresh process and session, no MCP servers, an empty
+// folder. It fails closed: any agent request, or any tool call it reports, ends the call.
 import type { TextGenerationOptions, TextGenerationUsage } from "../../contracts.ts";
 import type { killCliTree, spawnCli } from "../../procs.ts";
 
 export const BACKGROUND_TEXT_TIMEOUT_MS = 120_000;
-/** More than any capture, organize or contradiction answer needs. */
 export const BACKGROUND_TEXT_MAX_CHARS = 200_000;
 const MAX_STDOUT_BYTES = 4_000_000;
 
@@ -26,12 +18,9 @@ export interface AcpOneShotInput {
   prompt: string;
   /** The model usage is booked to when the session names none. */
   defaultModel: string;
-  /** The auth method to call, or null for none. */
   pickAuthMethod: (methods: Array<{ id?: string }>) => string | null;
-  /** True when a failed or missing auth method must stop the call. */
-  authRequired: boolean;
+  authRequired: boolean | "if-requested";
   loginNote: string;
-  /** Per-session settings (mode, model) between session/new and the prompt. */
   configure?: (ctx: { request: (method: string, params: unknown, timeoutMs?: number) => Promise<any>; sessionId: string; session: any }) => Promise<void>;
   options?: TextGenerationOptions;
   timeoutMs?: number;
@@ -55,14 +44,15 @@ export function runAcpOneShot(input: AcpOneShotInput): Promise<string> {
     let nextId = 1;
     const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
 
-    const finish = (error?: Error) => {
+    const finish = async (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       for (const waiter of pending.values()) waiter.reject(error ?? new Error(`${name} background call closed`));
       pending.clear();
-      void input.kill(child).catch(() => undefined);
+      // Windows keeps the session folder locked until the process exits.
+      await input.kill(child).catch(() => undefined);
       if (!error && usage) {
         try {
           onUsage?.(usage);
@@ -75,16 +65,14 @@ export function runAcpOneShot(input: AcpOneShotInput): Promise<string> {
       else resolve(output.trim());
     };
     const abort = () => finish(new Error(`${name} background call aborted`));
-    const timer = setTimeout(() => finish(new Error(`${name} background call timed out`)), input.timeoutMs ?? BACKGROUND_TEXT_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(new Error(`${name} background call timed out`)), input.timeoutMs ?? input.options?.timeoutMs ?? BACKGROUND_TEXT_TIMEOUT_MS);
     timer.unref?.();
 
     const send = (message: unknown) => {
       if (settled) return;
       try {
         child.stdin.write(`${JSON.stringify(message)}\n`);
-      } catch {
-        // the close handler reports a dead child
-      }
+      } catch {}
     };
     const request = (method: string, params: unknown): Promise<any> => new Promise((ok, fail) => {
       if (settled) return fail(new Error(`${name} background call closed`));
@@ -103,7 +91,6 @@ export function runAcpOneShot(input: AcpOneShotInput): Promise<string> {
         return;
       }
       if (msg?.id !== undefined && typeof msg.method === "string") {
-        // the agent asked us for something: refuse it, and stop
         send(msg.method === "session/request_permission"
           ? { jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }
           : { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: REFUSAL } });
@@ -166,7 +153,7 @@ export function runAcpOneShot(input: AcpOneShotInput): Promise<string> {
         } catch {
           if (input.authRequired) throw new Error(input.loginNote);
         }
-      } else if (input.authRequired) {
+      } else if (input.authRequired === true) {
         throw new Error(input.loginNote);
       }
       const session = await request("session/new", { cwd: input.cwd, mcpServers: [] });

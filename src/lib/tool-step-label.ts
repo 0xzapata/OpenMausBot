@@ -1,8 +1,3 @@
-// What a tool step is called where a person reads it. A provider names its
-// tools for the model: `Bash`, `mcp__omb__computer_batch`,
-// `GITHUB_GET_A_COMMIT`, or (Codex, ACP) the whole command line. Simple mode
-// shows a short plain phrase instead. Advanced mode and the step's own
-// details keep the provider's name, so nothing a power user reads is lost.
 import { composioActionPhrase } from "@/lib/approval-summary";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
@@ -10,8 +5,6 @@ import type { Message } from "@/state/store";
 
 type StepTool = Pick<NonNullable<Message["tool"]>, "name" | "summary">;
 
-/** Bare tool names (an MCP server prefix already removed) a person has a
- * phrase for. Lower-cased, so `Read`, `read` and `read_file` meet here. */
 const STEP_KEYS: Record<string, LocaleKey> = {
   bash: "toolStep.runCommand",
   shell: "toolStep.runCommand",
@@ -64,13 +57,9 @@ function sentence(words: string): string {
   return flat ? flat[0]!.toLocaleUpperCase() + flat.slice(1) : flat;
 }
 
-/** A tool's own name as a short phrase: "Run a command", "Read a file",
- * "Get a commit" for GITHUB_GET_A_COMMIT. A name that is already words (a
- * server-written line such as "Messaged @Ada") is kept as it is. */
 export function toolStepLabel(tool: StepTool): string {
   const { name } = tool;
-  // Codex and ACP title a command's chip with the command itself, and only a
-  // command carries a summary (server/tool-summary.ts commandSummary).
+  // Codex and ACP title a command's chip with the command line; only a command carries a summary.
   if (tool.summary) return t("toolStep.runCommand");
   if (/\s/.test(name)) return name;
   const bare = name.replace(/^mcp__.+?__(?=.)/, "");

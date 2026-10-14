@@ -10,13 +10,6 @@ import { toolStepLabel } from "@/lib/tool-step-label";
 import { PlaceIcon } from "./PlaceIcon";
 import { WorkingDots } from "./WorkingIndicator";
 
-/** A quiet disclosure, not a second inspector. Old messages and providers
- * without output keep their status and never invent a successful result. */
-/** `place` names where a screen or page tool ran, so a transcript shows the
- * place of every step, not just the current one. Absent for tools that touch
- * no screen. Simple mode names the step in plain words
- * (src/lib/tool-step-label.ts) and keeps the tool's own name in the details;
- * Advanced mode shows the tool name and command on the row. */
 export function ToolActivity({ tool, place = null }: { tool: NonNullable<Message["tool"]>; place?: Place | null }) {
   const [expanded, setExpanded] = useState(false);
   const failed = tool.ok === false;

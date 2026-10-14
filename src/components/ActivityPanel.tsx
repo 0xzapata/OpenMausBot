@@ -1,10 +1,3 @@
-// A bot's activity: what it did, in plain words, with the outcome. The
-// receipt view — for the person who wants to know what ran while they were
-// away, not the wire-level inspector next to it.
-//
-// Nothing here is captured for the panel's sake. The harness folds the
-// thread's runtime events and the decision log into rows (server/activity.ts);
-// this only asks for them, and asks again when a turn settles.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ListChecks, RefreshCw, X } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
@@ -42,8 +35,7 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
     try {
       const res = await fetch(`/api/bots/${bot.id}/activity?limit=${LIMIT}`, { signal: controller.signal });
       if (!res.ok) throw new Error(`${res.status}`);
-      // SAFETY: this same-version renderer calls the harness's typed
-      // activity endpoint; malformed transport data is handled by catch.
+      // SAFETY: the same-version harness's typed activity endpoint; malformed transport data is handled by catch.
       const next = (await res.json()) as { rows: ActivityRow[] };
       if (controller.signal.aborted) return;
       setRows(next.rows);
@@ -62,9 +54,6 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
     return () => loadAbort.current?.abort();
   }, [load]);
 
-  // Re-read when one of this bot's turns settles or a card is answered
-  // (both change what a row says), and when the app's live stream lost
-  // frames it could not replay.
   const threadIds = useMemo(
     () => new Set([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId)]),
     [bot.threadId, bot.tasks],

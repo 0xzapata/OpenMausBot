@@ -100,18 +100,13 @@ test("a failed check keeps the last verified answer (never a malformed one), say
   const f = await fixture(t); await f.connect();
   const paid = { plan: "pro", tier: "max", status: "active", expiresAt: f.now + 3 * 3600_000, version: 1 };
   f.entitlement = paid; await f.client.refresh(); f.sessionStatus = 503;
-  // One dropped check is not news: the plan, the Cloud and Connect stay.
   let state = await f.client.refresh();
   assert.equal(state.status, "connected"); assert.deepEqual(state.entitlement, paid); assert.equal(state.checking, undefined); assert.equal(f.saved.token, accessToken);
-  // Repeated failures: still the last verified answer, now quietly "checking".
   state = await f.client.refresh();
   assert.equal(state.status, "connected"); assert.deepEqual(state.entitlement, paid); assert.equal(state.checking, true);
-  // A malformed answer is a failed check too: never adopted.
   f.sessionStatus = 200; f.invalidEntitlement = true;
   state = await f.client.refresh(); assert.equal(state.status, "connected"); assert.deepEqual(state.entitlement, paid);
-  // An answer clears "checking".
   f.invalidEntitlement = false; state = await f.client.refresh(); assert.equal(state.checking, undefined); assert.deepEqual(state.entitlement, paid);
-  // A long outage: unavailable, with no entitlement, but the plan last verified is still named.
   f.sessionStatus = 503; await f.client.refresh(); f.now += 15 * 60_000;
   state = f.client.state(); assert.equal(state.status, "unavailable"); assert.equal(state.entitlement, undefined); assert.deepEqual(state.lastPlan, { tier: "max", active: true });
   f.sessionStatus = 200; f.invalidIdentity = true;
@@ -159,7 +154,6 @@ test("a free trial and its AI credit come with a verified session, for display o
   const DAY = 86_400_000, endsAt = f.now + 2 * DAY, origin = "https://home-7f3k2.fly.dev";
   const trial = { state: "active", tier: "pro", endsAt, amount: 4900, chargeAt: endsAt, holdUntil: null, deleteAt: null, keep: "none" };
   const credit = { grantedUsd: 5, remainingUsd: 3.2, state: "active" };
-  // Today's Admin: no trial, no credit, and nothing new in the state.
   f.entitlement = { plan: "pro", tier: "pro", status: "active", expiresAt: endsAt + 3 * DAY, version: 1 };
   f.cloud = { state: "ready", origin, pairingAvailable: true };
   let state = await f.client.refresh();
@@ -170,25 +164,20 @@ test("a free trial and its AI credit come with a verified session, for display o
   assert.deepEqual(state.trial, trial); assert.deepEqual(state.credit, credit); assert.deepEqual(state.machine, { status: "ready", origin });
   assert.equal(state.entitlement.status, "active", "the trial grants nothing; the entitlement does");
   assert.ok(!JSON.stringify(f.saved).includes("trial") && !JSON.stringify(f.saved).includes("credit"), "nothing about a trial is kept beside the sign-in");
-  // The Cloud's own page sees the trial, its credit and the notice main says is due, never the account.
   const snapshot = cloudPlanSnapshot(state, { notice: "active" });
   assert.deepEqual(snapshot, { status: "paid", tier: "pro", trial, credit, notice: "active" });
   assert.ok(!JSON.stringify(snapshot).includes("person@example.test") && !JSON.stringify(snapshot).includes("fixture-account"));
-  // A malformed trial or credit is dropped; the machine and the plan stay.
   f.cloud = { state: "ready", origin, pairingAvailable: true, trial: { ...trial, state: "paused" }, credit: { ...credit, remainingUsd: 9 } };
   state = await f.client.refresh();
   assert.equal(state.trial, undefined); assert.equal(state.credit, undefined); assert.equal(state.machine.status, "ready"); assert.equal(state.entitlement.status, "active");
-  // Ended: the plan is not active, the trial still says what happens to its files.
   const ended = { ...trial, state: "ended", chargeAt: null, deleteAt: endsAt + 3 * DAY, keep: "checkout" };
   f.entitlement = { plan: "free", status: "inactive", expiresAt: null, version: 2 };
   f.cloud = { state: "stopped", origin: null, pairingAvailable: false, trial: ended };
   state = await f.client.refresh();
   assert.deepEqual(cloudPlanSnapshot(state, { notice: "ended" }), { status: "none", trial: ended, notice: "ended" });
-  // Only a verified answer carries them: unavailable, or the sign-in ended, shows none.
   f.sessionStatus = 503; await f.client.refresh(); f.now += 15 * 60_000;
   assert.equal(f.client.state().trial, undefined);
   assert.deepEqual(cloudPlanSnapshot(f.client.state(), { notice: "ended" }), { status: "none" });
-  // Even a state that still held them shows nothing unverified, and no notice without a trial.
   for (const unverified of [{ status: "unavailable", trial: ended, credit, lastPlan: { tier: "pro", active: true } }, { status: "unavailable", trial: ended, credit },
     { status: "reauth-required", trial: ended, credit }, { status: "signed-out", trial: ended }]) {
     const shown = cloudPlanSnapshot(unverified, { notice: "ended" });
@@ -204,7 +193,6 @@ const plans = () => [
 test("what this person may buy: the session's own offer when signed in, else the public plans, read with no sign-in or cookie at most every 10 minutes", async t => {
   const f = await fixture(t);
   const asked = () => f.requests.filter(row => row.route === "/api/public/config");
-  // An Admin from before plans or offers: nothing to say.
   assert.equal(await f.client.offer(), null); assert.equal(asked().length, 1);
   assert.equal(await f.client.offer(), null); assert.equal(asked().length, 1, "a failed ask counts for 30 seconds");
   f.now += 30_000; f.publicConfig = { status: 200, body: { name: "OpenMausBot", surface: "cloud", plans: plans(), trial: { days: 7, holdDays: 3, creditUsd: 5 }, refundDays: 14 } };
@@ -219,14 +207,12 @@ test("what this person may buy: the session's own offer when signed in, else the
     assert.equal(await f.client.offer(), null, JSON.stringify(publicConfig));
   }
   assert.equal(f.client.state().status, "signed-out"); assert.deepEqual(f.browsers, []);
-  // Signed in: the session's own offer, this account's trial and all, with the state.
   f.now += 10 * 60_000; f.publicConfig = { status: 200, body: { plans: plans(), trial: { days: 7 }, refundDays: 14 } };
   f.offer = { plans: plans(), recommended: "pro", refundDays: 14 };
   await f.connect();
   const session = await f.client.offer();
   assert.deepEqual(session.plans.map(plan => plan.trialDays ?? null), [null, null], "this account's own: no trial, whatever the public config says");
   assert.deepEqual(f.client.state().offer, session);
-  // An Admin that sends no session offer: the public plans, never a trial (this account's eligibility isn't known).
   f.offer = undefined; await f.client.refresh();
   assert.equal(f.client.state().offer, undefined);
   const fallback = await f.client.offer();
@@ -240,7 +226,6 @@ test("Dodo's own checkout page is the only checkout address ever opened", () => 
     "javascript:alert(1)", "file:///etc/passwd", "openmausbot://cloud", "https://evil.example.test/", "", 42, null, `https://checkout.dodopayments.com/${"x".repeat(2100)}`]) {
     assert.equal(checkoutDestination(url), null, String(url));
   }
-  // Dodo's test mode only for a fixture Admin.
   assert.equal(checkoutDestination("https://test.checkout.dodopayments.com/session/cks_123", { fixture: true }), "https://test.checkout.dodopayments.com/session/cks_123");
   assert.deepEqual([...CHECKOUT_SOURCES], ["app_card", "app_howto", "app_menu", "app_settings", "app_routines"]);
 });
@@ -261,18 +246,15 @@ test("signed in, a checkout is the Admin's for this account, opened in the brows
   assert.equal(f.client.checkoutPending(), true); assert.equal(f.delay, 15_000);
   f.tick(); await until(() => f.delay !== null && f.requests.filter(row => row.route === "/api/cloud/desktop/session").length >= 2);
   assert.equal(f.delay, 15_000, "still free: asked again in 15 seconds");
-  // After 30 minutes it is asked as usual, and remembered (for the dialog's "ready").
   f.now += 30 * 60_000; assert.equal(f.client.checkoutPending(), false);
   await f.client.refresh(); assert.equal(f.delay, 60_000);
   assert.deepEqual(f.client.state().checkout, { plan: "pro", startedAt: f.now - 30 * 60_000 });
-  // Anything but Dodo's checkout, or an answer that isn't the Admin's, opens nothing.
   for (const url of ["https://evil.example.test/pay", "https://user:pw@test.checkout.dodopayments.com/s", `${DODO}#token`]) {
     f.checkout = { status: 200, body: { cloudContractVersion: 1, url } }; f.browsers = [];
     assert.equal((await f.client.checkout("pro", "app_menu")).outcome, "failed", url); assert.deepEqual(f.browsers, []);
   }
   f.checkout = { status: 200, body: { url: DODO } };
   assert.equal((await f.client.checkout("pro", "app_menu")).outcome, "failed", "no contract version");
-  // The Admin's refusals: a conflict reads the account again; too many; down.
   f.checkout = { status: 409, body: { error: "already_subscribed" } }; const sessions = f.requests.filter(row => row.route === "/api/cloud/desktop/session").length;
   assert.equal((await f.client.checkout("pro", "app_menu")).outcome, "conflict");
   assert.equal(f.requests.filter(row => row.route === "/api/cloud/desktop/session").length, sessions + 1);
@@ -282,45 +264,36 @@ test("signed in, a checkout is the Admin's for this account, opened in the brows
   f.checkout = { status: 409, body: "<!doctype html>Conflict page" };
   assert.equal((await f.client.checkout("pro", "app_menu")).outcome, "failed", "a page from in between is not the Admin's 409");
   assert.deepEqual(f.browsers, []);
-  // An Admin before this route: its Cloud page's checkout, tagged with the way in.
   f.checkout = { status: 404, body: "<!doctype html>not here" };
   assert.equal((await f.client.checkout("max", "app_card")).outcome, "opened");
   assert.deepEqual(f.browsers, [`${f.origin}/cloud?checkout=start&plan=max&src=app_card`]);
-  // A day later it is forgotten.
   f.now += 24 * 3600_000; assert.equal(f.client.state().checkout, undefined);
 });
 
 test("signed out, a checkout is a sign-in first: the verified link only gains the intent, and a failed sign-in forgets it", async t => {
   const f = await fixture(t);
-  // An Admin that words this account's offer: its approved page leads to checkout.
   f.offer = { plans: plans(), recommended: "pro", trialDays: 7 };
   const result = await f.client.checkout("pro", "app_card");
   assert.equal(result.outcome, "signing-in"); assert.equal(result.state.status, "connecting");
   assert.deepEqual(f.browsers, [`${f.origin}/cloud/desktop?code=ABCDE-FGHJK&next=checkout&plan=pro&src=app_card`]);
-  // A sign-in on the way to a checkout, not a checkout yet: the dialog says the browser has the next step.
   assert.deepEqual(result.state.checkout, { plan: "pro", startedAt: f.now, signIn: true });
   assert.ok(!f.requests.some(row => row.route.endsWith("/checkout")), "no checkout before the sign-in");
-  // Reopen opens the same link; approval connects, and the dialog then waits on the checkout.
   await f.client.reopen(); assert.equal(f.browsers.at(-1), f.browsers[0]);
   f.approved = true; f.tick(); await until(() => f.client.state().status === "connected");
   assert.deepEqual(f.client.state().checkout, { plan: "pro", startedAt: result.state.checkout.startedAt, signIn: true });
   assert.equal(f.browsers.length, 2, "nothing more is opened: the approved page leads to checkout");
   assert.ok(!f.requests.some(row => row.route.endsWith("/checkout")));
   await f.client.signOut(); assert.equal(f.client.state().checkout, undefined, "signing out forgets it");
-  // An Admin before offers: once signed in, its Cloud page's checkout opens for someone it lets buy.
   const old = await fixture(t);
   await old.client.checkout("max", "app_menu");
   old.approved = true; old.tick(); await until(() => old.browsers.length === 2);
   assert.deepEqual(old.browsers, [`${old.origin}/cloud/desktop?code=ABCDE-FGHJK&next=checkout&plan=max&src=app_menu`, `${old.origin}/cloud?checkout=start&plan=max&src=app_menu`]);
-  // Someone with a plan signing in that way is never sent to a checkout.
   const payer = await fixture(t);
   payer.entitlement = { plan: "pro", tier: "pro", status: "active", expiresAt: payer.now + 30 * 86400_000, version: 1 };
   await payer.client.checkout("pro", "app_card");
   payer.approved = true; payer.tick(); await until(() => payer.client.state().status === "connected");
   assert.equal(payer.browsers.length, 1);
-  // Nor told its long-ready Cloud is news: this journey opened no checkout, so nothing is remembered of one.
   assert.equal(payer.client.state().checkout, undefined);
-  // An authorization that isn't the Admin's own link is still refused, intent or not.
   const bad = await fixture(t); bad.badUrl = true;
   assert.equal((await bad.client.checkout("pro", "app_card")).state.status, "signed-out");
   assert.deepEqual(bad.browsers, []); assert.equal(bad.client.state().checkout, undefined);
@@ -350,7 +323,6 @@ test("active Pro requires a future expiry and free+active is never accepted", as
     f.entitlement = invalid; const state = await f.client.refresh();
     assert.equal(state.status, "connected"); assert.deepEqual(state.entitlement, free);
   }
-  // With no verified answer to keep, it is unavailable.
   f.now += 15 * 60_000; assert.equal(f.client.state().status, "unavailable"); assert.equal(f.client.state().entitlement, undefined);
 });
 
@@ -383,7 +355,6 @@ test("a plan newer than the app (personal, max) is paid with that tier, told onc
   f.entitlement = { plan: "max", status: "inactive", expiresAt: f.now - 1, version: 2 };
   assert.deepEqual((await f.client.refresh()).entitlement, { plan: "pro", tier: "max", status: "inactive", expiresAt: f.now - 1, version: 2 });
   assert.equal(warnings.length, 2);
-  // A newer plan gets no exemption from the rest of the checks: each is a failed check, never adopted.
   const kept = f.client.state().entitlement;
   for (const invalid of [{ plan: "max", status: "active", expiresAt: null, version: 1 }, { plan: "max", status: "active", expiresAt: f.now, version: 1 },
     ...["Max", "", "pro ", "m".repeat(25), 5, null].map(plan => ({ plan, ...paid }))]) {
@@ -410,12 +381,10 @@ test("the plan hint is saved for display only, follows the verified plan, and is
   assert.equal(f.saved.planHint, undefined, "a free account saves no plan");
   f.entitlement = { plan: "pro", tier: "personal", status: "active", expiresAt: f.now + 3600_000, version: 1 };
   await f.client.refresh(); assert.deepEqual(f.saved.planHint, { tier: "personal", active: true }); assert.equal(f.saved.entitlement, undefined);
-  // Restored offline: named, but nothing is active and nothing is verified.
   f.sessionStatus = 503; f.client.close();
   const restored = await fixture(t); restored.saved = { ...f.saved, origin: restored.origin }; restored.sessionStatus = 503;
   const state = await restored.client.start();
   assert.equal(state.status, "unavailable"); assert.equal(state.entitlement, undefined); assert.deepEqual(state.lastPlan, { tier: "personal", active: true });
-  // A malformed hint is no hint.
   const odd = await fixture(t); odd.saved = { ...f.saved, origin: odd.origin, planHint: { tier: "<b>", active: "yes" } }; odd.sessionStatus = 503;
   assert.equal((await odd.client.start()).lastPlan, undefined);
   restored.sessionStatus = 200; restored.entitlement = { plan: "free", status: "inactive", expiresAt: null, version: 2 };
@@ -435,7 +404,6 @@ test("a sign-in that reached its end asks to sign in again, keeps the plan, and 
   await f.client.refresh();
   await assert.rejects(f.client.signInAgain(), /still signed in/);
   f.now += 86400_000 + 1;
-  // Even before a check runs, the state says so.
   assert.equal(f.client.state().status, "reauth-required"); assert.equal(f.client.state().message, "expired");
   const ended = await f.client.refresh();
   assert.equal(ended.status, "reauth-required"); assert.equal(ended.message, "expired"); assert.deepEqual(ended.lastPlan, { tier: "max", active: true });
@@ -467,10 +435,8 @@ test("only the Admin's own answer ends a sign-in: a 401/403 page from in between
   assert.equal(state.status, "connected"); assert.deepEqual(state.entitlement, paid); assert.equal(state.checking, undefined);
   f.sessionPage = 401; state = await f.client.refresh();
   assert.equal(state.status, "connected"); assert.equal(state.checking, true); assert.equal(f.saved.token, accessToken);
-  // A JSON 403 that is not about the sign-in (a wrong origin) does not end it either.
   f.sessionPage = null; f.sessionError = { status: 403, body: { error: "invalid_origin" } };
   state = await f.client.refresh(); assert.equal(state.status, "connected"); assert.deepEqual(state.entitlement, paid);
-  // The Admin's own "invalid_token": sign in again, the plan still named.
   f.sessionError = { status: 401, body: { error: "invalid_token" } };
   state = await f.client.refresh(); assert.equal(state.status, "reauth-required"); assert.equal(state.message, "access-ended");
   assert.deepEqual(state.lastPlan, { tier: "max", active: true });
@@ -510,7 +476,6 @@ test("sign-out durably forgets personal Cloud and revokes only its credential; o
   assert.ok(f.requests.every(row => row.route.startsWith("/api/cloud/desktop/")));
   f.revoked = false; await f.connect(); f.sessionStatus = 503;
   assert.equal((await f.client.signOut()).message, "signout-local-only"); assert.equal(f.saved, null);
-  // A 403 page from in between (a firewall) revoked nothing: it is disclosed, never taken as done.
   f.sessionStatus = 200; await f.connect(); f.sessionPage = 403;
   assert.equal((await f.client.signOut()).message, "signout-local-only"); assert.equal(f.revoked, false);
 });
@@ -580,7 +545,6 @@ test("a saved Cloud sign-in that can never be read is removed, and signing in ag
   for (const decrypt of [
     // This computer's key no longer opens it (Windows after a reinstall onto a new profile).
     async () => { throw new Error("Error while decrypting the ciphertext provided to safeStorage.decryptString."); },
-    // It opens to something that is not JSON, or to JSON that is not a sign-in.
     async () => ({ shouldReEncrypt: false, result: "not json" }),
     async () => ({ shouldReEncrypt: false, result: JSON.stringify({ token: "not-a-cloud-token" }) }),
   ]) {
@@ -637,15 +601,12 @@ test("My Cloud's line in the server menus says what is true now: the trial's end
   const ends = Date.UTC(2026, 9, 15);
   assert.equal(cloudMenuSublabel(connected({ trial: { state: "active", endsAt: ends } }), date), "Free trial until 2026-10-15");
   assert.equal(cloudMenuSublabel(connected({ trial: { state: "ending", endsAt: ends } }), date), "Free trial until 2026-10-15");
-  // Past its end, its first charge processing: running, never a date already gone.
   assert.equal(cloudMenuSublabel(connected({ trial: { state: "processing", endsAt: ends } }), date), "Always on");
   assert.equal(cloudMenuSublabel(connected(), date), "Always on");
-  // Not paid for now: a trial that ended or is late, a payment problem, a subscription that ended.
   const inactive = { plan: "pro", tier: "pro", status: "inactive", expiresAt: null, version: 2 };
   for (const state of [connected({ entitlement: inactive, trial: { state: "ended", endsAt: ends }, machine: { status: "stopped" } }),
     connected({ entitlement: inactive, trial: { state: "late", endsAt: ends } }), connected({ entitlement: inactive, machine: { status: "payment-problem" } }),
     connected({ entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 3 }, machine: { status: "stopped" } })]) assert.equal(cloudMenuSublabel(state, date), "Stopped");
-  // This computer can't say: signed out, its sign-in ended, not checked now, or nothing of a Cloud.
   for (const state of [null, { status: "signed-out" }, { status: "reauth-required", message: "expired", lastPlan: { tier: "pro", active: true } }, { status: "unavailable" },
     connected({ entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 1 } })]) assert.equal(cloudMenuSublabel(state, date), null);
 });

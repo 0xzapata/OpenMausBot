@@ -1,16 +1,14 @@
-// Memory upkeep's one-shot text call on the ACP engines (generateMemoryText,
-// ./background-text.ts), against the fake ACP CLI: a fresh tool-free session
-// on the engine's own CLI, refusing any tool or permission, and the usage
-// it reports. Main had no such call, so these engines never learned.
 import { chmodSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ensureDirs } from "../../config.ts";
 import type { ProviderDriver, ProviderInstance, TextGenerationUsage } from "../../contracts.ts";
 import { removeTempDir } from "../../testing/cleanup.ts";
+import * as procs from "../../procs.ts";
+import { BACKGROUND_TEXT_TIMEOUT_MS } from "./background-text.ts";
 import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
 import { CursorAgentDriver } from "./cursor.ts";
 import { GeminiAgentDriver } from "./gemini.ts";
@@ -57,7 +55,6 @@ describe("ACP memory one-shot (generateMemoryText)", () => {
     expect(answer).toBe('[{"text":"The person likes jazz","kind":"preference"}]');
     const session = JSON.parse(readFileSync(`${process.env.FAKE_ACP_DUMP}.session.json`, "utf8"));
     expect(session.mcpServers).toEqual([]);
-    // an empty folder of its own, removed afterwards
     expect(session.cwd).toMatch(/omb-acp-memory-/);
     expect(existsSync(session.cwd)).toBe(false);
     expect(usage).toEqual([expect.objectContaining({ input: 12, output: 4 })]);
@@ -83,6 +80,14 @@ describe("ACP memory one-shot (generateMemoryText)", () => {
     await expect(engine.generateMemoryText!("prompt")).rejects.toThrow(/may not use|tried to use a tool/);
   });
 
+  it("waits as long as the caller's options say", async () => {
+    process.env.FAKE_ACP_MODE = "hang";
+    const engine = await create(GrokAgentDriver);
+    const started = Date.now();
+    await expect(engine.generateMemoryText!("prompt", { timeoutMs: 500 })).rejects.toThrow(/timed out/);
+    expect(Date.now() - started).toBeLessThan(BACKGROUND_TEXT_TIMEOUT_MS);
+  });
+
   it("stops on abort", async () => {
     process.env.FAKE_ACP_MODE = "hang";
     const engine = await create(GrokAgentDriver);
@@ -90,6 +95,35 @@ describe("ACP memory one-shot (generateMemoryText)", () => {
     const pending = engine.generateMemoryText!("prompt", { signal: controller.signal });
     setTimeout(() => controller.abort(), 200);
     await expect(pending).rejects.toThrow(/aborted/);
+  });
+
+  it.each([false, true])("waits for process shutdown before removing its folder (tool refusal: %s)", async (refused) => {
+    if (!refused) process.env.FAKE_ACP_TEXT_REPLY = "[]";
+    const engine = await create(GrokAgentDriver);
+    const kill = procs.killCliTree;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const stop = vi.spyOn(procs, "killCliTree").mockImplementation(async (child, timeout) => {
+      await gate;
+      return kill(child, timeout);
+    });
+    let settled = false;
+    const pending = engine.generateMemoryText!("prompt").then(
+      (text) => { settled = true; return text; },
+      (error: Error) => { settled = true; return error; },
+    );
+    try {
+      await expect.poll(() => stop.mock.calls.length).toBe(1);
+      expect(settled).toBe(false);
+    } finally {
+      release();
+      await pending;
+      await Promise.all(stop.mock.calls.map(([child]) => kill(child)));
+      stop.mockRestore();
+    }
+    const outcome = await pending;
+    if (refused) expect(outcome).toEqual(expect.objectContaining({ message: expect.stringMatching(/tried to use a tool/) }));
+    else expect(outcome).toBe("[]");
   });
 
   it("is absent on an engine that opts out", async () => {

@@ -2,8 +2,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-// The tool's own name on the row is Advanced mode's; Simple mode's plain
-// words are covered in ToolActivity.simple.test.ts.
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true }));
 const { ToolActivity } = await import("./ToolActivity");
 

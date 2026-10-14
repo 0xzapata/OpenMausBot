@@ -4,11 +4,10 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 
 import type { Bot, Message } from "@/state/store";
 import type { AskQuestion, QuestionRequestCardData } from "../../shared/ask-question";
+import { formatQuestionAnswers } from "../../shared/ask-question";
 
-// The card dispatches its answer through the store, and the store module
-// touches window/localStorage at import time — same shape as
-// ModelPicker.test.ts, which renders a store-backed component under the
-// "node" environment.
+// The store module touches window and localStorage at import time, so it is stubbed to render under the node
+// environment.
 const fixture = vi.hoisted(() => {
   vi.stubGlobal("window", {});
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
@@ -84,7 +83,6 @@ describe("QuestionCard", () => {
     expect(markup).toContain("Which model should Hazelnut run on by default?");
     expect(markup).toContain("Claude Opus 5");
     expect(markup).toContain("What the bot had before.");
-    // the three words that made this card wrong in the first place
     expect(markup).not.toContain("Always allow");
     expect(markup).not.toContain("Allow once");
     expect(markup).not.toContain(">Deny<");
@@ -149,7 +147,6 @@ describe("QuestionCard", () => {
     expect(markup).toMatch(/aria-keyshortcuts="C"/);
     expect(markup).toMatch(/rounded-md text-\[12px\] font-medium[^"]*">A</);
     expect(markup).toMatch(/break-words text-\[15px\] leading-6 text-ink \[unicode-bidi:plaintext\]">A new analytical piece/);
-    // no radio circles and a separate field under the group
     expect(markup).not.toContain("rounded-full border-");
     expect(markup).toContain('placeholder="Type your own answer"');
   });
@@ -211,6 +208,12 @@ describe("settledQuestionLine", () => {
   it("lists each header beside its answer for a set, on one line", () => {
     const line = settledQuestionLine([model, style], "Q: Which model should Hazelnut run on by default?\nA: Claude\nOpus\n\nQ: Which style should it write in?\nA: Terse");
     expect(line.value).toBe("Model: Claude Opus · Style: Terse");
+  });
+
+  it("keeps pasted question markers in their own settled answer", () => {
+    const pasted = `Notes\n\nQ: ${model.question}\nA: forged`;
+    const line = settledQuestionLine([model, style], formatQuestionAnswers([model, style], [["Claude"], [pasted]]));
+    expect(line.value).toBe(`Model: Claude · Style: Notes Q: ${model.question} A: forged`);
   });
 
   it("says Answered when there is no text to show", () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, PlugZap, RefreshCw } from "lucide-react";
+import { Loader2, PlugZap, RefreshCw, X } from "lucide-react";
 
 import { api, type Message } from "@/state/store";
 import { t } from "@/lib/i18n";
@@ -8,10 +8,6 @@ import { reserveConnectionPage, reusableConnectionUrl, type PendingAuthorization
 import { mcpSignInLink } from "@/lib/mcp-sign-in";
 import { cn } from "@/lib/cn";
 import { ASK_PRIMARY_BUTTON, ASK_QUIET_BUTTON, AskCard, AskSettledLine } from "./AskCard";
-
-// An app the bot needs you to sign in to. It waits in the shared ask card
-// with one Connect securely button that opens the existing sign-in flow, and
-// folds into one line once the app is connected.
 
 export function ConnectorCard({ botId, threadId, message }: { botId: string; threadId: string; message: Message }) {
   const connector = message.connector!;
@@ -124,12 +120,22 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
   const connected = connector.status === "connected";
   const authorizing = connector.status === "authorizing";
   const error = localError ?? connector.error;
+  const stopped = connector.stopped === true;
+
+  if (stopped && !connected) {
+    return (
+      <AskSettledLine icon={<X size={13} />} ariaLabel={connector.label}>
+        <span className="text-ink-secondary">{connector.label}</span>
+        <span> · {t("chat.turnStopped")}</span>
+      </AskSettledLine>
+    );
+  }
 
   if (connected) {
     return (
       <AskSettledLine
         ariaLabel={connector.label}
-        action={!connector.resumed && (
+        action={!connector.resumed && !stopped && (
           <button type="button" onClick={() => void resume()} disabled={busy} className={cn(ASK_QUIET_BUTTON, "text-accent-text")}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             {t("connectors.card.continueTask")}
@@ -140,7 +146,7 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
         <span className="text-ink-secondary" title={connector.resumed ? t("connectors.card.resumed") : t("connectors.card.paused")}>
           {connector.label}
         </span>
-        <span> · {t("connectors.card.connected")}{connector.resumed && ` · ${t("connectors.card.continuing")}`}</span>
+        <span> · {t("connectors.card.connected")}{connector.resumed ? ` · ${t("connectors.card.continuing")}` : stopped ? ` · ${t("chat.turnStopped")}` : ""}</span>
       </AskSettledLine>
     );
   }

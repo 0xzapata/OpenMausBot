@@ -1,17 +1,17 @@
 // @vitest-environment happy-dom
-// The New chat panel: a To: filter over the bots, arrows and Enter to start a
-// chat, the two create actions on top, and Escape or a press outside to close.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ dispatch: vi.fn(), showThreads: true }));
-vi.mock("@/state/store", () => ({
+vi.mock("@/state/store", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/state/store")>(),
   useStore: () => ({
     state: {
       bots: [
-        { id: "scout", name: "Scout", title: "Research", description: "", color: "blue", hidden: false },
+        { id: "scout", name: "Scout", title: "Research", description: "", color: "blue", hidden: false,
+          threadId: "older", mainThreadId: "latest", tasks: [{ threadId: "older" }, { threadId: "latest" }] },
         { id: "quill", name: "Quill", title: "", description: "Writes the newsletter\nand more", color: "pink", hidden: false },
         { id: "ghost", name: "Ghost", title: "", description: "", color: "green", hidden: true },
       ],
@@ -89,7 +89,6 @@ describe("SidebarNewChatPanel", () => {
     expect(text).toContain("Create new bot");
     expect(text).toContain("Create group chat");
     expect(text).toContain("Scout");
-    // one line per bot: the subtitle moves to the accessible name
     expect(text).not.toContain("Writes the newsletter");
     expect(container!.querySelector("[aria-label^='Quill, Writes the newsletter']")).not.toBeNull();
     expect(text).not.toContain("Ghost");
@@ -127,12 +126,12 @@ describe("SidebarNewChatPanel", () => {
     expect(props.onNewGroup).toHaveBeenCalledOnce();
   });
 
-  it("opens the bot's one conversation in simple mode", () => {
+  it("opens the bot's one conversation, its main thread, in simple mode", () => {
     fixture.showThreads = false;
     const { input } = open();
     expect(container!.querySelector("[aria-label$='. Open']")).not.toBeNull();
     key(input, "Enter");
-    expect(fixture.dispatch).toHaveBeenCalledWith({ type: "select", id: "scout" });
+    expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "switchTask", botId: "scout", threadId: "latest" });
   });
 
   it("has a close button for when it covers the whole window", () => {

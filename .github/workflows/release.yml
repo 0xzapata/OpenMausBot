@@ -16,6 +16,8 @@
 #                                 bandwidth silently
 #   - assemble-then-publish    -> 0.1.24 sat as an invisible draft; a mac-only
 #                                 publish 404s the README's other buttons
+#   - module-scope gate        -> 0.1.108 would not start under a parent
+#                                 package.json saying "type": "commonjs" (#2770)
 #
 # One-time setup (repo secrets) is documented in docs/releasing.md.
 name: Release
@@ -234,6 +236,7 @@ jobs:
             # regardless of the app binary's arch
             OMB_SMOKE_DIST="$res/server" node scripts/smoke-packaged-server.mjs \
               || { echo "::error::packaged server in $app failed to start"; exit 1; }
+            node scripts/check-module-scopes.mjs "$res" || exit 1
             node --input-type=module - "$res/server" <<'EOF'
           import { existsSync } from "node:fs";
           import { pathToFileURL } from "node:url";
@@ -350,6 +353,7 @@ jobs:
           res=release/win-unpacked/resources
           [ -f "$res/server/index.js" ] || { echo "::error::missing server/index.js"; exit 1; }
           [ -f "$res/server/desktop-entry.mjs" ] || { echo "::error::missing server/desktop-entry.mjs"; exit 1; }
+          node scripts/check-module-scopes.mjs "$res"
           [ -f "$res/ui/index.html" ] || { echo "::error::missing ui/index.html"; exit 1; }
           [ -f "$res/cloudflared/cloudflared.exe" ] || { echo "::error::missing cloudflared.exe"; exit 1; }
           [ -f "$res/licenses/cloudflared-LICENSE.txt" ] || { echo "::error::missing cloudflared license"; exit 1; }
@@ -453,6 +457,8 @@ jobs:
         env:
           OMB_SMOKE_DIST: /opt/OpenMausBot/resources/server
         run: node scripts/smoke-packaged-server.mjs --browser-bundle /opt/OpenMausBot/resources/browser-engine
+      - name: "Gate: packaged server and phone helper load as ES modules"
+        run: node scripts/check-module-scopes.mjs /opt/OpenMausBot/resources
       - name: Smoke the packages
         env:
           OMB_KEEP_SMOKE_DIR: "1"

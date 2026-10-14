@@ -63,7 +63,14 @@ switching and Stop can be exercised without a real provider or account.
     Group/channel histories are unchanged. Background working, queued, unread,
     and waiting conversations remain reachable through activity-only controls.
     The header stays uncluttered; **Other activity** appears below it only when
-    there is sibling activity, including when the sidebar is closed.
+    there is sibling activity, including when the sidebar is closed. Open a
+    sibling from its activity entry, then click the bot's row: it returns to
+    the conversation you last wrote in (the bot's main thread). Open another
+    bot, let a reply land in the sibling it was left on, and check that the
+    sibling has its own activity entry under that bot. Follow a notification,
+    a thread chip or a search hit to a third thread of that bot: the sibling
+    keeps its unread entry, and the third thread is read once open. An
+    `openmausbot://bot/<id>` link opens the main thread.
 13. Stop a running job through its activity entry while a sibling is queued;
     verify only the chosen job stops and the queued message starts normally.
     Reload and confirm Show threads remains off. Turn it back on to recover

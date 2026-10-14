@@ -1,12 +1,3 @@
-// The update button at the foot of the sidebar and the card it opens.
-//
-// Updates download by themselves (electron/updater.mjs). While one is on its
-// way, or downloaded and waiting for a restart, a small round button sits
-// beside the profile icon; the rest of the time there is no button at all.
-// It opens a centred card: the version, a few highlights from the release
-// notes, and one primary action (the download's progress until it is done,
-// then "Restart to update", or "Install" where a terminal finishes the job).
-// Restarting is always the person's click; "Later" leaves everything as is.
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowDown, Loader2, PackageOpen, RefreshCw, X } from "lucide-react";
@@ -18,12 +9,10 @@ import { brand } from "../lib/brand";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 
-/** The statuses the button is shown for: an update on its way or waiting. */
 export function updateIndicatorShown(state: UpdaterState | null): boolean {
   return Boolean(state && ["downloading", "preparing", "downloaded", "installing"].includes(state.status));
 }
 
-/** The button's accessible name, which says what it holds. */
 export function updateIndicatorLabel(state: UpdaterState): string {
   const app = brand().name;
   const version = state.version ?? "";
@@ -40,9 +29,6 @@ export function UpdateIndicator({ className }: { className?: string }) {
   const state = useUpdaterState();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  // Nothing left to act on (no update, a fresh check, or the deb hand-off now
-  // finishing in a terminal, which the popup explains): the card closes. A
-  // failure keeps it open, offering Try again.
   const settled = !state || state.status === "idle" || state.status === "checking" || state.status === "handed-off";
   useEffect(() => {
     if (settled) setOpen(false);
@@ -53,7 +39,9 @@ export function UpdateIndicator({ className }: { className?: string }) {
   const label = updateIndicatorLabel(state);
   const ready = state.status === "downloaded";
   return (
-    <>
+    <div
+      className={cn("flex size-[46px] shrink-0 items-center justify-center", className)}
+    >
       <button
         ref={buttonRef}
         type="button"
@@ -64,18 +52,15 @@ export function UpdateIndicator({ className }: { className?: string }) {
         onClick={() => setOpen(true)}
         className={cn(
           "relative flex size-7 shrink-0 items-center justify-center rounded-full bg-white text-neutral-900 shadow-sm ring-1 ring-black/10 transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-          className,
         )}
       >
         <ArrowDown size={16} strokeWidth={2.25} aria-hidden className={cn(!ready && "animate-pulse")} />
       </button>
       {open && <UpdateCard state={state} onClose={() => setOpen(false)} returnFocusRef={buttonRef} />}
-    </>
+    </div>
   );
 }
 
-// The md button: 28px tall, 13px medium on a 16px line, a full pill, 8px
-// between icon and label, the same for both so their labels share a baseline.
 const button = "inline-flex h-7 min-w-0 items-center justify-center gap-2 rounded-full px-3.5 text-[13px] font-medium leading-4 transition-colors";
 const primary = `${button} bg-accent text-white hover:brightness-110 disabled:cursor-default disabled:bg-control disabled:text-ink-secondary disabled:hover:brightness-100`;
 const secondary = `${button} text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-50`;
@@ -98,7 +83,6 @@ export function UpdateCard({
   const status = state.status;
   useEffect(() => setPending(false), [status]);
 
-  // Focus moves in on open and back to the button on close; Tab stays inside.
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     (primaryRef.current && !primaryRef.current.disabled ? primaryRef.current : laterRef.current)?.focus();

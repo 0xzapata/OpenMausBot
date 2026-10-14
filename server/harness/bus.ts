@@ -1,16 +1,4 @@
-// Fan-in event bus — port of upstream's ProviderService fan-in +
-// EventNdjsonLogger tee, minus Effect. Every adapter's event stream merges
-// into one bus; each event is stamped with its providerInstanceId, teed to
-// a per-thread canonical NDJSON log (the debugging trick both upstream and
-// agentcal lean on), and delivered to subscribers (the SSE endpoint and
-// the server-side message folder).
-//
-// Streamed text is merged here, once, for every engine on every kind of
-// install: a provider sends a reply as hundreds of small text deltas, and
-// each would otherwise be its own log line, listener call and SSE frame. The
-// bus holds a thread's text for at most DELTA_MERGE_MS and publishes it as
-// one delta, sooner when anything else happens on that thread, so the order
-// of events never changes.
+// Fan-in event bus — port of upstream's ProviderService fan-in + EventNdjsonLogger tee, minus Effect.
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -22,20 +10,13 @@ import { newId, type ProviderInstance, type RuntimeEvent, type RuntimeEventListe
 const INCOMPLETE_LOG_MESSAGE =
   "Canonical event history is incomplete: OpenMausBot could not write one or more events to disk. Live updates will continue.";
 
-/** How long a thread's streamed text waits to be merged with what follows. */
 const DELTA_MERGE_MS = 50;
 
-/** One append of adjacent lines. Keeps a single slow write from holding the
- * whole backlog, and keeps the lines that arrived in one turn together. */
 const MAX_BATCH_LINES = 64;
 
-/** In-memory ceiling. Past this, live delivery continues and the canonical
- * log records the same incomplete-history marker a failed disk write does. */
 const MAX_QUEUED_EVENTS = 256;
 const MAX_QUEUED_BYTES = 1024 * 1024;
 
-/** Disk append used by the canonical log. Sync throws and async rejections
- * are both write failures. Tests and the persistence bench inject their own. */
 export type EventLogAppend = (
   path: string,
   data: string,
@@ -48,14 +29,11 @@ type QueuedLog = { event: RuntimeEvent; bytes: number };
 
 type TextDelta = Extract<RuntimeEvent, { type: "content.delta" }>;
 
-/** Two deltas are one stream when only their text, id and time differ. */
 function sameStream(a: TextDelta, b: TextDelta): boolean {
   return a.provider === b.provider && a.providerInstanceId === b.providerInstanceId && a.turnId === b.turnId &&
     a.itemId === b.itemId && a.streamKind === b.streamKind && a.synthetic === b.synthetic;
 }
 
-/** A turn ending, a session ending, or a terminal runtime error. The queued
- * lines up to and including this event are flushed rather than left batched. */
 function isTerminalEvent(event: RuntimeEvent): boolean {
   if (event.type === "turn.completed" || event.type === "cap.exhausted" || event.type === "session.exited") {
     return true;
@@ -67,16 +45,13 @@ export class EventBus {
   private listeners = new Set<RuntimeEventListener>();
   private unsubscribes = new Map<string, () => void>();
   private pendingLogWarnings = new Map<string, RuntimeEvent>();
-  /** Per thread: the streamed text not yet published, and when it goes. */
   private pendingText = new Map<string, { event: TextDelta; timer: ReturnType<typeof setTimeout> }>();
   private readonly appendLog: EventLogAppend;
-  /** Accepted events not yet handed to the append, in publish order. */
   private queued: QueuedLog[] = [];
   private queuedBytes = 0;
   private pumping = false;
   private kickScheduled = false;
   private readonly drainWaiters: Array<() => void> = [];
-  /** Coalesce consecutive drops, but put their marker in the ordinary FIFO. */
   private readonly queuedLogWarnings = new Map<string, RuntimeEvent>();
 
   constructor(appendLog: EventLogAppend = defaultAppend) {
@@ -87,8 +62,7 @@ export class EventBus {
     for (const instance of instances) {
       this.detach(instance.instanceId);
       const unsub = instance.adapter.onEvent((event) => {
-        // hard invariant borrowed from correlateRuntimeEventWithInstance:
-        // an adapter may only emit events for its own driver kind
+        // An adapter may only emit events for its own driver kind.
         if (event.provider !== instance.driverKind) {
           console.error(`bus: dropped cross-driver event from ${instance.instanceId}`);
           return;
@@ -116,17 +90,11 @@ export class EventBus {
     this.write(event);
   }
 
-  /** Publish every thread's waiting text now, and wait until the canonical
-   * log has accepted every event already queued. Detach and shutdown call
-   * this; a terminal event flushes the same queue. */
   flush(): Promise<void> {
     for (const threadId of Array.from(this.pendingText.keys())) this.flushThread(threadId);
     return this.flushDisk();
   }
 
-  /** flush(), bounded for shutdown. Resolves false when the log has not
-   * accepted every queued line within `ms`: the caller exits anyway and
-   * says the history may be incomplete. */
   async flushWithin(ms: number): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<false>((resolve) => {
@@ -143,17 +111,14 @@ export class EventBus {
   private flushThread(threadId: string) {
     const pending = this.pendingText.get(threadId);
     if (!pending) return;
-    // gone from the map before delivery: a listener may publish on this thread
+    // Gone from the map before delivery: a listener may publish on this thread.
     this.pendingText.delete(threadId);
     clearTimeout(pending.timer);
     this.write(pending.event);
   }
 
   private write(event: RuntimeEvent) {
-    // Queue the canonical line first, then deliver. Queueing is synchronous
-    // and the append runs later, so a slow disk never stalls the turn, and a
-    // listener that publishes from inside delivery queues its event after
-    // this one: the log keeps publication order.
+    // Queue first, then deliver: a listener publishing during delivery queues after this, so the log keeps publication order.
     this.enqueue(event);
     this.deliver(event);
     if (isTerminalEvent(event)) void this.flushDisk();
@@ -167,16 +132,13 @@ export class EventBus {
       if (!this.queuedLogWarnings.has(event.threadId)) {
         const warning = this.logWarning(event);
         this.queuedLogWarnings.set(event.threadId, warning);
-        // Reserve the exact gap position, including behind an active batch.
-        // Queue before delivery because listeners may synchronously publish.
+        // Queued before delivery: listeners may publish synchronously.
         this.push(warning);
         console.error("bus: canonical event log queue is full");
         this.deliver(warning);
       }
       return;
     }
-    // A turn's end is never dropped. Any accepted event ends a run of drops;
-    // a later overflow needs its own marker after this newly accepted line.
     this.queuedLogWarnings.delete(event.threadId);
     this.push(event, bytes);
   }
@@ -187,7 +149,6 @@ export class EventBus {
     this.kick();
   }
 
-  /** Start a drain on a microtask so a synchronous burst becomes one batch. */
   private kick() {
     if (this.pumping || this.kickScheduled) return;
     this.kickScheduled = true;
@@ -245,13 +206,9 @@ export class EventBus {
     if (warning) persisted.unshift(warning);
     const file = join(EVENTS_DIR, `${threadId}.ndjson`);
     try {
-      // the canonical log is a file people paste into bug reports; scrub
-      // credential-shaped content (tool titles, request summaries, reply
-      // text) the same way the native tee does
+      // People paste this log into bug reports: scrub credential-shaped content as the native tee does.
       await this.appendLog(file, persisted.map((entry) => JSON.stringify(entry)).join("\n") + "\n", { mode: 0o600 });
       if (warning) this.pendingLogWarnings.delete(threadId);
-      // Best-effort size cap (#1280): an open thread's canonical log
-      // otherwise grows without bound for as long as the thread stays open.
       capThreadLog(file, currentThreadLogCap());
     } catch (error) {
       this.noteDiskFailure(events[0], error);
@@ -274,9 +231,7 @@ export class EventBus {
     };
   }
 
-  /** Once per outage. Never goes back through publish(): that would retry
-   * the same failed write and recurse. The marker is written with the next
-   * batch that reaches disk. */
+  /** Never through publish(): that would retry the same failed write and recurse. */
   private noteDiskFailure(event: RuntimeEvent, error: unknown) {
     if (this.pendingLogWarnings.has(event.threadId)) return;
     const warning = this.logWarning(event);
