@@ -1,7 +1,4 @@
 // @vitest-environment happy-dom
-// Selected message text goes straight into the composer: a floating
-// "Add to prompt" pill (or its shortcut) adds the quote, and the composer
-// shows it as an inline chip before the caret. No popover, no comment form.
 import { act, createElement, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";

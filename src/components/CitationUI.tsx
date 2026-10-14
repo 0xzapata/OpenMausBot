@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MessageCircleMore, Quote, X } from "lucide-react";
 import {
@@ -9,14 +9,13 @@ import {
   type CitationAttachment,
 } from "@/lib/citations";
 import { sendsMessage, useSendKey } from "@/lib/send-key";
-import { addToPromptChord, captureCitationSelection, citationTabShortcut, isAddToPromptShortcut } from "@/lib/citations-dom";
+import { addToPromptChord, captureCitationSelection, citationTabShortcut, isAddToPromptShortcut, removesQuoteChip } from "@/lib/citations-dom";
+import type { Attachment } from "@/lib/composer-attachments";
 import { isMacPlatform } from "@/lib/keyboard-shortcuts";
 import { t } from "@/lib/i18n";
 import { textDirection } from "./ChatMarkdown";
 
 type Point = { left: number; top: number };
-/** Where the selection is: the pill sits above its first line, or below
- * its last when there is no room above. */
 type Anchor = { left: number; top: number; bottom: number };
 
 function place(element: HTMLElement, point: Point): void {
@@ -31,8 +30,6 @@ function placeAbove(element: HTMLElement, anchor: Anchor): void {
   place(element, { left: anchor.left - rect.width / 2, top: above >= 8 ? above : anchor.bottom + 8 });
 }
 
-/** Focus the composer with the caret after what is already typed, which is
- * right after the quote chips when nothing is. */
 function focusComposer(): void {
   requestAnimationFrame(() => {
     const input = document.querySelector<HTMLTextAreaElement>('[data-tour="composer"] textarea');
@@ -42,8 +39,7 @@ function focusComposer(): void {
   });
 }
 
-
-export function CitationEditor({
+function CitationEditor({
   citation,
   point,
   onSave,
@@ -121,8 +117,6 @@ export function CitationEditor({
   );
 }
 
-/** The floating "Add to prompt" pill over selected message text. Clicking
- * it, or the shortcut, puts the quote straight into the composer. */
 export function CitationSelectionToolbar({
   viewportRef,
   onAdd,
@@ -137,11 +131,8 @@ export function CitationSelectionToolbar({
     citation: CitationAttachment;
     anchor: Anchor;
   } | null>(null);
-  const capturedRef = useRef(captured);
-  capturedRef.current = captured;
 
-  const add = () => {
-    const current = capturedRef.current;
+  const add = (current: typeof captured) => {
     if (!current || current.citation.quote.length > CITATION_MAX_QUOTE_LENGTH) return;
     onAdd(current.citation);
     window.getSelection()?.removeAllRanges();
@@ -149,7 +140,7 @@ export function CitationSelectionToolbar({
     focusComposer();
   };
   const addRef = useRef(add);
-  addRef.current = add;
+  useLayoutEffect(() => { addRef.current = add; });
 
   useEffect(() => {
     if (!captured) tabShortcut.reset();
@@ -181,12 +172,10 @@ export function CitationSelectionToolbar({
     viewportRef.current?.addEventListener("keyup", update);
     const onKey = (event: KeyboardEvent) => {
       if (!captured) return;
-      // a selection over the limit cannot be added, so the key keeps its
-      // usual meaning instead of doing nothing
       if (isAddToPromptShortcut(event, isMac) && captured.citation.quote.length <= CITATION_MAX_QUOTE_LENGTH) {
         event.preventDefault();
         event.stopPropagation();
-        addRef.current();
+        addRef.current(captured);
         return;
       }
       tabShortcut.handle(event, buttonRef.current);
@@ -210,7 +199,7 @@ export function CitationSelectionToolbar({
   if (!captured) return null;
   const tooLong = captured.citation.quote.length > CITATION_MAX_QUOTE_LENGTH;
   const chord = addToPromptChord(isMac);
-  // dark in every skin, like a tooltip: it floats over the transcript
+  // Dark in every skin, like a tooltip.
   return createPortal(
     <button
       ref={buttonRef}
@@ -220,7 +209,7 @@ export function CitationSelectionToolbar({
       aria-label={tooLong ? t("citation.tooLong") : t("citation.addToPrompt")}
       aria-keyshortcuts={tooLong ? undefined : chord.aria}
       onPointerDown={(event) => event.preventDefault()}
-      onClick={add}
+      onClick={() => add(captured)}
       onKeyDown={(event) => {
         if (event.key === "Escape") { event.preventDefault(); setCaptured(null); }
       }}
@@ -236,24 +225,14 @@ export function CitationSelectionToolbar({
   );
 }
 
-/** Direction of the composer's input line while quotes lead it: the
- * comment's once one is typed, the first quote's before that. The chips then
- * sit at the line's start and the caret right after them, in Arabic as in
- * English. */
 export function quoteLineDirection(text: string, quotes: readonly CitationAttachment[]): "rtl" | "ltr" {
   if (/\p{Letter}/u.test(text)) return textDirection(text);
   return textDirection(quotes[0]?.quote ?? "");
 }
 
-/** The longest stretch of a quote a chip reads before its ellipsis. CSS
- * clamps it to the chip's width too; this keeps the DOM small. */
 const CHIP_TEXT = 80;
 const CHIP_TITLE = 2_000;
 
-/** A quote waiting in the composer: inline at the start of the input line,
- * a speech-bubble icon and the opening words in quotes. Hover shows the whole
- * quote and an x. Backspace at the start of the input or Escape removes the
- * newest one (Composer). */
 export function ComposerQuoteChip({ citation, onRemove }: { citation: CitationAttachment; onRemove: () => void }) {
   const flat = citation.quote.replace(/\s+/g, " ").trim();
   const title = [
@@ -266,9 +245,6 @@ export function ComposerQuoteChip({ citation, onRemove }: { citation: CitationAt
       title={title}
       className="group/quote inline-flex h-7 min-w-0 max-w-[min(12rem,70%)] shrink items-center gap-1.5 rounded-lg px-1.5 text-[14px] text-ink-secondary transition-colors hover:bg-raised hover:text-ink focus-within:bg-raised"
     >
-      {/* the x takes the icon's place on hover or focus (always on a touch
-          screen), so the chip keeps its width and the caret stays right
-          after it */}
       <span className="relative flex size-4 shrink-0 items-center justify-center">
         <MessageCircleMore size={15} aria-hidden="true" className="transition-opacity group-focus-within/quote:opacity-0 group-hover/quote:opacity-0 touch:opacity-0" />
         <button
@@ -285,6 +261,40 @@ export function ComposerQuoteChip({ citation, onRemove }: { citation: CitationAt
       </span>
     </span>
   );
+}
+
+export function useComposerQuotes({ attachments, text, removeAttachment, inputRef }: {
+  attachments: readonly Attachment[];
+  text: string;
+  removeAttachment: (id: string) => void;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+}) {
+  const quotes = useMemo(
+    () => attachments.filter((attachment): attachment is CitationAttachment => attachment.kind === "citation"),
+    [attachments],
+  );
+  const removeQuote = (id: string) => {
+    removeAttachment(id);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+  const takesKey = (e: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    const last = quotes.at(-1);
+    if (!last || !removesQuoteChip(
+      { key: e.key, isComposing: e.nativeEvent.isComposing },
+      { start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd },
+    )) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    removeQuote(last.id);
+    return true;
+  };
+  if (quotes.length === 0) return { hasQuotes: false, leading: undefined, leadingDir: undefined, takesKey };
+  return {
+    hasQuotes: true,
+    leading: quotes.map((quote) => <ComposerQuoteChip key={quote.id} citation={quote} onRemove={() => removeQuote(quote.id)} />),
+    leadingDir: quoteLineDirection(text, quotes),
+    takesKey,
+  };
 }
 
 export function CitationBadge({

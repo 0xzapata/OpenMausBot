@@ -196,6 +196,14 @@ included in a pairing invitation only after it is ready. The default setup
 waits for that HTTPS address instead of silently substituting Tailscale;
 Tailscale pairing remains an explicit choice in its own optional card.
 
+The address is held only while something needs it. The desktop creates it
+when you sign in, choose Retry, or start pairing (a few seconds under the
+"Creating secure remote access" spinner), keeps it while any phone or desktop
+is paired, and gives it back one to four hours after Remote access shows
+nothing paired and no pairing open. The next pairing gets the same address
+back. If no HTTPS address is free, the panel says when to try again, and
+Wi-Fi or Tailscale pairing still works.
+
 Cloudflare terminates and proxies the encrypted connection to the connector.
 The OpenMausBot control plane stores account and installation metadata plus
 opaque tunnel/DNS identifiers in D1, but not bots, transcripts, approvals,

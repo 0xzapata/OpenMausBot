@@ -41,15 +41,9 @@ export function saveSidebarDensity(
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(SIDEBAR_DENSITY_KEY, density);
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
-    // The in-memory React state still makes the control useful this session.
   }
 }
 
-// The sidebar and Settings → Appearance both read and change the density, so
-// it lives in one renderer store rather than in either component's state.
-// A session choice survives storage that rejects writes; another window's
-// storage event supersedes it.
 let densitySessionChoice: SidebarDensity | undefined;
 const densityListeners = new Set<() => void>();
 
@@ -116,7 +110,6 @@ export function saveSidebarWidth(width: number, storage?: Pick<Storage, "setItem
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(SIDEBAR_WIDTH_KEY, String(width));
   } catch {
-    // A blocked local store does not prevent resizing this session.
   }
 }
 
@@ -141,8 +134,6 @@ export function saveSidebarAttentionPinned(
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(SIDEBAR_ATTENTION_PINNED_KEY, String(pinned));
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
-    // The in-memory React state still makes the control useful this session.
   }
 }
 
@@ -150,8 +141,6 @@ export function parsePinnedCircles(value: string | null): boolean {
   return value === "true";
 }
 
-/** Session choice when storage rejects the write. Injected storage in tests
- * does not touch it, so a blocked localStorage cannot leak across cases. */
 let sessionPinnedCircles: boolean | undefined;
 const pinnedCircleListeners = new Set<() => void>();
 
@@ -204,8 +193,6 @@ export function savePinnedCircles(
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(PINNED_CIRCLES_KEY, enabled ? "true" : "false");
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
-    // The in-memory React state still makes the control useful this session.
   }
 }
 
@@ -275,7 +262,6 @@ export function saveUniversalPins(
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(UNIVERSAL_PINS_KEY, enabled ? "true" : "false");
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
   }
 }
 
@@ -327,8 +313,6 @@ function saveStringList(
     ].slice(0, 100);
     target?.setItem(key, JSON.stringify(safe));
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
-    // In-memory React state still keeps the interaction useful this session.
   }
 }
 

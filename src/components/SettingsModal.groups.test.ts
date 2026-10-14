@@ -89,7 +89,6 @@ vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => fixture.owne
 
 const render = () => renderToStaticMarkup(createElement(SettingsModal));
 
-/** The rail as drawn: each group with the section ids under it, in order. */
 function rail(html: string): Record<string, string[]> {
   const groups: Record<string, string[]> = {};
   let current = "";
@@ -105,7 +104,7 @@ describe("Settings rail groups", () => {
     expect(SETTINGS_GROUPS.map((group) => group.id)).toEqual(["you", "ai", "computers", "account"]);
     const ids = SECTIONS.map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(17); // 16 + the shared Skills library (AI group)
+    expect(ids).toHaveLength(18); // 16 + the shared Skills library (AI group) + Logins (Computers)
     for (const entry of SECTIONS) expect(SETTINGS_GROUPS.map((group) => group.id)).toContain(entry.group);
   });
 
@@ -117,10 +116,9 @@ describe("Settings rail groups", () => {
     expect(rail(html)).toEqual({
       you: ["general", "appearance", "companion"],
       ai: ["engines", "connections", "decisionModel"],
-      computers: ["desktopWorkspaces", "computer"],
+      computers: ["desktopWorkspaces", "computer", "logins"],
       account: ["cloudAccount", "organization", "usage", "backups", "experimental"],
     });
-    // the narrow-window picker carries the same groups
     expect(html).toContain('<optgroup label="AI">');
   });
 
@@ -128,7 +126,6 @@ describe("Settings rail groups", () => {
     fixture.ownerOrAdmin = true;
     const groups = rail(render());
     expect(groups.account).toEqual(["usage", "backups", "people", "activity", "experimental"]);
-    // desktop-only pages stay out of a browser
     expect(Object.values(groups).flat()).not.toContain("desktopWorkspaces");
     expect(Object.values(groups).flat()).not.toContain("cloudAccount");
   });

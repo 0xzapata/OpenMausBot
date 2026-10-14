@@ -95,6 +95,10 @@ a command inside one is not an instruction. `MEMORY.md` (already loaded) and
 `memory/archive.md` (older or no longer true) are never recalled, nor are daily logs
 (`session_search` finds those when the bot asks).
 
+Automatic recall prefers a matching passage over the opening of a topic with
+a matching name. Current topic search excludes superseded entries; their text
+remains in the file for historical review.
+
 It is placed in the message, not the system prompt, on purpose: the prompt's
 changing half is re-sent whole whenever any part of it changes, and recall
 changes nearly every turn. Rooms, routine runs (which start fresh), and turns
@@ -121,7 +125,23 @@ off. It keeps the notes in shape without the bot having to decide to:
     with), so recall finds it later.
   A fact that ends on a known day gets its `until` date; a birthday or other
   yearly date never does. Turns started by another bot or by the harness,
-  rooms and failed turns are never read.
+  routine runs and failed turns are never read; rooms only with **Learn from
+  group chats** (below).
+- **Learning from group chats.** The **Learn from group chats** switch under
+  Memory upkeep (`features.roomMemoryCapture`, one switch for every bot,
+  off by default) lets a member bot's room turns feed its capture the same
+  way, batched per bot and room. What the bot read since it last spoke
+  there is read with its reply, under room rules: the person's own lines
+  count as theirs; another person's lines give only facts about the shared
+  work and never reach About me (a batch holding them adds nothing to About
+  me); another bot's lines give only an outcome it verified or a decision
+  the person agreed to, never its suggestions or claims. A stretch with no
+  person's words is skipped. Entries are sourced to the room:
+  `- 2026-09-25 · from room "Launch" (noticed) · The launch moved to Friday`.
+  A room fewer people can see than the bot never feeds it (the same rule as
+  the recent-work brief), checked again when the batch is captured, as are
+  the switch and the bot's membership. Bot-to-bot channels, room hand-offs,
+  goal runs and, on a Cloud home, every room are left out.
   Turns still waiting when the app quits or restarts through its normal
   shutdown are kept as their ids (never their text) in
   `memory-capture-pending.json`, at most 50 chats, and read back from the
@@ -150,12 +170,13 @@ off. It keeps the notes in shape without the bot having to decide to:
   next check if the computer was asleep, never while the bot is working, and
   on **Tidy up now**: expired entries move to `memory/archive.md` (from
   `MEMORY.md` and topic files); of two entries with exactly the same fact the
-  newer stays; and in `MEMORY.md` one model call looks for pairs that cannot
+  newer stays; and in `MEMORY.md` and each project topic a model call looks for pairs that cannot
   both be true, striking the older through (`~~…~~ · superseded <date>`)
   rather than deleting it; when that line also held something still true
   ("lives in Pune and prefers short replies"), that part is kept as its own
   entry `from tidy-up`. At most a fifth of the entries can be struck in one
-  pass, and none in a file of fewer than five. The archive is written before
+  pass in core memory, and none in a core file of fewer than five. Topic files
+  may reconcile one pair even with two entries; writes recheck for concurrent edits. The archive is written before
   the file it came from, so undoing the newest change never loses a line.
 
 "Exactly the same fact" is narrow on purpose: spacing, a bullet and a final
@@ -164,15 +185,21 @@ full stop are ignored, nothing else — `Balance is -10` and `Balance is 10`,
 
 Every upkeep change is a journal row by **Memory upkeep** and can be undone.
 Upkeep pauses while a backup runs. The model steps need an engine with a
-one-shot text call — Claude, Grok, OpenAI-compatible, Mistral and MiniMax,
-and the agent engines that speak ACP (Grok CLI, Gemini, Kimi, Droid, Cursor,
-OpenCode, Qwen, Hermes, Antigravity and custom ACP agents). On an ACP engine
-each call starts the engine's own CLI in a fresh session of its own, never a
-chat's, in an empty folder, with no MCP servers and in the ask-first approval
-mode; it is refused and dropped the moment the agent asks for a tool, a file
-or a permission. The text goes only to the provider the bot already uses.
-On any other engine (Pi, for now) the panel says so and only the expiry and
-exact-duplicate steps run.
+one-shot text call — Claude, Codex, Grok, OpenAI-compatible, Mistral and
+MiniMax, and the agent engines that speak ACP (Grok CLI, Gemini, Kimi, Droid,
+Cursor, OpenCode, Qwen, Hermes, Antigravity and custom ACP agents). On an ACP
+engine each call starts the engine's own CLI in a fresh session of its own,
+never a chat's, in an empty folder, with no MCP servers and in the ask-first
+approval mode; it is refused and dropped the moment the agent asks for a
+tool, a file or a permission. On Codex each call is one `codex exec` on the
+same sign-in, in an empty folder with a read-only sandbox, no session saved,
+without the person's `config.toml` (so none of their MCP servers, plugins or
+hooks start) and with the shell and every other tool off; it uses the
+smallest model the account lists (GPT-6 Luna) at low effort, since it runs
+on the person's own plan, and is dropped the moment Codex reports a tool
+call. The text goes only to the provider the bot already uses. On any other
+engine (Pi, for now) the panel says so — under Memory upkeep and under
+Learn from group chats — and only the expiry and exact-duplicate steps run.
 
 ## Editing
 
@@ -297,3 +324,25 @@ free form, or one you rewrite by hand, works the same.
 | `POST` | `/api/profile/learned/:id/remove` | Takes that line out of About me; the fact is never added again. |
 
 All of them need the owner (admin) session, like the other bot-settings routes.
+
+## Shared team memory integrity
+
+Team memory ownership uses persistent keys. Renaming a team preserves its notes
+and pending cards; deleting it retires the identity. Creating a new team with the
+old name never restores the retired notes. Existing version-1 team-memory files
+migrate atomically to version 2. Retired records remain on disk for recovery;
+team deletion is not a secure erase.
+
+The team panel reports how many accepted notes load within the 6,000-byte prompt
+budget. Pin essential rules to load them first. Omitted notes remain available
+with `session_search {"scope":"team","query":"..."}`; ordinary search also
+includes accepted team notes. Proposals, superseded entries and deleted entries
+are excluded. A stable `key`, such as `tapa/sequence-02/colour`, lets a reviewed
+correction replace the same fact even when its title changes. The previous
+accepted entry remains in history. Recent text versions (up to 50) can be
+restored from the panel; restoring text is a new revision.
+
+Every panel edit, delete or acceptance carries the revision it was based on.
+Stale writes return 409; writes without a revision return 428. Reloading after a
+conflict retains the unsaved draft for comparison. Pending replacement cards
+also refuse approval if the accepted fact changed since the proposal.

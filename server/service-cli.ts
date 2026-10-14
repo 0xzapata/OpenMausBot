@@ -1,6 +1,3 @@
-// The `openmausbot service` command, kept separate from cli.ts so it can be
-// tested with explicit inputs: it renders the unit for this platform, writes
-// it next to the data, and prints the commands that install it.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -14,7 +11,6 @@ export interface ServiceInstallInput {
   tunnel?: boolean;
   tailscale?: boolean;
   label?: string;
-  /** This CLI's own entry, as node saw it (process.argv[1]) and node itself (process.execPath). */
   script: string;
   node: string;
   platform?: NodeJS.Platform;
@@ -27,7 +23,6 @@ export interface ServiceIo {
   error(line: string): void;
 }
 
-/** The `serve` arguments the service repeats, from the options given to `service install`. */
 export function serviceServeArgs(input: Pick<ServiceInstallInput, "port" | "dataDir" | "domain" | "tunnel" | "tailscale" | "label">): string[] {
   const args = ["--port", String(input.port), "--data-dir", input.dataDir, "--no-pair"];
   if (input.domain) args.push("--domain", input.domain);

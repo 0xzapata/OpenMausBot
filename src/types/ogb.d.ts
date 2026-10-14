@@ -147,12 +147,28 @@ const __APP_VERSION__: string;
         state: () => Promise<{
           localOrigin: string;
           remote: boolean;
+          /** Named local environments exist only in a packaged build. */
+          packaged: boolean;
           activeId: string;
-          environments: Array<{ id: string; name: string; origin: string }>;
+          environments: Array<{
+            id: string;
+            kind?: "local" | "remote";
+            name: string;
+            origin?: string;
+            dataDir?: string;
+            missing?: boolean;
+          }>;
         }>;
-        switch: (id: string) => Promise<void>;
+        /** Local targets answer {ok, error?} (error strings are an open set); remote ones answer nothing. */
+        switch: (id: string) => Promise<{ ok: boolean; error?: string } | void>;
         addFromLink: (link: string, name?: string) => Promise<boolean | void>;
-        forget: (id: string) => Promise<void>;
+        /** Register a named local environment; an omitted dataDir lands beside the app's own. */
+        create: (name: string, dataDir?: string) => Promise<{ ok: boolean; error?: string; state: unknown }>;
+        /** Native folder chooser for the create form; { ok: false } on cancel. */
+        pickDir: () => Promise<{ ok: boolean; path?: string }>;
+        /** {ok:false} when main refused (active local, failed folder delete); a
+         * cancelled remote confirm and remote success answer nothing. */
+        forget: (id: string, purge?: boolean) => Promise<{ ok: boolean; error?: string } | void>;
         /** `panel` "copy": that server's Copy this computer here panel; otherwise its Computer access. */
         onOpenSettings?: (callback: (computerId?: string | null, panel?: "copy") => void) => () => void;
       };
@@ -185,6 +201,9 @@ const __APP_VERSION__: string;
         requestCode(email: string): Promise<CompanionAccountState>;
         verifyCode(email: string, code: string): Promise<CompanionAccountState>;
         retry(): Promise<CompanionAccountState>;
+        /** Create or repair this computer's HTTPS address because a person
+         * is pairing now. Absent in older desktop builds. */
+        prepare?(): Promise<CompanionAccountState>;
         signOut(): Promise<CompanionAccountState>;
       };
       /** Local-shell-only bridge for trusted approval-mode transitions. It is
@@ -309,7 +328,7 @@ const __APP_VERSION__: string;
       revealInFolder?(filePath: string): Promise<"shown" | "missing" | "invalid">;
       /** Save a provider credential through Electron's OS-backed store. */
       setCredential?(
-        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "jevApiKey" | "openaiImageApiKey" | "customImageApiKey" | "openaiLiveKey",
+        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "jevApiKey" | "openrouterDeciderKey" | "openaiImageApiKey" | "customImageApiKey" | "openaiLiveKey",
         value: string,
       ): Promise<ConfigStatus>;
       /** In-app auto-update (packaged app only; dormant in dev). Updates

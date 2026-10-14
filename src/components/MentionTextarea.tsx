@@ -3,17 +3,9 @@ import { useCallback, useLayoutEffect, useRef, type ReactNode, type RefObject, t
 import { type MentionPeer } from "@/lib/mentions";
 import { MentionText } from "./MentionText";
 
-/** A native textarea retains selection, undo, IME and accessibility. Its
- * aria-hidden mirror paints mentions without changing wrapping or caret offsets. */
 export function MentionTextarea({ inputRef, peers, everyone = false, wrapperClassName, leading, leadingDir = "auto", ...props }: TextareaHTMLAttributes<HTMLTextAreaElement> & {
-  /** Inline pieces at the start of the input line, before the caret: the
-   * composer's quote chips. They wrap with the editor and follow the
-   * direction of their own text. */
   leading?: ReactNode;
-  /** Direction of the line the leading pieces share with the input. */
   leadingDir?: "rtl" | "ltr" | "auto";
-  /** Classes for the flex child around the editor: the composer uses it to
-   * move the editor onto its own line when the row is too narrow. */
   wrapperClassName?: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   peers: readonly MentionPeer[];
@@ -42,8 +34,7 @@ export function MentionTextarea({ inputRef, peers, everyone = false, wrapperClas
   useLayoutEffect(() => {
     let width = inputRef.current?.clientWidth;
     const observer = new ResizeObserver(() => {
-      // Width changes can wrap an unchanged draft onto more lines. Observe
-      // width only so setting the measured height cannot create a resize loop.
+      // Observe width only, so setting the measured height cannot create a resize loop.
       const nextWidth = inputRef.current?.clientWidth;
       if (nextWidth !== width) { width = nextWidth; resize(); }
       else sync();
