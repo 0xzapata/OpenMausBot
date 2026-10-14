@@ -7,7 +7,6 @@ import { t } from "@/lib/i18n";
 import { isArchived, orderedSidebarThreads, orderedThreadList, threadRecency, threadUpdatedLabel } from "./SidebarThreadRow";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 
-/** Archived threads stay out of the bot's rows; the cross-bot panel still offers one that waits on an approval. */
 export function sidebarBotActivityTasks(bot: Bot, queued: Record<string, unknown[]>, archivedApprovals = false): Array<Task & { queued: boolean }> {
   const tasks = bot.tasks ?? [{
     threadId: bot.threadId, title: t("task.newShort"), createdAt: 0,
