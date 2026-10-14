@@ -86,12 +86,14 @@ export function parseConnectorServiceSlugsEnv(raw: string | undefined): readonly
     : [];
 }
 
-/** Offered when its service is granted with `"*"`, its exact name is granted, or it is that service's connection flow. */
+/** Offered when its service is granted with `"*"`, its exact name is granted, or it is that service's connection flow.
+ *  COMPOSIO_MANAGE_CONNECTIONS is always offered: a bot with no grants still has to be able to ask for a sign-in. */
 export function connectorToolAdvertised(
   name: string,
   grants: Record<string, ConnectorToolGrant>,
   candidates: readonly string[] = [],
 ): boolean {
+  if (name === "COMPOSIO_MANAGE_CONNECTIONS") return true;
   if (Object.keys(grants).length > 0 && CONNECTOR_META_TOOLS.includes(name)) return true;
   const service = serviceSlugForCandidates(name, candidates) ?? serviceSlugFor(name);
   const grant = service === null ? undefined : grants[service];

@@ -11323,6 +11323,12 @@ describe("harness HTTP API", () => {
       expect(connectorLinkRequests).toHaveLength(before + 3);
       expect((await api("POST", card, { threadId: "wrong-thread" })).status).toBe(404);
       expect(connectorLinkRequests).toHaveLength(before + 3);
+      const labelled = await api("POST", card, { threadId: bot.threadId, alias: " personal " });
+      expect(labelled.status).toBe(200);
+      expect(connectorLinkRequests.at(-1)).toEqual({ toolkit: "slack", alias: "personal" });
+      const relabelled = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages.find((message: any) => message.id === messageIds[0]);
+      expect(relabelled.connector).toMatchObject({ alias: "personal", status: "authorizing" });
+      expect((await api("POST", card, { threadId: bot.threadId, alias: "x".repeat(65) })).status).toBe(400);
     } finally {
       connectorAccounts = [];
       await api("DELETE", `/api/bots/${bot.id}`);

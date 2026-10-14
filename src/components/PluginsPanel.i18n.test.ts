@@ -4,11 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { setLocale, t } from "@/lib/i18n";
 import { locales } from "@/locales";
-import {
-  connectedInventoryCopy,
-  connectorActionLabel,
-  disconnectAccountConfirmation,
-} from "./PluginsPanel";
+import { connectedInventoryCopy, connectorActionLabel } from "@/lib/connector-status";
+import { disconnectAccountConfirmation } from "./PluginsPanel";
 import { parseMcpEnvironment } from "./McpServersPanel";
 import { ConnectorCard } from "./ConnectorCard";
 

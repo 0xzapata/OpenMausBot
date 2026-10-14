@@ -17514,11 +17514,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!message?.connector) return json(res, 404, { error: "no such connection request" });
       const connector = message.connector;
       if (m[3] === "authorize" && method === "POST") {
-        store.patchMessage(threadId, message.id, {
-          connector: { ...connector, status: "authorizing", error: undefined, dismissed: false },
-        });
+        const alias = composio.normalizeAccountAlias(typeof body.alias === "string" ? body.alias : undefined) ?? connector.alias;
+        store.patchMessage(threadId, message.id, { connector: { ...connector, alias, status: "authorizing", error: undefined, dismissed: false } });
         try {
-          return json(res, 200, await composio.authorizeService(cfg, connector.slug, connector.alias));
+          return json(res, 200, await composio.authorizeService(cfg, connector.slug, alias));
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
           store.patchMessage(threadId, message.id, {

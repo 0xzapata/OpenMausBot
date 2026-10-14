@@ -15,7 +15,7 @@ const HARD_CAP = 2000;
 const LISTED_FROM = 1000;
 
 const LINES: Record<string, number> = {
-  "server/index.ts": 17999,
+  "server/index.ts": 17998,
   "src/state/store.tsx": 3711,
   "electron/main.mjs": 3557,
   "server/store.ts": 2515,
@@ -33,7 +33,7 @@ const LINES: Record<string, number> = {
   "src/components/LocalComputerSection.tsx": 1605,
   "src/components/CursorAvatar.tsx": 1441,
   "server/skills.ts": 1421,
-  "server/composio.ts": 1380,
+  "server/composio.ts": 1345,
   "server/vps-computer.ts": 1369,
   "scripts/mcp-server.ts": 1487,
   "server/boat.ts": 1261,
@@ -46,7 +46,7 @@ const LINES: Record<string, number> = {
   "src/components/SettingsModal.tsx": 1210,
   "server/drivers/agents-call.ts": 1138,
   "src/components/ChatMarkdown.tsx": 1054,
-  "src/components/PluginsPanel.tsx": 1127,
+  "src/components/PluginsPanel.tsx": 1111,
   "server/org-library.ts": 1003,
   "src/components/TeamLibraryPanel.tsx": 1120,
   "src/components/AttachmentPreview.tsx": 1044,

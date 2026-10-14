@@ -238,8 +238,12 @@ describe("composioSystemPrompt", () => {
     expect(composioSystemPrompt(undefined)).toBe(COMPOSIO_PROMPT);
   });
 
-  it("is absent when no tools are granted", () => {
-    expect(composioSystemPrompt({})).toBe("");
+  it("offers only a connection card when no tools are granted", () => {
+    const prompt = composioSystemPrompt({});
+    expect(prompt).toContain("No connected apps are assigned to this bot");
+    expect(prompt).toContain("COMPOSIO_MANAGE_CONNECTIONS");
+    expect(prompt).not.toContain("COMPOSIO_MULTI_EXECUTE_TOOL");
+    expect(prompt.startsWith(" ")).toBe(true);
   });
 
   it("names exactly the granted services for a partial grant", () => {
