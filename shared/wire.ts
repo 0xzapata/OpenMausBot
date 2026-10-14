@@ -8,6 +8,7 @@ import type { CommandAllowlistCandidate } from "./command-allowlist.ts";
 import type { TurnDigest } from "./digest.ts";
 import type { BotAvatarCrop } from "./bot-avatar.ts";
 import type { MascotBodyId } from "./mascot-bodies.ts";
+import type { ReplyStyle } from "./reply-style.ts";
 import type { CredentialTargetId } from "./credential-request.ts";
 import type { TeamSetupRequest } from "./team-setup.ts";
 import type { RoutineRequestCardData } from "./routine-request.ts";
@@ -294,6 +295,8 @@ export interface WireBot {
   alwaysAllow?: string[];
   /** Speak this bot's replies aloud as they settle, without being asked. */
   speakReplies?: boolean;
+  /** How replies are shaped. Absent = "default". */
+  replyStyle?: ReplyStyle;
   /** This bot's own voice id, so a room of bots doesn't sound like one person. */
   voice?: string;
   /** Whether this bot may send voice notes. Absent/true = allowed; false
@@ -496,6 +499,8 @@ export interface WireMessage {
    * with how sure it was. Absent on every other message; clients that do
    * not know it ignore it. */
   routedBy?: { provider: "jev" | "openrouter"; probability: number };
+  /** On a conversational bot's user line: the picker label of the quick model its reply ran on. */
+  quickModel?: string;
   /** Set on the user-role line another bot delivered into this bot's own
    * conversation (coordinate_bots, start_thread). `incident`: the line is a
    * Team incidents report or Team escalations notice about that bot's thread

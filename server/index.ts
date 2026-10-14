@@ -86,6 +86,7 @@ import {
   avatarImageStatus,
 } from "./avatar-image.ts";
 import { fitsOnOneLine, parseBotProfilePatch } from "./bot-profile.ts";
+import { routeDirectTurn } from "./turn-route.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, effectiveRoomTurnTimeoutMinutes, parseConversationTurnTimeout, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { roomTurnEnd, type RoomClaimEnd } from "./room-turn-end.ts";
@@ -499,7 +500,7 @@ import { OrgLibrary } from "./org-library.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 import { autoLocalVmAttachable, type ContainerComputerStatus } from "./container-computer.ts";
 import { startAutoVmClaim, type AutoVmClaimSlot, type AutoVmClaimTable } from "./auto-vm-claims.ts";
-import { CONTROL_ACT_WITHIN_MS, CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_WAIT_MS, CONTROL_WAITED, controlRefusal, type ControlState } from "./control-client.ts";
+import { CONTROL_ACT_WITHIN_MS, CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_WAIT_MS, CONTROL_WAITED, controlRefusal, settledWithin, type ControlState } from "./control-client.ts";
 import { computerFreeAfterText, computerParkedText, computerPersonAwayText, computerStoppedWaitingText, computerWaitingText, type ComputerHolder } from "./computer-wait.ts";
 import { modelContextWindow } from "./model-context-window.ts";
 import { browserIsThePlace, cloudPlaceRefusal, computerSkippedNote, computerToolsRefusal, parseSurface, PlaceUnavailableError, placeUnavailable, resolveSurface, surfaceLabel, surfaceOfComputerKind, surfacePrompt, type ComputerWant, type PlaceSource, type Surface } from "./surface.ts";
@@ -2325,6 +2326,7 @@ function settleDirectFollowup(generation: string | undefined, outcome: DirectTur
 }
 // A running conversation keeps its exact bot settings: another thread or a changed default must not retarget its tools.
 const directTurnBots = new Map<string, BotRecord>();
+const routedTurnModels = new Map<string, string>();
 const turnPromptBytes = new Map<string, { stable: number; volatile: number }>();
 let providerFleetReloading = false;
 const turnResources = new TurnResources();
@@ -3498,7 +3500,7 @@ function previewSystemPrompt(bot: BotRecord) {
     teamAvailabilityPart(agentsMounted && coordination ? peers : []),
     { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: agentsMounted, fileTools: Boolean(privateWorkspace), enabled: bot.memoryEnabled !== false }) },
     { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? bot.assignedSkills : undefined) : "" },
-  ], agentsMounted ? { env: agentsToolBridgeEnv(cfg, bot, instance && turnEngine(instance, providerConfigs(), registry.lastSnapshot(instance.instanceId), bot.cwd ?? undefined)) } : undefined);
+  ], agentsMounted ? { env: agentsToolBridgeEnv(cfg, bot, instance && turnEngine(instance, providerConfigs(), registry.lastSnapshot(instance.instanceId), bot.cwd ?? undefined)) } : undefined, { replyStyle: bot.replyStyle });
   const totalBytes = built.sections.reduce((n, s) => n + s.bytes, 0);
   return {
     sections: built.sections,
@@ -6388,15 +6390,6 @@ function botComputerControlKey(bot: BotRecord): string {
   return computer ? teamComputerOwner(computer.id) : bot.id;
 }
 
-function settledWithin(work: Promise<unknown> | null, ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
-    const timer = setTimeout(done, Math.max(0, ms));
-    signal?.addEventListener("abort", done, { once: true });
-    work?.then(done, done);
-  });
-}
-
 /** Waits here up to COMPUTER_CALL_WAIT_MS; a call that waited through a person's hold, or whose turn ended, is never performed. */
 async function computerCallGate(internalCapability: InternalCapability, signal?: AbortSignal): Promise<ControlState> {
   const { botId, threadId, generation } = internalCapability;
@@ -7571,7 +7564,9 @@ bus.subscribe((event: RuntimeEvent) => {
           settleTrackedRequest(event.threadId);
         };
         const tokens = event.usage ?? lastReported;
-        const contextModel = store.taskByThread(bot.id, event.threadId)?.modelSelection?.model ?? bot.modelSelection.model;
+        const routedModel = routedTurnModels.get(event.threadId);
+        routedTurnModels.delete(event.threadId);
+        const contextModel = routedModel ?? store.taskByThread(bot.id, event.threadId)?.modelSelection?.model ?? bot.modelSelection.model;
         store.addTaskUsage(bot.id, event.threadId, {
           input: tokens?.input,
           output: tokens?.output,
@@ -7584,7 +7579,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // A provider that omitted a context measurement must not reuse a stale reading from another model or a pre-compaction session.
         const measuredSelection = directTurnBots.get(event.threadId)?.modelSelection ?? selection;
         store.patchTask(bot.id, event.threadId, { lastContextModel: Number.isFinite(lastContext?.tokens) && (lastContext?.tokens ?? 0) > 0
-          ? `${measuredSelection.instanceId}:${measuredSelection.model}` : undefined });
+          ? `${measuredSelection.instanceId}:${routedModel ?? measuredSelection.model}` : undefined });
         const promptBytes = turnPromptBytes.get(event.threadId);
         turnPromptBytes.delete(event.threadId);
         bookTurnUsage({
@@ -7593,7 +7588,7 @@ bus.subscribe((event: RuntimeEvent) => {
           threadId: event.threadId,
           instanceId: selection.instanceId,
           driverKind: registry.get(selection.instanceId)?.driverKind ?? "unknown",
-          model: selection.model,
+          model: routedModel ?? selection.model,
           input: tokens?.input ?? 0,
           output: tokens?.output ?? 0,
           ...(typeof tokens?.cachedInput === "number" ? { cachedInput: tokens.cachedInput } : {}),
@@ -8579,9 +8574,10 @@ async function startTurn(
     botId, text: resolvedImages.text, images: turnImages.length, depth: commsDepth, card: Boolean(opts?.cardContinuation), spoken,
   }));
   const instanceId = instance.instanceId;
-  const model = bot.modelSelection.model;
-  const effort = bot.modelSelection.effort;
-  const variant = bot.modelSelection.variant;
+  const automated = commsDepth > 0 || opts?.automationSource !== undefined
+    || Boolean(opts?.unattended || opts?.cardContinuation || opts?.peerAsk || opts?.coordination || opts?.compactOnly || opts?.computerSelectionContinuation);
+  const route = routeDirectTurn(bot, task, store.activePath(threadId), resolvedImages, instance, automated);
+  const { model, effort, variant } = route;
   assertModelVariantSupported({ variant, effort }, instance.adapter.capabilities);
   if (effort && !instance.adapter.capabilities.effortLevels?.includes(effort)) {
     throw Object.assign(
@@ -8621,6 +8617,9 @@ async function startTurn(
     queueMicrotask(drainQueuedSends);
     return userMessage;
   }
+  if (route.quickModel) routedTurnModels.set(threadId, model);
+  else routedTurnModels.delete(threadId);
+  if (route.quickModel && !opts?.cardContinuation && userMessage.quickModel !== route.quickModel) userMessage = store.patchMessage(threadId, userMessage.id, { quickModel: route.quickModel }) ?? userMessage;
   const recoveryUserMessageId = opts?.coordination
     ? store.activePath(threadId).findLast(m => m.role === "user" && m.kind === "text")?.id
     : userMessage.id;
@@ -9299,7 +9298,7 @@ async function startTurn(
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
         { id: "webhook", label: "Webhook provenance", text: opts?.automationSource === "webhook" ? WEBHOOK_PROMPT : "" },
         { id: "mentions", label: "Mentions", text: tagged.length ? `The user named these existing teammates: ${tagged.map(b => `${peerName(b.name)} (${b.id})`).join(", ")}. Use coordinate_bots when their contribution is needed; do not substitute native helper agents for these bots.` : "" },
-      ], integrations.agents);
+      ], integrations.agents, { replyStyle: liveBot?.replyStyle ?? bot.replyStyle });
       turnPromptBytes.set(threadId, { stable: Buffer.byteLength(prompt.stable), volatile: Buffer.byteLength(prompt.volatile) });
       // Recall rides in front of this turn's message, never the system prompt, whose volatile half is re-sent whole on any change.
       const recalled = autoRecallPrompt(bot, threadId, resolvedImages.text, {
