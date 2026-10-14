@@ -15,8 +15,7 @@ interface Card {
   finish(source: Source, decision?: { allowed?: boolean; always?: boolean; message?: string }): void;
 }
 
-/** What a refused call hands back to the model. A call the safety floor
- * refused says why, and `notice` raises the one line the person sees. */
+/** The text a refused call hands the model; a floor block also raises its line through `notice`. */
 export function refusal(block: FloorBlock | null, notice: (line: string) => void): string {
   if (!block) return "Permission denied or expired; the tool was not executed.";
   notice(block.line);
@@ -35,16 +34,12 @@ export function createChatToolApproval(options: {
 }) {
   const pending = new Map<string, Card>();
   let closed = false;
-  /** Whether an earlier "Always allow this session" already covers an ask,
-   * so `ask` would answer it with no card. */
+  /** Whether a kept "Always allow this session" answers this ask with no card. */
   const covered = (grant?: string): boolean => grant !== undefined && options.granted?.has(grant) === true;
   return {
     covered,
-    /** The safety floor, one more condition before this gate answers itself.
-     * At Full access, or where a kept session allow would answer, nobody
-     * sees the call: a command on the never-list, or one the floor could not
-     * read, is refused there (the block is returned, already logged). A card
-     * a person answers is theirs to decide and is not touched. */
+    /** The floor's block, already logged, for a call this gate would answer itself (Full access or a kept session
+     * allow), or null. A card a person answers is never touched. */
     floored(call: { full: boolean; threadId: string; botId?: string; shown: ChatToolCallView; summary?: string }): FloorBlock | null {
       if (!call.shown.ask || !(call.full || covered(call.shown.grant))) return null;
       return floorBlockForToolCall({ threadId: call.threadId, botId: call.botId, tool: call.shown.title, summary: call.summary, input: call.shown.input });

@@ -11,21 +11,13 @@ export function permissionCommand(command: unknown, cwd: unknown): { command: st
   return { command, cwd };
 }
 
-/** What a request to run a shell command puts on its event: the exact-command
- * descriptor, which needs a known working directory, and the engine's own
- * command line, which does not. The safety floor reads the second, so it
- * judges the same text whether or not the directory is known
- * (server/safety-floor-gate.ts). `command` is whatever the engine sent, or
- * undefined for a request that runs no shell command. */
+/** A shell request's event fields: the exact-command descriptor, which needs a known cwd, and the raw command line
+ * the safety floor reads, which does not. */
 export function shellRequest(command: unknown, cwd: unknown): { command: ReturnType<typeof permissionCommand>; commandLine: string | undefined } {
   return { command: permissionCommand(command, cwd), commandLine: typeof command === "string" && command.trim() ? command : undefined };
 }
 
-/** Whether a driver that answers a request inside the driver, with nobody
- * looking (Full access, a kept "Always allow this session"), may answer one
- * for this command. False for a shell command the safety floor does not
- * clear: the driver then answers nothing and raises the request like any
- * other, carrying the same command line, and the harness decides. */
+/** Whether a driver may answer a request itself with nobody looking; when false it must raise the request instead. */
 export function answersAlone(command: unknown): boolean {
   return safetyFloorClears(typeof command === "string" ? command : undefined);
 }
@@ -46,10 +38,8 @@ export function acpPermissionCommand(rawInput: unknown, launchCwd: string | unde
   return permissionCommand(input.command, directories[0] ?? launchCwd);
 }
 
-/** shellRequest for an ACP tool call. Only a call typed as a shell command
- * gets the exact-command descriptor; any call that names a command line
- * carries it for the safety floor. A question is not a request to run
- * anything: the driver passes no input for one, so it carries neither. */
+/** shellRequest for an ACP tool call: only a shell-typed call gets the descriptor, but any call naming a command
+ * line carries it for the safety floor. */
 export function acpShellRequest(isShellCommand: boolean, rawInput: unknown, launchCwd: string | undefined): ReturnType<typeof shellRequest> {
   const command = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? (rawInput as Record<string, unknown>).command : undefined;
   return { command: isShellCommand ? acpPermissionCommand(rawInput, launchCwd) : undefined, commandLine: shellRequest(command, undefined).commandLine };
