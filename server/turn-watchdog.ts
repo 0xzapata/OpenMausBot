@@ -8,7 +8,6 @@ export interface WatchedTurn {
   waitingOnComputer: boolean;
 }
 
-/** Waiting on a person or on a computer is not a stall, however long it takes. */
 const parked = (turn: WatchedTurn): boolean => turn.waitingOnHuman || turn.waitingOnComputer;
 
 export interface TurnWatchdogOptions {

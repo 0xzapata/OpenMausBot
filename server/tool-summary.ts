@@ -39,18 +39,12 @@ export function toolDetailPreview(value: unknown): string | undefined {
   return text.length > 6_000 ? `${text.slice(0, 6_000)}\n[… preview shortened]` : text;
 }
 
-/** Where commandSummary cuts: a summary this long may be a prefix. */
 export const COMMAND_SUMMARY_MAX = 200;
 const LIMIT = COMMAND_SUMMARY_MAX;
 
-/** What a preview or a summary writes where it does not show a value: the
- * placeholders of toolDetailPreview above and the masks of redact.ts. */
 const NOT_SHOWN = /\[(?:redacted|(?:binary|large) content omitted|additional (?:data|items|fields) omitted|… preview shortened)\]|«redacted \d+ chars»/;
 
-/** Whether a preview or a summary stands for more than it shows: a value
- * masked, left out or cut. Two that read the same are then not proof of the
- * same call, which is what the loop guard needs before it acts on a turn
- * for repeating one (server/host/loop-guard.ts). */
+/** Two previews that read the same prove the same call only when neither masked, left out or cut a value. */
 export function previewIsPartial(preview: string): boolean {
   return NOT_SHOWN.test(preview) || preview.includes(HELD_SECRET_MASK);
 }
