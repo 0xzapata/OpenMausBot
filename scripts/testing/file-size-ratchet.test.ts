@@ -43,7 +43,7 @@ const LINES: Record<string, number> = {
   "src/components/ModelPicker.tsx": 1207,
   "src/components/PhoneSetupFlow.tsx": 1283,
   "server/cli.ts": 1128,
-  "src/components/SettingsModal.tsx": 1210,
+  "src/components/SettingsModal.tsx": 1188,
   "server/drivers/agents-call.ts": 1138,
   "src/components/ChatMarkdown.tsx": 1054,
   "src/components/PluginsPanel.tsx": 1127,
