@@ -15,7 +15,7 @@ export interface CapacityConfig {
   /** Zone DNS record quota used for the usage alert. */
   dnsRecordLimit: number;
   /** A tunnel offline for at least this long (and an installation that has
-   * been quiet as long) may be reclaimed. Never below seven days. */
+   * been quiet as long) may be reclaimed. Never below three days. */
   offlineReclaimMs: number;
   /** `observe` evaluates and logs reclaim candidates without marking any. */
   reclaimMode: TunnelReclaimMode;
@@ -67,7 +67,7 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 export const DEFAULT_TUNNEL_LIMIT = 1_000;
 export const DEFAULT_DNS_RECORD_LIMIT = 1_000;
 export const DEFAULT_OFFLINE_RECLAIM_DAYS = 21;
-export const MIN_OFFLINE_RECLAIM_DAYS = 7;
+export const MIN_OFFLINE_RECLAIM_DAYS = 3;
 // Each cleanup makes at most ten Cloudflare API calls: twenty rows plus the two
 // capacity reads stay near 200 calls per five-minute run, under the token's
 // 1,200-per-five-minutes limit and Workers Paid's 10,000 subrequests. Use 4 on
