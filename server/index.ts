@@ -10338,7 +10338,7 @@ function resolveAndSendTrust(res: ServerResponse, threadId: string, requestId: s
   if (teamMemoryCard?.card?.teamMemoryRequest) {
     const request = teamMemoryCard.card.teamMemoryRequest;
     const proposer = teamMemoryCard.from?.botId ? store.bot(teamMemoryCard.from.botId) : store.botByThread(threadId);
-    const result = teamMemory.resolve(request.section, request.entryId, behavior === "allow" ? "accept" : "reject");
+    const result = teamMemory.resolveProposal(request.entryId, behavior === "allow" ? "accept" : "reject");
     if (!result.claimed) {
       if (!teamMemoryCard.card.answered) {
         store.patchMessage(threadId, teamMemoryCard.id, { card: { ...teamMemoryCard.card, answered: "unavailable", dismissed: true } });
@@ -15366,6 +15366,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           fromBotId: z.string().min(1).max(128),
           fromThreadId: z.string().min(1).max(128),
           kind: z.string(),
+          key: z.string().max(240).optional(),
           name: z.string(),
           detail: z.string(),
           aliases: z.array(z.string()).optional(),
@@ -15386,14 +15387,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         try {
           proposed = teamMemory.propose(
             from.section,
-            { kind: body.kind as TeamMemoryKind, name: body.name, detail: body.detail, aliases: body.aliases },
+            { key: body.key, kind: body.kind as TeamMemoryKind, name: body.name, detail: body.detail, aliases: body.aliases },
             { botId: from.id, botName: from.name, threadId: body.fromThreadId, at: Date.now() },
           );
         } catch (error) {
           return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
         }
         const summary = `${proposed.entry.kind[0].toUpperCase()}${proposed.entry.kind.slice(1)}: ${proposed.entry.name}${proposed.entry.aliases.length ? ` (also ${proposed.entry.aliases.join(", ")})` : ""} — ${proposed.entry.detail}`;
-        const section = sectionContextKey(from.section);
         const card = store.appendMessage(body.fromThreadId, {
           role: "bot",
           kind: "options",
@@ -15404,7 +15404,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             options: ["Remember", "Skip"],
             requestId: proposed.entry.id,
             tool: "propose_team_memory",
-            teamMemoryRequest: { section, entryId: proposed.entry.id, kind: proposed.entry.kind },
+            teamMemoryRequest: { section: sectionContextKey(from.section), entryId: proposed.entry.id, kind: proposed.entry.kind },
           },
         });
         appendDecision(DATA_DIR, {
@@ -15550,11 +15550,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const rawLimit = Number(url.searchParams.get("limit"));
         const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.trunc(rawLimit), 25) : 12;
         const scope = url.searchParams.get("scope") ?? "all";
-        if (scope !== "all" && scope !== "conversations" && scope !== "memory") {
-          return json(res, 400, { error: "scope must be all, conversations, or memory" });
+        if (scope !== "all" && scope !== "conversations" && scope !== "memory" && scope !== "team") {
+          return json(res, 400, { error: "scope must be all, conversations, memory, or team" });
         }
-        const memoryHits = scope === "conversations" || !q || from.memoryEnabled === false ? [] : searchMemoryFiles(from.id, q, limit);
-        if (scope === "memory") return json(res, 200, { hits: [], memoryHits });
+        const memoryHits = scope === "conversations" || scope === "team" || !q || from.memoryEnabled === false ? [] : searchMemoryFiles(from.id, q, limit);
+        if (scope === "memory" || scope === "team") return json(res, 200, { hits: [], memoryHits, teamHits: scope === "team" ? teamMemory.search(from.section, q, limit, range) : [] });
         const roomByThread = new Map<string, GroupRecord>();
         for (const group of store.groups) {
           // A room fewer people can see than this bot stays out of its recall, or its lines would reach them.
@@ -15581,7 +15581,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (inRoom) {
           discloseRecall(from, fromThreadId, hits.filter((hit) => hit.crossed).map((hit) => hit.threadId));
         }
-        return json(res, 200, { hits, memoryHits });
+        return json(res, 200, { hits, memoryHits, teamHits: scope === "conversations" ? [] : teamMemory.search(from.section, q, limit, range) });
       }
       // session_read: a message id from another bot's thread reads as missing, not forbidden, so the id space leaks nothing.
       if (method === "GET" && path === "/api/internal/session-read") {
