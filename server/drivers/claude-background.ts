@@ -1,25 +1,16 @@
-// The CLI arguments of the Claude driver's background one-shot call
-// (generateReview in ./claude.ts), kept apart so the driver stays a readable size.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnCli } from "../procs.ts";
 
 type BackgroundFlag = "--tools" | "--no-session-persistence" | "--strict-mcp-config" | "--setting-sources";
 
-/** A background call (memory upkeep, the skill review, titles, approval
- * summaries) that names no deadline of its own. */
 export const BACKGROUND_CALL_TIMEOUT_MS = 60_000;
 
-/** The CLI arguments of a background one-shot call. Isolated as a turn is
- * (no MCP servers, no user or local settings, so none of this machine's
- * hooks, skills or connectors) and with no built-in tools: without these
- * the CLI mounted every MCP server, plugin and skill of the person's own
- * Claude Code into each call, ~19k extra input tokens on a measured desktop,
- * and a reviewer told it had no tools in fact had them all. Each flag only
- * on a CLI that accepts it (CLAUDE_FLAG_FLOORS in ./claude.ts). The
- * `--tools` floor is not bisected: the guest path passes it from 2.1.257, so
- * it is known there; an older CLI runs the call with its default tools. */
+/** Isolated like a turn (no MCP servers, user or local settings) and with no built-in tools, each flag only where the CLI accepts it. */
 export function backgroundCallArgs(input: {
   model: string;
   outputFormat: "json" | "text";
-  /** Whether the installed CLI accepts a flag (claudeCliSupports). */
   supports: (flag: BackgroundFlag) => boolean;
   /** False while OMB_CLAUDE_INHERIT_USER_CONFIG asks for the person's own setup. */
   isolated: boolean;
@@ -32,4 +23,16 @@ export function backgroundCallArgs(input: {
     if (input.supports("--setting-sources")) args.push("--setting-sources", "project");
   }
   return args;
+}
+
+/** Runs in an empty temp folder so no project settings or files leak in; the caller removes it once settled. */
+export function spawnBackgroundCall(cli: string, args: string[], env: NodeJS.ProcessEnv) {
+  const cwd = mkdtempSync(join(tmpdir(), "omb-claude-background-"));
+  const removeCwd = () => { try { rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {} };
+  try {
+    return { child: spawnCli(cli, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env }), removeCwd };
+  } catch (error) {
+    removeCwd();
+    throw error;
+  }
 }

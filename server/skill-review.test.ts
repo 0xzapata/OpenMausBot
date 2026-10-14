@@ -315,6 +315,27 @@ describe("the scheduler", () => {
     expect(review.status(BOT.id, "thread-a").steps).toBe(3);
   });
 
+  it("gives up only on the steps a failed review covered, keeping work noted while it ran", async () => {
+    let now = 1_000_000;
+    let release: () => void = () => {};
+    const { review, nextCall } = harness({
+      now: () => now,
+      answer: () => new Promise<string>((resolve) => { release = () => resolve(createAnswer); }),
+      apply: () => { throw new Error("disk full"); },
+    });
+    review.noteTurn(BOT.id, "thread-a", 40);
+    for (let attempt = 1; attempt <= MAX_FAILED_REVIEWS; attempt++) {
+      const called = nextCall();
+      const done = review.run(BOT.id, "thread-a");
+      await called;
+      if (attempt === MAX_FAILED_REVIEWS) review.noteTurn(BOT.id, "thread-a", 2);
+      release();
+      expect(await done).toMatchObject({ state: "failed" });
+      now += 16 * 60_000;
+    }
+    expect(review.status(BOT.id, "thread-a").steps).toBe(2);
+  });
+
   it("tells the engine how long the review may take", async () => {
     const { review, state } = harness();
     review.noteTurn(BOT.id, "thread-a", 3);

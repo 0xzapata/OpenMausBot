@@ -3363,7 +3363,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("runs helper calls tool-free and isolated, in an empty folder it then removes", async () => {
-    await create();
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.296" });
     const dump = join(scratch, "isolated-helper.json");
     process.env.FAKE_CLAUDE_DUMP = dump;
     await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
@@ -3374,6 +3374,16 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.argv).toContain("--no-session-persistence");
     expect(seen.cwd).toContain("omb-claude-background-");
     expect(existsSync(seen.cwd)).toBe(false);
+  });
+
+  it("reads the CLI version before a helper call, so an older CLI gets no --tools", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.250" });
+    const dump = join(scratch, "older-helper.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv).not.toContain("--tools");
+    expect(seen.argv).toContain("--strict-mcp-config");
   });
 
   it("waits as long as the caller says for a helper call, and no longer", async () => {

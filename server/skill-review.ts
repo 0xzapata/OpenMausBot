@@ -15,10 +15,7 @@ export const SKILL_REVIEW_MARKER = "You are the SKILL REVIEW step";
 export const MAX_REVIEW_CHANGES = 3;
 export const REVIEW_TIMEOUT_MS = 3 * 60_000;
 export const RETRY_AFTER_MS = 15 * 60_000;
-/** After this many failed attempts in a row the steps they covered are
- * given up on: the conversation only grows, so retrying the same review
- * forever keeps failing the same way and spends a call each time. New
- * steps count toward a fresh review. */
+/** Failures in a row after which the steps they covered are dropped; new steps count toward a fresh review. */
 export const MAX_FAILED_REVIEWS = 3;
 export const SETTLE_DELAY_MS = 1_500;
 export const SETTLE_TRIES = 5;
@@ -330,7 +327,6 @@ interface Counter {
   steps: number;
   at: number;
   failedAt?: number;
-  /** Attempts in a row that could not run (MAX_FAILED_REVIEWS). */
   failures?: number;
 }
 
@@ -412,7 +408,6 @@ export function createSkillReview(deps: SkillReviewDeps): SkillReview {
     save();
   };
 
-  /** `steps`: what the failed attempt covered, given up on at the last try. */
   const failed = (botId: string, threadId: string, note: string, steps?: number): ReviewReport => {
     const counter = counters.get(key(botId, threadId));
     log(`${botId}: ${note}`);
@@ -498,8 +493,9 @@ export function createSkillReview(deps: SkillReviewDeps): SkillReview {
     const current = running.get(botId);
     if (current) return current.done;
     const controller = new AbortController();
+    const steps = counters.get(key(botId, threadId))?.steps ?? 0;
     const done = review(botId, threadId, controller).catch((error: unknown) =>
-      failed(botId, threadId, `the review stopped (${error instanceof Error ? error.message : "unknown"})`));
+      failed(botId, threadId, `the review stopped (${error instanceof Error ? error.message : "unknown"})`, steps));
     running.set(botId, { threadId, controller, done });
     void done.finally(() => {
       if (running.get(botId)?.controller === controller) running.delete(botId);

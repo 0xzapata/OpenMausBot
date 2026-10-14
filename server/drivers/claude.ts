@@ -45,7 +45,7 @@ import {
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { runKeepWarmPing, type KeepWarmContract } from "./claude-keepwarm.ts";
-import { BACKGROUND_CALL_TIMEOUT_MS, backgroundCallArgs } from "./claude-background.ts";
+import { BACKGROUND_CALL_TIMEOUT_MS, backgroundCallArgs, spawnBackgroundCall } from "./claude-background.ts";
 import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
@@ -288,6 +288,7 @@ export const CLAUDE_FLAG_FLOORS = {
   // Keep-warm pings only. Not bisected: both are in every 2.1 build checked.
   "--fork-session": [2, 1, 0],
   "--no-session-persistence": [2, 1, 0],
+  // Background calls. Not bisected: the guest path passes it from 2.1.257.
   "--tools": [2, 1, 257],
 } as const satisfies Record<string, ClaudeCliVersion>;
 
@@ -974,6 +975,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           resolve(err ? null : stdout.trim() || null),
         );
       });
+    const ensureCliVersion = async (env: NodeJS.ProcessEnv): Promise<void> => {
+      if (cliVersionChecked) return;
+      const version = await readCliVersion(env);
+      if (version) [cliVersion, cliVersionChecked] = [parseClaudeCliVersion(version), true];
+    };
     let helpRead: { version: string; done: Promise<void> } | null = null;
     const readCliHelp = (version: string, env: NodeJS.ProcessEnv): Promise<void> => {
       if (helpRead?.version === version) return helpRead.done;
@@ -1170,13 +1176,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         args.push("--disallowedTools", config.disallowedTools.join(","));
       }
       const turnEnvironment = environment();
-      if (!cliVersionChecked) {
-        const version = await readCliVersion(turnEnvironment);
-        if (version) {
-          cliVersion = parseClaudeCliVersion(version);
-          cliVersionChecked = true;
-        }
-      }
+      await ensureCliVersion(turnEnvironment);
       if (turn.guestConfined && !claudeCliSupports(cliVersion, "--restricted")) {
         throw new Error(withWhy("This Claude Code is too old to run this turn without a shell. Update Claude Code.", turn.confinedWhy));
       }
@@ -2062,17 +2062,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     /** One-shot call, prompt on stdin (approval summaries can hold secrets), no tools or MCP servers. */
-    const generateReview = (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"], timeoutMs?: number): Promise<string> =>
-      new Promise((resolve, reject) => {
+    const generateReview = async (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"], timeoutMs?: number): Promise<string> => {
+      await ensureCliVersion(environment());
+      return new Promise((resolve, reject) => {
         if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) {
           reject(new Error(NO_ANTHROPIC_KEY));
           return;
         }
         const model = config.managedModels?.[0] ?? "claude-haiku-4-5";
         const env = environment(model);
-        const cwd = mkdtempSync(join(tmpdir(), "omb-claude-background-"));
-        const args = backgroundCallArgs({ model, outputFormat: onUsage ? "json" : "text", supports: (flag) => claudeCliSupports(cliVersion, flag), isolated: !inheritsUserConfig(env) });
-        const child = spawnCli(config.cli, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env });
+        const args = backgroundCallArgs({ model, outputFormat: onUsage ? "json" : "text", supports: (flag) => cliVersion !== null && claudeCliSupports(cliVersion, flag), isolated: !inheritsUserConfig(env) });
+        const { child, removeCwd } = spawnBackgroundCall(config.cli, args, env);
         let stdout = "";
         let stderr = "";
         let settled = false;
@@ -2081,7 +2081,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           settled = true;
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
-          rmSync(cwd, { recursive: true, force: true });
+          removeCwd();
           if (error) reject(error);
           else resolve(stdout.trim());
         };
@@ -2143,6 +2143,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           child.stdin.end(prompt);
         }
       });
+    };
 
     return {
       instanceId,
