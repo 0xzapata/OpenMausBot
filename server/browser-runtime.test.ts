@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { addHeldSecretScrubber, HELD_SECRET_MASK } from "../shared/redact.ts";
-import { BROWSER_RESTART_TOOL, BrowserRuntime, TransportError, browserRuntimeEnv, formatBrowserTiming, type BrowserSpawnSpec, type BrowserTiming } from "./browser-runtime.ts";
+import { BROWSER_CALL_DEFAULTS, BROWSER_RESTART_TOOL, BrowserRuntime, TransportError, browserRuntimeEnv, formatBrowserTiming, type BrowserSpawnSpec, type BrowserTiming } from "./browser-runtime.ts";
+import { HARNESS_CALL_BUDGET_MS, HARNESS_PROXY_TIMEOUT_MS } from "./harness-budget.ts";
 import { RelayPorts } from "./browser-relay.ts";
 import { BrowserSteps, type StepCall, type StepContext } from "./browser-steps.ts";
 import { FakeRelay } from "./testing/fake-relay.ts";
@@ -487,7 +488,9 @@ describe("server-owned browser MCP runtime", () => {
     await value.restart("s", "owner", async () => {});
     expect(value.interrupted("s")).toBe(false);
     await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo", arguments: { text: "back" } }))
-      .resolves.toMatchObject({ content: [{ text: expect.stringContaining("back") }] });
+      .resolves.toMatchObject({ content: [{ text: expect.stringContaining("The person restarted your browser") }, { text: expect.stringContaining("back") }] });
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo", arguments: { text: "again" } }))
+      .resolves.toMatchObject({ content: [{ text: expect.stringContaining("again") }] });
   });
 
   it("still refuses an agent after a human's own interrupted command, browser alive", async () => {
@@ -737,15 +740,71 @@ describe("server-owned browser MCP runtime", () => {
     expect(value.canControl("s", "owner")).toBe(true);
   });
 
-  it.each(["hang", "crash", "oversized"])("fails closed on %s, and can reconnect after explicit close", async (name) => {
+  it.each(["hang", "crash", "oversized"])("fails closed on %s while the engine stays busy, and can reconnect after explicit close", async (name) => {
     const value = runtime({ requestTimeoutMs: 250 });
-    await expect(value.agentRpc("s", spec(), "tools/call", { name }))
-      .resolves.toMatchObject({ isError: true, content: [{ text: expect.stringContaining(`did not answer this ${name} call`) }] });
-    await expect(value.take("s", "owner")).rejects.toThrow(/may still be running/);
-    expect(value.canControl("s", "owner")).toBe(false);
-    value.release("s", "owner");
-    await value.close("s");
-    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" })).resolves.toMatchObject({ content: [{ type: "text" }] });
+    const daemon = daemonSpec();
+    try {
+      writeFileSync(daemon.busy, "busy");
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name }))
+        .resolves.toMatchObject({ isError: true, content: [{ text: expect.stringContaining(`did not answer this ${name} call`) }] });
+      await expect(value.take("s", "owner")).rejects.toThrow(/may still be running/);
+      expect(value.canControl("s", "owner")).toBe(false);
+      value.release("s", "owner");
+      await value.close("s");
+      rmSync(daemon.busy, { force: true });
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "echo" })).resolves.toMatchObject({ content: [{ type: "text" }] });
+    } finally {
+      daemon.cleanup();
+    }
+  });
+
+  it.each(["hang", "crash"])("lets a person take the browser once the engine answers after a lost %s call, without a restart", async (name) => {
+    const value = runtime({ requestTimeoutMs: 250, recoveryCheckMs: 1_000, takeoverTimeoutMs: 2_000 });
+    const daemon = daemonSpec();
+    try {
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name }))
+        .resolves.toMatchObject({ isError: true, content: [{ text: expect.stringContaining(`did not answer this ${name} call`) }] });
+      expect(value.interrupted("s")).toBe(true);
+      if (name === "crash") writeFileSync(daemon.busy, "busy");
+      await expect(value.take("s", "owner")).rejects.toThrow(/may still be running/);
+      expect(value.interrupted("s")).toBe(true);
+      rmSync(daemon.busy, { force: true });
+      await expect(value.take("s", "owner")).resolves.toBe(false);
+      expect(value.interrupted("s")).toBe(false);
+      expect(value.canControl("s", "owner")).toBe(true);
+      expect(daemon.calls().filter((call) => call === "agent_browser_get_url")).toHaveLength(2);
+      await expect(value.withHumanAction("s", "owner", async () => "click")).resolves.toBe("click");
+      value.release("s", "owner");
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "echo", arguments: { text: "after" } }))
+        .resolves.toMatchObject({ content: [{ text: expect.stringContaining("after") }] });
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
+  });
+
+  it("lets a person restart while a bot only waits to learn whether its lost call ended, never while one acts", async () => {
+    const value = runtime({ requestTimeoutMs: 250, recoveryCheckMs: 5_000 });
+    const daemon = daemonSpec();
+    try {
+      await value.agentRpc("s", daemon.spec, "tools/call", { name: "hang" });
+      const waiting = value.agentRpc("s", daemon.spec, "tools/call", { name: "echo" }).catch(() => undefined);
+      await vi.waitFor(() => expect(daemon.calls()).toContain("agent_browser_get_url"));
+      const closeBrowser = vi.fn(async () => { rmSync(daemon.busy, { force: true }); });
+      await value.restart("s", "person", closeBrowser);
+      expect(closeBrowser).toHaveBeenCalledOnce();
+      expect(value.interrupted("s")).toBe(false);
+      await waiting;
+      expect(daemon.calls()).not.toContain("echo");
+      const acting = deferred();
+      const action = value.withAgentAction("s", () => acting.promise);
+      await expect(value.restart("s", "person", async () => {})).rejects.toThrow(/busy/);
+      acting.resolve();
+      await action;
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
   });
 
   it("rejects oversized requests without poisoning the session", async () => {
@@ -1089,5 +1148,48 @@ describe("around each bot call (browser-steps.ts)", () => {
     expect([typing, capture, steps.signIn].map((fn) => fn.mock.calls.length)).toEqual([0, 0, 0]);
     closing.resolve(true);
     expect(await idle).toBe(true);
+  });
+
+  it("answers within the call budget when the reads after an action hang, and treats the call as lost until the engine answers", async () => {
+    const { steps } = hook();
+    const stuck = deferred<{ parts: []; launched: false }>();
+    steps.after.mockImplementationOnce(() => stuck.promise);
+    const value = runtime({ steps, callBudgetMs: 600, followUpReserveMs: 100 });
+    const started = Date.now();
+    const answer = await value.agentRpc("s", spec(), "tools/call", { name: "echo" }, undefined, ctx) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(answer).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("did not answer this echo call") }] });
+    expect(value.interrupted("s")).toBe(true);
+    stuck.resolve({ parts: [], launched: false });
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" }, undefined, ctx))
+      .resolves.toMatchObject({ content: [{ text: expect.stringContaining("earlier echo call that did not answer has ended") }] });
+    expect(value.interrupted("s")).toBe(false);
+  });
+});
+
+describe("one time budget per bot call", () => {
+  it("fits a full lane wait, the action and its follow-up reads inside the proxy's wait", () => {
+    expect(BROWSER_CALL_DEFAULTS.callBudgetMs).toBe(HARNESS_CALL_BUDGET_MS);
+    expect(HARNESS_CALL_BUDGET_MS).toBeLessThan(HARNESS_PROXY_TIMEOUT_MS);
+    expect(BROWSER_CALL_DEFAULTS.laneWaitMs + BROWSER_CALL_DEFAULTS.followUpReserveMs).toBeLessThan(BROWSER_CALL_DEFAULTS.callBudgetMs / 2);
+  });
+
+  it("cuts a hung action short at the budget, not at the longer engine timeout, counting its wait in the lane", async () => {
+    const value = runtime({ requestTimeoutMs: 10_000, laneWaitMs: 1_000, callBudgetMs: 1_500, followUpReserveMs: 200 });
+    const daemon = daemonSpec();
+    try {
+      const holding = value.withSecretInput("s", daemon.spec, async () => { await new Promise((resolve) => setTimeout(resolve, 400)); return { ok: true, text: "typed" }; });
+      const started = Date.now();
+      await expect(value.agentRpc("s", daemon.spec, "tools/call", { name: "hang" }))
+        .resolves.toMatchObject({ isError: true, content: [{ text: expect.stringContaining("did not answer this hang call") }] });
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(400);
+      expect(elapsed).toBeLessThan(1_500);
+      expect(value.interrupted("s")).toBe(true);
+      await holding;
+    } finally {
+      await value.closeAll();
+      daemon.cleanup();
+    }
   });
 });

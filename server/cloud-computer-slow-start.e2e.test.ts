@@ -30,9 +30,10 @@ describe("a slow cloud computer start", () => {
   let relay: Server;
   const rows: Array<{ id: string; name?: string; state: string }> = [];
   const requests: string[] = [];
-  /** The relay keeps a new computer "provisioning" while this is set, and
-   * never answers a desktop link request while `desktop` is set. */
-  const hold = { provisioning: false, desktop: false };
+  /** The relay keeps a new computer "provisioning" while this is set, never
+   * answers a desktop link request while `desktop` is set, and cuts off this
+   * many computer listings before answering, as a dropped connection does. */
+  const hold = { provisioning: false, desktop: false, dropLists: 0 };
   const held: ServerResponse[] = [];
 
   const api = async (method: string, path: string, body?: unknown) => {
@@ -95,6 +96,7 @@ describe("a slow cloud computer start", () => {
         const path = url.pathname.replace(/^\/relay\/api\/box\/v1/, "");
         requests.push(`${req.method} ${path}`);
         if (req.headers.authorization !== `Bearer ${INCLUDED}`) return send(401, { ok: false, code: "unauthorized" });
+        if (path === "/boxes" && req.method === "GET" && hold.dropLists > 0) { hold.dropLists--; return void req.socket.destroy(); }
         if (path === "/boxes" && req.method === "GET") return send(200, { ok: true, boxes: rows, pageInfo: { nextCursor: null } });
         if (path === "/boxes" && req.method === "POST") {
           const row = { id: `bx_${"23456789abcdefgh"[rows.length]}3456789`, state: "provisioning" };
@@ -182,6 +184,25 @@ describe("a slow cloud computer start", () => {
     const later = await until(() => screenshot(sent), result => !result.isError, 20_000);
     expect(later.content[0]).toMatchObject({ type: "image" });
     expect(creates()).toBe(1);
+    writeFileSync(finishFile, "finish");
+    await until(() => task(bot.id), current => current?.busy === false);
+    expect(await failedRows(bot.id)).toEqual([]);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  }, 45_000);
+
+  it("a call that cannot reach the relay is told to try again, and a later call in the same turn claims the computer", async () => {
+    const bot = await cloudBot("Unreachable starter");
+    const before = creates();
+    hold.dropLists = 2;
+    const sent = await startTurn(bot.id, "Open the cloud desktop");
+    const first = await screenshot(sent);
+    expect(first.isError).toBe(true);
+    expect(first.content[0]?.text).toMatch(/^This turn could not reach the cloud computer just now \(.+\)\. This call was not performed; try it again in a moment\.$/);
+    expect(hold.dropLists).toBe(0);
+    expect(creates()).toBe(before);
+    const later = await until(() => screenshot(sent), result => !result.isError, 20_000);
+    expect(later.content[0]).toMatchObject({ type: "image" });
+    expect(creates()).toBe(before + 1);
     writeFileSync(finishFile, "finish");
     await until(() => task(bot.id), current => current?.busy === false);
     expect(await failedRows(bot.id)).toEqual([]);

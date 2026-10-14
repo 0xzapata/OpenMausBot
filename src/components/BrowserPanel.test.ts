@@ -518,7 +518,7 @@ describe("live browser control affordance", () => {
 
   it("keeps the page while its own take waits but hides it while another window holds it", () => {
     fixture.control = { held: true, controlling: false, owned: false };
-    expect(render()).toContain("Live view paused for human control");
+    expect(render()).toContain("Another window or device controls this browser. Hand control back there to use it here.");
     fixture.control = { held: false, controlling: false, owned: false };
     const cleanup = fixture.effects[2]!();
     const source = FixtureEventSource.instances[0]!;
@@ -528,6 +528,20 @@ describe("live browser control affordance", () => {
     expect(fixture.setters[1]).not.toHaveBeenCalled();
     source.emit("control", { held: true, controlling: false, owned: false });
     expect(fixture.setters[1]).toHaveBeenCalledWith(null);
+    cleanup?.();
+  });
+
+  it("says another window holds the browser instead of dropping a click or a sign-in page silently", () => {
+    fixture.frame = { seq: 1, data: "fixture", viewerId: "current-viewer", generation: 1 };
+    const nodes = renderElements();
+    const cleanup = fixture.effects[2]!();
+    const source = FixtureEventSource.instances[0]!;
+    source.emit("ready", { viewerId: "current-viewer" });
+    source.emit("control", { held: true, controlling: false, owned: false });
+    fixture.setters[7]!.mockClear();
+    nodes.find((node) => node.type === BrowserViewport)!.props.input!({ type: "input_mouse", eventType: "mousePressed", x: 4, y: 5, button: "left", clickCount: 1, modifiers: 0 });
+    expect(fixture.setters[7]).toHaveBeenCalledWith("Another window or device controls this browser. Hand control back there to use it here.");
+    expect(api).not.toHaveBeenCalled();
     cleanup?.();
   });
 });

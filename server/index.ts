@@ -428,7 +428,7 @@ import { relayFrame, relayInsertText } from "./browser-relay.ts";
 import { browserEvidence, browserSteps, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
-import { BrowserLive } from "./browser-live.ts";
+import { BrowserLive, browserRestartRefusal } from "./browser-live.ts";
 import {
   agentBrowserIntegration,
   browserEngineEncryptionKey,
@@ -486,7 +486,7 @@ import {
 import { OrgLibrary } from "./org-library.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 import { autoLocalVmAttachable, type ContainerComputerStatus } from "./container-computer.ts";
-import { startAutoVmClaim, type AutoVmClaimSlot, type AutoVmClaimTable } from "./auto-vm-claims.ts";
+import { keepTransient, lazyClaimRetryText, settledWithin, startAutoVmClaim, withinBudget, type AutoVmClaimSlot, type AutoVmClaimTable } from "./auto-vm-claims.ts";
 import { CONTROL_ACT_WITHIN_MS, CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_WAIT_MS, CONTROL_WAITED, controlRefusal, type ControlState } from "./control-client.ts";
 import { computerFreeAfterText, computerParkedText, computerPersonAwayText, computerStoppedWaitingText, computerWaitingText, type ComputerHolder } from "./computer-wait.ts";
 import { modelContextWindow } from "./model-context-window.ts";
@@ -6454,15 +6454,6 @@ function botComputerControlKey(bot: BotRecord): string {
   return computer ? teamComputerOwner(computer.id) : bot.id;
 }
 
-function settledWithin(work: Promise<unknown> | null, ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
-    const timer = setTimeout(done, Math.max(0, ms));
-    signal?.addEventListener("abort", done, { once: true });
-    work?.then(done, done);
-  });
-}
-
 /** Waits here up to COMPUTER_CALL_WAIT_MS; a call that waited through a person's hold, or whose turn ended, is never performed. */
 async function computerCallGate(internalCapability: InternalCapability, signal?: AbortSignal): Promise<ControlState> {
   const { botId, threadId, generation } = internalCapability;
@@ -6491,6 +6482,7 @@ async function computerCallGate(internalCapability: InternalCapability, signal?:
       if (lazyClaim.begin && Date.now() < deadline && !signal?.aborted) {
         await settledWithin(lazyClaim.begin, deadline - Date.now(), signal);
         if (lazyClaim.claimed || lazyClaim.failed) continue;
+        if (lazyClaim.retryReason) return { held: true, helpOpen: false, blockedReason: lazyClaimRetryText(lazyClaim) };
       }
       held = { held: true, helpOpen: false, blockedReason: lazyClaim.pendingReason ?? CONTROL_BUSY };
     } else {
@@ -6693,7 +6685,7 @@ function mountBotBoat(
         });
         if (!attached) throw new Error("the cloud computer could not be created or reached");
       } catch (error) {
-        throw opts.source ? await asPlaceFailure(error, "cloud", opts.source, bot, "box") : error;
+        throw keepTransient(error, opts.source ? await asPlaceFailure(error, "cloud", opts.source, bot, "box") : error);
       }
       slot.boxId = attached.boxId;
       opts.onClaimed(attached.capture);
@@ -6720,12 +6712,6 @@ async function attachBotBoat(bot: BotRecord, owner: TurnOwner, start: { budgetMs
     boxId: machine.id as string,
     capture: () => boat.screenshotBoat(cfg, bot.id, machine.id),
   };
-}
-
-function withinBudget<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
-  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
 }
 
 async function startBotBoat(bot: BotRecord) {
@@ -16968,10 +16954,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const body = await readBody(req, 32_768);
         if (!isCurrent()) return json(res, 409, { error: "This browser session changed. Reopen the browser panel." });
         if (typeof body?.viewerId !== "string") return json(res, 400, { error: "A live browser connection is required." });
-        if (body.type === "restart" && store.bots.some((candidate) => candidate.busy &&
-            currentBrowserSession(candidate.id, candidate.browserProfile) === browser.session)) {
-          return json(res, 409, { error: "Stop every bot using this profile before restarting its browser." });
-        }
+        const refused = body.type === "restart" && browserRestartRefusal(browserRuntime.interrupted(browser.session), store.bots.filter((candidate) => candidate.busy
+          && currentBrowserSession(candidate.id, candidate.browserProfile) === browser.session).map((candidate) => ({ waitingOnBrowser: computerControl.snapshot(candidate.id).help?.place === "browser" })));
+        if (refused) return json(res, 409, { error: refused });
         return json(res, 200, await browserLive.action({ viewerId: body.viewerId, botId: bot.id, owner, body }));
       }
       return json(res, 405, { error: "method not allowed" });

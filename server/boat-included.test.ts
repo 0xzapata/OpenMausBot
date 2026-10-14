@@ -21,6 +21,8 @@ let state = "ready";
 let wakeOnResume = true;
 /** When set, every request is refused as an invalid credential. */
 let rejectCredentials = false;
+/** This many listings are cut off before any answer, as a dropped connection is. */
+let dropLists = 0;
 /** Replies to POST /resume in order; the last one repeats. A 2xx wakes the computer. */
 let resumeReplies: Array<{ status: number; body: unknown }> = [];
 const requests: Array<{ method: string; path: string; auth: string }> = [];
@@ -48,6 +50,7 @@ beforeAll(async () => {
       const [, base = "", rest = ""] = /^(\/boat\/api\/v1|\/relay\/api\/box\/v1|\/relay\/api\/v1)(\/.*)$/.exec(url.pathname) ?? [];
       const legacy = base === "/relay/api/box/v1";
       const [root, one, many] = legacy ? ["/boxes", "box", "boxes"] : ["/sandboxes", "sandbox", "sandboxes"];
+      if (rest === root && dropLists > 0) { dropLists--; return void req.socket.destroy(); }
       if (rest === root) return send(200, { ok: true, [many]: [{ id: boxId, name: machineName, state }] });
       if (rest === `${root}/${boxId}` && req.method === "GET") return send(200, { ok: true, [one]: { id: boxId, name: machineName, state } });
       if (rest === `${root}/${boxId}` && req.method === "DELETE") {
@@ -77,6 +80,7 @@ beforeEach(async () => {
   state = "ready";
   resumeReplies = [];
   rejectCredentials = false;
+  dropLists = 0;
   wakeOnResume = true;
   vi.stubEnv("BOX_TOKEN", undefined);
   vi.stubEnv("OMB_BOAT_API", `${base}/boat/api/v1`);
@@ -177,6 +181,22 @@ describe("included Boat computers", () => {
     rejectCredentials = true;
     expect((await boat.listManagedBoats({}, [])).problem).toBe("The cloud computers included with your Cloud plan aren't available right now. Try again later.");
     expect((await boat.listManagedBoats({ box: { token: "box_own" } }, [])).problem).toMatch(/update it in Settings/);
+  });
+
+  it("lists again once after a dropped connection, and names MausBot Cloud's computer service when it stays unreachable", async () => {
+    const lists = () => requests.filter((request) => request.path === "/relay/api/box/v1/boxes");
+    dropLists = 1;
+    await expect(boat.findBoat({}, "unlisted-bot")).resolves.toBeNull();
+    expect(lists()).toHaveLength(2);
+    dropLists = 2;
+    await expect(boat.findBoat({}, "unlisted-bot")).rejects.toMatchObject({
+      message: "Could not reach MausBot Cloud's computer service to list cloud computers — check your connection and refresh", status: 503, transient: true,
+    });
+    expect(lists()).toHaveLength(4);
+    dropLists = 2;
+    expect((await boat.listManagedBoats({ box: { token: "box_own" } }, [])).problem).toBe("Could not reach boat.dev to list cloud computers — check your connection and refresh");
+    rejectCredentials = true;
+    await expect(boat.findBoat({}, "unlisted-bot")).rejects.toMatchObject({ transient: false });
   });
 
   it("reports configured and included to Settings, never the token", () => {
