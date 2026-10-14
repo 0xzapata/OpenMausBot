@@ -85,3 +85,13 @@ it("retains one entry's failed draft when another entry saves successfully", asy
   await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[aria-label="Remove Audio"]')!.disabled).toBe(false));
   expect(document.body.textContent).toContain("Keep my orange draft");
 });
+
+
+it("restores a historical name even when its detail is unchanged", async () => {
+  request.mockResolvedValue({ entries: [{ ...entry, history: [{ name: "Earlier colour", detail: entry.detail, at: 1 }] }], loadedIds: [entry.id] });
+  await render();
+  flushSync(() => [...document.querySelectorAll("button")].find(button => button.textContent === "Restore text")!.click());
+  await vi.waitFor(() => expect(request.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+  expect(JSON.parse(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body))
+    .toEqual({ name: "Earlier colour", detail: entry.detail, expectedRevision: entry.revision });
+});

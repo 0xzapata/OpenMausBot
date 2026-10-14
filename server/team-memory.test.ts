@@ -312,3 +312,17 @@ it("does not allocate section ownership during a read", () => {
   sectionMemoryKey("Read only fixture");
   expect(readFileSync(SECTION_CONTEXTS_FILE, "utf8")).toBe(before);
 });
+
+
+it("keeps legacy label ownership stable when a write follows a read", () => {
+  writeFileSync(SECTION_CONTEXTS_FILE, JSON.stringify({ version: 1, sections: ["Legacy team"], contexts: {} }));
+  const old = { id: "legacy", kind: "decision", name: "Colour", detail: "Blue", aliases: [], status: "accepted", source, updatedAt: 1 };
+  writeFileSync(join(dir, "team-memory.json"), JSON.stringify({ version: 2, sections: { "Legacy team": [old] } }));
+  memory = new TeamMemory(join(dir, "team-memory.json"));
+  expect(memory.list("Legacy team")[0].detail).toBe("Blue");
+  memory.update("Legacy team", old.id, { detail: "Amber" });
+  changeEmptySection("Legacy team", "Renamed legacy");
+  expect(new TeamMemory(join(dir, "team-memory.json")).list("Renamed legacy")[0].detail).toBe("Amber");
+  ensureSections(["Legacy team"]);
+  expect(memory.list("Legacy team")).toEqual([]);
+});
