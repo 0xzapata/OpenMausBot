@@ -1,16 +1,16 @@
-// Per-turn ask gate, adapted from the approval lifecycle in #780.
-// Register before publishing: a harness listener may answer synchronously.
+// Per-turn ask gate. Register before publishing: a harness listener may answer synchronously.
 import { newId, type RequestOutcome } from "../contracts.ts";
 import type { AskQuestion } from "../../shared/ask-question.ts";
 
-interface Ask { id: string; tool: string; summary: string }
+/** `grant`: what "Always allow this session" would keep allowed; absent when the card can only allow once. */
+interface Ask { id: string; tool: string; summary: string; grant?: string }
 type Source = "user" | "timeout" | "system";
 
 interface Card {
   kind: "permission" | "question";
   ask: Ask;
   /** Exactly-once: a second finish is a no-op because the card left the map. */
-  finish(source: Source, decision?: { allowed?: boolean; message?: string }): void;
+  finish(source: Source, decision?: { allowed?: boolean; always?: boolean; message?: string }): void;
 }
 
 export function createChatToolApproval(options: {
@@ -19,14 +19,17 @@ export function createChatToolApproval(options: {
   resolved(ask: Ask, allowed: boolean, source: Source): void;
   openQuestion(ask: Ask, questions: AskQuestion[]): void;
   resolvedQuestion(ask: Ask, answered: boolean, source: Source): void;
+  /** The conversation's session grants: an ask they cover is allowed without a card. */
+  granted?: Set<string>;
   timeoutMs?: number;
 }) {
   const pending = new Map<string, Card>();
   let closed = false;
   return {
-    ask(tool: string, summary: string): Promise<boolean> {
+    ask(tool: string, summary: string, grant?: string): Promise<boolean> {
       if (closed || options.signal.aborted) return Promise.resolve(false);
-      const ask = { id: newId(), tool, summary };
+      if (grant !== undefined && options.granted?.has(grant)) return Promise.resolve(true);
+      const ask: Ask = { id: newId(), tool, summary, ...(grant !== undefined && options.granted ? { grant } : {}) };
       return new Promise((resolve) => {
         let timer: ReturnType<typeof setTimeout>;
         const card: Card = {
@@ -37,6 +40,7 @@ export function createChatToolApproval(options: {
             clearTimeout(timer);
             options.signal.removeEventListener("abort", abort);
             const allowed = decision?.allowed === true;
+            if (allowed && decision?.always && ask.grant !== undefined) options.granted?.add(ask.grant);
             options.resolved(ask, allowed, source);
             resolve(allowed);
           },
@@ -61,9 +65,7 @@ export function createChatToolApproval(options: {
             if (!pending.delete(ask.id)) return;
             clearTimeout(timer);
             options.signal.removeEventListener("abort", abort);
-            // Only the person's reply resolves a question; a timeout or
-            // abort resolves null so no system note can occupy the answer
-            // slot the model reads as the person's words.
+            // A timeout or abort resolves null: no system note may occupy the slot the model reads as the person's words.
             const reply = typeof decision?.message === "string" && decision.message.length > 0 ? decision.message : null;
             options.resolvedQuestion(ask, reply !== null, source);
             resolve(reply);
@@ -77,7 +79,7 @@ export function createChatToolApproval(options: {
         options.openQuestion(ask, questions);
       });
     },
-    answer(id: string, behavior: "allow" | "deny" | "answer", message?: string): RequestOutcome {
+    answer(id: string, behavior: "allow" | "deny" | "answer", message?: string, always?: boolean): RequestOutcome {
       const card = pending.get(id);
       if (!card || options.signal.aborted) return "unavailable";
       if (behavior === "deny") {
@@ -87,11 +89,10 @@ export function createChatToolApproval(options: {
       if (card.kind === "permission") {
         // An answer is not a permission: only allow or deny settles it.
         if (behavior !== "allow") return "unavailable";
-        card.finish("user", { allowed: true });
+        card.finish("user", { allowed: true, always: always === true });
         return "allowed-once";
       }
-      // And an allow is not an answer: a question settles only on a real
-      // reply, never a blank the model would have to interpret.
+      // A question settles only on a real reply, never a blank.
       if (behavior === "answer" && typeof message === "string" && message.trim()) {
         card.finish("user", { message });
         return "answered";

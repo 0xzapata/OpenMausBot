@@ -19,8 +19,6 @@ const text = (id: string, role: Message["role"], body: string, from?: string): M
   ...(from ? { from: { botId: from.toLowerCase(), name: from, color: "green" as const } } : {}),
 });
 
-// Play a sequence of transcript states through the announcer the way the
-// hook does, and collect what a screen reader would hear.
 function play(states: TranscriptSnapshot[]): string[] {
   let memory = announcerBaseline(states[0]!);
   const heard: string[] = [];
@@ -39,11 +37,9 @@ describe("nextAnnouncement", () => {
     const heard = play([
       { busy: false, reply: reply("old") },
       { busy: true, reply: reply("old") },
-      // an in-between reply while tools still run stays quiet
       { busy: true, reply: reply("mid", "Looking now.") },
       { busy: true, reply: reply("mid", "Looking now.") },
       { busy: false, reply: reply("new") },
-      // re-renders after the turn add nothing
       { busy: false, reply: reply("new") },
       { busy: false, reply: reply("new") },
     ]);
@@ -121,6 +117,14 @@ describe("latestReply", () => {
   it("picks the newest bot text and names its speaker", () => {
     const messages = [text("a", "bot", "First."), text("b", "user", "hi"), text("c", "bot", "Second.", "Eli")];
     expect(latestReply(messages, (m) => m.from?.name ?? "Pepper")).toEqual({ id: "c", name: "Eli", text: "Second." });
+  });
+
+  it("skips a client-abort sentence and reads the reply before it", () => {
+    const messages = [
+      text("a", "bot", "Here is the plan."),
+      text("b", "bot", "The request was cancelled by the client."),
+    ];
+    expect(latestReply(messages, () => "Pepper")?.id).toBe("a");
   });
 
   it("skips activity rows and empty text", () => {

@@ -1,4 +1,3 @@
-// bot-attachment.ts: what a bot may hand to the chat, from where, and as what.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // attachments.ts reads DATA_DIR at import time.
 const DATA_ROOT = mkdtempSync(join(tmpdir(), "omb-bot-attachment-"));
 process.env.OMB_DATA_DIR = join(DATA_ROOT, "data");
-const { attachForTurn, guestWorkspaceToHost, saveBotAttachment } = await import("./bot-attachment.ts");
+const { attachForTurn, deliveredCopy, guestWorkspaceToHost, saveBotAttachment } = await import("./bot-attachment.ts");
 const { ATTACHMENTS_DIR } = await import("./attachments.ts");
 
 const WORK = join(DATA_ROOT, "work");
@@ -67,7 +66,6 @@ describe("saveBotAttachment", () => {
     expect(saved.attachment.kind).toBe(kind);
     expect(saved.attachment.mime).toBe(mime);
     expect(saved.bytes).toBe(bytes.byteLength);
-    // A private copy in the attachment store, not the bot's own file.
     expect(saved.attachment.path.startsWith(ATTACHMENTS_DIR)).toBe(true);
     expect(readFileSync(saved.attachment.path)).toEqual(bytes);
     if (saved.attachment.kind === "file") expect(saved.attachment.name.toLowerCase()).toBe(name.toLowerCase());
@@ -90,7 +88,6 @@ describe("saveBotAttachment", () => {
     const guest = { root: "/home/cua/workspace", host: VM_HOME };
     await expect(saveBotAttachment({ path: "/home/cua/workspace/../../secret.pdf", roots: [WORK], guest })).rejects.toMatchObject({ status: 404 });
     await expect(saveBotAttachment({ path: join(DATA_ROOT, "secret.pdf"), roots: [WORK] })).rejects.toMatchObject({ status: 403 });
-    // A path in the display name is reduced to its last segment.
     writeFileSync(join(WORK, "plain.txt"), "hello");
     const saved = await saveBotAttachment({ path: "plain.txt", name: "../../evil/notes.txt", roots: [WORK] });
     expect(saved.attachment).toMatchObject({ kind: "file", name: "notes.txt" });
@@ -127,7 +124,7 @@ describe("saveBotAttachment for a file a turn saved outside its folders", () => 
     // Bots on macOS write the URL unencoded; Windows needs a real file URL.
     const href = process.platform === "win32" ? pathToFileURL(source).href : `file://${source}`;
     const saved = await saveBotAttachment({ path: href, roots: [WORK], savedThisTurn: { since, refuse } });
-    expect(saved.attachment).toMatchObject({ kind: "image", mime: "image/jpeg" });
+    expect(saved.attachment).toMatchObject({ kind: "image", mime: "image/jpeg", name: "00_غلاف.jpg" });
     expect(saved.attachment.path.startsWith(ATTACHMENTS_DIR)).toBe(true);
     expect(readFileSync(saved.attachment.path, "utf8")).toBe("jpeg-bytes");
     expect(readFileSync(source, "utf8")).toBe("jpeg-bytes");
@@ -228,7 +225,6 @@ describe("attachForTurn", () => {
       ...seen.hooks,
       save: () => { started += 1; return copy.promise.then(() => `file-${index}`); },
     }));
-    // Nothing has finished, yet only three may even start copying; the rest are refused at once.
     expect(started).toBe(3);
     expect(await Promise.all(calls.slice(3))).toEqual([{ status: "limit" }, { status: "limit" }, { status: "limit" }]);
     copies.slice(0, 3).forEach((copy) => copy.resolve("done"));
@@ -276,5 +272,40 @@ describe("attachForTurn", () => {
     const seen = hooks();
     expect(await attachForTurn({}, 10, seen.hooks)).toEqual({ status: "attached", saved: "saved" });
     expect(seen.discarded).toEqual([]);
+  });
+});
+
+describe("deliveredCopy", () => {
+  type Message = Parameters<typeof deliveredCopy>[1];
+  const bot = (id: string, parentId: string | null, extra: Partial<Message> = {}): Message =>
+    ({ id, at: 1, parentId, role: "bot", kind: "text", text: "", ...extra }) as Message;
+  const photo = { kind: "image" as const, path: "/store/copy.png", mime: "image/png", name: "sideboard.png" };
+  const ask = { id: "ask", at: 1, parentId: null, role: "user", kind: "text", text: "find a sideboard" } as Message;
+
+  it("finds the picture the reply's turn delivered under the name its inline image uses", () => {
+    const attached = bot("attached", "ask", { attachments: [photo] });
+    const tool = bot("tool", "attached", { kind: "activity" });
+    const reply = bot("reply", "tool", { text: "![Sideboard](/tmp/sideboard.png)" });
+    expect(deliveredCopy([ask, attached, tool, reply], reply, "sideboard.png")).toEqual(photo);
+    expect(deliveredCopy([ask, attached, tool, reply], reply, "other.png")).toBeNull();
+  });
+
+  it("stops at the person's message, so an earlier turn's delivery is not this reply's", () => {
+    const attached = bot("attached", null, { attachments: [photo] });
+    const again = { ...ask, parentId: "attached" };
+    const reply = bot("reply", "ask");
+    expect(deliveredCopy([attached, again, reply], reply, "sideboard.png")).toBeNull();
+  });
+
+  it("counts only the reply's author, and two deliveries with one name match neither", () => {
+    const by = (botId: string) => ({ from: { botId, name: botId, color: "blue" } }) as Partial<Message>;
+    const peer = bot("peer", "ask", { ...by("other"), attachments: [photo] });
+    const reply = bot("reply", "peer", by("me"));
+    expect(deliveredCopy([ask, peer, reply], reply, "sideboard.png")).toBeNull();
+    const first = bot("first", "ask", { ...by("me"), attachments: [photo] });
+    const second = bot("second", "first", { ...by("me"), attachments: [{ ...photo, path: "/store/copy-2.png" }] });
+    const twice = bot("twice", "second", by("me"));
+    expect(deliveredCopy([ask, first, second, twice], twice, "sideboard.png")).toBeNull();
+    expect(deliveredCopy([ask, first, twice], { ...twice, parentId: "first" }, "sideboard.png")).toEqual(photo);
   });
 });

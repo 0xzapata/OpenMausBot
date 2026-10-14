@@ -1,12 +1,13 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
-import { ArrowUp, BookOpen, Clock, Mic, Paperclip, Square, Target, Users, X } from "lucide-react";
+import { ArrowUp, BookOpen, Clock, Mic, Paperclip, Sparkles, Square, Target, Users, X } from "lucide-react";
 import { useStore, visibleMessages, currentTaskBot, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { activeLocale, t } from "@/lib/i18n";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { useAdvancedMode } from "@/lib/interface-mode";
+import { imeComposing, sendKeyLabel, sendsMessage, useSendKey } from "@/lib/send-key";
 import {
   draftRevision,
   appendDraftAttachments,
@@ -18,6 +19,7 @@ import {
   rememberFailedComposerSend,
   replaceDraftAttachment,
   restoredSendId,
+  restoredRequestText,
   useComposerDraft,
   useComposerChannelMode,
   useDraftAttachmentPending,
@@ -32,7 +34,6 @@ import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
 import { splitTranscriptCitations, type CitationAttachment } from "@/lib/citations";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { PlaceChip } from "./PlaceChip";
-import { FullAccessWarning } from "./FullAccessWarning";
 import { ApprovalModeSelector } from "./ApprovalModeSelector";
 import { CommandAllowlistDialog } from "./CommandAllowlistDialog";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
@@ -42,6 +43,7 @@ import {
   clipboardHasImages,
   clipboardImageFiles,
   composeMessage,
+  dataContextFor,
   composerShouldRefocus,
   composerTakesFocusOnOpen,
   imageAttachmentFromFile,
@@ -55,11 +57,12 @@ import {
   type PasteAttachment,
 } from "@/lib/composer-attachments";
 import { normalizeState } from "@/lib/mascot";
-import { goalCoordinatorForComposer, groupComposerHint, jevRoomRoutingOn, roomRespondersForComposer } from "@/lib/group-routing";
+import { goalCoordinatorForComposer, groupComposerHint, jevRoomRoutingOn, openTaskWorking, roomRespondersForComposer } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { CallButton } from "./CallView";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
-import { ReplyQuote } from "./ReplyQuote";
+import { ComposerReplyStrip } from "./ReplyQuote";
+import { escapeCancelsReply } from "@/lib/replies";
 import { useThreadRefs } from "./ThreadRefs";
 import {
   QueuedComposerMessages,
@@ -74,16 +77,17 @@ import {
   composerSlashTrigger,
   goalTextFromComposer,
   replaceComposerSlashTrigger,
+  skillSlashCommands,
+  slashCommandMatches,
   type ComposerSlashCommand,
 } from "@/lib/composer-commands";
+import { useSlashSkills } from "@/lib/use-slash-skills";
 
-/** The active @mention query at the caret: the text between an `@` that
- * starts a word and the caret. null = no mention being typed. */
 function mentionQueryAt(text: string, caret: number): { start: number; query: string } | null {
   const upto = text.slice(0, caret);
   const at = upto.lastIndexOf("@");
   if (at === -1) return null;
-  if (at > 0 && !/\s/.test(upto[at - 1])) return null; // user@host, not a tag
+  if (at > 0 && !/\s/.test(upto[at - 1])) return null;
   const query = upto.slice(at + 1);
   if (query.length > 24 || query.includes("@") || query.includes("\n")) return null;
   return { start: at, query };
@@ -95,7 +99,6 @@ interface ComposerDraftSnapshot extends ComposerSendSnapshot {
   reply: Message | null;
 }
 
-/** Renders the editable message composer and its pending attachments. */
 export function Composer({
   bot: profile,
   group,
@@ -115,7 +118,6 @@ export function Composer({
   onClearReply?: () => void;
   onConsumeReply?: () => void;
   onRestoreReply?: (message: Message, threadId: string) => void;
-  /** New rooms keep the composer inert until their setup is saved or skipped. */
   locked?: boolean;
 }) {
   const bot = profile ? currentTaskBot(profile) : undefined;
@@ -124,41 +126,32 @@ export function Composer({
   const ownerOrAdmin = useOwnerOrAdmin();
   const { threads, currentBotId } = useThreadRefs();
   const { capabilities } = useDesktopCapabilities();
-  // Simple leaves where a conversation works to its bot's Works on (Auto by
-  // default); pinning a place per conversation is an Advanced control.
   const advanced = useAdvancedMode();
+  const sendKey = useSendKey();
+  const sendLabel = sendKeyLabel(sendKey);
   const remoteClient = window.ogb?.remoteClient?.active === true;
-  // Unified target: a 1:1 bot thread or a room. In a room the @ picker
-  // offers members plus @everyone; explicit mentions override the room's
-  // configured default responder.
-  const busy = group ? Boolean(group.working || group.busyBotId) : Boolean(bot?.busy);
-  // an engine with a live session takes a message INTO the running turn;
-  // for those the composer never locks — the server steers instead of 409.
-  // A room steers through its busy speaker's engine, mirroring how the
-  // server's queue-steer route resolves the running turn.
+  const threadId = group?.threadId ?? bot?.threadId ?? "";
+  const currentGroupTask = group?.tasks?.find((task) => task.threadId === threadId);
+  const groupBusyBotId = currentGroupTask?.busyBotId ?? (currentGroupTask?.working ? group?.busyBotId : (group?.threadId === threadId ? group?.busyBotId : null));
+  const groupWorking = group ? openTaskWorking(group) : false;
+  const busy = group ? Boolean(groupWorking || groupBusyBotId) : Boolean(bot?.busy);
   const steerInstanceId = group
-    ? members?.find((member) => member.id === group.busyBotId)?.modelSelection.instanceId
+    ? members?.find((member) => member.id === groupBusyBotId)?.modelSelection.instanceId
     : bot?.modelSelection.instanceId;
   const canSteer =
     state.instances.find((i) => i.instanceId === steerInstanceId)?.capabilities?.queueing === true;
-  // a pending approval blocks the prompt until it is answered
-  const threadId = group?.threadId ?? bot?.threadId ?? "";
-  // The conversation's own place, when pinned; the chip reads it next to the bot default.
   const composerTask = profile?.tasks?.find((task) => task.threadId === threadId);
-  // the VISIBLE branch only — an approval left on a branch you edited away
-  // from must not keep blocking the composer
+  // Visible branch only: an approval left on an abandoned branch must not block the composer.
   const approvals = pendingApprovals(group ? group.messages : bot ? visibleMessages(bot) : []);
   const approval = approvals[0];
   const approvalBot = group
     ? members?.find((member) => member.id === approval?.message.from?.botId) ??
-      members?.find((member) => member.id === group.busyBotId)
+      members?.find((member) => member.id === groupBusyBotId)
     : bot;
   const busyName = group
-    ? (members?.find((b) => b.id === group.busyBotId)?.name ??
-      (group.working ? t("composer.busy.team") : t("composer.busy.aBot")))
+    ? (members?.find((b) => b.id === groupBusyBotId)?.name ??
+      (groupWorking ? t("composer.busy.team") : t("composer.busy.aBot")))
     : (bot?.name ?? t("composer.busy.theBot"));
-  // Per-thread draft: switching bots unmounts this component, so both the
-  // text and its attachment chips have to outlive it (see lib/drafts).
   const draftId = group
     ? `group:${group.id}:${group.threadId}`
     : `bot:${bot?.id ?? ""}:${bot?.threadId ?? ""}`;
@@ -168,8 +161,6 @@ export function Composer({
   );
   const attachmentPending = useDraftAttachmentPending(draftId);
   const failedSends = useFailedComposerSends(draftId);
-  // Goal mode is opt-in and one-shot so the next ordinary channel message
-  // cannot accidentally start another multi-turn team run.
   const [channelMode, setChannelMode] = useComposerChannelMode(draftId);
   const editText = useCallback(
     (next: string) => {
@@ -187,8 +178,6 @@ export function Composer({
   );
   const restoreDraft = useCallback(
     (sent: ComposerDraftSnapshot) => {
-      // Shared recovery reaches a newly mounted view after navigation and
-      // falls back to a separate retry item when a newer draft already exists.
       if (recoverFailedComposerSend(sent) === "restored") {
         if (sent.reply) onRestoreReply?.(sent.reply, sent.threadId);
       }
@@ -208,7 +197,6 @@ export function Composer({
     [attachments, editAttachments],
   );
   const displayPasteInChatBox = useCallback(
-    /** Moves one pasted attachment into the editable draft and restores focus. */
     function displayPasteInChatBox(attachment: PasteAttachment) {
       const nextText = appendPastedText(text, attachment.text);
       editText(nextText);
@@ -228,15 +216,13 @@ export function Composer({
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
-  const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [dismissedSlashAt, setDismissedSlashAt] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const draftIdRef = useRef(draftId);
   draftIdRef.current = draftId;
-  // the latest caret, readable from callbacks without re-creating them
   const caretRef = useRef(0);
   caretRef.current = caret;
-  /** Returns keyboard focus to the draft, keeping the caret where it was. */
   const refocusInput = useCallback(() => {
     requestAnimationFrame(() => {
       const input = inputRef.current;
@@ -246,10 +232,7 @@ export function Composer({
       input.setSelectionRange(at, at);
     });
   }, []);
-  // The composer is keyed by thread, so mounting means a thread was just
-  // opened: put the caret at the end of its draft so the person can type
-  // without clicking the box first. Touch screens are skipped — focusing
-  // there pops the on-screen keyboard over the conversation.
+  // Touch screens are skipped: focusing there pops the on-screen keyboard over the conversation.
   useEffect(() => {
     if (window.matchMedia?.("(hover: none) and (pointer: coarse)").matches) return;
     const frame = requestAnimationFrame(() => {
@@ -260,10 +243,6 @@ export function Composer({
     });
     return () => cancelAnimationFrame(frame);
   }, []);
-  // Choosing a message to reply to means typing the reply comes next, so the
-  // caret follows the new target the same way it does when a thread opens.
-  // A reply restored with the thread is the open effect's; the ref starts on
-  // it so the two never both run.
   const replyToId = replyTo?.id ?? null;
   const focusedReplyRef = useRef(replyToId);
   useEffect(() => {
@@ -280,12 +259,9 @@ export function Composer({
     return () => cancelAnimationFrame(frame);
   }, [replyToId]);
   const mentionListRef = useRef<HTMLDivElement>(null);
-  // what was typed before the mic went on — partials append after it
+  const commandListRef = useRef<HTMLDivElement>(null);
   const baseText = useRef("");
 
-  // image paste is offered only when every bot that will actually answer
-  // can open one. sendGroup routes to mentions, else the room default —
-  // `members.some` would let a mixed room send <attached-image> to Grok.
   const botSupportsImages = (candidate?: Bot) =>
     Boolean(
       candidate &&
@@ -304,9 +280,9 @@ export function Composer({
   const effectiveChannelMode = typedGoalText !== null ? "goal" : channelMode;
   const engineSupportsImages = imageTargetsSupport(effectiveText, effectiveChannelMode);
 
-  // ── Slash commands and @mentions ─────────────────────────────────────
   const slash = composerSlashTrigger(text, caret);
   const locale = activeLocale();
+  const slashSkills = useSlashSkills(group ? undefined : bot?.id, Boolean(slash) && slash?.start !== dismissedSlashAt);
   const commandCandidates = useMemo(() => {
     if (!slash || slash.start === dismissedSlashAt) return [];
     const supportsAgents = (candidate?: Bot) =>
@@ -318,6 +294,7 @@ export function Composer({
       );
     const available: ComposerSlashCommand[] = [];
     if (group && !group.dm) available.push({
+      kind: "command",
       id: "goal",
       label: "/goal",
       description: t("composer.command.goalDesc"),
@@ -327,29 +304,23 @@ export function Composer({
       (group ? (members ?? []).some(supportsAgents) : supportsAgents(bot))
     ) {
       available.push({
+        kind: "command",
         id: "learn",
         label: "/learn",
         description: t("composer.command.learnDesc"),
       });
     }
-    // Setup mode needs the agents tools (propose_profile and friends) and a
-    // single bot: a room cannot set itself up.
     if (!group && supportsAgents(bot)) available.push({
+      kind: "command",
       id: "setup",
       label: "/setup",
       description: t("composer.command.setupDesc"),
     });
-    const query = slash.query.toLowerCase();
-    return available.filter(
-      (command) =>
-        !query ||
-        command.id.startsWith(query) ||
-        command.description.toLowerCase().includes(query),
-    );
-  }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale]);
+    available.push(...skillSlashCommands(slashSkills));
+    return available.filter((command) => slashCommandMatches(command, slash.query));
+  }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale, slashSkills]);
   const commandPickerOpen = commandCandidates.length > 0;
 
-  // Tag another bot; the agent reaches it via ask_bot.
   const mention = mentionQueryAt(text, caret);
   const candidates = useMemo(() => {
     if (!mention || mention.start === dismissedAt) return [];
@@ -363,8 +334,6 @@ export function Composer({
           .map((member) => ({ id: member.id, name: member.name, bot: member }));
     return mentionChoicesForQuery(pool, mention.query);
   }, [mention, dismissedAt, state.bots, bot?.id, group, members]);
-  // @everyone reaches the room's visible bots. Hidden members stay out of
-  // the count so the line matches who the server will actually answer.
   const mentionEveryoneCount = (members ?? []).filter((member) => !member.hidden).length;
   const mentionPickerOpen = candidates.length > 0;
   const commandMotion = useMenuMotion(commandPickerOpen);
@@ -374,6 +343,18 @@ export function Composer({
     () => setHighlight(0),
     [mention?.start, mention?.query, slash?.start, slash?.query],
   );
+
+  useEffect(() => {
+    if (!commandPickerOpen) return;
+    setHighlight((current) => Math.min(current, commandCandidates.length - 1));
+  }, [commandCandidates.length, commandPickerOpen]);
+
+  useEffect(() => {
+    if (!commandPickerOpen) return;
+    commandListRef.current
+      ?.querySelector<HTMLElement>(`[data-command-index="${highlight}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [highlight, commandPickerOpen]);
 
   useEffect(() => {
     if (!mentionPickerOpen) return;
@@ -389,7 +370,6 @@ export function Composer({
     editText(next);
     const newCaret = mention.start + peer.name.length + 2;
     setCaret(newCaret);
-    // picking completes this tag — close the popup so the next Enter sends
     setDismissedAt(mention.start);
     requestAnimationFrame(() => {
       inputRef.current?.focus();
@@ -397,23 +377,21 @@ export function Composer({
     });
   };
 
-  const pickCommand = (command: ComposerSlashCommand) => {
-    if (!slash) return;
-    const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : "";
+  const pickCommand = (command: ComposerSlashCommand | undefined) => {
+    if (!slash || !command) return;
+    const replacement = command.kind === "skill" ? `${command.label} `
+      : command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : "";
     const next = replaceComposerSlashTrigger(text, slash, replacement);
     editText(next.text);
     setCaret(next.caret);
     setDismissedSlashAt(slash.start);
-    setChannelMode(command.id === "goal" ? "goal" : "chat");
+    setChannelMode(command.kind === "command" && command.id === "goal" ? "goal" : "chat");
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.setSelectionRange(next.caret, next.caret);
     });
   };
 
-  // Busy sends are owned by the harness immediately for both channels and
-  // 1:1 chats. Keeping a channel follow-up in this component used to lose its
-  // auto-send intent whenever navigation unmounted the composer.
   const pendingCount = (state.pendingQueued[threadId] ?? []).length;
   const queuedMessages = state.pendingQueued[threadId] ?? [];
   const canSteerQueued = composerCanSteerQueuedMessages(
@@ -433,28 +411,17 @@ export function Composer({
     setSteering(true);
     const settle = () => setSteering(false);
     if (group && canSteer) {
-      // A steer-capable room folds the queued head into the running turn
-      // through the server; it never interrupts the turn to do it.
       dispatch({ type: "steerGroupQueued", groupId: group.id, threadId, queueId: queueHeadId, onError: settle, onSettled: settle });
     } else if (group) {
-      // A room whose running engine cannot steer keeps the old behavior:
-      // Steer ends the running turn so the next queued message starts.
       dispatch({ type: "interruptGroup", groupId: group.id, threadId, onError: settle });
     } else if (bot && canSteer) {
-      // A steer-capable engine folds the queued words into the running turn
-      // through the server; it never interrupts the turn to do it.
       dispatch({ type: "steerQueued", botId: bot.id, threadId, queueId: queueHeadId, onError: settle, onSettled: settle });
     } else if (bot) {
-    // Unlike the general Stop control, Steer belongs to this exact queue.
-    // Scoping prevents a 1:1 queue from interrupting the same bot in a room
-    // (or a routine) whose work is unrelated to the words shown here.
       dispatch({ type: "interrupt", botId: bot.id, threadId, onError: settle });
     }
   };
   useEffect(() => setSteering(false), [threadId, queueHeadId]);
-  // Edit pulls a queued message back into the composer. The server removes it
-  // from the queue first; only a confirmed removal hands the words back, so a
-  // message that already drained into a turn can never also be resent.
+  // Only a confirmed removal hands the words back, so a message that already drained into a turn is never resent.
   const editQueued = (queueId: string) => {
     const queued = queuedMessages.find((item) => item.queueId === queueId);
     if (!queued) return;
@@ -474,11 +441,6 @@ export function Composer({
     if (group) dispatch({ type: "cancelGroupQueued", groupId: group.id, threadId, queueId, onCancelled });
     else if (bot) dispatch({ type: "cancelQueued", botId: bot.id, threadId, queueId, onCancelled });
   };
-  // Double-Enter gesture: when a send lands as a queued chip on a busy
-  // steer-capable thread (live steer lost its race, an attachment, an
-  // older CLI), a second Enter within a short window pulls that queue into
-  // the running turn. Plain sends never consult the window, so they keep
-  // their normal latency.
   const steerAgainUntilRef = useRef(0);
   const prevPendingCountRef = useRef(pendingCount);
   useEffect(() => {
@@ -491,9 +453,6 @@ export function Composer({
     if (expiresAt !== null) steerAgainUntilRef.current = expiresAt;
     prevPendingCountRef.current = pendingCount;
   }, [pendingCount, busy, canSteer]);
-  // Most engines acknowledge interruption quickly, but a lost response must
-  // not leave a control claiming to steer forever. Queue drain or turn end
-  // clears it immediately; twenty seconds is the final recovery floor.
   useEffect(() => {
     if (!busy || pendingCount === 0) {
       setSteering(false);
@@ -505,13 +464,12 @@ export function Composer({
   }, [busy, pendingCount, steering]);
   const fileInput = useRef<HTMLInputElement>(null);
   const [approvalWarning, setApprovalWarning] = useState<{
-    mode: "auto" | "full";
+    mode: "auto";
     botId: string;
     threadId: string;
   } | null>(null);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [commandAllowlistTarget, setCommandAllowlistTarget] = useState<{ botId: string; botName: string; threadId: string } | null>(null);
-  // Approval mode belongs to one bot; a room has several, each with its own.
   const modeBot = group ? undefined : bot;
   const approvalEngine = modeBot
     ? state.instances.find((instance) => instance.instanceId === modeBot.modelSelection.instanceId)
@@ -530,11 +488,8 @@ export function Composer({
       }
       handoffAttachmentImagePreview(completed.path, completed.previewUrl);
       if (!replaceDraftAttachment(draftId, optimistic.id, completed)) {
-        // The user removed the chip while its upload was completing.
         releaseAttachmentImagePreview(completed);
       }
-      // The keyed draft already owns the completed attachment; returning it
-      // would make intakeFiles append a duplicate chip.
       return null;
     } catch (error) {
       replaceDraftAttachment(draftId, optimistic.id, null);
@@ -556,18 +511,11 @@ export function Composer({
     } finally {
       changeDraftAttachmentPending(draftId, false);
     }
-    // the file dialog leaves focus on the paperclip button; typing should
-    // continue in the draft without another click
     refocusInput();
   };
   const setApprovalMode = (mode: ApprovalMode) => {
     if (!modeBot || modeBot.busy || mode === approvalModeFor(modeBot)) return;
-    if ((mode === "full" || mode === "custom") && !trustedThreadAccess) return;
-    if (mode === "full") {
-      setApprovalWarning({ mode, botId: modeBot.id, threadId: modeBot.threadId });
-      return;
-    }
-    // Safe Auto still needs its dedicated warning when it can drive the host.
+    if (mode === "custom" && !trustedThreadAccess) return;
     if (mode === "auto" && modeBot.computer === "local") {
       setApprovalWarning({ mode: "auto", botId: modeBot.id, threadId: modeBot.threadId });
       return;
@@ -614,11 +562,10 @@ export function Composer({
       dispatch({ type: "error", message: t("composer.error.noImages") });
       return;
     }
-    // named `body`, not `t` — that name belongs to the catalog lookup now
-    // resolvable "#Title" runs leave as canonical links, so the thread id
-    // stays machine-readable in the stored send and the model's context
-    const body = composeMessage(serializeThreadRefs(effectiveText, threads, currentBotId), attachments);
-    if (!body) return;
+    const composed = composeMessage(serializeThreadRefs(effectiveText, threads, currentBotId), attachments);
+    if (!composed) return;
+    const body = restoredRequestText(draftId) ?? composed;
+    const dataContext = dataContextFor(body, state.computerOpen ? state.dataView : null, !group && bot ? { botId: bot.id, threadId } : undefined);
     const sentDraft: ComposerDraftSnapshot = {
       draftId,
       revision: draftRevision(draftId),
@@ -651,6 +598,7 @@ export function Composer({
         sendId: sentDraft.sendId,
         replyToId: replyTo?.id,
         threadId,
+        dataContext,
         onError: () => restoreDraft(sentDraft),
       });
       track("message_sent", { driver: bot.modelSelection?.instanceId, queued: busy && !canSteer });
@@ -661,17 +609,7 @@ export function Composer({
     if (group) setChannelMode("chat");
   };
 
-  /**
-   * Handles clipboard paste events in the composer textarea: converts pasted clipboard
-   * images into uploaded attachments (if supported by the responder) and converts oversized
-   * text into draft attachment chips.
-   *
-   * @param e - Clipboard event from the composer textarea.
-   */
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    // an image from the clipboard becomes an uploaded attachment —
-    // but only for engines that can open one; a grok bot politely
-    // refuses instead of receiving a path it cannot read
     const imageFiles = clipboardImageFiles(e.clipboardData);
     if (imageFiles.length > 0 || clipboardHasImages(e.clipboardData)) {
       e.preventDefault();
@@ -707,16 +645,11 @@ export function Composer({
       }
     }
     const pasted = e.clipboardData.getData("text/plain");
-    // a pasted thread reference — canonical link, its markdown shape, or a
-    // raw UUID — becomes the token the composer holds when it names a
-    // thread the person can see; anything else stays ordinary text
     const reference = threadTokenFromPaste(pasted, threads, currentBotId);
     if (reference) {
       e.preventDefault();
       const start = e.currentTarget.selectionStart ?? text.length;
       const end = e.currentTarget.selectionEnd ?? start;
-      // "#Title" only links at a word boundary, so keep the token clear of
-      // the words it may land between
       const { lead, trail } = threadTokenSpacing(text, start, end);
       const token = lead + reference.token + trail;
       editText(text.slice(0, start) + token + text.slice(end));
@@ -728,11 +661,8 @@ export function Composer({
       });
       return;
     }
-    // a wall of text becomes a chip instead of burying the input
     if (!isLongPaste(pasted)) return;
     e.preventDefault();
-    // Preserve native paste replacement semantics: if text was
-    // selected, the attachment replaces that selection.
     const start = e.currentTarget.selectionStart;
     const end = e.currentTarget.selectionEnd;
     if (start !== end) {
@@ -742,8 +672,6 @@ export function Composer({
     editAttachments((prev) => [...prev, pasteAttachment(pasted)]);
   };
 
-  // native dictation: partials stream into the input while the Swift
-  // helper runs; the final transcript stays in the box, ready to edit/send
   useEffect(() => {
     if (!recording) return;
     const bridge = window.ogb;
@@ -791,8 +719,6 @@ export function Composer({
 
   return (
     <div className="pointer-events-none relative px-5 pb-3">
-      {/* No fill or hairline on this wrapper — those were the black frame
-          in the pill's top corners. The dock overlays the transcript. */}
       {speechError && (
         <div className="pointer-events-auto mb-2 w-full rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
           {speechError}
@@ -829,16 +755,18 @@ export function Composer({
         ))}
         {commandMotion.shown && (
           <div
+            ref={commandListRef}
             role="listbox"
             aria-label={t("composer.commands.aria")}
-            className={cn("absolute bottom-full left-2 z-20 mb-2 w-80 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg", commandMotion.className)} {...commandMotion.exitProps}
+            className={cn("absolute bottom-full left-2 z-20 mb-2 max-h-80 w-80 max-w-[calc(100%-1rem)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border border-hairline/40 bg-raised shadow-lg", commandMotion.className)} {...commandMotion.exitProps}
           >
             <div className="border-b border-hairline/20 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-secondary">
               {t("composer.commands.title")}
             </div>
             {commandCandidates.map((command, index) => (
               <button
-                key={command.id}
+                key={`${command.kind}:${command.id}`}
+                data-command-index={index}
                 type="button"
                 role="option"
                 aria-selected={index === highlight}
@@ -851,14 +779,21 @@ export function Composer({
                 )}
               >
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-                  {command.id === "goal" ? (
+                  {command.kind === "skill" ? (
+                    <Sparkles size={15} aria-hidden="true" />
+                  ) : command.id === "goal" ? (
                     <Target size={15} aria-hidden="true" />
                   ) : (
                     <BookOpen size={15} aria-hidden="true" />
                   )}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[14px] font-medium text-accent">{command.label}</span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-[14px] font-medium text-accent">{command.label}</span>
+                    {command.kind === "skill" && (
+                      <span className="shrink-0 rounded-full bg-accent/10 px-1.5 text-[11px] font-medium leading-4 text-accent">{t("composer.command.skillTag")}</span>
+                    )}
+                  </span>
                   <span className="block truncate text-xs text-ink-secondary">
                     {command.description}
                   </span>
@@ -907,12 +842,8 @@ export function Composer({
             })}
           </div>
         )}
-        {/* An approval takes over the composer: you answer it before you
-            can type again, so a waiting bot is impossible to miss. */}
         {approval && (
           <div className="mb-2 overflow-hidden rounded-2xl border border-accent/40 bg-card">
-            {/* locale: the panel is memoized and its other props do not
-                change with the language — see MessagesList in ChatView */}
             <PendingApprovalPanel
               pending={approval}
               count={approvals.length}
@@ -924,15 +855,6 @@ export function Composer({
               threadId={threadId}
               bot={approvalBot}
               onCancelTurn={interruptTurn}
-            />
-          </div>
-        )}
-        {replyTo && (
-          <div className="mb-2 px-1">
-            <ReplyQuote
-              message={replyTo}
-              fallbackName={bot?.name}
-              onClear={onClearReply}
             />
           </div>
         )}
@@ -961,24 +883,13 @@ export function Composer({
           onEdit={locked ? undefined : editQueued}
         />
         <div className="relative">
-          {/* App-ground from the pill midline down, full-bleed. Bubbles may
-              tuck into the top half of the radius; they must not show below
-              center. End at the dock's pb-3 padding: a viewport-height
-              backdrop extends the document and lets focus scroll the header
-              away. Only the decoration is bounded; upward menus stay free. */}
           <div
             aria-hidden
             data-composer-backdrop
             className="pointer-events-none absolute -left-5 -right-5 -bottom-3 top-1/2 bg-app"
           />
-        {/* One row while it fits: chips, editor, mic. The editor is the only
-            child that can shrink, so in a narrow column (a bot's settings open
-            beside the chat, a small window) it collapsed to a few pixels and
-            its placeholder stacked one letter per line, while the auto-grow
-            made the box tall to fit them. Below the container width where the
-            chips and the placeholder cannot share a line, the editor takes a
-            full line of its own above the chips instead. */}
         <div data-tour="composer" className="@container/composer relative z-[1] rounded-3xl bg-composer px-2 py-1.5 ring-1 ring-composer-ring">
+        {replyTo && <ComposerReplyStrip message={replyTo} fallbackName={bot?.name} onClear={onClearReply} />}
         <div data-composer-row className="flex items-end gap-1 @max-[30rem]/composer:flex-wrap">
           <input
             ref={fileInput}
@@ -987,7 +898,7 @@ export function Composer({
             className="hidden"
             onChange={(e) => {
               void pickFiles(e.target.files);
-              // same file twice in a row still fires onChange
+              // Reset so picking the same file again still fires onChange.
               e.target.value = "";
             }}
           />
@@ -1062,7 +973,6 @@ export function Composer({
           inputRef={inputRef}
           peers={group ? members ?? [] : state.bots.filter((member) => member.id !== bot?.id)}
           everyone={Boolean(group && !group.dm)}
-          // the message is composed in the writer's language, not the UI's
           dir="auto"
           rows={1}
           value={text}
@@ -1076,6 +986,8 @@ export function Composer({
           onKeyUp={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onClick={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onKeyDown={(e) => {
+            // An input method's confirming Enter and arrows pick its own candidates, not a mention or command.
+            if (imeComposing(e.nativeEvent)) return;
             if (commandPickerOpen) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
@@ -1114,18 +1026,18 @@ export function Composer({
                 return;
               }
             }
-            // an empty composer + ArrowUp = edit your last message (like a chat app)
+            if (onClearReply && escapeCancelsReply(e.nativeEvent, { replying: Boolean(replyTo), recording })) {
+              e.preventDefault();
+              onClearReply();
+              return;
+            }
             if (e.key === "ArrowUp" && !hasContent && onEditLast) {
               e.preventDefault();
               onEditLast();
               return;
             }
-            // Shift+Enter inserts a newline; plain Enter sends
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            if (sendsMessage(e.nativeEvent, sendKey)) {
               e.preventDefault();
-              // The second Enter of the gesture: the chip above is waiting,
-              // the composer is empty, and the window is open — steer the
-              // queue into the running turn instead of waiting it out.
               if (
                 canSteer &&
                 doubleEnterSteersQueue(steerAgainUntilRef.current, Date.now(), pendingCount, hasContent)
@@ -1138,10 +1050,8 @@ export function Composer({
             }
             if (e.key === "Escape" && recording) setRecording(false);
           }}
-          // an upload in flight must not disable the box: a disabled element
-          // drops keyboard focus and never gets it back, so the writer had to
-          // click the input again after every pasted image (#1014). send()
-          // already refuses while an attachment is pending.
+          // Not disabled during an upload: a disabled element drops keyboard focus for good. send() refuses while one
+          // is pending.
           disabled={Boolean(approval) || locked}
           aria-busy={bot?.awaitingThreadSnapshot || undefined}
           placeholder={
@@ -1153,13 +1063,15 @@ export function Composer({
               ? t("composer.placeholder.attaching")
               : recording
               ? t("composer.placeholder.listening")
+              : replyTo && !busy
+              ? t("composer.placeholder.reply")
               : busy && canSteer
                 ? pendingCount > 0
-                  ? t("composer.placeholder.steerQueued", { name: busyName })
-                  : t("composer.placeholder.steer", { name: busyName })
+                  ? t("composer.placeholder.steerQueued", { name: busyName, key: sendLabel })
+                  : t("composer.placeholder.steer", { name: busyName, key: sendLabel })
               : busy
                 ? group
-                  ? t("composer.placeholder.queueGroup", { name: busyName })
+                  ? t("composer.placeholder.queueGroup", { name: busyName, key: sendLabel })
                   : t("composer.placeholder.queue", { name: busyName })
                 : group
                   ? channelMode === "goal"
@@ -1174,8 +1086,6 @@ export function Composer({
             className="block max-h-[9rem] min-h-6 w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-[15px] leading-6 placeholder:text-ink-secondary focus:outline-none"
           />
           <div data-composer-actions className="flex items-center gap-1 @max-[30rem]/composer:ml-auto">
-          {/* Stop stays a stop. Stop-then-steer is named beside the queued
-              message above, where its effect is visible before activation. */}
           {busy && !locked && (
           <button
             onClick={interruptTurn}
@@ -1201,9 +1111,6 @@ export function Composer({
             <Mic size={18} />
           </button>
         )}
-        {/* Calling the bot lives here, beside dictation, rather than in the
-            chat header: it is another way to talk to it. Rooms keep their
-            group call button in the room header. */}
         {bot && !group && <CallButton bot={bot} placement="composer" />}
         {hasContent && !locked && (
           <button
@@ -1221,7 +1128,7 @@ export function Composer({
                   ? t("composer.send.steer")
                   : busy
                     ? t("composer.send.queueHint")
-                    : t("chat.send")
+                    : `${t("chat.send")} (${sendLabel})`
             }
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-full text-white",
@@ -1244,18 +1151,6 @@ export function Composer({
         {...commandAllowlistTarget}
         onClose={() => setCommandAllowlistTarget(null)}
       />}
-      <FullAccessWarning
-        open={approvalWarning?.mode === "full"}
-        scope="thread"
-        onCancel={() => setApprovalWarning(null)}
-        onConfirm={() => {
-          const target = approvalWarning;
-          setApprovalWarning(null);
-          if (target?.mode !== "full" || !trustedThreadAccess) return;
-          dispatch({ type: "updateTask", botId: target.botId, threadId: target.threadId,
-            patch: { approvalMode: "full", confirmFullAccess: true } });
-        }}
-      />
       <LocalComputerAutoWarning
         open={approvalWarning?.mode === "auto"}
         onCancel={() => setApprovalWarning(null)}

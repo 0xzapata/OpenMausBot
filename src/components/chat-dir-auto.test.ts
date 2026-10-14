@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 const source = (name: string) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
 
-/** The attribute sits on the element that shows or edits that text. */
 function expectDirAuto(file: string, marker: string) {
   const text = source(file);
   const at = text.indexOf(marker);
