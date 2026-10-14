@@ -507,6 +507,29 @@ function ConnectorToolsGrants({
   );
 }
 
+/** Record browser steps: a sub-row of the Browser card. An admin setting
+ * with no prompt; the steps stay with each conversation (server/browser-steps.ts). */
+function RecordStepsRow({ on, browserOn, myChrome, onChange }: { on: boolean; browserOn: boolean; myChrome: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <div className="mt-3 flex items-center justify-between gap-4 border-t border-hairline/40 pt-3">
+      <div>
+        <div className="text-[13.5px] font-medium text-ink">{t("botAccess.recordSteps.title")}</div>
+        <div className="mt-0.5 text-[12.5px] text-ink-secondary">
+          {!browserOn ? t("botAccess.recordSteps.needsBrowser") : on ? t("botAccess.recordSteps.on") : t("botAccess.recordSteps.off")}
+          {browserOn && on && myChrome ? ` ${t("botAccess.recordSteps.myChrome")}` : ""}
+        </div>
+      </div>
+      <Switch
+        checked={on && browserOn}
+        aria-label={t("botAccess.recordSteps.title")}
+        disabled={!browserOn}
+        onClick={() => onChange(!on)}
+        className="disabled:cursor-not-allowed"
+      />
+    </div>
+  );
+}
+
 export function AccessSection({
   bot,
   derived,
@@ -664,37 +687,47 @@ export function AccessSection({
       <McpServersCard bot={bot} patch={patch} />
       <ToolSelectionCard key={bot.id} bot={bot} engineKind={derived.engine?.driverKind} />
 
-      <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
-        <div>
-          <div className="text-[15px] font-medium text-ink">Browser</div>
-          <div className="mt-0.5 text-[13px] text-ink-secondary">
-            {!desktopBrowser
-              ? browserBlockedOnWindows && !browserInstallable
-                ? "Not available on this Windows machine yet: install the browser engine with `openmausbot browser install`."
-                : browserUnavailableReason(state.config)
-              : !browserFeature
-                ? "The built-in browser is switched off under App Settings → Computers."
-                : !canUseBrowser
-                  ? "This bot's current model cannot use the built-in browser."
-                  : bot.computer === "off"
-                    ? "Works on is set to Off, so this bot has no browser. Choose another place in the Computer panel to give it one."
-                    : browserEnabled
-                      ? "This bot has its own browser with its own logins."
-                      : "Keep the built-in browser unavailable to this bot."}
+      <div className="rounded-xl bg-card p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-[15px] font-medium text-ink">Browser</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              {!desktopBrowser
+                ? browserBlockedOnWindows && !browserInstallable
+                  ? "Not available on this Windows machine yet: install the browser engine with `openmausbot browser install`."
+                  : browserUnavailableReason(state.config)
+                : !browserFeature
+                  ? "The built-in browser is switched off under App Settings → Computers."
+                  : !canUseBrowser
+                    ? "This bot's current model cannot use the built-in browser."
+                    : bot.computer === "off"
+                      ? "Works on is set to Off, so this bot has no browser. Choose another place in the Computer panel to give it one."
+                      : browserEnabled
+                        ? "This bot has its own browser with its own logins."
+                        : "Keep the built-in browser unavailable to this bot."}
+            </div>
+            <ProposalStatus bot={bot} kind="owner" />
           </div>
-          <ProposalStatus bot={bot} kind="owner" />
+          <Switch
+            checked={browserEnabled && bot.computer !== "off"}
+            aria-label="Give this bot a built-in browser"
+            disabled={
+              bot.computer === "off" ||
+              (!browserEnabled && ((!desktopBrowser && !browserInstallable) || !browserFeature || !canUseBrowser))
+            }
+            onClick={() => patch({ browser: !browserAllowed })}
+            title={bot.computer === "off" ? "Works on is set to Off, so this bot has no browser" : undefined}
+            className="disabled:cursor-not-allowed"
+          />
         </div>
-        <Switch
-          checked={browserEnabled && bot.computer !== "off"}
-          aria-label="Give this bot a built-in browser"
-          disabled={
-            bot.computer === "off" ||
-            (!browserEnabled && ((!desktopBrowser && !browserInstallable) || !browserFeature || !canUseBrowser))
-          }
-          onClick={() => patch({ browser: !browserAllowed })}
-          title={bot.computer === "off" ? "Works on is set to Off, so this bot has no browser" : undefined}
-          className="disabled:cursor-not-allowed"
-        />
+        {!draft && (
+          <RecordStepsRow
+            on={bot.recordBrowserSteps === true}
+            browserOn={browserEnabled && bot.computer !== "off"}
+            myChrome={state.config?.browserEngine?.myChrome === true && (state.config?.browserProfiles ?? []).some((profile) => profile.id === bot.browserProfile && profile.browser === "chrome")}
+            onChange={(recordBrowserSteps) => patch({ recordBrowserSteps })}
+          />
+        )}
       </div>
 
       {!draft && <div className="rounded-xl bg-card p-4">

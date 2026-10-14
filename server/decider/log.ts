@@ -25,6 +25,8 @@ export interface DeciderLogRow {
   at: string;
   seam: DeciderSeam;
   provider: DeciderProvider;
+  /** The model asked, for a provider with a choice of them (OpenRouter). */
+  model?: string;
   ok: boolean;
   reason?: DeciderFailure;
   status?: number;

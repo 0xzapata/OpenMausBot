@@ -13,8 +13,10 @@ import { freePortBlock } from "./testing/ports.ts";
 
 // Auto rooms end to end: a real server and fake engine CLIs, with the
 // decision model pointed at a fake Jev-compatible endpoint on this machine
-// (decider.baseUrl). Nothing here reaches the real Jev API. The key reaches
-// the server only through its env, the way the desktop shell delivers it.
+// (decider.baseUrl), then at a fake OpenRouter on this machine
+// (decider.openrouterBaseUrl). Nothing here reaches the real Jev or
+// OpenRouter API. The Jev key reaches the server only through its env, the
+// way the desktop shell delivers it.
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
@@ -26,6 +28,7 @@ type RouteScript = { status?: number; choice?: string; p?: number; hold?: Promis
 
 let child: ChildProcess;
 let jev: Server;
+let openrouter: Server | undefined;
 let home = "";
 let data = "";
 let base = "";
@@ -34,7 +37,9 @@ let engineDump = "";
 let titleDump = "";
 let fallbackTitleDump = "";
 const jevRequests: JevRequest[] = [];
+const openrouterRequests: JevRequest[] = [];
 let script: RouteScript = {};
+let openrouterScript: RouteScript = {};
 
 const routeRequests = () => jevRequests.filter((request) => request.body?.questions?.answer?.type === "choice");
 const keyChecks = () => jevRequests.filter((request) => request.body?.questions?.answer?.type === "noul");
@@ -144,6 +149,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (child) await waitForExit(child, { signal: "SIGTERM" });
   await new Promise<void>((resolve) => (jev ? jev.close(() => resolve()) : resolve()));
+  await new Promise<void>((resolve) => (openrouter ? openrouter.close(() => resolve()) : resolve()));
   if (home) await removeTempDir(home);
 });
 
@@ -310,5 +316,139 @@ describe("Auto rooms ask the decision model who answers", { timeout: 90_000 }, (
     expect(JSON.parse(disk).decider).toMatchObject({ key: "", enabled: true, jobs: { roomRouting: true } });
     expect(disk).not.toContain("tsk_new_valid_key");
     expect((await api("PUT", "/api/config", { decider: { key: "" } })).body.decider).toMatchObject({ configured: false, enabled: false });
+  });
+
+  describe("with OpenRouter as the provider", () => {
+    const OR_KEY = "sk-or-v1-e2e-secret-value-5b1d8e";
+    const MODEL = "openai/gpt-4o-mini";
+    const CURATED = "openai/gpt-4.1-nano";
+    const DECISIONS_MODEL = "typesafe/jev-1.13";
+
+    it("lists models from OpenRouter's catalog, with no key", async () => {
+      openrouter = createServer((req, res) => {
+        let raw = "";
+        req.on("data", (chunk) => (raw += chunk));
+        req.on("end", () => {
+          const send = (status: number, value: unknown) => {
+            res.writeHead(status, { "content-type": "application/json" });
+            res.end(JSON.stringify(value));
+          };
+          if (req.method === "GET" && req.url === "/api/v1/models?output_modalities=decisions") {
+            const decisions = (id: string, name: string) => ({ id, name, architecture: { output_modalities: ["decisions"] } });
+            // a chat model in the same body is not offered; a decisions model OpenRouter added since is, under "more"
+            return send(200, { data: [decisions(DECISIONS_MODEL, "TypeSafe: Jev 1.13"), decisions("acme/zippy", "Acme: Zippy"), { id: CURATED, name: "OpenAI: GPT-4.1 Nano", architecture: { output_modalities: ["text"] } }] });
+          }
+          if (req.method === "POST" && req.url === "/api/alpha/decisions") {
+            // the Decisions API: Jev's request as it is, Jev's answers back
+            const asked = JSON.parse(raw || "{}");
+            openrouterRequests.push({ auth: req.headers.authorization, body: { ...asked, question: asked.questions?.answer } });
+            return send(200, { answers: { answer: { type: "noul", noul: 0.96 } }, model: `${asked.model}-2026`, usage: { input_tokens: 410, output_tokens: 5 } });
+          }
+          const body = JSON.parse(raw || "{}");
+          const question = JSON.parse(body.messages?.[1]?.content ?? "{}").questions?.answer;
+          if (req.method !== "POST" || req.url !== "/api/v1/chat/completions" || !question) return send(404, { error: "bad request shape" });
+          openrouterRequests.push({ auth: req.headers.authorization, body: { ...body, question } });
+          const answer = (value: unknown) => send(200, {
+            model: `${body.model}-2026`,
+            choices: [{ message: { role: "assistant", content: JSON.stringify({ answers: { answer: value } }) } }],
+            usage: { prompt_tokens: 410 },
+          });
+          if (question.type === "noul") {
+            return req.headers.authorization === "Bearer sk-or-bad" ? send(401, { error: { message: `invalid key ${req.headers.authorization}` } }) : answer({ noul: 0.96 });
+          }
+          const current = openrouterScript;
+          if (current.status && current.status !== 200) return send(current.status, { error: { message: "no credits" } });
+          const keys = Object.keys(question.criteria);
+          const choice = current.choice!;
+          const other = keys.find((key) => key !== choice)!;
+          answer({ choice, probabilities: { [choice]: current.p, [other]: Math.round((1 - current.p!) * 100) / 100 } });
+        });
+      });
+      await new Promise<void>((resolve) => openrouter!.listen(0, "127.0.0.1", resolve));
+      const url = `http://127.0.0.1:${(openrouter!.address() as AddressInfo).port}/api/v1`;
+      expect((await api("PUT", "/api/config", { decider: { openrouterBaseUrl: url } })).status).toBe(200);
+      const models = await api("GET", "/api/decider/models");
+      expect(models.status).toBe(200);
+      expect(models.body.source).toBe("openrouter");
+      expect(models.body.models).toEqual([
+        { id: DECISIONS_MODEL, name: "TypeSafe: Jev 1.13", group: "recommended", api: "decisions" },
+        { id: "acme/zippy", name: "Acme: Zippy", group: "more", api: "decisions" },
+      ]);
+    });
+
+    it("saving a rejected key is refused with OpenRouter's name on it; a good one turns it on", async () => {
+      const rejected = await api("PUT", "/api/config", { decider: { provider: "openrouter", openrouterModel: MODEL, openrouterKey: "sk-or-bad" } });
+      expect(rejected.status).toBe(400);
+      expect(rejected.body).toMatchObject({ code: "decider_rejected", error: expect.stringContaining("OpenRouter rejected this key") });
+      expect(rejected.text).not.toContain("sk-or-bad");
+      expect((await api("GET", "/api/config")).body.decider).toMatchObject({ provider: "jev", enabled: false });
+
+      const saved = await api("PUT", "/api/config?secretStorage=external", { decider: { provider: "openrouter", openrouterModel: MODEL, openrouterKey: OR_KEY } });
+      expect(saved.status).toBe(200);
+      expect(saved.body.decider).toEqual({ provider: "openrouter", model: MODEL, api: "chat", configured: true, enabled: true, jobs: { roomRouting: true } });
+      expect(saved.text).not.toContain(OR_KEY);
+      const check = openrouterRequests.at(-1)!;
+      expect(check.auth).toBe(`Bearer ${OR_KEY}`);
+      expect(check.body.model).toBe(MODEL);
+      // the desktop's path: config.json keeps an empty placeholder, the Jev fields are untouched
+      const disk = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+      expect(disk.decider).toMatchObject({ provider: "openrouter", openrouterModel: MODEL, openrouterKey: "", enabled: true });
+      expect(JSON.stringify(disk)).not.toContain(OR_KEY);
+      // Test uses the saved provider, model and key; a bad draft is refused
+      expect(await api("POST", "/api/decider/test", {})).toMatchObject({ body: { ok: true } });
+      expect((await api("POST", "/api/decider/test", { key: "sk-or-bad" })).body).toEqual({ ok: false, reason: "rejected", status: 401 });
+    });
+
+    it("a confident pick answers alone, stamped with the provider; the log has the model and no text", async () => {
+      openrouterScript = { choice: bots.Theo!.id, p: 0.91 };
+      const asked = openrouterRequests.length;
+      const { replies } = await round(room.id, "The pricing page shows the wrong currency on Safari.");
+      expect([...new Set(replies.map((reply) => reply.from!.name))]).toEqual(["Theo"]);
+      expect(replies[0]!.routedBy).toEqual({ provider: "openrouter", probability: 0.91 });
+      expect(openrouterRequests.length).toBeGreaterThan(asked);
+      const request = openrouterRequests.at(-1)!;
+      expect(request.auth).toBe(`Bearer ${OR_KEY}`);
+      expect(request.body).toMatchObject({ model: MODEL, temperature: 0, provider: { require_parameters: true } });
+      expect(request.body.response_format.json_schema.strict).toBe(true);
+      expect(request.body.response_format.json_schema.schema.properties.answers.properties.answer.properties.choice.enum)
+        .toEqual([bots.Maya!.id, bots.Theo!.id, bots.Ravi!.id, "__everyone__"]);
+      // never the Jev fake
+      expect(jevRequests.every((jevRequest) => jevRequest.auth !== `Bearer ${OR_KEY}`)).toBe(true);
+
+      const dir = join(data, "decider-log");
+      const log = readdirSync(dir).map((name) => readFileSync(join(dir, name), "utf8")).join("");
+      const rows = log.trim().split("\n").map((line) => JSON.parse(line));
+      expect(rows.some((row) => row.provider === "openrouter" && row.model === MODEL && row.seam === "roomRouting" && row.ok && row.choice === bots.Theo!.id)).toBe(true);
+      expect(log).not.toContain(OR_KEY);
+      expect(log).not.toContain("pricing page");
+      expect(output).not.toContain(OR_KEY);
+    });
+
+    it("a failing OpenRouter (out of credits) falls back to the lead, unmarked", async () => {
+      openrouterScript = { status: 402 };
+      const { replies } = await round(room.id, "Who owns the invoice emails?");
+      expect(replies.map((reply) => reply.from!.name)).toEqual(["Ravi"]);
+      expect(replies[0]!.routedBy).toBeUndefined();
+      const dir = join(data, "decider-log");
+      const rows = readdirSync(dir).map((name) => readFileSync(join(dir, name), "utf8")).join("").trim().split("\n").map((line) => JSON.parse(line));
+      expect(rows.some((row) => row.provider === "openrouter" && !row.ok && row.reason === "http_error" && row.status === 402)).toBe(true);
+    });
+
+    it("a decisions model is tested through the Decisions API, and saved with its API", async () => {
+      const saved = await api("PUT", "/api/config", { decider: { openrouterModel: DECISIONS_MODEL, openrouterApi: "decisions" } });
+      expect(saved.body.decider).toMatchObject({ provider: "openrouter", model: DECISIONS_MODEL, api: "decisions" });
+      expect(await api("POST", "/api/decider/test", {})).toMatchObject({ body: { ok: true } });
+      const check = openrouterRequests.at(-1)!;
+      expect(check.auth).toBe(`Bearer ${OR_KEY}`);
+      expect(check.body).toMatchObject({ model: DECISIONS_MODEL, state: expect.anything(), question: { type: "noul" } });
+      // saving a model with no API puts it back on chat completions
+      expect((await api("PUT", "/api/config", { decider: { openrouterModel: MODEL } })).body.decider).toMatchObject({ model: MODEL, api: "chat" });
+    });
+
+    it("engines never see the OpenRouter decision key", () => {
+      const dump = readFileSync(engineDump, "utf8");
+      expect(JSON.parse(dump).env).not.toHaveProperty("OMB_OPENROUTER_DECIDER_KEY");
+      expect(dump).not.toContain(OR_KEY);
+    });
   });
 });

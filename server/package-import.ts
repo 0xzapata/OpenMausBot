@@ -389,10 +389,13 @@ function runImport(source: ImportSource, options: PackageImportOptions, deps: Pa
         : undefined;
       // composio: false — a shared persona never starts with reach into the
       // person's connected apps (absence would mean allowed). Approval is
-      // never set: every imported bot starts on Ask, whatever was suggested.
+      // never set: every imported bot starts at the default level, like any
+      // new bot, whatever was suggested.
       store.patchBot(created.id, {
         composio: false,
         connectorTools: {},
+        // The publisher's choice, with no card: recording only keeps evidence in this workspace.
+        ...(agent?.recordBrowserSteps === true ? { recordBrowserSteps: true } : {}),
         ...(playbooks.length ? { playbooks } : {}),
         ...(installed ? { installedPackage: installed } : {}),
         ...(agent?.connections ? { mcpServers: agent.connections.flatMap((key) => serverForKey.has(key) ? [serverForKey.get(key)!] : []) } : {}),

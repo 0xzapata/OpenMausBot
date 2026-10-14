@@ -36,7 +36,7 @@ it.skipIf(process.platform === "win32")("saves a login from the sign-in card, an
       if (req.url === "/api/command") {
         const command = JSON.parse(raw) as { action?: string; subaction?: string; text?: string };
         if (command.action !== "keyboard" || command.subaction !== "insertText" || typeof command.text !== "string") return reply({ success: false });
-        await page.insertText(page.streamPort, command.text);
+        await page.insertText(command.text);
         return reply({ success: true, data: {} });
       }
       const { args } = JSON.parse(raw) as { args: string[] };

@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 
 import { z } from "zod";
 import { writeFileAtomic } from "./atomic.ts";
-import { browserDaemonPidPath, closeBrowserSession, runningBrowserSessionNames } from "./browser-engine.ts";
+import { browserDaemonFile, closeBrowserSession, runningBrowserSessionNames } from "./browser-engine.ts";
 import { orphanedBrowsers, stopBrowserProcesses } from "./browser-processes.ts";
 import { browserRuntimeEnv } from "./browser-runtime.ts";
 
@@ -409,7 +409,7 @@ export function browserIdleMs(cfg: { browserEngine?: { idleTimeoutMinutes?: numb
 /** Whether any daemon may run under this HOME: agent-browser writes one
  * `<session>.pid` per daemon, so with none there is nothing to ask about. */
 function daemonsMayRun(env: NodeJS.ProcessEnv): boolean {
-  try { return readdirSync(dirname(browserDaemonPidPath({ ...env, AGENT_BROWSER_SESSION: "" }))).some((name) => name.endsWith(".pid") && name !== "dashboard.pid"); }
+  try { return readdirSync(dirname(browserDaemonFile({ ...env, AGENT_BROWSER_SESSION: "" }, ".pid"))).some((name) => name.endsWith(".pid") && name !== "dashboard.pid"); }
   catch { return false; }
 }
 

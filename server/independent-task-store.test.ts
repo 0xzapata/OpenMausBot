@@ -20,6 +20,7 @@ describe("independent bot task state", () => {
     const store = new Store(selection);
     const bot = store.createBot({}, { seedMessages: false });
     const other = store.createBot({}, { seedMessages: false });
+    store.patchBot(other.id, { approvalMode: "ask", autoApprove: false });
     const first = bot.threadId;
     store.appendMessage(first, { role: "user", kind: "text", text: "Keep this conversation" });
     const archived = store.createTask(bot.id, "Archived")!;
@@ -44,6 +45,7 @@ describe("independent bot task state", () => {
   it("refreshes one thread's permissions from the bot default and leaves the rest", () => {
     const store = new Store(selection);
     const bot = store.createBot({}, { seedMessages: false });
+    store.patchBot(bot.id, { approvalMode: "ask", autoApprove: false });
     const first = bot.threadId;
     // The opening thread inherits until it has its own copy. A later thread,
     // and any thread whose level was chosen in the composer, keeps that copy.
@@ -84,6 +86,7 @@ describe("independent bot task state", () => {
   it("does not partially elevate any thread when saving the all-threads change fails", () => {
     const store = new Store(selection);
     const bot = store.createBot({}, { seedMessages: false });
+    store.patchBot(bot.id, { approvalMode: "ask", autoApprove: false });
     store.createTask(bot.id, "Second thread");
     const before = JSON.stringify(bot);
     const save = vi.spyOn(store as unknown as { saveBots(): void }, "saveBots").mockImplementation(() => { throw new Error("fixture disk full"); });
@@ -140,7 +143,7 @@ describe("independent bot task state", () => {
     store.setResumeCursor(bot.id, "claude", "first-session", first.threadId);
     const reloaded = new Store(selection);
     expect(reloaded.taskByThread(bot.id, first.threadId)).toMatchObject({ routineRunId: "run-1", resumeCursors: { claude: "first-session" } });
-    expect(reloaded.taskByThread(bot.id, second.threadId)).toMatchObject({ routineRunId: "run-2", resumeCursors: {}, approvalMode: "ask", autoApprove: false });
+    expect(reloaded.taskByThread(bot.id, second.threadId)).toMatchObject({ routineRunId: "run-2", resumeCursors: {}, approvalMode: "full", autoApprove: false });
     reloaded.patchTask(bot.id, first.threadId, { routineRunId: undefined });
     expect(new Store(selection).taskByThread(bot.id, first.threadId)?.routineRunId).toBeUndefined();
   });

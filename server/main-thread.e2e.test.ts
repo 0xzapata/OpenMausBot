@@ -79,7 +79,7 @@ it("stamps askedAt where a person writes, never for a routine, a webhook, start_
     expect(side.openedBy).toMatchObject({ botId: bot.id });
 
     // Slack's worker relays a person's line through the guarded route.
-    const { task: relayed } = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "From Slack" }, 201);
+    const { task: relayed } = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "From Slack", approvalMode: "ask" }, 201);
     await api("POST", `/api/bots/${bot.id}/messages/guarded`, {
       threadId: relayed.threadId, sendId: randomUUID(), text: "Sent from Slack.", expectedActiveLeafId: null,
     }, 202);

@@ -18,6 +18,7 @@ import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-ico
 import type { McpServerSpec } from "./contracts.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
+import { deciderConfigSchema, type DeciderConfig } from "./decider/config.ts";
 
 const optionalText = z.string().optional();
 const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -513,24 +514,7 @@ const appConfigSchema = z.object({
     model: optionalText,
     fishModel: z.enum(FISH_TTS_MODELS).optional(),
   }).optional(),
-  /** The decision model (server/decider): a fast classifier that picks
-   * things for bots, starting with who answers a room message. `key` is
-   * write-only like every credential; `baseUrl` points at a Jev-compatible
-   * server instead of TypeSafe's (an operator setting with no UI); `jobs`
-   * switches each decision on or off. Not `decisions`: that section is the
-   * authorization log's retention. */
-  decider: z.object({
-    enabled: z.boolean().optional(),
-    provider: z.enum(["jev", "off"]).optional(),
-    key: optionalText,
-    baseUrl: z
-      .string()
-      .trim()
-      .max(2048)
-      .refine((value) => !value || /^https?:\/\//i.test(value), "the decision model address must start with http:// or https://")
-      .optional(),
-    jobs: z.object({ roomRouting: z.boolean().optional() }).optional(),
-  }).optional(),
+  decider: deciderConfigSchema.optional(),
   /** Live calls: an OpenAI project key for GPT-Live, kept apart from every
    * other OpenAI credential so a Live call never bills an image or engine key
    * the user did not hand to it. `voice` is a GPT-Live built-in voice name. */
@@ -655,8 +639,8 @@ export interface AppConfig {
   vps?: { sshAlias?: string };
   opencodeGo?: { apiKey?: string; providerKeys?: Record<string, string> };
   tts?: { key?: string; fishKey?: string; voice?: string; provider?: "elevenlabs" | "fish" | "system" | "chatterbox" | "xai"; baseUrl?: string; model?: string; fishModel?: FishTtsModel };
-  /** The decision model; see the schema above and server/decider. */
-  decider?: { enabled?: boolean; provider?: "jev" | "off"; key?: string; baseUrl?: string; jobs?: { roomRouting?: boolean } };
+  /** The decision model; see server/decider/config.ts. */
+  decider?: DeciderConfig;
   imageGen?: ImageGenerationConfig;
   live?: { key?: string; voice?: string; readTypedReplies?: boolean; idleMinutes?: number };
   profile?: { name?: string; email?: string; aboutMe?: string };
@@ -1131,6 +1115,7 @@ export function loadConfig(): AppConfig {
   if (process.env.OMB_FISH_AUDIO_API_KEY !== undefined) cfg.tts.fishKey = process.env.OMB_FISH_AUDIO_API_KEY;
   cfg.decider = { ...cfg.decider };
   if (process.env.OMB_JEV_API_KEY !== undefined) cfg.decider.key = process.env.OMB_JEV_API_KEY;
+  if (process.env.OMB_OPENROUTER_DECIDER_KEY !== undefined) cfg.decider.openrouterKey = process.env.OMB_OPENROUTER_DECIDER_KEY;
   cfg.live = { ...cfg.live };
   if (process.env.OMB_OPENAI_LIVE_KEY !== undefined) cfg.live.key = process.env.OMB_OPENAI_LIVE_KEY;
   cfg.imageGen = { ...cfg.imageGen };
@@ -1197,6 +1182,7 @@ export function syncCredentialEnv(patch: Partial<Omit<AppConfig, "threads" | "ne
     [patch.tts?.key, "OMB_TTS_KEY"],
     [patch.tts?.fishKey, "OMB_FISH_AUDIO_API_KEY"],
     [patch.decider?.key, "OMB_JEV_API_KEY"],
+    [patch.decider?.openrouterKey, "OMB_OPENROUTER_DECIDER_KEY"],
     [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
     [patch.imageGen?.customApiKey, "OMB_CUSTOM_IMAGE_KEY"],
     [patch.live?.key, "OMB_OPENAI_LIVE_KEY"],
@@ -1245,6 +1231,7 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_TTS_KEY",
   "OMB_FISH_AUDIO_API_KEY",
   "OMB_JEV_API_KEY",
+  "OMB_OPENROUTER_DECIDER_KEY",
   "OMB_OPENAI_IMAGE_KEY",
   "OMB_CUSTOM_IMAGE_KEY",
   "OMB_OPENAI_LIVE_KEY",

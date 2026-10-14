@@ -189,21 +189,26 @@ export function SimpleBotPanel({
   // Display that behavior without changing the saved mode or granting Full.
   const displayedApprovalMode = engine?.driverKind === "antigravityAgent" && approvalMode === "auto" ? "ask" : approvalMode;
 
-  // Ask is always offered; "Decide for me" is the provider's own Auto, which
-  // a few engines do not have.
+  // Ask and Full access, the default level, are always offered; "Decide for
+  // me" is the provider's own Auto, which a few engines do not have.
   const autoOffered = approvalModeOptionsFor(engine?.driverKind ?? "", trustedModesAvailable)
     .some((option) => option.mode === "auto");
-  const chooseMode = (mode: Extract<ApprovalMode, "ask" | "auto">) => {
+  const chooseMode = (mode: Extract<ApprovalMode, "ask" | "auto" | "full">) => {
     // The same rules as the Permissions section's selector: no change while
-    // a turn runs, and Auto on this computer needs its warning first.
+    // a turn runs, Auto on this computer needs its warning first, and Full
+    // reaches every thread at once.
     if (bot.busy || mode === approvalMode) return;
+    if (mode === "full") {
+      dispatch({ type: "updateBot", botId: bot.id, patch: { approvalMode: "full", applyToAllThreads: true } });
+      return;
+    }
     if (mode === "auto" && bot.computer === "local") {
       setLocalAutoWarning({ botId: bot.id, patch: { approvalMode: "auto", acknowledgeLocalAuto: true } });
       return;
     }
     patch({ approvalMode: mode });
   };
-  const customMode = displayedApprovalMode !== "ask" && displayedApprovalMode !== "auto";
+  const customMode = displayedApprovalMode === "edits" || displayedApprovalMode === "custom";
 
   // The same steps the model picker's plain-words pane offers, on the row.
   // An engine whose reasoning is a provider variant keeps that in the picker.
@@ -495,12 +500,14 @@ export function SimpleBotPanel({
                 title={t("botSettings.simple.beforeActs", { name: bot.name })}
                 hint={customMode
                   ? <span data-approval-custom>{t("botSettings.simple.customMode")}</span>
-                  : t(displayedApprovalMode === "auto" ? "botSettings.simple.decideHint" : "botSettings.simple.askHint")}
+                  : t(displayedApprovalMode === "auto" ? "botSettings.simple.decideHint"
+                    : displayedApprovalMode === "full" ? "botSettings.simple.fullHint" : "botSettings.simple.askHint")}
               >
                 <div role="group" aria-label={t("botSettings.simple.beforeActs", { name: bot.name })} className={segmentCls}>
                   {([
                     { mode: "ask", title: t("botSettings.simple.ask"), hint: t("botSettings.simple.askHint"), offered: true },
                     { mode: "auto", title: t("botSettings.simple.decide"), hint: t("botSettings.simple.decideHint"), offered: autoOffered },
+                    { mode: "full", title: t("botSettings.simple.full"), hint: t("botSettings.simple.fullHint"), offered: true },
                   ] as const).map((choice) => {
                     const selected = displayedApprovalMode === choice.mode;
                     return (

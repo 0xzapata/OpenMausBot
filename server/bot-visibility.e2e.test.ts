@@ -578,7 +578,7 @@ posixOnly("per-bot visibility on a shared workspace", () => {
   }, 90_000);
 
   it("gives a bot a restricted Chief creates the Chief's own audience", async () => {
-    expect((await api("PATCH", `/api/bots/${ids.board}`, { chiefOfStaff: true }, BOSS)).status).toBe(200);
+    expect((await api("PATCH", `/api/bots/${ids.board}`, { chiefOfStaff: true, approvalMode: "ask" }, BOSS)).status).toBe(200);
     const bob = openStream(BOB);
     try {
       expect(await bob.ready()).toBeTruthy();
@@ -610,7 +610,7 @@ posixOnly("per-bot visibility on a shared workspace", () => {
       await api("DELETE", `/api/bots/${made.id}`, undefined, BOSS);
     } finally {
       bob.close();
-      await api("PATCH", `/api/bots/${ids.board}`, { chiefOfStaff: false }, BOSS);
+      await api("PATCH", `/api/bots/${ids.board}`, { chiefOfStaff: false, approvalMode: "full" }, BOSS);
     }
   }, 60_000);
 

@@ -35,7 +35,8 @@ describe("a failed turn's row", () => {
     // a hand-written row is how one path ended up with its own cut
     const dir = new URL("../server/", import.meta.url);
     const handWritten = readdirSync(dir, { recursive: true, encoding: "utf8" })
-      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts") && !file.includes("testing"))
+      // server/headless is the openmausbot command line: it prints errors to a terminal and never writes a turn row
+      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts") && !file.includes("testing") && !file.startsWith("headless/"))
       .flatMap((file) => readFileSync(new URL(file, dir), "utf8").split("\n")
         .filter((line) => /["'`]error: /.test(line))
         .map((line) => `${file}: ${line.trim()}`));

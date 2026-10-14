@@ -39,7 +39,7 @@ import {
   approvalModeFor,
   modelSwitchNeedsAsk,
   isEmergencyApprovalDowngrade,
-  isApprovalMode,
+  isApprovalMode, setDefaultApprovalMode,
   type ApprovalMode,
 } from "../shared/approval-mode.ts";
 import { createApprovalModeSupport } from "./harness-capabilities.ts";
@@ -393,7 +393,7 @@ import {
   composioSystemPrompt,
   customMcpPrompt,
   CREDENTIAL_PROMPT,
-  THREADS_PROMPT,
+  THREADS_PROMPT, WIDGET_PROMPT,
   LEARN_PROMPT,
   PROFILE_PROMPT,
   TEAM_MEMORY_PROMPT,
@@ -426,12 +426,13 @@ import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { HeldSecrets, LoginStore } from "./login-store.ts";
 import { OnePasswordLogins, sdkOnePasswordClient, type OnePasswordSdk } from "./onepassword.ts";
 import { nativeRequire } from "./data/engine.ts";
-import { fillLogin, streamInsertText, type FillCandidate } from "./login-fill.ts";
+import { fillLogin, type FillCandidate } from "./login-fill.ts";
+import { relayFrame, relayInsertText } from "./browser-relay.ts";
+import { browserEvidence, browserSteps, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
 import { BrowserLive } from "./browser-live.ts";
 import {
-  agentBrowserFrame,
   agentBrowserIntegration,
   browserEngineEncryptionKey,
   prepareBrowserSessionState,
@@ -447,7 +448,7 @@ import { createScreenFrameSource, type ScreenCapture } from "./screen-frame-sour
 import { screenFrameHash, screenSurfaceForTool, screenTouchingTool, settledFrameIsNews } from "./screen-frame-gate.ts";
 import { asSchedule, RoutineRequestService } from "./routine-requests.ts";
 import { directApply, UNDO_STALE, type DirectApply } from "./direct-apply.ts";
-import { createOptionsCard } from "./options-card.ts";
+import { createAgentCard } from "./chat-widgets.ts";
 import { buildBotOverview, type BotOverview, connectedAppsFacts } from "./bot-overview.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { ModelRequestService } from "./model-requests.ts";
@@ -584,6 +585,7 @@ import { createSkillShareRoutes } from "./routes/skill-share.ts";
 import { createTeamContextRoutes } from "./routes/team-context.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
+import { createBrowserEvidenceRoutes } from "./routes/browser-evidence.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
 import { createRoomHoldRoutes } from "./routes/room-holds.ts";
 import { createGroupRoutes } from "./routes/groups.ts";
@@ -769,9 +771,10 @@ const DESKTOP_MANAGED = process.env.OMB_DESKTOP_PARENT === "1";
 const SHARED_WORKSPACE_FULL_ACCESS = sharedWorkspaceFullAccessConfigured();
 const sharedWorkspaceFullAccessEnabled = () => SHARED_WORKSPACE_FULL_ACCESS && Boolean(workspaceAccess) && entitled("admin");
 /** Full access goes over the HTTP API like any other level (owner decision,
- * Oct 12), except on a hosted company workspace: there only the operator's
- * dedicated policy grants it, for new tasks (POST /api/bots/:id/tasks). */
+ * Oct 12) and is every bot's default, except on a hosted company workspace:
+ * there only the operator's dedicated policy grants it (POST /api/bots/:id/tasks). */
 const HOSTED_FULL_ACCESS_REFUSAL = "On a shared company workspace Full access comes only from the operator's dedicated policy";
+if (HOSTED_WORKSPACE) setDefaultApprovalMode("ask");
 // Who a loopback request without a session is (server/request-auth.ts
 // LoopbackTrust): the owner on a desktop or a one-person server; a service on
 // a shared workspace, where every bot's shell is a loopback caller too.
@@ -2243,14 +2246,13 @@ function externalRuntimeCapability(header: string | string[] | undefined): Inter
   };
 }
 
-/** Roots begun for a test capability minted while no turn ran in its
- * thread (the testing route below): they stand in for a turn, so the next
- * real turn there ends them, or the runtime would never overlap the two. */
+/** Roots begun for a test capability minted while no turn ran in its thread
+ * (the testing route below): they stand in for a turn, so they end with their
+ * generation (the next real turn there revokes it), as a turn's root would. */
 const standInRoots = new Set<string>();
 function beginInternalCapabilityGeneration(threadId: string, generation = randomUUID()): string {
   const previous = activeInternalGenerationByThread.get(threadId);
   if (previous) revokeInternalCapabilityGeneration(threadId, previous);
-  if (previous && standInRoots.delete(previous)) coordinator.endTurn(previous, { ok: true, text: "" });
   activeInternalGenerationByThread.set(threadId, generation);
   return generation;
 }
@@ -2321,6 +2323,7 @@ function endForeignTurns(threadId: string, generation?: string): void {
 }
 
 function revokeInternalCapabilityGeneration(threadId: string, generation: string): void {
+  if (standInRoots.delete(generation)) coordinator.endTurn(generation, { ok: true, text: "" });
   endForeignTurns(threadId, generation);
   if (guestDrivenTurns.get(threadId) === generation) guestDrivenTurns.delete(threadId);
   for (const [token, capability] of internalCapabilities) {
@@ -3279,9 +3282,8 @@ function cancelDirectTurnDispatch(botId: string, expectedThreadId?: string): Dir
   return claim;
 }
 
-/** The bot's browser for this turn: agent-browser, one isolated session per
- * browser profile or per bot (docs/plans/browser-engine.md). Null, with the
- * reason logged once, when the engine is not on this machine. */
+/** The bots' browsers: agent-browser, one isolated session per browser
+ * profile or per bot (docs/plans/browser-engine.md). */
 const browserRuntime = new BrowserRuntime({
   // The bot's restart_browser tool. An open Browser panel watched the old
   // browser; drop its stream the way the panel's own Restart button does.
@@ -3291,6 +3293,7 @@ const browserRuntime = new BrowserRuntime({
     return closed;
   },
   applyViewport: (spec) => setBrowserViewport(spec.command, spec.env),
+  steps: browserSteps, // page health for every bot, recorded steps for some (browser-steps.ts)
   // Opt-in diagnostics: one line per bot browser call and preview frame.
   onTiming: process.env.OMB_BROWSER_TIMING === "1" ? (timing) => console.info(formatBrowserTiming(timing)) : undefined,
 });
@@ -4210,11 +4213,11 @@ const wireTask = (task: TaskRecord, botModel: ModelSelection): WireTask => {
 const wireBot = (bot: BotRecord): WireBot => {
   const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
   // An elevated selection is inert until the desktop confirms its exact
-  // private reply. Every ordinary client sees the effective Ask state during
-  // that two-phase window, never a grant that may still roll back.
+  // private reply. Every ordinary client sees the level the bot runs at: Ask
+  // during that two-phase window, never a grant that may still roll back.
   const visible = approvalGrant && !approvalGrant.threadOnly
     ? { ...rest, approvalMode: "ask" as const, autoApprove: false }
-    : rest;
+    : { ...rest, approvalMode: approvalModeFor(rest) };
   return { ...visible, waitingForTeammates: activeCoordinationForThread(bot.threadId) && !threadBusy(bot.id, bot.threadId),
     mainThreadId: botMainThread(bot.id),
     avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
@@ -4453,9 +4456,9 @@ function peerReviewRequired(bot: BotRecord, threadId: string): boolean {
 }
 
 /** A Chief of Staff's level flows down its delegation. The person set the
- * Chief's level so its work runs that way; a teammate the Chief brings in
- * starting at "Ask for approval" meant switching every such thread by hand,
- * all day, for the whole team. So a teammate a Chief delegates to starts at
+ * Chief's level so its work runs that way; a teammate someone set lower
+ * would otherwise mean switching every such thread by hand, all day, for the
+ * whole team. So a teammate a Chief delegates to starts at
  * the Chief's level for that work: Auto-accept edits, Approve for me or Full
  * access (delegatedApprovalMode: never lower than the teammate's own level,
  * capped at what its engine implements). Only a Chief passes its level on —
@@ -4894,12 +4897,7 @@ function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
     return true;
   }
   if (!supportsApprovalMode(existing.modelSelection, mode)) {
-    respond({
-      ok: false,
-      error: mode === "full"
-        ? "This provider does not support Full access"
-        : "Custom approval settings are available only for Codex bots",
-    });
+    respond({ ok: false, error: "Custom approval settings are available only for Codex bots" });
     return true;
   }
   if (
@@ -11884,7 +11882,7 @@ async function startTurn(
           // model mostly did not think to make.
           ? peerRosterSystemPrompt(sectionPeers)
           : "";
-      const credentialPrompt = integrations.agents ? CREDENTIAL_PROMPT + THREADS_PROMPT : "";
+      const credentialPrompt = integrations.agents ? CREDENTIAL_PROMPT + THREADS_PROMPT + WIDGET_PROMPT : "";
       const routinePrompt = integrations.agents ? ROUTINE_PROMPT : "";
       const profilePrompt = integrations.agents ? PROFILE_PROMPT : "";
       const recallPrompt = integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "";
@@ -11943,14 +11941,11 @@ async function startTurn(
         const selectedProfile = liveBot.browserProfile;
         browser = await browserIntegration(bot.id, selectedProfile, { threadId, generation: dispatchClaimId });
         if (browser) integrations.browser = browser.integration;
-        // The browser lost its frame source when the Electron surface was
-        // removed: previewCapture is set by the computer branches above, and
-        // nothing replaced it here. A bot with only a browser was pictured
-        // not at all; a bot with both was pictured on its desktop even while
-        // the work was a web page, because agent-browser runs its own headless
-        // Chrome on the host rather than inside that desktop.
+        // The browser's own frames, over its relay and never a launch
+        // (browser-relay.ts); a bot with a desktop too is pictured on the page
+        // it works on, since agent-browser runs its own Chrome on the host.
         if (browser) {
-          const frame = { binaryPath: browser.spec.command, env: browser.spec.env };
+          const spec = browser.spec;
           const session = browser.session;
           // The preview shares the profile with tool calls: claim the same
           // exclusive browser:<session> resource the tools/call path claims,
@@ -11958,7 +11953,7 @@ async function startTurn(
           browserCapture = async () => {
             const owner = turnResourceOwners.get(threadId);
             if (!owner || !claimTurnResource(owner, `browser:${session}`)) throw new Error("another thread is using this browser");
-            return browserRuntime.previewFrame(session, () => agentBrowserFrame(frame));
+            return browserRuntime.previewFrame(session, () => relayFrame(spec, session));
           };
         }
       }
@@ -15622,7 +15617,7 @@ function startGroupTurn(
             : [];
         if (picked.length && route.kind !== "fallback") {
           round = picked;
-          routedBy = { provider: "jev", probability: Math.round(route.probability * 100) / 100 };
+          routedBy = { provider: route.provider, probability: Math.round(route.probability * 100) / 100 };
         }
         // What a routed round holds from the start, like any other round.
         for (const responder of round) operation.botIds.add(responder.id);
@@ -15792,7 +15787,7 @@ function resolveReplyTarget(threadId: string, value: unknown): Message | undefin
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") throw Object.assign(new Error("replyToId must be a message id"), { status: 400 });
   const target = store.messagesFor(threadId).find((message) => message.id === value);
-  if (!target || target.kind !== "text" || !target.text?.trim()) {
+  if (!target || (target.kind !== "text" && target.kind !== "widget") || !target.text?.trim()) {
     throw Object.assign(new Error("the message being replied to is no longer available"), { status: 404 });
   }
   return target;
@@ -16660,15 +16655,15 @@ async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, 
   const env = browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session });
   const username = typeof rawUsername === "string" ? rawUsername.slice(0, 512) : undefined;
   try {
-    const outcome = await browserRuntime.withAgentAction(session, () => fillLogin({
+    const outcome = await browserRuntime.withSecretInput(session, spec, () => fillLogin({
       username,
       candidates: (host) => loginCandidates(bot.id, host),
       available: async () => availableLogins(bot.id),
     }, {
       engine: (args) => inRunningBrowser(spec.command, env, args),
-      insertText: streamInsertText,
+      insertText: (text) => relayInsertText(spec, session, text),
       remember: (value, kind) => heldSecrets.remember(value, kind),
-    }));
+    }), stepContext(current, capability, () => liveTurnByThread.get(threadId) ?? null));
     if (outcome.ok && outcome.loginId) {
       logins.markUsed(outcome.loginId);
       onePassword.markUsed(outcome.loginId);
@@ -17403,8 +17398,8 @@ ROUTES.push(createBotMessageRoutes({
   cancelGroupTurnOperations, closeOpenApprovals,
 }));
 // Conversation reads and uploads: the /api/bots snapshot, message pages, a
-// message's image or file, uploads, attachments, search and the export. The
-// `let` slots are read per request; visibility is computed as the preamble does.
+// message's image or file, uploads, attachments, search, the export and a
+// conversation's job. `let` slots are read per request, visibility as the preamble does.
 ROUTES.push(createThreadRoutes({
   store, cfg, sessions, groupUsageReader, lendingEnabled,
   hostedWorkspace: HOSTED_WORKSPACE, sessionCookie: SESSION_COOKIE, loopback: LOOPBACK, defaultPage: DEFAULT_PAGE,
@@ -17413,7 +17408,7 @@ ROUTES.push(createThreadRoutes({
   companionMutationToken: () => companionMutationToken,
   cliOwnerToken: () => cliOwnerToken,
   pageSize, messagePage, messageWindow, publicBotQueuedMessages, publicGroupState, wireBot, wireTask,
-  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo,
+  botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo, coordinator, groupThreadIsWorking,
 }));
 // Creating a bot (POST /api/bots): the saved New bot defaults and a preset
 // are applied around the store's own creation.
@@ -17421,7 +17416,7 @@ ROUTES.push(createBotCreateRoutes({
   store, cfg, presetStore, orgInstallStatuses,
   hostedWorkspace: HOSTED_WORKSPACE, hostedFullAccessRefusal: HOSTED_FULL_ACCESS_REFUSAL, desktopManaged: DESKTOP_MANAGED,
   maxWorkspaceBots: MAX_WORKSPACE_BOTS, cloudOwnerKey: CLOUD_OWNER_KEY,
-  hostedModels, supportsApprovalMode, cloudRoutineAuthors,
+  hostedModels, cloudRoutineAuthors,
   routines: () => routines,
   storedAvatarExists, defaultSelection, checkedModelSelection, cloudOwnerSession, wireBot,
 }));
@@ -17486,7 +17481,7 @@ ROUTES.push(createBotMemoryRoutes({
     broadcast({ kind: "config", ...configStatus() });
   },
 }));
-ROUTES.push(createDeciderRoutes({ decider }));
+ROUTES.push(createDeciderRoutes({ decider, config: () => cfg }));
 ROUTES.push(createSignInCardRoutes({ settle: settleSignIn, saveLogin: saveLoginFromCard }));
 ROUTES.push(createRoomHoldRoutes({
   group: (id) => store.group(id),
@@ -17625,6 +17620,7 @@ ROUTES.push(createBrowserSiteRoutes({
   list: (target) => listSignedInSites(target),
   signOut: (target, site) => signOutOfSites(target, site),
 }));
+ROUTES.push(createBrowserEvidenceRoutes({ evidence: browserEvidence.attach({ onChange: (listener) => store.onChange(listener), threadExists: (id) => Boolean(threadOwner(id)) }), threadExists: (id) => Boolean(threadOwner(id)) }));
 ROUTES.push(createLoginRoutes({
   list: () => logins.list(),
   create: (input) => logins.create(input),
@@ -18545,14 +18541,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         const body = await readInternalBody();
         requireActiveInternalCapability();
-        const result = createOptionsCard({
+        const result = createAgentCard({
           store,
           bot: internalSender,
           threadId: internalCapability.threadId,
-          input: body,
+          input: body, authored: (id) => handoffs.authored(internalCapability.threadId, internalCapability.generation, id),
         });
         return result.ok
-          ? json(res, 201, { messageId: result.messageId })
+          ? json(res, 201, { messageId: result.messageId, ...("masked" in result && result.masked ? { masked: true } : {}) })
           : json(res, result.status, { error: result.error });
       }
       // Notes written from a room fewer people can see than this bot would
@@ -18608,7 +18604,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           if (body.method === "tools/call" && !claimTurnResource(internalCapability, `browser:${browser.session}`)) {
             throw Object.assign(new Error("another thread is using this browser — pause browser work until that thread finishes"), { status: 409 });
           }
-        });
+        }, stepContext(bot, internalCapability, () => liveTurnByThread.get(internalCapability.threadId) ?? null));
         requireActiveInternalCapability();
         return json(res, 200, { result });
       }

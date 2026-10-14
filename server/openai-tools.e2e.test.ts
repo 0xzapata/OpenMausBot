@@ -146,7 +146,8 @@ it.each(["openaiCompat", "groq", "meta"] as const)("%s runs structured MCP calls
       await api("PATCH", `/api/mcp/servers/${mode}`, { enabled: true });
       const { bot } = await control(["new-bot", "--name", `API tool ${mode}`]);
       await control(["set-model", "--bot", bot.id, "--instance", instanceId, "--model", "fixture-model"]);
-      await api("PATCH", `/api/bots/${bot.id}`, { mcpServers: [mode], description: "Verification assistant", soul: "Use structured tools when an operation is requested." });
+      // On Ask, so each structured call stops on the harness's own card.
+      await api("PATCH", `/api/bots/${bot.id}`, { mcpServers: [mode], approvalMode: "ask", description: "Verification assistant", soul: "Use structured tools when an operation is requested." });
       if (mode === "selected" || mode === "scope-empty") {
         await api("PATCH", `/api/bots/${bot.id}`, { toolScope: { allow: mode === "selected" ? [`mcp:${mode}:write_file`] : [] } });
       }

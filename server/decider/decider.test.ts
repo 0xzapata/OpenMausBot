@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AppConfig } from "../config.ts";
-import { createDecider, deciderReady, deciderSavePatch, describeDecider } from "./index.ts";
+import { createDecider, deciderPatchKey, deciderReady, deciderSavePatch, describeDecider } from "./index.ts";
 import { DECIDER_LOG_DIR, flushDeciderLog } from "./log.ts";
 import { jevEndpoint, parseJevResponse } from "./jev.ts";
 import { KEY_CHECK_QUESTION, KEY_CHECK_STATE, RELAY_MAX_STATE_BYTES, relayAccepts } from "./relay.ts";
@@ -500,5 +500,172 @@ describe("Cloud Pro's included decisions", () => {
     // without Cloud Pro, as before
     expect(deciderSavePatch({ key: "" }, { enabled: true, key: KEY }, false)).toEqual({ ok: true, patch: { key: "", enabled: false } });
     expect(deciderSavePatch({ enabled: true }, {}, false)).toMatchObject({ ok: false });
+  });
+});
+
+describe("OpenRouter as the provider", () => {
+  const OR_KEY = "sk-or-v1-unit-openrouter-key-0123456789";
+  const OR: AppConfig = { decider: { enabled: true, provider: "openrouter", openrouterKey: OR_KEY, openrouterModel: "openai/gpt-4o-mini", jobs: { roomRouting: true } } };
+  const answer = (choice: string, probabilities: Record<string, number>) => new Response(JSON.stringify({
+    model: "openai/gpt-4o-mini",
+    choices: [{ message: { content: JSON.stringify({ answers: { answer: { choice, probabilities } } }) } }],
+    usage: { prompt_tokens: 300 },
+  }), { status: 200 });
+  const yes = () => vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({ answers: { answer: { noul: 0.97 } } }) } }],
+  }), { status: 200 }));
+  const authOf = (fetchImpl: FetchMock, index = 0) => (fetchImpl.mock.calls[index]![1]!.headers as Record<string, string>).authorization;
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    ["the switch is off", { decider: { ...OR.decider, enabled: false } }, "disabled"],
+    ["no OpenRouter key is saved, even with a Jev key", { decider: { ...OR.decider, openrouterKey: " ", key: KEY } }, "no_key"],
+    ["the job is off", { decider: { ...OR.decider, jobs: { roomRouting: false } } }, "job_off"],
+  ] as Array<[string, AppConfig, string]>)("%s → %s, with no call", async (_name, config, reason) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(decider(config, fetchImpl).choose("roomRouting", STATE, QUESTION)).resolves.toEqual({ ok: false, reason });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("goes to OpenRouter with its own key and model, never the Jev key", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => answer("theo", { theo: 0.9, maya: 0.1 }));
+    const result = await decider({ decider: { ...OR.decider, key: KEY } }, fetchImpl).choose("roomRouting", STATE, QUESTION);
+    expect(result).toMatchObject({ ok: true, provider: "openrouter", model: "openai/gpt-4o-mini", inputTokens: 300 });
+    expect(String(fetchImpl.mock.calls[0]![0])).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(authOf(fetchImpl)).toBe(`Bearer ${OR_KEY}`);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body)).model).toBe("openai/gpt-4o-mini");
+    expect(JSON.stringify(fetchImpl.mock.calls)).not.toContain(KEY);
+  });
+
+  it("a configured OpenRouter base URL carries the key, and a Jev base URL never does", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => answer("theo", { theo: 0.9, maya: 0.1 }));
+    await decider({ decider: { ...OR.decider, openrouterBaseUrl: "http://127.0.0.1:9/v1", baseUrl: "https://jev.example.com" } }, fetchImpl)
+      .choose("roomRouting", STATE, QUESTION);
+    expect(String(fetchImpl.mock.calls[0]![0])).toBe("http://127.0.0.1:9/v1/chat/completions");
+  });
+
+  it("logs the provider and model, with no message text and no key", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "omb-decider-or-log-"));
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(answer("theo", { theo: 0.9, maya: 0.1 }))
+      .mockResolvedValueOnce(new Response(`echo ${OR_KEY}`, { status: 402 }));
+    const d = decider(OR, fetchImpl, dataDir);
+    await d.choose("roomRouting", STATE, QUESTION);
+    await d.choose("roomRouting", STATE, QUESTION);
+    await flushDeciderLog(dataDir);
+    const dir = join(dataDir, DECIDER_LOG_DIR);
+    const text = readdirSync(dir).map((name) => readFileSync(join(dir, name), "utf8")).join("");
+    const rows = text.trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows[0]).toMatchObject({ seam: "roomRouting", provider: "openrouter", model: "openai/gpt-4o-mini", ok: true, choice: "theo", pTop: 0.9, inputTokens: 300 });
+    expect(rows[1]).toMatchObject({ provider: "openrouter", model: "openai/gpt-4o-mini", ok: false, reason: "http_error", status: 402 });
+    for (const secret of ["PRIVATE-MESSAGE-TEXT", "Product Designer", OR_KEY]) expect(text).not.toContain(secret);
+  });
+
+  it("a Jev log row stays without a model", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "omb-decider-jev-log-"));
+    await decider(ON, vi.fn<typeof fetch>(async () => jsonResponse(choiceBody("theo", { theo: 0.94, maya: 0.06 }))), dataDir).choose("roomRouting", STATE, QUESTION);
+    await flushDeciderLog(dataDir);
+    const dir = join(dataDir, DECIDER_LOG_DIR);
+    const [row] = readdirSync(dir).map((name) => readFileSync(join(dir, name), "utf8")).join("").trim().split("\n").map((line) => JSON.parse(line));
+    expect(row.provider).toBe("jev");
+    expect(row).not.toHaveProperty("model");
+  });
+
+  it("Cloud Pro's included token is never used for OpenRouter", async () => {
+    vi.stubEnv("OMB_CLOUD_DECIDER_URL", "https://cloud.example.test/api/cloud/services/decider");
+    vi.stubEnv("OMB_CLOUD_DECIDER_TOKEN", "omb_decide_unit_included_token_0123456789");
+    const fetchImpl = yes();
+    const noKey: AppConfig = { decider: { provider: "openrouter" } };
+    expect(deciderReady(noKey, "roomRouting")).toBe(false);
+    expect(describeDecider(noKey)).toEqual({ provider: "openrouter", model: "typesafe/jev-1.13", api: "decisions", configured: false, enabled: false, jobs: { roomRouting: true } });
+    await expect(decider(noKey, fetchImpl).choose("roomRouting", STATE, QUESTION)).resolves.toEqual({ ok: false, reason: "disabled" });
+    await expect(decider(noKey, fetchImpl).testKey()).resolves.toEqual({ ok: false, reason: "no_key" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("Settings status names the provider and the model in use, and never a key", () => {
+    const status = describeDecider(OR);
+    expect(status).toEqual({ provider: "openrouter", model: "openai/gpt-4o-mini", api: "chat", configured: true, enabled: true, jobs: { roomRouting: true } });
+    expect(JSON.stringify(status)).not.toContain(OR_KEY);
+    // a saved Jev key does not make OpenRouter configured
+    expect(describeDecider({ decider: { enabled: true, provider: "openrouter", key: KEY } })).toMatchObject({ configured: false, enabled: false });
+    // an old config with no provider is Jev, with no model field
+    expect(describeDecider({ decider: { enabled: true, key: KEY } })).toEqual({ provider: "jev", configured: true, enabled: true, jobs: { roomRouting: true } });
+  });
+
+  it("Test checks a draft or the saved key at OpenRouter with the chosen model", async () => {
+    const fetchImpl = yes();
+    const d = decider({ decider: { ...OR.decider, enabled: false } }, fetchImpl);
+    await expect(d.testKey({ key: "sk-or-draft" })).resolves.toMatchObject({ ok: true, provider: "openrouter", answers: { p: 0.97 } });
+    expect(authOf(fetchImpl)).toBe("Bearer sk-or-draft");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body)).model).toBe("openai/gpt-4o-mini");
+    await expect(d.testKey()).resolves.toMatchObject({ ok: true });
+    expect(authOf(fetchImpl, 1)).toBe(`Bearer ${OR_KEY}`);
+  });
+
+  it("Test can override the provider and model, as a save that changes them with the key needs", async () => {
+    const fetchImpl = yes();
+    // saved: Jev. The patch: OpenRouter, another model, a new key.
+    const d = decider(ON, fetchImpl);
+    await d.testKey({ key: "sk-or-draft", provider: "openrouter", model: "meta-llama/llama-4-maverick" });
+    expect(String(fetchImpl.mock.calls[0]![0])).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body)).model).toBe("meta-llama/llama-4-maverick");
+    // saved: OpenRouter. The patch: a Jev key.
+    await decider(OR, fetchImpl).testKey({ key: "tsk_draft", provider: "jev" });
+    expect(String(fetchImpl.mock.calls[1]![0])).toBe("https://api.typesafe.ai/v1/systemone");
+    expect(authOf(fetchImpl, 1)).toBe("Bearer tsk_draft");
+  });
+});
+
+describe("settings rules with two providers", () => {
+  it("saving the OpenRouter key switches the decider and its room job on", () => {
+    expect(deciderSavePatch({ provider: "openrouter", openrouterKey: " sk-or-new " }, undefined))
+      .toEqual({ ok: true, patch: { provider: "openrouter", openrouterKey: "sk-or-new", enabled: true, jobs: { roomRouting: true } } });
+    expect(deciderSavePatch({ openrouterKey: "sk-or-new" }, { provider: "openrouter", enabled: false, jobs: { roomRouting: false } }))
+      .toMatchObject({ ok: true, patch: { enabled: true, jobs: { roomRouting: true } } });
+  });
+
+  it("clearing the active OpenRouter key switches it off, even where Jev decisions are included", () => {
+    expect(deciderSavePatch({ openrouterKey: "" }, { provider: "openrouter", enabled: true, openrouterKey: "sk-or" }, true))
+      .toEqual({ ok: true, patch: { openrouterKey: "", enabled: false } });
+  });
+
+  it("the other provider's key is only trimmed: it never flips the switch", () => {
+    expect(deciderSavePatch({ key: " tsk_new " }, { provider: "openrouter", enabled: false })).toEqual({ ok: true, patch: { key: "tsk_new" } });
+    expect(deciderSavePatch({ openrouterKey: "sk-or" }, { enabled: false, key: KEY })).toEqual({ ok: true, patch: { openrouterKey: "sk-or" } });
+    expect(deciderSavePatch({ openrouterKey: "" }, { enabled: true, key: KEY })).toEqual({ ok: true, patch: { openrouterKey: "" } });
+  });
+
+  it("a provider-only patch never errors and leaves the switch alone", () => {
+    expect(deciderSavePatch({ provider: "openrouter" }, { enabled: true, key: KEY })).toEqual({ ok: true, patch: { provider: "openrouter" } });
+    expect(deciderSavePatch({ provider: "jev" }, { provider: "openrouter", enabled: true })).toEqual({ ok: true, patch: { provider: "jev" } });
+    expect(deciderSavePatch({ openrouterModel: "openai/gpt-4o-mini" }, { provider: "openrouter" })).toEqual({ ok: true, patch: { openrouterModel: "openai/gpt-4o-mini", openrouterApi: "chat" } });
+    // a decisions model keeps its API; a model saved with none is a chat model again
+    expect(deciderSavePatch({ openrouterModel: "typesafe/jev-1.13", openrouterApi: "decisions" }, { provider: "openrouter" }))
+      .toEqual({ ok: true, patch: { openrouterModel: "typesafe/jev-1.13", openrouterApi: "decisions" } });
+  });
+
+  it("switching on needs a key for the provider in use, and the error names it", () => {
+    const jevOnly = { enabled: false, key: KEY };
+    expect(deciderSavePatch({ provider: "openrouter", enabled: true }, jevOnly)).toEqual({ ok: false, error: "Save an OpenRouter API key before turning on fast decisions." });
+    expect(deciderSavePatch({ enabled: true }, { provider: "openrouter", key: KEY })).toMatchObject({ ok: false, error: expect.stringContaining("OpenRouter") });
+    expect(deciderSavePatch({ enabled: true }, { provider: "openrouter", openrouterKey: "sk-or" })).toEqual({ ok: true, patch: { enabled: true } });
+    expect(deciderSavePatch({ enabled: true }, {})).toEqual({ ok: false, error: "Save a Jev API key before turning on fast decisions." });
+    // Cloud Pro's included decisions are Jev's: they do not let OpenRouter switch on without a key
+    expect(deciderSavePatch({ provider: "openrouter", enabled: true }, {}, true)).toMatchObject({ ok: false });
+  });
+
+  it("picks the pasted key to check: the active provider's, with the model it will use", () => {
+    expect(deciderPatchKey({ key: " tsk_new " }, undefined)).toEqual({ provider: "jev", check: { key: "tsk_new", provider: "jev" } });
+    expect(deciderPatchKey({ provider: "openrouter", openrouterKey: "sk-or" }, undefined))
+      .toEqual({ provider: "openrouter", check: { key: "sk-or", provider: "openrouter", model: "typesafe/jev-1.13", api: "decisions" } });
+    expect(deciderPatchKey({ openrouterKey: "sk-or" }, { provider: "openrouter", openrouterModel: "typesafe/jev-1.13", openrouterApi: "decisions" }))
+      .toMatchObject({ check: { model: "typesafe/jev-1.13", api: "decisions" } });
+    expect(deciderPatchKey({ openrouterKey: "sk-or" }, { provider: "openrouter", openrouterModel: "openai/gpt-4o-mini" }))
+      .toMatchObject({ provider: "openrouter", check: { model: "openai/gpt-4o-mini" } });
+    // a key for the provider not in use is checked at its own provider
+    expect(deciderPatchKey({ key: "tsk_new" }, { provider: "openrouter" })).toMatchObject({ provider: "jev" });
+    expect(deciderPatchKey({ key: "  ", openrouterKey: "" }, undefined)).toBeNull();
+    expect(deciderPatchKey({ enabled: true }, undefined)).toBeNull();
   });
 });

@@ -36,6 +36,8 @@ export interface EnvironmentDescriptor {
     selfUpdate: "desktop-managed" | "operator";
     /** Whether /pair offers "sign in with your email" (an allow-list is set). */
     emailSignIn?: boolean;
+    /** GET /api/threads/:id/job answers, long-polled (the headless CLI needs it). */
+    jobs: true;
   };
 }
 
@@ -137,6 +139,7 @@ export function environmentDescriptor(input: { environmentId: string; desktopMan
       ...(input.cloudHome === true ? { cloudHome: true as const } : {}),
       selfUpdate: input.desktopManaged ? "desktop-managed" : "operator",
       emailSignIn: input.emailSignIn === true,
+      jobs: true,
     },
   };
 }

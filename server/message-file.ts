@@ -194,6 +194,15 @@ function renderedMarkdownTargets(markdown: string): string[] {
   return links;
 }
 
+/** The local files a message links to, as written: its rendered Markdown
+ * link and image targets that are not web, mail or in-page links. Each is
+ * still only readable through the message's own grant (the file route). */
+export function messageFileTargets(text: string): string[] {
+  return [...new Set(renderedMarkdownTargets(text))].filter((target) =>
+    !target.startsWith("#") && !target.startsWith("//") &&
+    (/^[a-z]:[\\/]/i.test(target) || /^file:/i.test(target) || !/^[a-z][a-z\d+.-]*:/i.test(target)));
+}
+
 /** Resolve the local image authored at one Markdown source offset. The
  * browser can use this small message-scoped reference instead of putting an
  * absolute host path in a GET URL. Definitions are collected first because
