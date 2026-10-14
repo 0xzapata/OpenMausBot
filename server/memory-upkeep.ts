@@ -201,6 +201,25 @@ function takePending(): PendingCapture["batches"] {
   }
 }
 
+/** Drop one bot's saved turns, keeping every other bot's. */
+function dropPending(botId: string): void {
+  let parsed: Partial<PendingCapture>;
+  try {
+    parsed = JSON.parse(readFileSync(pendingPath(), "utf8")) as Partial<PendingCapture>;
+  } catch {
+    return;
+  }
+  if (!Array.isArray(parsed?.batches)) return;
+  const kept = parsed.batches.filter((batch) => batch?.botId !== botId);
+  if (kept.length === parsed.batches.length) return;
+  try {
+    if (kept.length) writeFileAtomic(pendingPath(), `${JSON.stringify({ batches: kept })}\n`, { mode: 0o600 });
+    else rmSync(pendingPath(), { force: true });
+  } catch {
+    // best effort: a deleted bot's saved turns are refused at capture anyway
+  }
+}
+
 function readRaw(botId: string, relative: string): string | null {
   try {
     return readMemoryText(join(workspaceDir(botId), relative));
@@ -575,6 +594,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     forgetBot(botId) {
       buffer.dropBot(botId);
       for (let i = deferred.length - 1; i >= 0; i--) if (deferred[i]!.botId === botId) deferred.splice(i, 1);
+      dropPending(botId);
       const state = loadState();
       if (!state.bots[botId]) return;
       delete state.bots[botId];

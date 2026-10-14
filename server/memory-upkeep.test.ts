@@ -1,7 +1,7 @@
 // Memory upkeep: capture parsing and dedupe, the tidy plan (the share limit
 // on small notebooks and the identity regressions from #1363's review),
 // About me suggestions, and the upkeep loop against a scripted engine.
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -334,6 +334,17 @@ describe("the upkeep loop", () => {
     await loop.idle();
     expect(prompts).toHaveLength(1);
     expect(loop.status(BOT.id).lastCapture).toBeUndefined();
+  });
+
+  it("forgets a deleted bot's turns saved at shutdown, keeping other bots'", () => {
+    const pending = join(DATA_DIR, "memory-capture-pending.json");
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(pending, JSON.stringify({ batches: [
+      { botId: BOT.id, threadId: "t1", turnIds: ["a"] },
+      { botId: "other-bot", threadId: "t2", turnIds: ["b"] },
+    ] }));
+    upkeep().forgetBot(BOT.id);
+    expect(JSON.parse(readFileSync(pending, "utf8")).batches).toEqual([{ botId: "other-bot", threadId: "t2", turnIds: ["b"] }]);
   });
 
   it("adds to About me a fact the notebook already holds, without appending it again", async () => {

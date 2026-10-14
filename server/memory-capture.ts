@@ -22,7 +22,7 @@ export interface Candidate {
   until?: string;
   /** About the person themselves, useful to any of their bots: added to
    * the shared About me straight away and listed in Settings, where the
-   * person can remove it for good (server/profile-learned.ts). */
+   * person can remove it from About me (server/profile-learned.ts). */
   aboutUser: boolean;
   /** Already in the notebook, listed again only as an About me candidate:
    * never appended. */
