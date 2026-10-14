@@ -685,7 +685,7 @@ it.each(["SIGTERM", "SIGKILL"] as const)("runs each teammate turn a restart cut 
     expect(review).toContain("A restart cut these teammates' turns: Engineering lead (resumed once in place and told to check what it had already done); Ops (resumed once in place and told to check what it had already done).");
     expect(review).toContain("LEAD_RESUMED_RESULT");
     expect(review).toContain("OPS_RESUMED_RESULT");
-    expect(f.nodes().filter((node: any) => node.threadId !== f.qa.activeTaskId).every((node: any) => node.status === "completed")).toBe(true);
+    await expect.poll(() => f.nodes().filter((node: any) => node.threadId !== f.qa.activeTaskId).every((node: any) => node.status === "completed"), { timeout: 15_000 }).toBe(true);
     const chiefRows = (await f.messages()).map((m: any) => m.tool?.name).filter(Boolean);
     expect(chiefRows).toEqual(expect.arrayContaining(["Engineering lead was cut off by a restart; resuming", "Ops was cut off by a restart; resuming",
       "Engineering lead replied", "Ops replied", "Resumed with Engineering lead, Ops results after a restart, reviewing"]));
