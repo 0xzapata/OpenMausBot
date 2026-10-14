@@ -734,8 +734,8 @@ describe("loop guard, the same command", () => {
     times(12, (index) => r.play(acp(`server/file-${index}.test.ts`)));
     expect(r.steers).toEqual([]);
     expect(r.interrupts).toEqual([]);
-    // the chip alone, as it always was, cannot tell them apart
-    expect(r.notices()).toHaveLength(2);
+    // the chip keys on the input as well as the cut title
+    expect(r.notices()).toEqual([]);
     times(10, () => r.play(acp("server/same.test.ts")));
     expect(r.interrupts).toHaveLength(1);
   });
