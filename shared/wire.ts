@@ -493,8 +493,8 @@ export interface WireMessage {
   routedBy?: { provider: "jev" | "openrouter"; probability: number };
   /** Set on the user-role line another bot delivered into this bot's own
    * conversation (coordinate_bots, start_thread). `incident`: the line is a
-   * Team incidents report about that bot's broken run in `threadId`, not its
-   * words; `notified`: that failure already buzzed the person. */
+   * Team incidents report or Team escalations notice about that bot's thread
+   * in `threadId`, not its words; `notified`: the person was already buzzed. */
   peerAsk?: { botId: string; name: string; unattended?: boolean; incident?: { threadId: string; notified?: boolean } };
   /** emoji reactions; by = "user" or a member botId. */
   reactions?: Array<{ emoji: string; by: string }>;

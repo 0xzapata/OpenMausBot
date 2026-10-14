@@ -15,6 +15,8 @@ export interface CatalogProfile {
   chief: boolean;
   /** Written into start_thread's schema: the only bot_id it accepts. */
   botId: string;
+  /** features.chiefEscalations: raise_escalation is mounted. */
+  escalations?: boolean;
 }
 
 /** Everything is off unless the harness says "1". */
@@ -27,6 +29,7 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     memoryEnabled: env.OMB_MEMORY_ENABLED !== "0",
     chief: env.OMB_CHIEF_OF_STAFF === "1",
     botId: env.OMB_BOT_ID ?? "",
+    escalations: env.OMB_ESCALATIONS === "1",
   };
 }
 
@@ -243,6 +246,13 @@ const TOOL_DEFINITIONS = [
       id: { type: "string", description: "The assignment id (a coordinate_bots receipt's requestId, or a delegation id from list_threads). Omit to list every outstanding assignment of this conversation." },
       wait_ms: { type: "integer", minimum: 0, maximum: 240_000, description: "Only for a standing external runtime: hold the answer up to this many milliseconds (at most 240000) for the assignment to settle. Omit inside a turn." },
     } },
+  },
+  {
+    name: "raise_escalation",
+    description: "Flag a gate only the person can lift — a permission or decision your work is parked on and you cannot proceed without. One reason line, the person's own words where possible; the Chief of Staff (or the person directly) is told at once. Then end your turn and wait: the gate lifting resumes nothing on its own, so say plainly that you stopped and why. Not for failures (those report themselves), not for a credential or sign-in (use request_credential or request_sign_in, which resume you), and not to ask the person a question you could ask by ending your turn on it.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      reason: { type: "string", minLength: 1, maxLength: 500, description: "One line: what you need from the person and why your work is parked on it." },
+    }, required: ["reason"] },
   },
   {
     name: "list_bots",
@@ -898,7 +908,8 @@ export function availableTools(profile: CatalogProfile) {
 function catalogTools(profile: CatalogProfile) {
   const BOT_SCOPED_TOOLS = TOOL_DEFINITIONS.filter((tool) =>
     (profile.botId === WATCHER_OPTIONS_CARD_BOT_ID || !WATCHER_TOOL_NAMES.has(tool.name)) &&
-    (profile.memoryEnabled !== false || (tool.name !== "memory_update" && tool.name !== "memory_log")));
+    (profile.memoryEnabled !== false || (tool.name !== "memory_update" && tool.name !== "memory_log")) &&
+    (profile.escalations === true || tool.name !== "raise_escalation"));
   const AUTHORING_TOOLS = profile.skillAuthoring
     ? BOT_SCOPED_TOOLS
     : BOT_SCOPED_TOOLS.filter((tool) => !SKILL_TOOL_NAMES.has(tool.name));

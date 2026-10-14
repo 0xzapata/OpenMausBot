@@ -237,7 +237,9 @@ import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./dri
 import { readMessageText, recallMessages, recentMessages, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
-import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentRequest, incidentText, type Incident, type IncidentKind } from "./incidents.ts";
+import { chiefEscalationsEnabled, NEEDS_INPUT_GATE, peerApprovalGate, RAISED_GATE } from "./escalations.ts";
+import { createChiefNotices } from "./host/chief-notices.ts";
+import { needsInputQuestion } from "./runtime-coordinator.ts";
 
 const SESSION_READ_MAX_CHARS = 8_000;
 import { promptWithReply, transcriptText } from "./replies.ts";
@@ -591,6 +593,7 @@ import { createInternalSignInRoutes } from "./routes/sign-in.ts";
 import { createInternalThreadRoutes } from "./routes/internal-threads.ts";
 import { createBrowserEvidenceRoutes } from "./routes/browser-evidence.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
+import { createInternalEscalateRoutes } from "./routes/internal-escalate.ts";
 import { createRoomHoldRoutes } from "./routes/room-holds.ts";
 import { createGroupRoutes } from "./routes/groups.ts";
 import { createChannelRoutes } from "./routes/channels.ts";
@@ -2051,6 +2054,7 @@ function agentsIntegration(
         return tts.voiceReady(cfg, speaking?.voice) && speaking?.voiceNotes !== false ? "1" : "0";
       })(),
       OMB_CHIEF_OF_STAFF: store.bot(botId)?.chiefOfStaff === true ? "1" : "0",
+      OMB_ESCALATIONS: chiefEscalationsEnabled(cfg) ? "1" : "0",
     },
   };
 }
@@ -3450,7 +3454,7 @@ function previewSystemPrompt(bot: BotRecord) {
   });
   const peers = reachablePeers(store.bots, bot);
   const coordination = bot.chiefOfStaff
-    ? chiefOfStaffSystemPrompt(bot.id, store.bots, true)
+    ? chiefOfStaffSystemPrompt(bot.id, store.bots, true, chiefEscalationsEnabled(cfg))
     : peers.length > 0
       ? peerRosterSystemPrompt(peers)
       : "";
@@ -7580,6 +7584,9 @@ bus.subscribe((event: RuntimeEvent) => {
         const broken = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
         if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: turnFailureCause(event) ?? "the run ended without a result" });
       }
+      const question = bot && event.ok && !stopped && completedTurnId && chiefEscalationsEnabled(cfg) ? needsInputQuestion(store.activePath(event.threadId)
+        .findLast((message) => message.role === "bot" && message.kind === "text" && message.turnId === completedTurnId)?.text ?? "") : undefined;
+      if (bot && question !== undefined) reportEscalation({ kind: "needs-input", bot, threadId: event.threadId, gate: NEEDS_INPUT_GATE, reason: question, alreadyNotified: false });
       const lastReported = turnUsage.get(event.threadId);
       turnUsage.delete(event.threadId);
       const lastContext = turnContext.get(event.threadId);
@@ -7819,15 +7826,12 @@ function runtimeWorkPending(threadId: string): boolean {
         && coordinator.children(root.id).some(child => child.reply !== "none" && child.createdAt >= (root.startedAt ?? 0)))));
 }
 
-const incidentLedger = new IncidentLedger();
-
-function incidentContext(threadId: string): { lastRequest: string | null; lastReply: string | null } {
-  const messages = store.messagesFor(threadId);
-  return {
-    lastRequest: incidentRequest(messages),
-    lastReply: messages.findLast((message) => message.role === "bot" && message.kind === "text" && message.text)?.text ?? null,
-  };
-}
+const { reportIncident, reportEscalation, incidentRefused, incidentLastAt } = createChiefNotices({
+  store, notify, threadBusy, botAtThreadCapacity, startTurn,
+  assignerOf: (threadId) => coordinator.assignerOf(threadId),
+  groupTurnActive: (botId) => Boolean(activeGroupTurnForBot(botId)),
+  escalationsEnabled: () => chiefEscalationsEnabled(cfg),
+});
 
 function turnAnswers(threadId: string, opts?: {
   cardContinuation?: boolean; requestMessageId?: string; coordination?: { id: string };
@@ -7853,82 +7857,6 @@ function turnAnswers(threadId: string, opts?: {
     incident: reports.length > 0,
     quiet: reports.length > 0 && reports.length === lines.length && reports.every(line => line.queueId && line.peerAsk?.incident?.notified),
   };
-}
-
-function incidentRefused(chief: BotRecord, incidentsThreadId: string, asks: ReadonlyArray<Message["peerAsk"]>, why: string): void {
-  const refused = `the incident could not reach ${chief.name} — ${why}`;
-  store.appendMessage(incidentsThreadId, { role: "bot", kind: "activity", tool: failedTurnTool(refused) });
-  const lines = store.messagesFor(incidentsThreadId);
-  for (const ask of asks) {
-    if (!ask?.incident || ask.incident.notified) continue;
-    const bot = store.bot(ask.botId);
-    if (!bot) continue;
-    const { threadId } = ask.incident;
-    const chip = lines.findLast(line => line.kind === "activity" && line.tool?.ok === false && line.threadRef?.threadId === threadId)?.tool?.name;
-    const group = store.groupByThread(threadId);
-    notify(buildNotification("incident", bot, threadId, chip ?? refused, {
-      avatarUrl: bot.avatarUrl,
-      ...(group ? { group: { id: group.id, name: group.name } } : {}),
-    }));
-  }
-}
-
-function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: string; detail: string }): void {
-  const { bot, threadId } = input;
-  const task = store.taskByThread(bot.id, threadId);
-  if (coordinator.assignerOf(threadId)) return;
-  const group = store.groupByThread(threadId);
-  const incident: Incident = {
-    kind: input.kind,
-    bot,
-    threadId,
-    title: task?.title ?? null,
-    room: group?.name ?? null,
-    detail: redactSecretsInText(input.detail),
-    ...incidentContext(threadId),
-  };
-  const count = incidentLedger.note(threadId);
-  if (count.muted) return;
-  const chief = chiefForBot(store.bots, bot);
-  const alreadyNotified = input.kind === "could-not-start" || input.kind === "routine-failed";
-  const tellThePerson = () => {
-    if (alreadyNotified) return;
-    notify(buildNotification("incident", bot, threadId, incidentChip(incident), {
-      avatarUrl: bot.avatarUrl,
-      ...(group ? { group: { id: group.id, name: group.name } } : {}),
-    }));
-  };
-  if (!chief) {
-    tellThePerson();
-    return;
-  }
-  const incidents = store.tasks(chief.id).find((candidate) => candidate.title === INCIDENTS_THREAD_TITLE && !candidate.archivedAt)
-    ?? store.createTask(chief.id, INCIDENTS_THREAD_TITLE, false, undefined, { botId: chief.id, name: chief.name, at: Date.now() });
-  if (!incidents || incidents.threadId === threadId) {
-    tellThePerson();
-    return;
-  }
-  store.appendMessage(incidents.threadId, {
-    role: "bot",
-    kind: "activity",
-    tool: { name: incidentChip(incident), ok: false },
-    threadRef: { botId: bot.id, threadId, title: task?.title ?? (group ? group.name : `${bot.name}'s conversation`) },
-  });
-  const text = incidentText(incident, count);
-  const peerAsk = { botId: bot.id, name: bot.name, unattended: true,
-    incident: { threadId, ...(alreadyNotified ? { notified: true } : {}) } };
-  const decision = admit("incident", {}, {
-    threadBusy: threadBusy(chief.id, incidents.threadId),
-    atCapacity: botAtThreadCapacity(chief.id),
-    groupTurn: Boolean(activeGroupTurnForBot(chief.id)),
-  });
-  if (decision.action === "queue") {
-    queueSteeredMessage(chief.id, incidents.threadId, text, { reason: decision.reason, unattended: true, peerAsk });
-    return;
-  }
-  void startTurn(chief.id, text, { threadId: incidents.threadId, unattended: true, peerAsk }).catch((error) => {
-    incidentRefused(chief, incidents.threadId, [peerAsk], error instanceof Error ? error.message : String(error));
-  });
 }
 
 // Provider sessions only know their own turns' messages, so a harness-appended result marks the task for one replay; the unique suffix keeps a newer marker through a racing replay.
@@ -9298,7 +9226,7 @@ async function startTurn(
           )
         : [];
       const coordinationPrompt = bot.chiefOfStaff
-        ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents))
+        ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents), chiefEscalationsEnabled(cfg))
         : integrations.agents && sectionPeers.length > 0
           ? peerRosterSystemPrompt(sectionPeers)
           : "";
@@ -10827,7 +10755,9 @@ function roomRoutingInput(
 const roomPostBudgets = new Map<string, RoomPostBudget>();
 const ROOM_POST_MAX_CHARS = 4_000;
 
-const approvalBus: ApprovalBus = { store, broadcast, notify, autoApply: fullAccessForSource };
+const approvalBus: ApprovalBus = { store, broadcast, notify, autoApply: fullAccessForSource,
+  onPeerApprovalPending: (from, target, action, sourceThreadId, message) => void reportEscalation({
+    kind: "peer-approval", bot: from, threadId: sourceThreadId, gate: peerApprovalGate(action, target.name), reason: message, alreadyNotified: true }) };
 
 // Peer approvals live only in memory: settle every peer card still open on disk, or it locks the composer forever.
 {
@@ -15804,7 +15734,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 409, { error: "that thread is still running — wait for it to settle before retrying" });
         }
         // A thread that finished a run since it was last reported has nothing to resume: resuming would redo finished work.
-        const reportedAt = incidentLedger.lastAt(threadId);
+        const reportedAt = incidentLastAt(threadId);
         if (reportedAt !== undefined && store.activePath(threadId).some(line => line.turnSucceeded === true && line.at > reportedAt)) {
           return json(res, 409, { error: "that thread has finished a run since it was reported — there is nothing to retry; read what it did before deciding anything else" });
         }
@@ -15824,6 +15754,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
         return json(res, 200, { started: true, message: `${target.name}'s thread #${task.title} is running again. Its result stays in that thread; you are not woken for it — check later with list_threads or session_search if you need to.` });
       }
+      if (await dispatchRoutes([createInternalEscalateRoutes({
+        readBody: readInternalBody, requireActive: requireActiveInternalCapability,
+        report: (reason) => reportEscalation({ kind: "raised", bot: internalSender, threadId: internalCapability.threadId, gate: RAISED_GATE, reason, alreadyNotified: false }),
+      })], { req, res, url, path, method, auth, json, readBody })) return;
       // post_to_room appends role "bot", never "user" (which would start a round of real turns), starts no turn, and takes membership from the record.
       if (method === "POST" && path === "/api/internal/post-to-room") {
         const body = await readInternalBody();

@@ -117,6 +117,7 @@ Every turn that may hand work on, whatever started it, gets the same tools:
 
 - `coordinate_bots(bot_ids, message, reason?, rework?, thread?: "standing" | "new", reply?: "resume" | "none", consult?: true, done_when?)`. `thread: "new"` opens a new thread on the teammate; `reply: "none"` is a one-way notice that is never awaited; `consult: true` asks a question that the teammate answers from what it knows, acting on nothing, and the asker is resumed with the answer.
 - `assignment_status(id?)`: read-only; one assignment's status, outcome and result, or everything this conversation still waits on. External runtimes long-poll it; it never blocks a bot.
+- `raise_escalation(reason)` (only with `features.chiefEscalations` on): a bot parks itself on a gate only a person can lift and says so in one line; the Chief of Staff (or the person directly, `server/escalations.ts`) is told, the turn keeps running and the tool's answer says to end it and wait.
 - `list_bots`, `start_thread` (on yourself), `list_threads`, `close_thread`, `post_to_room`, `list_rooms`, the Chief tools and `retry_thread` are unchanged.
 
 The old names (`delegate_bot`, `ask_bot`, `send_to_bot`, `check_delegation`, `wait_delegation`) stayed for one release as aliases with a deprecation line in their result and were removed in PR 5; `start_thread` opens a job on the bot itself.
