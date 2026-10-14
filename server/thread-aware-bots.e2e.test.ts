@@ -31,21 +31,12 @@ const api = async (
   body?: unknown,
   headers: Record<string, string> = {},
 ): Promise<{ status: number; body: any }> => {
-  const startedAt = Date.now();
-  let phase = "fetch";
-  try {
-    const response = await fetch(`${base}${path}`, {
-      method,
-      headers: { ...(body ? { "content-type": "application/json" } : {}), ...headers },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    phase = "body read";
-    return { status: response.status, body: response.status === 204 ? null : await response.json() };
-  } catch (cause) {
-    throw new Error(`${method} ${path} failed during ${phase} after ${Date.now() - startedAt}ms ` +
-      `(server exit=${child?.exitCode ?? "null"}, signal=${child?.signalCode ?? "null"})\n` +
-      `Server stderr (last 4096 characters):\n${stderr.slice(-4096)}`, { cause });
-  }
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: { ...(body ? { "content-type": "application/json" } : {}), ...headers },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: response.status, body: response.status === 204 ? null : await response.json() };
 };
 
 /** A gate written before the turn starts lets it finish at once. Depth-1 turns (no thread id in their MCP config) share the "peer" gate. */
@@ -441,7 +432,6 @@ describe("coordinate_bots on a teammate", () => {
       expect(opened.body.receipts).toEqual([expect.objectContaining({ botId: near.id, outcome: "queued", threadId: expect.any(String) })]);
       const job = opened.body.receipts[0].threadId as string;
       expect(job).not.toBe(near.threadId);
-      release(job);
       expect((await botState(near.id)).tasks.find((task: any) => task.threadId === job)).toMatchObject({ title: "Job", openedBy: { botId: pm.id } });
       expect(handoffs().find(node => node.threadId === job)).toMatchObject({ botId: near.id, mode: "work", reply: "resume", text: "go" });
       const send = (botIds: string[]) => api("POST", "/api/internal/coordinate-bots", { botIds, message: "Check it." }, token);
@@ -464,6 +454,7 @@ describe("coordinate_bots on a teammate", () => {
       expect(afterArchive.body.receipts).toEqual([expect.objectContaining({ requestId: first.id, threadId: first.threadId, detail: expect.stringContaining("already sent") })]);
       expect((await botState(near.id)).tasks).toHaveLength(3);
       expect((await messages(pm.threadId)).filter(message => message.threadRef?.threadId === first.threadId)).toHaveLength(1);
+      release(job);
       await expect.poll(() => handoffs().find(node => node.threadId === job)?.status, { timeout: 15_000 }).toBe("completed");
     } finally {
       await cleanup([pm.id, near.id, far.id, other.id]);

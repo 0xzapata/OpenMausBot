@@ -179,8 +179,19 @@ describe("saveAudio", () => {
     expect(saved.path.endsWith(".mp3")).toBe(true);
   });
 
+  it("keeps a WAV note as .wav and serves it back as audio/wav", () => {
+    for (const mime of ["audio/wav", "audio/x-wav", "Audio/Wave"]) {
+      const saved = saveAudio(Buffer.from(`RIFF-${mime}`), mime);
+      expect(saved.mime).toBe("audio/wav");
+      expect(saved.path.endsWith(".wav")).toBe(true);
+      const back = readAttachment(saved.path.split(/[\\/]/).pop()!);
+      expect(back?.bytes.toString()).toBe(`RIFF-${mime}`);
+      expect(back?.mime).toBe("audio/wav");
+    }
+  });
+
   it("rejects other audio mimes, empty bodies, and oversize bodies", () => {
-    expect(() => saveAudio(Buffer.from("x"), "audio/wav")).toThrow(/unsupported audio type/);
+    expect(() => saveAudio(Buffer.from("x"), "audio/ogg")).toThrow(/unsupported audio type/);
     expect(() => saveAudio(Buffer.alloc(0), "audio/mpeg")).toThrow(/empty/);
     expect(() => saveAudio(Buffer.alloc(FILE_MAX_BYTES + 1), "audio/mpeg")).toThrow(/exceeds/);
   });

@@ -1,9 +1,15 @@
 import { t } from "./i18n";
 import { MAUS_COLORS, type MausColor } from "./mascot";
 import { isMentionBoundary, isMentionNameContinuation } from "../../shared/mention-boundary";
+import { personTagAt, personTagNames } from "../../shared/person-mention";
 
 export type MentionPeer = { name: string; hidden?: boolean; color?: MausColor };
-export type MentionRange = { start: number; end: number; color?: string };
+export type MentionRange = { start: number; end: number; color?: string; you?: true };
+export type MentionPerson = { profileName?: string | null };
+
+export function sameMentionPerson(a?: MentionPerson, b?: MentionPerson): boolean {
+  return Boolean(a) === Boolean(b) && (a?.profileName ?? "") === (b?.profileName ?? "");
+}
 
 export function mentionChoicesForQuery<T extends { name: string }>(pool: readonly T[], query: string): T[] {
   const normalized = query.trim().toLowerCase();
@@ -30,9 +36,11 @@ export function mentionRowDescription(detail: MentionRowDetail): string {
   }
 }
 
-export function mentionRanges(text: string, peers: readonly MentionPeer[], everyone = false): MentionRange[] {
+export function mentionRanges(text: string, peers: readonly MentionPeer[], everyone = false, person?: MentionPerson): MentionRange[] {
   const candidates = peers.filter((p) => !p.hidden && p.name.trim())
     .sort((a, b) => b.name.length - a.name.length);
+  const personNames = person ? personTagNames(person.profileName) : [];
+  const botNames = candidates.map(({ name }) => name);
   const ranges: MentionRange[] = [];
   let at = -1;
   while ((at = text.indexOf("@", at + 1)) !== -1) {
@@ -42,6 +50,12 @@ export function mentionRanges(text: string, peers: readonly MentionPeer[], every
       && !isMentionNameContinuation(rest.slice(name.length)));
     const all = everyone && rest.slice(0, 8).toLowerCase() === "everyone"
       && !isMentionNameContinuation(rest.slice(8));
+    const you = !all && personNames.length ? personTagAt(rest, personNames, botNames) : undefined;
+    if (you !== undefined) {
+      ranges.push({ start: at, end: at + you + 1, you: true });
+      at += you;
+      continue;
+    }
     const length = all ? 8 : peer?.name.length;
     if (length === undefined) continue;
     // Only palette values enter CSS.
@@ -52,6 +66,10 @@ export function mentionRanges(text: string, peers: readonly MentionPeer[], every
   return ranges;
 }
 
+export function mentionClassName(range: Pick<MentionRange, "you">): string {
+  return range.you ? "mention-highlight mention-you" : "mention-highlight";
+}
+
 type MarkdownNode = {
   type: string;
   value?: string;
@@ -59,21 +77,21 @@ type MarkdownNode = {
   data?: { hName: string; hProperties: { className: string; style?: string } };
 };
 
-export function remarkMentions({ peers, everyone = false }: { peers: readonly MentionPeer[]; everyone?: boolean }) {
+export function remarkMentions({ peers, everyone = false, person }: { peers: readonly MentionPeer[]; everyone?: boolean; person?: MentionPerson }) {
   return (tree: MarkdownNode) => {
     const visit = (node: MarkdownNode) => {
       if (!node.children || ["link", "linkReference", "code", "inlineCode"].includes(node.type)) return;
       node.children = node.children.flatMap((child) => {
         if (child.type !== "text" || !child.value) { visit(child); return [child]; }
         const text = child.value;
-        const ranges = mentionRanges(text, peers, everyone);
+        const ranges = mentionRanges(text, peers, everyone, person);
         if (!ranges.length) return [child];
         const result: MarkdownNode[] = [];
         let end = 0;
         for (const range of ranges) {
           if (range.start > end) result.push({ type: "text", value: text.slice(end, range.start) });
           result.push({ type: "mention", data: { hName: "span", hProperties: {
-            className: "mention-highlight",
+            className: mentionClassName(range),
             ...(range.color ? { style: `--mention-color:${range.color}` } : {}),
           } },
             children: [{ type: "text", value: text.slice(range.start, range.end) }] });

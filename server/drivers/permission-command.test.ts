@@ -1,8 +1,3 @@
-// Exact command identity, as reported by an ACP agent.
-//
-// Everything keyed on "which command was this" depends on these: the saved
-// command allowlist most of all, whose rules can only ever match a request
-// that carried a command in the first place.
 import { describe, expect, it } from "vitest";
 
 import { acpPermissionCommand, permissionCommand } from "./permission-command.ts";
@@ -11,11 +6,6 @@ const CWD = "/home/user/work";
 
 describe("acpPermissionCommand", () => {
   it("reads Antigravity's CommandLine/Cwd", () => {
-    // The field names and the shape are from a real request.opened event
-    // observed on 2026-10-10; only the paths are generalised. Until this
-    // spelling was handled the function returned undefined for every
-    // Antigravity shell request, so those bots reported no command at all
-    // and no saved-command rule could ever match one.
     expect(acpPermissionCommand({
       CommandLine: "ls -la /home/user/workspace/notes/",
       Cwd: "/home/user/.openmausbot/task-workspaces/fc432790/4b7437fe",
@@ -37,11 +27,8 @@ describe("acpPermissionCommand", () => {
   });
 
   it("refuses two different spellings of the same field", () => {
-    // A frame that says two things is a contradiction, not a choice, and a
-    // grant keyed on the wrong one would be a grant for a different command.
     expect(acpPermissionCommand({ command: "ls", CommandLine: "rm -rf /", cwd: CWD }, undefined)).toBeUndefined();
     expect(acpPermissionCommand({ CommandLine: "ls", cwd: CWD, Cwd: "/elsewhere" }, undefined)).toBeUndefined();
-    // Agreeing on both spellings is not a contradiction.
     expect(acpPermissionCommand({ command: "ls", CommandLine: "ls", cwd: CWD }, undefined))
       .toEqual({ command: "ls", cwd: CWD });
   });
