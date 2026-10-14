@@ -1,11 +1,5 @@
-// A sign-in card's answers (shared/sign-in-request.ts). Done and Cancel carry
-// nothing secret: the person typed the password into the page itself.
-// POST /api/bots/<bot>/sign-in-cards/<message>/(done|cancel) with {threadId}.
-// The third answer, POST .../save-login with {threadId, username, password,
-// totp?}, saves a login for the card's page (server/login-store.ts) that the
-// bot then fills with fill_login; the password goes into the encrypted
-// store and no route ever returns it. All scoped like the other card answers
-// in server/request-auth.ts.
+// POST /api/bots/<bot>/sign-in-cards/<message>/(done|cancel|save-login) with {threadId}. A saved password goes into the
+// encrypted store and no route ever returns it.
 import { PASS, type RouteHandler } from "./table.ts";
 
 export type SignInOutcome = "done" | "cancelled";
