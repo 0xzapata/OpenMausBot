@@ -243,6 +243,24 @@ it("never treats arbitrary workbench code as a counted daily allowance", async (
   expect(relayed).toHaveLength(before);
 });
 
+it("tells a scoped bot its multi-execute arguments were unreadable, not that it lacks access", async () => {
+  const b = await bot("Misshapen batch");
+  await api("PATCH", `/api/bots/${b.id}`, { connectorScopes: { apps: { gmail: "write" } } });
+  const token = await mint(b.id, b.threadId);
+  const before = relayed.length;
+  const refused = await relay(token, "COMPOSIO_MULTI_EXECUTE_TOOL", { tool_calls: [{ tool_slug: "GMAIL_FETCH_EMAILS", arguments: {} }] });
+  expect(refused.body.result.isError).toBe(true);
+  const text = refused.body.result.content[0].text;
+  expect(text).not.toContain("has not been given access");
+  expect(text).not.toContain("do not retry");
+  expect(text).toContain("could not read");
+  expect(text).toContain("tools: [{ tool_slug, arguments }]");
+  expect(relayed).toHaveLength(before);
+  const resent = await relay(token, "COMPOSIO_MULTI_EXECUTE_TOOL", { tools: [{ tool_slug: "GMAIL_FETCH_EMAILS", arguments: {} }] });
+  expect(resent.body.result.content[0].text).toBe("relay-ok");
+  expect(relayed).toHaveLength(before + 1);
+});
+
 it("keeps accepted facts through a replacement review and rejects autonomous restricted memory", async () => {
   const b = await bot("Team facts");
   const token = await mint(b.id, b.threadId, "agents");

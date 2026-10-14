@@ -194,6 +194,7 @@ describe("refusal text", () => {
     const text = connectorUnrecognizedText(COMPOSIO_MULTI_EXECUTE_TOOL, "the tools list was empty");
     expect(text).toContain(COMPOSIO_MULTI_EXECUTE_TOOL);
     expect(text).toContain("the tools list was empty");
+    expect(text).toContain("tools: [{ tool_slug, arguments }]");
     expect(text).toContain("Ask the person");
   });
 });

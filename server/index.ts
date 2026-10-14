@@ -16543,6 +16543,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             threadId: internalCapability.threadId, botId: currentSender.id, botName: currentSender.name,
             tool: access.slug, decision: "auto-denied", source: "connector-scope", rule: `scope:${access.toolkit}:${access.reason}`,
           });
+          // A multi-execute whose arguments did not parse falls back to the opaque proxy; say so instead of blaming access.
+          if (call.kind === "unrecognized") return refuseOutbound(connectorUnrecognizedText(call.invoked, call.reason));
           return refuseOutbound(
             access.reason === "app"
               ? `OpenMausBot did not run this: ${currentSender.name} has not been given access to ${appName}. Ask the user to allow it under the bot's Access settings, and do not retry.`
