@@ -291,8 +291,8 @@ Cloud · always on**; in a browser, a plain label says the same.
 A Cloud home is a headless Linux server, so its bots have two places: the
 built-in browser and cloud computers. It never offers **This computer** (that
 would be the server itself) or a **Local VM** (a Fly machine has no container
-runtime). The person's own Mac is reached only when they lend it (**Let My
-Cloud use this Mac**, below), through the shared-computer tools.
+runtime). The person's own computer is reached only when they lend it (**Let My
+Cloud use this computer**, below), through the shared-computer tools.
 
 - Neither place is listed in the Computer panel, the composer's place chip, a
   bot's Works on setting or Settings → Computers (the config answers
@@ -471,9 +471,9 @@ The web UI's pages are sent with `Content-Security-Policy: frame-ancestors
 (`serveStatic`, `server/index.ts`): no other page can frame them. Nothing
 frames the web UI: the desktop app shows it in its own window.
 
-## Let My Cloud use this Mac
+## Let My Cloud use this computer
 
-The Cloud is home: bots and chats live there. The person's Mac is a computer
+The Cloud is home: bots and chats live there. The person's Mac or PC is a computer
 the Cloud can borrow while it is awake. Lending is off until the person turns
 it on, and it exists only between their own desktop app and their own Cloud
 home. Other users (desktop only, self-hosted, hosted team workspaces) keep
@@ -483,7 +483,7 @@ computer sharing exactly as before: off unless a maintainer sets
 ### What the person sees
 
 In **Settings → MausBot Cloud**, the **My Cloud** card has a **Let My Cloud use
-this Mac** switch under **Open My Cloud** (it is part of connecting, not
+this computer** switch under **Open My Cloud** (it is part of connecting, not
 a dialog). Turning it on shows what can be lent; each change applies at once,
 with no confirmation. The switch and the chosen scopes are the consent.
 

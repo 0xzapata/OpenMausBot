@@ -298,7 +298,7 @@ it("a turn in a conversation a guest left behind writing MEMORY.md directly take
   expect(listing.unavailable).toContain("This bot's memory was changed in a conversation you didn't write");
   const blocked = await reads(ownerTools);
   expect(blocked.isError).toBe(true);
-  expect(blocked.content[0].text).toContain("Review it in Memory to use your Mac again");
+  expect(blocked.content[0].text).toContain("Review it in Memory to use your computer again");
   const current = await review(bot);
   expect(current?.changed).toEqual(["MEMORY.md"]);
   expect((await local("POST", `/api/bots/${bot.id}/memory/reviewed`, { token: current!.token })).status).toBe(403);

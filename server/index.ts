@@ -859,8 +859,8 @@ function cloudLendingTurn(capability: Pick<InternalCapability, "botId" | "thread
   };
 }
 
-const LENDING_SOMEONE_ELSE = "Someone else wrote in this conversation, so it can't use your Mac. Start a new conversation to use it.";
-const LENDING_MEMORY_CHANGED = "This bot's memory was changed in a conversation you didn't write. Review it in Memory to use your Mac again.";
+const LENDING_SOMEONE_ELSE = "Someone else wrote in this conversation, so it can't use your computer. Start a new conversation to use it.";
+const LENDING_MEMORY_CHANGED = "This bot's memory was changed in a conversation you didn't write. Review it in Memory to use your computer again.";
 
 function cloudLendingRefusal(capability: Pick<InternalCapability, "botId" | "threadId" | "generation">): "unproven" | "not-owner" | "someone-else" | "memory-changed" | null {
   const refusal = cloudHomeLendingRefusal(cloudLendingTurn(capability));
