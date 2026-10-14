@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA_DIR, ensureDirs, instanceConfigs, NATIVE_DIR } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
+import { BACKGROUND_CALL_TIMEOUT_MS, backgroundCallArgs } from "./claude-background.ts";
 import {
   autoCompactWindow,
   brokerSocketCandidates,
@@ -3373,6 +3374,51 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await expect(instance.reviewPermission?.("review this request")).resolves.toBe("fake generated text");
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.argv[seen.argv.indexOf("--output-format") + 1]).toBe("text");
+  });
+
+  it("runs helper calls tool-free and isolated, in an empty folder it then removes", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.296" });
+    const dump = join(scratch, "isolated-helper.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
+    expect(seen.argv).toContain("--strict-mcp-config");
+    expect(seen.argv[seen.argv.indexOf("--setting-sources") + 1]).toBe("project");
+    expect(seen.argv).toContain("--no-session-persistence");
+    expect(seen.cwd).toContain("omb-claude-background-");
+    expect(existsSync(seen.cwd)).toBe(false);
+  });
+
+  it("reads the CLI version before a helper call, so an older CLI gets no --tools", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.250" });
+    const dump = join(scratch, "older-helper.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv).not.toContain("--tools");
+    expect(seen.argv).toContain("--strict-mcp-config");
+  });
+
+  it("waits as long as the caller says for a helper call, and no longer", async () => {
+    await create(undefined, { FAKE_CLAUDE_TEXT_HANG: "1" });
+    const started = Date.now();
+    await expect(instance.generateText!("summarize", { timeoutMs: 300 })).rejects.toThrow("Claude review timed out");
+    expect(Date.now() - started).toBeLessThan(BACKGROUND_CALL_TIMEOUT_MS);
+  });
+
+  it("passes only the background flags the installed CLI accepts", () => {
+    const base = { model: "claude-haiku-4-5", outputFormat: "text" as const };
+    const cli = (version: [number, number, number]) => (flag: Parameters<typeof claudeCliSupports>[1]) => claudeCliSupports(version, flag);
+    expect(backgroundCallArgs({ ...base, supports: cli([2, 1, 296]), isolated: true })).toEqual([
+      "-p", "--model", "claude-haiku-4-5", "--output-format", "text",
+      "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "project",
+    ]);
+    // OMB_CLAUDE_INHERIT_USER_CONFIG keeps the person's own setup, still without tools
+    expect(backgroundCallArgs({ ...base, supports: cli([2, 1, 296]), isolated: false })).not.toContain("--strict-mcp-config");
+    expect(backgroundCallArgs({ ...base, supports: cli([1, 0, 100]), isolated: true })).toEqual([
+      "-p", "--model", "claude-haiku-4-5", "--output-format", "text", "--strict-mcp-config",
+    ]);
   });
 
   it("never falls back to personal authentication for API-key-only helper calls", async () => {
