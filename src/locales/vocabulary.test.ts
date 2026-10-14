@@ -157,6 +157,7 @@ describe("one name per thing", () => {
       ["cloudPhone.step1", [myCloud!]],
       ["lending.status.connectFirst", [e["cloudHome.connect"]!]],
       ["computer.worksOnHintCloudHome", [e["lending.title"]!, settings]],
+      ["cloudMove.leftBehindLend", [e["lending.title"]!, settings]],
       ["cloudAccount.onCloudSignIn", [e["cloudAccount.signInAgain"]!, settings]],
       ["cloudAccount.storageFailed", [e["cloudAccount.signOut"]!]],
       ["cloudAccount.codeExpired", [e["cloudAccount.signIn"]!]],

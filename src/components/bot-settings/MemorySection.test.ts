@@ -194,7 +194,7 @@ describe("LendingReviewNotice", () => {
   it("says plainly why the bot cannot use the Mac, names what changed, and marks it reviewed in one click", () => {
     const onReviewed = vi.fn();
     const markup = render(createElement(LendingReviewNotice, { changed, stale: false, busy: false, onReviewed }));
-    expect(markup).toContain("This bot's memory was changed in a conversation you didn't write, so it can't use your Mac.");
+    expect(markup).toContain("This bot's memory was changed in a conversation you didn't write, so it can't use your computer.");
     expect(markup).toContain("Changed:");
     for (const file of changed) expect(markup).toContain(`>${file}<`);
     expect(markup).toContain(">Mark reviewed<");

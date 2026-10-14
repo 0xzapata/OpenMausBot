@@ -141,6 +141,22 @@ it("after a copy: what came, what is not running yet there, and Done", async () 
   expect(moveNextSteps({ phase: "failed", action: "move" })).toEqual([]);
 });
 
+it("after a copy from a PC, one line says which of its folders and files stayed there and what to do", () => {
+  const done = (destination: MoveDestination, leftBehind: CloudMoveState["leftBehind"]): CloudMoveState =>
+    ({ phase: "done", action: "move", destination, moved: { bots: 3, rooms: 0, chats: 2 }, leftBehind });
+  const site = "C:\\Users\\Ada\\Projects\\site";
+  expect(moveNextSteps(done(CLOUD, { bots: 2, paths: [site, "C:\\Users\\Ada\\Desktop\\x.docx"] }))).toEqual([
+    `2 bots used folders on this computer, like ${site}. Those files didn't come over, so those bots now start in their own folder on My Cloud. Upload what they need there. `
+      + "Or turn on Let My Cloud use this computer in Settings → MausBot Cloud, so My Cloud can reach them here.",
+    expect.stringContaining("To use My Cloud from your phone"),
+  ]);
+  expect(moveNextSteps(done(VPS, { bots: 1, paths: [site] }))[0])
+    .toBe(`A bot used a folder on this computer, ${site}. Its files didn't come over, so that bot now starts in its own folder on bots.example.test. Upload what it needs there.`);
+  expect(moveNextSteps(done(VPS, { bots: 0, paths: ["C:\\Users\\Ada\\Desktop\\x.docx"] }))[0])
+    .toBe("Instructions you copied mention files on this computer, like C:\\Users\\Ada\\Desktop\\x.docx. Those files didn't come over. Upload what your bots need to bots.example.test.");
+  expect(moveNextSteps(done(VPS, undefined))).toEqual([expect.stringContaining("from your phone")]);
+});
+
 it("every state reads as one sentence and one next step, for the Cloud and any other server", () => {
   const view = (state: Partial<CloudMoveState>, over: Partial<CloudMoveOverview> | null = null, options = {}) =>
     moveView(over && overview(over), { phase: "idle", ...state } as CloudMoveState, options);
