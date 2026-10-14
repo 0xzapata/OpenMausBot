@@ -1,8 +1,3 @@
-// A thread's default folder is outside the bot workspace (#981), so engines
-// started there never walked up to the workspace's native skill links
-// (#2806). The task folder gets its own projection of the same manifest.
-// Only the app-owned task folder: a user-chosen project folder is never
-// written to.
 import { syncSkillLinks } from "./skills.ts";
 import { ensureTaskWorkspace } from "./workspace.ts";
 

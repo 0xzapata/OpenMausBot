@@ -1,6 +1,3 @@
-// The native-discovery link names the app last created (syncSkillLinks in
-// server/skills.ts): a cleanup hint for names whose link directory can no
-// longer be listed. The protected skill manifest stays authoritative.
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -26,7 +23,6 @@ export function readManagedLinks(botId: string, threadId?: string): string[] {
   }
 }
 
-// Rebuilt on every turn and almost always the same list.
 export function writeManagedLinks(botId: string, names: string[], threadId?: string): void {
   const path = managedLinksPath(botId, threadId);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });

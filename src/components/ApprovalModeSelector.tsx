@@ -8,9 +8,7 @@ import { APPROVAL_LEVELS_URL, openExternalLink } from "@/lib/app-links";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 
-/** Keys, not labels — these are the words the held notes quote back to the
- * reader ("… so Approve for me stopped to ask"), and a label resolved in this
- * module-scope array would freeze the language the app booted in. */
+/** Keys, not labels: a label resolved in this module-scope array would freeze the language the app booted in. */
 const APPROVAL_MODE_KEYS: ReadonlyArray<{
   mode: ApprovalMode;
   labelKey: LocaleKey;
@@ -33,8 +31,6 @@ export interface ApprovalModeOption {
   Icon: typeof Hand;
 }
 
-/** The levels, in the reader's language. A function rather than a
- * constant: it has to answer to the language in effect when it is called. */
 export function approvalModeOptions(): ApprovalModeOption[] {
   return APPROVAL_MODE_KEYS.map(({ mode, labelKey, chipKey, descriptionKey, Icon }) => ({
     mode,
@@ -45,14 +41,11 @@ export function approvalModeOptions(): ApprovalModeOption[] {
   }));
 }
 
-/** The levels this engine offers here. Full is offered wherever the engine
- * runs it (owner decision, Oct 12); only Custom waits for the packaged
- * desktop's private channel (`trustedModesAvailable`). */
 export function approvalModeOptionsFor(driverKind: string, trustedModesAvailable = true) {
   return approvalModeOptions()
     .filter((option) => supportsApprovalMode(driverKind, option.mode)
-      // Antigravity has no native reviewer. Offer its explicit full-access
-      // grant as Auto instead of a second choice that actually behaves as Ask.
+      // Antigravity has no native reviewer: its full-access grant is shown as Auto below, and the real Auto, which
+      // behaves as Ask, is not offered.
       && (driverKind !== "antigravityAgent" || option.mode !== "auto")
       && (trustedModesAvailable || option.mode !== "custom"))
     .map((option) => {
@@ -74,17 +67,10 @@ export function approvalModeSelectionRequiresLocalDesktop(
   currentMode: ApprovalMode,
   trustedModesAvailable: boolean,
 ) {
-  // A persisted bot can temporarily lose its provider instance. Custom still
-  // cannot leave through HTTP in that state, so the lock follows the durable
-  // mode rather than today's provider lookup.
+  // Custom cannot leave through HTTP even while the provider instance is missing, so the lock follows the durable mode.
   return currentMode === "custom" && !trustedModesAvailable;
 }
 
-/** How much this bot may do on its own, shown beside the composer with the
- * current mode as its icon. Opens a menu that lists every available mode with
- * its label and description and returns the chosen mode to the caller. Compact
- * (icon-only) by default; `wide` renders the labeled variant used on bot
- * settings. */
 export function ApprovalModeSelector({
   approvalMode,
   autoApprove,
@@ -117,8 +103,7 @@ export function ApprovalModeSelector({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const savedMode = approvalModeFor({ approvalMode, autoApprove });
-  // Old Antigravity Auto settings still ask. Do not display or silently grant
-  // the new Auto/full-access behavior until the user explicitly selects it.
+  // Security: old Antigravity Auto settings still ask; never display or silently grant the new Auto until it is chosen.
   const mode = driverKind === "antigravityAgent" && savedMode === "auto" ? "ask" : savedMode;
   const allOptions = approvalModeOptions();
   const current = approvalModeOptionsFor(driverKind).find((option) => option.mode === mode)

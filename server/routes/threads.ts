@@ -1,10 +1,3 @@
-// The conversation reads and uploads, moved out of server/index.ts's inline
-// routes into the route table (server/routes/README.md): the GET /api/bots
-// snapshot, a thread's message pages and one message's image or file, image
-// and document uploads, serving an attachment, search across every
-// transcript, the transcript export, and a conversation's job (jobs.ts). The
-// table runs after the auth gate; scope rules stay keyed by path in
-// server/request-auth.ts.
 import type { WireBot, WireGroup, WireTask } from "../../shared/wire.ts";
 import {
   ATTACHMENTS_DIR, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, parseAudioRange, readAttachment, saveFile, saveImageUpload,
@@ -29,15 +22,12 @@ import type { BotRecord, GroupRecord, Message, Store, TaskRecord } from "../stor
 import { createJobRoutes } from "./jobs.ts";
 import { PASS, type RouteContext, type RouteHandler } from "./table.ts";
 
-/** A transcript page as index.ts's messagePage builds it: the whole thread,
- * or a bounded tail with `hasMore`. */
 export type MessagePage = { messages: Array<Message | Record<string, unknown>>; hasMore?: boolean; activeLeafId: string | null };
 
 export interface ThreadRouteDeps {
   store: Pick<Store,
     | "activeLeaf" | "activePath" | "bot" | "botByThread" | "bots" | "groupByThread" | "groupTaskByThread" | "groups" | "messagesFor"
     | "onChange" | "sections" | "taskByThread" | "tasks">;
-  /** The job runtime, for a conversation's job (jobs.ts). */
   coordinator: Pick<Coordinator, "job">;
   groupThreadIsWorking(groupId: string, threadId: string): boolean;
   cfg: Pick<AppConfig, "profile">;
@@ -47,13 +37,10 @@ export interface ThreadRouteDeps {
   sessionCookie: string;
   loopback: { trust: ResolveOptions["loopbackTrust"] };
   lendingEnabled(): boolean;
-  /** The slots index.ts fills at boot or on first use, after the routes are
-   * built (server/host/README.md, rule 5): read once per request. */
   workspaceAccess(): WorkspaceAccess | null;
   desktopMutationToken(): string | undefined;
   companionMutationToken(): string | undefined;
   cliOwnerToken(): string | undefined;
-  /** How many messages a page carries when the client names no size. */
   defaultPage: number;
   pageSize(raw: string | null): number | null | undefined;
   messagePage(threadId: string, limit: number | undefined, before?: string | null): MessagePage;
@@ -76,29 +63,18 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
     botComputerControlSnapshot, messageFileRootsForThread, viewerFor, visibleTo,
   } = deps;
   const jobs = createJobRoutes({ store, coordinator: deps.coordinator, groupThreadIsWorking: deps.groupThreadIsWorking, viewerFor, visibleTo, sessions });
-  // The image, file and export routes answer with `return res.end(…)`, so the
-  // body's result is whatever Node hands back; the table only asks whether
-  // it was PASS.
   const handle = async ({ req, res, url, path, method, auth, json, readBody }: RouteContext): Promise<unknown> => {
-    /** scratch for route matches, shared by every `path.match` below */
     let m: RegExpMatchArray | null = null;
-    // Bot visibility as index.ts's preamble computed it for this request,
-    // and the late-bound slots, read now so the routes see one value each.
     const visible = visibleTo(viewerFor(auth));
     const workspaceAccess = deps.workspaceAccess();
     const desktopMutationToken = deps.desktopMutationToken();
     const companionMutationToken = deps.companionMutationToken();
     const cliOwnerToken = deps.cliOwnerToken();
     if (method === "GET" && path === "/api/bots") {
-      try { groupUsageReader.refresh(); } catch { /* accounting must not block a snapshot */ }
+      try { groupUsageReader.refresh(); } catch { }
       const limit = pageSize(url.searchParams.get("messages"));
       if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
-      // wireBot(), not publicBot(): this snapshot answers with the page it
-      // was asked for, not the default one. tasks stays explicit, as in
-      // publicBot(): wireBot() omits the key entirely for a bot record
-      // carrying no tasks, where clients expect [].
-      // A member on a workspace with a restricted bot gets only what they may
-      // see (bot-visibility.ts); for everyone else these filters keep all.
+      // tasks stays explicit: clients expect [] where wireBot() would omit the key.
       const shownBots = store.bots.filter((bot) => visible.bot(bot.id));
       const queued = publicBotQueuedMessages();
       return json(res, 200, {
@@ -122,7 +98,6 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       });
     }
 
-    // scrollback: the page before a message the client already holds
     m = path.match(/^\/api\/threads\/([\w-]+)\/messages$/);
     if (m && method === "GET") {
       const threadId = m[1];
@@ -139,22 +114,16 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
         if (!window) return json(res, 404, { error: "no such message" });
         return json(res, 200, { ...window, activeLeafId: store.activeLeaf(threadId) });
       }
-      // An unknown cursor must not silently answer with the newest page —
-      // the client would paginate in a circle and never reach the top.
+      // An unknown cursor must not answer with the newest page: the client would paginate in a circle.
       if (before && !store.messagesFor(threadId).some((msg) => msg.id === before)) {
         return json(res, 404, { error: "no such message" });
       }
       return json(res, 200, { ...messagePage(threadId, limit ?? DEFAULT_PAGE, before), activeLeafId: store.activeLeaf(threadId) });
     }
 
-    // the pixels of one screen message, fetched only when something shows it
     m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/image$/);
     if (m && method === "GET") {
-      // Same guard as the page route above, and for the same reason twice
-      // over: an unknown id should 404 deliberately rather than by accident,
-      // and `messagesFor` materialises and caches a ThreadState for whatever
-      // it is handed. Without this, a client asking for images on ids that
-      // do not exist grows the thread map for as long as it keeps asking.
+      // messagesFor caches a ThreadState for any id it is handed, so unknown ids 404 first.
       if (!store.botByThread(m[1]) && !store.groupByThread(m[1])) {
         return json(res, 404, { error: "no such conversation" });
       }
@@ -164,18 +133,12 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       res.writeHead(200, {
         "content-type": message.mime ?? "image/png",
         "content-length": String(bytes.byteLength),
-        // a settled message's image never changes
         "cache-control": "private, max-age=31536000, immutable",
       });
       return res.end(bytes);
     }
 
-    // Download one local file only when this exact stored message grants it:
-    // a bot must render a Markdown link or carry a generated-image attachment,
-    // while a user message must carry the standalone composer tag. The bot
-    // branch derives conversation/workspace roots; the user branch is limited
-    // to OpenMausBot's private attachment directory. This is deliberately not
-    // a general path reader.
+    // Only a file this exact stored message grants; deliberately not a general path reader.
     m = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/file$/);
     const streamsMessageImage = Boolean(
       m && method === "GET" && url.searchParams.get("preview") === "1",
@@ -207,9 +170,6 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
 
       let roots: string[];
       let downloadName: string | undefined;
-      // A file the bot attached with attach_file lives in the private
-      // attachment store; the message itself is the grant, exactly as a
-      // user's attachment tag is for their own uploads.
       const botAttachment = message.role === "bot"
         ? message.attachments?.find((attachment) => attachment.path === href)
         : undefined;
@@ -220,8 +180,6 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
         }
         roots = [ATTACHMENTS_DIR];
       } else if (botAttachment) {
-        // Files and images alike: the stored message is the grant, so the
-        // mobile clients can fetch an attached image through this route too.
         downloadName = botAttachment.kind === "file" ? botAttachment.name : undefined;
         roots = [ATTACHMENTS_DIR];
       } else {
@@ -229,17 +187,13 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
           return json(res, 403, { error: "that bot message does not link to this file" });
         }
         const senderId = directBot?.id ?? message.from?.botId;
-        // The persisted bot-role message is the author record. Membership is
-        // intentionally not consulted: removing a bot must not break files it
-        // already shared in channel history.
+        // Membership is not consulted: removing a bot must not break files it already shared.
         if (!senderId) {
           return json(res, 403, { error: "the file's bot author could not be verified" });
         }
         roots = messageFileRootsForThread(senderId, threadId);
       }
 
-      // A link to a folder answers with its files; each one is then fetched
-      // by plain name under the same message grant and file checks.
       const folderEntry = method === "POST" && body.entry !== undefined
         ? messageFolderEntryName(body.entry)
         : undefined;
@@ -252,9 +206,6 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       } catch (error) {
         const code = (error as { code?: unknown } | null)?.code;
         const status = (error as { status?: unknown } | null)?.status;
-        // A reply's file outside the conversation's folders, or gone, that
-        // its bot delivered with attach_file this turn: the stored copy is
-        // what the reply shows and saves, as a chat link's would be.
         const name = message.role === "bot" && !botAttachment && !folderEntry && (code === "outside_workspace" || status === 404)
           ? referencedFileName(href)
           : null;
@@ -305,13 +256,7 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       return;
     }
 
-    // ── image attachments ────────────────────────────────────────────────
-    // Pasted/dropped images are stored as files and referenced by path in
-    // the prompt (<attached-image path="…"/>); this pair of routes is the
-    // save + serve. The POST takes raw bytes (base64 JSON would double the
-    // payload), so it needs its own reader rather than readBody. A share
-    // extension can add a UUID uploadId; retrying that UUID returns the same
-    // committed path instead of creating an orphan duplicate.
+    // Raw bytes, not base64 JSON; retrying a UUID uploadId returns the same committed path.
     if (method === "POST" && path === "/api/attachments") {
       let uploadId: string | undefined;
       try {
@@ -366,13 +311,7 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       return json(res, 201, saved);
     }
 
-    // ── shared files ────────────────────────────────────────────────────
-    // Companion apps and the desktop composer send documents as raw bytes
-    // over the same authenticated connection as messages. saveFile writes each
-    // incoming chunk directly to disk, atomically commits it, and removes
-    // partial uploads on error. Its optional UUID uploadId is stable across
-    // route retries, while the aggregate store quota rejects rather than
-    // silently deleting files that old prompts may still reference.
+    // Raw bytes; a UUID uploadId is stable across retries, and the quota rejects rather than delete files old prompts reference.
     if (method === "POST" && path === "/api/files") {
       let uploadId: string | undefined;
       try {
@@ -402,9 +341,7 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
         return json(res, 413, { error: `file exceeds ${FILE_MAX_BYTES} bytes` });
       }
       try {
-        // Returning from this iterator must not destroy the request socket:
-        // the caller still needs to receive the useful 4xx response when the
-        // streamed byte count crosses the limit.
+        // Returning must not destroy the socket: the caller still sends the 4xx when the byte count crosses the limit.
         const chunks = req.iterator({ destroyOnReturn: false }) as AsyncIterable<Buffer>;
         const saved = await saveFile(chunks, name, rawType ?? "", { uploadId, expectedBytes: declaredLength });
         return json(res, 201, saved);
@@ -414,25 +351,18 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       }
     }
 
-    // serving is name-locked to the attachments dir — readAttachment
-    // refuses anything that is not a bare generated filename
+    // Name-locked to the attachments dir: readAttachment refuses anything but a bare generated filename.
     m = path.match(/^\/api\/attachments\/([\w.-]+)$/);
     if (m && method === "GET") {
       const attachment = readAttachment(m[1]!);
       if (!attachment) return json(res, 404, { error: "no such attachment" });
       const size = attachment.bytes.byteLength;
-      // Who may see an attachment is decided per request — the dispatcher
-      // 404s hidden ones above — so the browser must never reuse one
-      // member's copy after a switch to another identity in the same profile.
+      // Visibility is decided per request, so the browser must never reuse one member's copy for another identity.
       const headers = {
         "content-type": attachment.mime,
         "cache-control": "private, no-store",
         "x-content-type-options": "nosniff",
       };
-      // Range serving is audio-only (#1745): a player scrubbing a voice note
-      // asks for byte windows, and images/documents keep the full response
-      // the app has always relied on. A header we do not understand reads
-      // as absent — the full 200 is always a correct answer to a GET.
       if (attachment.mime.startsWith("audio/")) {
         const rawRange = Array.isArray(req.headers.range) ? req.headers.range[0] : req.headers.range;
         const range = parseAudioRange(rawRange, size);
@@ -453,10 +383,6 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       return res.end(attachment.bytes);
     }
 
-    // ── search across every transcript ──────────────────────────────────
-    // Literal substring scans run in a bounded read-only worker so a large
-    // history cannot stall unrelated turns. Hits resolve to the owning bot/room;
-    // rows belonging to deleted conversations resolve to nothing and drop.
     if (method === "GET" && path === "/api/search") {
       const q = url.searchParams.get("q") ?? "";
       const rawLimit = url.searchParams.get("limit");
@@ -465,19 +391,14 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       if (threadId && ((!store.botByThread(threadId) && !store.groupByThread(threadId)) || !visible.thread(threadId))) {
         return json(res, 404, { error: "no such conversation" });
       }
-      // whether each hit sits on its thread's visible branch — a click on
-      // one that does not has to switch versions first (and only then)
       const activePaths = new Map<string, Set<string>>();
       const onActivePath = (threadId: string, messageId: string) => {
         let ids = activePaths.get(threadId);
         if (!ids) activePaths.set(threadId, (ids = new Set(store.activePath(threadId).map((m) => m.id))));
         return ids.has(messageId);
       };
-      // A member who may not see every bot: look further, then keep only
-      // hits in conversations they can open.
       const found = await searchMessagesAsync(q, visible.everything ? limit : Math.min(limit * 10, 1_000), threadId);
-      // A scan may outlive a revocation or audience edit. Authorize again
-      // after the await, and resolve visibility from current store state.
+      // A scan may outlive a revocation or audience edit: authorize again after the await.
       if (HOSTED_WORKSPACE && auth.kind === "session") {
         const failure = workspaceAccess ? await workspaceAccess.authorize(req, auth)
           : { status: 503, error: "Workspace sign-in is unavailable." };
@@ -513,7 +434,6 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       return json(res, 200, { hits });
     }
 
-    // ── transcript export (the visible branch, human-readable) ──────────
     m = path.match(/^\/api\/threads\/([\w-]+)\/export$/);
     if (m && method === "GET") {
       const threadId = m[1];
@@ -530,8 +450,6 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       const filename = (title.replace(/[^\w\- ]+/g, "").trim() || "conversation").slice(0, 60);
       const messages = store.activePath(threadId);
       if (format === "json") {
-        // pixels stripped — an export is for reading and archiving, and a
-        // base64 desktop frame is neither
         const slim = messages.map(({ png: _png, mime: _mime, ...rest }) => rest);
         res.writeHead(200, {
           "content-type": "application/json",
@@ -546,7 +464,6 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
         const who = msg.role === "user"
           ? msg.via === "api" ? `${sentBy} (via the local API)` : sentBy
           : (msg.from?.name ?? bot?.name ?? "Bot");
-        // A widget exports as its text fallback (shared/widget.ts widgetToText).
         if ((msg.kind === "text" || msg.kind === "widget") && msg.text) lines.push(`**${who}:**`, "", msg.text, "");
         else if (msg.kind === "activity" && msg.tool) lines.push(`> ${msg.tool.name}`, "");
         else if (msg.kind === "screen") lines.push("> [screen capture]", "");

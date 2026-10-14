@@ -1,7 +1,5 @@
 import { Component, type ReactNode } from "react";
 
-/** One bad markdown node must not white-screen the app — the transcript
- * degrades to a plain-text bubble instead. Rooms use the same boundary. */
 export class MessageBoundary extends Component<{ children: ReactNode; fallbackText: string }, { failed: boolean }> {
   state = { failed: false };
   static getDerivedStateFromError() {

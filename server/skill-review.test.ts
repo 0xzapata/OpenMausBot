@@ -1,8 +1,3 @@
-// Automatic skill learning (server/skill-review.ts): step counting, the
-// bounded transcript, the prompt's read-before-write rule, answer parsing,
-// and the scheduler against a scripted engine — persisted counters, the
-// threshold, deferral while the bot is busy, stale updates, failures and
-// cancellation.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,7 +56,6 @@ describe("the review transcript", () => {
     expect(text).toContain("Scout[tools: Bash]");
     expect(text).toContain("  [tool] Bash: ls 59");
     expect(text).toContain("answer 59");
-    // a digest line is clipped; a recent line is not
     expect(text).toMatch(/Person: question 0 x+…/);
     expect(text.length).toBeLessThanOrEqual(TRANSCRIPT_MAX_CHARS);
   });
@@ -217,7 +211,6 @@ describe("the scheduler", () => {
     first.review.stop();
     expect(JSON.parse(readFileSync(statePath, "utf8")).counters).toEqual([expect.objectContaining({ botId: BOT.id, threadId: "thread-a", steps: 2 })]);
 
-    // a restart reads the counter back; one more short turn makes it due
     const second = harness();
     expect(second.review.status(BOT.id, "thread-a").steps).toBe(2);
     second.review.noteTurn(BOT.id, "thread-a", 1);
@@ -257,7 +250,6 @@ describe("the scheduler", () => {
     const called = nextCall();
     review.botSettled(BOT.id);
     await called;
-    // the person writes again: the bot is busy when the answer arrives
     state.busy = true;
     review.noteTurn(BOT.id, "thread-a", 2);
     release(createAnswer);
@@ -268,7 +260,6 @@ describe("the scheduler", () => {
     state.busy = false;
     review.botSettled(BOT.id);
     await expect.poll(() => state.applied.length).toBe(1);
-    // steps run while the review was out still count toward the next one
     expect(review.status(BOT.id, "thread-a")).toMatchObject({ waiting: false, steps: 2 });
   });
 
