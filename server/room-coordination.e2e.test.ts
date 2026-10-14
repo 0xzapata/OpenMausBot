@@ -216,7 +216,7 @@ it("withholds a cross-team result if the owner revokes access while it runs", ()
   expect(messages.some((m: any) => m.tool?.name.includes("Result withheld"))).toBe(true);
 }), 60_000);
 
-it("withholds an in-flight result after team deletion and recreation", () => withRooms(async f => {
+it.each(["rename", "delete"])("withholds an in-flight result after team %s and recreation", mode => withRooms(async f => {
   await f.api(`/api/bots/${f.target.id}`, { section: "Engineering" }, "PATCH");
   await f.api(`/api/bots/${f.sender.id}`, { chiefOfStaff: true, managedSections: ["Engineering"], acknowledgePeerScope: true }, "PATCH");
   const gateFile = join(f.session.info.dataDir, "team-recreation.gate");
@@ -227,7 +227,7 @@ it("withholds an in-flight result after team deletion and recreation", () => wit
   const move = (section: string) => request(`/api/bots/${f.target.id}`, { method: "PATCH", headers: { Origin: f.session.info.url },
     body: JSON.stringify({ section }) }, f.session.info.url);
   await move("Parking");
-  await f.api("/api/sidebar-sections?section=Engineering", {}, "DELETE");
+  await f.api("/api/sidebar-sections?section=Engineering", mode === "rename" ? { name: "Renamed" } : {}, mode === "rename" ? "PATCH" : "DELETE");
   await f.api("/api/sidebar-sections", { name: "Engineering" });
   await move("Engineering");
   const chief = (await f.api("/api/bots?messages=0")).bots.find((bot: any) => bot.id === f.sender.id);
@@ -238,22 +238,6 @@ it("withholds an in-flight result after team deletion and recreation", () => wit
   const messages = await f.messages(f.source.activeTaskId);
   expect(JSON.stringify(messages)).not.toContain("PRIVATE_RESULT_AFTER_TEAM_RECREATION");
   expect(messages.some((m: any) => m.tool?.name.includes("Result withheld"))).toBe(true);
-}), 60_000);
-
-it("refuses to rename a team while its work is in flight", () => withRooms(async f => {
-  await f.api(`/api/bots/${f.target.id}`, { section: "Engineering" }, "PATCH");
-  await f.api(`/api/bots/${f.sender.id}`, { chiefOfStaff: true, managedSections: ["Engineering"], acknowledgePeerScope: true }, "PATCH");
-  f.plan[f.target.id] = { reply: "PRIVATE_RESULT_AFTER_TEAM_RENAME" };
-  await f.start();
-  await expect.poll(() => f.nodes().find((n: any) => n.parentId)?.status, { timeout: 30_000 }).toBe("running");
-  // The rename guard (store.renameSection) refuses while a managed-section
-  // bot still has active work: the chief's delegation is still running.
-  await expect(f.api("/api/sidebar-sections?section=Engineering", { name: "Renamed" }, "PATCH"))
-    .rejects.toThrow(/Stop this team.s active work before renaming/u);
-  // The team kept its identity, so the work completes and delivers normally.
-  expect((await f.wait()).status).toBe("settled");
-  const messages = await f.messages(f.source.activeTaskId);
-  expect(JSON.stringify(messages)).toContain("PRIVATE_RESULT_AFTER_TEAM_RENAME");
 }), 60_000);
 
 it.each(["recipient", "source-reader", "destination-reader"])("refuses cross-section work involving a %s without leaking room history", role => withRooms(async f => {
