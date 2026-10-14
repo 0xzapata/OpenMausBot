@@ -11,6 +11,7 @@ import { openStartupModelCatalog, writeStartupModelCache } from "../startup-mode
 import { writeFileAtomic, writeFileAtomicIfChanged } from "../atomic.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { claudeAuthStatus } from "./claude-auth-status.ts";
 import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
 import { hostTimeZone } from "../turn-clock.ts";
 import { ClaudeLoginController } from "./claude-login-auth.ts";
@@ -56,48 +57,6 @@ import {
   questionChoices,
   type AskQuestion,
 } from "../../shared/ask-question.ts";
-
-/** Whether `claude` is signed in, per the CLI's own `auth status`: credential storage varies by
- * platform (Keychain, a JSON file) and presence checks accept stale credentials. */
-function claudeAuthStatus(
-  cli: string,
-  env: NodeJS.ProcessEnv,
-  run: typeof execCli = execCli,
-): Promise<{ authenticated: boolean; account?: ProviderSnapshot["account"] }> {
-  return new Promise((resolve) => {
-    run(cli, ["auth", "status", "--json"], { timeout: 8000, maxBuffer: 65_536, env }, (_error, stdout) => {
-      try {
-        const status: unknown = JSON.parse(stdout);
-        if (!status || typeof status !== "object" || !("loggedIn" in status) || status.loggedIn !== true) {
-          return resolve({ authenticated: false });
-        }
-        const identity = status as { email?: unknown; orgName?: unknown; authMethod?: unknown };
-        const boundedText = (value: unknown, max: number): string | undefined =>
-          typeof value === "string" && value.trim().length > 0 && value.length <= max && !/[\p{Cc}\p{Cf}]/u.test(value)
-            ? value.trim() : undefined;
-        const candidateEmail = boundedText(identity.email, 254);
-        const email = candidateEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidateEmail) ? candidateEmail : undefined;
-        const organization = boundedText(identity.orgName, 160);
-        const account = {
-          ...(email ? { email } : {}),
-          ...(organization ? { organization } : {}),
-          ...(identity.authMethod === "api_key" ? { method: "api-key" as const } : {}),
-        };
-        resolve({ authenticated: true, ...(Object.keys(account).length ? { account } : {}) });
-      } catch {
-        resolve({ authenticated: false });
-      }
-    });
-  });
-}
-
-export async function claudeSignedIn(
-  cli: string,
-  env: NodeJS.ProcessEnv,
-  run: typeof execCli = execCli,
-): Promise<boolean> {
-  return (await claudeAuthStatus(cli, env, run)).authenticated;
-}
 
 /** Parent-session credentials/routing a named account must not inherit. */
 export const CLAUDE_ACCOUNT_ENV_KEYS = [
@@ -2079,6 +2038,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     const login = new ClaudeLoginController({ cli: config.cli, environment, onAuthenticated: async () => { await refreshModels(); } });
+    let lastAuth: Awaited<ReturnType<typeof claudeAuthStatus>> = {};
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const env = environment();
@@ -2093,7 +2053,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (!input.environment.ANTHROPIC_API_KEY) return { state: "unavailable", version, reason: NO_ANTHROPIC_KEY };
         return { state: "available", version, authenticated: true, account: { method: "api-key" }, ...(update ? { update } : {}), ...(warning ? { warning } : {}), billing: "metered" };
       }
-      const auth = await claudeAuthStatus(config.cli, env);
+      const probed = await claudeAuthStatus(config.cli, env);
+      const auth = probed.authenticated === undefined ? lastAuth : (lastAuth = probed);
       // Turns run on the CLI's own login, so its reported cost is what the call would bill.
       return { state: "available", version, ...auth, ...(update ? { update } : {}), ...(warning ? { warning } : {}), billing: "subscription" };
     };
