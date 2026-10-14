@@ -223,7 +223,6 @@ describe("skill folder sibling reporting", () => {
     const files = result.skills![0]!.files;
     expect(files.find((entry) => entry.path === "SKILL.md")?.content).toBe("# A skill");
     expect(files.find((entry) => entry.path === "notes.md")?.content).toBe("# A skill");
-    // Not markdown-only, not downloadable: still named, never fetched.
     expect(files.filter((entry) => entry.content === "").map((entry) => entry.path)).toEqual(["run.sh", "big.bin", "scripts/"]);
   });
 
@@ -241,7 +240,6 @@ describe("skill folder sibling reporting", () => {
     if ("error" in result) throw new Error(result.error);
     const files = result.skills![0]!.files;
     expect(files.find((entry) => entry.path === "SKILL.md")?.content).toBe("# A skill");
-    // 40 filler .md files: 29 downloaded beside SKILL.md, the rest named.
     expect(files.filter((entry) => entry.path.endsWith(".md") && entry.content !== "").length).toBe(30);
     expect(files.filter((entry) => entry.content === "").length).toBe(11);
   });

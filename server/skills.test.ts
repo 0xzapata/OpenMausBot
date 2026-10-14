@@ -201,7 +201,6 @@ describe("parseSkillMd", () => {
   });
 
   it("reads descriptions with a colon+space, an unmatched quote, or wrapping quotes without losing bytes", () => {
-    // (source frontmatter value → what the parsed skill must say)
     const cases: Array<[string, string]> = [
       ["Show me your work: evidence, not vibes.", "Show me your work: evidence, not vibes."],
       ['Proves it works, then shows the receipt"', 'Proves it works, then shows the receipt"'],

@@ -36,11 +36,7 @@ export function parseSkillTags(raw: string | undefined): string[] | undefined {
   return tags.length > 0 ? tags : undefined;
 }
 
-/** Read one YAML single-line scalar the way the frontmatter writers of the
- * world actually write them. Only a *matched* pair of surrounding quotes is
- * unwrapped: a plain value that merely starts or ends with a quote character
- * keeps it, so `it works"` is never truncated to `it works`. Double-quoted
- * values unescape \" \\ \n; single-quoted values fold '' to '. */
+/** Unwraps only a matched quote pair, per YAML: "…" unescapes \" \\ \n, '…' folds '' to '. */
 function unquoteScalar(raw: string): string {
   const value = raw.trim();
   if (value.length >= 2) {
@@ -68,11 +64,7 @@ function unquoteScalar(raw: string): string {
   return value;
 }
 
-/** Serialize one frontmatter value as a single-line YAML scalar that
- * parseSkillMd reads back byte-faithfully: plain when that is unambiguous,
- * otherwise a double-quoted scalar with " and \ escaped. Used wherever a
- * SKILL.md is regenerated from parsed fields, so a description containing
- * ": " or quotes can never come back out as invalid YAML. */
+/** One-line YAML scalar that parseSkillMd reads back unchanged: plain when unambiguous, else double-quoted. */
 export function yamlFrontmatterValue(value: string): string {
   const plain =
     value.length > 0 &&

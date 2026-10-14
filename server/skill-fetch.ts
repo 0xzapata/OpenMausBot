@@ -212,19 +212,13 @@ export async function discoverSkillDirs(target: Target, fetcher: typeof fetch): 
   return found;
 }
 
-/** Fetch ONE skill folder's markdown files. `dir` must contain SKILL.md.
- * Every other entry in the folder listing — non-markdown files, files without
- * a download URL, subdirectories, markdown past the download cap — comes back
- * as a path-only file with empty content, so the install reports it in
- * skippedFiles instead of dropping it silently. */
+/** Entries that are not downloaded come back path-only (empty content) so the install lists them as skipped. */
 export async function fetchSkillDir(target: Target, dir: string, fetcher: typeof fetch): Promise<FetchedSkill> {
   const entries = await listDir(target, dir, fetcher);
   const markdown = entries.filter((entry) => entry.type === "file" && /\.md$/i.test(entry.name) && entry.download_url);
   if (!markdown.some((entry) => entry.name === "SKILL.md")) {
     throw new Error(`no SKILL.md in ${dir || "the repository root"}`);
   }
-  // SKILL.md is the one required file: download it even when a wall of
-  // alphabetically earlier markdown would push it past the cap.
   const downloadable = [
     markdown.find((entry) => entry.name === "SKILL.md")!,
     ...markdown.filter((entry) => entry.name !== "SKILL.md").slice(0, MAX_FILES - 1),
