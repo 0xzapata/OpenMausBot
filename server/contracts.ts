@@ -373,6 +373,8 @@ export interface TextGenerationUsage {
 export interface TextGenerationOptions {
   signal?: AbortSignal;
   onUsage?: (usage: TextGenerationUsage) => void;
+  /** How long the caller will wait; drivers with their own process timer use it instead of their default. */
+  timeoutMs?: number;
 }
 
 export interface ProviderInstance {

@@ -10,6 +10,7 @@ import { removeTempDir } from "../testing/cleanup.ts";
 import { CodexDriver } from "./codex.ts";
 import {
   CODEX_BACKGROUND_EFFORT,
+  CODEX_BACKGROUND_TIMEOUT_MS,
   codexBackgroundArgs,
   codexBackgroundModel,
   runCodexOneShot,
@@ -175,6 +176,13 @@ describe("Codex generateMemoryText (fake CLI)", () => {
     const usage = vi.fn();
     await expect(codex.generateMemoryText!("hello", { onUsage: usage })).rejects.toThrow(/tried to use a tool \(command_execution\)/);
     expect(usage).not.toHaveBeenCalled();
+  });
+
+  it("waits as long as the caller's options say", async () => {
+    const env = { ...process.env, FAKE_CODEX_TEXT_MODE: "hang", FAKE_CODEX_TEXT_LOG: log };
+    const started = Date.now();
+    await expect(runCodexOneShot({ spawn: spawnCli, kill: killCliTree, cli: FAKE_CLI, env, prompt: "hello", model: "gpt-6-luna", providerArgs: [], options: { timeoutMs: 1_500 } })).rejects.toThrow(/timed out/);
+    expect(Date.now() - started).toBeLessThan(CODEX_BACKGROUND_TIMEOUT_MS);
   });
 
   it("stops the process on timeout and on abort", async () => {

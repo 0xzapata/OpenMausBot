@@ -696,7 +696,7 @@ export function attachmentImageUrl(path: string): string | null {
 
 export function attachmentAudioUrl(path: string): string | null {
   const name = attachmentBasename(path);
-  if (!/^[A-Za-z0-9-]+\.mp3$/.test(name)) return null;
+  if (!/^[A-Za-z0-9-]+\.(?:mp3|wav)$/.test(name)) return null;
   return `/api/attachments/${encodeURIComponent(name)}`;
 }
 
