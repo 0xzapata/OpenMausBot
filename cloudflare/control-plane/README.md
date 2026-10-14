@@ -60,6 +60,9 @@ tunnel and DNS IDs would make operator cleanup impossible.
 | `DELETE` | `/v1/installations/:id` | owning account bearer |
 | `GET` | `/v1/installations/self` | installation credential |
 | `GET`, `POST`, `DELETE` | `/v1/installations/self/endpoint` | installation credential |
+| `POST` | `/v1/installations/self/push/register` | installation credential |
+| `POST` | `/v1/installations/self/push/unregister` | installation credential |
+| `POST` | `/v1/installations/self/push/send` | installation credential |
 
 Installation registration requires a stable `clientInstanceId`, a display
 `name`, and a `platform` of `darwin`, `windows`, or `linux`; `appVersion` is
@@ -174,6 +177,82 @@ each eligible sweep emits a distinct aggregate operator-attention log without
 installation or account identifiers. This bounded sweep prevents a transient
 provider failure from orphaning resources forever without creating an
 unbounded scheduled invocation.
+
+### Phone push relay
+
+Closed-app alerts for the iOS app (harness side: `server/phone-push.ts`,
+wire contract version 1 in `shared/phone-push.ts`; app side:
+`docs/ios-companion.md`). Apple accepts pushes for an App Store or
+TestFlight build only when they are signed with the publishing team's key, and
+a harness may run on a VPS or in a container. So the project's key lives here,
+and a harness asks this Worker to push with the installation credential it
+already holds. Account bearer tokens are refused. All three routes take
+`application/json` and answer with the usual `{ "error": "<code>" }` shape.
+
+- `register` `{ "v": 1, "token": "<lowercase hex>", "environment": "production" | "sandbox" }`
+  stores the APNs device token for this installation (idempotent; it updates
+  the environment). At most 50 tokens per installation (`409
+  push_device_limit`) and 120 registrations per hour. An environment
+  `APNS_ENVIRONMENTS` does not list is `400 push_environment_not_allowed`.
+- `unregister` `{ "v": 1, "token": "…" }` deletes it. `204`.
+- `send` `{ "v": 1, "token": "…", "pairing"?: "…", "notification": { "kind",
+  "title", "botId", "botName", "threadId", "roomId"?, "roomName"? } }` pushes
+  to a token **this** installation registered, else `404
+  push_device_unknown` (the harness then registers and retries once). The
+  schema is strict: `kind` is `[a-z-]`, ids are `[\w-]{1,120}`, `title` is one
+  line of at most 200 characters, names at most 80. Any other field (a
+  `body`, a message) is `400 invalid_request`, never silently dropped, so no
+  message text can reach Apple through this route. `202 { "sent": true }` on
+  success. Limits: 600 sends per installation and 60 per token per hour (`429
+  rate_limited`, `Retry-After: 60`).
+
+The APNs request is `POST https://api.push.apple.com/3/device/<token>` (or
+`api.sandbox.push.apple.com` for a `sandbox` token) with `apns-push-type:
+alert`, `apns-priority: 10`, a 24-hour `apns-expiration`, `apns-topic` set to
+the bundle id, and an `apns-collapse-id` derived from the kind and thread, so
+a repeat replaces the older alert. The payload is
+`{ "aps": { "alert": { "title" }, "sound": "default", "thread-id",
+"interruption-level" }, "omb": { "v": 1, "kind", "botId", "botName",
+"threadId", "roomId"?, "roomName"?, "pairing"? } }`; `interruption-level` is
+`time-sensitive` for `approval`, `question`, `sign-in` and `mention`, else
+`active`.
+
+The provider token is an ES256 JWT signed with WebCrypto (no dependency):
+`{ "alg": "ES256", "kid": APNS_KEY_ID }`, `{ "iss": APNS_TEAM_ID, "iat" }`.
+Its `iat` is the start of the current 50-minute window, so every isolate
+signs for the same window and Apple's 20-to-60-minute refresh rule holds
+however many isolates send; each isolate caches its token for the window.
+
+APNs answers are mapped for the harness: `410 Unregistered`,
+`BadDeviceToken` and `DeviceTokenNotForTopic` delete the token for every
+installation that registered it in the same APNs environment (for a `410`,
+only registrations older than Apple's `timestamp`) and return `410
+push_device_unregistered` (the harness drops it too); an expired or invalid provider token is re-signed and retried once,
+then `503 push_unavailable`; APNs `429` is `429 rate_limited`; anything else
+is `502 push_failed`. Failures log the request id, APNs status and reason
+only, never the token or payload.
+
+Without all of the settings below every push route answers `503
+push_unavailable` and harnesses back off for an hour. Revoking an
+installation deletes its tokens. D1 stores, per row, the installation id, the
+token, its SHA-256, the environment and timestamps (`migrations/0008`).
+
+**Secrets the maintainer sets** (all with `wrangler secret put <NAME>
+--config wrangler.jsonc`; none belongs in `vars`, this file, or CI output):
+
+| Name | Value |
+| --- | --- |
+| `APNS_KEY_ID` | The 10-character Key ID of the APNs auth key (`.p8`) in the Apple Developer account. |
+| `APNS_TEAM_ID` | The 10-character Team ID that owns the app. |
+| `APNS_PRIVATE_KEY` | The whole `.p8` file, PEM, e.g. `wrangler secret put APNS_PRIVATE_KEY < AuthKey_XXXXXXXXXX.p8`. Escaped `\n` newlines are accepted too. |
+| `APNS_BUNDLE_ID` | The iOS app's bundle id, which is the APNs topic. |
+| `APNS_ENVIRONMENTS` | Optional. `production` (default), `sandbox`, or `production,sandbox` to also accept development builds' tokens. |
+
+They are deliberately not in `secrets.required`: the Worker is complete
+without them, with phone push off, until the Apple key exists. Apply `migrations/0008` before
+deploying the Worker that uses it. For a local trial with `wrangler dev`,
+`.dev.vars` is read only for declared names, so add these names to
+`secrets.required` in a local, uncommitted copy of the config.
 
 ### Tunnel capacity and idle reclaim
 
@@ -599,7 +678,10 @@ Before a production deployment, an operator must:
    and added later (see **Several Cloudflare accounts**).
 7. Replace `ALLOWED_ORIGINS` with a comma-separated allow-list of exact HTTPS
    application origins. Wildcards are deliberately unsupported.
-8. Deploy the Worker and verify that `GET <BETTER_AUTH_URL>/healthz` returns
+8. Optional, for closed-app phone alerts: apply `migrations/0008`, then set
+   the APNs secrets listed under **Phone push relay**. Without them the push
+   routes answer `503 push_unavailable` and nothing else changes.
+9. Deploy the Worker and verify that `GET <BETTER_AUTH_URL>/healthz` returns
    `"ok": true` and `"service": "openmausbot-control-plane"` over HTTPS
    before shipping the desktop build. Electron probes this endpoint and
    keeps new hosted onboarding hidden until it is healthy; an already signed-in
