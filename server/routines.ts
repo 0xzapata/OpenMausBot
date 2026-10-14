@@ -1107,12 +1107,7 @@ export class RoutineManager {
 
   remove(id: string, request?: RoutineRequestCommitFor<"delete">): boolean {
     this.assertWritable();
-    if (request) {
-      const receipt = this.matchingRoutineRequestReceipt(request);
-      if (receipt) {
-        return true;
-      }
-    }
+    if (request && this.matchingRoutineRequestReceipt(request)) return true;
     const at = this.routines.findIndex((r) => r.id === id);
     if (at === -1) return false;
     const changedRuns: RoutineRun[] = [];
@@ -1126,7 +1121,6 @@ export class RoutineManager {
           run.finishedAt = this.now();
           changedRuns.push(run);
         } else if (!run.seenAt && isRoutineProblemRun(run)) {
-          // Nothing is left to fix once the routine is gone, so its failures stop lighting the Routines indicators.
           run.seenAt = this.now();
           changedRuns.push(run);
         }
