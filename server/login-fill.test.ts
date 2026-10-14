@@ -22,7 +22,7 @@ function setup(url: string, html: string, saved: Login[]) {
   }));
   const deps: FillLoginDeps = {
     engine: (args) => page!.engine(args),
-    insertText: (port, text) => page!.insertText(port, text),
+    insertText: (text) => page!.insertText(text),
     remember: (value, kind) => { remembered.push([kind, value]); },
     now: () => NOW,
     sleep: async () => undefined,
@@ -58,6 +58,9 @@ describe("fill_login on a saved login's own page", () => {
     expect(page.field("input[name=q]").value).toBe("");
     expect(page.field("input[name=csrf]").value).toBe("token-not-a-secret");
     expect(page.window.document.querySelectorAll("[data-omb-login]")).toHaveLength(0);
+    // The typing goes over the session's relay (browser-relay.ts): fill_login
+    // itself asks the engine for no stream.
+    expect(page.engineCalls.filter((args) => args[0] === "stream")).toEqual([]);
     expect(remembered).toContainEqual(["password", PASSWORD]);
     expectNoSecret(outcome, page, [PASSWORD]);
   });

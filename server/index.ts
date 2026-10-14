@@ -426,12 +426,13 @@ import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { HeldSecrets, LoginStore } from "./login-store.ts";
 import { OnePasswordLogins, sdkOnePasswordClient, type OnePasswordSdk } from "./onepassword.ts";
 import { nativeRequire } from "./data/engine.ts";
-import { fillLogin, streamInsertText, type FillCandidate } from "./login-fill.ts";
+import { fillLogin, type FillCandidate } from "./login-fill.ts";
+import { relayFrame, relayInsertText } from "./browser-relay.ts";
+import { browserEvidence, browserSteps, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
 import { BrowserLive } from "./browser-live.ts";
 import {
-  agentBrowserFrame,
   agentBrowserIntegration,
   browserEngineEncryptionKey,
   prepareBrowserSessionState,
@@ -584,6 +585,7 @@ import { createBotSkillsRoutes } from "./routes/bot-skills.ts";
 import { createTeamContextRoutes } from "./routes/team-context.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
+import { createBrowserEvidenceRoutes } from "./routes/browser-evidence.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
 import { createRoomHoldRoutes } from "./routes/room-holds.ts";
 import { createGroupRoutes } from "./routes/groups.ts";
@@ -3297,9 +3299,8 @@ function cancelDirectTurnDispatch(botId: string, expectedThreadId?: string): Dir
   return claim;
 }
 
-/** The bot's browser for this turn: agent-browser, one isolated session per
- * browser profile or per bot (docs/plans/browser-engine.md). Null, with the
- * reason logged once, when the engine is not on this machine. */
+/** The bots' browsers: agent-browser, one isolated session per browser
+ * profile or per bot (docs/plans/browser-engine.md). */
 const browserRuntime = new BrowserRuntime({
   // The bot's restart_browser tool. An open Browser panel watched the old
   // browser; drop its stream the way the panel's own Restart button does.
@@ -3309,6 +3310,7 @@ const browserRuntime = new BrowserRuntime({
     return closed;
   },
   applyViewport: (spec) => setBrowserViewport(spec.command, spec.env),
+  steps: browserSteps, // page health for every bot, recorded steps for some (browser-steps.ts)
   // Opt-in diagnostics: one line per bot browser call and preview frame.
   onTiming: process.env.OMB_BROWSER_TIMING === "1" ? (timing) => console.info(formatBrowserTiming(timing)) : undefined,
 });
@@ -11956,14 +11958,11 @@ async function startTurn(
         const selectedProfile = liveBot.browserProfile;
         browser = await browserIntegration(bot.id, selectedProfile, { threadId, generation: dispatchClaimId });
         if (browser) integrations.browser = browser.integration;
-        // The browser lost its frame source when the Electron surface was
-        // removed: previewCapture is set by the computer branches above, and
-        // nothing replaced it here. A bot with only a browser was pictured
-        // not at all; a bot with both was pictured on its desktop even while
-        // the work was a web page, because agent-browser runs its own headless
-        // Chrome on the host rather than inside that desktop.
+        // The browser's own frames, over its relay and never a launch
+        // (browser-relay.ts); a bot with a desktop too is pictured on the page
+        // it works on, since agent-browser runs its own Chrome on the host.
         if (browser) {
-          const frame = { binaryPath: browser.spec.command, env: browser.spec.env };
+          const spec = browser.spec;
           const session = browser.session;
           // The preview shares the profile with tool calls: claim the same
           // exclusive browser:<session> resource the tools/call path claims,
@@ -11971,7 +11970,7 @@ async function startTurn(
           browserCapture = async () => {
             const owner = turnResourceOwners.get(threadId);
             if (!owner || !claimTurnResource(owner, `browser:${session}`)) throw new Error("another thread is using this browser");
-            return browserRuntime.previewFrame(session, () => agentBrowserFrame(frame));
+            return browserRuntime.previewFrame(session, () => relayFrame(spec, session));
           };
         }
       }
@@ -16674,15 +16673,15 @@ async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, 
   const env = browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session });
   const username = typeof rawUsername === "string" ? rawUsername.slice(0, 512) : undefined;
   try {
-    const outcome = await browserRuntime.withAgentAction(session, () => fillLogin({
+    const outcome = await browserRuntime.withSecretInput(session, spec, () => fillLogin({
       username,
       candidates: (host) => loginCandidates(bot.id, host),
       available: async () => availableLogins(bot.id),
     }, {
       engine: (args) => inRunningBrowser(spec.command, env, args),
-      insertText: streamInsertText,
+      insertText: (text) => relayInsertText(spec, session, text),
       remember: (value, kind) => heldSecrets.remember(value, kind),
-    }));
+    }), stepContext(current, capability, () => liveTurnByThread.get(threadId) ?? null));
     if (outcome.ok && outcome.loginId) {
       logins.markUsed(outcome.loginId);
       onePassword.markUsed(outcome.loginId);
@@ -17636,6 +17635,7 @@ ROUTES.push(createBrowserSiteRoutes({
   list: (target) => listSignedInSites(target),
   signOut: (target, site) => signOutOfSites(target, site),
 }));
+ROUTES.push(createBrowserEvidenceRoutes({ evidence: browserEvidence.attach({ onChange: (listener) => store.onChange(listener), threadExists: (id) => Boolean(threadOwner(id)) }), threadExists: (id) => Boolean(threadOwner(id)) }));
 ROUTES.push(createLoginRoutes({
   list: () => logins.list(),
   create: (input) => logins.create(input),
@@ -18619,7 +18619,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           if (body.method === "tools/call" && !claimTurnResource(internalCapability, `browser:${browser.session}`)) {
             throw Object.assign(new Error("another thread is using this browser — pause browser work until that thread finishes"), { status: 409 });
           }
-        });
+        }, stepContext(bot, internalCapability, () => liveTurnByThread.get(internalCapability.threadId) ?? null));
         requireActiveInternalCapability();
         return json(res, 200, { result });
       }

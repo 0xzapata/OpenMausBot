@@ -7,14 +7,13 @@ import { delimiter, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  agentBrowserFrame,
   agentBrowserIntegration,
   browserEngineEncryptionKey,
   cachedAgentBrowserVersion,
   pendingAgentBrowserVersionProbe,
   browserEngineStatus,
   describeBrowserEngine,
-  browserDaemonPidPath,
+  browserDaemonFile,
   browserRestoreKey,
   browserSessionId,
   clearBrowserSessionState,
@@ -205,7 +204,7 @@ describe("deleting one browser session's saved logins", () => {
   it("finishes when its daemon is gone even though a new one took the session's name", async () => {
     const { options } = fixture();
     const env = { ...options.env, AGENT_BROWSER_SESSION: "work" };
-    const pidFile = browserDaemonPidPath(env);
+    const pidFile = browserDaemonFile(env, ".pid");
     mkdirSync(join(pidFile, ".."), { recursive: true });
     writeFileSync(pidFile, "2147483000");
     vi.mocked(spawn).mockImplementation((_binary, args) => lifecycleChild(args, { sessions: ["work"], onClose: () => writeFileSync(pidFile, "2147483001") }));
@@ -290,7 +289,7 @@ describe("a browser daemon that will not close (#2603)", () => {
     [{}, "/h/.agent-browser/work.pid"],
   ])("finds the daemon's pid file where agent-browser writes it (%j)", (extra, expected) => {
     if (!posix) return;
-    expect(browserDaemonPidPath({ HOME: "/h", USERPROFILE: "/h", AGENT_BROWSER_SESSION: "work", ...extra })).toBe(expected);
+    expect(browserDaemonFile({ HOME: "/h", USERPROFILE: "/h", AGENT_BROWSER_SESSION: "work", ...extra }, ".pid")).toBe(expected);
   });
 
   // A symlink to node stands in for the agent-browser binary: `ps` shows the
@@ -357,7 +356,7 @@ describe("a browser daemon that will not close (#2603)", () => {
     await vi.waitFor(() => expect(existsSync(files.BROWSER_PID) && existsSync(files.HELPER_PID) && readFileSync(files.HELPER_PID, "utf8").trim()).toBeTruthy(), { timeout: 5_000 });
     const pids = { daemon, browser: Number(readFileSync(files.BROWSER_PID, "utf8")), helper: Number(readFileSync(files.HELPER_PID, "utf8")) };
     groups.push(pids.browser);
-    writeFileSync(browserDaemonPidPath(env), String(daemon));
+    writeFileSync(browserDaemonFile(env, ".pid"), String(daemon));
     const running = new Set(["work"]);
     vi.mocked(spawn).mockImplementation(((binary: string, args: readonly string[], spawnOptions: object) => {
       if (args[0] === "session") return lifecycleChild(args, { sessions: [...running] });
@@ -446,7 +445,7 @@ describe("a browser daemon that will not close (#2603)", () => {
     const { actual, binaryPath, env } = await engine({ close: () => 1 });
     const stranger = actual.spawn("sleep", ["30"], { stdio: "ignore" });
     try {
-      writeFileSync(browserDaemonPidPath(env), String(stranger.pid));
+      writeFileSync(browserDaemonFile(env, ".pid"), String(stranger.pid));
       expect(await closeBrowserSession(binaryPath, env, 1_000)).toBe(false);
       expect(alive(stranger.pid!)).toBe(true);
     } finally {
@@ -463,7 +462,7 @@ describe("a browser daemon that will not close (#2603)", () => {
     for (const taken of [{ AGENT_BROWSER_DAEMON: "1", AGENT_BROWSER_SESSION: "play" }, { AGENT_BROWSER_SESSION: "work" }]) {
       const other = actual.spawn(binaryPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", env: { PATH: process.env.PATH, ...taken } });
       groups.push(other.pid!);
-      writeFileSync(browserDaemonPidPath(env), String(other.pid));
+      writeFileSync(browserDaemonFile(env, ".pid"), String(other.pid));
       expect(await closeBrowserSession(binaryPath, env, 500)).toBe(false);
       expect(alive(other.pid!)).toBe(true);
     }
@@ -939,52 +938,5 @@ describe("what a bot gets", () => {
     expect(fresh).toMatch(/^[0-9a-f]{64}$/u);
     expect(fresh).not.toBe(key);
     mkdirSync(join(dataDir, "unused"));
-  });
-});
-
-
-describe("agentBrowserFrame", () => {
-  /** Use a real Node child on every OS, not an unlaunchable Windows shebang.
-   * Only the executable is substituted; arguments, env and file IO are real. */
-  async function fakeBinary(body: string): Promise<string> {
-    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    vi.mocked(spawn).mockImplementationOnce((_binary, args, options) => {
-      expect(_binary).toBe("fixture-agent-browser");
-      expect(args?.[0]).toBe("screenshot");
-      return actual.spawn(process.execPath, ["-e", body, ...args ?? []], options);
-    });
-    return "fixture-agent-browser";
-  }
-
-  it("returns the picture the browser wrote, base64 encoded", async () => {
-    // `screenshot <path>` is argument 2; the CLI writes the file there.
-    const binaryPath = await fakeBinary('require("node:fs").writeFileSync(process.argv[2], "JPEGDATA")');
-    const frame = await agentBrowserFrame({ binaryPath, env: { AGENT_BROWSER_SESSION: "bot-1" } });
-    expect(frame.format).toBe("jpeg");
-    expect(Buffer.from(frame.png, "base64").toString()).toBe("JPEGDATA");
-    // JPEG for this command only: the bot's own screenshot tool keeps its format.
-    expect(vi.mocked(spawn).mock.calls[0]![1]!.slice(2)).toEqual(["--screenshot-format", "jpeg", "--screenshot-quality", "80"]);
-    expect(existsSync(vi.mocked(spawn).mock.calls[0]![1]![1]!)).toBe(false);
-  });
-
-  it("carries the mount's session env, so it pictures the bot's own browser", async () => {
-    const binaryPath = await fakeBinary('require("node:fs").writeFileSync(process.argv[2], process.env.AGENT_BROWSER_SESSION)');
-    const frame = await agentBrowserFrame({ binaryPath, env: { AGENT_BROWSER_SESSION: "profile-x" } });
-    expect(Buffer.from(frame.png, "base64").toString()).toBe("profile-x");
-  });
-
-  it("fails with the browser's own reason when the capture fails", async () => {
-    const binaryPath = await fakeBinary('process.stderr.write("no open page"); process.exitCode = 3');
-    await expect(agentBrowserFrame({ binaryPath, env: {} })).rejects.toThrow(/no open page/);
-  });
-
-  it("fails rather than inventing a picture the browser never wrote", async () => {
-    const binaryPath = await fakeBinary("process.exitCode = 0");
-    await expect(agentBrowserFrame({ binaryPath, env: {} })).rejects.toThrow(/did not write/);
-  });
-
-  it("gives up on a hung browser instead of holding the turn open", async () => {
-    const binaryPath = await fakeBinary("setTimeout(() => {}, 5000)");
-    await expect(agentBrowserFrame({ binaryPath, env: {}, timeoutMs: 150 })).rejects.toThrow(/in time/);
   });
 });

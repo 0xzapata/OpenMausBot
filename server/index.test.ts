@@ -9256,6 +9256,20 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("saves Record browser steps as a true-or-false bot setting, shown to the app", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Visitor" })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { recordBrowserSteps: "yes" })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { recordBrowserSteps: true })).status).toBe(200);
+      const listed = async () => (await api("GET", "/api/bots")).body.bots.find((entry: { id: string }) => entry.id === bot.id);
+      expect((await listed()).recordBrowserSteps).toBe(true);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { recordBrowserSteps: false })).status).toBe(200);
+      expect((await listed()).recordBrowserSteps).toBe(false);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("Works on: Off withholds the browser and tells the model why", async () => {
     // The report behind this: a bot set to Off reached for a browser anyway,
     // because Off withheld only the computer. The dispatched prompt is the
