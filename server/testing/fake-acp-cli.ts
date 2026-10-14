@@ -219,7 +219,7 @@ const writeDumpAtomic = (path: string, contents: string): void => {
       }
     }
   } finally {
-    try { unlinkSync(tmp); } catch { /* already renamed, or failed cleanup */ }
+    try { unlinkSync(tmp); } catch {}
   }
 };
 if (process.env.FAKE_ACP_DUMP) {

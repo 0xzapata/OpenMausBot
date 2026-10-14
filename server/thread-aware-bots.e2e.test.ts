@@ -454,8 +454,6 @@ describe("coordinate_bots on a teammate", () => {
       expect(afterArchive.body.receipts).toEqual([expect.objectContaining({ requestId: first.id, threadId: first.threadId, detail: expect.stringContaining("already sent") })]);
       expect((await botState(near.id)).tasks).toHaveLength(3);
       expect((await messages(pm.threadId)).filter(message => message.threadRef?.threadId === first.threadId)).toHaveLength(1);
-      // Released only now: once the job completes, a further send to Near is
-      // refused as an acknowledgement of finished work.
       release(job);
       await expect.poll(() => handoffs().find(node => node.threadId === job)?.status, { timeout: 15_000 }).toBe("completed");
     } finally {
