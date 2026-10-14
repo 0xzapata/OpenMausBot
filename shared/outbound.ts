@@ -1,12 +1,6 @@
-// Outbound actions: the calls that reach a person outside the app, or move
-// money. Sending an email, replying in a thread, posting to a channel,
-// publishing, inviting, sharing, refunding, charging. These get their own
-// confirmation regardless of approval level, and an optional daily
-// allowance per bot, because the cost of one wrong send is paid by someone
-// who never saw the bot.
-//
-// Shared between the harness (which enforces it) and the app (which shows
-// the setting), so both agree on what "outbound" means.
+// Outbound actions: calls that reach a person outside the app or move money.
+// They get their own confirmation regardless of approval level, and an optional
+// daily allowance per bot. Shared by the harness (which enforces it) and the app.
 
 export type OutboundPolicy = {
   /** ask: every outbound call waits for a tap. allow: up to dailyCap a day. */
