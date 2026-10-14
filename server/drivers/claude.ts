@@ -53,6 +53,7 @@ import {
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { runKeepWarmPing, type KeepWarmContract } from "./claude-keepwarm.ts";
+import { BACKGROUND_CALL_TIMEOUT_MS, backgroundCallArgs } from "./claude-background.ts";
 import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
@@ -431,9 +432,6 @@ export const CLAUDE_FLAG_FLOORS = {
   // ping as an argument error, which ends the keep-warm window, nothing else.
   "--fork-session": [2, 1, 0],
   "--no-session-persistence": [2, 1, 0],
-  // The background one-shot call (backgroundCallArgs) passes `--tools ""`.
-  // Not bisected: the guest path passes --tools from 2.1.257, so it is known
-  // there; an older CLI runs the call with its default tools, as before.
   "--tools": [2, 1, 257],
 } as const satisfies Record<string, ClaudeCliVersion>;
 
@@ -447,34 +445,6 @@ export const CLAUDE_FLAG_FLOORS = {
 const withWhy = (refusal: string, why: string | undefined) => why ? `${refusal} ${why}` : refusal;
 
 export const GUEST_CLAUDE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "WebSearch"] as const;
-
-/** A background call (memory upkeep, the skill review, titles, approval
- * summaries) that names no deadline of its own. */
-export const BACKGROUND_CALL_TIMEOUT_MS = 60_000;
-
-/** The CLI arguments of a background one-shot call. Isolated as a turn is
- * (no MCP servers, no user or local settings, so none of this machine's
- * hooks, skills or connectors) and with no built-in tools: without these
- * the CLI mounted every MCP server, plugin and skill of the person's own
- * Claude Code into each call, ~19k extra input tokens on a measured desktop,
- * and a reviewer told it had no tools in fact had them all. Each flag only
- * on a CLI that accepts it (CLAUDE_FLAG_FLOORS). */
-export function backgroundCallArgs(input: {
-  model: string;
-  outputFormat: "json" | "text";
-  cliVersion: ClaudeCliVersion | null;
-  /** False while OMB_CLAUDE_INHERIT_USER_CONFIG asks for the person's own setup. */
-  isolated: boolean;
-}): string[] {
-  const args = ["-p", "--model", input.model, "--output-format", input.outputFormat];
-  if (claudeCliSupports(input.cliVersion, "--tools")) args.push("--tools", "");
-  if (claudeCliSupports(input.cliVersion, "--no-session-persistence")) args.push("--no-session-persistence");
-  if (input.isolated) {
-    if (claudeCliSupports(input.cliVersion, "--strict-mcp-config")) args.push("--strict-mcp-config");
-    if (claudeCliSupports(input.cliVersion, "--setting-sources")) args.push("--setting-sources", "project");
-  }
-  return args;
-}
 /** Tools a guest's session must never report in its init frame. */
 const GUEST_FORBIDDEN_TOOLS = new Set(["Bash", "PowerShell", "WebFetch", "BashOutput", "KillShell", "KillBash", "NotebookEdit", "Task", "Agent"]);
 /** The permission block a guest's session runs under, as a second layer. */
@@ -2773,9 +2743,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     /** One-shot Claude call with the prompt on stdin, never argv. Approval
      * summaries can contain paths, commands, or secrets, so the generic
      * `claude -p "prompt"` shape is not safe for review. No tools or MCP
-     * servers are mounted in this isolated process (backgroundCallArgs),
-     * and it runs in an empty folder, so no project settings, CLAUDE.md or
-     * .mcp.json are picked up either. */
+     * servers are mounted in this isolated process (./claude-background.ts). */
     const generateReview = (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"], timeoutMs?: number): Promise<string> =>
       new Promise((resolve, reject) => {
         if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) {
@@ -2785,15 +2753,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const model = config.managedModels?.[0] ?? "claude-haiku-4-5";
         const env = environment(model);
         const cwd = mkdtempSync(join(tmpdir(), "omb-claude-background-"));
-        const child = spawnCli(
-          config.cli,
-          backgroundCallArgs({ model, outputFormat: onUsage ? "json" : "text", cliVersion, isolated: !inheritsUserConfig(env) }),
-          {
-            cwd,
-            stdio: ["pipe", "pipe", "pipe"],
-            env,
-          },
-        );
+        const args = backgroundCallArgs({ model, outputFormat: onUsage ? "json" : "text", supports: (flag) => claudeCliSupports(cliVersion, flag), isolated: !inheritsUserConfig(env) });
+        const child = spawnCli(config.cli, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env });
         let stdout = "";
         let stderr = "";
         let settled = false;
@@ -2810,8 +2771,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           killCliTree(child);
           finish(new Error("Claude review aborted"));
         };
-        // the caller's own deadline when it names one (the skill review waits
-        // minutes); a caller that names none still gets a bounded call
         const timer = setTimeout(() => {
           killCliTree(child);
           finish(new Error("Claude review timed out"));

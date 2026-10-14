@@ -17,10 +17,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA_DIR, ensureDirs, instanceConfigs, NATIVE_DIR } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
+import { BACKGROUND_CALL_TIMEOUT_MS, backgroundCallArgs } from "./claude-background.ts";
 import {
   autoCompactWindow,
-  BACKGROUND_CALL_TIMEOUT_MS,
-  backgroundCallArgs,
   brokerSocketCandidates,
   claudeCliSupports,
   claudeCliUpdate,
@@ -3650,13 +3649,14 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("passes only the background flags the installed CLI accepts", () => {
     const base = { model: "claude-haiku-4-5", outputFormat: "text" as const };
-    expect(backgroundCallArgs({ ...base, cliVersion: [2, 1, 296], isolated: true })).toEqual([
+    const cli = (version: [number, number, number]) => (flag: Parameters<typeof claudeCliSupports>[1]) => claudeCliSupports(version, flag);
+    expect(backgroundCallArgs({ ...base, supports: cli([2, 1, 296]), isolated: true })).toEqual([
       "-p", "--model", "claude-haiku-4-5", "--output-format", "text",
       "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "project",
     ]);
     // OMB_CLAUDE_INHERIT_USER_CONFIG keeps the person's own setup, still without tools
-    expect(backgroundCallArgs({ ...base, cliVersion: [2, 1, 296], isolated: false })).not.toContain("--strict-mcp-config");
-    expect(backgroundCallArgs({ ...base, cliVersion: [1, 0, 100], isolated: true })).toEqual([
+    expect(backgroundCallArgs({ ...base, supports: cli([2, 1, 296]), isolated: false })).not.toContain("--strict-mcp-config");
+    expect(backgroundCallArgs({ ...base, supports: cli([1, 0, 100]), isolated: true })).toEqual([
       "-p", "--model", "claude-haiku-4-5", "--output-format", "text", "--strict-mcp-config",
     ]);
   });
