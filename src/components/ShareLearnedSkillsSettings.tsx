@@ -12,9 +12,6 @@ const MODES = [
   { value: "auto", label: "settings.experimental.shareSkillsAuto" },
 ] as const;
 
-/** "Share learned skills with the team" (features.shareLearnedSkills),
- * under the skill authoring switches. Offered only where the shared skills
- * library is on: sharing goes through it. */
 export function ShareLearnedSkillsSettings() {
   const { state, dispatch } = useStore();
   const [saving, setSaving] = useState(false);
@@ -73,8 +70,6 @@ export function ShareLearnedSkillsSettings() {
   );
 }
 
-/** The learned-skill settings under the skill authoring switches: the
- * automatic review, then sharing with the team. */
 export function LearnedSkillsSettings() {
   return (
     <>

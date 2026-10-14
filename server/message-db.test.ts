@@ -419,5 +419,6 @@ describe("recall of digest rows", () => {
     const hits = recallMessages("retry limit", ["t1"]);
     expect(hits.map((h) => h.messageId)).toEqual(["m1", "d1"]);
     expect(hits[1]?.kind).toBe("digest");
+    for (const hit of hits) expect(readMessageText(hit.threadId, hit.messageId)).toMatchObject({ messageId: hit.messageId });
   });
 });

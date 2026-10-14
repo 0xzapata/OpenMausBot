@@ -286,7 +286,6 @@ describe("ApprovalCard learned skills", () => {
     expect(markup).toContain("shared with Colorist");
     expect(markup).not.toContain("shared with Cutter");
     expect(markup).toContain("not shared with Sound");
-    // no store, no "ask" mode: no Share button
     expect(markup).not.toContain("Share with team");
   });
 

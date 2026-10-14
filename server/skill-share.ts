@@ -1,29 +1,6 @@
-// Share learned skills with the author's team (features.shareLearnedSkills,
-// only while features.skillsLibrary is on).
-//
-// A skill a bot learns (skill_manage, the automatic skill review) lands in
-// that bot's private skills store. Sharing moves it into the shared skills
-// library right away — the same move the boot migration makes: install the
-// exact reviewed bytes, record the author's assignment durably, archive the
-// private copy write-once, drop its manifest entry — and assigns it to every
-// bot in the author's team (bots in the same sidebar section). A teammate
-// that already has a private skill of that name keeps it; the receipt says
-// so. Once shared, an update by any bot it is assigned to rewrites the
-// library copy while it is still the version that bot read.
-//
-// Prompt-cache safety. A teammate's existing conversations must not see
-// their system prompt change because a skill was shared: that would throw
-// away the provider's cached prefix of a long conversation. So every
-// assignment made by a share is recorded with its time, and a conversation
-// that started before it keeps that skill out of its skills index for good.
-// It learns about the skill instead from a one-time note added to its next
-// user turn. New conversations see the skill in the index like any other.
-//
-// Audience. A skill carries what its bot learned where it learned it, so it
-// only reaches teammates that no more people can see than could see that
-// place (the author, narrowed to a room's audience when learned in one):
-// a wider teammate is skipped and named on the receipt, and an update is
-// refused while a wider bot has the skill assigned.
+// Invariants: a share never changes the skills index of a conversation that started before it (the provider's
+// cached prefix survives; the conversation gets a one-time note instead), and a skill reaches only teammates
+// that no more people can see than could see where it was learned.
 import { readdirSync, readFileSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -52,9 +29,6 @@ import type { SkillShareRecord } from "../shared/skill-request.ts";
 
 export type ShareLearnedSkillsMode = "off" | "ask" | "auto";
 
-/** How learned skills reach the author's team. Always "off" while the
- * skills library is off, so flag-off behavior stays byte-identical;
- * otherwise "ask" unless set. */
 export function shareLearnedSkillsMode(cfg: AppConfig): ShareLearnedSkillsMode {
   if (!skillsLibraryEnabled(cfg)) return "off";
   return cfg.features?.shareLearnedSkills ?? "ask";
@@ -65,13 +39,11 @@ export interface ShareBot {
   name: string;
   section?: string;
   assignedSkills?: string[];
-  /** Who may see the bot (server/bot-visibility.ts); absent is everyone. */
+  /** Absent: everyone may see the bot. */
   visibility?: unknown;
 }
 
-/** A learned SKILL.md checked exactly as stageSkillWrite checks a staged
- * one (secret scrub, size cap, frontmatter, scan warnings), for the shared
- * library update, which writes the library copy instead of a revision. */
+/** The checks stageSkillWrite applies, for a library write that is never staged. */
 export function prepareLearnedSkillMd(content: string):
   | { content: string; name: string; description: string; sha256: string; warnings: string[] }
   | { error: string } {
@@ -91,8 +63,7 @@ type PatchAssigned = (botId: string, assignedSkills: string[]) => void;
 
 const sectionKey = (section?: string | null): string => section?.trim() || "";
 
-/** The author's team: every other bot in the same sidebar section (the
- * unsectioned bots are the General team). */
+/** Unsectioned bots form one team. */
 export function teammatesOf(author: ShareBot, bots: readonly ShareBot[]): ShareBot[] {
   const team = sectionKey(author.section);
   return bots.filter((bot) => bot.id !== author.id && sectionKey(bot.section) === team);
@@ -103,8 +74,6 @@ function sha256Hex(text: string): string {
 }
 
 const sortedUnique = (names: readonly string[]) => [...new Set(names)].sort();
-
-// --- the shared-assignment record (prompt-cache safety) ------------------
 
 function sharedAssignmentsPath(root: string): string {
   return join(root, "shared-assignments.json");
@@ -133,7 +102,6 @@ function writeJsonRecord(root: string, path: string, value: unknown): void {
   writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
-/** When a share assigned each skill to this bot (epoch ms), by name. */
 export function sharedAssignmentTimes(botId: string, root: string = skillsLibraryRoot()): Record<string, number> {
   const entry = readJsonRecord(sharedAssignmentsPath(root))[botId] ?? {};
   const result: Record<string, number> = {};
@@ -154,10 +122,7 @@ function recordSharedAssignments(root: string, changes: Array<{ botId: string; n
   writeJsonRecord(root, sharedAssignmentsPath(root), all);
 }
 
-/** Shared skills this conversation must keep out of its skills index: the
- * ones a share assigned after the conversation started. `startedAt` is the
- * time of the conversation's first message; a conversation with none is
- * new and withholds nothing. */
+/** `startedAt` is the conversation's first message time; undefined (a new conversation) withholds nothing. */
 function withheldForConversation(botId: string, startedAt: number | undefined, root: string): Set<string> {
   if (startedAt === undefined) return new Set();
   return new Set(Object.entries(sharedAssignmentTimes(botId, root))
@@ -165,10 +130,6 @@ function withheldForConversation(botId: string, startedAt: number | undefined, r
     .map(([name]) => name));
 }
 
-/** The library assignments a conversation's skills index may list. Equal
- * to `assigned` except for skills shared into this bot after the
- * conversation started, so a share never changes an existing
- * conversation's system prompt. */
 export function conversationAssignedSkills(
   botId: string,
   assigned: readonly string[] | undefined,
@@ -186,18 +147,13 @@ function notedNames(root: string, botId: string, threadId: string): string[] {
 }
 
 export interface ShareNote {
-  /** The note for the next user turn; empty when there is nothing new. */
   text: string;
-  /** Remember the note as delivered. Called once the provider accepted the
-   * turn, so a dispatch that fails before that repeats it next turn. */
+  /** Call only after the provider accepted the turn, so a failed dispatch repeats the note. */
   commit(): void;
 }
 
 const NO_NOTE: ShareNote = { text: "", commit: () => {} };
 
-/** The one-time note for skills shared into this bot after the
- * conversation started: added to the next user turn instead of the system
- * prompt and, once committed, never repeated in this conversation. */
 export function prepareShareNote(
   botId: string,
   threadId: string,
@@ -232,8 +188,6 @@ export function prepareShareNote(
   };
 }
 
-// --- sharing -------------------------------------------------------------
-
 function assignTeam(args: {
   author: ShareBot;
   bots: readonly ShareBot[];
@@ -242,7 +196,6 @@ function assignTeam(args: {
   at: number;
   root: string;
   assignAuthor: boolean;
-  /** Who could see where the skill was learned or changed. */
   audience: unknown;
 }): Pick<SkillShareRecord, "assigned" | "skipped"> {
   const assigned: SkillShareRecord["assigned"] = [];
@@ -270,18 +223,13 @@ function assignTeam(args: {
   return { assigned, skipped };
 }
 
-/** Share one of the author's learned skills with its team. A private copy
- * moves into the library (installed, or deduplicated against identical
- * bytes already there); a learned library skill already assigned to the
- * author is only assigned onward. Every refusal returns `{ error }` and
- * leaves the skill exactly where it was. */
+/** Every refusal returns `{ error }` and leaves the skill where it was. */
 export function shareLearnedSkill(args: {
   author: ShareBot;
   bots: readonly ShareBot[];
   name: string;
   patchAssigned: PatchAssigned;
-  /** The SKILL.md sha256 a receipt applied: a skill changed since is not
-   * the one that receipt may share (`stale`). */
+  /** The SKILL.md sha256 the receipt applied; any other version is `stale`. */
   expectSha256?: string;
   /** Who could see where it was learned; the author's audience if absent. */
   audience?: unknown;
@@ -327,8 +275,7 @@ export function shareLearnedSkill(args: {
       if ("error" in installed) return installed;
     }
     library = existing ? "deduplicated" : "installed";
-    // The migration's order: the assignment is durable before the private
-    // copy goes, so a crash in between replays it at the next boot.
+    // The assignment is durable before the private copy goes, so a crash in between replays it at the next boot.
     try {
       const pending = readPendingAssignments(root);
       writePendingAssignments({ ...pending, [author.id]: sortedUnique([...(pending[author.id] ?? []), name]) }, root);
@@ -336,9 +283,7 @@ export function shareLearnedSkill(args: {
     } catch (error) {
       return { error: `could not move the private copy into the library: ${error instanceof Error ? error.message : String(error)}` };
     }
-    // The copy is archived and the library holds it: a manifest entry that
-    // moved on meanwhile (a newer private revision) stays the author's own,
-    // and the share completes rather than stopping half-applied.
+    // The library owns the skill from here: a manifest entry that moved on stays the author's, and the share completes.
     try {
       const removed = removeManifestEntry(author.id, name, copy.sha256);
       if ("error" in removed) console.warn(`[skill-share] ${name}: ${removed.error}`);
@@ -370,15 +315,9 @@ export function shareLearnedSkill(args: {
   return { library, sha256, sharedAt: at, ...team };
 }
 
-/** How much of a library hash skills_list shows as a shared skill's revision. */
 export const SHARED_REVISION_CHARS = 12;
 
-/** Update a shared learned skill through the library copy. The bot must
- * have it assigned (and no private skill of that name); the write applies
- * only while the library still holds the version the writer read
- * (`expectSha256`: the full hash, or the 12-character revision skills_list
- * shows), so a rewrite of an older read never replaces a teammate's newer
- * update. Teammates that joined since are assigned too. */
+/** Applies only while the library holds the version the writer read (`expectSha256`: full hash or revision prefix). */
 export function updateSharedLearnedSkill(args: {
   bot: ShareBot;
   bots: readonly ShareBot[];
@@ -386,9 +325,7 @@ export function updateSharedLearnedSkill(args: {
   skillMd: string;
   expectSha256: string;
   patchAssigned: PatchAssigned;
-  /** features.shareLearnedSkills "auto": teammates that joined since get it. */
   assignOnward?: boolean;
-  /** Who could see where it was changed; the bot's audience if absent. */
   audience?: unknown;
   now?: number;
   root?: string;
@@ -432,11 +369,7 @@ export function updateSharedLearnedSkill(args: {
   };
 }
 
-/** Undo a share recorded on a receipt: the library write is reverted (a
- * skill this share put in the library leaves it again; an update gets its
- * previous SKILL.md back) and every assignment the share made is removed.
- * Only while the library copy is exactly what the change left; otherwise
- * `stale` and nothing changes. */
+/** Only while the library copy is exactly what the share left; otherwise `stale` and nothing changes. */
 export function undoSharedLearnedSkill(args: {
   authorId: string;
   name: string;
@@ -474,12 +407,9 @@ export function undoSharedLearnedSkill(args: {
   return { undone: true };
 }
 
-/** Whether a library skill is one this bot may update through sharing: a
- * learned skill assigned to it that no private skill shadows. */
 export function sharedSkillEditable(botId: string, assigned: readonly string[] | undefined, name: string, root: string = skillsLibraryRoot()): boolean {
   if (!assigned?.includes(name)) return false;
   if (listSkills(botId).some((skill) => skill.name === name)) return false;
   const entry = readSkillLibraryIndex(root)[name];
-  // the same integrity check the update applies: a tampered copy is not offered
   return Boolean(entry && entry.source.startsWith(LEARN_SOURCE_PREFIX) && entry.reviewState === "approved" && readLibrarySkillFile(name, root) !== null);
 }

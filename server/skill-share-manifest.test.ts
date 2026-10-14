@@ -1,6 +1,3 @@
-// A share whose private manifest entry moved on while it ran (a newer
-// private revision) still completes: the library copy is authoritative and
-// the team is assigned, rather than stopping half-applied.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

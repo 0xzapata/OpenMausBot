@@ -179,15 +179,12 @@ function AppliedChangeLine({
   const [undoing, setUndoing] = useState(false);
   const [error, setError] = useState<string>();
   const [sharing, setSharing] = useState(false);
-  // The share response, kept until the card's own patch arrives so the
-  // Share button cannot come back in between.
+  // Kept until the card's own patch arrives, so the Share button cannot come back in between.
   const [sharedNow, setSharedNow] = useState<{ requestId: string; shared: SkillShareRecord }>();
-  const config = useContext(StoreContext)?.state.config ?? null; // null where no store is mounted (previews)
+  const config = useContext(StoreContext)?.state.config ?? null;
   const undone = card.undone === true;
   const skill = card.skillRequest;
   const shared = skill?.shared ?? (sharedNow && sharedNow.requestId === card.requestId ? sharedNow.shared : undefined);
-  // features.shareLearnedSkills "ask": the person shares a learned skill
-  // with the author's team from its receipt, once.
   const canShare = Boolean(skill && !shared && !undone && threadId && card.requestId)
     && shareLearnedSkillsMode(config) === "ask";
   const share = () => {

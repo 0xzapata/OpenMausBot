@@ -2,9 +2,8 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { writeFileAtomic } from "./atomic.ts";
 import { rm as removeDirectory } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { ToolResults, TOOL_RESULT_MAX_CHARS } from "./tool-results.ts";
@@ -16,7 +15,7 @@ import { selectReplay, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./contex
 import { draftSummary, foldPoint } from "./compaction-summary.ts";
 import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
-import { RoomContextTracker } from "./room-context.ts";
+import { RoomContextTracker, roomResetNote } from "./room-context.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -109,10 +108,10 @@ import { liveCardKind, liveDecisionRefusal } from "../shared/live-approval.ts";
 import {
 } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
-import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
+import { connectorCallFromFrame, connectorRefusalText, connectorScopeRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
 import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { buildRecall } from "./recall.ts";
+import { buildRecall, recallRooms, recallThreadIds } from "./recall.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { createCacheKeepWarm, type KeepWarmStatus, type KeepWarmTarget } from "./cache-keepwarm.ts";
@@ -197,7 +196,7 @@ import { fleetAvailable, fleetSocketPath } from "./fleet-client.ts";
 import { entitled } from "./enterprise.ts";
 import { HOSTED_CONTRACT_HEADER, HOSTED_CONTRACT_METADATA, HOSTED_CONTRACT_VERSION } from "./hosted-contract.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
-import { buildNotification, buildSpendNotification, type Notification } from "./notify.ts";
+import { buildMentionNotification, buildNotification, buildSpendNotification, type Notification } from "./notify.ts";
 import {
   isModelVariant,
   TurnNotStartedError,
@@ -290,6 +289,7 @@ import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerC
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
 import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
+import { pageSize, slimMessage } from "./host/message-pages.ts";
 import {
   mentionedBots,
   roomResponders,
@@ -314,7 +314,7 @@ import { recordLiveCall, spokenLineFields, titleLiveCall } from "./live-call-rec
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
 import { turnStartLogLine } from "./turn-log.ts";
 import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./turn-outcome.ts";
-import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS } from "./turn-context.ts";
+import { buildRecoveryText, buildTurnContext, engineIsFresh, replaysNatively } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
 import { extractTurnImages } from "./turn-images.ts";
 import { callTitleExcerpt, threadTitlePrompt, type ThreadTitleSource } from "./thread-title.ts";
@@ -386,6 +386,7 @@ import {
   composioSystemPrompt,
   customMcpPrompt,
   CREDENTIAL_PROMPT,
+  longCommandsPrompt,
   THREADS_PROMPT, WIDGET_PROMPT,
   LEARN_PROMPT,
   PROFILE_PROMPT,
@@ -397,6 +398,8 @@ import {
   savedLoginsPrompt,
   teamAvailabilityPart,
 } from "./system-prompt.ts";
+import { shellTimeoutHookResult } from "./shell-timeout-hint.ts";
+import { spillToolResult } from "./tool-result-spill.ts";
 import { readCuaConnection, readCuaUnavailableReason, gatedLocalComputer } from "./local-computer.ts";
 import {
   discoverExistingPerBotLocalVms,
@@ -408,7 +411,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { RepeatDetector, callKey } from "./repeat-detector.ts";
+import { RepeatDetector, callKey, toolItemKey } from "./repeat-detector.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -1268,20 +1271,17 @@ function recentWorkSources(bot: BotRecord) {
   };
 }
 
+function recallThreads(from: BotRecord, capability: Parameters<typeof cloudLendingView>[0]): { roomByThread: Map<string, GroupRecord>; ownThreads: string[] } {
+  const roomByThread = recallRooms(store.groups, from, roomFeedsBot);
+  return { roomByThread, ownThreads: recallThreadIds(from, roomByThread).filter(cloudLendingView(capability) ? cloudOwnerOnlyThread : () => true) };
+}
+
 /** Other conversations only for a 1:1 turn the person started: another bot, a webhook or a room must not pull a private chat into its reply. */
 function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opts: { conversations: boolean; userName: string }): string {
   if (bot.memoryEnabled === false || !autoRecallEnabled(cfg)) return "";
-  const roomByThread = new Map<string, GroupRecord>();
-  if (opts.conversations) {
-    for (const group of store.groups) {
-      if (!group.memberIds.includes(bot.id) || !roomFeedsBot(group, bot)) continue;
-      roomByThread.set(group.threadId, group);
-      for (const task of group.tasks ?? []) roomByThread.set(task.threadId, group);
-    }
-  }
+  const roomByThread = opts.conversations ? recallRooms(store.groups, bot, roomFeedsBot) : new Map<string, GroupRecord>();
   const threadIds = opts.conversations
-    ? [...new Set([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId), ...roomByThread.keys()])]
-      .filter((id) => id !== threadId && (!CLOUD_HOME || cloudOwnerOnlyThread(id)))
+    ? recallThreadIds(bot, roomByThread).filter((id) => id !== threadId && (!CLOUD_HOME || cloudOwnerOnlyThread(id)))
     : [];
   try {
     const recalled = buildRecall({
@@ -3328,8 +3328,6 @@ const store = new Store(
   (selection) => withNewBotEffort(selection, cfg.newBots?.effort, registry.get(selection.instanceId)?.adapter.capabilities.effortLevels),
   (instanceId) => registry.cliTarget(instanceId)?.driverKind,
 );
-// Skills library (features.skillsLibrary) and sharing learned skills with
-// the team (features.shareLearnedSkills): server/host/skills-library.ts.
 const skillsHost = createSkillsLibraryHost({ store, cfg, appendSkillRequestCard });
 const { listBotSkills, readBotSkillFile } = skillsHost;
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
@@ -3466,6 +3464,7 @@ function previewSystemPrompt(bot: BotRecord) {
           caps?.composioMcp === true && bot.composio !== false && composio.configured(cfg)),
       }),
     },
+    { id: "shell", label: "Long-running commands", text: privateWorkspace ? longCommandsPrompt(computerPromptKind) : "" },
     { id: "computer", label: "Computer", text: computerPrompt(computerPromptKind) },
     { id: "team-computer", label: "Team computer", text: teamComputerPrompt(teamComputer) },
     { id: "plan", label: "Surface", text: previewPlan.computer === undefined ? "" : surfacePrompt({
@@ -4085,7 +4084,10 @@ type GroupTurnOperation = {
 // Wider than busyBotId (setup and queued responders too), so polling clients never mistake a handoff for completion.
 const groupTurnOperations = new Map<string, Set<GroupTurnOperation>>();
 const groupSpeakers = new Map<string, { botId: string; name: string; color: string; since?: number }>();
-const roomMemberContexts = new RoomContextTracker();
+const roomMemberContexts = new RoomContextTracker({
+  heldUntil: (threadId) => cacheKeepWarmStatus(threadId)?.until,
+  expired: (threadId) => { const room = store.groupByThread(threadId); if (room) broadcast({ kind: "group", group: publicGroupState(room) }); },
+});
 /** Holds a member for the thread it was handed to until that turn marks the bot busy. */
 const roomMemberLock = new RoomMemberLock();
 
@@ -5290,22 +5292,7 @@ store.onChange((change) => {
   }
 });
 
-const MESSAGE_PAGE_MAX = 200;
 const DEFAULT_PAGE = 50;
-
-/** undefined = absent, null = present but unusable (the caller answers 400). */
-function pageSize(raw: string | null): number | null | undefined {
-  if (raw === null) return undefined;
-  const size = Number(raw);
-  if (!Number.isInteger(size) || size < 0) return null;
-  return Math.min(size, MESSAGE_PAGE_MAX);
-}
-
-function slimMessage(message: Message): Message | Record<string, unknown> {
-  if (message.kind !== "screen" || !message.png) return message;
-  const { png: _png, ...rest } = message;
-  return { ...rest, hasImage: true };
-}
 
 function messagePage(threadId: string, limit: number | undefined, before?: string | null) {
   if (limit === undefined) {
@@ -6269,6 +6256,7 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
     return { ok: true, context };
   }
   if (name === "Stop") return { ok: true };
+  if (name === "PostToolUseFailure") return shellTimeoutHookResult(payload);
   if (name !== "PostToolUse") return { ok: true, ignored: name || "unknown" };
   const toolUseId = typeof payload.tool_use_id === "string" ? payload.tool_use_id : "";
   if (!toolUseId) return { ok: true, ignored: "PostToolUse without tool_use_id" };
@@ -6281,15 +6269,9 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
   const key = `${threadId}:${turnId}:${toolUseId}`;
   if (!commandReceipt("hook.ingest", key)) {
     const dir = join(TOOL_RESULTS_DIR, threadId.replace(/[^\w.-]/g, "_"));
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const safeId = createHash("sha256").update(key).digest("hex");
-    const file = join(dir, `${safeId}.txt`);
     const redacted = redactSecretsInText(text);
-    const bounded = redacted.length > TOOL_RESULT_SPILL_MAX
-      ? `${redacted.slice(0, TOOL_RESULT_SPILL_MAX)}\n[… ${redacted.length - TOOL_RESULT_SPILL_MAX} more characters omitted]`
-      : redacted;
-    writeFileAtomic(file, bounded, { mode: 0o600 });
-    store.patchMessage(threadId, row.id, { tool: { ...row.tool, fullResult: redacted.length <= TOOL_RESULT_SPILL_MAX } }, { kind: "hook.ingest", key });
+    const fullResult = spillToolResult(dir, key, redacted, TOOL_RESULT_SPILL_MAX);
+    store.patchMessage(threadId, row.id, { tool: { ...row.tool, fullResult } }, { kind: "hook.ingest", key });
   }
   return { ok: true };
 }
@@ -7726,13 +7708,11 @@ bus.subscribe((event: RuntimeEvent) => {
         const tokens = event.usage ?? lastReported;
         const speakingBot = store.bot(speaker.botId);
         const selection = speakingBot?.modelSelection;
-        roomMemberContexts.record(event.threadId, speaker.botId, lastContext, selection?.model,
-          selection ? registry.get(selection.instanceId)?.models : undefined);
+        roomMemberContexts.record(event.threadId, speaker.botId, lastContext, selection?.model, selection && registry.get(selection.instanceId)?.models);
         const promptBytes = turnPromptBytes.get(event.threadId);
         turnPromptBytes.delete(event.threadId);
         bookTurnUsage({
-          botId: speaker.botId,
-          botName: speaker.name,
+          botId: speaker.botId, botName: speaker.name,
           threadId: event.threadId,
           instanceId: selection?.instanceId ?? "unknown",
           driverKind: (selection && registry.get(selection.instanceId)?.driverKind) ?? "unknown",
@@ -7762,6 +7742,7 @@ bus.subscribe((event: RuntimeEvent) => {
           });
         }
         liveTurnByThread.delete(event.threadId);
+        if (event.ok && !stopped && speakingBot) notify(buildMentionNotification(store, speakingBot, group, { threadId: event.threadId, turnId: completedTurnId, reply, profileName: cfg.profile?.name }));
       }
       if (speaker) {
         releaseTurnResources(turnResourceOwners.get(event.threadId));
@@ -8091,16 +8072,16 @@ const handoffs = new Handoffs({
 bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
   if (event.type === "turn.completed" || event.type === "session.exited") return void repeats.settle(event.threadId);
-  let key: string | null = null;
+  let key: string | null = null, shown: string | undefined; // shown: the title only, never the input the key counts on
   if (event.type === "item.started" && event.itemType === "tool") {
-    const title = event.title ?? "";
-    if (/\s|\//.test(title.trim())) key = callKey("tool", title);
+    key = toolItemKey(event.title, event.input);
+    shown = event.title?.trim();
   } else if (event.type === "request.opened" && event.requestType === "permission") key = callKey(event.tool, event.summary);
   if (!key) return;
   const { threshold } = repeats.record(event.threadId, key);
   if (!threshold) return;
   const [tool, ...rest] = key.split(":");
-  const args = rest.join(":");
+  const args = shown ?? rest.join(":");
   store.appendMessage(event.threadId, {
     role: "bot",
     kind: "activity",
@@ -8930,7 +8911,7 @@ async function startTurn(
           rewound,
           fresh: fresh || contextReset,
           externallyUpdated: Boolean(externalContextMarker) || handedStale,
-          replaysNatively: NATIVELY_REPLAYING_DRIVER_KINDS.includes(instance.driverKind),
+          replaysNatively: replaysNatively(instance.driverKind),
         });
         // Snapshot the cursor now: an external result can clear it during async setup.
         const resumeCursor = resume ? task.resumeCursors[instanceId] : undefined;
@@ -9424,6 +9405,7 @@ async function startTurn(
           connectedApps: setupConnectedApps(bot, instance.adapter.capabilities.composioMcp === true, Boolean(integrations.composio)),
         }) },
         { id: "files", label: "File locations", text: worksInWorkspace ? workspaceLocationsPrompt(bot.id, cwd, liveBot?.cwd ?? bot.cwd, { attachFile: Boolean(integrations.agents) && !CLOUD_HOME && !HOSTED_WORKSPACE }) : "" },
+        { id: "shell", label: "Long-running commands", text: worksInWorkspace ? longCommandsPrompt(computerPromptKind) : "" },
         { id: "computer", label: "Computer", text: computerPrompt(computerPromptKind) },
         { id: "team-computer", label: "Team computer", text: teamComputerPrompt(teamComputer) },
         { id: "plan", label: "Surface", text: surfacePrompt({ computer: mountedComputer, browser: Boolean(integrations.browser) }, { pinned: plan.pinned, note: plan.note + vpsUnavailableNote + (computerSkipped && plan.computer !== "off" ? computerSkippedNote(redactSecretsInText(computerSkipped)) : ""), canSelect: computerSelectionTurns.has(threadId), cloudHome: Boolean(CLOUD_HOME) }) },
@@ -9467,7 +9449,7 @@ async function startTurn(
       // Before sendTurn: an adapter may emit the whole turn before it resolves.
       handoffs.dispatching(threadId, dispatchClaimId, dispatchContext.handoff);
       const clock = takesTurnClock(userTurnText) ? turnClockLine(Date.now(), hostTimeZone()) : "";
-      const shareNote = skillsHost.shareNote(bot, threadId, Boolean(privateWorkspace)); // a team skill shared since, once
+      const shareNote = skillsHost.shareNote(bot, threadId, Boolean(privateWorkspace));
       const dispatch = await guardTurnDispatch(shareNote.after(instance.adapter.sendTurn({
         threadId,
         botId: bot.id,
@@ -10267,6 +10249,7 @@ async function deleteBotWithLifecycle(botId: string, revalidate: () => void = ()
           revalidate();
           store.deleteBot(bot.id, setupRequest);
           skillReview.dropBot(bot.id);
+          memoryUpkeep.forgetBot(bot.id);
           routines!.disableForBot(bot.id);
           webhooks.disableForBot(bot.id);
           calendarCalls!.removeBot(bot.id);
@@ -10331,7 +10314,7 @@ function resolveAndSendTrust(res: ServerResponse, threadId: string, requestId: s
   if (teamMemoryCard?.card?.teamMemoryRequest) {
     const request = teamMemoryCard.card.teamMemoryRequest;
     const proposer = teamMemoryCard.from?.botId ? store.bot(teamMemoryCard.from.botId) : store.botByThread(threadId);
-    const result = teamMemory.resolve(request.section, request.entryId, behavior === "allow" ? "accept" : "reject");
+    const result = teamMemory.resolveProposal(request.entryId, behavior === "allow" ? "accept" : "reject");
     if (!result.claimed) {
       if (!teamMemoryCard.card.answered) {
         store.patchMessage(threadId, teamMemoryCard.id, { card: { ...teamMemoryCard.card, answered: "unavailable", dismissed: true } });
@@ -10656,7 +10639,7 @@ function undoSkillCard(botId: string, threadId: string, messageId: string): Undo
   if (request.botId !== botId || request.threadId !== threadId) {
     return { claimed: true, state: "invalid", error: "this skill request belongs to a different bot", status: 403 };
   }
-  if (request.shared) return skillsHost.undoReceipt(botId, threadId, message, { ...request, shared: request.shared }); // revert the team share too
+  if (request.shared) return skillsHost.undoReceipt(botId, threadId, message, { ...request, shared: request.shared });
   const undone = undoSkillWrite(botId, {
     stagedId: request.stagedId,
     name: request.name,
@@ -11394,6 +11377,11 @@ async function runClaimedGroupMemberTurn(
     .filter((b): b is NonNullable<typeof b> => Boolean(b))
     .map(roomRosterLine)
     .join(", ");
+  const roomHandoff = orchestration?.roomHandoffId ? coordinator.node(orchestration.roomHandoffId) : undefined;
+  const roomRequester = roomHandoff?.parentId ? store.bot(coordinator.node(roomHandoff.parentId)?.botId ?? "")?.name : undefined;
+  const requesterRule = roomRequester
+    ? ` Don't use coordinate_bots toward @${roomRequester} or whoever assigned its work; to ask @${roomRequester} something, end your turn with the question — it is resumed with your reply.`
+    : "";
   const outsideRoom = integrations.agents && orchestration && !orchestration.roomHandoffId
     ? reachablePeers(store.bots, bot).filter((peer) => !readyGroup.memberIds.includes(peer.id))
     : [];
@@ -11403,10 +11391,10 @@ async function runClaimedGroupMemberTurn(
     bot.description && `About: ${bot.description}`,
     `Room members: ${roster}, and ${userName} (the human).`,
     readyGroup.bulletin.trim() && `Room bulletin (shared instructions for everyone):\n${readyGroup.bulletin.trim()}`,
-    `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,
+    `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.${readyGroup.dm ? "" : ` To get ${userName}'s attention or ask them something blocking, write @you.`}`,
     outsideRoom.length > 0 && roomPeerRosterSystemPrompt(outsideRoom),
     integrations.agents && (CREDENTIAL_PROMPT + (orchestration && !orchestration.roomHandoffId ? THREADS_PROMPT : "")).trim(),
-    integrations.agents && (!orchestration || orchestration.roomHandoffId) && "For actual OpenMausBot teamwork, discover IDs with list_room_targets and use coordinate_bots for advice or work in this or another room. Do not substitute native coding helpers for these named bots. Consult only when needed to make a decision; no discussion step is mandatory. Give concrete responsibilities, exact accessible paths and acceptance checks. End your turn after assigning; busy teammates queue and results automatically resume you. When they return, finish the requested verification and give the user one final answer. Native helper names are not evidence that an OpenMausBot teammate participated. Plain @mentions are only for conversational replies in this room.",
+    integrations.agents && (!orchestration || orchestration.roomHandoffId) && "For actual OpenMausBot teamwork, discover IDs with list_room_targets and use coordinate_bots for advice or work in this or another room. Do not substitute native coding helpers for these named bots. Consult only when needed to make a decision; no discussion step is mandatory. Give concrete responsibilities, exact accessible paths and acceptance checks. End your turn after assigning; busy teammates queue and results automatically resume you. When they return, finish the requested verification and give the user one final answer. Native helper names are not evidence that an OpenMausBot teammate participated. Plain @mentions are only for conversational replies in this room." + requesterRule,
     integrations.agents && ROUTINE_PROMPT.trim(),
     integrations.agents && PROFILE_PROMPT.trim(),
     skillAuthoring && LEARN_PROMPT.trim(),
@@ -11468,6 +11456,7 @@ async function runClaimedGroupMemberTurn(
   const roomSystem = buildSystemPrompt(system, store.bot(bot.id)?.soul ?? bot.soul ?? "", [
     { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
     { id: "files", label: "File locations", text: workspace ? workspaceLocationsPrompt(bot.id, cwd, readyBot.cwd, { attachFile: Boolean(integrations.agents) && !CLOUD_HOME && !HOSTED_WORKSPACE }) : "" },
+    { id: "shell", label: "Long-running commands", text: workspace ? longCommandsPrompt(roomComputerPromptKind) : "" },
     { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) },
     { id: "computer", label: "Computer", text: computerPrompt(roomComputerPromptKind) },
     { id: "team-computer", label: "Team computer", text: teamComputerPrompt(roomTeamComputer) },
@@ -11600,17 +11589,15 @@ async function runClaimedGroupMemberTurn(
     const roomRecalled = cardContinuation ? "" : autoRecallPrompt(bot, threadId, resolvedLatestImages.text, { conversations: false, userName });
     const turnApprovalMode = roomTurnApprovalMode(readyBot, threadId, orchestration);
     if (!done) releaseTurnLevel = roomTurnLevels.dispatched(threadId, readyBot.id, turnApprovalMode);
-    const roomReset = roomMemberContexts.takeReset(threadId, readyBot.id, cfg.context);
+    const { reset: roomReset, displaced } = roomMemberContexts.dispatch(threadId, readyBot.id, instance.instanceId, cfg.context);
     if (roomReset) {
       store.appendMessage(threadId, {
         role: "bot", kind: "activity", from: { botId: readyBot.id, name: readyBot.name, color: readyBot.color },
-        tool: { name: roomReset.reason === "requested"
-          ? `compacted ${readyBot.name}'s context (${roomReset.percent}% full): fresh session with the room's recent messages`
-          : `${readyBot.name}'s context was ${roomReset.percent}% full: compacted to a fresh session with the room's recent messages`, ok: true },
+        tool: { name: roomResetNote(readyBot.name, roomReset), ok: true },
       });
-      broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
     }
-    const roomShareNote = skillsHost.shareNote(bot, threadId, Boolean(workspace)); // a team skill shared since, once
+    if (roomReset || displaced) broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
+    const roomShareNote = skillsHost.shareNote(bot, threadId, Boolean(workspace));
     guardTurnDispatch(roomShareNote.after(instance.adapter.sendTurn({
         ...(roomReset ? { sessionReset: true } : {}),
         threadId,
@@ -12785,7 +12772,7 @@ function applyOwnStagedSkill(
       tool: "stage_skill", summary: receipt.summary, decision: "auto-approved", source: direct });
   });
   if ("error" in applied) rejectStagedSkillWrite(from.id, staged.id);
-  return "error" in applied ? applied : skillsHost.afterOwnApply(from.id, threadId, staged, applied); // "auto" shares it now
+  return "error" in applied ? applied : skillsHost.afterOwnApply(from.id, threadId, staged, applied);
 }
 
 function appendSkillRequestCard(args: {
@@ -15363,6 +15350,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           fromBotId: z.string().min(1).max(128),
           fromThreadId: z.string().min(1).max(128),
           kind: z.string(),
+          key: z.string().max(240).optional(),
           name: z.string(),
           detail: z.string(),
           aliases: z.array(z.string()).optional(),
@@ -15383,14 +15371,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         try {
           proposed = teamMemory.propose(
             from.section,
-            { kind: body.kind as TeamMemoryKind, name: body.name, detail: body.detail, aliases: body.aliases },
+            { key: body.key, kind: body.kind as TeamMemoryKind, name: body.name, detail: body.detail, aliases: body.aliases },
             { botId: from.id, botName: from.name, threadId: body.fromThreadId, at: Date.now() },
           );
         } catch (error) {
           return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
         }
         const summary = `${proposed.entry.kind[0].toUpperCase()}${proposed.entry.kind.slice(1)}: ${proposed.entry.name}${proposed.entry.aliases.length ? ` (also ${proposed.entry.aliases.join(", ")})` : ""} — ${proposed.entry.detail}`;
-        const section = sectionContextKey(from.section);
         const card = store.appendMessage(body.fromThreadId, {
           role: "bot",
           kind: "options",
@@ -15401,7 +15388,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             options: ["Remember", "Skip"],
             requestId: proposed.entry.id,
             tool: "propose_team_memory",
-            teamMemoryRequest: { section, entryId: proposed.entry.id, kind: proposed.entry.kind },
+            teamMemoryRequest: { section: sectionContextKey(from.section), entryId: proposed.entry.id, kind: proposed.entry.kind },
           },
         });
         appendDecision(DATA_DIR, {
@@ -15547,20 +15534,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const rawLimit = Number(url.searchParams.get("limit"));
         const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.trunc(rawLimit), 25) : 12;
         const scope = url.searchParams.get("scope") ?? "all";
-        if (scope !== "all" && scope !== "conversations" && scope !== "memory") {
-          return json(res, 400, { error: "scope must be all, conversations, or memory" });
+        if (scope !== "all" && scope !== "conversations" && scope !== "memory" && scope !== "team") {
+          return json(res, 400, { error: "scope must be all, conversations, memory, or team" });
         }
-        const memoryHits = scope === "conversations" || !q || from.memoryEnabled === false ? [] : searchMemoryFiles(from.id, q, limit);
-        if (scope === "memory") return json(res, 200, { hits: [], memoryHits });
-        const roomByThread = new Map<string, GroupRecord>();
-        for (const group of store.groups) {
-          // A room fewer people can see than this bot stays out of its recall, or its lines would reach them.
-          if (!group.memberIds.includes(from.id) || !roomFeedsBot(group, from)) continue;
-          roomByThread.set(group.threadId, group);
-          for (const task of group.tasks ?? []) roomByThread.set(task.threadId, group);
-        }
-        const ownThreads = [...new Set([from.threadId, ...(from.tasks ?? []).map((task) => task.threadId), ...roomByThread.keys()])]
-          .filter(cloudLendingView(internalCapability) ? cloudOwnerOnlyThread : () => true);
+        const memoryHits = scope === "conversations" || scope === "team" || !q || from.memoryEnabled === false ? [] : searchMemoryFiles(from.id, q, limit);
+        if (scope === "memory" || scope === "team") return json(res, 200, { hits: [], memoryHits, teamHits: scope === "team" ? teamMemory.search(from.section, q, limit, range) : [] });
+        const { roomByThread, ownThreads } = recallThreads(from, internalCapability);
         const inRoom = Boolean(store.groupByThread(fromThreadId));
         const found = q ? recallMessages(q, ownThreads, limit, range) : recentMessages(ownThreads, range ?? {}, limit);
         const hits = found.map((hit) => {
@@ -15578,7 +15557,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (inRoom) {
           discloseRecall(from, fromThreadId, hits.filter((hit) => hit.crossed).map((hit) => hit.threadId));
         }
-        return json(res, 200, { hits, memoryHits });
+        return json(res, 200, { hits, memoryHits, teamHits: scope === "conversations" ? [] : teamMemory.search(from.section, q, limit, range) });
       }
       // session_read: a message id from another bot's thread reads as missing, not forbidden, so the id space leaks nothing.
       if (method === "GET" && path === "/api/internal/session-read") {
@@ -15592,12 +15571,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const threadId = String(url.searchParams.get("threadId") ?? "").trim();
         const messageId = String(url.searchParams.get("messageId") ?? "").trim();
         if (!threadId || !messageId) return json(res, 400, { error: "threadId and messageId are required" });
-        const own = (threadId === from.threadId || Boolean(store.taskByThread(from.id, threadId))) &&
-          (!cloudLendingView(internalCapability) || cloudOwnerOnlyThread(threadId));
+        const recall = recallThreads(from, internalCapability);
+        const own = recall.ownThreads.includes(threadId);
         const message = own ? readMessageText(threadId, messageId) : null;
         if (!message) return json(res, 404, { error: "no such message in your conversations" });
         const readInRoom = Boolean(store.groupByThread(fromThreadId));
-        const readCrossed = readInRoom && threadId !== fromThreadId;
+        const readCrossed = readInRoom && threadId !== fromThreadId && !recall.roomByThread.has(threadId);
         if (readCrossed) discloseRecall(from, fromThreadId, [threadId]);
         return json(res, 200, {
           ...message,
@@ -16541,11 +16520,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             threadId: internalCapability.threadId, botId: currentSender.id, botName: currentSender.name,
             tool: access.slug, decision: "auto-denied", source: "connector-scope", rule: `scope:${access.toolkit}:${access.reason}`,
           });
-          return refuseOutbound(
-            access.reason === "app"
-              ? `OpenMausBot did not run this: ${currentSender.name} has not been given access to ${appName}. Ask the user to allow it under the bot's Access settings, and do not retry.`
-              : `OpenMausBot did not run this: ${appName} is read-only for ${currentSender.name}, and ${described.label} would write to it. Ask the user before trying again.`,
-          );
+          return refuseOutbound(connectorScopeRefusalText(call, access.reason, currentSender.name, appName, described.label));
         }
         const opaque = connectorCalls.some(call => call.slug === "COMPOSIO_PROXY_EXECUTE");
         if (opaque && currentSender.connectorTools !== undefined) return refuseOutbound("OpenMausBot cannot verify this code against this bot's tool grants. Use a direct app tool.");

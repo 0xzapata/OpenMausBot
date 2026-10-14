@@ -7,6 +7,8 @@ import type { RoomHold, RoomHeldMessage } from "../shared/wire.ts";
 
 const STOP_WINDOW = 2;
 const STOP_WORDS = new Set(["stop", "halt", "pause"]);
+const OBJECT_STARTERS = new Set(["this", "that", "these", "those", "the", "a", "an", "my", "our", "your", "his", "her", "their", "its"]);
+const OWN_WORK_OR_URGENCY = new Set(["now", "please", "right", "immediately", "asap", "work", "task", "job", "turn", "run", "reply"]);
 export const MAX_HELD_MESSAGES = 20;
 
 export type HoldDirective = {
@@ -46,9 +48,14 @@ export function stopWordPlacement(text: string): "adjacent" | "distant" | null {
   const tokens = maskQuotedAndCode(text).toLowerCase().match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) ?? [];
   const mentions: number[] = [];
   const stops: number[] = [];
+  const takesObject = (index: number) => {
+    const next = tokens[index + 1];
+    const after = tokens[index + 2];
+    return next !== undefined && OBJECT_STARTERS.has(next) && after !== undefined && !after.startsWith("@") && !OWN_WORK_OR_URGENCY.has(after);
+  };
   tokens.forEach((token, index) => {
     if (token.startsWith("@")) mentions.push(index);
-    else if (STOP_WORDS.has(token)) stops.push(index);
+    else if (STOP_WORDS.has(token) && !takesObject(index)) stops.push(index);
   });
   if (stops.some((stop) => mentions.some((mention) => Math.abs(stop - mention) <= STOP_WINDOW))) return "adjacent";
   return stops.length ? "distant" : null;

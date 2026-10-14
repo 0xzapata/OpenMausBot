@@ -267,8 +267,8 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
         const instances = persistableInstanceConfigs(result.config);
         if (!result.ok || !Object.hasOwn(instances, instanceId)) return json(res, 404, { error: `unknown instance "${instanceId}"` });
         const entry = instances[instanceId];
-        if ((body.displayName !== undefined || body.configDir !== undefined) && entry.driver !== "claudeAgent") {
-          return json(res, 400, { error: "Account settings are currently available for Claude only." });
+        if ((body.configDir !== undefined && entry.driver !== "claudeAgent") || (body.displayName !== undefined && !["claudeAgent", "codex"].includes(entry.driver))) {
+          return json(res, 400, { error: "Account settings are available for Claude and ChatGPT accounts only." });
         }
         if (body.tools !== undefined) {
           if (!["openai-compat", "grok", "minimax", "mistral", "cerebras", "groq", "meta"].includes(entry.driver)) {
@@ -301,13 +301,24 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
       if (providerConfigBusy.get()) return json(res, 409, { error: "provider settings are already being updated" });
       const instances = persistableInstanceConfigs(cfg);
       if (!Object.hasOwn(instances, instanceId)) return json(res, 404, { error: "unknown instance" });
-      if (instances[instanceId].driver !== "claudeAgent" || instanceId === "claude") {
-        return json(res, 400, { error: "Only added Claude accounts can be removed here." });
+      const addedChatgpt = instances[instanceId].driver === "codex" && instanceId.startsWith("chatgpt-");
+      if (!addedChatgpt && (instances[instanceId].driver !== "claudeAgent" || instanceId === "claude")) {
+        return json(res, 400, { error: "Only added Claude and ChatGPT accounts can be removed here." });
       }
       if (cfg.defaultModelSelection?.instanceId === instanceId || store.bots.some((bot) =>
         bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) => task.modelSelection?.instanceId === instanceId)) ||
         busyProviderSelections().some((selection) => selection.instanceId === instanceId)) {
         return json(res, 409, { error: "Choose another account for the bots and default model using this account before removing it." });
+      }
+      // OpenMausBot keeps a ChatGPT account's sign-in in its own data folder: removing the account clears it.
+      const live = addedChatgpt ? registry.get(instanceId) : undefined;
+      if (live?.signOut) {
+        try { await providerAuthSessions.signOut(live, auth.kind === "session" ? auth.session.id : "loopback"); }
+        catch (error) {
+          if ((error as { code?: unknown }).code !== "chatgpt_revocation_unconfirmed") {
+            return json(res, 409, { error: error instanceof Error ? error.message : String(error) });
+          }
+        }
       }
       providerConfigBusy.set(true);
       providerInstancesChanging.add(instanceId);

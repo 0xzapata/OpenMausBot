@@ -15,6 +15,8 @@ export const SKILL_REVIEW_MARKER = "You are the SKILL REVIEW step";
 export const MAX_REVIEW_CHANGES = 3;
 export const REVIEW_TIMEOUT_MS = 3 * 60_000;
 export const RETRY_AFTER_MS = 15 * 60_000;
+/** Failures in a row after which the steps they covered are dropped; new steps count toward a fresh review. */
+export const MAX_FAILED_REVIEWS = 3;
 export const SETTLE_DELAY_MS = 1_500;
 export const SETTLE_TRIES = 5;
 export const MAX_COUNTERS = 500;
@@ -294,7 +296,7 @@ export function parseSkillReview(text: string, skills: readonly ReviewSkill[], s
 }
 
 export interface ReviewEngine {
-  generateText: (prompt: string, options?: { signal?: AbortSignal }) => Promise<string>;
+  generateText: (prompt: string, options?: { signal?: AbortSignal; timeoutMs?: number }) => Promise<string>;
 }
 
 export interface SkillReviewDeps {
@@ -325,6 +327,7 @@ interface Counter {
   steps: number;
   at: number;
   failedAt?: number;
+  failures?: number;
 }
 
 interface PendingApply {
@@ -368,6 +371,7 @@ export function createSkillReview(deps: SkillReviewDeps): SkillReview {
           steps: Math.max(0, Math.floor(raw.steps)),
           at: typeof raw.at === "number" ? raw.at : 0,
           ...(typeof raw.failedAt === "number" ? { failedAt: raw.failedAt } : {}),
+          ...(typeof raw.failures === "number" && raw.failures > 0 ? { failures: Math.floor(raw.failures) } : {}),
         });
       }
     }
@@ -400,16 +404,22 @@ export function createSkillReview(deps: SkillReviewDeps): SkillReview {
     if (!counter) return;
     counter.steps = Math.max(0, counter.steps - steps);
     delete counter.failedAt;
+    delete counter.failures;
     save();
   };
 
-  const failed = (botId: string, threadId: string, note: string): ReviewReport => {
+  const failed = (botId: string, threadId: string, note: string, steps?: number): ReviewReport => {
     const counter = counters.get(key(botId, threadId));
-    if (counter) {
+    log(`${botId}: ${note}`);
+    if (!counter) return { state: "failed", applied: [], note };
+    counter.failures = (counter.failures ?? 0) + 1;
+    if (counter.failures >= MAX_FAILED_REVIEWS) {
+      settleCounter(botId, threadId, steps ?? counter.steps);
+      log(`${botId}: gave up on this review after ${MAX_FAILED_REVIEWS} failed attempts; new work counts toward the next one`);
+    } else {
       counter.failedAt = now();
       save();
     }
-    log(`${botId}: ${note}`);
     return { state: "failed", applied: [], note };
   };
 
@@ -448,7 +458,7 @@ export function createSkillReview(deps: SkillReviewDeps): SkillReview {
       return { state: "skipped", applied: [], note: "the conversation is gone" };
     }
     const engine = deps.engine(botId);
-    if (!engine) return failed(botId, threadId, "this bot's engine cannot run a background review");
+    if (!engine) return failed(botId, threadId, "this bot's engine cannot run a background review", steps);
     const transcript = reviewTranscript(conversation.messages, bot, conversation.room);
     const skills = deps.skills(botId);
     const { shown } = shownSkills(skills, transcript);
@@ -457,12 +467,12 @@ export function createSkillReview(deps: SkillReviewDeps): SkillReview {
     try {
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS)]);
       answer = await Promise.race([
-        engine.generateText(prompt, { signal }),
+        engine.generateText(prompt, { signal, timeoutMs: REVIEW_TIMEOUT_MS }),
         new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error(controller.signal.aborted ? "cancelled" : "timed out")), { once: true })),
       ]);
     } catch (error) {
       if (controller.signal.aborted) return { state: "cancelled", applied: [] };
-      return failed(botId, threadId, `the review call failed (${error instanceof Error ? error.message : "unknown"})`);
+      return failed(botId, threadId, `the review call failed (${error instanceof Error ? error.message : "unknown"})`, steps);
     }
     if (controller.signal.aborted) return { state: "cancelled", applied: [] };
     const { changes, note } = parseSkillReview(typeof answer === "string" ? answer : "", skills, shown);
@@ -483,8 +493,9 @@ export function createSkillReview(deps: SkillReviewDeps): SkillReview {
     const current = running.get(botId);
     if (current) return current.done;
     const controller = new AbortController();
+    const steps = counters.get(key(botId, threadId))?.steps ?? 0;
     const done = review(botId, threadId, controller).catch((error: unknown) =>
-      failed(botId, threadId, `the review stopped (${error instanceof Error ? error.message : "unknown"})`));
+      failed(botId, threadId, `the review stopped (${error instanceof Error ? error.message : "unknown"})`, steps));
     running.set(botId, { threadId, controller, done });
     void done.finally(() => {
       if (running.get(botId)?.controller === controller) running.delete(botId);
@@ -515,6 +526,7 @@ export function createSkillReview(deps: SkillReviewDeps): SkillReview {
       if (!counter || counter.steps === 0) return;
       counter.steps = 0;
       delete counter.failedAt;
+      delete counter.failures;
       save();
     },
     botSettled(botId) {

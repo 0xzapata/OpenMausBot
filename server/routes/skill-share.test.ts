@@ -1,6 +1,3 @@
-// Sharing learned skills through the route table: the receipt's Share
-// button and share-by-name, each passing the host's answer through. The
-// sharing itself is covered by server/skill-share.test.ts.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";

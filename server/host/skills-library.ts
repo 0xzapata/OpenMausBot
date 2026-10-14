@@ -1,14 +1,3 @@
-// The skills library on the host (features.skillsLibrary): a bot's skills
-// merged with its library assignments, and sharing learned skills with the
-// team (features.shareLearnedSkills) as server/index.ts wires it into turns,
-// the automatic skill review, skill_manage, receipts and their Undo. The
-// library and assignment rules live in server/skill-library.ts and
-// server/skill-share.ts; this module binds them to the store.
-//
-// Prompt-cache safety: a conversation's skills index lists only what was
-// assigned before it started (conversationSkills), and a skill shared later
-// reaches it once as a note on its next user turn (shareNote), recorded as
-// delivered only after the provider accepted that turn.
 import { randomUUID } from "node:crypto";
 
 import type { SkillRequestCardData, SkillShareRecord } from "../../shared/skill-request.ts";
@@ -32,7 +21,6 @@ import {
 import { listSkills, readSkillFile, resolveBotSkills, type SkillListing } from "../skills.ts";
 import type { BotRecord, Message, Store } from "../store.ts";
 
-/** One receipt card, as appendSkillRequestCard writes it. */
 type ReceiptArgs = {
   botId: string;
   threadId: string;
@@ -61,8 +49,7 @@ type UndoResult =
   | { claimed: true; state: "undone" }
   | { claimed: true; state: "invalid"; error: string; status: number; stale?: true };
 
-/** A turn's share note: its text, and a wrapper for the provider dispatch
- * that records the note as delivered once the provider accepted it. */
+/** `after` records the note as delivered only once the provider accepted the dispatch. */
 export interface TurnShareNote {
   text: string;
   after<T>(dispatch: Promise<T>): Promise<T>;
@@ -74,18 +61,12 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
   const { store, cfg } = deps;
   const mode = () => shareLearnedSkillsMode(cfg);
 
-  // Skills library (features.skillsLibrary). While the flag is off both
-  // helpers reduce exactly to today's per-bot calls; assignments recorded on
-  // bot records stay inert until it is on.
   const listBotSkills = (bot: BotRecord) =>
     skillsLibraryEnabled(cfg) ? resolveBotSkills(bot.id, bot.assignedSkills) : listSkills(bot.id);
   const readBotSkillFile = (bot: BotRecord, name: string): string | null => {
     const own = readSkillFile(bot.id, name);
     if (own !== null || !skillsLibraryEnabled(cfg)) return own;
-    // A private listing whose stored bytes no longer verify must not fall
-    // through to a same-named library skill: private wins collisions, so a
-    // broken private file stays unreadable instead of exporting another
-    // bot's library instructions under this bot's name.
+    // Private wins collisions: a private skill that no longer verifies must not fall through to a same-named library skill.
     if (listSkills(bot.id).some((skill) => skill.name === name)) return null;
     // The library fallback is by assignment only, never by name alone.
     if (!bot.assignedSkills?.includes(name)) return null;
@@ -97,8 +78,7 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
   const patchAssigned = (botId: string, assignedSkills: string[]) => {
     store.patchBot(botId, { assignedSkills });
   };
-  /** Who could see the conversation a skill came from: the bot's audience,
-   * narrowed to the room's (its bots and its floor) when it is a room. */
+  /** The bot's audience, narrowed to the room's (its bots and its floor) when the conversation is a room. */
   const sourceAudience = (bot: { visibility?: unknown }, threadId?: string): unknown => {
     const room = threadId ? store.groupByThread(threadId) : undefined;
     if (!room) return bot.visibility;
@@ -108,16 +88,13 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
     });
     return intersectAudience(bot.visibility, narrowestAudience([room.audienceFloor, ...members]));
   };
-  /** When a conversation started: its first message's time; none = new. */
   const conversationStartedAt = (threadId: string): number | undefined => store.messagesFor(threadId)[0]?.at;
-  // read live: an assignment PUT during awaited turn setup still counts
+  // The bot record predates awaited setup work; an assignment PUT in that window must still reach this prompt.
   const liveAssigned = (bot: BotRecord) => store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills;
 
-  /** Whether an update to `name` goes to the shared library copy. */
   const editable = (botId: string, name: string): boolean =>
     mode() !== "off" && sharedSkillEditable(botId, store.bot(botId)?.assignedSkills, name);
 
-  /** The share as one sentence, for the bot that learned the skill. */
   function summaryLine(share: SkillShareRecord): string {
     const mates = share.assigned.map((bot) => bot.name);
     const skipped = share.skipped.map((bot) => `${bot.name} (${bot.reason})`);
@@ -127,8 +104,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
     ].filter(Boolean).join(" ");
   }
 
-  /** Share one of a bot's learned skills with its team and, given its
-   * receipt, record the outcome there so Undo reverts it too. */
   function shareFromBot(
     botId: string,
     name: string,
@@ -142,7 +117,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
       audience: sourceAudience(author, receipt?.threadId),
       ...(receipt?.expectSha256 ? { expectSha256: receipt.expectSha256 } : {}),
     });
-    // a receipt for a version that changed since keeps its card as it was
     if (receipt && !("stale" in shared)) {
       const message = store.messagesFor(receipt.threadId).find((candidate) => candidate.id === receipt.messageId);
       const card = message?.card;
@@ -157,8 +131,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
     return shared;
   }
 
-  /** Update a shared learned skill through its library copy, with the same
-   * one-line receipt and Undo a private update gets. */
   function applySharedUpdate(
     from: BotRecord,
     threadId: string,
@@ -209,16 +181,8 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
     listBotSkills,
     readBotSkillFile,
 
-    /** features.shareLearnedSkills: "off" | "ask" | "auto". */
     mode,
 
-    /** The library assignments one conversation's skills index lists. A
-     * skill shared into this bot after the conversation started stays out,
-     * so a teammate's share never changes this conversation's system prompt
-     * and its cached prefix survives. Flag off: undefined, the per-bot
-     * listing exactly as before. */
-    /** When the conversation began, for skillsSystemPrompt: a library skill
-     * keeps the description it had then. */
     conversationStartedAt,
 
     conversationSkills(bot: BotRecord, threadId: string): string[] | undefined {
@@ -226,8 +190,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
       return conversationAssignedSkills(bot.id, liveAssigned(bot), conversationStartedAt(threadId));
     },
 
-    /** The one-time "new team skill" note for this turn's user text; empty
-     * where the turn has no workspace (`enabled` false). */
     shareNote(bot: BotRecord, threadId: string, enabled: boolean): TurnShareNote {
       if (!enabled || !skillsLibraryEnabled(cfg)) return NO_TURN_NOTE;
       try {
@@ -240,8 +202,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
       }
     },
 
-    /** The automatic review's skill list plus the shared team skills it may
-     * improve (an update rewrites the library copy). */
     reviewSkills<T extends { name: string }>(botId: string, own: T[]): Array<T | {
       name: string; description: string; editable: boolean; enabled: boolean; sha256: string; body?: string | null;
     }> {
@@ -258,13 +218,11 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
       return [...own, ...shared];
     },
 
-    /** A shared skill's current library hash, for the review's stale check. */
     sharedSha: (botId: string, name: string): string | null =>
       editable(botId, name) ? readSkillLibraryIndex()[name]?.sha256 ?? null : null,
 
     editable,
 
-    /** The automatic review's update of a shared skill. */
     applyReviewUpdate(bot: BotRecord, threadId: string, change: { name: string; skillMd: string; gist: string; baseSha256?: string }, direct: DirectApply):
       { ok: true } | { ok: false; error: string } {
       const updated = applySharedUpdate(bot, threadId, {
@@ -273,8 +231,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
       return "error" in updated ? { ok: false, error: updated.error } : { ok: true };
     },
 
-    /** skill_manage's update of a shared skill (`editable`): the response's
-     * status and body. */
     harnessUpdate(from: BotRecord, threadId: string, name: string, skillMd: string, gist: unknown, baseRevision: unknown, direct: DirectApply | null):
       [status: number, body: Record<string, unknown>] {
       if (!direct) return [422, { state: "failed", error: "this conversation cannot update a shared team skill" }];
@@ -285,8 +241,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
       return [201, { state: "applied", name: updated.name, action: "update", summary: updated.summary, shared: updated.shared }];
     },
 
-    /** skill_manage's list: shared team skills this bot may update are
-     * editable, with the revision an update must name (base_revision). */
     harnessListing(botId: string, skills: SkillListing[]): Array<SkillListing & { revision?: string }> {
       if (mode() === "off") return skills;
       return skills.map((skill) => !skill.editable && editable(botId, skill.name)
@@ -294,10 +248,7 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
         : skill);
     },
 
-    /** After a bot's own learned skill applied: features.shareLearnedSkills
-     * "auto" shares it now. A settlement still pending keeps its stage record
-     * bound to the private copy, so that one waits for the receipt's Share
-     * button instead. */
+    /** A settlement still pending keeps its stage bound to the private copy, so it waits for the receipt's Share button. */
     afterOwnApply<T extends { settlementPending?: boolean }>(botId: string, threadId: string, staged: { id: string; name: string }, applied: T):
       T & { shared?: string; shareError?: string } {
       if (mode() !== "auto" || applied.settlementPending) return applied;
@@ -306,9 +257,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
       return "error" in shared ? { ...applied, shareError: shared.error } : { ...applied, shared: summaryLine(shared) };
     },
 
-    /** "Share with team" on a learned-skill receipt (features.shareLearnedSkills
-     * "ask"): the receipt's own skill at the version it applied, once, while
-     * it is not undone. */
     shareFromReceipt(threadId: string, requestId: string):
       | { ok: true; shared: SkillShareRecord }
       | { ok: false; status: number; error: string } {
@@ -330,8 +278,6 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
 
     shareFromBot,
 
-    /** Undo of a shared skill's receipt: revert the library write and every
-     * assignment the share made. Its private copy stays archived. */
     undoReceipt(botId: string, threadId: string, message: Message, request: SkillRequestCardData & { shared: SkillShareRecord }): UndoResult {
       const undone = undoSharedLearnedSkill({
         authorId: botId,
@@ -356,7 +302,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Recording a delivered note never fails the turn that carried it. */
 function commitNote(commit: () => void): void {
   try {
     commit();

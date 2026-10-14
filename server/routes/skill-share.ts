@@ -1,17 +1,10 @@
-// Sharing learned skills with the team (features.shareLearnedSkills): the
-// receipt's "Share with team" button, and sharing a bot's learned skill by
-// name (a coordinator such as an editing lead acting on the owner's behalf).
-// The work is server/host/skill-share-host.ts; scope rules stay keyed by
-// path in server/request-auth.ts.
 import type { SkillShareRecord } from "../../shared/skill-request.ts";
 import type { RequestAuth } from "../request-auth.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 export interface SkillShareRouteDeps {
-  /** features.shareLearnedSkills is not "off". */
   enabled(): boolean;
   botExists(botId: string): boolean;
-  /** Why this session may not act on the receipt card, or null. */
   cardRefusal(auth: RequestAuth, threadId: string, requestId: string): string | null;
   shareFromReceipt(threadId: string, requestId: string): { ok: true; shared: SkillShareRecord } | { ok: false; status: number; error: string };
   shareFromBot(botId: string, name: string): SkillShareRecord | { error: string };

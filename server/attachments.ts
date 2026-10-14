@@ -493,9 +493,17 @@ export function saveImage(bytes: Buffer, mime: string, requestedUploadId?: strin
   }
 }
 
+/** Cloud voices answer in MP3; the built-in Mac voices (`say`) and Chatterbox answer in WAV. */
+const AUDIO_MIMES: Readonly<Record<string, { mime: string; ext: string }>> = {
+  "audio/mpeg": { mime: "audio/mpeg", ext: ".mp3" },
+  "audio/wav": { mime: "audio/wav", ext: ".wav" },
+  "audio/x-wav": { mime: "audio/wav", ext: ".wav" },
+  "audio/wave": { mime: "audio/wav", ext: ".wav" },
+};
+
 export function saveAudio(bytes: Buffer, mime: string): SavedAttachment {
-  const normalized = mime.split(";")[0]!.trim().toLowerCase();
-  if (normalized !== "audio/mpeg") {
+  const format = AUDIO_MIMES[mime.split(";")[0]!.trim().toLowerCase()];
+  if (!format) {
     throw Object.assign(new Error("unsupported audio type"), { status: 400 });
   }
   if (bytes.byteLength === 0) throw Object.assign(new Error("empty audio"), { status: 400 });
@@ -506,7 +514,7 @@ export function saveAudio(bytes: Buffer, mime: string): SavedAttachment {
   const reservation = new AttachmentReservation();
   reservation.reserve(bytes.byteLength);
   const id = randomUUID();
-  const name = `${id}.mp3`;
+  const name = `${id}${format.ext}`;
   const path = join(ATTACHMENTS_DIR, name);
   const partialPath = join(ATTACHMENTS_DIR, `.openmaus-upload-${id}-${randomUUID()}.partial`);
   activePartials.add(partialPath);
@@ -524,7 +532,7 @@ export function saveAudio(bytes: Buffer, mime: string): SavedAttachment {
       }
     }
     unlinkSync(partialPath);
-    return { path, mime: normalized, bytes: bytes.byteLength };
+    return { path, mime: format.mime, bytes: bytes.byteLength };
   } catch (error) {
     try {
       unlinkSync(partialPath);
@@ -563,7 +571,7 @@ export function attachmentExists(name: string): boolean {
 
 /** Only a bare filename inside ATTACHMENTS_DIR resolves: the route must never become a file server for the data dir. */
 export function readAttachment(name: string): { bytes: Buffer; mime: string } | null {
-  if (!/^[A-Za-z0-9-]+\.(png|jpg|jpeg|gif|webp|mp3)$/.test(name)) return null;
+  if (!/^[A-Za-z0-9-]+\.(png|jpg|jpeg|gif|webp|mp3|wav)$/.test(name)) return null;
   const path = join(ATTACHMENTS_DIR, name);
   if (extname(path) === ".jpeg") return null;
   try {
@@ -585,6 +593,8 @@ function mimeForExt(ext: string): string {
       return "image/webp";
     case ".mp3":
       return "audio/mpeg";
+    case ".wav":
+      return "audio/wav";
     default:
       return "application/octet-stream";
   }
