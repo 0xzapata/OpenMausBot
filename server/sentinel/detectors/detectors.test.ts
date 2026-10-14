@@ -7,6 +7,7 @@ import { DETECTORS } from "./index.ts";
 import { queueWait } from "./queue-wait.ts";
 import { retryLoop } from "./retry-loop.ts";
 import { toolError } from "./tool-error.ts";
+import { heldMemberLine } from "../../room-holds.ts";
 import { turnStop } from "./turn-stop.ts";
 
 const config: DetectorConfig = { queueWaitMs: 300_000, costUsd: 5, retryLoopMin: 3, now: 10_000_000 };
@@ -44,6 +45,10 @@ describe("sentinel detectors", () => {
     ], config);
     expect(new Set(observations.map((o) => o.signature)).size).toBe(1);
     expect(observations[0]).toMatchObject({ origin: "shell", severity: "low", title: "timed out" });
+  });
+
+  it("tool_error never reports a member the person held on purpose", () => {
+    expect(toolError.detect([tool("m1", heldMemberLine("Reviewer"), "")], config)).toEqual([]);
   });
 
   it("turn_stop reports failed and budget-stopped turns, a stopped room turn as a timeout, and never the person's own stop", () => {
