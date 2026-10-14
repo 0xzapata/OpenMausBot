@@ -1,9 +1,3 @@
-// The Simple bot panel's Vault: what this one bot is allowed to use. Apps are
-// the connected apps with an on/off switch each, written to the same
-// connectorScopes record the Access section edits. Logins are the sites this
-// bot's browser is signed in to, read and signed out by the same list the
-// browser's own profile manager shows. Nothing here stores a password: a
-// login is made by signing in once in the bot's browser.
 import { withBotApp } from "@/lib/bot-app-access";
 import { t } from "@/lib/i18n";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
@@ -33,7 +27,6 @@ export function VaultTab({
     "patch" | "canUseConnectedApps" | "connectedAppsConfigured" | "connectedAppsEnabled" | "browserEnabled"
   >;
   apps: BotApps;
-  /** Opens this bot's browser: signing in to a site happens there. */
   onOpenBrowser: () => void;
 }) {
   const { state, dispatch } = useStore();
@@ -54,9 +47,6 @@ export function VaultTab({
           ? t("botSettings.simple.appsNone")
           : null;
 
-  // Which browser this bot signs in with, as the browser's profile manager
-  // reads it: its own, a shared named profile, a temporary one, or the
-  // person's Chrome (whose sign-ins are theirs to manage, not ours).
   const profileId = bot.browserProfile ?? "";
   const profile = (state.config?.browserProfiles ?? []).find((candidate) => candidate.id === profileId);
   const temporary = profileId === "guest";
@@ -90,8 +80,6 @@ export function VaultTab({
             <Switch
               checked={connectedAppsEnabled}
               aria-label={t("botSettings.simple.appsAllow", { name: bot.name })}
-              // The same rule as the Access section's switch: it can always
-              // be turned off, and on only where apps can work at all.
               disabled={!connectedAppsEnabled && (!connectedAppsConfigured || !canUseConnectedApps)}
               onClick={() => patch({ composio: !connectedAppsEnabled })}
               className="disabled:cursor-not-allowed"
@@ -99,7 +87,6 @@ export function VaultTab({
           </div>
           {apps.apps.map((app) => (
             <div key={app.slug} data-simple-app={app.slug} className={rowCls}>
-              {/* Keyed by its mark: the catalog can arrive after the list. */}
               <ServiceIcon key={`${app.card.logo}:${app.card.domain}`} card={app.card} className="size-8 shrink-0" />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13.5px] font-medium text-ink">{app.label}</div>
@@ -137,8 +124,7 @@ export function VaultTab({
           <p className={noteCls}>{t("settings.profiles.myChromeHint")}</p>
         ) : (
           <>
-            {/* Reading and clearing a browser's sign-ins is the owner's or an
-                admin's to do; the server refuses anyone else. */}
+            {/* Security: reading and clearing a browser's sign-ins is the owner's or an admin's; the server refuses anyone else. */}
             {ownerOrAdmin !== false && (profileId === "" || profile) && (
               <SignedInSites bare key={`${bot.id}:${profileId}`} target={{ bot: bot.id }} sharedBy={sharedBy} disabled={Boolean(bot.busy)} />
             )}

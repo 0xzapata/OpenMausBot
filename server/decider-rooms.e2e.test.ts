@@ -11,12 +11,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { freePortBlock } from "./testing/ports.ts";
 
-// Auto rooms end to end: a real server and fake engine CLIs, with the
-// decision model pointed at a fake Jev-compatible endpoint on this machine
-// (decider.baseUrl), then at a fake OpenRouter on this machine
-// (decider.openrouterBaseUrl). Nothing here reaches the real Jev or
-// OpenRouter API. The Jev key reaches the server only through its env, the
-// way the desktop shell delivers it.
+// The decision model points at a fake Jev-compatible endpoint (decider.baseUrl), then a fake OpenRouter
+// (decider.openrouterBaseUrl), both on this machine; the Jev key reaches the server only through its env, as the desktop delivers it.
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
@@ -139,7 +135,6 @@ beforeAll(async () => {
     try {
       if ((await fetch(`${base}/api/health`)).status === 200) break;
     } catch {
-      // still starting
     }
     if (Date.now() >= deadline) throw new Error(`server never became healthy: ${output}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -161,8 +156,6 @@ const roomState = async (roomId: string) => {
   return { room, messages: (room?.messages ?? []) as RoomMessage[] };
 };
 
-/** Send one plain message and wait for the round to settle; returns what the
- * bots said in it (the first text line of each speaker). */
 async function round(roomId: string, text: string): Promise<{ post: any; replies: RoomMessage[] }> {
   const before = new Set((await roomState(roomId)).messages.map((message) => message.id));
   const post = await api("POST", `/api/groups/${roomId}/messages`, { text });
@@ -233,7 +226,6 @@ describe("Auto rooms ask the decision model who answers", { timeout: 90_000 }, (
     expect([...new Set(replies.map((reply) => reply.from!.name))]).toEqual(["Theo"]);
     expect(replies[0]!.routedBy).toEqual({ provider: "jev", probability: 0.94 });
     expect(replies.slice(1).every((reply) => reply.routedBy === undefined)).toBe(true);
-    // the task title came from the chosen responder's engine, not the fallback's
     await expect.poll(() => existsSync(titleDump), { timeout: 10_000 }).toBe(true);
     expect(existsSync(fallbackTitleDump)).toBe(false);
 
@@ -390,11 +382,9 @@ describe("Auto rooms ask the decision model who answers", { timeout: 90_000 }, (
       const check = openrouterRequests.at(-1)!;
       expect(check.auth).toBe(`Bearer ${OR_KEY}`);
       expect(check.body.model).toBe(MODEL);
-      // the desktop's path: config.json keeps an empty placeholder, the Jev fields are untouched
       const disk = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
       expect(disk.decider).toMatchObject({ provider: "openrouter", openrouterModel: MODEL, openrouterKey: "", enabled: true });
       expect(JSON.stringify(disk)).not.toContain(OR_KEY);
-      // Test uses the saved provider, model and key; a bad draft is refused
       expect(await api("POST", "/api/decider/test", {})).toMatchObject({ body: { ok: true } });
       expect((await api("POST", "/api/decider/test", { key: "sk-or-bad" })).body).toEqual({ ok: false, reason: "rejected", status: 401 });
     });
@@ -412,7 +402,6 @@ describe("Auto rooms ask the decision model who answers", { timeout: 90_000 }, (
       expect(request.body.response_format.json_schema.strict).toBe(true);
       expect(request.body.response_format.json_schema.schema.properties.answers.properties.answer.properties.choice.enum)
         .toEqual([bots.Maya!.id, bots.Theo!.id, bots.Ravi!.id, "__everyone__"]);
-      // never the Jev fake
       expect(jevRequests.every((jevRequest) => jevRequest.auth !== `Bearer ${OR_KEY}`)).toBe(true);
 
       const dir = join(data, "decider-log");
@@ -441,7 +430,6 @@ describe("Auto rooms ask the decision model who answers", { timeout: 90_000 }, (
       const check = openrouterRequests.at(-1)!;
       expect(check.auth).toBe(`Bearer ${OR_KEY}`);
       expect(check.body).toMatchObject({ model: DECISIONS_MODEL, state: expect.anything(), question: { type: "noul" } });
-      // saving a model with no API puts it back on chat completions
       expect((await api("PUT", "/api/config", { decider: { openrouterModel: MODEL } })).body.decider).toMatchObject({ model: MODEL, api: "chat" });
     });
 

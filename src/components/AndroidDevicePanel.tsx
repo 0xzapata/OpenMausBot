@@ -14,7 +14,7 @@ export function useAndroidUsbDevices() {
   const pageVisible = usePageVisible();
 
   useEffect(() => {
-    // every tick is an adb subprocess — nothing to learn while hidden
+    // Every tick is an adb subprocess, so nothing runs while hidden.
     if (!bridge || !pageVisible) return;
     let alive = true;
     const refresh = async () => {
@@ -74,7 +74,6 @@ export function AndroidDevicePanel({ status }: { status: AndroidDeviceStatus }) 
   }, [selected, status.devices]);
 
   useEffect(() => {
-    // an adb screencap subprocess per tick — pause the mirror while hidden
     if (!bridge || !selectedSerial || selectedState !== "device" || !pageVisible) {
       if (!pageVisible) return;
       setFrame(null);

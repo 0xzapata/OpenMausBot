@@ -45,7 +45,6 @@ it("asks with /setup in front, offers ideas, and says plainly how to skip", () =
   expect(html).toContain("Skip for now");
   expect(html).toContain("Esc");
   expect(html).toContain("You can come back to it any time");
-  // Not a dialog: the sidebar and everything else stay reachable.
   expect(html).not.toContain('aria-modal="true"');
 });
 

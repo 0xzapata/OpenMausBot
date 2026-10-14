@@ -1,19 +1,5 @@
-// Saved logins at rest, and the scrubber that keeps them out of everything a
-// bot or a transcript can read.
-//
-// The store is the browser engine's own at-rest mechanism, reused: the whole
-// list is one file sealed with AES-256-GCM under SHA-256 of a random key
-// (server/browser-sites.ts encryptBrowserState, the format agent-browser
-// writes its saved sign-ins in), the key a 0600 file beside it in the data
-// folder. It is the same on the desktop, a server and Cloud. Its key is its
-// own, not the browser engine's, because that one is handed to every
-// browser process in its environment and this one never leaves the server.
-// Neither file is ever backed up, exported or moved to another computer
-// (server/workspace-backup-policy.ts): a saved password stays on the
-// computer it was saved on.
-//
-// The 1Password service-account token (Settings → Logins) is kept in the
-// same sealed file.
+// Sealed under a key of its own (a 0600 file beside it), never the browser engine's, which every browser process gets in
+// its environment. Neither file is ever backed up, exported or moved: a saved password stays on its computer.
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -70,7 +56,6 @@ export interface NewLogin {
 export interface LoginPatch {
   username?: string;
   password?: string;
-  /** null removes the 2FA key. */
   totp?: TotpKey | null;
   bots?: LoginBots;
 }
@@ -91,7 +76,6 @@ export class LoginStore {
   private readonly now: () => number;
   private cache: StoreFile | null = null;
   private unreadableWarned = false;
-  /** Bumped on every change, so the scrubber rebuilds its list only then. */
   version = 0;
 
   constructor(options: { dataDir: string; now?: () => number }) {
@@ -100,14 +84,11 @@ export class LoginStore {
     this.now = options.now ?? Date.now;
   }
 
-  /** The key, made on first save. Reading never makes one: no key means
-   * nothing was ever saved here. */
   private key(create: boolean): string | null {
     try {
       const existing = readFileSync(this.keyFile, "utf8").trim();
       if (/^[0-9a-f]{64}$/u.test(existing)) return existing;
     } catch {
-      // not made yet
     }
     if (!create) return null;
     const key = randomBytes(32).toString("hex");
@@ -125,8 +106,7 @@ export class LoginStore {
         if (!key) throw new Error("missing key");
         data = fileSchema.parse(JSON.parse(decryptBrowserState(readFileSync(this.file), key)));
       } catch {
-        // A file that cannot be opened (its key lost, or damaged) holds
-        // nothing usable; the next save replaces it. Never its contents in a log.
+        // Never log an unreadable file's contents.
         if (!this.unreadableWarned) console.warn("saved logins: the saved logins file could not be opened; it will be replaced on the next save");
         this.unreadableWarned = true;
         data = EMPTY;
@@ -154,9 +134,6 @@ export class LoginStore {
     return this.read().logins.find((login) => login.id === id) ?? null;
   }
 
-  /** Save a login. The same host and username (ignoring case) replaces the
-   * one already saved — the person saving again means "this is the password
-   * now" — keeping who may use it unless `bots` widens it. */
   create(input: NewLogin): LoginSummary {
     const data = this.read();
     const at = this.now();
@@ -201,12 +178,10 @@ export class LoginStore {
     return true;
   }
 
-  /** The logins a bot may use on exactly this host. */
   usableFor(host: string, botId: string): StoredLogin[] {
     return this.read().logins.filter((login) => login.host === host && (login.bots === "all" || login.bots.includes(botId)));
   }
 
-  /** Every host and username a bot has a login for: what its prompt names. */
   hostsFor(botId: string): Array<{ host: string; username: string }> {
     return this.read().logins.filter((login) => login.bots === "all" || login.bots.includes(botId))
       .map((login) => ({ host: login.host, username: login.username }))
@@ -230,7 +205,6 @@ export class LoginStore {
     this.write(token ? { ...rest, onePassword: { token, connectedAt: this.now() } } : rest);
   }
 
-  /** Every secret value this store holds, for the scrubber. */
   secretValues(): string[] {
     const data = this.read();
     return [
@@ -240,34 +214,23 @@ export class LoginStore {
   }
 }
 
-// ── the scrubber ───────────────────────────────────────────────────────
-// Every saved password (and 2FA key, and the 1Password token), every
-// password filled from elsewhere this run, and every one-time code made in
-// the last few minutes is replaced with •••••• wherever text crosses to a
-// bot or a transcript: browser tool results, the stored conversation, the
-// engines' protocol logs (shared/redact.ts runs this inside
-// redactSecretsInText). The forms a value takes in page text, JSON, a URL or
-// HTML are all matched. A screenshot cannot be scrubbed.
+// Saved secrets, passwords filled this run and recent one-time codes are masked wherever text crosses to a bot or a
+// transcript. A screenshot cannot be scrubbed.
 
-/** Shorter values are not treated as secrets: masking every "abc" in a
- * transcript would destroy it, and no site accepts such a password. */
 const MIN_SECRET = 4;
-/** How long a filled one-time code is scrubbed after it was made. */
 const CODE_MEMORY_MS = 5 * 60_000;
-/** Passwords filled from 1Password this run, at most. */
 const FILLED_LIMIT = 500;
 
 function htmlEscaped(value: string): string {
   return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;").replace(/"/gu, "&quot;").replace(/'/gu, "&#39;");
 }
 
-/** The forms one value takes in text a bot may read. */
 export function secretForms(value: string): string[] {
   const forms = new Set([value, JSON.stringify(value).slice(1, -1), htmlEscaped(value)]);
   try {
     forms.add(encodeURIComponent(value));
     forms.add(encodeURIComponent(value).replace(/%20/gu, "+"));
-  } catch { /* a lone surrogate has no URL form */ }
+  } catch {}
   return [...forms].filter((form) => form.length >= MIN_SECRET);
 }
 
@@ -290,8 +253,6 @@ export class HeldSecrets {
     this.now = now;
   }
 
-  /** A value about to reach a page: a password (kept for this run) or a
-   * one-time code (kept for a few minutes). */
   remember(value: string, kind: "password" | "code"): void {
     if (!value) return;
     if (kind === "code") {
@@ -325,7 +286,6 @@ export class HeldSecrets {
       const now = this.now();
       for (const [code, until] of this.codes) {
         if (until <= now) { this.codes.delete(code); continue; }
-        // A code is digits: only a whole number matches, never part of a longer one.
         if (out.includes(code)) out = out.replace(new RegExp(`(?<!\\d)${escapeRegExp(code)}(?!\\d)`, "gu"), HELD_SECRET_MASK);
       }
     }

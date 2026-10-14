@@ -1,15 +1,6 @@
-// Background fact capture, for a bot with Memory upkeep on. A fact said in
-// passing ("I'm vegetarian", "the launch moved to Friday") otherwise lives in
-// one chat until it is compacted away, unless the bot happened to call
-// memory_update. After a chat goes quiet, one tool-free model call reads the
-// finished turns — the person's words and the bot's under different rules —
-// beside the current MEMORY.md, and proposes up to eight facts. With Learn
-// from group chats on, a member bot's room turns are read too: the person's
+// With Learn from group chats on, a member bot's room turns are read too: the person's
 // lines as the person's, other people's and other bots' under narrower
 // rules (the background review Hermes Agent runs in group threads, MIT).
-// Pure here:
-// prompt, parsing, dedupe and the per-thread buffer. Wiring and writes live
-// in memory-upkeep.ts.
 import { factIdentity, isMemoryDate, notebookIdentities } from "./memory-entries.ts";
 
 export type CandidateKind = "preference" | "fact" | "decision" | "outcome";
@@ -18,23 +9,13 @@ export const CANDIDATE_KINDS: readonly CandidateKind[] = ["preference", "fact", 
 export interface Candidate {
   text: string;
   kind: CandidateKind;
-  /** YYYY-MM-DD, the last day a temporary fact holds. */
   until?: string;
-  /** About the person themselves, useful to any of their bots: a
-   * candidate for the shared About me, which only the person can approve. */
   aboutUser: boolean;
-  /** Already in the notebook, listed again only as an About me candidate:
-   * never appended. */
   noted?: boolean;
-  /** The topic file the fact belongs in (`food`, `family`, `northwind`);
-   * absent for a core fact, which goes to MEMORY.md. */
   topic?: string;
-  /** Other words for that topic, added to its header. */
   topicAliases?: string[];
 }
 
-/** A model's topic name as a file name: lower-case words joined by dashes,
- * or null when nothing usable is left. "archive" and "memory" are reserved. */
 export function topicFileName(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const name = raw.toLowerCase().replace(/\.md$/, "").replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 40);
@@ -49,9 +30,6 @@ const LINE_MAX = 1_500;
 const NOTEBOOK_MAX = 6_000;
 export const CAPTURE_MARKER = "You are the CAPTURE step of a memory system";
 
-/** One line of a room the bot read before its reply. "person" is the person
- * this computer belongs to; "other" another person of a shared workspace;
- * "peer" another bot of the room. */
 export interface RoomLine {
   by: "person" | "other" | "peer";
   name: string;
@@ -59,23 +37,15 @@ export interface RoomLine {
 }
 
 export interface CaptureTurn {
-  /** In a room: the person's own lines of the turn, joined. */
   person: string;
   bot: string;
-  /** False when another person of a shared workspace sent the message:
-   * their facts may be kept, but never offered for the owner's About me. */
+  /** Another person's facts may be kept, but never offered for the owner's About me. */
   owner?: boolean;
-  /** The finished turn this came from. A batch still waiting at shutdown is
-   * saved as these ids, never as text, and read back from the transcript at
-   * the next start (memory-upkeep.ts). */
   turnId?: string;
-  /** Set for a room turn: what the bot read since it last spoke there,
-   * oldest first. The prompt shows these lines instead of `person`. */
   room?: RoomLine[];
 }
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-/** The weekday of a YYYY-MM-DD day, so "this Friday" can be turned into a date. */
 function weekday(day: string): string {
   return WEEKDAYS[new Date(`${day}T12:00:00Z`).getUTCDay()] ?? "";
 }
@@ -130,7 +100,6 @@ export function capturePrompt(input: { botName: string; turns: readonly CaptureT
   ].join("\n");
 }
 
-/** The JSON inside a model's answer, fenced or bare. */
 function jsonPayload(text: string): unknown {
   const trimmed = text.trim();
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
@@ -163,7 +132,6 @@ export function parseCandidates(text: string, today: string): Candidate[] {
     if (typeof confidence === "number" && confidence < MIN_CONFIDENCE) continue;
     const factText = raw.replace(/\s+/g, " ").replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "").trim().slice(0, TEXT_MAX);
     if (!factText) continue;
-    // an until in the past is a fact that is already over
     const validUntil = isMemoryDate(until) && until >= today ? until : undefined;
     if (isMemoryDate(until) && !validUntil) continue;
     out.push({
@@ -182,8 +150,6 @@ export function parseCandidates(text: string, today: string): Candidate[] {
   return out;
 }
 
-/** Candidates not already in the notebook, and not repeated among
- * themselves, by the exact identity rule (signs, symbols and case kept). */
 export function newCandidates(candidates: readonly Candidate[], notebook: string): Candidate[] {
   const seen = notebookIdentities(notebook);
   const out: Candidate[] = [];
@@ -203,10 +169,6 @@ export interface CaptureBatch {
   turns: CaptureTurn[];
 }
 
-/** Finished turns wait here per bot and thread (a room's thread holds the
- * turns of every member bot, each its own batch) and go out together after
- * a quiet spell, or at once at the count: one model call per batch, never
- * on the turn path. */
 export class CaptureBuffer {
   private readonly pending = new Map<string, { botId: string; threadId: string; turns: CaptureTurn[]; timer: ReturnType<typeof setTimeout> | null }>();
   private readonly opts: { quietMs: () => number; maxTurns: number; onFlush: (batch: CaptureBatch) => void };
@@ -237,14 +199,12 @@ export class CaptureBuffer {
     if (entry.turns.length) this.opts.onFlush({ botId: entry.botId, threadId: entry.threadId, turns: entry.turns });
   }
 
-  /** Every bot's waiting turns of this thread, now. */
   flush(threadId: string): void {
     for (const [key, entry] of Array.from(this.pending.entries())) {
       if (entry.threadId === threadId) this.flushKey(key);
     }
   }
 
-  /** Drop a bot's waiting turns: its upkeep was switched off, or it was deleted. */
   dropBot(botId: string): void {
     for (const [key, entry] of Array.from(this.pending.entries())) {
       if (entry.botId !== botId) continue;
@@ -253,7 +213,6 @@ export class CaptureBuffer {
     }
   }
 
-  /** Every waiting batch, without capturing it: shutdown saves them. */
   drain(): CaptureBatch[] {
     const batches: CaptureBatch[] = [];
     for (const [key, entry] of Array.from(this.pending.entries())) {

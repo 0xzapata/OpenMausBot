@@ -2,9 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkProviderKey, providerModelsUrl } from "./provider-key-check.ts";
 
-// A local stand-in for a provider's models endpoint. It records the
-// headers it saw and answers per the key it was given; no real provider
-// is contacted anywhere in this file.
+// A local stand-in for a provider's models endpoint; no real provider is contacted in this file.
 describe("provider key check", () => {
   let server: Server;
   let base: string;
@@ -104,7 +102,6 @@ describe("provider key check", () => {
       .toEqual({ ok: false, reason: "rejected", status: 401 });
     expect(await checkProviderKey({ provider: "openaiCompat", key: "valid-fixture-key", url: "https://openrouter.ai/api/v1/" }, openRouter))
       .toEqual({ ok: true, check: "authentication", models: [] });
-    // The OpenRouter row authenticates the same way.
     expect(await checkProviderKey({ provider: "openrouter", key: "valid-fixture-key" }, openRouter))
       .toEqual({ ok: true, check: "authentication", models: [] });
     expect(paths).toHaveLength(3);

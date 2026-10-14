@@ -1,9 +1,3 @@
-// Access: where this bot runs, its working folder, connected apps and
-// browser toggles, its webhooks, and the standing "always allowed" grants.
-// Works on/cloud backend/auto-start VPS, Working folder, Connected apps, and
-// Browser are moved verbatim from SettingsPanel.tsx; the connected-service
-// list, webhooks list, and always-allowed list (the first read-only view of
-// standing grants) are new.
 import { useEffect, useState } from "react";
 import { browserUnavailableReason } from "@/lib/feature-flags";
 import { ChevronDown, ChevronRight, FolderOpen, Plus } from "lucide-react";
@@ -33,11 +27,10 @@ import { inputCls } from "./field";
 import type { ConnectorScope, ConnectorScopes } from "../../../shared/connector-scopes";
 import type { useBotSettingsDerived } from "./useBotSettingsDerived";
 
-/** Where a bot's shell tools run. Set per bot; each task pins its own copy
- * on its first turn (the server does the pinning — Claude keeps sessions
- * per project folder, so a folder must not move under a live task). The
- * PATCH is made directly rather than through updateBot: the server
- * validates the path and a rejected folder must not stick in local state. */
+/**
+ * Claude keeps sessions per project folder, so the server pins each task's folder on its first turn. PATCHed directly,
+ * not via updateBot: the server validates the path, and a rejected folder must not stick in local state.
+ */
 function WorkingFolder({ bot }: { bot: Bot }) {
   const { request: api } = useBotEditor();
   const { capabilities } = useDesktopCapabilities();
@@ -47,7 +40,7 @@ function WorkingFolder({ bot }: { bot: Bot }) {
   const [saving, setSaving] = useState(false);
   const canPick = Boolean(window.ogb?.pickFolder);
   const task = bot.tasks?.find((t) => t.threadId === bot.threadId);
-  const pinned = task?.cwd; // undefined = not yet, null = legacy home, string = folder
+  const pinned = task?.cwd;
   const pinnedElsewhere = pinned !== undefined && (pinned ?? undefined) !== bot.cwd;
 
   const save = async (cwd: string | null) => {
@@ -91,7 +84,6 @@ function WorkingFolder({ bot }: { bot: Bot }) {
           className="mt-3 flex items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            // an emptied field clears the folder — the server wants null
             void save((draft ?? bot.cwd ?? "").trim() || null);
           }}
         >
@@ -116,9 +108,10 @@ function WorkingFolder({ bot }: { bot: Bot }) {
   );
 }
 
-/** Which app-wide MCP servers this bot mounts. Absent list = all enabled
- * (the pre-existing behavior); the first switch flip writes an explicit
- * list so later additions in Plugins do not silently reach this bot. */
+/**
+ * Absent list = all enabled; the first flip writes an explicit list so servers added later never silently reach this
+ * bot.
+ */
 function McpServersCard({ bot, patch }: { bot: Bot; patch: (patch: { mcpServers: string[] | null }) => void }) {
   const { dispatch } = useStore();
   const { servers, error, refresh } = useMcpServers();
@@ -195,10 +188,6 @@ interface ToolListing {
   description?: string;
 }
 
-/** Lazy, module-cached inventory of every grantable tool per service, read
- * from the same endpoint the bots' bridge relays through. Recent data
- * survives dialog reopens; a failed load degrades the per-tool editor to a
- * retry row while All-tools and remove keep working. */
 let connectorToolsCache: { at: number; services: Record<string, ToolListing[]> } | null = null;
 let connectorToolsRequest: Promise<Record<string, ToolListing[]>> | null = null;
 const CONNECTOR_TOOLS_CACHE_MS = 60_000;
@@ -229,12 +218,10 @@ const VERB_LABELS: Record<ConnectorVerb, LocaleKey> = {
   delete: "botAccess.grants.verb.delete",
 };
 
-/** Per-service tool grants under the Connected apps switch (issue #1738).
- * Each connected service row expands into the exact-name editor: search,
- * verb-class preset chips that expand to explicit names, and one-click All
- * tools per service or globally. A grants record this build cannot parse
- * renders as a read-only summary — never a guess that could destroy fields
- * a newer server understands. */
+/**
+ * A grants record this build cannot parse renders read-only, never a guess that could destroy fields a newer server
+ * understands.
+ */
 function ConnectorToolsGrants({
   bot,
   patch,
@@ -248,12 +235,10 @@ function ConnectorToolsGrants({
   const [search, setSearch] = useState("");
   const [tools, setTools] = useState<Record<string, ToolListing[]> | null>(null);
   const [toolsError, setToolsError] = useState<string | null>(null);
-  /** The explicit list a service had before "All tools", so the switch can
-   * toggle back and forth within one visit. */
   const [lastExplicit, setLastExplicit] = useState<Record<string, string[]>>({});
-  /** The first grant pending confirmation: saving it creates the grants
-   * record, which limits every other connected app to no tools, so the
-   * person confirms that transition before it lands. */
+  /**
+   * The first grant creates the grants record, which limits every other connected app to no tools: confirm it first.
+   */
   const [confirmFirstGrant, setConfirmFirstGrant] = useState<{ slug: string; tools: "*" | string[] } | null>(null);
 
   useEffect(() => {
@@ -507,8 +492,6 @@ function ConnectorToolsGrants({
   );
 }
 
-/** Record browser steps: a sub-row of the Browser card. An admin setting
- * with no prompt; the steps stay with each conversation (server/browser-steps.ts). */
 function RecordStepsRow({ on, browserOn, myChrome, onChange }: { on: boolean; browserOn: boolean; myChrome: boolean; onChange: (on: boolean) => void }) {
   return (
     <div className="mt-3 flex items-center justify-between gap-4 border-t border-hairline/40 pt-3">
@@ -580,8 +563,6 @@ export function AccessSection({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Where it works is chosen in one place, the Computer panel; here is
-          its one line (shared/place-view.ts), the same words the panel uses. */}
       <div className="rounded-xl bg-card p-4" data-testid="access-works-on">
         <div className="text-[15px] font-medium text-ink">{t("access.worksOn", { name: bot.name, short: worksOn.short })}</div>
         <ProposalStatus bot={bot} kind="owner" />
@@ -787,7 +768,6 @@ export function AccessSection({
   );
 }
 
-/** App-level limits intersect with the existing exact tool grants. */
 function ConnectorScopesControl({ connectedSlugs, scopes, onChange }: {
   connectedSlugs: string[];
   scopes: ConnectorScopes | undefined;

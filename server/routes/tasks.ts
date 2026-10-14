@@ -1,9 +1,3 @@
-// A bot's conversations: its folders (projects), and its tasks — open one,
-// switch to one, change its settings (title, folder, model, approval level,
-// pin, archive, snooze, surface, link), delete one, and name one again
-// from its conversation. Moved from server/index.ts's inline routes into
-// the route table (server/routes/README.md); the table runs after the auth
-// gate, scope rules stay keyed by path in server/request-auth.ts.
 import { approvalModeFor, isApprovalMode, type ApprovalMode } from "../../shared/approval-mode.ts";
 import { threadLinkUrl } from "../../shared/thread-link.ts";
 import type { WireBot, WireTask } from "../../shared/wire.ts";
@@ -37,18 +31,14 @@ export interface TaskRouteDeps {
   /** A shared company workspace: Full access comes only from its operator. */
   hostedWorkspace: boolean;
   hostedFullAccessRefusal: string;
-  /** Company model policy on a hosted workspace, absent elsewhere. */
   hostedModels: Pick<HostedModels, "resetTask"> | null;
-  /** Assigned at boot, after the routes are built, so it is read per request. */
   routines(): Pick<RoutineManager, "isActiveThread"> | null;
   coordinator: Pick<Coordinator, "cancelDirect">;
   handoffs: Pick<Handoffs, "forget">;
   skillReview: Pick<SkillReview, "dropThread">;
   threadStarters: Pick<ThreadStarters, "set">;
   phoneSecretSubmissions: Pick<PhoneSecretSubmissionRegistry, "hasBot" | "hasThread">;
-  /** Threads whose title is being generated right now. */
   titleRegenerations: Pick<Set<string>, "has" | "add" | "delete">;
-  /** The direct-turn generation per thread, read here only. */
   directTurnGenerationByThread: ReadonlyMap<string, string>;
   actorKey(auth: RequestAuth & { kind: "session" }): string;
   cloudOwnerSession(auth: RequestAuth): boolean;
@@ -89,15 +79,10 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
   const HOSTED_WORKSPACE = deps.hostedWorkspace;
   const HOSTED_FULL_ACCESS_REFUSAL = deps.hostedFullAccessRefusal;
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
-    /** scratch for route matches, shared by every `path.match` below */
     let m: RegExpMatchArray | null = null;
     const routines = deps.routines();
-    // ── tasks: a bot's separate contexts ────────────────────────────────
-    // Replies carry the open thread's newest page: a create or delete can
-    // change which transcript is live. The frames come from store.onChange.
 
-    // Folders organize one bot's threads; they never own settings,
-    // transcripts or working directories. The project wire names stay stable.
+    // Folders never own settings, transcripts or working directories; the "project" wire names stay.
     m = path.match(/^\/api\/bots\/([\w-]+)\/projects\/order$/);
     if (m && method === "PATCH") {
       const bot = store.bot(m[1]);
@@ -150,8 +135,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
       if (!bot) return json(res, 404, { error: "no such bot" });
       let cwd: string | undefined;
       if (body.cwd !== undefined) {
-        // Opening a conversation is client-scoped, choosing where its file
-        // tools run has the same authority as editing the bot's folder.
+        // Choosing where its file tools run takes the same authority as editing the bot's folder.
         if (!auth.scopes.includes("admin")) {
           return json(res, 403, { error: "Choosing a working folder requires the admin scope" });
         }
@@ -195,10 +179,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
       const switched = store.switchTask(bot.id, m[2]);
       if (!switched) return json(res, 404, { error: "no such task" });
       const switchedSettings = { ...wireBot(switched), tasks: store.tasks(switched.id).map((task) => wireTask(task, switched.modelSelection)) };
-      // "0" is settings only, a positive page is a bounded transcript, and no
-      // parameter is the whole thread — the one branch that materialises it.
-      // Search results land through that branch (src/lib/focus-message.ts):
-      // the hit can be older than one page.
+      // "0": settings only; a positive page: that tail; omitted: the whole thread (search hits can be older than a page).
       const responseBot = requestedMessages === "0"
         ? switchedSettings
         : { ...switchedSettings, ...messagePage(switched.threadId, switchLimit) };
@@ -213,9 +194,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
       if (Object.keys(body).some((key) => !allowed.has(key))) return json(res, 400, { error: "unsupported thread setting" });
       const notYours = cloudThreadRefusal(auth, m[2]);
       if (notYours) return json(res, 403, { error: notYours });
-      // On a Cloud home only the owner decides whether a bot may act without
-      // asking them, even in a conversation someone else started, and what
-      // the bot itself defaults to.
+      // On a Cloud home only the owner decides whether a bot may act without asking, even in someone else's conversation.
       if (CLOUD_HOME && !cloudOwnerSession(auth) &&
         (body.approvalMode !== undefined || body.autoApprove !== undefined || body.acknowledgeLocalAuto !== undefined || body.updateBotDefault === true || body.refreshPermissions === true)) {
         return json(res, 403, { error: "On this Cloud only its owner can change how a bot asks for approval, or its default model." });
@@ -240,9 +219,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
         if (profile.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
         if (threadBusy(profile.id, m[2])) return json(res, 409, { error: "stop this thread before changing its approval mode" });
         const nextMode = approvalModeFor({ ...profile, approvalGrant: undefined });
-        // Custom never travels over the bot-reachable HTTP surface: the
-        // desktop's private channel copies it, and it is also the only way
-        // to leave Custom. Full is copied here like any other level.
+        // Custom never travels over the bot-reachable HTTP surface; only the desktop's private channel copies it.
         if (nextMode === "custom") {
           return json(res, 403, { error: "Refresh Custom access from the packaged desktop app" });
         }
@@ -262,8 +239,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
         const widensMode = approvalRank[nextMode] > approvalRank[approvalModeFor(current)];
         const nextAllow = profile.alwaysAllow ?? [];
         const widensAllow = nextAllow.some((key) => !(current.alwaysAllow ?? []).includes(key));
-        // Full has no OMB-side guard (owner decision, Oct 12), here as on
-        // the bot and thread routes; the narrower levels keep this one.
+        // Full has no OMB-side guard here; the narrower levels keep this one.
         if (nextMode !== "full" && (widensMode || widensAllow) && auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin && store.bots.some((bot) => bot.busy)) {
           return json(res, 409, { error: "Change approval mode from the app or a paired device while bots are working." });
         }
@@ -303,9 +279,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
       }
       if (body.surface !== undefined) {
         if (threadBusy(current.id, current.threadId)) return json(res, 409, { error: "Stop this thread before changing its computer destination." });
-        // Where this conversation works, chosen by the person and recorded as
-        // theirs, so a later Works on change never sweeps it. Null follows the
-        // bot's Works on again. Reachability is the turn's to judge.
+        // Recorded as the person's, so a Works on change never sweeps it; null follows the bot's Works on again.
         if (body.surface === null) {
           patch.surface = undefined;
           patch.surfaceSource = undefined;
@@ -329,8 +303,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
         if (body.autoApprove !== undefined && typeof body.autoApprove !== "boolean") return json(res, 400, { error: "autoApprove must be a boolean" });
         const mode: unknown = body.approvalMode ?? (body.autoApprove ? "auto" : "ask");
         if (!isApprovalMode(mode)) return json(res, 400, { error: "approvalMode must be ask, edits, auto, full, or custom" });
-        // Full applies here like any other level. Custom still needs the
-        // trusted desktop transition: a thread PATCH cannot manufacture it.
+        // A thread PATCH cannot manufacture Custom: it needs the trusted desktop transition.
         if (mode === "custom") return json(res, 403, { error: "Custom access requires trusted desktop confirmation" });
         if (mode === "full" && HOSTED_WORKSPACE && approvalModeFor(current) !== "full") return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
         if (approvalModeFor(current) === "custom") return json(res, 403, { error: "Leaving Custom approval requires confirmation in the packaged desktop app" });
@@ -385,10 +358,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
       rejectDeletedThreadSkillStages(stagedSkillCleanups);
       return json(res, 200, { bot: publicBot(updated) });
     }
-    // Regenerate title (#1858): name the thread again from its conversation
-    // as it is now. The person asked, so the result replaces any title, but
-    // only the one this started from: a rename that lands while the one-shot
-    // runs wins, and the late result is dropped.
+    // A rename that lands while the one-shot runs wins; the late title is dropped.
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/title$/);
     if (m && method === "POST") {
       const current = store.projectBotForTask(m[1], m[2]);

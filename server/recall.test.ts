@@ -1,5 +1,3 @@
-// Automatic recall: the query, the two-term rule, which files are never
-// recalled, and the block's shape (rule first, numbered, fenced, capped).
 import { rmSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -94,7 +92,6 @@ describe("recall from memory files", () => {
     expect(topicPassages(BOT, "where can I get bhel?").map((p) => p.label)).toEqual(["memory/Dining.md"]);
     expect(topicPassages(BOT, "an Irani cafe nearby").map((p) => p.label)).toEqual(["memory/Dining.md"]);
     expect(topicPassages(BOT, "is my family visiting?").map((p) => p.label)).toEqual(["memory/family.md"]);
-    // word matching has a limit: nothing here says "restaurant"
     expect(topicPassages(BOT, "suggest a restaurant")).toEqual([]);
   });
 

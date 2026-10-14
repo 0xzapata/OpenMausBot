@@ -13,7 +13,6 @@ const SCOUT = { id: "bot-scout", name: "Scout", color: "blue" as const };
 const API_KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwx";
 const GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123";
 
-/** Threads of messages behind the four calls chat-widgets.ts makes. */
 function fakeStore(rooms: string[] = []) {
   const threads = new Map<string, Message[]>();
   const rows = (threadId: string) => threads.get(threadId) ?? threads.set(threadId, []).get(threadId)!;
@@ -45,7 +44,6 @@ function show(fake: Fake, widget: unknown, extra: Record<string, unknown> = {}, 
   return createAgentCard({ store: fake.store, bot: SCOUT, threadId, input: { tool: "show_widget", widget, ...extra } });
 }
 
-/** Show a sample and hand back its stored row. */
 function shown(fake: Fake, sample: string): Message {
   const result = show(fake, WIDGET_SAMPLES[sample]);
   if (!result.ok) throw new Error(result.error);
@@ -68,7 +66,6 @@ describe("show_widget", () => {
     expect(message).not.toHaveProperty("from");
     expect(message.text).toBe(widgetToText(message.widget!.root));
     expect(message.text!.split("\n")[0]).toBe("**Pull requests** · mausbot-mobile · 3 open");
-    // Canonical: a version, server-assigned ids in document order, spacing in px.
     expect(message.widget).toEqual({ v: 1, root: expect.objectContaining({ type: "ListView", id: "n1", title: "Pull requests" }) });
     const nodes = all(message.widget!.root);
     expect(nodes.map((node) => node.id)).toEqual(nodes.map((_, index) => `n${index + 1}`));
@@ -146,7 +143,6 @@ describe("show_widget", () => {
     expect(root.title).toBe(`Key ${redactSecretsInText(API_KEY)}`);
     expect(text.value).toBe(`Use ${redactSecretsInText(API_KEY)} for the deploy`);
     expect(select.options).toEqual([{ label: `Old ${redactSecretsInText(API_KEY)}`, value: "old" }, { label: "New", value: redactSecretsInText(GITHUB_TOKEN) }]);
-    // A chart row's key is scrubbed exactly as the series that names it, so they still meet.
     const dataKey = (chart.series as Array<{ dataKey: string }>)[0].dataKey;
     expect(dataKey).toBe(redactSecretsInText(API_KEY));
     expect((chart.data as Array<Record<string, unknown>>)[0]).toEqual({ day: redactSecretsInText(GITHUB_TOKEN), [dataKey]: 3 });
@@ -155,7 +151,6 @@ describe("show_widget", () => {
       payload: { token: redactSecretsInText(GITHUB_TOKEN), nested: [{ [redactSecretsInText(API_KEY)]: `Bearer ${redactSecretsInText(GITHUB_TOKEN)}` }] },
     });
     expect(root.confirm).toEqual({ label: "Deploy", action: { type: "deploy", payload: { key: redactSecretsInText(API_KEY) } } });
-    // The fallback is written from the scrubbed tree, and structure is untouched.
     expect(row.text).toContain("«redacted");
     expect(all(root).map((node) => [node.type, node.id])).toEqual([["Card", "n1"], ["Text", "n2"], ["Markdown", "n3"], ["Select", "n4"], ["Chart", "n5"], ["Button", "n6"]]);
     expect(widgetActions(root).map((entry) => entry.ref)).toEqual(["n6", "confirm"]);
@@ -180,7 +175,6 @@ describe("show_widget", () => {
       ],
       confirm: { label: "Go", action: { type: "go", payload: { password: plain, count: 2, token: null } } },
     });
-    // and the bot is told, so it can rename a field it called `key` for an id
     expect(result).toMatchObject({ ok: true, masked: true });
     expect(show(fakeStore(), { type: "Card", children: [{ type: "Text", value: "nothing secret here" }] })).not.toHaveProperty("masked");
     const root = fake.rows(THREAD)[0].widget!.root;
@@ -191,10 +185,8 @@ describe("show_widget", () => {
       deep: { list: [{ client_secret: masked, note: plain }], env: [{ name: "AUTH_TOKEN", value: masked }, { name: "REGION", value: plain }] },
     } });
     expect(root.confirm).toEqual({ label: "Go", action: { type: "go", payload: { password: masked, count: 2, token: null } } });
-    // Only where the bot chose the keys: what a node shows the person is scrubbed by its content alone.
     expect(text.value).toBe(`the key is ${plain}`);
     expect(input).toMatchObject({ name: "api_key", defaultValue: plain });
-    // The press hands the model the masked payload, never the value.
     const press = prepareWidgetPress(fake.store, THREAD, { messageId: "m1", ref: button.id }, undefined);
     expect(press).toMatchObject({ ok: true, label: "Rotate", action: { type: "key.rotate", payload: { api_key: masked, user: plain } } });
   });
@@ -216,7 +208,6 @@ describe("show_widget", () => {
     show(fake, WIDGET_SAMPLES.pullRequests, { fallback_text: "word ".repeat(600) });
     expect(fake.rows(THREAD)[1].text).toHaveLength(WIDGET_LIMITS.fallback);
     expect(fake.rows(THREAD)[1].text!.endsWith("…")).toBe(true);
-    // Blank is the same as omitted, and a widget with no words still has a line to reply to.
     show(fake, WIDGET_SAMPLES.pullRequests, { fallback_text: "   " });
     expect(fake.rows(THREAD)[2].text).toBe(widgetToText(fake.rows(THREAD)[2].widget!.root));
     show(fake, { type: "Card", children: [{ type: "Spacer" }] });
@@ -232,7 +223,6 @@ describe("update_widget", () => {
     const fake = fakeStore();
     const row = shown(fake, "buildStatus");
     const result = update(fake, row.id, { type: "Card", title: "Build 25 to TestFlight", children: [{ type: "Progress", value: 1, label: `done ${API_KEY}` }] });
-    // the new tree held a key: it is stored masked, and the bot is told
     expect(result).toEqual({ ok: true, messageId: row.id, masked: true });
     expect(fake.appendMessage).toHaveBeenCalledTimes(1);
     expect(fake.patchMessage).toHaveBeenCalledTimes(1);
@@ -253,7 +243,6 @@ describe("update_widget", () => {
     expect(payloadOf(fake, row.id).rev).toBe(1);
     expect(update(fake, row.id, WIDGET_SAMPLES.pullRequests).ok).toBe(true);
     expect(payloadOf(fake, row.id)).toMatchObject({ v: 1, rev: 2, root: { type: "ListView", title: "Pull requests" } });
-    // A refused update does not count.
     expect(update(fake, row.id, { type: "Carousel" }).ok).toBe(false);
     expect(payloadOf(fake, row.id).rev).toBe(2);
   });
@@ -280,7 +269,6 @@ describe("update_widget", () => {
     expect(update(fake, undefined, WIDGET_SAMPLES.buildStatus)).toEqual(missing);
     expect(update(fake, plain.id, WIDGET_SAMPLES.buildStatus)).toEqual(missing);
     expect(update(fake, peers.id, WIDGET_SAMPLES.buildStatus)).toEqual(missing);
-    // Another conversation's widget, named from this one.
     expect(update(fake, row.id, WIDGET_SAMPLES.buildStatus, "thread-other")).toEqual(missing);
     expect(fake.patchMessage).not.toHaveBeenCalled();
   });
@@ -325,26 +313,21 @@ describe("prepareWidgetPress", () => {
     expect(press).toMatchObject({
       ok: true, messageId: row.id, settles: true,
       text: "Create routine\nRuns on: Every day\nStarts: 2026-10-14\nAt: 09:00\nReport to: Discord · #releases",
-      // What was pressed, for the prompt: read off the stored widget, not off the text.
       label: "Create routine", action: { type: "routine.create", payload: { name: "release-check" } },
     });
     if (!press.ok) throw new Error(press.error);
-    // Preparing wrote nothing: the route settles only after the message is accepted.
     expect(fake.patchMessage).not.toHaveBeenCalled();
     expect(payloadOf(fake, row.id).settled).toBeUndefined();
     const before = Date.now();
     press.settle();
     expect(fake.patchMessage).toHaveBeenCalledTimes(1);
     const settled = payloadOf(fake, row.id).settled!;
-    // With the values that went with the press, defaults included, for the read-only Details view.
     expect(settled).toEqual({
       ref: "confirm", label: "Create routine", tone: "confirm", at: expect.any(Number), sendId: SEND,
       values: { days: "mon,tue,wed,thu,fri,sat,sun", starts: "2026-10-14", at: "09:00", report: "discord:releases", stopOnRed: false },
     });
     expect(settled.at).toBeGreaterThanOrEqual(before);
-    // The tree is still there for the Details view.
     expect(payloadOf(fake, row.id).root).toEqual(row.widget!.root);
-    // Two requests for the one press both reach settle(): it patches once.
     press.settle();
     expect(fake.patchMessage).toHaveBeenCalledTimes(1);
   });
@@ -355,7 +338,6 @@ describe("prepareWidgetPress", () => {
     const cancel = prepareWidgetPress(fake.store, THREAD, { messageId: form.id, ref: "cancel" }, undefined);
     expect(cancel).toMatchObject({ ok: true, text: "Discard", settles: true });
     if (cancel.ok) cancel.settle();
-    // Cancel sends no values, whatever the fields held: none are kept.
     expect(payloadOf(fake, form.id).settled).toEqual({ ref: "cancel", label: "Discard", tone: "cancel", at: expect.any(Number) });
 
     const sink = shown(fake, "kitchenSink");
@@ -363,12 +345,10 @@ describe("prepareWidgetPress", () => {
     const sent = prepareWidgetPress(fake.store, THREAD, { messageId: sink.id, ref: submit.ref, values: { rating: "good", note: "Fast." } }, SEND);
     expect(sent).toMatchObject({ ok: true, text: "Send feedback\nHow did the run go?: Good\nNote: Fast.", settles: true });
     if (sent.ok) sent.settle();
-    // A submit keeps its own form's fields.
     expect(payloadOf(fake, sink.id).settled).toEqual({
       ref: submit.ref, label: "Send feedback", tone: "submit", at: expect.any(Number), sendId: SEND, values: { rating: "good", email: "", note: "Fast." },
     });
 
-    // A confirm on a widget with no fields has no values to keep.
     const list = shown(fake, "pullRequests");
     const merged = prepareWidgetPress(fake.store, THREAD, { messageId: list.id, ref: "confirm", values: {} }, SEND);
     if (merged.ok) merged.settle();
@@ -389,7 +369,6 @@ describe("prepareWidgetPress", () => {
     expect(fake.patchMessage).not.toHaveBeenCalled();
     expect(payloadOf(fake, list.id).settled).toBeUndefined();
     expect(payloadOf(fake, sink.id).settled).toBeUndefined();
-    // Still live: the next press goes through.
     expect(prepareWidgetPress(fake.store, THREAD, { messageId: list.id, ref: "confirm" }, undefined)).toMatchObject({ ok: true, text: "Merge the two ready" });
   });
 
@@ -414,7 +393,6 @@ describe("prepareWidgetPress", () => {
     if (!first.ok) throw new Error(first.error);
     first.settle();
     const answered = { ok: false, status: 409, error: "This was already answered." };
-    // No sendId, another press's sendId, another button: all too late.
     expect(prepareWidgetPress(fake.store, THREAD, { messageId: row.id, ref: "confirm" }, undefined)).toEqual(answered);
     expect(prepareWidgetPress(fake.store, THREAD, { messageId: row.id, ref: "cancel" }, "send-another-0123456789")).toEqual(answered);
     expect(prepareWidgetPress(fake.store, THREAD, { messageId: row.id, ref: "n2" }, "send-another-0123456789")).toEqual(answered);
@@ -443,7 +421,6 @@ describe("prepareWidgetPress", () => {
     const press = (rev?: unknown, sendId: string | undefined = SEND) =>
       prepareWidgetPress(fake.store, THREAD, { messageId: row.id, ref: "confirm", ...(rev === undefined ? {} : { rev }) }, sendId);
     const stale = { ok: false, status: 409, error: "This widget changed. Check it and press again." };
-    // Never updated: no rev, null and 0 all name the tree that is there.
     expect(press()).toMatchObject({ ok: true, text: "Merge the two ready" });
     expect(press(null)).toMatchObject({ ok: true });
     expect(press(0)).toMatchObject({ ok: true });
@@ -457,12 +434,10 @@ describe("prepareWidgetPress", () => {
     const current = press(1);
     expect(current).toMatchObject({ ok: true, text: "Send email", settles: true });
 
-    // Settled on revision 1: the same press again still comes back with its text ...
     if (!current.ok) throw new Error(current.error);
     current.settle();
     expect(payloadOf(fake, row.id)).toMatchObject({ rev: 1, settled: { ref: "confirm", label: "Send email", sendId: SEND } });
     expect(press(1)).toMatchObject({ ok: true, text: "Send email", settles: false });
-    // ... and anything else is told it was answered, whichever tree it was made on.
     expect(press(1, "send-another-0123456789")).toEqual({ ok: false, status: 409, error: "This was already answered." });
     expect(press(0, "send-another-0123456789")).toEqual({ ok: false, status: 409, error: "This was already answered." });
 
@@ -484,7 +459,6 @@ describe("prepareWidgetPress", () => {
     expect(payloadOf(fake, started.id).settled).not.toHaveProperty("queueId");
     fake.patchMessage.mockClear();
 
-    // Another slot, or this slot in another conversation: nothing to reopen.
     reopenCancelledPress(fake.store, THREAD, "queue-2");
     reopenCancelledPress(fake.store, "thread-other", "queue-1");
     expect(fake.patchMessage).not.toHaveBeenCalled();
@@ -492,10 +466,8 @@ describe("prepareWidgetPress", () => {
     reopenCancelledPress(fake.store, THREAD, "queue-1");
     expect(fake.patchMessage).toHaveBeenCalledTimes(1);
     expect(payloadOf(fake, queued.id)).toEqual({ v: 1, root: queued.widget!.root });
-    // The press that started its turn is untouched, and the reopened widget takes an answer again.
     expect(payloadOf(fake, started.id).settled).toMatchObject({ ref: "confirm", label: "Merge the two ready" });
     expect(prepareWidgetPress(fake.store, THREAD, { messageId: queued.id, ref: "cancel" }, "send-third-0123456789ab")).toMatchObject({ ok: true, text: "Discard", settles: true });
-    // Cancelling the same slot twice changes nothing more.
     reopenCancelledPress(fake.store, THREAD, "queue-1");
     expect(fake.patchMessage).toHaveBeenCalledTimes(1);
   });

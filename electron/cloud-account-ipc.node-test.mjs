@@ -43,7 +43,6 @@ test("production personal Cloud IPC guards exact local main frame and forwards n
     for (const sender of [{ sender: contents, senderFrame: { url: `${origin}/subframe` } }, { sender: {}, senderFrame: frame },
       { sender: contents, senderFrame: { url: "https://remote.example.test" } }, { sender: contents }]) assert.throws(() => handle(sender), /only available/);
   }
-  // connectHomeForPhone forwards only its own fixed "phone", never what the page sent.
   assert.deepEqual(calls, bridgeMethods.map(method => method === "connectHomeForPhone" ? ["connectHome", "phone"] : [method]));
 });
 test("a checkout from the page carries only a plan and a source, as text; the server menu only 'howto'", async () => {
