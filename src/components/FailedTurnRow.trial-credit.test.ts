@@ -1,8 +1,3 @@
-// A turn the trial's Claude credit refused, as chat shows it: the row's
-// stored English words (shared/trial-credit.ts, read whole by the phones)
-// said again in the reader's language, with the one next step: connect their
-// own AI when the credit is used up, gone or too low for the chat, and try
-// again when it is only paused.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,7 +43,6 @@ describe("a turn the trial's Claude credit refused", () => {
     expect(usedUp.buttons).toEqual(["Eigene KI verbinden"]);
     expect(show(stored("ended")).html).toContain("Das Claude-Guthaben der Testphase ist auf My Cloud nicht mehr verfügbar.");
     expect(show(stored("too_low")).html).toContain("reicht für diesen Chat nicht aus");
-    // Paused is for now: try again, nothing to connect.
     const paused = show(stored("paused"), vi.fn());
     expect(paused.html).toContain("Das Claude-Guthaben der Testphase ist vorübergehend pausiert.");
     expect(paused.buttons.some(label => label.includes("Eigene KI"))).toBe(false);

@@ -11,15 +11,9 @@ import { useStore, type Message } from "@/state/store";
 import { ASK_CHIP, ASK_CHIP_IDLE, ASK_PRIMARY_BUTTON, ASK_QUIET_BUTTON, AskCard, AskSettledLine, returnFocusToComposer } from "./AskCard";
 import { LoginForm } from "./LoginForm";
 
-// A bot asked the person to sign in to a site themselves (request_sign_in).
-// The site is the headline and the bot's reason is quoted as its own words.
-// Open goes to the exact place the bot works — the login only reaches the
-// bot there — and Done or Cancel resumes it. In the built-in browser the
-// person may instead save a login for the page (a masked form): it is
-// encrypted on the server, the bot fills it with fill_login, and neither
-// the bot nor any screen ever gets it back.
+// Security: a saved login is encrypted on the server and filled by fill_login; neither the bot nor any screen ever gets
+// it back.
 
-/** Where to sign in, by place; "host" is this computer seen from elsewhere. */
 const WHERE = {
   browser: "signIn.where.browser",
   vm: "signIn.where.vm",
@@ -48,8 +42,6 @@ export function SignInRequestCard({
   const error = localError ?? card.error;
   const outcome = signInOutcome(card);
   const ref = { botId, threadId, messageId: message.id, place: card.place };
-  // This computer is the person's own only in the desktop app hosting the
-  // bot; anywhere else it is the computer OpenMausBot runs on.
   const here = signInHostIsHere();
 
   const answer = async (choice: "done" | "cancel") => {
@@ -66,8 +58,6 @@ export function SignInRequestCard({
     }
   };
 
-  // Stop ended the turn this card paused: nothing resumes, whatever is
-  // answered afterwards (the answer is kept).
   const stopped = card.stopped === true;
 
   if (card.superseded || (stopped && !outcome)) {
@@ -107,12 +97,10 @@ export function SignInRequestCard({
     if (card.place === "local") setExplained(true);
     else dispatch({ type: "openSignIn", botId, messageId: message.id, url: card.url, site: card.site, place: card.place });
   };
-  // fill_login reaches the built-in browser (and My Chrome) only, so a login
-  // is offered for saving there. A desktop paired to another host relays
-  // no passwords.
+  // fill_login reaches only the built-in browser (and My Chrome); a desktop paired to another host relays no passwords.
   const canSave = card.place === "browser" && window.ogb?.remoteClient?.active !== true;
   let pageHost = card.site;
-  try { pageHost = new URL(card.url).hostname; } catch { /* the site stands in */ }
+  try { pageHost = new URL(card.url).hostname; } catch {}
   return (
     <AskCard
       ariaLabel={t("signIn.cardLabel", { name: botName, site: card.site })}
@@ -169,9 +157,6 @@ export function SignInRequestCard({
   );
 }
 
-/** The bot's open sign-in request where the person is signing in: the
- * Computer panel and the remote client's panel. It names the site and offers
- * the card's own Done and Cancel; a computer's banner adds Take control. */
 export function SignInBanner({
   help,
   askerName,

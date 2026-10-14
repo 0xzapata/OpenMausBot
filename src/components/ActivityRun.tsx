@@ -1,7 +1,3 @@
-// A folded stretch of tool chips: one row saying what ran, click to open.
-//
-// Collapsed by default. A search hit inside a run opens it, and a run stays
-// open once the user has opened it. Failed steps never enter a folded run.
 import { useEffect, useState } from "react";
 import { ChevronRight, Check } from "lucide-react";
 import type { Message } from "@/state/store";
@@ -14,10 +10,7 @@ export function ActivityRun({
   children,
 }: {
   messages: Message[];
-  /** landing on a step inside this run — a search hit cannot scroll to a
-   * row that a fold has kept out of the DOM */
   forceOpen?: boolean;
-  /** the individual chips, rendered by whichever transcript owns them */
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(forceOpen);

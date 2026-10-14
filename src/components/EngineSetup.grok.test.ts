@@ -1,10 +1,4 @@
 // @vitest-environment happy-dom
-// Grok Build's setup card, wherever Grok is not ready: Settings → Engines,
-// My Cloud's sign-in and a failed turn's card all render this one. Signed out,
-// it is the in-app code, the same on the desktop, a server and My Cloud; the
-// `grok login` command stays behind "Prefer a terminal?" only where a
-// terminal runs on that machine. Where Grok cannot run and nobody here can
-// install it, it is one honest line and one action: an xAI key.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -25,8 +19,6 @@ const grok = (snapshot: InstanceInfo["snapshot"]): InstanceInfo => ({
 const signedOut = grok({ state: "available", authenticated: false, version: "grok 1.0.41" });
 const missing = grok({ state: "unavailable", reason: "`grok` CLI not found" });
 
-// Where the page is: the desktop app's own window on its own server, the
-// desktop paired to another server, or a browser on a server's page.
 const desktop = { platform: "darwin", openInstallTerminal: vi.fn(async () => true), remoteClient: { active: false } };
 const pairedDesktop = { ...desktop, remoteClient: { active: true } };
 

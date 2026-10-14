@@ -181,7 +181,6 @@ describe("Triggers pop-up", () => {
       return fixture.dispatch.mock.calls.map(([action]) => action).filter((action) => action.type !== "toggleTriggers");
     };
     expect(openChat()).toEqual([{ type: "select", id: "scout" }, { type: "switchTask", botId: "scout", threadId: "delivery-run" }]);
-    // The thread Scout was on keeps its unread mark: only its activity row reaches it.
     fixture.showThreads = false;
     expect(openChat()).toEqual([{ type: "switchTask", botId: "scout", threadId: "delivery-run" }]);
   });
@@ -197,7 +196,6 @@ describe("Triggers pop-up", () => {
     fixture.webhooks = [webhook("w1"), webhook("w2", { name: "Stripe" })];
     fixture.overrides.set(1, "w1:command");
     const { html } = render();
-    // Copy link, switch, copy command, rotate, edit and delete on both rows.
     expect(html.match(/ disabled=""/g)).toHaveLength(12);
   });
 

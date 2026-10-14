@@ -1,4 +1,4 @@
-import { Component, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch } from "react";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import { ThreadLinkContext } from "@/components/ThreadLinkMenu";
 import { useShowThreads } from "@/lib/thread-preferences";
@@ -87,9 +87,9 @@ import { userBubbleStyle } from "@/lib/user-bubble-tone";
 import { ToolActivity } from "./ToolActivity";
 import { DataResultChip } from "./DataResultChip";
 import { ThreadRefText } from "./ThreadRefs";
-import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
-import { ApprovalCard } from "./ApprovalCard";
-import { QuestionCard } from "./QuestionCard";
+import { optionsCardRow } from "./OptionsCardRow";
+import { MessageBoundary } from "./MessageBoundary";
+import { WidgetMessage } from "./widget/WidgetMessage";
 import { Composer } from "./Composer";
 import { ChatErrorBanner, ChatNotice } from "./ChatErrorBanner";
 import { ThreadContextWarning } from "./ContextWarning";
@@ -146,43 +146,25 @@ import { latestFailure, latestReply, type TranscriptSnapshot } from "@/lib/trans
 import { pendingApprovals } from "./PendingApproval";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 
-/** Long user messages collapse behind a fade so pasted walls of text don't
- * bury the conversation; bots get full markdown. */
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
 
-/** What every row of the open chat reads besides its own message. The value
- * changes only when one of these does, so the memoized rows skip store
- * events that are not theirs: another bot's frame, a tool chip elsewhere in
- * the thread. The rosters keep their identity until a field a row draws
- * changes, the way ThreadRefsProvider keeps the thread list. */
 interface ChatRows {
   botId: string;
   threadId: string;
   botName: string;
   voiceId?: string;
-  /** Speech settings, for the read-aloud button. */
   tts: ConfigStatus["tts"];
-  /** A paired Mac reads aloud with its own voices. That choice lives on the
-   * device, not in the store, so it is read here once per store event. */
   localVoice: boolean;
-  /** Editing, regenerating and switching versions wait for the turn. */
   busy: boolean;
-  /** Older messages remain on the server, beyond the page the thread holds. */
   hasMore: boolean;
-  /** Every bot, for who wrote a relayed line or sits across a bot⇄bot chip. */
   bots: readonly Bot[];
-  /** Every other bot, for @mentions. */
   mentionPeers: readonly Bot[];
-  /** A search hit or jump target in this thread. */
   focus: AppState["focusMessage"];
   showToolCalls: boolean;
-  /** Rows show catalog strings, so a language change re-renders them. */
   locale: string;
-  /** Set when the person's messages take this bot's color. Absent leaves the skin bubble. */
   bubbleStyle?: ReturnType<typeof userBubbleStyle>;
   dispatch: Dispatch<Action>;
-  /** Whether a message is on the branch shown now (citation links). */
   onBranch: (messageId: string) => boolean;
 }
 
@@ -194,12 +176,9 @@ function useChatRows(): ChatRows {
   return rows;
 }
 
-/** The fields of a bot that rows draw: its name and colour for @mentions,
- * its avatar for relayed lines and bot⇄bot chips. */
 const drawnBot = (bot: Bot) =>
   [bot.id, bot.name, bot.hidden, bot.color, bot.mascotBody, bot.mascotExpression, bot.avatarUrl, bot.avatarCrop, bot.avatarZoom, bot.avatarFocusX, bot.avatarFocusY].join("\u0001");
 
-/** `bots`, holding the same array until a drawn field of one of them changes. */
 function useDrawnBots(bots: readonly Bot[]): readonly Bot[] {
   const signature = bots.map(drawnBot).join("\u0002");
   const cache = useRef({ signature, bots });
@@ -215,7 +194,6 @@ function DaySeparator({ at, today }: { at: number; today: number }) {
   );
 }
 
-/** Reply to one message: the curved back arrow beside every bubble. */
 export function ReplyAction({ onReply }: { onReply: () => void }) {
   return (
     <button type="button" onClick={onReply} aria-label={t("chat.replyToMessage")} title={t("chat.reply")} className={messageActionClass}>
@@ -224,8 +202,6 @@ export function ReplyAction({ onReply }: { onReply: () => void }) {
   );
 }
 
-/** Hover/focus-revealed copy control shared by user + bot bubbles. Rooms use
- * the same button beside a message. */
 export function CopyButton({ text, className }: { text: string; className?: string }) {
   const { state, copy } = useCopyFeedback(text);
   const label = t(state === "copied" ? "chat.copyMessageDone" : state === "failed" ? "chat.copyMessageFailed" : "chat.copyMessage");
@@ -245,15 +221,6 @@ export function CopyButton({ text, className }: { text: string; className?: stri
   );
 }
 
-/** A failed turn: a real error block with a retry, not a truncated pill.
- *
- * A `setup` error — CLI missing, or installed but not signed in — shows what
- * to do instead of a Retry, because retrying hits the same wall every time.
- * Once the engine reports itself fixed the card flips back to Retry, which
- * (with the on-focus re-probe) happens by itself when the user returns from
- * the terminal. When the headline is a plain sentence instead of the
- * engine's words (a signed-out engine, a Mac permission), those words stay
- * one click away under it. */
 export function ErrorRow({
   message,
   headline: plainHeadline,
@@ -263,17 +230,10 @@ export function ErrorRow({
   claudeUpdateInstance,
 }: {
   message: string;
-  /** A plain sentence to open with instead of `message` (FailedTurnRow's
-   * signed-out line, or the plain line for a technical cause from
-   * src/lib/plain-error.ts); `message` then moves under Details. */
   headline?: string;
   onRetry?: () => void;
-  /** The one next action a failed place names (shared/place-view.ts), in
-   * place of Retry; null for a place with nothing to do here. */
   action?: { label: string; onClick: () => void } | null;
   setupInstance?: InstanceInfo;
-  /** The Claude engine to update when this turn failed because its Claude
-   * Code is too old for the model. */
   claudeUpdateInstance?: InstanceInfo;
 }) {
   const { capabilities, ready } = useDesktopCapabilities();
@@ -335,10 +295,6 @@ export function ErrorRow({
   );
 }
 
-/** A place that could not be used: its one line and its one next action
- * (shared/place-view.ts), never the provider's raw words or a second
- * button. Try again is the conversation's own retry, offered only where a
- * retry exists. */
 function PlaceFailedRow({ place, botId, threadId, onRetry }: {
   place: PlaceRow;
   botId: string;
@@ -357,35 +313,23 @@ function PlaceFailedRow({ place, botId, threadId, onRetry }: {
   return <ErrorRow message={view.line} action={view.action && onClick ? { label: view.action.label, onClick } : null} />;
 }
 
-/** The trial's Claude credit refused a turn (shared/trial-credit.ts): its
- * stored English words, said again in the reader's language. */
 const TRIAL_CREDIT_LINE: Record<TrialCreditRefusal, LocaleKey> = {
   used_up: "engines.trialCreditUsedUp", ended: "engines.trialCreditEnded", paused: "engines.trialCreditPaused", too_low: "engines.trialCreditTooLow",
 };
-/** Used up, gone or too little for this chat: the next step is the person's
- * own AI, in Settings → Engines. Paused: trying again later is. */
 function TrialCreditFailedRow({ kind, onRetry }: { kind: TrialCreditRefusal; onRetry?: () => void }) {
   const { dispatch } = useStore();
   if (kind === "paused") return <ErrorRow message={t(TRIAL_CREDIT_LINE[kind])} onRetry={onRetry} />;
   return <ErrorRow message={t(TRIAL_CREDIT_LINE[kind])} action={{ label: t("chat.error.connectOwnAi"), onClick: () => dispatch({ type: "toggleAppSettings", open: true, section: "engines" }) }} />;
 }
 
-/** Only a local, editable Claude Code engine can be updated from chat; a
- * company-managed one is the organisation's to update. */
 export function claudeUpdateTarget(engine: InstanceInfo | undefined): InstanceInfo | undefined {
   return engine?.driverKind === "claudeAgent" && !engine.readOnly ? engine : undefined;
 }
 
-/** A failed turn's stored row ("error: …", src/lib/failed-turn.ts), shown
- * the same in a 1:1 chat and a room: the server writes the same row for both,
- * so both read it here. `engine` is the one the turn ran on — what its
- * sign-in or update card acts on. A place that could not be used is worded
- * again from its stored state, in this reader's language and role. */
 export function FailedTurnRow({ tool, engine, onRetry, botId, threadId }: {
   tool: NonNullable<Message["tool"]>;
   engine: InstanceInfo | undefined;
   onRetry?: () => void;
-  /** The bot the turn ran as, and its conversation: where a place's next action goes. */
   botId?: string;
   threadId?: string;
 }) {
@@ -405,27 +349,8 @@ export function FailedTurnRow({ tool, engine, onRetry, botId, threadId }: {
   );
 }
 
-/** One bad markdown node must not white-screen the app — the transcript
- * degrades to a plain-text bubble instead. Rooms use the same boundary. */
-export class MessageBoundary extends Component<{ children: ReactNode; fallbackText: string }, { failed: boolean }> {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-  render() {
-    if (this.state.failed) {
-      return (
-        <div className="chat-text w-fit max-w-[min(42rem,78%)] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">
-          {this.props.fallbackText}
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
+export { MessageBoundary };
 
-/** Inline editor a user bubble turns into: the send key sends (forking the
- * conversation), Esc cancels. Any other Enter is a newline, like the composer. */
 function BubbleEditor({
   initial,
   onCancel,
@@ -485,10 +410,6 @@ function BubbleEditor({
   );
 }
 
-/** One message. Memoized: it renders when its own props change (the
- * message, whether it is pinned or being edited) or the chat's ChatRows do,
- * never for the rest of the store. The callbacks take the message they act
- * on, so every row shares the same ones. */
 const Bubble = memo(function Bubble({
   message,
   emerging = false,
@@ -508,23 +429,16 @@ const Bubble = memo(function Bubble({
   eagerAttachments?: boolean;
   editing: boolean;
   pinned: boolean;
-  /** Every version of an edited question, oldest first; absent when it was never edited. */
   versions?: readonly Message[];
   onStartEdit: (messageId: string) => void;
   onCancelEdit: () => void;
   onSubmitEdit: (messageId: string, text: string) => void;
-  /** Given to the last answer only. */
   onRegenerate?: () => void;
   replyTarget?: Message;
   onReply: (message: Message) => void;
 }) {
   const { botId, threadId, botName, voiceId, tts, localVoice, busy, mentionPeers, focus, dispatch, onBranch, bubbleStyle } = useChatRows();
   const remoteClient = window.ogb?.remoteClient?.active === true;
-  // A user-role line another bot delivered (ask_bot, delegate_bot,
-  // start_thread) is that bot speaking, not the person: it takes the
-  // bot side of the chat under the peer's name, with the model-facing
-  // provenance note stripped from what the reader sees. A coordinate_bots
-  // request is stored bot-role and gets the same label.
   const peer = peerLine(message) ?? peerRequest(message, botId);
   const user = message.role === "user" && !peer;
   const [expanded, setExpanded] = useState(false);
@@ -534,7 +448,6 @@ const Bubble = memo(function Bubble({
   const speaking = speech.messageId === message.id && speech.status !== "idle";
   const rawText = peer ? peer.body : (message.text ?? "");
   const text = user ? rawText : stripLeakedSystemHarnessMessages(rawText);
-  // built before any early return so the hook order never changes
   const botMenu = useBotMessageMenu({
     text,
     botId,
@@ -557,7 +470,6 @@ const Bubble = memo(function Bubble({
     () => user ? [] : [...attached.files, ...collectMessageFiles(text, [...attached.images, ...attached.files.map((file) => file.path)])],
     [user, text, attached],
   );
-  // a reply with text lists its files under the text, without the ones it links inline
   const group = useMemo(
     () => !user && text.trim() ? replyAttachmentGroup(text, message.attachments) : null,
     [user, text, message.attachments],
@@ -571,7 +483,6 @@ const Bubble = memo(function Bubble({
   const attachments = user && !webhookView ? splitTranscriptAttachments(cited?.display ?? text) : null;
   const visibleText = webhookView?.task ?? attachments?.display ?? text;
   const hasAttachments = Boolean(cited?.citations.length || (attachments && (attachments.images.length || attachments.files.length)));
-  // A message that is only attachments is just the files: no bubble around them.
   const attachmentsOnly = !webhookView && !replyTarget && !visibleText.trim() &&
     (user ? hasAttachments : generatedPaths.length + linkedFiles.length > 0);
   const collapsible =
@@ -588,11 +499,9 @@ const Bubble = memo(function Bubble({
     );
   }
 
-  // "‹ 2/3 ›" under an edited message — every fork it belongs to
   const forks = user && versions ? versions : [message];
   const versionIndex = forks.findIndex((v) => v.id === message.id);
   const switchTo = (v: Message | undefined) => {
-    // an edit still waiting for its server fork has no branch to switch to yet
     if (v && !busy && !v.id.startsWith("optimistic-")) dispatch({ type: "switchBranch", botId, threadId, messageId: v.id });
   };
   const togglePin = () =>
@@ -607,8 +516,6 @@ const Bubble = memo(function Bubble({
             side="user"
             menu={userMessageMenu({
               messageId: message.id,
-              // editing rewinds the thread, so it waits for the turn to end,
-              // same rule as the version switcher below
               onEdit: message.kind === "text" && !webhookView && !hasAttachments && !busy && !message.id.startsWith("optimistic-")
                 ? () => onStartEdit(message.id) : undefined,
               pin: remoteClient ? undefined : { pinned, onToggle: togglePin },
@@ -726,7 +633,6 @@ const Bubble = memo(function Bubble({
           <MessageActions side="bot" forceOpen={viewRaw || speaking} menu={botMenu}>
             <ReplyAction onReply={() => onReply(message)} />
             {text && <CopyButton text={text} className={messageActionClass} />}
-            {/* a state the person turned on keeps its switch in view */}
             {text && viewRaw && <RawToggleAction active onToggle={() => setViewRaw(false)} className={messageActionClass} />}
             {text && speaking && (
               <SpeakButton text={text} botId={botId} messageId={message.id} voiceId={voiceId} tts={tts} localVoice={localVoice} className={cn(messageActionClass, "text-accent")} />
@@ -769,10 +675,6 @@ const Bubble = memo(function Bubble({
   );
 });
 
-/** Who wrote a relayed line and how it arrived, above the bubble — the
- * same shape as a room's cluster label. Looked up by id, then by name for
- * rows that predate Message.peerAsk; a peer since renamed or deleted still
- * shows the name the line carries. Renders with its bubble. */
 function PeerLabel({ peer }: { peer: PeerLine }) {
   const { bots } = useChatRows();
   const author =
@@ -801,13 +703,11 @@ function PeerLabel({ peer }: { peer: PeerLine }) {
   );
 }
 
-/** A tool run: spinner while live, check/cross once settled. */
 const ActivityChip = memo(function ActivityChip({ message, place = "auto" }: { message: Message; place?: EffectivePlace }) {
   const { bots, dispatch } = useChatRows();
   const tool = message.tool;
   if (!tool) return null;
   if (message.threadRef) return <ThreadChip message={message} />;
-  // bot⇄bot comm chip: opens the channel where the exchange lives
   const comm = message.comm;
   if (comm) {
     const withBot = bots.find((b) => b.id === comm.withBotId);
@@ -828,8 +728,6 @@ const ActivityChip = memo(function ActivityChip({ message, place = "auto" }: { m
   return <ToolActivity tool={tool} place={toolPlace(tool.name, place)} />;
 });
 
-/** A routine run's receipt. It opens the run's own thread, so it follows
- * the whole store to know whether that thread is still there. */
 function RoutineRunRow({ message, botId }: { message: Message; botId: string }) {
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
@@ -847,14 +745,12 @@ function RoutineRunRow({ message, botId }: { message: Message; botId: string }) 
   );
 }
 
-/** A conversation with nothing in it yet: who it is with, and a prompt. */
 function EmptyChat({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
   const advanced = useAdvancedMode();
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
       <BotAvatar bot={bot} state="idle" size={64} motion="none" motionKey={0} />
-      {/* Simple mode renames in the bot's settings only. */}
       {!advanced ? <div className="text-[17px] font-semibold text-ink">{bot.name}</div> : <RenameTitle
         value={bot.name}
         onCommit={(name) => {
@@ -876,10 +772,6 @@ function EmptyChat({ bot }: { bot: Bot }) {
   );
 }
 
-/** The settled transcript, memoized as one unit: it renders when any
- * message on the branch or the chat's ChatRows change. Each row inside is
- * memoized on its own message, so a patched tool chip renders that chip and
- * nothing else. */
 const MessagesList = memo(function MessagesList({
   messages,
   transcript,
@@ -901,21 +793,16 @@ const MessagesList = memo(function MessagesList({
   onReply,
 }: {
   messages: Message[];
-  /** Active-branch messages, including ones outside the mounted window. */
   transcript: Message[];
   lookups: TranscriptLookups;
-  /** Where this conversation works, for the place icon on screen and page tools. */
   place: EffectivePlace;
   pinnedMessageId?: string;
-  /** localDay of now: Today and Yesterday move on at midnight. */
   today: number;
   editingId: string | null;
   lastBotTextId: string | undefined;
   emergingId?: string | null;
   canRetryLast: boolean;
-  /** This bot's engine, for rendering setup help on a `setup` error. */
   engine: InstanceInfo | undefined;
-  /** The New divider goes above the row holding this message. */
   unreadDividerId: string | null;
   unreadDividerFading: boolean;
   onStartEdit: (id: string) => void;
@@ -925,17 +812,12 @@ const MessagesList = memo(function MessagesList({
   onReply: (message: Message) => void;
 }) {
   const { botId, threadId, botName, busy, hasMore, focus, showToolCalls, locale } = useChatRows();
-  // Finished tool chips become compact runs; settled assistant narration
-  // becomes one reversible turn row while the terminal answer stays visible.
-  // The locale refreshes the turn labels when the language changes.
   const items = useMemo(() => groupTranscript(messages), [messages, locale]);
   const newestMessageId = messages.at(-1)?.id;
   let newestUserMessageId: string | undefined;
   for (let i = messages.length - 1; i >= 0 && !newestUserMessageId; i--) {
     if (messages[i]!.role === "user") newestUserMessageId = messages[i]!.id;
   }
-  // A search hit inside a folded run has to open it: the fold keeps the
-  // row out of the DOM, and there is nothing for the scroll to land on.
   const focusedId = focus && !focus.consumed ? focus.messageId : null;
   const unreadIds = useMemo(() => unreadMessageIds(messages, unreadDividerId), [messages, unreadDividerId]);
   let dividerPlaced = false;
@@ -980,7 +862,6 @@ const MessagesList = memo(function MessagesList({
           );
         }
         if (item.kind === "run") {
-          // Hidden steps still carry the divider: the reply under them is new.
           if (!showToolCalls) return divider && <div key={item.id} className="contents">{divider}</div>;
           return (
             <div key={item.id} className="contents">
@@ -998,8 +879,6 @@ const MessagesList = memo(function MessagesList({
         }
         const m = item.message;
         const row = (() => {
-          // A client abort is a stop, not a failure. Legacy rows still store
-          // the provider's sentence or an error row; both read as this line.
           if (isCancelledTranscriptRow(m)) {
             return (
               <CancelledTurnRow
@@ -1007,47 +886,24 @@ const MessagesList = memo(function MessagesList({
               />
             );
           }
-          switch (m.kind) {
+          switch (m.kind === "widget" && !m.widget ? "text" : m.kind) {
             case "secret":
               return m.secret ? <SecretRequestCard botId={botId} threadId={threadId} message={m} /> : null;
             case "signin":
               return m.signIn ? <SignInRequestCard botId={botId} botName={botName} threadId={threadId} message={m} /> : null;
             case "connector":
               return m.connector ? <ConnectorCard botId={botId} threadId={threadId} message={m} /> : null;
-            case "options": {
-              // a live permission ask gets the approval box; a structured
-              // ask gets the question box; anything else keeps the list
-              // card. The first-run quiz drops out once they talk.
-              // Cards are bot-authored and persisted, so one that will not
-              // draw must fall back to its text on every open, not take the
-              // whole page down every time this chat is selected.
-              const card = m.card?.requestId && m.card.questionRequest ? (
-                <QuestionCard threadId={threadId} bot={{ name: botName }} message={m} />
-              ) : m.card?.requestId && m.card.tool ? (
-                <ApprovalCard bot={{ name: botName }} message={m} threadId={threadId} />
-              ) : shouldHideOnboardingCard(m, transcript) ? null : (
-                <OptionCard botId={botId} threadId={threadId} message={m} />
-              );
-              if (!card) return null;
-              return (
-                <MessageBoundary fallbackText={m.card?.subtitle || m.card?.title || ""}>
-                  {card}
-                </MessageBoundary>
-              );
-            }
+            case "options":
+              return optionsCardRow({ message: m, transcript, botId, botName, threadId });
+            case "widget":
+              return <MessageBoundary fallbackText={m.text ?? ""}><WidgetMessage botId={botId} threadId={threadId} message={m} /></MessageBoundary>;
             case "routine.run":
               return <RoutineRunRow message={m} botId={botId} />;
             case "call":
-              // a finished Live call's record; its spoken lines stay inline
               return m.call ? <CallRecordRow message={m} transcript={transcript} botName={botName} busy={busy} hasMore={hasMore} /> : null;
             case "activity": {
-              // a Data receipt first: its title is a person's words, never a status or error marker
               if (m.dataResult) return <DataResultChip message={m} />;
               if (isStatusActivity(m)) return <StatusActivityRow message={m} />;
-              // a failed turn is an error, not a tool run — render it as one.
-              // bot⇄bot comm chips and opened-thread chips stay because they
-              // link to another conversation.
-              // plain tool runs stay out unless Settings → Tool calls is on.
               if (m.tool && failedTurnCause(m.tool.name) !== null) {
                 return (
                   <FailedTurnRow
@@ -1063,7 +919,6 @@ const MessagesList = memo(function MessagesList({
               return <ActivityChip message={m} place={place} />;
             }
             case "digest":
-              // the summary of the turn's tool chips: shown under the same setting
               return showToolCalls ? <DigestChip message={m} /> : null;
             case "compaction":
               return <CompactionChip message={m} />;
@@ -1086,8 +941,6 @@ const MessagesList = memo(function MessagesList({
                   onStartEdit={onStartEdit}
                   onCancelEdit={onCancelEdit}
                   onSubmitEdit={onSubmitEdit}
-                  // only the last answer offers Regenerate; the others keep
-                  // their props when this callback changes
                   onRegenerate={m.id === lastBotTextId ? onRegenerate : undefined}
                   replyTarget={lookups.replyTarget(m)}
                   onReply={onReply}
@@ -1109,9 +962,6 @@ const MessagesList = memo(function MessagesList({
   );
 });
 
-/** The one pinned message, above the transcript: sender, one line, click to
- * jump, X to unpin. Resolves the pin id against the full message list; a
- * pin that no longer resolves renders nothing (edited away or deleted). */
 function PinnedBanner({
   bot,
   pinnedId,
@@ -1157,14 +1007,10 @@ function PinnedBanner({
   );
 }
 
-/** The chat header's bot pill: the model chip's shape and tint. */
 const CHATHEAD_PILL = "flex min-w-0 items-center gap-2 rounded-full border border-hairline/40 bg-control/60 py-0.5 pl-1.5 text-ink";
 
 function chiefOfStaffBadge(bot: Bot) {
   if (!bot.chiefOfStaff) return null;
-  // One line, never shrinking with the name (it wrapped "Chief / of /
-  // Staff", #1871); folds to the crown like the chips beside it do, so the
-  // name keeps the room.
   return (
     <span title={t("chat.chiefOfStaff")} className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-accent/12 px-2 py-0.5 text-[11px] font-medium text-accent @max-4xl/chathead:px-1.5">
       <Crown size={11} aria-hidden="true" /> <span className="@max-4xl/chathead:sr-only">{t("chat.chiefOfStaff")}</span>
@@ -1177,15 +1023,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
   const remoteClient = window.ogb?.remoteClient?.active === true;
-  // Simple mode reaches other threads from the sidebar; the header picker is Advanced only.
-  // Without a native title bar (macOS inset lights, frameless Windows) this
-  // header is the window drag region. On Windows the icon row also shifts
-  // below the 26px-tall corner the renderer-drawn caption buttons occupy.
   const { dragProps: headerDragProps, noDragStyle: headerNoDragStyle, controlsShiftStyle } = useCaptionChrome();
   const composerDockRef = useRef<HTMLDivElement>(null);
   const composerDock = useComposerDockPad(composerDockRef);
   const advanced = useAdvancedMode();
-  // A guest on an OMB Cloud home writes only in conversations it opened.
   const canWrite = useCanWriteIn(bot.threadId);
 
   const computerStarting = computerStartLine(state.computerStarts[bot.id], bot.name);
@@ -1208,17 +1049,9 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     return () => window.removeEventListener("keydown", onFind);
   }, []);
 
-  // only the active branch is rendered; forks stay reachable via ‹ › nav.
-  // Keyed on the transcript alone: a bot frame that leaves it untouched
-  // keeps this array, and the rows memoized on it.
   const { messages: allMessages, activeLeafId } = bot;
   const messages = useMemo(() => visibleMessages({ messages: allMessages, activeLeafId }), [allMessages, activeLeafId]);
-  // edit versions, reply targets, the Retry row: once per list, not per row
   const lookups = useMemo(() => transcriptLookups(allMessages, messages), [allMessages, messages]);
-  // The bot's run in the current ask — every command it ran, the control-CLI
-  // ones verified — for the run card. Saving mirrors the /learn gate: the
-  // flag, an engine with the agents tools, and a bot that can take a message
-  // now — plus a run with something to keep.
   const recordedRun = useMemo(() => runSteps(messages), [messages]);
   const recordedRunCounts = runSummary(recordedRun);
   const engineSupportsAgents = Boolean(
@@ -1226,15 +1059,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   );
   const canSaveRun =
     skillAuthoringEnabled(state.config) && engineSupportsAgents && recordedRunCounts.passed > 0 && recordedRunCounts.running === 0 && !bot.busy;
-  // A dismissal is pinned to the run's last step, per thread: the card comes
-  // back when the bot runs another command, not merely when a step settles,
-  // and stays away across a switch to another thread and back.
   const [runDismissed, setRunDismissed] = useState<ReadonlyMap<string, string>>(() => new Map());
   const lastRunStep = recordedRun.at(-1);
   const showRunCard = useShowRunCard();
 
-  // Only a tail of the thread mounts; everything derived below (lastBotTextId,
-  // lastUserMessage, working dots) stays computed from the FULL list.
   const {
     scrollRef,
     transcriptRef,
@@ -1262,7 +1090,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   );
   const unreadDivider = useUnreadDivider({ threadId: bot.threadId, messages, following });
 
-  // What the rows read besides their own message (see ChatRows).
   const bots = useDrawnBots(state.bots);
   const mentionPeers = useMemo(() => bots.filter((peer) => peer.id !== bot.id), [bots, bot.id]);
   const focus = state.focusMessage?.threadId === bot.threadId ? state.focusMessage : null;
@@ -1271,10 +1098,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const localVoice = localSystemVoiceActive();
   const locale = activeLocale();
   const busy = Boolean(bot.busy);
-  // The header face moves only while the bot works or plays a motion beat,
-  // as in the sidebar: a resting face left open would redraw at display rate.
   const headerAnimated = busy || (mascotMotion?.kind ?? "none") !== "none";
-  // read when a citation is clicked, so the rows need not change per message
   const branch = useRef(messages);
   branch.current = messages;
   const onBranch = useCallback((messageId: string) => branch.current.some((m) => m.id === messageId), []);
@@ -1285,13 +1109,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle }),
     [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle],
   );
-  // Where this conversation works, for the place icon on screen and page tools.
   const place = effectivePlace(bot, bot.tasks?.find((task) => task.threadId === bot.threadId));
 
-  // one message at a time may be in edit mode
   const [editingId, setEditingId] = useState<string | null>(null);
   useEffect(() => setEditingId(null), [bot.id, bot.threadId]);
-  // stable handler identities — MessagesList is memo'd on them
   const startEdit = useCallback((id: string) => setEditingId(id), []);
   const cancelEdit = useCallback(() => setEditingId(null), []);
   const submitEdit = useCallback(
@@ -1312,10 +1133,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     return cited.citations.length > 0 || attached.images.length > 0 || attached.files.length > 0;
   }, [lastUserMessage]);
 
-  // Mascot while the turn works. Streaming stays invisible — when the reply
-  // is finished, the whole bubble pops in above the mascot.
-  // The working line reads the last real message: a finished call's record
-  // (and a turn's receipts) can trail a turn that is still working.
   const lastMessage = lastNonReceipt(messages);
   const toolInFlight = lastMessage?.kind === "activity" && lastMessage.tool?.ok === undefined;
   const activity = liveActivityPhrases(lastMessage);
@@ -1360,16 +1177,11 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       approval: approval ? { id: approval.requestId, name: bot.name } : undefined,
     };
   }, [messages, bot.busy, bot.name]);
-  // Wall-clock anchor for the working row's elapsed readout — the server
-  // stamps the turn's real start (turnStartedAt), so switching threads keeps
-  // the count truthful; Date.now() only covers servers without the stamp.
   const [busySince, setBusySince] = useState<number | null>(null);
   useEffect(() => {
     setBusySince(bot.busy ? bot.turnStartedAt ?? Date.now() : null);
   }, [bot.busy, bot.id, bot.threadId, bot.turnStartedAt]);
 
-  // regenerate = fork the last user message with the same text — reuses the
-  // existing branch machinery, so the old answer stays reachable via ‹ ›
   const regenerate = useCallback(() => {
     if (lastUserMessage?.text && !bot.busy && !lastUserMessage.id.startsWith("optimistic-")) {
       dispatch({ type: "editMessage", botId: bot.id, threadId: bot.threadId, messageId: lastUserMessage.id, text: lastUserMessage.text });
@@ -1388,44 +1200,20 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   return (
     <ThreadLinkContext value={threadLink}>
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
-      {/* A take-turns call covers the thread while the bot is on the line */}
       <CallOverlay bot={bot} />
-      {/* The transcript scrolls on under the header (and the banners that
-          hang from it), which is liquid glass tinted with the chat's own
-          background, and under the composer, which already floats. */}
       <GlassScrollFrame className="flex-1 [--glass-tint:var(--color-app)]">
-      {/* Above anything raised inside the transcript (the room set-up card
-          is z-20 so its menus clear the composer), below the CallOverlay (z-30). */}
+      {/* z-[25]: above the room set-up card (z-20), below the CallOverlay (z-30). */}
       <GlassBar edge="top" className="z-[25]">
-      {/* Header */}
       <div
         {...headerDragProps}
         className={cn(
-          // @container so the chips on the right can fold to icon bubbles
-          // when the column is narrow (side panel open, small window). A
-          // container query never matches the container itself, so the row
-          // that has to wrap is the child below, not this element.
+          // A container query never matches the container itself, so the row that wraps is the child below.
           "@container/chathead px-5 py-3",
-          // Room for the drawer button, which overlays this corner below md.
           "pl-11 md:pl-5",
         )}
       >
-        {/* The chip group does not shrink, so in a narrow column (a phone,
-            or a panel beside the chat) the name truncated to nothing and the
-            rename pencil landed under the export button. Below 30rem the
-            header wraps: name line on top, chips underneath on the right.
-            From 30rem the bot sits in the middle of the header: three
-            columns, the left one empty, so the name is centred on the chat
-            itself. The controls' column never goes below their own width;
-            when room is short it takes it from the empty side, which slides
-            the name left rather than under the controls. */}
         <div data-chathead-row className="flex items-center justify-between @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:gap-y-1 @min-[30rem]/chathead:grid @min-[30rem]/chathead:grid-cols-[minmax(0,1fr)_minmax(0,auto)_minmax(max-content,1fr)]">
         <div data-chathead-identity className="flex min-w-0 items-center gap-2 @max-[30rem]/chathead:basis-full @min-[30rem]/chathead:col-start-2 @min-[30rem]/chathead:justify-self-center" style={headerNoDragStyle}>
-          {/* The bot as one pill, the same shape as the model chip across the
-              header: avatar and name together, opening the bot's settings.
-              Simple mode makes the whole pill that one button; Advanced keeps
-              the rename pencil inside it, so the avatar and the name stay
-              their own buttons (a button cannot hold another). */}
           {advanced ? (
             <div data-chathead-pill className={cn(CHATHEAD_PILL, "pr-1")}>
               <button
@@ -1484,16 +1272,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               {chiefOfStaffBadge(bot)}
             </button>
           )}
-          {/* The pill draws no activity of its own: the sidebar avatar's
-              presence dot, the Stop button beside the model chip and the
-              composer already say a turn is running, at every width. The
-              pill keeps one width either way, and a screen reader still
-              hears when the bot starts working. */}
           <span role="status" className="sr-only" data-chathead-status>{bot.busy ? t("sidebar.preview.working") : ""}</span>
           {!bot.busy && bot.waitingForTeammates && <span className="truncate text-[12px] text-ink-secondary" role="status">Teammates working</span>}
-          {/* Threads hidden: a side thread is a visit (a notification, a chip
-              or an activity row opened it). One click goes back to the bot's
-              own conversation, so a stray click never strands the person. */}
           {awayFromMainThread(profile, showThreads) && (
             <button
               type="button"
@@ -1508,9 +1288,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         <div
           data-chathead-controls
           className="flex shrink-0 items-center gap-2 @max-[30rem]/chathead:ml-auto @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:justify-end @min-[30rem]/chathead:col-start-3 @min-[30rem]/chathead:justify-self-end"
-          // The caption buttons sit over the header's right end; drop this
-          // icon row 16px (visual only — the header keeps its height) so the
-          // buttons clear the 26px overlay while the rest of the layout stays.
           style={controlsShiftStyle}
         >
           {(bot.busy || bot.waitingForTeammates) && (
@@ -1528,21 +1305,18 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           )}
           <ThreadContextWarning bot={bot} messages={messages} />
           {!remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
-          {/* below md the sidebar (and its Live call pill) is hidden */}
           <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state, showThreads)} />
           <button
             data-tour="computer"
             onClick={() => dispatch({ type: "toggleComputer" })}
             className={cn(
-              "rounded-md p-1.5 hover:bg-raised",
+              "relative rounded-md p-1.5 hover:bg-raised",
               state.computerOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
             )}
-            title={t("chat.computer")}
+            title={t("chat.computer")} aria-label={busy && place === "browser" ? `${t("chat.computer")}, ${t("place.live")}` : t("chat.computer")}
           >
-            <Monitor size={18} />
+            <Monitor size={18} />{busy && place === "browser" && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 animate-pulse rounded-full bg-success" data-testid="computer-button-live" />}
           </button>
-          {/* Keep threads reachable even when the sidebar is collapsed.
-              Less frequent actions share one menu. */}
           <ChatHeaderMenu key={`menu:${bot.threadId}`} bot={bot} messages={messages} findOpen={findOpen} onFind={() => setFindOpen((open) => !open)} />
         </div>
         </div>
@@ -1559,7 +1333,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       <ChatErrorBanner message={state.error} onDismiss={() => dispatch({ type: "error", message: null })} />
       <ChatNotice notice={state.notice} />
 
-      {/* Pinned message banner */}
       <PinnedBanner
         bot={bot}
         pinnedId={bot.pinnedMessageId}
@@ -1575,8 +1348,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
       </GlassBar>
 
-      {/* Messages + composer share one pane so bubbles scroll into the pill
-          instead of dying on a rectangular clip above a black dock. */}
       <div
         ref={scrollRef}
         className="glass-scroller h-full overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 [overflow-anchor:none]"
@@ -1587,12 +1358,11 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           className="glass-scroller-content flex w-full flex-col gap-3"
           style={{ paddingBottom: composerDock.pad }}
           role="log"
-          // off: a polite log re-reads every tick and chip while the bot
-          // works; TranscriptAnnouncer below speaks once when it is done
+          // off: a polite log re-reads every tick and chip while the bot works; TranscriptAnnouncer speaks once when
+          // done.
           aria-live="off"
           aria-label={t("chat.conversationWith", { name: bot.name })}
         >
-          {/* Reverse infinite scroll sentinel and smooth loading indicator */}
           {olderPending ? (
             <div className="flex items-center justify-center gap-2 py-3 text-xs text-ink-tertiary">
               <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
@@ -1644,8 +1414,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           )}
           <TurnPresence
             avatar={
-              // BotAvatar, not a bare MausAvatar: an uploaded profile image
-              // (and a chosen mascot body) must match the sidebar row.
               <BotAvatar
                 bot={bot}
                 state={toolInFlight ? "working" : "thinking"}
@@ -1667,7 +1435,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
       <TranscriptAnnouncer threadKey={transcriptKey} snapshot={announcement} />
 
-      {/* Reading scrollback — one tap back to the end, streaming or not */}
       {!following && (
         <button
           onClick={jumpToLatest}
@@ -1679,18 +1446,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         </button>
       )}
 
-      {/* Keyed by task: each conversation keeps its own draft and a failed
-          request can restore the old task without spilling into the newly
-          selected one. ArrowUp-to-edit stays gated on busy because editing
-          rewinds the thread, which a live turn forbids (the server 409s it). */}
       <div ref={composerDockRef} className="pointer-events-none absolute inset-x-0 bottom-0 z-[2]">
-      {/* The bot's run in this ask as a checklist, once it is worth one (a
-          verified step, or more than one command). Save fills this thread's
-          composer with the run and the person's request and hands the caret
-          over; the person adds context and sends — nothing is sent from
-          here. In the dock so its height is measured with the composer's:
-          the transcript pad, the jump pill and bottom-follow all move with
-          it. */}
       {lastRunStep && showRun(recordedRun) && showRunCard && runDismissed.get(transcriptKey) !== lastRunStep.id && (
         <div className="flex justify-end px-5 pb-2">
           <VerifyCard
@@ -1706,9 +1462,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           />
         </div>
       )}
-      {/* A Live call on this chat: its controls and captions sit above the
-          composer so the transcript stays in view. In the dock, so the
-          transcript pad grows with it. */}
       <LiveCallBar bot={bot} />
       {canWrite === false ? (
         <NewConversationInstead onNew={() => dispatch({ type: "newTask", botId: bot.id })} />
@@ -1740,9 +1493,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   );
 }
 
-/** In place of the composer, for a guest on an OMB Cloud home in a
- * conversation it did not open: it can only start its own. One click, no
- * dialog. */
 export function NewConversationInstead({ onNew }: { onNew: () => void }) {
   return (
     <div className="pointer-events-auto mx-5 mb-4 flex items-center justify-between gap-3 rounded-2xl border border-hairline/60 bg-raised px-4 py-3" data-testid="cloud-guest-composer">
@@ -1754,9 +1504,6 @@ export function NewConversationInstead({ onNew }: { onNew: () => void }) {
   );
 }
 
-/** The thread's usage, folded to one figure for the header menu — cost when
- * the engine reports one, else new tokens — with the full breakdown as the
- * tooltip. Null while the thread has no usage yet. */
 function usageSummary(bot: Bot, instances: AppState["instances"]): { short: string; detail: string; tone?: "danger" | "warning" } | null {
   const task = bot.tasks?.find((t) => t.threadId === bot.threadId);
   const usage = task?.usage;
@@ -1768,23 +1515,17 @@ function usageSummary(bot: Bot, instances: AppState["instances"]): { short: stri
     usageDetail(usage),
     lastTurnDetail(usage),
     contextDetail(usage),
-    // the whole thread rides along on every turn, so most of "in" is the
-    // model re-reading what it already saw — say so, or the figure reads as
-    // a bug (issue #527); past 80% of the window the fix is a new thread
     share?.tone === "danger" ? t("chat.usage.contextNudge") : null,
     keepWarmLine(task?.cacheKeepWarm),
     hasFiniteCost(usage.costUsd) ? `${formatUsd(usage.costUsd)} ${costCaption(billing)}` : null,
   ]
     .filter(Boolean)
     .join("\n");
-  // Keep the unit visible in the compact header too.
   const short = usageChip(usage);
   const ctx = contextChip(usage);
   return { short: ctx ? `${short} · ${ctx}` : short, detail, tone: share?.tone === "danger" ? "danger" : share?.tone === "warning" ? "warning" : undefined };
 }
 
-/** The header's "more" menu: find, export, usage and the inspector, behind
- * one button that opens on hover. */
 function ChatHeaderMenu({ bot, messages, findOpen, onFind }: {
   bot: Bot;
   messages: readonly Message[];
@@ -1794,8 +1535,6 @@ function ChatHeaderMenu({ bot, messages, findOpen, onFind }: {
   const { state, dispatch } = useStore();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   const usage = usageSummary(bot, state.instances);
-  // Simple mode keeps these in sight but locked, so people know where they
-  // live without being handed builder tools by default.
   const advanced = useAdvancedMode();
   const advancedOnly = advanced ? undefined : t("chat.advancedOnly");
   const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(null);
