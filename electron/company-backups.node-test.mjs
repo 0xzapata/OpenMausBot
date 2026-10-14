@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -415,11 +416,11 @@ for (const operation of ["backup", "restore"]) {
 }
 
 for (const operation of ["backup", "restore"]) {
-  test(`an unread ${operation} upload body leaves no uncaught stream error after cleanup`, async t => {
-    const unread = () => new Response(null, { status: 500 });
+  test(`an unread ${operation} upload body whose file is gone before it opens leaves no uncaught stream error`, async t => {
+    const unread = (_, options) => { rmSync(options.body.path); return new Response(null, { status: 500 }); };
     const f = await fixture(t, operation === "backup"
       ? { storage: unread }
-      : { local: route => route === "/api/workspace-backup/upload" ? unread() : undefined });
+      : { local: (route, options) => route === "/api/workspace-backup/upload" ? unread(route, options) : undefined });
     const uncaught = [];
     const record = error => uncaught.push(error);
     process.on("uncaughtException", record);
