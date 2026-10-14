@@ -319,3 +319,25 @@ free form, or one you rewrite by hand, works the same.
 | `POST` | `/api/profile/learned/:id/remove` | Takes that line out of About me; the fact is never added again. |
 
 All of them need the owner (admin) session, like the other bot-settings routes.
+
+## Shared team memory integrity
+
+Team memory ownership uses persistent keys. Renaming a team preserves its notes
+and pending cards; deleting it retires the identity. Creating a new team with the
+old name never restores the retired notes. Existing version-1 team-memory files
+migrate atomically to version 2. Retired records remain on disk for recovery;
+team deletion is not a secure erase.
+
+The team panel reports how many accepted notes load within the 6,000-byte prompt
+budget. Pin essential rules to load them first. Omitted notes remain available
+with `session_search {"scope":"team","query":"..."}`; ordinary search also
+includes accepted team notes. Proposals, superseded entries and deleted entries
+are excluded. A stable `key`, such as `tapa/sequence-02/colour`, lets a reviewed
+correction replace the same fact even when its title changes. The previous
+accepted entry remains in history. Recent text versions (up to 50) can be
+restored from the panel; restoring text is a new revision.
+
+Every panel edit, delete or acceptance carries the revision it was based on.
+Stale writes return 409; writes without a revision return 428. Reloading after a
+conflict retains the unsaved draft for comparison. Pending replacement cards
+also refuse approval if the accepted fact changed since the proposal.

@@ -5,6 +5,7 @@
 // ownership boundaries separate avoids a compromised or mistaken bot
 // persisting instructions into every teammate's future turns.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -25,19 +26,22 @@ interface SectionContextFile {
   /** Named teams exist independently of their current bots or group chats. */
   sections: string[];
   contexts: Record<string, SectionContextRecord>;
+  /** Stable memory ownership survives renames; deleting a label retires its key. */
+  memoryKeys: Record<string, string>;
 }
 
 const sectionContextRecordSchema = z.object({ text: z.string(), updatedAt: z.number().finite() });
 const sectionContextFileSchema = z.object({
   version: z.literal(1),
   sections: z.array(z.string()).optional(),
+  memoryKeys: z.record(z.string(), z.string().min(1)).optional(),
   contexts: z.record(
     z.string(),
     sectionContextRecordSchema,
   ),
 });
 
-const emptyFile = (): SectionContextFile => ({ version: 1, sections: [], contexts: Object.create(null) });
+const emptyFile = (): SectionContextFile => ({ version: 1, sections: [], contexts: Object.create(null), memoryKeys: Object.create(null) });
 
 /** Section labels are identities everywhere else in the store: trim once,
  * and use the empty key for the unsectioned General team. */
@@ -67,7 +71,9 @@ function loadFile(forWrite = false): SectionContextFile {
       if (Buffer.byteLength(record.text, "utf8") > SECTION_CONTEXT_MAX_BYTES) continue;
       contexts[sectionContextKey(key)] = { text: record.text, updatedAt: record.updatedAt };
     }
-    return { version: 1, sections: [...new Set([
+    const memoryKeys: Record<string, string> = Object.create(null);
+    for (const [name, key] of Object.entries((input as { memoryKeys?: Record<string, string> }).memoryKeys ?? {})) memoryKeys[name] = key;
+    return { version: 1, memoryKeys, sections: [...new Set([
       ...(candidate.data.sections ?? []), ...Object.keys(contexts),
     ].map(sectionContextKey).filter(Boolean))], contexts };
   } catch {
@@ -85,11 +91,23 @@ export function readSections(): string[] {
   return loadFile().sections;
 }
 
+/** Legacy teams keep their existing key until renamed; new teams get unique keys. */
+export function sectionMemoryKey(section?: string | null): string {
+  const name = sectionContextKey(section);
+  const data = loadFile(true);
+  if (name && data.sections.includes(name) && !data.memoryKeys[name]) {
+    data.memoryKeys[name] = `team:${randomUUID()}`;
+    saveFile(data);
+  }
+  return data.memoryKeys[name] ?? name;
+}
+
 /** Remember legacy labels and newly created teams without changing membership. */
 export function ensureSections(names: (string | undefined)[]): boolean {
   const data = loadFile(true);
   const sections = [...new Set([...data.sections, ...names.map(sectionContextKey).filter(Boolean)])];
   if (sections.length === data.sections.length) return false;
+  for (const name of sections) if (!data.sections.includes(name)) data.memoryKeys[name] = `team:${randomUUID()}`;
   saveFile({ ...data, sections });
   return true;
 }
@@ -103,6 +121,9 @@ export function changeEmptySection(name: string, nextName: string | null): void 
     throw new Error("A team with that name already exists");
   }
   if (nextName === name) return;
+  const memoryKey = data.memoryKeys[name] ?? name;
+  delete data.memoryKeys[name];
+  if (nextName !== null) data.memoryKeys[nextName] = memoryKey;
   if (nextName === null) data.sections.splice(index, 1);
   else data.sections[index] = nextName;
   const context = data.contexts[name];
@@ -132,7 +153,10 @@ export function writeSectionContext(section: string | null | undefined, text: st
   }
   const data = loadFile(true);
   const key = sectionContextKey(section);
-  if (key && !data.sections.includes(key)) data.sections.push(key);
+  if (key && !data.sections.includes(key)) {
+    data.sections.push(key);
+    data.memoryKeys[key] = `team:${randomUUID()}`;
+  }
   if (!text.trim()) {
     delete data.contexts[key];
   } else {

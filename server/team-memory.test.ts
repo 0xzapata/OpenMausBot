@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { TeamMemory, TEAM_MEMORY_PROMPT_MAX_BYTES } from "./team-memory.ts";
+import { TeamMemory, TeamMemoryConflict, TEAM_MEMORY_PROMPT_MAX_BYTES } from "./team-memory.ts";
+import { ensureSections, changeEmptySection, sectionMemoryKey, SECTION_CONTEXTS_FILE } from "./section-context.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
 
 let dir: string;
@@ -130,7 +131,8 @@ describe("propose", () => {
 describe("resolve, update, remove", () => {
   it("rejects edits that collide with another accepted fact", () => {
     const a = memory.propose("", { kind: "term", name: "Alex", detail: "term" }, source);
-    memory.propose("", { kind: "place", name: "Alex", detail: "place" }, source);
+    const place = memory.propose("", { kind: "place", name: "Alex", detail: "place" }, source);
+    memory.resolve("", place.entry.id, "accept");
     expect(() => memory.update("", a.entry.id, { kind: "place" })).toThrow(/already exists/);
     expect(memory.list("")[0].kind).toBe("term");
   });
@@ -159,7 +161,7 @@ describe("resolve, update, remove", () => {
     memory.propose("", { kind: "term", name: "OMB", detail: "OpenMausBot" }, source);
     const reopened = new TeamMemory(join(dir, "team-memory.json"));
     expect(reopened.list("")).toHaveLength(1);
-    expect(JSON.parse(readFileSync(join(dir, "team-memory.json"), "utf8")).version).toBe(1);
+    expect(JSON.parse(readFileSync(join(dir, "team-memory.json"), "utf8")).version).toBe(2);
   });
 });
 
@@ -200,4 +202,80 @@ describe("systemPrompt", () => {
     expect(prompt).toContain("Term 399");
     expect(prompt).not.toContain("Term 0:");
   });
+});
+
+it("keeps memory and pending cards through rename, but never reuses a deleted identity", () => {
+  ensureSections(["Memory editing"]);
+  const originalKey = sectionMemoryKey("Memory editing");
+  const { entry } = memory.propose("Memory editing", { kind: "decision", name: "Colour", detail: "Amber" }, source);
+  changeEmptySection("Memory editing", "Memory post");
+  expect(sectionMemoryKey("Memory post")).toBe(originalKey);
+  expect(memory.resolveProposal(entry.id, "accept")).toMatchObject({ state: "accepted" });
+  expect(memory.systemPrompt("Memory post")).toContain("Amber");
+  ensureSections(["Memory editing"]);
+  expect(memory.list("Memory editing")).toEqual([]);
+  changeEmptySection("Memory post", null);
+  ensureSections(["Memory post"]);
+  expect(memory.list("Memory post")).toEqual([]);
+  expect(new TeamMemory(join(dir, "team-memory.json")).list("Memory post")).toEqual([]);
+});
+
+it("rejects stale edits, deletion and pending replacements while retaining the old text", () => {
+  const { entry } = memory.propose("", { kind: "decision", name: "Colour", detail: "Blue", key: "tapa/colour" }, source);
+  memory.resolve("", entry.id, "accept");
+  const old = memory.list("")[0];
+  const next = memory.propose("", { kind: "decision", name: "Colour", detail: "Amber", key: "tapa/colour" }, source);
+  memory.update("", old.id, { detail: "Green" }, old.revision);
+  expect(() => memory.update("", old.id, { detail: "Stale" }, old.revision)).toThrow(TeamMemoryConflict);
+  expect(() => memory.remove("", old.id, old.revision)).toThrow(TeamMemoryConflict);
+  expect(() => memory.resolve("", next.entry.id, "accept")).toThrow(TeamMemoryConflict);
+  expect(memory.list("")[0].history?.[0].detail).toBe("Blue");
+});
+
+it("replaces a keyed decision even when its name changes and preserves its history", () => {
+  const first = memory.propose("", { kind: "decision", name: "Blue treatment", detail: "Use blue", key: "tapa/colour" }, source);
+  memory.resolve("", first.entry.id, "accept");
+  const second = memory.propose("", { kind: "decision", name: "Orange approved", detail: "Use orange", key: "tapa/colour" }, source);
+  memory.resolve("", second.entry.id, "accept");
+  expect(memory.search("", "blue")).toEqual([]);
+  expect(memory.list("")).toHaveLength(1);
+  expect(memory.list("")[0].history?.[0].detail).toBe("Use blue");
+  expect(memory.list("", true).find(entry => entry.id === first.entry.id)?.status).toBe("superseded");
+});
+
+it("keeps pending replacement revisions valid through a server restart", () => {
+  const first = memory.propose("", { kind: "decision", name: "Colour", detail: "Blue" }, source);
+  memory.resolve("", first.entry.id, "accept");
+  const replacement = memory.propose("", { kind: "decision", name: "Colour", detail: "Amber" }, source);
+  const reopened = new TeamMemory(join(dir, "team-memory.json"));
+  expect(reopened.resolve("", replacement.entry.id, "accept")).toMatchObject({ state: "accepted" });
+  expect(reopened.list("")[0].detail).toBe("Amber");
+});
+
+it("discloses omitted notes, keeps pinned rules first and searches every accepted entry", () => {
+  for (let i = 0; i < 20; i++) {
+    const { entry } = memory.propose("", { kind: "term", name: `Rule ${i}`, detail: `${i === 0 ? "critical " : ""}${"x".repeat(550)}` }, { ...source, at: i });
+    memory.resolve("", entry.id, "accept");
+  }
+  const old = memory.list("")[0];
+  memory.update("", old.id, { pinned: true }, old.revision);
+  const selection = memory.promptSelection("");
+  expect(selection.loadedIds).toContain(old.id);
+  expect(selection.loadedIds.length).toBeLessThan(selection.total);
+  expect(selection.text).toContain("Some notes are not loaded");
+  expect(Buffer.byteLength(selection.text)).toBeLessThanOrEqual(TEAM_MEMORY_PROMPT_MAX_BYTES);
+  expect(memory.search("", "Rule 1", 25).length).toBeGreaterThan(0);
+});
+
+it("fails closed on unreadable team ownership without blocking prompt construction", () => {
+  ensureSections(["Broken registry team"]);
+  const { entry } = memory.propose("Broken registry team", { kind: "term", name: "Private", detail: "Do not guess ownership" }, source);
+  memory.resolve("Broken registry team", entry.id, "accept");
+  const original = readFileSync(SECTION_CONTEXTS_FILE, "utf8");
+  try {
+    writeFileSync(SECTION_CONTEXTS_FILE, "{broken");
+    expect(memory.systemPrompt("Broken registry team")).toBe("");
+    expect(() => memory.propose("Broken registry team", { kind: "term", name: "Lost", detail: "must not save" }, source)).toThrow(/could not be read/);
+  } finally { writeFileSync(SECTION_CONTEXTS_FILE, original); }
+  expect(memory.list("Broken registry team")[0].name).toBe("Private");
 });
