@@ -1,7 +1,3 @@
-// Bundled skill catalog. Skills remain isolated resources so adding or
-// disabling one does not require changing a provider driver. A future Skills
-// UI can use the same manifests; today enabled built-ins are selected by their
-// declared trigger terms and mounted capabilities.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -83,9 +79,6 @@ export function loadBundledSkills(root = process.env.OMB_SKILLS_DIR || join(proc
   return skills;
 }
 
-/** User skills are hot-loaded on each turn so a skill that was just enabled
- * or hand-authored works without restarting the desktop app. One broken
- * folder is isolated instead of taking down every bot turn. */
 export function loadUserSkills(root: string): BundledSkill[] {
   if (!existsSync(root)) return [];
   let names: string[];
@@ -100,8 +93,6 @@ export function loadUserSkills(root: string): BundledSkill[] {
       const skill = loadSkillDirectory(join(root, name));
       if (skill) skills.push(skill);
     } catch {
-      // Skills the app writes are validated first, but people are free to
-      // hand-edit the folders later. A malformed edit disables only itself.
     }
   }
   return skills;
@@ -139,16 +130,6 @@ export function renderSkillInstructions(
   ).join("");
 }
 
-// ---------------------------------------------------------------------------
-// Skills library (features.skillsLibrary, skills lane S1)
-//
-// One shared store at the data dir. Bots reference library skills through an
-// assignment list on their bot record instead of private per-workspace
-// copies; per-bot copies migrate in by sha256 dedup with the originals
-// archived (never deleted). While the feature flag is off, nothing here is
-// reachable from any surface and per-bot behavior stays byte-identical.
-// ---------------------------------------------------------------------------
-
 export type LibraryReviewState = "approved" | "disabled";
 
 export interface SkillLibraryEntry {
@@ -160,18 +141,12 @@ export interface SkillLibraryEntry {
   reviewState: LibraryReviewState;
   license?: string;
   compatibility?: string;
-  /** Browsing tags parsed from frontmatter at install time. */
   tags?: string[];
   warnings: string[];
   skippedFiles: string[];
-  /** Organization installs only: the stamp that put this skill in the
-   * library, mapped from the per-bot manifest on migration. Never exposed
-   * to agents or clients. */
   package?: SkillPackageStamp;
 }
 
-/** A library skill projected the way per-bot `SkillListing` reads, so
- * assignment resolution composes the two without adapters. */
 export interface LibrarySkillListing {
   name: string;
   description: string;
@@ -210,8 +185,6 @@ const skillLibraryEntrySchema = z.object({
 });
 const skillLibraryIndexSchema = z.record(z.string(), skillLibraryEntrySchema);
 
-/** Every library write emits here so later skills-lane consumers can drop
- * caches without polling. The payload names what changed. */
 export const skillLibraryEvents = new EventEmitter();
 
 export function skillsLibraryRoot(dataDir: string = DATA_DIR): string {
@@ -226,13 +199,10 @@ export function librarySkillDirectory(root: string, name: string): string {
   return join(root, "skills", name);
 }
 
-/** The path agents are told to read for an assigned library skill. */
 export function librarySkillFilePath(name: string, root: string = skillsLibraryRoot()): string {
   return join(root, "skills", name, "SKILL.md");
 }
 
-/** Where a migrated per-bot copy is preserved. Archives are write-once:
- * migration never deletes the original bytes, it moves them here. */
 export function libraryArchiveDirectory(root: string, botId: string, name: string): string {
   return join(root, "archive", botId, name);
 }
@@ -241,9 +211,7 @@ type SkillLibraryIndexRead =
   | { index: Record<string, SkillLibraryEntry> }
   | { error: string };
 
-/** A missing index is a legitimate empty library; an index that exists but
- * cannot be read or validated is not, and writers must refuse rather than
- * replace it and strand every stored skill. */
+/** A missing index is an empty library; an unreadable one is not, and writers must refuse rather than replace it. */
 function readSkillLibraryIndexState(root: string): SkillLibraryIndexRead {
   try {
     const parsed: unknown = JSON.parse(readFileSync(libraryIndexPath(root), "utf8"));
@@ -307,10 +275,6 @@ export function listLibrarySkills(root: string = skillsLibraryRoot()): LibrarySk
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Put a skill in the library. Installing the same name with the same
- * SKILL.md bytes is idempotent (the existing entry wins); the same name
- * with different bytes is refused, mirroring the per-bot import rule.
- * Every failure returns `{ error }` — callers fall back. */
 export function installLibrarySkill(input: {
   name: string;
   description?: string;
@@ -341,8 +305,6 @@ export function installLibrarySkill(input: {
     if (existing.sha256 === sha256) return librarySkillListing(root, existing);
     return { error: `a skill named "${input.name}" is already in the library — choose a different name` };
   }
-  // Callers such as the library migration do not pass tags; frontmatter
-  // tags parsed from the instructions are the source of record then.
   const tags = input.tags?.length ? input.tags : parsed.tags;
   const entry: SkillLibraryEntry = {
     name: input.name,
@@ -358,8 +320,7 @@ export function installLibrarySkill(input: {
     skippedFiles: [],
     ...(input.package ? { package: { ...input.package } } : {}),
   };
-  // Bytes first, index second: the index is the commit point, so a crash
-  // between the two leaves unreferenced bytes, never a dangling entry.
+  // Bytes first, index second: the index is the commit point, so a crash leaves unreferenced bytes, never a dangling entry.
   mkdirSync(librarySkillDirectory(root, input.name), { recursive: true, mode: 0o700 });
   writeFileAtomic(join(librarySkillDirectory(root, input.name), "SKILL.md"), input.instructions, { mode: 0o600 });
   index[input.name] = entry;

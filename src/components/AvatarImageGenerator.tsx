@@ -29,7 +29,6 @@ export function AvatarImageGenerator({
   const { state, dispatch } = useStore();
   const imageGen = state.config?.imageGen;
   const savedProvider = imageGen?.provider ?? "openai";
-  // Null means follow the shared configuration. Drafts stay local until saved.
   const [providerDraft, setProviderDraft] = useState<AvatarImageProvider | null>(null);
   const [urlDraft, setUrlDraft] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState<string | null>(null);
@@ -91,7 +90,6 @@ export function AvatarImageGenerator({
     setUrlDraft(null);
     setModelDraft(null);
     setError(null);
-    // Custom connections need an explicit save after their address/model is set.
     if (next === "custom") return;
     setPending(true);
     try {

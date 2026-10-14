@@ -42,7 +42,7 @@ import { failedTurnTool } from "../../shared/failed-turn.ts";
 import { nameIsCommand } from "../../shared/tool-name.ts";
 import type { RuntimeEvent, SteerOutcome } from "../contracts.ts";
 import { quoteInNote } from "../peer-provenance.ts";
-import { RepeatDetector, callKey } from "../repeat-detector.ts";
+import { RepeatDetector, callKey, toolItemKey } from "../repeat-detector.ts";
 import { RepeatStreak, failureDigest } from "../repeat-streak.ts";
 import { COMMAND_SUMMARY_MAX, previewIsPartial } from "../tool-summary.ts";
 
@@ -170,10 +170,9 @@ type ToolStart = Extract<RuntimeEvent, { type: "item.started" }>;
 function countedCall(event: RuntimeEvent): CountedCall | null {
   if (event.type === "request.opened" && event.requestType === "permission") return shown(callKey(event.tool, event.summary));
   if (event.type !== "item.started" || event.itemType !== "tool") return null;
-  // a title with more than a bare identifier is a call with arguments;
-  // a bare "Bash" is not countable
-  const title = event.title ?? "";
-  return /\s|\//.test(title.trim()) ? shown(callKey("tool", title)) : null;
+  const key = toolItemKey(event.title, event.input);
+  // The chip quotes the title only, never the input the key counts on.
+  return key ? { key, tool: "tool", args: (event.title ?? "").trim() } : null;
 }
 
 /** The shell command a tool start runs, for the streak. The chip can afford
