@@ -4,9 +4,9 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, 
 import {
   chmodSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync,
   fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
-  readlinkSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync,
+  readSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, parse, posix, relative, resolve, win32 } from "node:path";
+import { isAbsolute, join, parse, posix, relative, resolve, win32 } from "node:path";
 import { homedir } from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
 import { pipeline } from "node:stream/promises";
@@ -16,7 +16,7 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { writeFileAtomic } from "./atomic.ts";
 import { escapeAttribute, splitTranscriptAttachments } from "../src/lib/composer-attachments.ts";
 import { WORKSPACE_BACKUP_CLIENT_KEYS } from "../shared/workspace-backup-client.ts";
-import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, liveDataEnginePath, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
+import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, liveDataEnginePath, managedTaskSkillLink, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
 import type { WorkspaceBackupClientState, WorkspaceBackupPrivateMetadata, WorkspaceBackupSummary } from "../shared/workspace-backup.ts";
 
 export type { WorkspaceBackupSummary, WorkspaceBackupPrivateMetadata } from "../shared/workspace-backup.ts";
@@ -307,20 +307,6 @@ export async function createWorkspaceBackup(dataDir: string, options: CreateWork
   }
 }
 
-/** A native-discovery link the app keeps in a conversation's work folder
- * (syncTaskSkillLinks). Its target is the same bot's skill store, which is in
- * the backup. Read the link text, never follow it. */
-function managedTaskSkillLink(source: string, path: string, roots: string[]): boolean {
-  const match = /^task-workspaces\/([^/]+)\/[^/]+\/\.(?:claude|agents|grok)\/skills\/[^/]+$/.exec(path);
-  if (!match) return false;
-  let target: string;
-  try { target = resolve(dirname(source), readlinkSync(source).replace(/^\\\\\?\\/, "")); } catch { return false; }
-  return roots.some((root) => {
-    const rel = relative(join(root, "workspaces", match[1], "skills"), target);
-    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-  });
-}
-
 /** Worker implementation; application callers use createWorkspaceBackup. */
 export async function createWorkspaceBackupSnapshot(dataDir: string, options: CreateWorkspaceBackupOptions, jobId?: string): Promise<CreatedWorkspaceBackup> {
   if (Object.hasOwn(options, "credentials")) throw new Error("Workspace backups do not transfer credentials.");
@@ -383,8 +369,7 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
         // checkout, a virtualenv). A link's target is not this workspace's
         // data, so the link is left out rather than failing the backup.
         if (stat.isSymbolicLink() && path.startsWith("task-workspaces/")) {
-          if (managedTaskSkillLink(source, path, [root, resolve(dataDir)])) skippedLinks++;
-          else skippedWorkLinks++;
+          if (managedTaskSkillLink(source, path, [root, resolve(dataDir)])) skippedLinks++; else skippedWorkLinks++;
           continue;
         }
         if (stat.isSymbolicLink()) {

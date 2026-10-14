@@ -329,7 +329,6 @@ import { TurnWatchdog } from "./turn-watchdog.ts";
 import { TurnResources, type TurnOwner } from "./turn-resources.ts";
 import {
   ensureWorkspace,
-  ensureTaskWorkspace,
   workspaceLocationsPrompt,
   supportsWorkspaceFiles,
   updateMemory,
@@ -374,12 +373,12 @@ import {
   setSkillEnabled,
   skillPackageStamps,
   skillsSystemPrompt,
-  syncTaskSkillLinks,
   expandSkillCommandTurnText,
   stageSkillWrite,
   undoSkillWrite,
 } from "./skills.ts";
 import { fetchSkillFromSource } from "./skill-fetch.ts";
+import { ensureTaskWorkspaceWithSkills } from "./skill-task-links.ts";
 import { pickBotName } from "./names.ts";
 import { botSkillTemplateSchema, newBotDefaultsSchema } from "./new-bot-defaults.ts";
 import { expandLearnTurnText, learnSource } from "./skill-learn.ts";
@@ -11339,7 +11338,7 @@ async function startTurn(
         // baseline for the journal's turn-boundary diff (see the bus hook)
         if (bot.memoryEnabled !== false) beginMemoryTurn(bot.id, threadId);
       }
-      const privateWorkspace = worksInWorkspace ? ensureTaskWorkspace(bot.id, threadId) : undefined;
+      const privateWorkspace = worksInWorkspace ? ensureTaskWorkspaceWithSkills(bot.id, threadId) : undefined;
       const skillInstructions = renderSkillInstructions(selectedSkills, {
         includeRoot: worksInWorkspace,
       });
@@ -11371,16 +11370,6 @@ async function startTurn(
       // on nearly every ordinary chat; snapshotting it would add hidden disk
       // and process overhead without a user project to list changes for.
       const checkpointCwd = cwd && cwd !== privateWorkspace ? cwd : undefined;
-      // Engines discover native skills from their cwd. The private task folder
-      // is not under the workspace that holds the bot-level links (#2806).
-      // A failure only loses native discovery; the prompt index still lists them.
-      if (cwd && cwd === privateWorkspace) {
-        try {
-          syncTaskSkillLinks(bot.id, threadId);
-        } catch (error) {
-          console.warn(`[skills] linking skills into the task folder failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
       // dweb is opt-in: without an explicit daemon URL, do not advertise
       // tools that would fail on every call or spawn an unnecessary proxy.
       const dwebUrl = process.env.DWEB_URL?.trim();
@@ -14476,7 +14465,7 @@ async function runClaimedGroupMemberTurn(
   // room, not of whichever member happened to speak first.
   // A room a guest opened on a Cloud home works in a folder of its own too.
   const cwd = workspace && cloudGuestOpened(threadId)
-    ? ensureTaskWorkspace(bot.id, threadId)
+    ? ensureTaskWorkspaceWithSkills(bot.id, threadId)
     : groupTurnCwd(workspace, () => store.pinGroupCwd(readyGroup.id, threadId));
   {
     const drift = checkSoulDrift(bot.id, bot.soul ?? "", bot.soulHash ?? "");

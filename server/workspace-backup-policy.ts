@@ -1,3 +1,5 @@
+import { readlinkSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseStoredConfig } from "./config.ts";
 
 // Connection sections deliberately stay on the destination as a whole: a
@@ -77,4 +79,18 @@ export function ephemeralWorkspaceTokenPath(path: string): boolean {
  * again. The sheet beside it (sheet.json) is backed up. */
 export function liveDataEnginePath(path: string): boolean {
   return /^bots\/[^/]+\/(?:data\.duckdb(?:\.wal)?$|data-tmp(?:\/|$))/.test(path);
+}
+
+/** A native-discovery link the app keeps in a conversation's work folder
+ * (syncTaskSkillLinks). Its target is the same bot's skill store, which is in
+ * the backup. Read the link text, never follow it. */
+export function managedTaskSkillLink(source: string, path: string, roots: string[]): boolean {
+  const match = /^task-workspaces\/([^/]+)\/[^/]+\/\.(?:claude|agents|grok)\/skills\/[^/]+$/.exec(path);
+  if (!match) return false;
+  let target: string;
+  try { target = resolve(dirname(source), readlinkSync(source).replace(/^\\\\\?\\/, "")); } catch { return false; }
+  return roots.some((root) => {
+    const rel = relative(join(root, "workspaces", match[1], "skills"), target);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  });
 }

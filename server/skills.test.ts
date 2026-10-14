@@ -34,10 +34,10 @@ import {
   skillsSystemPrompt,
   stageSkillWrite,
   syncSkillLinks,
-  syncTaskSkillLinks,
   undoSkillWrite,
 } from "./skills.ts";
 import { parseSkillSource } from "./skill-fetch.ts";
+import { ensureTaskWorkspaceWithSkills, syncTaskSkillLinks } from "./skill-task-links.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import { ensureTaskWorkspace, TASK_WORKSPACES_DIR, workspaceDir } from "./workspace.ts";
 
@@ -306,6 +306,19 @@ describe("install → review → enable lifecycle", () => {
       syncTaskSkillLinks(bot, thread);
       expect(readFileSync(join(own, "SKILL.md"), "utf8")).toBe("mine");
       expect(existsSync(join(taskDir, ".agents", "skills", "own-skill"))).toBe(false);
+    } finally {
+      rmSync(join(TASK_WORKSPACES_DIR, bot), { recursive: true, force: true });
+    }
+  });
+
+  // startTurn (and a Cloud guest's room) take their folder from this helper.
+  it("hands a turn its task folder with the enabled skills already linked", () => {
+    installSkill(bot, "src", [{ path: "SKILL.md", content: SKILL("turn-skill") }]);
+    setSkillEnabled(bot, "turn-skill", true);
+    try {
+      const folder = ensureTaskWorkspaceWithSkills(bot, "thread-c");
+      expect(folder).toBe(ensureTaskWorkspace(bot, "thread-c"));
+      expect(lstatSync(join(folder, ".claude", "skills", "turn-skill")).isSymbolicLink()).toBe(true);
     } finally {
       rmSync(join(TASK_WORKSPACES_DIR, bot), { recursive: true, force: true });
     }
