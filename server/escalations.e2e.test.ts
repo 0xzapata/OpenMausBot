@@ -76,7 +76,9 @@ it("delivers a pending peer-comm approval card to the Chief's escalations thread
     const chief = (await control(["new-bot", "--name", "Clive", "--section", "Ops"])).bot;
     await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
     const ada = (await control(["new-bot", "--name", "Ada", "--section", "Ops"])).bot;
-    await api("PATCH", `/api/bots/${ada.id}`, { approvePeerComms: true });
+    await api("PATCH", `/api/bots/${ada.id}`, { approvePeerComms: true, approvalMode: "ask" });
+    // Upstream defaults new bots to full access (PR #2808), which would
+    // auto-allow the consult with no card; ask mode puts the gate back.
     const hedge = (await control(["new-bot", "--name", "Hedge", "--section", "Ops"])).bot;
     await useCli();
     // Ada consults Hedge through the real agents proxy; the card that lands
