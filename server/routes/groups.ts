@@ -1,8 +1,3 @@
-// Rooms (persisted as groups): create one, and finish or skip its setup,
-// moved from server/index.ts's inline routes into the route table
-// (server/routes/README.md). The table runs after the auth gate; scope
-// rules stay keyed by path in server/request-auth.ts. The rest of a room's
-// routes (tasks, messages, queue, stop) are in channels.ts.
 import type { WireGroup } from "../../shared/wire.ts";
 import { validateBotCwd } from "../bot-cwd.ts";
 import type { VisibleSet } from "../bot-visibility.ts";
@@ -13,10 +8,8 @@ import { PASS, type RouteHandler } from "./table.ts";
 
 export interface GroupRouteDeps {
   store: Pick<Store, "bot" | "group" | "messagesFor" | "patchGroup">;
-  /** On a Cloud home whoever opens a room names it (cloudThreadRefusal). */
   cloudHome: boolean;
-  /** Which bots this request may see (bot-visibility.ts): a member may only
-   * put bots they can see in a room. */
+  /** A member may only put bots they can see in a room. */
   visibleFor(auth: RequestAuth): VisibleSet;
   actorKey(auth: RequestAuth & { kind: "session" }): string;
   threadStarters: Pick<ThreadStarters, "set">;
@@ -29,14 +22,10 @@ export function createGroupRoutes(deps: GroupRouteDeps): RouteHandler {
   const { store, actorKey, threadStarters, createChannel, publicGroupState, checkedGroupResponder } = deps;
   const CLOUD_HOME = deps.cloudHome;
   return async ({ req, res, path, method, auth, json, readBody }) => {
-    /** scratch for route matches, shared by every `path.match` below */
     let m: RegExpMatchArray | null = null;
     const visible = deps.visibleFor(auth);
-    // ── channels (persisted internally as groups) ───────────────────────
     if (method === "POST" && path === "/api/groups") {
       const body = await readBody(req);
-      // A member may only put bots they can see in a room: the room would
-      // otherwise show them a restricted bot (bot-visibility.ts).
       const hiddenMember = Array.isArray(body?.memberIds) ? body.memberIds.find((id: unknown) => typeof id === "string" && store.bot(id) && !visible.bot(id)) : undefined;
       if (hiddenMember) return json(res, 400, { error: `unknown channel member: ${String(hiddenMember)}` });
       const group = createChannel(body);

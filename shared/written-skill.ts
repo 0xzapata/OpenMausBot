@@ -1,8 +1,6 @@
-// A command the person writes in Bot settings > Skills: a name, one line on
-// what it does, and the instructions. It is stored as an ordinary SKILL.md
-// through the same per-bot install the bot-creation templates use, so it
-// needs no store of its own: it shows in the skills index, can be switched
-// off or removed like any skill, and runs as `/name` from the composer.
+// A command the person writes: a name, one line on what it does, and the
+// instructions. Stored as an ordinary SKILL.md through the per-bot install, so
+// it needs no store of its own and runs as `/name` from the composer.
 import { DESCRIPTION_MAX, isSkillName, parseSkillMd } from "./skill-md.ts";
 
 export const WRITTEN_SKILL_SOURCE = "written:bot settings";

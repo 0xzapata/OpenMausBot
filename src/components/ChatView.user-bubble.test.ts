@@ -57,7 +57,6 @@ describe("bot-colored user bubbles", () => {
     expect(html).toContain(`background-color:${tone.background}`);
     expect(html).toContain("--color-ink:#ffffff");
     expect(html).toContain("hello from me");
-    // the bot's own bubble stays on the card, not the person's fill
     const mine = html.indexOf("user-bubble-colored");
     const reply = html.indexOf("hello back");
     expect(mine).toBeGreaterThan(-1);

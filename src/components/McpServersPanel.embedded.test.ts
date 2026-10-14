@@ -2,8 +2,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The server list is McpServersPanel's first piece of state; seed it as a
-// finished load would leave it (effects do not run under server rendering).
+// The server list is McpServersPanel's first piece of state, seeded as a finished load would leave it (effects do not
+// run under server rendering).
 const fixture = vi.hoisted(() => ({ servers: null as unknown, index: 0, counting: false, seeded: {} as Record<number, unknown> }));
 vi.mock("react", async (original) => {
   const react = await original<typeof import("react")>();
@@ -58,7 +58,6 @@ describe("Your MCP servers inside the Apps pop-up", () => {
     expect(html).toMatch(/aria-label="Turn docs on" type="button" role="switch" aria-checked="false"/);
     expect(html).toContain('aria-label="Edit notes"');
     expect(html.match(/> Test</g)).toHaveLength(2);
-    // a section of the pop-up's own scroll, not a second scroller
     expect(html).not.toContain("overflow-y-auto");
   });
 

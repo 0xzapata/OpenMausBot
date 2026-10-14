@@ -133,7 +133,6 @@ test("native workspace choices use saved IDs and connect opens settings without 
   const calls = [];
   const items = env.workspaceMenuTemplate(state, { onSwitch: (id) => calls.push(["switch", id]), onConnect: () => calls.push(["settings"]), onForget: (id) => calls.push(["forget", id]) });
   assert.equal(items.find((item) => item.id === "workspace-cloud").checked, true);
-  // The menu id stays "workspace-connect"; the label uses the product word.
   assert.equal(items.find((item) => item.id === "workspace-connect").label, "Connect to a server…");
   items.find((item) => item.id === "workspace-local").click();
   items.find((item) => item.id === "workspace-connect").click();
@@ -146,7 +145,6 @@ test("Add a Cloud… sits just under the saved servers only where main offers it
   const state = { environments: [{ id: "cloud", name: "My Cloud", origin: "https://omb-u-1.fly.dev" }, { id: "office", name: "Office", origin: "https://office.example" }], activeId: "local" };
   const calls = [];
   const base = { onSwitch: (id) => calls.push(["switch", id]), onConnect: () => calls.push(["settings"]), onForget: () => {} };
-  // Without onAddCloud (a dev build, companion mode, a branded build): today's menu, hosts as sublabels.
   const plain = env.workspaceMenuTemplate(state, base);
   assert.equal(plain.some(item => item.id === "workspace-add-cloud"), false);
   assert.deepEqual(plain.filter(item => item.sublabel).map(item => item.sublabel), ["omb-u-1.fly.dev", "office.example"]);
@@ -257,7 +255,6 @@ test("bootEnvironmentDir refuses to boot onto a missing named env dir — the de
   assert.deepEqual(env.bootEnvironmentDir(gone, DEFAULT), { dataDir: DEFAULT, fellBack: true, missingDir: "/Volumes/gone/.openmausbot-aprs" });
   const present = { environments: [{ ...gone.environments[0], missing: false }], activeId: "l1" };
   assert.deepEqual(env.bootEnvironmentDir(present, DEFAULT), { dataDir: "/Volumes/gone/.openmausbot-aprs", fellBack: false, missingDir: null });
-  // The default dir is never a fallback: a first boot is allowed to create it.
   assert.deepEqual(env.bootEnvironmentDir({ environments: [], activeId: "local" }, DEFAULT), { dataDir: DEFAULT, fellBack: false, missingDir: null });
   const remote = { environments: [{ id: "r1", kind: "remote", name: "Office", origin: "https://box.example", missing: false }], activeId: "r1" };
   assert.deepEqual(env.bootEnvironmentDir(remote, DEFAULT), { dataDir: DEFAULT, fellBack: false, missingDir: null });
@@ -285,7 +282,6 @@ test("withLocalEnvironment rejects a candidate that contains a registered local 
   assert.equal(error("/Users/me/bots"), "nested");
   assert.equal(error("/Users/me"), "nested");
   assert.equal(error("/"), "nested");
-  // Siblings share a parent but neither contains the other.
   assert.equal(error("/Users/me/bots/other"), undefined);
   assert.equal(error("/Users/me/botsx"), undefined);
   const sibling = env.withLocalEnvironment(added.state, { name: "Other", dataDir: "/Users/me/bots/other" }, () => "id2", DEFAULT);
@@ -318,14 +314,10 @@ test("withLocalEnvironment compares Windows-shaped paths by separators and case"
   const state = env.withLocalEnvironment({ environments: [], activeId: "local" }, { name: "Site", dataDir: "C:\\Bots\\Site" }, () => "site", winDefault);
   assert.equal(state.ok, true);
   const again = (name, dataDir) => env.withLocalEnvironment(state.state, { name, dataDir }, () => "x", winDefault).error;
-  // Same folder written differently (separator style, drive case, trailing slash).
   assert.equal(again("Copy", "c:/bots/site/"), "duplicate");
-  // A child of an environment — written with either separator.
   assert.equal(again("Child", "C:\\Bots\\Site\\sub"), "nested");
   assert.equal(again("Child2", "C:/BOTS/SITE/sub"), "nested");
-  // A folder inside the default dir, with mixed separators.
   assert.equal(again("Inside default", "c:\\users\\me\\.openmausbot\\envs\\x"), "nested");
-  // UNC containment.
   const unc = env.withLocalEnvironment({ environments: [], activeId: "local" }, { name: "Share", dataDir: "\\\\NAS\\omb" }, () => "share", "\\\\nas\\other");
   assert.equal(unc.ok, true);
   assert.equal(env.withLocalEnvironment(unc.state, { name: "Under", dataDir: "\\\\NAS\\omb\\deep" }, () => "x", "\\\\NAS\\elsewhere").error, "nested");
@@ -333,17 +325,14 @@ test("withLocalEnvironment compares Windows-shaped paths by separators and case"
 
 test("parseEnvironments dedups local dirs on the same normalized key", () => {
   const parse = (entries) => env.parseEnvironments(JSON.stringify({ version: 2, environments: entries, activeId: "local" })).environments;
-  // Trailing slash is the same folder.
   assert.deepEqual(parse([
     { id: "l1", kind: "local", name: "A", dataDir: "/Users/me/.openmausbot-aprs" },
     { id: "l2", kind: "local", name: "B", dataDir: "/Users/me/.openmausbot-aprs/" },
   ]).map((entry) => entry.id), ["l1"]);
-  // Windows separator style and drive case are the same folder.
   assert.deepEqual(parse([
     { id: "l1", kind: "local", name: "A", dataDir: "C:\\Bots\\Site" },
     { id: "l2", kind: "local", name: "B", dataDir: "c:/bots/site" },
   ]).map((entry) => entry.id), ["l1"]);
-  // Distinct siblings survive.
   assert.equal(parse([
     { id: "l1", kind: "local", name: "A", dataDir: "/Users/me/.openmausbot-a" },
     { id: "l2", kind: "local", name: "B", dataDir: "/Users/me/.openmausbot-b" },

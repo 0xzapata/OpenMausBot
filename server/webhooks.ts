@@ -67,26 +67,11 @@ export interface WebhookManagerOptions {
   }) => { id: string };
   cancelQueued?: (webhookId: string, message: string) => void;
   pendingRuns?: (webhookId: string) => number;
-  /** Sink for delivery:"post" webhooks: the payload text lands as the
-   *  bot's own message in `threadId` -- the trigger's own stable
-   *  destination from `resolvePostThread`, never a caller-supplied
-   *  "current" thread. */
+  /** delivery:"post" sink: lands in the trigger's own stable thread, never a caller-supplied one. */
   post?: (botId: string, threadId: string, text: string) => void;
-  /** Resolves the stable thread a delivery:"post" webhook's messages land
-   *  in, creating it on first use. Mirrors RoutineManagerOptions'
-   *  resolveResultsThread/isResultsThread pair (routines.ts): called on
-   *  every `post` dispatch, exactly like routines.ts's newRun calls
-   *  resolveResultsThread on every run, so the resolver itself owns the
-   *  reuse-vs-allocate decision from `trigger.resultsThreadId` rather than
-   *  the dispatcher special-casing "already have one". `forceNew` is
-   *  unused by any call site today (no caller resets a webhook's
-   *  destination yet) but kept for signature parity with that sibling and
-   *  any future explicit-reset entry point. Absent (a host with no task
-   *  creation support) makes every `post` delivery fail with 503 instead
-   *  of silently falling back to a shared/ambient thread -- see
-   *  https://github.com/milind-soni/OpenMausBot/issues/2071. */
+  /** Absent, every post delivery fails with 503 rather than falling back to an ambient thread
+   *  (https://github.com/milind-soni/OpenMausBot/issues/2071). */
   resolvePostThread?: (trigger: WebhookTrigger, forceNew: boolean) => string | undefined;
-  /** The execution store commits this identity together with the queued run. */
   findRun?: (webhookId: string, deliveryId: string) => { id: string } | null;
 }
 
@@ -101,9 +86,6 @@ const MAX_EVENT_CHARS = 48_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 10;
 const UNAUTHORIZED_REASON = "Invalid webhook URL or secret";
-/** Unfinished (queued, running or waiting) runs one webhook may hold before
- * new deliveries are refused with 429. A webhook can set its own limit; one
- * fanning out a project manager's events needs more than a CI hook does. */
 export const DEFAULT_MAX_PENDING_RUNS = 3;
 export const MAX_PENDING_RUNS_LIMIT = 50;
 const maxPendingRunsSchema = z.number().int().min(1).max(MAX_PENDING_RUNS_LIMIT);
@@ -120,7 +102,6 @@ const triggerInputSchema = z.object({
   enabled: z.boolean().optional(),
   verificationPending: z.boolean().optional(),
   eventTypes: eventTypesSchema,
-  /** `null` goes back to the default. */
   maxPendingRuns: maxPendingRunsSchema.nullable().optional(),
 });
 const triggerPatchSchema = triggerInputSchema.partial();
@@ -143,17 +124,13 @@ const storedWebhookSchema = z.object({
   updatedAt: z.number().finite().nonnegative(),
   lastReceivedAt: z.number().finite().nonnegative().optional(),
   lastRunId: z.string().optional(),
-  /** delivery:"post" only: the stable destination thread, resolved once
-   *  via WebhookManagerOptions.resolvePostThread and reused forever
-   *  after -- see the `post`/`resolvePostThread` doc comments above. */
   resultsThreadId: z.string().min(1).optional(),
   deliveryCount: z.number().int().nonnegative(),
   verificationPending: z.boolean().optional(),
   verifiedAt: z.number().finite().nonnegative().optional(),
   verificationSample: verificationSampleSchema.optional(),
   eventTypes: eventTypesSchema,
-  // A hand-edited value out of range falls back to the default instead of
-  // making the whole webhooks file unreadable.
+  // A hand-edited value out of range falls back to the default instead of making the file unreadable.
   maxPendingRuns: maxPendingRunsSchema.optional().catch(undefined),
   secretHash: z.string().regex(/^[a-f0-9]{64}$/),
 });
@@ -321,11 +298,8 @@ export class WebhookManager {
   private deliveries: DeliveryReceipt[] = [];
   private attempts: WebhookAttempt[] = [];
   private rate = new Map<string, number[]>();
-  /** Bad-secret requests folded into each webhook's rolling record. */
   private unauthorized = new Map<string, number>();
-  /** The file existed but could not be read (corrupt JSON or a row that
-   * fails validation). Saves are refused while set so a fresh empty state
-   * can never overwrite whatever is on disk. Missing means a first run. */
+  /** Saves are refused while set, so an empty state never overwrites an unreadable file. */
   private unreadable = false;
 
   constructor(options: WebhookManagerOptions) {
@@ -342,13 +316,9 @@ export class WebhookManager {
       this.webhooks = [];
       this.deliveries = [];
       this.attempts = [];
-      // Missing means no webhooks yet. Any other read/validation failure
-      // disables overwriting the file: the next save must not replace it
-      // with nothing.
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.unreadable = true;
-        // JSON.parse echoes a fragment of its input in some messages, so a
-        // malformed file must never be copied into the server log.
+        // JSON.parse errors can echo a fragment of the input, so they never reach the log.
         const reason = error instanceof SyntaxError ? "invalid JSON"
           : error instanceof Error ? error.message : "unable to read webhooks";
         console.error(`webhooks: ignoring unreadable ${this.file}: ${reason}`);
@@ -492,11 +462,7 @@ export class WebhookManager {
     return this.recordRejectedForTrigger(trigger, statusCode, reason, event);
   }
 
-  /** A request with a wrong secret can come from anyone who reaches the
-   * receiver, before any rate limit applies. Each webhook keeps one rolling
-   * record of them, updated in place and saved with the next real change, so
-   * a flood neither pushes real deliveries out of the shared history nor
-   * rewrites the file on every request. */
+  /** Anyone who reaches the receiver can send a wrong secret: one rolling record per webhook, saved with the next real change. */
   recordUnauthorized(endpointId: string, event: Partial<WebhookEvent> = {}): WebhookAttempt | null {
     const trigger = this.webhooks.find((candidate) => candidate.endpointId === endpointId);
     if (!trigger) return null;
@@ -508,7 +474,6 @@ export class WebhookManager {
     }
     const count = (this.unauthorized.get(trigger.id) ?? 1) + 1;
     this.unauthorized.set(trigger.id, count);
-    // Same id: clients replace the record they hold instead of adding one.
     const attempt = this.buildAttempt(trigger, event, {
       outcome: "rejected",
       statusCode: 401,
@@ -558,8 +523,7 @@ export class WebhookManager {
       }
     }
 
-    // A sender retrying an already-accepted delivery must remain idempotent
-    // even while this webhook's queue is full. Only new work consumes a slot.
+    // A retry of an accepted delivery stays idempotent even while the queue is full.
     const maxPendingRuns = trigger.maxPendingRuns ?? DEFAULT_MAX_PENDING_RUNS;
     const pendingRuns = this.options.pendingRuns?.(trigger.id) ?? 0;
     if (pendingRuns >= maxPendingRuns) {
@@ -573,19 +537,9 @@ export class WebhookManager {
     this.rate.set(trigger.endpointId, recent);
 
     const deliveryId = requestedDeliveryId || randomUUID();
-    // delivery:"post": the payload text becomes the bot's own chat message — no task,
-    // no model turn. For notification-style webhooks (a scheduled brief, an alert)
-    // that should read like the bot said it. Dedup/rate/attempt bookkeeping is shared.
     if (trigger.delivery === "post") {
-      // Never fall through to a task run: a stored post webhook on a server
-      // without a post sink is a configuration error, not a run request.
+      // Never fall through to a task run.
       if (!this.options.post) fail(503, "This server cannot post webhook messages to chat");
-      // Resolved on every dispatch, exactly like routines.ts's newRun calls
-      // resolveResultsThread on every run -- the resolver owns the
-      // reuse-vs-allocate decision from trigger.resultsThreadId, so a host
-      // without resolvePostThread wired can only fail closed here, never
-      // silently fall back to whatever thread the bot happens to have
-      // selected right now (the bug this replaces -- issue #2071).
       const threadId = this.options.resolvePostThread?.(trigger, false);
       if (!threadId) fail(503, "This server could not resolve a destination thread for this delivery");
       if (threadId !== trigger.resultsThreadId) {
@@ -712,9 +666,6 @@ export class WebhookManager {
   }
 
   private save(): void {
-    // The file on disk failed to load, so it may still hold webhooks this
-    // process cannot see. Management writes refuse above; delivery bookkeeping
-    // skips here rather than replacing it with nothing.
     if (this.unreadable) return;
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(

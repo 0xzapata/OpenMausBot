@@ -1,8 +1,3 @@
-// Team memory: the people, places, decisions and terms every bot in a
-// section shares. Bots propose them from conversations for review; this is where the
-// person sees the whole of it, answers what is waiting, and fixes or
-// removes anything. Sits beside the section's shared context, which only
-// the person writes.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Brain, Check, Loader2, Plus, Trash2, X } from "lucide-react";

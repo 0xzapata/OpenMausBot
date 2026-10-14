@@ -1,9 +1,6 @@
-// Which Cloudflare account an endpoint lives in. Pure rules, no I/O.
-//
-// An endpoint row names its account by ID (`provider_account`) and keeps it
-// for life: renewal, re-provisioning after an idle reclaim, cleanup, and the
-// idle scan all act in that account. Only a new row chooses, and only a row
-// that never handed out an address may move.
+// Which Cloudflare account an endpoint lives in. Pure rules, no I/O. A row keeps
+// its account for life; only a new row chooses, and only a row that never
+// handed out an address may move.
 import type { ControlPlaneConfig, EndpointAccount } from "./config";
 
 /** After Cloudflare refuses an account a new tunnel or DNS record (its
@@ -74,11 +71,9 @@ export function opaqueHostnameSQL(hostname: string, suffix: string): string {
              AND substr(${hostname}, 35) = '.' || ${suffix})`;
 }
 
-/** `endpointAccountFor` over every account in SQL: true for an endpoint row
- * aliased `e` that some configured account acts on. Bind
- * `actedOnAccounts(config)` to its one parameter. The queries that pick rows
- * to act on, or count the rows nothing acts on, use it so that they agree
- * with the actions themselves. */
+/** `endpointAccountFor` over every account in SQL, for an endpoint row aliased
+ * `e`; bind `actedOnAccounts(config)` to its one parameter. Row-picking queries
+ * use it so they agree with the actions themselves. */
 export const ACTED_ON_ENDPOINT_SQL = `EXISTS (
           SELECT 1 FROM json_each(?) AS account
            WHERE json_extract(account.value, '$.id') = e.provider_account

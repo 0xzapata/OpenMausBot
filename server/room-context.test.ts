@@ -56,16 +56,12 @@ describe("room context", () => {
     expect(rooms.request("room", "editor1")).toBe(true);
     rooms.dispatched("room", "codex-bot", "codex");
     rooms.record("room", "codex-bot", { tokens: 30_000, window: 200_000 }, undefined);
-    // A bot on another engine leaves Editor 1's Claude process alone.
     expect(rooms.dispatched("room", "codex-bot", "codex")).toBe(false);
     expect(Object.keys(rooms.forThread("room") ?? {})).toEqual(["editor1", "codex-bot"]);
-    // Editor 3 speaks on the same Claude engine: Editor 1's process closes,
-    // and with it the warning and the pending Compact now.
     expect(rooms.dispatched("room", "editor3", "claude")).toBe(true);
     expect(rooms.forThread("room")).toEqual({ "codex-bot": { tokens: 30_000, window: 200_000 } });
     expect(rooms.takeReset("room", "editor1", undefined)).toBeNull();
     expect(rooms.request("room", "editor1")).toBe(false);
-    // A member's own next turn keeps its reading for takeReset to judge.
     rooms.record("room", "editor3", { tokens: 190_000, window: 200_000 }, undefined);
     expect(rooms.dispatched("room", "editor3", "claude")).toBe(false);
     expect(rooms.forThread("room")?.editor3).toEqual({ tokens: 190_000, window: 200_000 });
@@ -80,7 +76,6 @@ describe("room context", () => {
     rooms.request("room", "editor1");
     vi.advanceTimersByTime(IDLE_MS - 1);
     expect(rooms.forThread("room")?.editor1?.compactRequested).toBe(true);
-    // A keep-warm window holds the process (and the reading) past idle.
     heldUntil = Date.now() + 5 * 60_000;
     vi.advanceTimersByTime(1);
     expect(expired).toEqual([]);
@@ -91,7 +86,6 @@ describe("room context", () => {
     expect(rooms.request("room", "editor1")).toBe(false);
     expect(rooms.takeReset("room", "editor1", undefined)).toBeNull();
 
-    // A reading consumed or replaced before it ages out tells no one.
     rooms.record("room", "editor1", { tokens: 190_000, window: 200_000 }, undefined);
     expect(rooms.takeReset("room", "editor1", undefined)).toEqual({ reason: "threshold", percent: 95 });
     heldUntil = undefined;
