@@ -10885,10 +10885,7 @@ const ROOM_POST_MAX_CHARS = 4_000;
 
 const approvalBus: ApprovalBus = { store, broadcast, notify, autoApply: fullAccessForSource };
 
-const { quotaSwitch, harnessCardOutcome } = createQuotaSwitchHost({
-  store, coordinator, registry, turnStops, approvalBus, hostedModels, providerConfigs, policyModelRefusal,
-  checkedTaskModelSwitch, threadBusy, directRequestOwners, startOrQueueDirectMessage,
-});
+const { quotaSwitch, harnessCardOutcome } = createQuotaSwitchHost({ store, coordinator, registry, turnStops, approvalBus, hostedModels, providerConfigs, policyModelRefusal, checkedTaskModelSwitch, threadBusy, directRequestOwners, startOrQueueDirectMessage });
 
 // Peer approvals live only in memory: settle every peer card still open on disk, or it locks the composer forever.
 {
