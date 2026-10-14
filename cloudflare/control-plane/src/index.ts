@@ -132,7 +132,6 @@ async function route(
     }
   }
 
-  // Closed-app phone alerts (src/push.ts), installation-authenticated.
   if (request.method === "POST" && url.pathname === "/v1/installations/self/push/register") {
     return registerPushDevice(request, env);
   }
@@ -168,7 +167,6 @@ async function route(
   return errorResponse(404, "not_found");
 }
 
-/** `apnsFetch` reaches Apple's push service; tests pass a fake. */
 export function createWorker(cloudflareFetch: CloudflareFetch = fetch, apnsFetch: typeof fetch = fetch) {
   return {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

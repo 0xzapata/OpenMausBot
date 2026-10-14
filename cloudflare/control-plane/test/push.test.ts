@@ -25,8 +25,7 @@ interface ApnsCall {
   body: Record<string, unknown>;
 }
 
-/** A stand-in for APNs that records each request and answers from a script. */
-function fakeApns(answers: Array<{ status: number; reason?: string }> = []) {
+function fakeApns(answers: Array<{ status: number; reason?: string; timestamp?: number }> = []) {
   const calls: ApnsCall[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -42,7 +41,8 @@ function fakeApns(answers: Array<{ status: number; reason?: string }> = []) {
       body: await request.json<Record<string, unknown>>(),
     });
     const answer = answers.shift() ?? { status: 200 };
-    return new Response(answer.reason ? JSON.stringify({ reason: answer.reason }) : null, { status: answer.status });
+    const body = answer.reason ? JSON.stringify({ reason: answer.reason, timestamp: answer.timestamp }) : null;
+    return new Response(body, { status: answer.status });
   }) as typeof fetch;
   return { calls, fetch: fetchImpl };
 }
@@ -234,6 +234,33 @@ describe("phone push relay", () => {
     expect((await send(worker, testEnv, first.credential, { token: TOKEN_B })).status).toBe(410);
     const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM installation_push_devices").first<{ n: number }>();
     expect(rows?.n).toBe(0);
+  });
+
+  it("drops a dead token only in the environment APNs judged, and keeps registrations newer than a 410", async () => {
+    const key = await apnsKey();
+    const testEnv = await pushEnv(key.privateKeyPem);
+    const apns = fakeApns([
+      { status: 400, reason: "BadDeviceToken" },
+      { status: 410, reason: "Unregistered", timestamp: 1 },
+      { status: 410, reason: "Unregistered", timestamp: Date.now() + 60_000 },
+    ]);
+    const worker = createWorker(fetch, apns.fetch);
+    const sandbox = await installation(worker, testEnv, "env-sandbox@example.test");
+    const production = await installation(worker, testEnv, "env-production@example.test");
+    await register(worker, testEnv, sandbox.credential, TOKEN_A, "sandbox");
+    await register(worker, testEnv, production.credential, TOKEN_A, "production");
+
+    expect((await send(worker, testEnv, production.credential)).status).toBe(410);
+    expect(apns.calls[0]!.url).toBe(`https://api.push.apple.com/3/device/${TOKEN_A}`);
+    expect((await send(worker, testEnv, production.credential)).status).toBe(404);
+
+    expect((await send(worker, testEnv, sandbox.credential)).status).toBe(410);
+    const kept = await env.DB.prepare("SELECT COUNT(*) AS n FROM installation_push_devices WHERE installation_id = ?").bind(sandbox.id).first<{ n: number }>();
+    expect(kept?.n).toBe(1);
+
+    expect((await send(worker, testEnv, sandbox.credential)).status).toBe(410);
+    expect((await send(worker, testEnv, sandbox.credential)).status).toBe(404);
+    expect(apns.calls).toHaveLength(3);
   });
 
   it("retries once with a fresh provider token when APNs refuses it", async () => {

@@ -180,9 +180,9 @@ unbounded scheduled invocation.
 
 ### Phone push relay
 
-Closed-app alerts for the iOS app (proposal: issue #2769; harness side:
-`server/phone-push.ts`, wire contract version 1 in `shared/phone-push.ts`; app
-side: `docs/ios-companion.md`). Apple accepts pushes for an App Store or
+Closed-app alerts for the iOS app (harness side: `server/phone-push.ts`,
+wire contract version 1 in `shared/phone-push.ts`; app side:
+`docs/ios-companion.md`). Apple accepts pushes for an App Store or
 TestFlight build only when they are signed with the publishing team's key, and
 a harness may run on a VPS or in a container. So the project's key lives here,
 and a harness asks this Worker to push with the installation credential it
@@ -225,8 +225,9 @@ however many isolates send; each isolate caches its token for the window.
 
 APNs answers are mapped for the harness: `410 Unregistered`,
 `BadDeviceToken` and `DeviceTokenNotForTopic` delete the token for every
-installation and return `410 push_device_unregistered` (the harness drops it
-too); an expired or invalid provider token is re-signed and retried once,
+installation that registered it in the same APNs environment (for a `410`,
+only registrations older than Apple's `timestamp`) and return `410
+push_device_unregistered` (the harness drops it too); an expired or invalid provider token is re-signed and retried once,
 then `503 push_unavailable`; APNs `429` is `429 rate_limited`; anything else
 is `502 push_failed`. Failures log the request id, APNs status and reason
 only, never the token or payload.

@@ -1,23 +1,4 @@
-// Closed-app phone alerts: the push relay.
-//
-// A harness (the desktop app, `openmausbot serve --tunnel`, a fleet
-// container) cannot send APNs pushes for an App Store or TestFlight build
-// itself: Apple accepts them only signed with the publishing team's key. So
-// the harness asks here, authenticated with its installation credential, and
-// this Worker signs with the project's key and sends to APNs.
-//
-//   POST /v1/installations/self/push/register    { v, token, environment }
-//   POST /v1/installations/self/push/unregister  { v, token }
-//   POST /v1/installations/self/push/send        { v, token, pairing?, notification }
-//
-// The relay pushes only to a token the presenting installation registered.
-// The payload is built here from a strict schema: the alert's kind, a title,
-// the bot's and room's names and opaque ids. A field that could carry message
-// text, such as `body`, is refused, not dropped. Wire contract version 1;
-// the harness side is shared/phone-push.ts in the app repository.
-//
-// The APNs key is configuration only (README "Phone push relay"). Without it
-// every route answers 503 `push_unavailable` and the harness backs off.
+// APNs accepts pushes for an App Store or TestFlight build only when signed with the publishing team's key.
 import { z } from "zod";
 
 import { errorResponse, HTTPError, json, readBoundedJSON } from "./http";
@@ -32,7 +13,6 @@ export interface ApnsConfig {
   privateKey: string;
   /** The app's bundle id: the APNs topic. */
   bundleId: string;
-  /** Which APNs environments tokens may be registered for. */
   environments: ReadonlySet<ApnsEnvironment>;
 }
 
@@ -43,16 +23,11 @@ export const APNS_HOSTS: Record<ApnsEnvironment, string> = {
 
 export const PUSH_DEVICE_LIMIT = 50;
 const HOUR_MS = 60 * 60 * 1_000;
-/** Per installation: every phone it serves together. */
 export const PUSH_SEND_LIMIT = 600;
-/** Per installation and device token: one phone. */
 export const PUSH_DEVICE_SEND_LIMIT = 60;
 export const PUSH_REGISTER_LIMIT = 120;
-/** A push older than this is not worth delivering: the person has moved on. */
 const APNS_EXPIRATION_SECONDS = 24 * 60 * 60;
-/** Apple wants a provider token refreshed at most every 20 and at least
- * every 60 minutes. Every isolate signs for the same 50-minute window, so a
- * token's `iat` changes once per window however many isolates send. */
+/** APNs wants a provider token refreshed no more than every 20 and at least every 60 minutes. */
 export const APNS_TOKEN_WINDOW_MS = 50 * 60 * 1_000;
 const APNS_TIMEOUT_MS = 10_000;
 
@@ -62,7 +37,6 @@ const TOKEN = /^[0-9a-f]{64,200}$/;
 const ID = /^[\w-]{1,120}$/;
 const KIND = /^[a-z][a-z-]{0,39}$/;
 const PAIRING = /^[A-Za-z0-9_-]{8,64}$/;
-/** Kinds that mean a bot is blocked on the person. */
 const NEEDS_YOU = new Set(["approval", "question", "sign-in", "mention"]);
 
 function oneLine(max: number) {
@@ -97,8 +71,6 @@ const sendSchema = z.strictObject({
 });
 export type PushSendRequest = z.infer<typeof sendSchema>;
 
-/** The APNs settings, or null when phone push is not configured. A partial
- * or malformed configuration also counts as off; the README says what to set. */
 export function readApnsConfig(env: Env): ApnsConfig | null {
   const vars = env as unknown as Partial<Record<string, unknown>>;
   const keyId = vars.APNS_KEY_ID;
@@ -109,8 +81,7 @@ export function readApnsConfig(env: Env): ApnsConfig | null {
   if (typeof teamId !== "string" || !KEY_OR_TEAM_ID.test(teamId)) return null;
   if (typeof bundleId !== "string" || bundleId.length > 155 || !BUNDLE_ID.test(bundleId)) return null;
   if (typeof rawKey !== "string") return null;
-  // `wrangler secret put` from a file keeps the newlines; a pasted value may
-  // carry them escaped.
+  // `wrangler secret put` from a file keeps the newlines; a pasted value may carry them escaped.
   const privateKey = rawKey.replace(/\\n/g, "\n").trim();
   if (!/^-----BEGIN PRIVATE KEY-----\n[\s\S]+\n-----END PRIVATE KEY-----$/.test(privateKey)) return null;
   const listed = typeof vars.APNS_ENVIRONMENTS === "string" && vars.APNS_ENVIRONMENTS.trim()
@@ -119,8 +90,6 @@ export function readApnsConfig(env: Env): ApnsConfig | null {
   if (!listed.every((value) => value === "production" || value === "sandbox")) return null;
   return { keyId, teamId, privateKey, bundleId, environments: new Set(listed as ApnsEnvironment[]) };
 }
-
-// ── the provider token ───────────────────────────────────────────────────
 
 function base64url(bytes: ArrayBuffer | Uint8Array): string {
   let binary = "";
@@ -143,13 +112,11 @@ interface CachedToken {
 }
 let cachedToken: CachedToken | null = null;
 
-/** Drop the cached provider token: APNs refused it. */
 export function forgetApnsToken(): void {
   cachedToken = null;
 }
 
-/** An ES256 provider token (RFC 7518 §3.4: the raw r‖s signature WebCrypto
- * returns), cached for its 50-minute window. */
+/** ES256 per RFC 7518 §3.4 is the raw r‖s signature WebCrypto returns. */
 export async function apnsProviderToken(config: ApnsConfig, now = Date.now()): Promise<string> {
   const window = Math.floor(now / APNS_TOKEN_WINDOW_MS);
   const fingerprint = `${config.teamId}:${config.keyId}:${await sha256(config.privateKey)}`;
@@ -170,10 +137,6 @@ export async function apnsProviderToken(config: ApnsConfig, now = Date.now()): P
   return jwt;
 }
 
-// ── what the phone receives ──────────────────────────────────────────────
-
-/** The APNs payload: the title the harness built from names, and the ids the
- * app routes a tap with. Never any message text. */
 export function apnsPayload(request: PushSendRequest) {
   const notification = request.notification;
   return {
@@ -195,8 +158,6 @@ export function apnsPayload(request: PushSendRequest) {
   };
 }
 
-// ── routes ───────────────────────────────────────────────────────────────
-
 function unavailable(): never {
   throw new HTTPError(503, "push_unavailable");
 }
@@ -213,8 +174,6 @@ function rateLimited(retryAfterSeconds: number): Response {
   return response;
 }
 
-/** One hour window per (installation, action), in the endpoint limiter's
- * table. Returns false when the window is full. */
 function limitStatement(env: Env, installationId: string, action: string, limit: number, now: number) {
   const cutoff = now - HOUR_MS;
   return env.DB.prepare(
@@ -275,7 +234,7 @@ export async function sendPush(
   apnsFetch: typeof fetch,
   requestId: string,
 ): Promise<Response> {
-  // Parse first so the device read rides in the authentication's own batch.
+  // Parse before authenticating so the device read rides in the authentication's own D1 batch.
   let body: PushSendRequest | null = null;
   let parseError: HTTPError | null = null;
   try {
@@ -292,14 +251,11 @@ export async function sendPush(
     : null);
   const config = readApnsConfig(env) ?? unavailable();
   if (parseError || !body) throw parseError ?? new HTTPError(400, "invalid_request");
-  // Only a token this installation registered, so a relay credential cannot
-  // be pointed at somebody else's phone.
+  // Only a token this installation registered, so a relay credential cannot be pointed at somebody else's phone.
   if (!row || row.token !== body.token) return errorResponse(404, "push_device_unknown");
 
   const now = Date.now();
-  // Check both windows before taking from either, so a send refused by one
-  // limit does not use up the other. The upserts still enforce each cap, so
-  // two racing sends can at worst both be refused, never both pass a full one.
+  // Read both windows before taking from either, so a send refused by one limit does not spend the other.
   const limits = [
     { action: "push_send", limit: PUSH_SEND_LIMIT },
     { action: `push_send:${tokenHash.slice(0, 32)}`, limit: PUSH_DEVICE_SEND_LIMIT },
@@ -321,8 +277,10 @@ export async function sendPush(
     return json({ sent: true }, 202);
   }
   if (outcome.kind === "dead") {
-    // The token is dead for every installation that registered it.
-    await env.DB.prepare("DELETE FROM installation_push_devices WHERE token_hash = ?").bind(tokenHash).run();
+    // APNs judges a token per environment and topic; a 410's timestamp spares registrations made after it.
+    await env.DB.prepare("DELETE FROM installation_push_devices WHERE token_hash = ? AND environment = ? AND updated_at <= ?")
+      .bind(tokenHash, row.environment, Math.min(outcome.invalidSince ?? now, now))
+      .run();
     return errorResponse(410, "push_device_unregistered");
   }
   console.error(JSON.stringify({ message: "apns push failed", requestId, status: outcome.status, reason: outcome.reason }));
@@ -333,10 +291,9 @@ export async function sendPush(
 
 type Delivery =
   | { kind: "sent" }
-  | { kind: "dead" }
+  | { kind: "dead"; invalidSince?: number }
   | { kind: "throttled" | "credentials" | "failed"; status: number; reason: string };
 
-/** Reasons that mean this token will never work for this app. */
 const DEAD_TOKEN_REASONS = new Set(["BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"]);
 const PROVIDER_TOKEN_REASONS = new Set(["ExpiredProviderToken", "InvalidProviderToken", "MissingProviderToken"]);
 
@@ -351,8 +308,6 @@ async function deliver(
   // Repeats for one kind in one conversation replace each other on the lock screen.
   const collapseId = (await sha256(`${request.notification.kind}:${request.notification.threadId}`)).slice(0, 32);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    // A key that passes the PEM check can still fail to import or sign:
-    // that is the relay's configuration, not APNs being unreachable.
     let providerToken: string;
     try {
       providerToken = await apnsProviderToken(config, now);
@@ -380,11 +335,13 @@ async function deliver(
       return { kind: "failed", status: 0, reason: "unreachable" };
     }
     if (response.status === 200) return { kind: "sent" };
-    const reason = await response.json<{ reason?: unknown }>().then(
-      (value) => (typeof value?.reason === "string" ? value.reason.slice(0, 64) : ""),
-      () => "",
-    );
-    if (response.status === 410 || DEAD_TOKEN_REASONS.has(reason)) return { kind: "dead" };
+    const answer = await response.json<{ reason?: unknown; timestamp?: unknown }>().catch(() => null);
+    const reason = typeof answer?.reason === "string" ? answer.reason.slice(0, 64) : "";
+    if (response.status === 410) {
+      const invalidSince = typeof answer?.timestamp === "number" && Number.isFinite(answer.timestamp) ? answer.timestamp : undefined;
+      return { kind: "dead", invalidSince };
+    }
+    if (DEAD_TOKEN_REASONS.has(reason)) return { kind: "dead" };
     if (response.status === 403 && PROVIDER_TOKEN_REASONS.has(reason) && attempt === 0) {
       forgetApnsToken();
       continue;

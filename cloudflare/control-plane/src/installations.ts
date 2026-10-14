@@ -308,7 +308,6 @@ export async function revokeInstallation(
       env.DB.prepare(
         "UPDATE installation_credentials SET revoked_at = ? WHERE installation_id = ? AND revoked_at IS NULL",
       ).bind(now, installationId),
-      // A revoked installation can no longer push; its phones' tokens go too.
       env.DB.prepare("DELETE FROM installation_push_devices WHERE installation_id = ?").bind(installationId),
     ]);
   }
