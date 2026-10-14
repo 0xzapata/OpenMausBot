@@ -9,8 +9,6 @@ const FIXTURES = join(import.meta.dirname, "..", "shared", "package-fixtures");
 const fixture = (name: string): any => JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
 let home: string;
 
-/** A real Store, RoutineManager, skill store, memory and section registry in
- * a throwaway home; MCP config and policy are in-memory stand-ins. */
 async function installation(options: { refuse?: (name: string) => string | undefined; servers?: Record<string, unknown> } = {}) {
   home = mkdtempSync(join(tmpdir(), "omb-package-import-"));
   vi.resetModules();
@@ -81,7 +79,6 @@ describe("importing a whole team", () => {
         requiredApps: [expect.objectContaining({ slug: "hubspot" })] },
     });
     expect(lead.avatarUrl).toMatch(/^\/api\/attachments\/[\w-]+\.png$/);
-    // Approval is never taken from the file.
     expect(lead).not.toHaveProperty("approvalMode");
     expect(lead).not.toHaveProperty("autoApprove");
     expect(lead.installedPackage?.installId).toMatch(/^[0-9a-f-]{36}$/);
@@ -101,7 +98,6 @@ describe("importing a whole team", () => {
       expect.objectContaining({ name: "research-brief", enabled: false }),
     ]);
     expect(result.offeredSkills).toEqual(["objection-handling"]);
-    // The slot never binds to the credentialed server already called "crm".
     expect(result.connections).toEqual([{ key: "crm", name: "crm-2", label: "CRM" }]);
     expect(app.mcp.servers["crm-2"]).toEqual({ type: "http", url: "https://mcp.example.com/crm", headers: { Authorization: "" }, enabled: false });
     expect(app.mcp.servers.crm).toMatchObject({ headers: { Authorization: "Bearer mine" } });

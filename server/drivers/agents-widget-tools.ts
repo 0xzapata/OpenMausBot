@@ -1,9 +1,4 @@
-// The two chat-widget tools of the agents catalog
-// (docs/superpowers/specs/2026-10-13-chat-widgets-design.md), spread into
-// TOOL_DEFINITIONS in agents-catalog.ts. Definitions only, like that file;
-// agents-call-cards.ts carries a call out and server/chat-widgets.ts stores
-// the result. Every word here is sent to the model on every turn and pinned
-// by agents-catalog-wire.test.ts.
+// The two chat-widget tools of the agents catalog: definitions only, sent to the model on every turn.
 export const WIDGET_TOOL_DEFINITIONS = [
   {
     name: "show_widget",

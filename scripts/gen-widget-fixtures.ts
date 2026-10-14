@@ -1,7 +1,6 @@
-// Writes the widget fixtures the phone apps test against (mausbot-mobile:
-// ios/Tests/CompanionCoreTests/Fixtures, read by the iOS and Android core
-// tests). Every tree is produced by parseWidgetInput from WIDGET_SAMPLES, so
-// the phones decode exactly what this server stores.
+// Writes the widget fixtures the phone apps' core tests read. Every tree comes
+// from parseWidgetInput over WIDGET_SAMPLES, so the phones decode exactly what
+// this server stores.
 //
 //   node --experimental-strip-types scripts/gen-widget-fixtures.ts <fixtures dir>
 import { writeFileSync } from "node:fs";

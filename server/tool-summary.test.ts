@@ -66,8 +66,7 @@ describe("commandSummary", () => {
   });
 
   it("redacts credentials before cutting, so a sliced key cannot slip through", () => {
-    // the token starts at column 186: cutting first would leave "ghp_" plus
-    // ten characters — too short for the github shape to catch
+    // The token starts at column 186: cutting first would leave "ghp_" plus ten characters, too short for the github shape.
     const token = `ghp_${"a".repeat(36)}`;
     const summary = commandSummary({ command: `${"x".repeat(180)} curl ${token} https://api` });
     expect(summary).not.toContain("ghp_");

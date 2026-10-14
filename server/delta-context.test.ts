@@ -72,7 +72,6 @@ describe("record size", () => {
     expect(handedStateUsable(state, "s", order)).toBe(true);
     const over = recordHanded(state, order, received.slice(200));
     expect(handedStateUsable(over, "s", order)).toBe(false);
-    // the gap is never declared received
     expect(unseenIds(order, { ...over, session: "s" })).toContain("m1");
   });
 });
@@ -84,7 +83,6 @@ describe("sessionStart", () => {
     expect(start).toEqual({ omitted: "m5", sent: ["m6", "m7", "m8", "m9"] });
     const state = recordHanded({ session: "new", omitted: start.omitted, ids: [] }, order, start.sent);
     expect(state).toEqual({ session: "new", omitted: "m5", through: "m9", ids: [] });
-    // older history is neither offered nor received
     expect(unseenIds(order, state)).toEqual([]);
     expect(unseenIds([...order, "m10"], state)).toEqual(["m10"]);
   });
@@ -153,7 +151,6 @@ describe("renderUnseen", () => {
   });
 });
 
-// The acceptance fold, driven by runtime events against an in-memory store.
 describe("Handoffs", () => {
   const setup = (order: string[], record?: HandedState) => {
     const records = new Map<string, HandedState>(record ? [["claude", record]] : []);
@@ -209,7 +206,6 @@ describe("Handoffs", () => {
     expect(f.records.get("claude")).toEqual({ ids: [] });
     f.event(output);
     expect(f.records.get("claude")).toEqual({ session: "new", config: "c", omitted: "m4", through: "m7", ids: ["m9"] });
-    // m8 was only in the unseen block, which a rebuild does not carry
     expect(unseenIds(order, f.records.get("claude")!)).toEqual(["m8"]);
   });
 
@@ -256,13 +252,10 @@ describe("Handoffs", () => {
       f.event({ type: "turn.completed", ok: true });
       return f.records.get("claude")!;
     };
-    // Turn N wrote the row through its own tool: turn N+1 resumes with nothing unseen.
     expect(shown("claim")).toEqual({ session: "s", through: "m5", ids: [] });
     expect(unseenIds(order, shown("claim"))).toEqual([]);
-    // Unrecorded, the same row would be handed back to the session that made it.
     expect(shown()).toEqual({ session: "s", through: "m3", ids: ["m5"] });
     expect(unseenIds(order, shown())).toEqual(["m4"]);
-    // A call that outlived its turn (another claim) records nothing on this one.
     expect(unseenIds(order, shown("an-earlier-claim"))).toEqual(["m4"]);
   });
 
@@ -281,7 +274,6 @@ describe("Handoffs", () => {
     f.handoffs.authored("t", "claim", "m3");
     f.event({ type: "turn.completed", ok: true });
     expect(f.records.get("claude")).toEqual({ session: "s", through: "m3", ids: [] });
-    // Nothing is pending once the turn is over: a late call is ignored.
     f.handoffs.authored("t", "claim", "m4");
     expect(f.records.get("claude")).toEqual({ session: "s", through: "m3", ids: [] });
   });
@@ -361,7 +353,6 @@ describe("Handoffs", () => {
     f.event({ ...output, providerInstanceId: "codex" });
     f.event({ ...output, turnId: "other" });
     expect(f.records.get("claude")).toEqual({ session: "s", through: "m1", ids: [] });
-    // the stale steer is not this turn's: Stop does not withdraw it
     f.handoffs.stoppedByPerson("t");
     f.event(output);
     f.event({ type: "turn.completed", ok: false, stopReason: "interrupted" });
@@ -450,7 +441,6 @@ describe("isContextMessage", () => {
     expect(isContextMessage({ kind: "widget", text: "**Pull requests** · 3 open\n[Merge the two ready]" })).toBe(true);
     expect(isContextMessage({ kind: "widget", text: "" })).toBe(false);
     expect(isContextMessage({ kind: "widget" })).toBe(false);
-    // The other cards stay out, as before.
     expect(isContextMessage({ kind: "options", text: "Pick one" })).toBe(false);
   });
 });

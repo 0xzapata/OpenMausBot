@@ -1,10 +1,7 @@
-// A failed turn is stored as an activity row named "error: <what went
-// wrong>", in a 1:1 chat and a room alike. The server writes every such row
-// through failedTurnTool and the clients read it back through
-// failedTurnCause, so the marker and the one length limit live here only.
-// A place that could not be used also stores its state (place-view.ts), so
-// the app words it again in the reader's language; the words stay English
-// and whole for the phones, which read only them.
+// A failed turn is stored as an activity row named "error: <what went wrong>",
+// in a 1:1 chat and a room alike. A place that could not be used also stores
+// its state, so the app words it again in the reader's language; the words
+// stay English and whole for the phones, which read only them.
 import type { PlaceRow } from "./place-view.ts";
 
 const MARKER = "error:";

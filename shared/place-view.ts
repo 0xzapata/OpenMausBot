@@ -1,16 +1,8 @@
-// Where a bot works, said once: one plain line and at most one next action
-// for every state a place can be in, from the facts the server and the app
-// already hold. The server words a failed turn's row from it (English, the
-// language phones read), and every control that shows or picks a place
-// (the Computer panel's cards and Simple grid, the composer chip, the failed
-// turn row, the bot's Access settings) renders the same state from it in the
-// person's language. Nothing else decides what a place is called or what to
-// do when it can't be used.
-//
-// The English below mirrors src/locales/en.json `place.view.*`,
-// `place.action.*` and `place.askAdmin`/`place.backOnAuto` exactly (a test
-// holds them together), the way shared/live-approval.ts mirrors its keys:
-// the server has no i18n.
+// Where a bot works, said once: one plain line and at most one next action for
+// every state a place can be in. The server words a failed turn's row from it
+// in English; the app renders the same state in the person's language. The
+// English mirrors src/locales/en.json `place.*` exactly (a test holds them
+// together): the server has no i18n.
 
 export type Place = "cloud" | "vm" | "local" | "browser";
 
@@ -96,11 +88,11 @@ export interface PlaceFacts {
   engine: {
     name: string;
     model?: string;
-    /** It can use computer tools (capabilities.computerMcp). */
+    /** It can use computer tools. */
     computer: boolean;
-    /** It can use the built-in browser (capabilities.browserMcp). */
+    /** It can use the built-in browser. */
     browser: boolean;
-    /** Not waiting on a sign-in (src/lib/failed-turn.ts engineSignedOut). */
+    /** Not waiting on a sign-in. */
     signedIn: boolean;
   };
   /** The bot's tool selection includes the computer. */
@@ -308,8 +300,6 @@ const ACTION_KEY: Record<PlaceActionId, PlaceKey> = {
   "open-computer-panel": "place.action.openComputerPanel",
 };
 
-/** The state and its params, from the facts. Pure: the panel, the chip, the
- * Access line and the server all ask this. */
 export function placeState(facts: PlaceFacts): { state: PlaceState; params: PlaceParams } {
   const bot = facts.bot;
   const model = facts.engine.model || facts.engine.name;
@@ -331,8 +321,7 @@ export function placeState(facts: PlaceFacts): { state: PlaceState; params: Plac
   if (facts.place === "vm") {
     return facts.engine.computer ? { state: "vm", params: { bot } } : { state: "vm-cannot", params: { bot, model } };
   }
-  // The cloud computer: on the person's own server (VPS) or on Boat, one
-  // rule for both (shared/cloud-computer.ts).
+  // On the person's own server (VPS) or on Boat, one rule for both.
   const vps = facts.backend === "vps";
   if (!facts.engine.computer) return { state: "cc-cannot", params: { bot, model } };
   if (!facts.toolsAllowComputer) return { state: "cc-tools-off", params: { bot } };
@@ -464,7 +453,6 @@ export function placeRowText(row: PlaceRow, server?: ServerKind): string {
   return `${view.line} ${words}`;
 }
 
-// ── Reading a failed start ──────────────────────────────────────────────
 
 const MONTH = "(January|February|March|April|May|June|July|August|September|October|November|December)";
 const HOURS_USED = new RegExp(`Your (.+?) plan's (\\d+) cloud computer hours for \\w+ are used up\\. They reset on 1 ${MONTH}`);
@@ -481,11 +469,9 @@ const NO_START_WORDS = [
 ];
 const CLEARING_WORDS = [/is being deleted/i, /previous cloud computer deletion/i, /deletion was not confirmed/i, /deletion is still being reconciled/i];
 
-/** Read a failed cloud computer start as a state. The Admin's own codes come
- * first; until every refusal has one, its English is read (the words below
- * are exactly the Admin's, server/cloud-services.ts). `included`: the plan's
- * computers, not the person's own Boat key, whose provider's words are shown
- * as they are. */
+/** The Admin's own codes come first; until every refusal has one, its English
+ * is read. `included`: the plan's computers, not the person's own Boat key,
+ * whose provider's words are shown as they are. */
 export function cloudRefusal(failure: { message: string; code?: string; status?: number }, included: boolean): { state: PlaceState; params: PlaceParams } {
   const message = failure.message.trim();
   const code = failure.code;

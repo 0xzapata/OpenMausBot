@@ -45,10 +45,6 @@ export function AddProviderAccount({ antigravityInstanceId }: { antigravityInsta
   </form>;
 }
 
-/** Settings → Engines → Codex once ChatGPT is connected: whose account the
- * bots run on, a status check, and a sign-out so a different person can
- * connect their own account from the browser. Mirrors the Claude account
- * panel; sign-in itself stays on the setup card. */
 export function CodexAccountSettings({ instance }: { instance: InstanceInfo }) {
   const { state, dispatch, refreshInstances } = useStore();
   const [busy, setBusy] = useState<"check" | "signOut" | null>(null);
@@ -76,8 +72,7 @@ export function CodexAccountSettings({ instance }: { instance: InstanceInfo }) {
     setError(null);
     try {
       const { instances } = await api(`/api/instances/${encodeURIComponent(instance.instanceId)}/auth/sign-out`, { method: "POST" });
-      // Use the confirmed result: a second catalog request could fail and
-      // otherwise leave the signed-out account displayed as connected.
+      // Use the confirmed result: a second request could fail and leave a signed-out account showing connected.
       dispatch({ type: "instances", instances });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

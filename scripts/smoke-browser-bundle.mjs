@@ -212,9 +212,9 @@ async function failureDiagnostics() {
     if (!daemonAlive) continue;
     try {
       // Failure evidence, not a fallback or prewarm: the MCP test still fails.
-      // Upstream Windows issue #1308/#1407 can leave MCP waiting on inherited
-      // pipe handles after navigation actually succeeded. A read-only command
-      // to the exact existing fixture session distinguishes those two cases.
+      // On Windows vercel-labs/agent-browser#1308 and vercel-labs/agent-browser#1407
+      // can leave MCP waiting on inherited pipe handles after navigation
+      // succeeded; a read-only command to this fixture session tells them apart.
       const response = JSON.parse(await run(integration.command, ["--json", "--no-webmcp", "get", "url"], { ...env, ...integration.env }, 8_000));
       console.error(`[browser-smoke] existing-session URL diagnostic ${JSON.stringify({ session, success: response.success, url: response.data?.url, error: response.error }).slice(0, 2_000)}`);
     } catch (error) {
@@ -311,9 +311,8 @@ try {
   await alpha.tool("agent_browser_fill", { selector: "#message", text: "Bundled browser works" });
   await alpha.tool("agent_browser_click", { selector: "#submit" });
   assert.equal((await alpha.tool("agent_browser_get_text", { selector: "#result" })).data.text, "Bundled browser works");
-  // The harness reads, sizes and pictures a bot's browser over the engine's
-  // own loopback relay (server/browser-relay.ts): page health, step
-  // evidence, preview frames and login typing all rely on this contract.
+  // The harness reads, sizes and pictures a bot's browser over the engine's own
+  // loopback relay: page health, step evidence, preview frames and login typing.
   phase = "relay contract";
   const { RelayPorts, relay } = await import("../server/browser-relay.ts");
   const relayTarget = { session: alpha.integration.env.AGENT_BROWSER_SESSION, binaryPath: alpha.integration.command, env: { ...env, ...alpha.integration.env } };

@@ -102,8 +102,7 @@ const routineToolChangesSchema = routineToolDefinitionSchema
   "Choose at least one routine field to update",
 );
 
-/** Resolved and authorized by the harness route (existence + same section)
- * before it reaches this service; re-authorized again at confirm time. */
+/** Authorized by the harness route (existence + same section) before it gets here, and again at confirm time. */
 const targetBotSchema = z.object({
   botId: z.string().min(1).max(128),
   name: z.string().min(1).max(80),
@@ -295,7 +294,6 @@ export interface RoutineRequestMessage {
   card?: RoutineRequestOptionCard;
 }
 
-/** Kept narrow so the domain can be tested without constructing the full app store. */
 export interface RoutineRequestStore {
   messagesFor(threadId: string): RoutineRequestMessage[];
   appendMessage(
@@ -319,22 +317,16 @@ export interface RoutineRequestServiceOptions {
   routines: RoutineManager;
   now?: () => number;
   timeZone?: () => string;
-  /** Whether a submitted change applies without a person, and why
-   * (server/direct-apply.ts). Server-owned, never request input. */
+  /** Server-owned, never request input. */
   autoApply?: DirectApplyCheck;
-  /** Harness-owned readiness check for proposals that would execute in cloud. */
   cloudReady?: (botId: string) => Promise<{ ready: boolean; reason?: string }>;
-  /** Revalidates conversation ownership and capacity synchronously, directly
-   * before the card append. This closes races across an async cloud probe. */
+  /** Revalidates ownership and capacity synchronously right before the card append, closing races across the cloud probe. */
   canPersist?: (
     botId: string,
     threadId: string,
-    /** False for a change that applies directly: it opens no card. */
     opensCard: boolean,
   ) => { ok: true } | { ok: false; status: number; error: string };
-  /** Re-authorizes a cross-bot target (the card can sit open while the target
-   * bot is deleted or moved to another section). Returns the sentence to
-   * refuse with, or null to allow. Checked at propose AND confirm time. */
+  /** Re-authorizes a cross-bot target at propose and confirm time: the card can outlive the target's section. */
   validateTarget?: (proposerBotId: string, target: { botId: string; name: string }) => string | null;
 }
 
@@ -343,10 +335,8 @@ export interface ProposeRoutineRequestArgs {
   threadId: string;
   /** Untrusted model output; normalized by routineProposalSchema in propose(). */
   proposal: unknown;
-  /** Room cards retain the member attribution used by every other bot message. */
   from?: { botId: string; name: string; color: string };
-  /** Exact caller/turn lease checked synchronously after any readiness await
-   * and immediately before the durable card append. */
+  /** Caller/turn lease, checked synchronously right before the durable card append. */
   canCommit?: () => boolean;
 }
 
@@ -354,9 +344,7 @@ export interface RoutineProposalResult {
   requestId: string;
   messageId: string;
   title: string;
-  /** Short response returned to the proposing agent. */
   summary: string;
-  /** Exact approval text persisted in the card. */
   detail: string;
   nextRunAt: number | null;
   timeZone: string;
@@ -393,16 +381,12 @@ export type UndoRoutineRequestResult =
       state: "undone";
       action: RoutineRequestOperation["action"];
       routineId: string;
-      /** A deleted routine comes back under a new id. */
       restoredId?: string;
       ownersBefore?: boolean;
     };
 
 export class RoutineRequestError extends Error {
   readonly status: number;
-  /** True when no retry of this card can ever succeed — the routine moved
-   * under the proposal — so the card must settle as expired rather than
-   * staying actionable. */
   readonly terminal: boolean;
 
   constructor(message: string, status = 400, options?: { terminal?: boolean }) {
@@ -417,8 +401,7 @@ function text(value: string, field: string, max: number): string {
   const trimmed = value.trim();
   if (!trimmed) throw new RoutineRequestError(`${field} is required`);
   if (trimmed.length > max) throw new RoutineRequestError(`${field} must be ${max.toLocaleString("en-US")} characters or fewer`);
-  // This payload is hidden under the visible card fields, so the store's
-  // shallow card redaction cannot reach it. Scrub before it is persisted.
+  // Hidden under the visible card fields, where the store's shallow card redaction cannot reach.
   const redacted = redactSecretsInText(trimmed);
   if (redacted.length > max) {
     throw new RoutineRequestError(
@@ -566,8 +549,7 @@ function normalizeSchedule(schedule: RoutineToolScheduleInput, now: number): Rou
   }
   if (schedule.weekdays.length === 0) throw new RoutineRequestError("Choose at least one weekday");
   const weekdays = schedule.weekdays.map((day) => {
-    // SAFETY: every key in WEEKDAY_NUMBER is lower-case; membership is
-    // checked immediately below before the numeric value is retained.
+    // SAFETY: WEEKDAY_NUMBER keys are lower-case, and membership is checked just below.
     const number = WEEKDAY_NUMBER[day.toLowerCase() as keyof typeof WEEKDAY_NUMBER];
     if (number === undefined) throw new RoutineRequestError(`Unsupported weekday: ${day}`);
     return number;
@@ -652,9 +634,7 @@ function normalizedOperation(
     return operation;
   }
   const id = routineId(validated.routineId);
-  // A targeted action manages the named bot's routine: ownership and every
-  // run's permissions stay with that bot, exactly as a routine created
-  // through the for_bot_id path keeps them.
+  // Ownership and every run's permissions stay with the named bot.
   const ownerBotId = validated.forBot?.botId ?? botId;
   const current = ownedRoutine(manager, id, ownerBotId);
   if (!current) throw new RoutineRequestError("That routine does not exist", 404);
@@ -797,12 +777,7 @@ export function scheduleText(schedule: RoutineRequestSchedule, timeZone: string)
   return `${days} at ${schedule.time} (${timeZone})`;
 }
 
-/** One plain sentence describing how often a routine will actually run, so
- * the approval card states the consequence rather than just the schedule. */
 export function consequenceLine(schedule: RoutineRequestSchedule, continuity = false): string {
-  // A continuity routine still gets a fresh session per run; what carries
-  // over is the previous run's report, so say that rather than contradict
-  // the Continuity line above it.
   const session = continuity ? "each run starts a fresh session with the previous run's report" : "each run starts a fresh session";
   if (schedule.type === "cron") return `Will run at matching calendar times in ${schedule.timeZone}; ${session}.`;
   if (schedule.type === "once") return "Will run once; that run starts a fresh session.";
@@ -851,7 +826,6 @@ function effectiveDefinition(operation: RoutineRequestOperation, manager: Routin
   };
   if (timeoutMinutes === null) delete merged.timeoutMinutes;
   else if (timeoutMinutes !== undefined) merged.timeoutMinutes = timeoutMinutes;
-  // Becoming a one-time routine drops it, as the routine itself does.
   if (merged.schedule.type === "once") delete merged.runOnStartup;
   return merged;
 }
@@ -904,9 +878,7 @@ function cardCopy(
             ? "None — this routine will be deleted"
             : "None";
   const status = remainsPaused ? " · Remains paused" : "";
-  // Existing routines may predate nested-card redaction. The approval still
-  // shows every instruction, but credential-shaped values never travel back
-  // through the bot's MCP response or into the transcript.
+  // Credential-shaped values never travel back through the bot's MCP response or into the transcript.
   const visibleInstructions = redactSecretsInText(definition.instructions);
   const runLimit = definition.timeoutMinutes === undefined
     ? "no run limit"
@@ -930,8 +902,6 @@ function cardCopy(
       ...(definition.runOnStartup || (operation.action === "update" && operation.changes.runOnStartup !== undefined)
         ? [`On startup: ${definition.runOnStartup ? "Also runs once each time OpenMausBot starts" : "Runs only on its schedule"}`]
         : []),
-      // Last before the instructions: the one sentence that says what
-      // confirming actually does, in the reader's terms.
       ...(operation.action === "create" || operation.action === "update"
         ? [consequenceLine(definition.schedule, Boolean(definition.continuity))]
         : []),
@@ -990,9 +960,7 @@ function canonicalValue(value: JsonValue): JsonValue {
   return sorted;
 }
 
-/** Bind exact-once recovery to the immutable card owner as well as its
- * operation. Recursive key sorting keeps old receipts valid if a future
- * schema refactor changes object construction order. */
+/** Bound to the card owner as well as the operation; sorted keys keep old receipts valid across refactors. */
 export function routineRequestFingerprint(
   payload: Pick<RoutineRequestCardData, "version" | "requestId" | "botId" | "threadId" | "operation">,
   messageId: string,
@@ -1052,8 +1020,6 @@ function revalidateOperation(operation: RoutineRequestOperation, manager: Routin
         || (routine.overlap ?? "skip") !== (definition.overlap ?? "skip")
         || Boolean(routine.runOnStartup) !== Boolean(definition.runOnStartup)
         || (routine.attachments?.length ?? 0) > 0) return false;
-      // An omitted start means "every N minutes", not a new phase each time
-      // the model retries. Explicit starts and all other constraints stay exact.
       const candidate = schedule.type === "interval" && routine.schedule.type === "interval"
         && definition.schedule.type === "interval" && definition.schedule.anchorAt === undefined
         ? { ...schedule, anchorAt: routine.schedule.anchorAt }
@@ -1061,8 +1027,7 @@ function revalidateOperation(operation: RoutineRequestOperation, manager: Routin
       return isDeepStrictEqual(candidate, routine.schedule);
     });
     if (duplicate) {
-      // The tool cannot choose a result destination. Return the existing ID,
-      // without moving its reports or treating a renamed request as new work.
+      // The tool cannot choose a result destination.
       throw new RoutineRequestError(
         `An enabled routine with the same instructions and execution settings already exists (${duplicate.id}). Use list_routines to review it, then update or run that routine instead.`,
         409,
@@ -1133,9 +1098,6 @@ function revalidateOperation(operation: RoutineRequestOperation, manager: Routin
   }
 }
 
-/** The routine as it stands, kept for Undo. None when it carries what a
- * card cannot hold exactly: attachments, or credential-shaped text the
- * transcript scrubs. */
 function routineSnapshot(routine: Routine): RoutineRequestSnapshot | undefined {
   if (routine.attachments?.length) return undefined;
   if (redactSecretsInText(routine.name) !== routine.name || redactSecretsInText(routine.prompt) !== routine.prompt) return undefined;
@@ -1157,8 +1119,6 @@ function routineSnapshot(routine: Routine): RoutineRequestSnapshot | undefined {
   return storedSnapshotSchema.safeParse(snapshot).success ? snapshot : undefined;
 }
 
-/** Puts an updated routine's definition back exactly: an interval's
- * restrictions are cleared explicitly, since an omitted one is kept. */
 function restorePatch(before: RoutineRequestSnapshot, now: number): Partial<RoutineInput> {
   const schedule = asSchedule(before.schedule, now);
   return {
@@ -1208,7 +1168,6 @@ export class RoutineRequestService {
 
   private async prepare(args: ProposeRoutineRequestArgs, submitted = false): Promise<RoutineProposalResult & {
     result?: Extract<ResolveRoutineRequestResult, { state: "applied" }>;
-    /** Why it applied without a person. */
     appliedBy?: DirectApply;
   }> {
     const botId = text(args.botId, "botId", 128);
@@ -1224,9 +1183,7 @@ export class RoutineRequestService {
       if (refusal) throw new RoutineRequestError(refusal, 403);
     }
     await this.requireCloudReadiness(operation, botId);
-    // The readiness probe is asynchronous. Another request can edit or
-    // delete the routine while it is in flight, so re-check the captured
-    // revision before rendering and persisting the confirmation snapshot.
+    // The probe is async: re-check the captured revision before persisting the snapshot.
     const cardAt = this.now();
     revalidateOperation(operation, this.routines, botId, cardAt);
     const requestId = newId();
@@ -1254,16 +1211,10 @@ export class RoutineRequestService {
       },
     };
     if (args.from) messageInput.from = args.from;
-    // Resolve the current source-thread grant after the asynchronous probe.
     const owner = operation.forBot?.botId ?? botId;
     const grant = submitted ? this.autoApply?.(botId, threadId, owner) ?? null : null;
-    // A bot applying its own routines keeps at most SELF_ROUTINE_CAP of them
-    // on; a create or resume past that shows the card, as before. Full
-    // access has no cap.
     const automatic = grant === "full-access" || (grant === "self" && !this.overSelfCap(operation, owner));
-    // This check and append are deliberately adjacent and synchronous. JS
-    // cannot interleave another completed proposal between the capacity /
-    // ownership decision and the durable transcript write.
+    // Check and append stay adjacent and synchronous, so no other proposal can interleave.
     const persistence = this.canPersist?.(botId, threadId, !automatic);
     if (persistence && !persistence.ok) {
       throw new RoutineRequestError(persistence.error, persistence.status);
@@ -1271,7 +1222,6 @@ export class RoutineRequestService {
     if (args.canCommit && !args.canCommit()) {
       throw new RoutineRequestError("The requesting turn ended before this proposal could be saved", 401);
     }
-    // What Undo puts back, taken before the change.
     const before = automatic && (operation.action === "update" || operation.action === "delete")
       ? this.snapshotOf(operation.routineId, owner)
       : undefined;
@@ -1290,8 +1240,6 @@ export class RoutineRequestService {
       timeZone,
     };
     if (!automatic) return proposal;
-    // Persist a hidden receipt first, then use the existing validated,
-    // idempotent commit path without exposing a pending confirmation.
     let result: ResolveRoutineRequestResult;
     try {
       result = this.resolve({ botId, threadId, requestId, behavior: "allow" });
@@ -1302,8 +1250,6 @@ export class RoutineRequestService {
       this.recordAutoApplied(threadId, message.id, definition, before);
       return { ...proposal, result, ...(grant ? { appliedBy: grant } : {}) };
     }
-    // The scheduler commit can succeed even if settling its transcript
-    // fails. Report that exact result; a retry only finishes the receipt.
     const receipt = this.routines.routineRequestReceipt(requestId);
     if (receipt && receipt.botId === botId && receipt.threadId === threadId && receipt.messageId === message.id &&
       receipt.fingerprintVersion === ROUTINE_REQUEST_FINGERPRINT_VERSION && receipt.fingerprint === routineRequestFingerprint(payload, message.id)) {
@@ -1315,7 +1261,6 @@ export class RoutineRequestService {
     throw new RoutineRequestError(result.state === "invalid" ? result.error : "The routine change could not be applied", result.state === "invalid" ? result.status : 409);
   }
 
-  /** Whether one more enabled routine would take the bot past the cap. */
   private overSelfCap(operation: RoutineRequestOperation, owner: string): boolean {
     if (operation.action !== "create" && operation.action !== "resume") return false;
     const enabled = this.routines.listRoutines().filter((routine) => routine.botId === owner && routine.enabled).length;
@@ -1327,9 +1272,6 @@ export class RoutineRequestService {
     return routine ? routineSnapshot(routine) : undefined;
   }
 
-  /** Marks a card whose change applied without a person, with what its
-   * one-line receipt and Undo need. A failure here leaves the change
-   * applied and the card as it was, only without Undo. */
   private recordAutoApplied(
     threadId: string,
     messageId: string,
@@ -1357,13 +1299,9 @@ export class RoutineRequestService {
         card: { ...card, autoApplied: true, routineRequest: { ...payload, undo } },
       });
     } catch {
-      // The routine change itself is durable; only its Undo is lost.
     }
   }
 
-  /** Puts back a change that applied without a person. Authorized by the
-   * caller exactly like answering the card; refuses, applying nothing, once
-   * the routine changed since. A second Undo reports already undone. */
   undo(args: { botId: string; threadId: string; requestId: string }): UndoRoutineRequestResult {
     const message = this.store
       .messagesFor(args.threadId)
@@ -1470,11 +1408,7 @@ export class RoutineRequestService {
     );
   }
 
-  /**
-   * Claims a routine card even after it was settled. That distinction is
-   * important: duplicate clicks must never fall through to a provider that
-   * did not create the request id.
-   */
+  /** Claims a card even after it settled: a duplicate click must never fall through to a provider that did not create the request id. */
   resolve(args: {
     botId: string;
     threadId: string;
@@ -1500,9 +1434,7 @@ export class RoutineRequestService {
       if (card.answered) return { claimed: true, state: "already_settled", behavior: card.answered };
       const recovered = this.settleCommittedReceipt(args, message.id, card);
       if (recovered) return recovered;
-      // Cancelling is always safe and must remain possible even if an older
-      // persisted payload no longer passes today's schema. Otherwise that
-      // durable card would own the composer forever with no escape hatch.
+      // Deny stays possible when an old payload fails today's schema; otherwise the card owns the composer forever.
       if (args.behavior === "deny") {
         this.store.patchMessage(args.threadId, message.id, { card: { ...card, answered: "deny", held: undefined } });
         return { claimed: true, state: "denied" };
@@ -1560,11 +1492,6 @@ export class RoutineRequestService {
           receipt.appliedAt,
         );
       }
-      // An expired card is settled terminal state, not a decision waiting on
-      // a slower click: the proposal it carried can never be confirmed as
-      // prepared, even when the routine moves back under it. The committed
-      // receipt above still recovers a write that already happened; nothing
-      // past this point can.
       if (card.expired) {
         return {
           claimed: true,
@@ -1587,9 +1514,6 @@ export class RoutineRequestService {
     } catch (error) {
       const status = error instanceof RoutineRequestError ? error.status : 400;
       const detail = error instanceof Error ? error.message : String(error);
-      // A terminal failure (the routine moved under the proposal) can never
-      // be confirmed as prepared: settle the card as expired with its
-      // options removed so it stops looking actionable.
       const expired = error instanceof RoutineRequestError && error.terminal;
       this.store.patchMessage(args.threadId, message.id, {
         card: { ...card, ...(expired ? { expired: true, options: [] } : {}), held: redactSecretsInText(detail).slice(0, 500) },
@@ -1667,9 +1591,6 @@ export class RoutineRequestService {
     try {
       this.routines.forgetRoutineRequestReceipt(request);
     } catch {
-      // The transcript is already durably settled. Retaining a redundant
-      // receipt after a cleanup write failure is safe and a later duplicate
-      // response will retry this cleanup.
     }
   }
 

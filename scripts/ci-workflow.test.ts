@@ -51,8 +51,8 @@ describe("CI concurrency", () => {
   });
 
   it("never lets a merged PR's stop run join main's group", () => {
-    // A merged PR's closed event reports the base branch as github.ref, so any
-    // ref-named group here cancelled main's CI on every merge (Oct 3 2026).
+    // A merged PR's closed event reports the base branch as github.ref, so a
+    // ref-named group would cancel main's CI on every merge.
     const stop = parse(readFileSync(new URL("../.github/workflows/ci-stop-closed.yml", import.meta.url), "utf8"));
     expect(stop.concurrency.group).not.toContain("github.ref");
     expect(stop.concurrency.group).toContain("github.event.pull_request.number");

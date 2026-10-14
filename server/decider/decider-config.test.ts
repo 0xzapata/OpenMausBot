@@ -43,7 +43,6 @@ describe("decider config", () => {
     try {
       const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ answers: { answer: { type: "noul", noul: 0.9 } } })));
       const decider = createDecider({ config: loadConfig, fetch: fetchImpl });
-      // no own key: the relay, with the included token
       expect(describeDecider(loadConfig())).toMatchObject({ configured: true, included: true, enabled: true });
       await decider.testKey();
       // the desktop hands the saved key over as env: now it is the one in use
@@ -129,7 +128,6 @@ describe("decider config", () => {
     expect(parseConfigPatch({ decider: { baseUrl: "http://127.0.0.1:9000", enabled: true } }).decider).toEqual({ baseUrl: "http://127.0.0.1:9000", enabled: true });
     expect(() => parseConfigPatch({ decider: { baseUrl: "file:///etc/passwd" } })).toThrow();
     expect(() => parseConfigPatch({ decider: { provider: "someone-else" } })).toThrow();
-    // an older file without the section still loads
     expect(parseStoredConfig({ tts: { voice: "narrator" } }).decider).toBeUndefined();
   });
 });
