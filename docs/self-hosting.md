@@ -842,6 +842,23 @@ curl -H "Authorization: Bearer $TOKEN" -o usage.csv \
 Dates are inclusive, UTC, at most a year apart; without them you get the
 current month to date.
 
+### When an engine runs out
+
+When a person's turn ends on its engine's quota or usage limit (a
+subscription's weekly limit, an API key out of credit), the conversation gets
+one card offering up to three other engines that can take over, and "Not
+now". An engine is offered only if it can run a turn now (installed, signed
+in, allowed by your organisation), has the tools and the working folder the
+current one has, and can run the conversation's approval level as it stands.
+Nothing changes until the person picks one: that conversation alone moves to
+the engine's default model, the bot's own model and its other conversations
+stay where they are, and their message is sent again. Turns nobody typed
+(routines, webhooks, a teammate's work) get no card.
+
+The offer is on by default. To switch it off, start the server with
+`OMB_QUOTA_SWITCH=0`; any other value, or none, leaves it on. It has no
+setting in `config.json` yet.
+
 ### The decision log
 
 Every approval decision — a rule that let a tool call through, a card that

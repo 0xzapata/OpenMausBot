@@ -566,6 +566,17 @@ export interface OptionCardData {
   skillRequest?: SkillRequestCardData;
   /** A provider's structured question set. */
   questionRequest?: QuestionRequestCardData;
+  /** The options are the whole answer: clients offer no free-text reply. */
+  fixedOptions?: boolean;
+  quotaSwitch?: QuotaSwitchCardData;
+}
+
+/** Kept on the card so the offer survives a restart. `engines` follow the card's options; `messageId` is the
+ * message to resend, `rootId` the failed request's job-runtime root. */
+export interface QuotaSwitchCardData {
+  engines: Array<{ instanceId: string; name: string }>;
+  messageId?: string;
+  rootId?: string;
 }
 
 /** Which app holds the microphone of a Live call: the desktop app (its own

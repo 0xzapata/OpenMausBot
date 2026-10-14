@@ -211,6 +211,7 @@ import {
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
+import { createQuotaSwitchHost } from "./host/quota-switch.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
   addDisabledMcpServer,
@@ -5675,10 +5676,6 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 }
 
 const lastReply = new Map<string, string>();
-function turnFailureCause(event: { threadId: string; turnId?: string; ok: boolean; stopReason?: string | null }): string | undefined {
-  if (event.ok) return undefined;
-  return turnStops.read(event.threadId, event.turnId)?.error ?? (event.stopReason?.trim() || undefined);
-}
 const stoppedTurns = new Map<string, string | undefined>();
 const sessionModelByThread = new Map<string, string>();
 const nativeReviewNoticed = new Set<string>();
@@ -6177,7 +6174,7 @@ bus.subscribe((event: RuntimeEvent) => {
     const tools = messages
       .filter((message) => message.kind === "activity" && message.turnId === event.turnId && message.tool?.name)
       .map((message) => message.tool!.name);
-    const line = turnOutcomeLine({ ok: event.ok, reply: reply?.text, stopReason: turnFailureCause(event), tools });
+    const line = turnOutcomeLine({ ok: event.ok, reply: reply?.text, stopReason: turnStops.failureCause(event), tools });
     if (!line) return;
     // A room fewer people can see than this bot leaves no line: session_search would hand it to anyone who sees the bot.
     const room = store.groupByThread(event.threadId);
@@ -7582,8 +7579,9 @@ bus.subscribe((event: RuntimeEvent) => {
       const capContinues = !event.ok && turnStops.read(event.threadId, completedTurnId)?.handoffPath !== undefined;
       if (!event.ok && !stopped && !lazyClaimAlreadyReported && !computerParked && !capContinues && !routines?.runForThread(event.threadId)) {
         const broken = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
-        if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: turnFailureCause(event) ?? "the run ended without a result" });
-      }
+        if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: turnStops.failureCause(event) ?? "the run ended without a result" });
+        if (bot) void quotaSwitch.turnFailed(bot, event, internal);
+      } else if (bot && event.ok) quotaSwitch.turnSucceeded(bot, event.threadId);
       const question = bot && event.ok && !stopped && completedTurnId && chiefEscalationsEnabled(cfg) ? needsInputQuestion(store.activePath(event.threadId)
         .findLast((message) => message.role === "bot" && message.kind === "text" && message.turnId === completedTurnId)?.text ?? "") : undefined;
       if (bot && question !== undefined) reportEscalation({ kind: "needs-input", bot, threadId: event.threadId, gate: NEEDS_INPUT_GATE, reason: question, alreadyNotified: false });
@@ -10759,6 +10757,8 @@ const approvalBus: ApprovalBus = { store, broadcast, notify, autoApply: fullAcce
   onPeerApprovalPending: (from, target, action, sourceThreadId, message) => void reportEscalation({
     kind: "peer-approval", bot: from, threadId: sourceThreadId, gate: peerApprovalGate(action, target.name), reason: message, alreadyNotified: true }) };
 
+const { quotaSwitch, harnessCardOutcome } = createQuotaSwitchHost({ store, coordinator, registry, turnStops, approvalBus, hostedModels, providerConfigs, policyModelRefusal, checkedTaskModelSwitch, threadBusy, directRequestOwners, startOrQueueDirectMessage });
+
 // Peer approvals live only in memory: settle every peer card still open on disk, or it locks the composer forever.
 {
   const stale = dismissStalePeerCards(approvalBus);
@@ -13786,7 +13786,7 @@ const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));
 // `routines` is assigned at boot, so it is read per request.
 ROUTES.push(createBotMessageRoutes({
-  store, registry, handoffs, approvalBus, phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
+  store, registry, handoffs, phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
   routines: () => routines,
   desktopManaged: DESKTOP_MANAGED, cloudHome: Boolean(CLOUD_HOME), DirectSendRefused,
   acceptDirectSend, directSendRefusal, startTurn, usageTriggerFor, messageSender, cloudGuestSendRefusal, cloudThreadRefusal,
@@ -13795,7 +13795,7 @@ ROUTES.push(createBotMessageRoutes({
   turnSelection, policyModelRefusal, clearUnattended, drainQueuedSends, answeringCardAs, resolveAndSendTrust, resolveAndSendTeamSetup,
   resolveAndSendRoutine, resolveAndSendProfile, resolveAndSendModel, resolveSkillRequest, sendSkillResolution, answerRequest,
   deliverLateQuestionAnswer, interruptDirectThread, cancelDirectTurnDispatch, revokeInternalCapabilitiesForThread,
-  cancelGroupTurnOperations, closeOpenApprovals,
+  cancelGroupTurnOperations, closeOpenApprovals, harnessCardOutcome,
 }));
 // `let` slots are read per request.
 ROUTES.push(createThreadRoutes({
