@@ -1,5 +1,3 @@
-// Real server, injected MCP proxy, durable confirmation and scheduler records.
-// The scripted provider chooses known expressions; this is not a model-quality test.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -46,7 +44,6 @@ it("takes cron through the real routine tools, applying the bot's own routine at
       evidence.push({ turn });
       return (await messages()).findLast(message => message.card?.routineRequest)?.card;
     };
-    // The bot's own routine change applied at its level, as a receipt line.
     const applied = (card: any) => {
       expect(card).toMatchObject({ answered: "allow", autoApplied: true, options: [] });
       return { resultId: card.routineRequest.resultId as string };

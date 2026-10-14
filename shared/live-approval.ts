@@ -1,7 +1,6 @@
 // What the harness tells GPT-Live about the bot's cards during a Live call.
-// English only: the voice speaks the user's language on its own, and the
-// server has no i18n. The strings mirror src/locales/en.json approval.voice.*
-// and approval.tool.* so the call and the card say the same thing.
+// English only (the voice speaks the user's language on its own), mirroring
+// src/locales/en.json approval.voice.* and approval.tool.*.
 import type { OptionCardData } from "./wire.ts";
 
 export type LiveCardKind = "approval" | "review" | "question";
@@ -53,7 +52,6 @@ const TOOL_PHRASES: Record<string, string> = {
   tool: "use a tool",
 };
 
-/** Same rule as toolLabel in src/components/ApprovalCard.tsx, in English. */
 export function toolPhrase(tool?: string): string {
   if (!tool) return "take an action";
   return TOOL_PHRASES[tool] ?? tool.replace(/^mcp__[^_]+__/, "").replace(/_/g, " ");
@@ -87,10 +85,8 @@ function brief(text: string, limit = DETAIL_LIMIT): string {
   return flat.length <= limit ? flat : `${flat.slice(0, limit).replace(/\s+\S*$/, "")}…`;
 }
 
-// The voice IS the bot to the person on the call, so everything below is
-// either said as the bot ("I …") or addressed to the voice as "you". Never
-// name the bot in the third person: the voice then talks about itself as a
-// separate "backend" (seen in the first test calls).
+// The voice IS the bot to the person on the call: say everything as the bot
+// ("I …") or to the voice as "you", never naming the bot in the third person.
 
 export function spokenApprovalPrompt(card: OptionCardData): string {
   const detail = brief(card.subtitle);

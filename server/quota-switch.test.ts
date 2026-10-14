@@ -1,7 +1,3 @@
-// The quota-switch card's lifecycle on a real Store and a real job runtime
-// (so message, task and root writes take the genuine paths), with fake
-// engines and fakes for what only server/index.ts can do: the thread's gated
-// model switch, the request record and a person's send.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,7 +57,6 @@ describe("quota-switch card", () => {
   let deps: QuotaSwitchDeps;
   let quota: QuotaSwitch;
   let coordinator: Coordinator;
-  /** index.ts's directRequestOwners: each thread's request record. */
   let requests: Map<string, QuotaRequest>;
   /** What TurnStops holds for the turn that is failing. */
   let cause: string;
@@ -113,7 +108,6 @@ describe("quota-switch card", () => {
     bot = store.patchBot(store.createBot().id, { name: "Wren", modelSelection: defaultSelection() })!;
     engines = [engine("claude", "claudeAgent", "Claude"), engine("codex", "codex", "Codex"), engine("cursor", "cursorAgent", "Cursor")];
     resend = vi.fn<QuotaSwitchDeps["resend"]>(async () => undefined);
-    // index.ts answers with checkedTaskModelSwitch here.
     gate = vi.fn<QuotaSwitchDeps["gate"]>((_thread, selection) => switchRefusal ? { ok: false, error: switchRefusal } : { ok: true, selection });
     switchRefusal = undefined;
     enabled = true;
@@ -123,8 +117,7 @@ describe("quota-switch card", () => {
     teammateSays = undefined;
     parked = () => {};
     timers = [];
-    // The real job runtime, in memory. Its host is the least these scenarios
-    // need: no teammate's turn starts until a test says what it answers.
+    // No teammate's turn starts until a test says what it answers.
     coordinator = createCoordinator({
       dataDir: ":memory:", log: () => {},
       host: {
@@ -438,9 +431,7 @@ describe("quota-switch card", () => {
       expect(notices()).toContainEqual({
         name: "notice: could not switch to Codex — the bot is working — stop it before changing models", ok: false,
       });
-      // Not spent: a transient refusal must not cost the person the offer. The
-      // card goes out again as it stands, so a client that folded it on the
-      // press shows it open again.
+      // Not spent: a transient refusal must not cost the person the offer.
       expect(pending()?.id).toBe(card.id);
       expect(sent.map((message) => message.card?.answered)).toEqual([undefined]);
 

@@ -1,11 +1,4 @@
-// The person's own bubble, painted in the bot's color.
-//
-// Palette swatches are chosen as avatar fills, not as text backgrounds.
-// Several of them (yellow, orange, cyan, teal, coral) are too light for
-// white body text. This deepens the same hue until white clears WCAG AA,
-// then derives the tokens children already use (links, code, mentions,
-// quotes, the editor) so they stay readable on that fill. The fill is
-// opaque, so the skin behind it does not change the ratios.
+// Deepens the bot's hue until white body text clears WCAG AA on the opaque fill.
 
 import type { CSSProperties } from "react";
 import { contrastRatio, mixSrgb, toneForSurface } from "./color-contrast";
@@ -15,12 +8,10 @@ const WHITE = "#ffffff";
 const INK = "#101410";
 /** Body text. 15px is normal text, so the bar is 4.5:1, not the large-text 3:1. */
 export const BUBBLE_TEXT_MIN = 4.5;
-/** A border or focus ring. WCAG 1.4.11. */
+/** A border or focus ring: WCAG 1.4.11. */
 const UI_MIN = 3;
 
-/** How much of the mention's own color tints the chip behind white text. */
 export const MENTION_CHIP_MIX = 0.22;
-/** Selection darkens the fill so white text stays above the bar. */
 export const SELECTION_BLACK_MIX = 0.35;
 
 export type UserBubbleTone = {
@@ -44,7 +35,6 @@ export type UserBubbleTone = {
   successInk: string;
 };
 
-/** Least white mixed into `hue` that still clears `min` against `on`. Keeps the hue when it already passes. */
 function lightEnough(hue: string, on: string, min: number): string {
   if (contrastRatio(hue, on) >= min) return hue;
   let lo = 0;
@@ -61,7 +51,6 @@ function lightEnough(hue: string, on: string, min: number): string {
   return contrastRatio(best, on) >= min ? best : WHITE;
 }
 
-/** Quiet white-mix whose contrast against `background` is at least `min` and as close to it as possible. */
 function quietWhite(background: string, min: number): string {
   let lo = 0;
   let hi = 1;
@@ -87,18 +76,15 @@ export function userBubbleTone(color: MausColor): UserBubbleTone {
   const secondary = quietWhite(background, Math.min(6.2, Math.max(BUBBLE_TEXT_MIN, contrastRatio(WHITE, background) - 0.6)));
   let tertiary = quietWhite(background, BUBBLE_TEXT_MIN);
   if (contrastRatio(tertiary, background) > contrastRatio(secondary, background)) tertiary = secondary;
-  // A chip well, darker than the fill so it separates, still dark enough for white.
   let inset = mixSrgb("#000000", background, 0.2);
   if (contrastRatio(WHITE, inset) < BUBBLE_TEXT_MIN) inset = background;
   if (contrastRatio(secondary, inset) < BUBBLE_TEXT_MIN) inset = background;
   const panel = mixSrgb(inset, background, 0.45);
-  // Hover fills lift a little, but not so far that white text drops under AA.
   let raised = mixSrgb(WHITE, background, 0.1);
   if (contrastRatio(WHITE, raised) < BUBBLE_TEXT_MIN) raised = background;
   let raisedHover = mixSrgb(WHITE, background, 0.16);
   if (contrastRatio(WHITE, raisedHover) < BUBBLE_TEXT_MIN) raisedHover = raised;
   const hairline = lightEnough(mixSrgb(WHITE, background, 0.45), background, UI_MIN);
-  // Links and the send button. A light accent of this hue, with a dark label.
   let accent = lightEnough(palette, background, BUBBLE_TEXT_MIN);
   if (contrastRatio(accent, raised) < BUBBLE_TEXT_MIN) accent = lightEnough(accent, raised, BUBBLE_TEXT_MIN);
   if (contrastRatio(INK, accent) < BUBBLE_TEXT_MIN) accent = lightEnough(accent, INK, BUBBLE_TEXT_MIN);
@@ -126,7 +112,6 @@ export function userBubbleTone(color: MausColor): UserBubbleTone {
   };
 }
 
-/** Chip behind an @mention on a colored bubble: white text on a tint of the named bot. */
 export function mentionChipBackground(mention: string, inset: string): string {
   return mixSrgb(mention, inset, MENTION_CHIP_MIX);
 }
@@ -135,7 +120,6 @@ export function selectionBackground(background: string): string {
   return mixSrgb("#000000", background, SELECTION_BLACK_MIX);
 }
 
-/** Quote strip: inset at 70% over the fill, as `bg-inset/70` paints it. */
 export function quoteSurface(inset: string, background: string): string {
   return mixSrgb(inset, background, 0.7);
 }

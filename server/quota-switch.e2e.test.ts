@@ -1,9 +1,4 @@
-// The quota-switch card against the real server: a Claude engine whose
-// account is past its weekly limit (the fake CLI plays the frames Claude Code
-// 2.1.295 sent) and a second Claude engine that works. The person's turn
-// fails once, one card offers the working engine, and nothing moves until it
-// is answered. Every turn is a root of the job runtime, so the rows in
-// runtime.db say whether a request was ever started twice.
+// The fake CLI plays the frames Claude Code 2.1.295 sent past its weekly limit.
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,10 +16,6 @@ const FAKE_CLI = fileURLToPath(new URL("./testing/fake-claude-cli.ts", import.me
 const jsonLines = (path: string): any[] => existsSync(path)
   ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
 
-/** A server of its own, in a throwaway home, that knows the two engines
- * from its first start: the hermetic environment and arguments are the
- * verification launcher's (scripts/control-omb.ts), the config is this
- * suite's. */
 async function withQuotaFixture(
   options: { env?: Record<string, string> },
   check: (fixture: {
@@ -185,9 +176,7 @@ it("offers the working engine once, and on the person's answer switches this con
 it.each([
   { name: "Not now", behavior: "answer", message: "Not now", outcome: "answered" },
   { name: "typed words that name no offered engine", behavior: "answer", message: "use whichever is fastest", outcome: "answered" },
-  // Where local services may only decline a card (hosted workspaces, a Cloud
-  // home, OMB_LOOPBACK_TRUST=service), a bot's own shell can read this card
-  // and post a decline: the engine's label on it must choose nothing.
+  // Decline-only service trust (hosted, Cloud home, OMB_LOOPBACK_TRUST=service): a decline naming an engine chooses nothing.
   { name: "a decline that carries the offered engine's label", behavior: "deny", message: BACKUP, outcome: "rejected" },
   { name: "an allow that carries the offered engine's label", behavior: "allow", message: BACKUP, outcome: "rejected" },
 ])("changes nothing on $name", async ({ behavior, message, outcome }) => {
