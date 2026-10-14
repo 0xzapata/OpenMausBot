@@ -37,7 +37,6 @@ import {
 } from "lucide-react";
 import { api, useStore, formatTime, visibleMessages, currentTaskBot, botOpensTo, openBot, openThread, type Action, type AppState, type Bot, type BotProject, type Group, type InstanceInfo, type Message } from "@/state/store";
 import { approvalModeFor } from "../../shared/approval-mode";
-import { avatarCropRadius, botAvatarProfile } from "../../shared/bot-avatar";
 import { peerLine } from "@/lib/peer-message";
 import { liveActivityLabel } from "@/lib/live-activity";
 import { llmThreadTitlesEnabled } from "@/lib/feature-flags";
@@ -138,6 +137,9 @@ import { isClientCancellation } from "../../shared/client-cancel";
 import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { useAdvancedMode } from "@/lib/interface-mode";
+import { PinnedBotRoster } from "./PinnedCircleThreads";
+
+export { PinnedBotCircle, PinnedCircleThreadPanel } from "./PinnedCircleThreads";
 
 /** Coupled to electron/window-chrome.mjs: trafficLightPosition.y = 16 and 14px-tall buttons. */
 export const MAC_TRAFFIC_LIGHT_CENTER_Y = 23;
@@ -1234,66 +1236,6 @@ function useVisibleMessages(bot: Bot): Message[] {
   return useMemo(() => visibleMessages({ messages, activeLeafId }), [messages, activeLeafId]);
 }
 
-export const PinnedBotCircle = memo(function PinnedBotCircle({ bot, selected, mascotMotion, pendingQueued, dispatch, onMenu }: BotRowProps) {
-  const showThreads = useShowThreads();
-  const visible = useVisibleMessages(bot);
-  const activityTasks = sidebarBotActivityTasks(bot, pendingQueued);
-  const waiting = bot.activity === "waiting-on-you" || activityTasks.some((task) => task.activity === "waiting-on-you");
-  const working = !waiting && (Boolean(bot.busy) || activityTasks.some((task) => task.busy || task.activity === "working"));
-  const unread = bot.unread || activityTasks.some((task) => task.unread);
-  const radius = avatarCropRadius(botAvatarProfile(bot).avatarCrop);
-  return (
-    <button
-      type="button"
-      data-sidebar-bot-row={bot.id}
-      aria-current={selected ? "page" : undefined}
-      aria-label={`${bot.name}${waiting ? ` · ${t("sidebar.preview.waiting")}` : working ? ` · ${t("chat.activity.working")}` : ""}${unread ? ` · ${t("task.unread")}` : ""}`}
-      title={bot.name}
-      onClick={() => openBot(dispatch, bot, showThreads)}
-      onContextMenu={(event) => openBotContextMenu(onMenu, bot.id, event)}
-      className="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1 text-center outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
-    >
-      <span className="relative">
-        <span
-          className={cn(
-            "flex size-16 items-center justify-center overflow-hidden",
-            selected && "ring-2 ring-accent ring-offset-2 ring-offset-panel",
-          )}
-          style={{ borderRadius: radius }}
-        >
-          <BotAvatar
-            bot={bot}
-            state={stateForBot({ ...bot, messages: visible })}
-            size={64}
-            motion={mascotMotion?.kind ?? "none"}
-            motionKey={mascotMotion?.nonce ?? 0}
-            animated={working || Boolean(bot.unread) || (mascotMotion?.kind ?? "none") !== "none"}
-          />
-        </span>
-        {unread && (
-          <span className="absolute top-0.5 right-0.5 size-2.5 rounded-full border-2 border-panel bg-accent" aria-label={t("task.unreadMany")} />
-        )}
-        {working && (
-          <span
-            data-testid="working-dot"
-            className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-panel bg-success"
-          />
-        )}
-        {waiting && (
-          <span
-            data-testid="waiting-dot"
-            role="status"
-            aria-label={t("sidebar.preview.waiting")}
-            title={t("sidebar.preview.waiting")}
-            className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-panel bg-warning"
-          />
-        )}
-      </span>
-      <span className="w-full truncate text-center text-[11px] leading-4 text-ink">{bot.name}</span>
-    </button>
-  );
-});
-
 export function PinnedCircleThreadSection({
   bots,
   collapsed,
@@ -1318,35 +1260,6 @@ export function PinnedCircleThreadSection({
       />
       {!collapsed && bots.map((bot) => <BotListItem key={bot.id} {...row(bot)} />)}
     </div>
-  );
-}
-
-function PinnedBotRoster({
-  bots,
-  density,
-  circles,
-  row,
-}: {
-  bots: Bot[];
-  density: SidebarDensity;
-  circles: boolean;
-  row: (bot: Bot) => BotRowProps;
-}) {
-  if (circles && density !== "icons") {
-    return (
-      <div
-        data-sidebar-pinned-circles=""
-        className="grid gap-1 px-1 pb-1"
-        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))" }}
-      >
-        {bots.map((bot) => <PinnedBotCircle key={bot.id} {...row(bot)} />)}
-      </div>
-    );
-  }
-  return (
-    <>
-      {bots.map((bot) => <BotListItem key={bot.id} {...row(bot)} />)}
-    </>
   );
 }
 
@@ -2375,6 +2288,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             density={density}
             circles={pinnedCircles}
             row={botRow}
+            listItem={BotListItem}
           />
         </div>
       )}
@@ -2541,6 +2455,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
                         density={density}
                         circles={pinnedCircles}
                         row={botRow}
+                        listItem={BotListItem}
                       />
                     ) : sectionBotItems.map((bot) => <BotListItem key={bot.id} {...botRow(bot)} />)}
                     {!remoteClient && sectionName && layoutInteractive && (
