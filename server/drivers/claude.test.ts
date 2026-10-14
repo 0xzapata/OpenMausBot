@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingHttpHeaders } from "node:http";
 import { connect, createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -1586,6 +1586,15 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(await both).toMatchObject([{ state: "available" }, { state: "available" }]);
     expect(readFileSync(probes, "utf8").match(/^help /gm)).toHaveLength(1);
   });
+
+  it("keeps the last known sign-in when auth status times out, as it does behind an open Keychain prompt", async () => {
+    const release = join(scratch, "release-auth");
+    writeFileSync(release, "");
+    await create(undefined, { FAKE_CLAUDE_HOLD_AUTH: release });
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: true });
+    unlinkSync(release);
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: true });
+  }, 20_000);
 
   it("maps a CLI version onto the flags it accepts", () => {
     expect(parseClaudeCliVersion("2.1.232 (Claude Code)")).toEqual([2, 1, 232]);
