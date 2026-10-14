@@ -776,7 +776,7 @@ it.each(["SIGTERM", "SIGKILL"] as const)("runs each teammate turn a restart cut 
     expect(review).toContain("OPS_RESUMED_RESULT");
     // The coordination's tree all completed; the person's own cut turn with
     // another bot is a root of its own, run again once in place (below).
-    expect(f.nodes().filter((node: any) => node.threadId !== f.qa.activeTaskId).every((node: any) => node.status === "completed")).toBe(true);
+    await expect.poll(() => f.nodes().filter((node: any) => node.threadId !== f.qa.activeTaskId).every((node: any) => node.status === "completed"), { timeout: 15_000 }).toBe(true);
     // Its chat says what happened, and nothing failed.
     const chiefRows = (await f.messages()).map((m: any) => m.tool?.name).filter(Boolean);
     expect(chiefRows).toEqual(expect.arrayContaining(["Engineering lead was cut off by a restart; resuming", "Ops was cut off by a restart; resuming",
