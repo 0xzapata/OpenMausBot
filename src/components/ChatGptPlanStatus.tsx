@@ -6,10 +6,12 @@ import { CodexMark } from "./ProviderIcons";
 
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
 
-/** This marker dismisses a welcome message only; no sign-in data lives in the renderer. */
-export function ChatGptPlanStatus({ instanceId }: { instanceId: string }) {
+/** Security: this marker only dismisses a welcome message; no sign-in data lives in the renderer. Settings passes
+ * `welcome={false}`: its account rows stay mounted inside closed cards, where a modal would block the page unseen. */
+export function ChatGptPlanStatus({ instanceId, welcome = true }: { instanceId: string; welcome?: boolean }) {
   const key = `omb:chatgpt-plan-welcome:${instanceId}`;
   const [acknowledged, setAcknowledged] = useState(() => {
+    if (!welcome) return true;
     try { return localStorage.getItem(key) === "1"; } catch { return false; }
   });
   const dialog = useRef<HTMLDialogElement>(null);
@@ -19,7 +21,7 @@ export function ChatGptPlanStatus({ instanceId }: { instanceId: string }) {
   }, [acknowledged]);
 
   const dismiss = () => {
-    try { localStorage.setItem(key, "1"); } catch { /* Private browsing may block persistence. */ }
+    try { localStorage.setItem(key, "1"); } catch {}
     dialog.current?.close();
     setAcknowledged(true);
   };

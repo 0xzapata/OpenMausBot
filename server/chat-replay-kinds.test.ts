@@ -1,8 +1,4 @@
-// Chat-completions bots take their history from SendTurnInput.transcript, so
-// the inline replay buildTurnContext adds for a "fresh" engine must not also
-// ride the turn text. A chat bot never holds a resume cursor, which makes
-// engineIsFresh true on every turn after the first: a kind the replay switch
-// does not know sends the whole conversation twice, every turn.
+// A chat bot never holds a resume cursor, so engineIsFresh is true on every later turn: the inline replay must not also ride the turn text.
 import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -43,8 +39,6 @@ describe("chat-completions history is sent once", () => {
       config: GroqDriver.decodeConfig({ url: base }), environment: { GROQ_API_KEY: `gsk_${"a".repeat(48)}` } });
     const recorder = recordEvents(instance.adapter);
     try {
-      // Turn 2, decided as server/index.ts decides it: the instance ran turn 1
-      // but a chat engine keeps no cursor, so it reads as fresh.
       const transcript = [{ role: "user" as const, text: FIRST }, { role: "assistant" as const, text: "Noted." }];
       const fresh = engineIsFresh({ instanceId: "groq-1", lastInstanceId: "groq-1", resumeCursors: {}, transcript });
       const { turnText } = buildTurnContext({ text: "what is my dog called?", transcript, rewound: false, fresh,

@@ -1,14 +1,12 @@
 /**
  * Saved logins: a website username and password (and optionally its 2FA key)
- * the person keeps in OpenMausBot so a bot can sign in without them. The bot
- * never receives the password: it calls fill_login on the login page and the
- * server fills the fields itself (server/login-fill.ts). This is the shape
- * every client sees — a saved login as a list row, never its secrets — and
- * the address rules the server and the forms share.
+ * a bot signs in with but never receives: it calls fill_login and the server
+ * fills the fields itself. Clients see a saved login as a list row, never its
+ * secrets.
  */
 
-/** Where a login came from: the sign-in card's Save, Settings → Logins, or
- * the person's 1Password vault (read-only here). */
+/** Where a login came from: the sign-in card's Save, Settings, or the person's
+ * 1Password vault (read-only here). */
 export type LoginSource = "card" | "settings" | "1password";
 
 /** Which bots may use a login: every bot, or the ones named. */
@@ -29,8 +27,8 @@ export interface LoginSummary {
   lastUsedAt?: number;
 }
 
-/** 1Password, connected with a service account (Settings → Logins). The
- * token itself never leaves the server. */
+/** 1Password, connected with a service account. The token itself never leaves
+ * the server. */
 export interface OnePasswordStatus {
   connected: boolean;
   /** The vaults the service account can read, by name. */

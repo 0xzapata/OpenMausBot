@@ -1,8 +1,4 @@
-// Every engine the server registers must have a capability row, and the
-// row must say what the driver really does: the level rule and the
-// continuation rule read these flags, never driver names. The expected
-// table is written out in full so a change in shared/approval-mode.ts or
-// in a driver's resume path is a visible diff here, not a silent shift.
+// The expected table is written out in full so any change to an engine's flags is a visible diff here.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +8,7 @@ import { BUILT_IN_DRIVERS } from "../drivers/builtIn.ts";
 import { ENGINE_KINDS, engineCapabilities, replaysTranscriptNatively, type EngineCapabilities } from "./capabilities.ts";
 
 const chat: EngineCapabilities = { resume: false, nativeReviewer: false, full: true, edits: false, stepCap: 64, subagents: false };
-const bare: EngineCapabilities = { resume: true, nativeReviewer: false, full: false, edits: false, subagents: false };
+const bare: EngineCapabilities = { resume: true, nativeReviewer: false, full: true, edits: false, subagents: false };
 
 const EXPECTED: Record<string, EngineCapabilities> = {
   claudeAgent: { resume: true, nativeReviewer: true, full: true, edits: true, subagents: false },
@@ -54,11 +50,10 @@ describe("engineCapabilities", () => {
     expect(engineCapabilities(kind)).toEqual(expected);
   });
 
-  it("answers conservatively for an unknown or absent engine", () => {
-    const none: EngineCapabilities = { resume: false, nativeReviewer: false, full: false, edits: false, subagents: false };
+  it("answers conservatively for an unknown or absent engine, Full aside: every engine runs it", () => {
+    const none: EngineCapabilities = { resume: false, nativeReviewer: false, full: true, edits: false, subagents: false };
     expect(engineCapabilities(undefined)).toEqual(none);
     expect(engineCapabilities("someFutureEngine")).toEqual(none);
-    // a prototype name is not an engine
     expect(engineCapabilities("constructor")).toEqual(none);
     expect(engineCapabilities("__proto__")).toEqual(none);
   });
@@ -83,15 +78,7 @@ describe("engineCapabilities", () => {
   });
 });
 
-// A driver built on createOpenAIChatRuntime sends the thread as transcript
-// messages, so its turn text must not replay it too. The set is read off the
-// driver sources, so a chat driver added later without the transcript flag
-// fails here instead of silently doubling its input tokens.
 describe("replaysTranscriptNatively", () => {
-  // Every non-test driver source under server/drivers, subfolders included,
-  // whose text calls createOpenAIChatRuntime. Its kind is read from the same
-  // file (the literal or the DRIVER_KIND constant), so a file declaring no
-  // kind we can read fails loudly rather than escaping the check.
   const root = fileURLToPath(new URL("../drivers/", import.meta.url));
   const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
     entry.isDirectory() ? sources(join(dir, entry.name))

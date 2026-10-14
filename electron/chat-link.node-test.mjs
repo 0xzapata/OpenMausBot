@@ -1,5 +1,3 @@
-// #2383: a chat link opened from outside the app must reach the page; every
-// other openmausbot:// link stays with its own handler.
 import assert from "node:assert/strict";
 import test from "node:test";
 

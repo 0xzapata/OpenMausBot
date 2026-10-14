@@ -1,6 +1,3 @@
-// Settings → Logins through the route table, on a real sealed store in a
-// temporary folder: adding, changing and deleting a login, and the one rule
-// that matters most — no answer ever carries a password or a 2FA key.
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -86,7 +83,6 @@ describe("Settings → Logins routes", () => {
     expect((await call("PATCH", `/api/logins/${id}`, { password: NEW_PASSWORD, bots: "all" })).body.login).toMatchObject({ bots: "all", hasTotp: true });
     expect(store.get(id)?.password).toBe(NEW_PASSWORD);
     expect((await call("PATCH", `/api/logins/${id}`, { totp: null })).body.login.hasTotp).toBe(false);
-    // An empty change keeps the saved password.
     expect((await call("PATCH", `/api/logins/${id}`, {})).status).toBe(200);
     expect(store.get(id)?.password).toBe(NEW_PASSWORD);
 
@@ -125,7 +121,6 @@ describe("Settings → Logins routes", () => {
     const listed = await call("GET", "/api/logins");
     expect(listed.body.logins).toEqual([expect.objectContaining({ host: "vault.example.com", username: "vault-user", source: "1password", bots: "all" })]);
     const id = listed.body.logins[0].id as string;
-    // Read-only here: it is changed in 1Password.
     for (const method of ["PATCH", "DELETE"]) {
       expect(await call(method, `/api/logins/${encodeURIComponent(id)}`, method === "PATCH" ? { password: "fake-x-pass" } : undefined))
         .toMatchObject({ status: 409, body: { error: LOGIN_ERRORS.readOnly } });

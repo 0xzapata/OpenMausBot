@@ -1,17 +1,3 @@
-// The welcome flow: one card, one guide, a handful of beats. The card is the
-// same element for the whole flow and morphs between beats with the View
-// Transitions API (the card, the mascot and the title keep their names, so
-// the browser moves and resizes them instead of cross-fading two cards).
-// The guide mascot is mounted once so its face engine carries over; beats
-// borrow it through setMascot/bump rather than rendering their own.
-//
-// Nothing here can brick the app: every beat is skippable, Escape skips the
-// whole tour, and completion is written to the workspace config. A failed
-// write still dismisses this visit, but may require retrying on the next launch.
-//
-// A hosted team workspace gets its own short set (a greeting, then the bot):
-// its organisation assigns the models, and nothing there is installed on,
-// granted to or paired with this computer.
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { MausAvatar } from "@/components/Avatar";
 import { useDesktopCapabilities } from "@/components/DesktopCapabilities";
@@ -40,8 +26,6 @@ import { withViewTransition } from "./view-transition";
 import { ProgressDots } from "./ProgressDots";
 import { FeatureReel } from "./reel/FeatureReel";
 
-/** The guide's resting face per beat; beats may override it as they learn
- * more (the engines beat looks proud or curious once the harness answers). */
 const MASCOT_FOR_BEAT: Record<BeatId, MausState> = {
   hello: "happy",
   reel: "curious",
@@ -82,25 +66,15 @@ export function WelcomeFlow({
   hosted = false,
   onOpenOrganisation,
 }: {
-  /** The seeded bot the exit beat names; null when the roster is empty. */
   bot: Bot | null;
   onDone: () => void;
-  /** Replays skip nothing but are tracked separately. */
   replay?: boolean;
-  /** Open on a given beat: the preview, and resuming after the engines beat
-   * sent the person to Settings → Organisation. */
   initialBeat?: BeatId;
-  /** Preview only: fill the parent instead of the viewport. */
   embedded?: boolean;
-  /** The feature reel beat; the preview gallery turns it off. */
   reel?: boolean;
-  /** Preview only: pretend the microphone can be asked for (or not). */
   dictation?: boolean;
-  /** The guide's first motion beat on mount. */
   entrance?: Motion;
-  /** A hosted team workspace: the hosted beat set, no email field. */
   hosted?: boolean;
-  /** The engines beat's organisation row asks for Settings → Organisation. */
   onOpenOrganisation?: () => void;
 }) {
   const { dispatch } = useStore();
@@ -114,10 +88,7 @@ export function WelcomeFlow({
 
   const bump = useCallback((kind: Motion) => setMotion((m) => ({ kind, key: m.key + 1 })), []);
 
-  // The entrance waits one frame. A spin issued in the same commit that
-  // mounts the avatar lands before its engine has drawn, and the face never
-  // comes back; the mascot gallery never hits this because its motions are
-  // always triggered on an avatar that is already on screen.
+  // One frame late: a motion issued in the avatar's mounting commit is lost.
   useEffect(() => {
     const frame = requestAnimationFrame(() => bump(entrance));
     return () => cancelAnimationFrame(frame);
@@ -128,9 +99,6 @@ export function WelcomeFlow({
     track("onboarding_step", { step: beat, replay });
   }, [beat, replay]);
 
-  /** Move to another beat. The View Transitions API snapshots the old card,
-   * applies the state change synchronously, then animates named elements to
-   * their new place; without it (or under reduced motion) the swap is instant. */
   const go = useCallback(
     (target: BeatId) => {
       withViewTransition(() => {
@@ -147,16 +115,12 @@ export function WelcomeFlow({
       if (finishing.current) return;
       finishing.current = true;
       track("onboarding_completed", { reason, at: beat, replay });
-      // one release of the old browser-side gate, so a downgrade stays quiet
       setEmailGateDone("submitted");
-      // A slow/offline server must not trap the user behind the welcome card.
       onDone();
       try {
         const config = await api("/api/config", { method: "PUT", body: JSON.stringify(completionPatch()), signal: AbortSignal.timeout(10_000) });
         dispatch({ type: "configStatus", config });
       } catch {
-        // offline or a paired client without admin scope: the caller still
-        // closes the tour; it comes back next launch, which is the honest state
       }
     },
     [beat, dispatch, onDone, replay],
@@ -169,7 +133,6 @@ export function WelcomeFlow({
     else void finish("completed");
   }, [next, go, finish]);
 
-  // Escape skips the tour; Tab stays inside the card.
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -194,10 +157,6 @@ export function WelcomeFlow({
     }
   };
 
-  // Keyboard focus lands on the beat's first real control: an autofocused
-  // input where there is one, else the primary button. Never the card
-  // itself, which would draw the focus ring around the whole dialog, and
-  // never "Skip tour", which is first in the DOM but last in intent.
   useEffect(() => {
     const card = cardRef.current;
     if (!card || card.contains(document.activeElement)) return;
@@ -257,10 +216,6 @@ export function WelcomeFlow({
           )}
         </div>
 
-        {/* keyed so a beat's rise-in plays once per visit, never on re-render.
-            The engines list can outgrow a short window; that beat alone may
-            shrink so its list scrolls and the footer stays in view. Other
-            beats keep their height and the card scrolls instead. */}
         <div key={beat} className={cn("flex flex-col", beat === "engines" ? "min-h-0" : "shrink-0")}>
           {beat === "hello" && <HelloBeat {...beatProps} hosted={hosted} />}
           {beat === "reel" && <FeatureReel {...beatProps} />}

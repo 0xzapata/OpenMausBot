@@ -52,11 +52,8 @@ describe("connector tool advertisement", () => {
     expect(connectorToolAdvertised("COMPOSIO_SEARCH_TOOLS", partial)).toBe(true);
     expect(connectorToolAdvertised("COMPOSIO_GET_TOOL_SCHEMAS", partial)).toBe(true);
     expect(connectorToolAdvertised("COMPOSIO_MULTI_EXECUTE_TOOL", partial)).toBe(true);
-    // Session-level connection meta-tools prefix as service "composio",
-    // which no grant names, so they ride the meta-tool list.
     expect(connectorToolAdvertised("COMPOSIO_MANAGE_CONNECTIONS", partial)).toBe(true);
     expect(connectorToolAdvertised("COMPOSIO_WAIT_FOR_CONNECTIONS", partial)).toBe(true);
-    // not granted: another tool on the granted service, another service
     expect(connectorToolAdvertised("GMAIL_GET_EMAIL", partial)).toBe(false);
     expect(connectorToolAdvertised("SLACK_POST_MESSAGE", partial)).toBe(false);
     expect(connectorToolAdvertised("SLACK_MANAGE_CONNECTIONS", partial)).toBe(false);
@@ -72,7 +69,6 @@ describe("connector tool advertisement", () => {
   it("resolves underscored service slugs from the connected-service catalog before splitting", () => {
     const record = grants({ bland: { tools: "*" }, bland_ai: { tools: ["BLAND_AI_MAKE_CALL"] } });
     expect(connectorToolAdvertised("BLAND_AI_MAKE_CALL", record, ["bland", "bland_ai"])).toBe(true);
-    // bland_ai claims BLAND_AI_* before bland's star grant can widen it.
     expect(connectorToolAdvertised("BLAND_AI_SEND_SMS", record, ["bland", "bland_ai"])).toBe(false);
     expect(connectorToolAdvertised("BLAND_SEND_SMS", record, ["bland", "bland_ai"])).toBe(true);
   });
