@@ -1,7 +1,4 @@
-// Test fixtures for Sentinel: a data dir shaped like the app's, written the
-// way the app writes it. Both databases run in WAL mode with checkpointing
-// off and the writer left open, so the rows a test adds stay in the -wal
-// file exactly as they do while the app is running.
+// WAL with checkpointing off and the writer open, so rows stay in the -wal file as they do while the app runs.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";

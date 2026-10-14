@@ -1,6 +1,4 @@
-// queue_wait: delegated work that sat queued longer than the threshold
-// before its assignee's turn started, or is still sitting there. One issue
-// per assignee bot: a bot whose queue keeps backing up is one problem.
+// One issue per assignee bot: a bot whose queue keeps backing up is one problem.
 import { signatureOf } from "../normalize.ts";
 import type { Detector, Observation } from "../types.ts";
 

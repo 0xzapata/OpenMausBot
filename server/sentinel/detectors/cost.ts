@@ -1,6 +1,4 @@
-// cost: a single turn that cost more than the threshold. On a subscription
-// the engine's figure is notional, but a turn that would have cost this
-// much is still one that ran far longer than it should have.
+// On a subscription the engine's cost figure is notional, but it still marks a turn that ran far too long.
 import { signatureOf } from "../normalize.ts";
 import type { Detector, Observation } from "../types.ts";
 

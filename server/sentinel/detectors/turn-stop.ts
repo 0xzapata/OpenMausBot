@@ -1,8 +1,4 @@
-// turn_timeout / turn_stop: a turn that ended without finishing. Two
-// sources say so: a turn.completed event that is not ok (or stopped on a
-// budget), and the notice the harness writes when it stops a room turn that
-// ran past its limit ("… exceeded 20 minutes and was stopped"). Stops the
-// person asked for are not failures.
+// Stops the person asked for are not failures.
 import { capTitle, HARNESS_NOTICE, normalizeSignatureText, signatureOf } from "../normalize.ts";
 import type { Detector, Observation, Origin } from "../types.ts";
 

@@ -40,11 +40,7 @@ import { parseSkillSource } from "./skill-fetch.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import { workspaceDir } from "./workspace.ts";
 
-// skills.ts resolves storage through workspaceDir(botId) → DATA_DIR, which
-// reads OMB_DATA_DIR at import time — so point the suite at a scratch dir
-// via vitest's per-file process env before importing. Simpler: use a unique
-// botId per test; workspaces land under the real DATA_DIR's scratch when
-// OMB_DATA_DIR is set by the harness. Here we isolate by botId.
+// skills.ts reads OMB_DATA_DIR at import time, so tests isolate by a unique botId each.
 const SKILL = (name: string, description = "Reviews a PR the way this team reviews PRs.") =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n\nDo the thing.\n`;
 
@@ -63,7 +59,7 @@ let bot: string;
 
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "omb-skills-"));
-  process.env.OMB_TEST_UNUSED = scratch; // keep cleanup symmetrical
+  process.env.OMB_TEST_UNUSED = scratch;
   bot = `test-bot-${Math.random().toString(36).slice(2, 10)}`;
 });
 
@@ -221,7 +217,6 @@ describe("install → review → enable lifecycle", () => {
     ]);
     expect(installed).toMatchObject({ name: "code-review", enabled: false });
     expect(installed).toMatchObject({ editable: false });
-    // disabled: invisible to the prompt
     expect(skillsSystemPrompt(bot)).toBe("");
 
     const enabled = setSkillEnabled(bot, "code-review", true);
@@ -230,20 +225,16 @@ describe("install → review → enable lifecycle", () => {
     expect(prompt).toContain("- code-review:");
     expect(prompt).toContain("never override");
 
-    // native discovery links exist for each CLI family, pointing at the store
     for (const dir of [".claude/skills", ".agents/skills", ".grok/skills"]) {
       const path = join(workspaceDir(bot), dir, "code-review");
       expect(existsSync(path), `${dir} link should exist`).toBe(true);
       expect(lstatSync(path).isSymbolicLink()).toBe(true);
     }
 
-    // disable removes it from prompt and links
     setSkillEnabled(bot, "code-review", false);
     expect(skillsSystemPrompt(bot)).toBe("");
   });
 
-  // Every turn re-syncs the native links; rewriting an unchanged list cost an
-  // fsync on the event loop each time.
   it("rewrites the managed-link record only when the set of links changes", () => {
     installSkill(bot, "src", [{ path: "SKILL.md", content: SKILL("steady-links") }]);
     setSkillEnabled(bot, "steady-links", true);
@@ -344,12 +335,10 @@ describe("install → review → enable lifecycle", () => {
     const userTarget = join(scratch, "replacement");
     mkdirSync(userTarget, { recursive: true });
     const replaced = join(root, ".claude", "skills", "link-safety");
-    // Node 24 on macOS reports a directory symlink as EISDIR unless recursive
-    // removal is enabled; rm still unlinks the symlink without following it.
+    // Node 24 on macOS reports a directory symlink as EISDIR unless recursive removal is on; rm still only unlinks it.
     rmSync(replaced, { recursive: true, force: true });
     symlinkSync(userTarget, replaced, process.platform === "win32" ? "junction" : "dir");
 
-    // The other two app links now point at a missing target and are broken.
     rmSync(join(root, "skills", "link-safety"), { recursive: true, force: true });
     expect(skillsSystemPrompt(bot)).toBe("");
     expect(realpathSync(replaced)).toBe(realpathSync(userTarget));
@@ -402,8 +391,6 @@ describe("install → review → enable lifecycle", () => {
     rmSync(skillsRoot, { recursive: true, force: true });
     symlinkSync(outsideRoot, skillsRoot, process.platform === "win32" ? "junction" : "dir");
 
-    // Before reconciliation, each app-created link now reaches the unreviewed
-    // replacement through the unchanged workspace/skills/<name> target.
     for (const dir of [".claude/skills", ".agents/skills", ".grok/skills"]) {
       expect(realpathSync(join(root, dir, "root-replaced"))).toBe(realpathSync(outsideSkill));
     }
@@ -1007,7 +994,6 @@ describe("staged skill writes", () => {
     expect(JSON.parse(readFileSync(securePath, "utf8"))).toEqual({ writes: {} });
     expect(existsSync(legacyPath)).toBe(false);
 
-    // Recreating workspace state cannot override the protected migration marker.
     writeFileSync(legacyPath, JSON.stringify({ writes: { legacy: { name: "legacy-stage" } } }));
     expect(listStagedSkillWrites(bot)).toEqual([]);
   });
@@ -1064,7 +1050,6 @@ describe("staged skill writes", () => {
     const applied = applySkillWriteWithReceipt(bot, staged, () => { throw new Error("receipt write failed"); });
     expect(applied).toMatchObject({ result: { name: "full-receipt", enabled: true }, settlementPending: true });
     expect(listSkills(bot)).toMatchObject([{ name: "full-receipt", enabled: true }]);
-    // Recover the same durable operation, never create a second skill.
     expect(applySkillWriteWithReceipt(bot, staged, () => {})).toMatchObject({ result: { name: "full-receipt" } });
     expect(listStagedSkillWrites(bot)).toEqual([]);
   });
@@ -1138,8 +1123,7 @@ describe("staged skill writes", () => {
       }),
     ).toThrow("simulated card write failure");
 
-    // A proposal card is durable and has no expiry. Simulate a long delay
-    // before another proposal is staged; the manifest token must still replay.
+    // A proposal card has no expiry: simulate a long delay before another proposal is staged.
     const stagedStorePath = join(DATA_DIR, "skill-state", bot, "staged.json");
     const stagedStore = JSON.parse(readFileSync(stagedStorePath, "utf8"));
     stagedStore.writes[staged.id].createdAt = "2020-01-01T00:00:00.000Z";
@@ -1242,7 +1226,6 @@ describe("undo of a skill a bot wrote without a person", () => {
     expect(readSkillFile(bot, "own-skill")).toBe(original);
     expect(listSkills(bot).find((skill) => skill.name === "own-skill")).toMatchObject({ enabled: true, description: "First version." });
     expect(listStagedSkillWrites(bot)).toEqual([]);
-    // The restore is itself a change, so the old update's Undo is stale now.
     expect(undoSkillWrite(bot, updated)).toEqual({ stale: true });
   });
 

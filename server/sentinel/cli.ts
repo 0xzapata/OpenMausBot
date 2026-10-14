@@ -1,7 +1,3 @@
-// `openmausbot sentinel`: one read-only health scan of a data dir, then a
-// short summary. Meant to be run every couple of minutes by launchd or
-// systemd (`openmausbot service install --sentinel`); a run that finds the
-// sources unchanged since the last one exits at once.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -75,7 +71,6 @@ export function parseSentinelArgs(argv: string[], env: NodeJS.ProcessEnv = proce
   return { ...args, dataDir, out: out ?? defaultSentinelOut(dataDir, process.platform, homedir(), env) };
 }
 
-/** Where --check-install looks; tests substitute it. */
 export interface SentinelHost {
   platform: NodeJS.Platform;
   home: string;

@@ -871,7 +871,10 @@ computers belong to this machine on every request.
   JSON). `server/decider/relay.ts` checks each request before it is sent; one
   that does not fit is not sent, and the room falls back as for any other
   decision-model failure. Any other decision job, now or added later, uses
-  only the person's own Jev key until the relay accepts it too.
+  only the person's own Jev key until the relay accepts it too. The relay
+  speaks Jev's API only: included decisions are Jev's, and with OpenRouter
+  selected in **Settings → Decision model** nothing is included (it needs an
+  OpenRouter key of the person's own).
 - **Included decisions are on until switched off.** While the decision model
   runs on the included token, its master switch counts as on unless the person
   switched it off in **Settings → Decision model**; an explicit off always

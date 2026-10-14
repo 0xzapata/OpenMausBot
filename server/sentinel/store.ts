@@ -1,8 +1,4 @@
-// Sentinel's own files, the only things it writes: issues.jsonl (one issue
-// per line, upserted by signature) and state.json (log offsets, the last
-// scan, and the occurrences already counted). Both are owner-only. Issues
-// hold ids that point back into the data dir, never tool output or message
-// text: the transcripts they come from are private.
+// The only files Sentinel writes, both owner-only; issues hold ids into the data dir, never tool output or message text.
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,24 +9,23 @@ import type { Issue, Observation } from "./types.ts";
 export const ISSUES_FILE = "issues.jsonl";
 export const STATE_FILE = "state.json";
 
-/** Bump when state.json changes shape. A state file of another version is
- * dropped and the next scan starts over, counting nothing already in
- * issues.jsonl again (scan.ts). */
+/** Bump when state.json changes shape: another version's state is dropped and the next scan starts over. */
 export const STATE_VERSION = 1;
 
 export interface SentinelState {
   version: typeof STATE_VERSION;
   lastScanAt: number | null;
-  /** What the sources looked like at the last scan; equal means nothing to do. */
+  /** What the sources looked like at the last scan; equal means nothing to do until queueDueAt. */
   fingerprint: string | null;
+  /** When the earliest wait still pending at the last scan crosses the queue-wait threshold, with no file changing. */
+  queueDueAt: number | null;
   logs: Record<string, LogOffset>;
-  /** Occurrence keys already counted, with when they happened. Kept only
-   * while a later scan could still see the same occurrence again. */
+  /** Kept only while a later scan could still see the same occurrence again. */
   seen: Record<string, number>;
 }
 
 export function emptyState(): SentinelState {
-  return { version: STATE_VERSION, lastScanAt: null, fingerprint: null, logs: {}, seen: {} };
+  return { version: STATE_VERSION, lastScanAt: null, fingerprint: null, queueDueAt: null, logs: {}, seen: {} };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -45,6 +40,7 @@ export function readState(out: string): SentinelState {
     if (!isRecord(parsed.logs) || !isRecord(parsed.seen)) return emptyState();
     if (parsed.lastScanAt !== null && !(typeof parsed.lastScanAt === "number" && Number.isFinite(parsed.lastScanAt))) return emptyState();
     if (typeof parsed.fingerprint !== "string" && parsed.fingerprint !== null) return emptyState();
+    if (parsed.queueDueAt !== undefined && parsed.queueDueAt !== null && !Number.isFinite(parsed.queueDueAt)) return emptyState();
     return { ...emptyState(), ...parsed };
   } catch {
     return emptyState();
@@ -71,9 +67,7 @@ export function readIssues(out: string): Map<string, Issue> {
   return issues;
 }
 
-/** Count every occurrence not counted before into its issue. Returns the
- * signatures that changed and how many occurrences were new. Running the
- * same observations twice changes nothing the second time. */
+/** Idempotent: running the same observations twice changes nothing the second time. */
 export function upsertIssues(issues: Map<string, Issue>, state: SentinelState, observations: readonly Observation[]): { touched: Set<string>; added: number } {
   const touched = new Set<string>();
   let added = 0;
@@ -116,7 +110,6 @@ export function upsertIssues(issues: Map<string, Issue>, state: SentinelState, o
   return { touched, added };
 }
 
-/** Forget occurrences older than any scan can reread. */
 export function pruneSeen(state: SentinelState, before: number): void {
   for (const [key, at] of Object.entries(state.seen)) if (at < before) delete state.seen[key];
 }

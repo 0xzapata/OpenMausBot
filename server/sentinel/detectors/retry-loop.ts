@@ -1,6 +1,4 @@
-// retry_loop: the same tool failing the same way again and again inside one
-// turn — the bot retrying something that will not start working. Counted
-// over the whole scan window, so a loop that spans two scans still adds up.
+// Counted over the whole scan window, so a loop that spans two scans still adds up.
 import { capTitle, failureKey, signatureOf, toolOrigin } from "../normalize.ts";
 import type { Detector, Observation, SentinelRecord } from "../types.ts";
 
@@ -34,7 +32,6 @@ export const retryLoop: Detector = {
         threadId: last.threadId,
         turnId: last.turnId!,
         at: last.at,
-        // one loop per turn, however long it grows
         occurrence: `retry:${last.turnId}:${signature}`,
         evidence: { source: "messages", id: last.id },
         ...(last.botId ? { botId: last.botId } : {}),

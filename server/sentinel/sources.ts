@@ -1,19 +1,5 @@
-// Sentinel's sources, all read-only. The app may be running and writing
-// while a scan reads, so:
-//
-// - SQLite opens read-only (SQLITE_OPEN_READONLY, what `mode=ro` means in a
-//   URI) and never `immutable`: both databases run in WAL mode and most
-//   recent rows live in the -wal file, which immutable would skip. Every
-//   query is short and the handle closes right after, so a scan never holds
-//   a read transaction that keeps the app from checkpointing.
-// - Activity rows are UPDATEd when a tool finishes, so a rowid cursor would
-//   miss the outcome. Each scan rereads a trailing `at` window instead, and
-//   the store dedupes occurrences by message id.
-// - events/<threadId>.ndjson is read from a byte offset that starts over
-//   when the file shrank or its inode changed: thread-log-rotation.ts
-//   rewrites an oversized log in place through a rename, and
-//   thread-retention.ts deletes idle ones. A per-file high-water mark on
-//   createdAt keeps the rewritten tail from being read twice.
+// SQLite opens read-only, never `immutable`: both databases run in WAL mode and recent rows live in the -wal file,
+// which immutable skips. Handles close after each short query so a scan never blocks the app's checkpoint.
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -36,9 +22,7 @@ export function withReadOnlyDb<T>(file: string, read: (db: DatabaseSync) => T): 
 }
 
 export interface ThreadOwners {
-  /** threadId → botId, from bots.json. */
   owners: Map<string, string>;
-  /** Bot names, held in memory only to take them out of harness notices. */
   names: string[];
 }
 
@@ -71,7 +55,7 @@ interface ActivityJson {
   from?: { botId?: string; name?: string };
 }
 
-/** Failed tool calls and harness notices in messages.db since `sinceAt`. */
+/** Activity rows are UPDATEd when a tool finishes, so this rereads an `at` window instead of keeping a rowid cursor. */
 export function readToolRecords(dataDir: string, sinceAt: number, who: ThreadOwners): SentinelRecord[] {
   const rows = withReadOnlyDb(join(dataDir, "messages.db"), (db) => {
     const threads = db.prepare("SELECT DISTINCT thread_id FROM messages").all() as Array<{ thread_id: string }>;
@@ -114,12 +98,10 @@ function withoutNames(text: string, names: string[]): string {
 export interface LogOffset {
   ino: number;
   offset: number;
-  /** Newest createdAt (ms) already read from this file. */
+  /** Newest createdAt already read, so a log rewritten through a rename is not read twice. */
   hwm: number;
 }
 
-/** New turn.completed events across events/*.ndjson. Returns the offsets to
- * keep for next time; a file that is gone drops out. */
 export function readTurnRecords(dataDir: string, previous: Record<string, LogOffset>, who: ThreadOwners): { records: SentinelRecord[]; offsets: Record<string, LogOffset> } {
   const dir = join(dataDir, "events");
   const offsets: Record<string, LogOffset> = {};
@@ -162,8 +144,7 @@ export function readTurnRecords(dataDir: string, previous: Record<string, LogOff
   return { records, offsets };
 }
 
-/** The complete lines appended since `previous`, or from the start when the
- * file was replaced or truncated. Null when the file cannot be read. */
+/** From the start when the file was replaced or truncated; null when it cannot be read. */
 export function readLogTail(file: string, previous: LogOffset | undefined): { lines: string[]; offset: LogOffset; skipThrough: number } | null {
   let fd: number;
   try {
@@ -199,9 +180,7 @@ export function readLogTail(file: string, previous: LogOffset | undefined): { li
   }
 }
 
-/** Queue waits from runtime.db: each wait runs from `enqueued` (or
- * `resume_due`) to the next `started` — what Runtime.dispatchDue decides.
- * A wait that has not started yet is reported with the time so far. */
+/** A wait runs from `enqueued` or `resume_due` to the next `started`; one not started yet reports the time so far. */
 export function readQueueRecords(dataDir: string, sinceAt: number, now: number, who: ThreadOwners): SentinelRecord[] {
   const rows = withReadOnlyDb(join(dataDir, "runtime.db"), (db) => db.prepare(`
     SELECT e.id AS eid, e.assignment_id AS aid, e.at, e.kind, a.status, a.assignee_bot_id AS bot, a.assignee_thread_id AS thread
@@ -232,7 +211,6 @@ export function readQueueRecords(dataDir: string, sinceAt: number, now: number, 
 function queueRecord(wait: { eid: number; aid: string; at: number; bot: string; thread: string }, end: number, started: boolean, who: ThreadOwners): SentinelRecord {
   const botId = wait.bot || who.owners.get(wait.thread);
   return {
-    // one wait, whether seen pending or finished: the event that began it
     type: "queue", id: `${wait.aid}:${wait.eid}`, assignmentId: wait.aid, threadId: wait.thread, at: end, waitMs: Math.max(0, end - Number(wait.at)), started,
     ...(botId ? { botId } : {}),
   };

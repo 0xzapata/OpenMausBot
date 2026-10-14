@@ -1,8 +1,4 @@
-// Where Sentinel keeps its issues and log by default: the platform's place
-// for an app's own state, outside the OpenMausBot data dir it scans. Backups
-// and copies of the data dir never carry Sentinel's files, and Sentinel
-// never writes into the folder it only reads. The default is pure, so the
-// service renderer can print the same path the scan will use.
+// Sentinel's files live outside the data dir it scans: it never writes where it only reads, and backups never carry them.
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -16,17 +12,13 @@ export function defaultSentinelOut(dataDir: string, platform: NodeJS.Platform = 
   const base = platform === "darwin" ? path.join(home, "Library", "Application Support", FOLDER)
     : platform === "win32" ? path.join(env.LOCALAPPDATA || path.join(home, "AppData", "Local"), FOLDER)
     : path.join(state, FOLDER);
-  // the usual data dir gets the folder itself; any other its own subfolder,
-  // so two workspaces never count into one set of issues
+  // two workspaces never count into one set of issues
   const resolved = path.resolve(dataDir);
   if (resolved === path.join(home, ".openmausbot")) return base;
   return path.join(base, `data-${createHash("sha256").update(resolved).digest("hex").slice(0, 12)}`);
 }
 
-/** `path` with every symlink in its existing part resolved: the nearest
- * existing ancestor through realpath, and the rest appended as given. A
- * link to a folder inside a repository or the data dir is judged by where
- * it leads. */
+/** A link into a repository or the data dir is judged by where it leads. */
 export function resolveThroughLinks(path: string): string {
   const missing: string[] = [];
   let current = resolve(path);
@@ -42,7 +34,6 @@ export function resolveThroughLinks(path: string): string {
   }
 }
 
-/** The nearest folder at or above `dir` holding a .git, if any. */
 function enclosingRepo(dir: string): string | null {
   for (let current = dir; ; current = dirname(current)) {
     if (existsSync(join(current, ".git"))) return current;
@@ -50,9 +41,7 @@ function enclosingRepo(dir: string): string | null {
   }
 }
 
-/** Why Sentinel must not write to `out`, or null. Its issues name bots and
- * threads, so they never go inside a repository, and it only reads the
- * data dir. The CLI and the service installer both ask before writing. */
+/** Issues name bots and threads, so they never go inside a repository, and the data dir is read-only to Sentinel. */
 export function outRefusal(out: string, dataDir: string): string | null {
   const target = resolveThroughLinks(out);
   const repo = enclosingRepo(target);
@@ -61,7 +50,6 @@ export function outRefusal(out: string, dataDir: string): string | null {
   return null;
 }
 
-/** Whether `child` is `parent` or anywhere under it. */
 export function isInside(child: string, parent: string, platform: NodeJS.Platform = process.platform): boolean {
   const path = platform === "win32" ? win32 : posix;
   const relative = path.relative(path.resolve(parent), path.resolve(child));

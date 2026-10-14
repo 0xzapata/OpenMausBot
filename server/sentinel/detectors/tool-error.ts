@@ -1,6 +1,3 @@
-// tool_error: every failed tool call, grouped by tool and normalized error.
-// A failure in one of OpenMausBot's own tools is ranked as a bug; a shell
-// command that exited non-zero is usually the bot's own business.
 import { failureKey, HARNESS_NOTICE, signatureOf, toolOrigin } from "../normalize.ts";
 import type { Detector, Observation, Origin, Severity } from "../types.ts";
 import { TURN_TIMEOUT_NOTICE } from "./turn-stop.ts";

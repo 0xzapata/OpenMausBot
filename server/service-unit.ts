@@ -1,27 +1,16 @@
-// `openmausbot service install`: keep the server running across reboots.
-// Renders a systemd unit (Linux) or a launchd agent (macOS) that runs the
-// same `openmausbot serve …` the operator just used, and either installs it
-// (when allowed to) or writes it next to the data and prints the two
-// commands that install it. Pure rendering lives here so it is testable;
-// the CLI decides where the file goes.
 import { homedir, userInfo } from "node:os";
 import { posix } from "node:path";
 
-// Unit files describe a Linux or macOS machine, so their paths are POSIX
-// whatever host renders them (the Windows CI runner included).
+// Unit files describe a Linux or macOS machine: POSIX paths whatever host renders them (Windows CI included).
 const { basename, dirname, join } = posix;
 
 export interface ServiceSpec {
-  /** How to start this same CLI: absolute node, then its script. */
   node: string;
   script: string;
-  /** `serve …` arguments, already validated by the CLI. */
   serveArgs: string[];
   dataDir: string;
-  /** Unix user the service runs as (systemd only). */
   user: string;
   home: string;
-  /** Needs ports 80 and 443 (serve --domain): grant the capability to the unit. */
   bindsLowPorts: boolean;
   label?: string;
 }
@@ -122,7 +111,6 @@ export function unstableInstallWarning(script: string): string | null {
   return null;
 }
 
-/** Where the rendered file goes and how to activate it, per platform. */
 export function servicePlan(platform: NodeJS.Platform, dataDir: string, home = homedir()): { file: string; installed: string; activate: string[]; deactivate: string[] } | null {
   if (platform === "linux") {
     const installed = `/etc/systemd/system/${SYSTEMD_UNIT_NAME}`;
@@ -145,30 +133,17 @@ export function servicePlan(platform: NodeJS.Platform, dataDir: string, home = h
   return null;
 }
 
-// `openmausbot service install --sentinel`: Sentinel, the read-only health
-// scanner (server/sentinel/), every two minutes out of process, so it keeps
-// noticing failures after the app itself has crashed. A launchd agent with a
-// StartInterval on macOS, a systemd user timer on Linux: it reads only what
-// its own user can, so it needs no root and no system unit.
 export const SENTINEL_LAUNCHD_LABEL = "com.openmausbot.sentinel";
 export const SENTINEL_SYSTEMD_NAME = "openmausbot-sentinel";
 export const SENTINEL_INTERVAL_SECONDS = 120;
 
 export type SentinelServiceSpec = Pick<ServiceSpec, "node" | "script" | "dataDir" | "home"> & {
-  /** Sentinel's own folder, outside the data dir: issues, state, its log
-   * and these rendered files (server/sentinel/paths.ts). */
   out: string;
   /** `node` is the desktop app's own executable, run as Node. */
   electronRunAsNode?: boolean;
 };
 
-/** The CLI the installed desktop app ships: its executable run as Node
- * (ELECTRON_RUN_AS_NODE, as docs/mcp-server.md does for mcp-server.js) and
- * the bundled resources/server/openmausbot.js. An app update replaces both
- * in place, so a schedule pointing here survives updates and Node upgrades;
- * a checkout or an nvm Node does not. Null when no installed app is found,
- * or when the installed one predates Sentinel (`hasSentinel` says no): a
- * schedule pointing there would fail on an unknown command. */
+/** The app's executable run as Node (ELECTRON_RUN_AS_NODE) survives app updates and Node upgrades; null for an app predating Sentinel. */
 export function shippedSentinelCli(
   platform: NodeJS.Platform, home: string, exists: (path: string) => boolean, hasSentinel: (script: string) => boolean = () => true,
 ): { node: string; script: string } | null {
@@ -184,8 +159,6 @@ export function sentinelCommand(spec: Pick<SentinelServiceSpec, "node" | "script
   return [spec.node, ...(needsStripTypes(spec.script) ? ["--experimental-strip-types"] : []), spec.script, "sentinel", "--once", "--data-dir", spec.dataDir, "--out", spec.out];
 }
 
-/** One argument of a command printed for the person to paste: "Application
- * Support" must reach cp as one path. */
 function shellArg(value: string): string {
   return /^[\w@%+=:,./~-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -229,15 +202,12 @@ export function sentinelLaunchdPlist(spec: SentinelServiceSpec): string {
   ].join("\n");
 }
 
-/** Refuse a path no unit file can carry: a line break or NUL would end the
- * line it sits on and start another one of its own. */
+/** A line break or NUL in a unit file value would start a line of its own. */
 function assertUnitValue(label: string, value: string): void {
   if (/[\r\n\0]/.test(value)) throw new Error(`the ${label} path contains a line break or NUL, which a service file cannot hold; choose a path without one`);
 }
 
-/** One systemd value, quoted: backslashes and quotes escaped (so a trailing
- * backslash is no line continuation) and % doubled so it is no specifier.
- * ExecStart also expands $VARIABLES, so a command line doubles $ too. */
+/** systemd: a trailing backslash continues the line, % is a specifier, and ExecStart expands $VARIABLES. */
 function systemdQuoted(value: string, command = false): string {
   const escaped = value.replace(/[\\"]/g, "\\$&").replace(/%/g, "%%");
   return `"${command ? escaped.replace(/\$/g, "$$$$") : escaped}"`;
@@ -277,8 +247,6 @@ export function sentinelSystemdTimer(): string {
   ].join("\n");
 }
 
-/** The files written to Sentinel's folder, where each one goes, and how to
- * activate them. Null on a platform without a renderer (Windows). */
 export function sentinelServicePlan(platform: NodeJS.Platform, out: string, home = homedir()): { files: Array<{ name: string; installed: string }>; activate: string[]; deactivate: string[] } | null {
   if (platform === "linux") {
     const dir = join(home, ".config", "systemd", "user");
@@ -301,8 +269,6 @@ export function sentinelServicePlan(platform: NodeJS.Platform, out: string, home
   return null;
 }
 
-/** The node and script an installed Sentinel unit runs, read back from the
- * plist's ProgramArguments or the unit's ExecStart. */
 export function sentinelUnitCommand(text: string): { node: string; script: string } | null {
   let args: string[];
   const plist = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text);
@@ -325,9 +291,7 @@ export type SentinelInstallCheck =
   | { status: "not_installed" | "unreadable"; unit: string }
   | { status: "unsupported" };
 
-/** Whether the installed schedule still points at a node and a script that
- * exist. An app update or a Node upgrade can move either, and launchd or
- * systemd then fail on every run without a word in Sentinel's own log. */
+/** launchd and systemd fail silently on every run once an app update or Node upgrade moves the node or script. */
 export function checkSentinelInstall(platform: NodeJS.Platform, home: string, fs: { exists(path: string): boolean; read(path: string): string }): SentinelInstallCheck {
   const plan = sentinelServicePlan(platform, "", home);
   if (!plan) return { status: "unsupported" };

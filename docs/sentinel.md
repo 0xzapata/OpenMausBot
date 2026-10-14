@@ -16,8 +16,9 @@ openmausbot sentinel --check-install [--json]
 ```
 
 Each run does one scan, prints a short summary (or JSON with `--json`) and
-exits 0. When no source file has changed since the last run, it says so and
-exits without reading any rows.
+exits 0. When no source file has changed since the last run and no queued
+work has passed the queue-wait threshold since, it says so and exits without
+reading any rows.
 
 ## What it reads
 

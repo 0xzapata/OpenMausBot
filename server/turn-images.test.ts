@@ -131,17 +131,14 @@ describe("turn image admission", () => {
         { path: second, mime: "image/webp", bytes: 6 },
       ],
     });
-    // text-only words come back untouched, with no images
     expect(extractSteerImages(["just text"], { attachmentsDir: root })).toEqual({ texts: ["just text"], images: [] });
   });
 
   it("gives up on a steer whose images together would not fit one turn", () => {
     const root = store();
     const one = (index: number) => `<attached-image path="${image(root, index, ".png", 4)}" name="${index}.png" />`;
-    // each text alone is within limits; together they are not
     expect(extractSteerImages([one(0), one(1), one(2)], { attachmentsDir: root, maxCount: 2 })).toBeNull();
     expect(extractSteerImages([one(3), one(4)], { attachmentsDir: root, maxBytes: 7 })).toBeNull();
-    // a single text over the limit is refused too, rather than thrown
     expect(extractSteerImages([`${one(0)}\n\n${one(1)}\n\n${one(2)}`], { attachmentsDir: root, maxCount: 2 })).toBeNull();
   });
 });

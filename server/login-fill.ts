@@ -1,30 +1,11 @@
-// fill_login: the server signs a bot in with a saved login, on the page the
-// bot has open, without the bot ever holding the password.
-//
-// Everything happens in the bot's own running browser through the engine,
-// the same way in the built-in browser and in My Chrome (a profile attached
-// to the person's Chrome), and nothing here ever launches a browser:
-//   1. `get url` names the bot's current page. It must be https (plain http
-//      only on this computer) and its host exactly the login's.
-//   2. An in-page script finds the visible login fields and marks them. It
-//      carries no secret, and its answer is booleans, never field values.
-//   3. Each field is focused (and emptied the way a person would, so
-//      React-style forms see the change), the page's address is checked
-//      again, and the value goes in as real typing: the engine's input relay
-//      (`keyboard insertText`, the call the Browser tab's masked "Type a
-//      password or code" box makes) over its loopback stream, never on a
-//      command line.
-//   4. A last script reports which fields hold text and removes the marks.
-// Two-step logins fill what is visible (the username, then the password on
-// the next page), and a one-time-code field gets a TOTP code made at fill
-// time. The bot hears what was filled, or why not — never a value.
+// The bot never holds the password: in-page scripts carry no secret and answer booleans, values go in as real typing over
+// the engine's loopback relay (never on a command line), and the bot hears what was filled or why not, never a value.
 import { randomBytes } from "node:crypto";
 
 import { loginOriginCheck, type LoginSource } from "../shared/logins.ts";
 import { totpCode, type TotpKey } from "./totp.ts";
 
-/** One login the bot may use on a host, from any source. Its secrets are
- * read only when it is about to be filled. */
+/** Its secrets are read only when it is about to be filled. */
 export interface FillCandidate {
   id: string;
   host: string;
@@ -34,12 +15,8 @@ export interface FillCandidate {
 }
 
 export interface FillLoginDeps {
-  /** One engine command in the bot's running browser: its answer's data, or
-   * null when that browser is not running. */
   engine(args: string[]): Promise<Record<string, unknown> | null>;
-  /** Type text into the page's focused field, as real input. */
-  insertText(port: number, text: string): Promise<void>;
-  /** Every secret value about to reach the page, so the scrubber knows it. */
+  insertText(text: string): Promise<void>;
   remember(value: string, kind: "password" | "code"): void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -47,8 +24,6 @@ export interface FillLoginDeps {
 
 export interface FillLoginInput {
   username?: string;
-  /** The logins this bot may use on a host, and every host it has one for
-   * (named in a refusal so the bot knows where it can sign in). */
   candidates(host: string): Promise<FillCandidate[]>;
   available(): Promise<Array<{ host: string; username: string }>>;
 }
@@ -66,8 +41,6 @@ export interface FillLoginOutcome {
 
 const MARK = "data-omb-login";
 
-/** In-page: find the visible login fields, mark them, and say which exist.
- * Plain JS in a string: what the page runs is exactly what is written here. */
 const FIND_FIELDS = `((nonce) => {
   const MARK = ${JSON.stringify(MARK)};
   for (const old of document.querySelectorAll("[" + MARK + "]")) old.removeAttribute(MARK);
@@ -120,9 +93,7 @@ const FIND_FIELDS = `((nonce) => {
   return JSON.stringify({ href: location.href, username: Boolean(username), password: Boolean(password), code: boxes.length });
 })`;
 
-/** In-page: focus one marked field and empty it the way typing over it
- * would, so a React-style form's state follows. `same`: the field already
- * holds this text (a username, never a secret), so it is left alone. */
+/** Emptied the way typing over it would, so a React-style form's state follows. */
 const FOCUS_FIELD = `((nonce, name, keep) => {
   const el = document.querySelector("[${MARK}=\\"" + nonce + ":" + name + "\\"]");
   if (!(el instanceof HTMLInputElement)) return JSON.stringify({ href: location.href, focused: false, same: false });
@@ -137,8 +108,6 @@ const FOCUS_FIELD = `((nonce, name, keep) => {
   return JSON.stringify({ href: location.href, focused: document.activeElement === el, same: false });
 })`;
 
-/** In-page: which marked fields hold text now (booleans only), and remove
- * every mark. */
 const CHECK_FIELDS = `((nonce) => {
   const out = {};
   for (const el of document.querySelectorAll("[${MARK}]")) {
@@ -153,8 +122,7 @@ function call(script: string, ...args: unknown[]): string {
   return `${script}(${args.map((arg) => JSON.stringify(arg ?? null)).join(", ")})`;
 }
 
-/** An eval answer as a value: agent-browser hands back the expression's
- * result, which these scripts make a JSON string. */
+/** agent-browser hands back the expression's result, which these scripts make a JSON string. */
 function evaluated(data: Record<string, unknown> | null): Record<string, unknown> | null {
   let value: unknown = data?.result;
   for (let depth = 0; depth < 2 && typeof value === "string"; depth++) {
@@ -175,17 +143,6 @@ function joinWords(words: string[]): string {
 
 const FIELD_WORDS: Record<FilledField, string> = { username: "the username", password: "the password", code: "the one-time code" };
 
-/** The engine's local stream, enabled if it is not yet. */
-async function streamPort(engine: FillLoginDeps["engine"]): Promise<number> {
-  let status = await engine(["stream", "status"]);
-  if (status && status.enabled !== true) status = await engine(["stream", "enable"]);
-  const port = status?.port;
-  if (status?.enabled !== true || typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("The browser did not open its local input channel. Restart the browser and try again.");
-  }
-  return port;
-}
-
 export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Promise<FillLoginOutcome> {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -194,10 +151,9 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
   if (!page || !pageUrl || pageUrl === "about:blank") {
     return { ok: false, text: "The browser has no page open. Open the site's login page first, then call fill_login." };
   }
-  // The page must be one a login may ever be filled on before any login is
-  // looked at; the exact host is matched below.
+  // The page must be one a login may ever be filled on before any login is looked at.
   let pageHost = "";
-  try { pageHost = new URL(pageUrl).hostname.toLowerCase(); } catch { /* refused just below */ }
+  try { pageHost = new URL(pageUrl).hostname.toLowerCase(); } catch {}
   const origin = loginOriginCheck(pageUrl, pageHost);
   if (!origin.ok) {
     return { ok: false, host: pageHost || undefined, text: origin.reason === "insecure"
@@ -220,8 +176,6 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
     return { ok: false, host: pageHost, text: `There are ${chosen.length} saved logins for ${pageHost}: ${chosen.map((login) => login.username).join(", ")}. Call fill_login again with the username to use.` };
   }
   const login = chosen[0]!;
-  // Re-checked against the login's own host (equal by construction) so the
-  // rule stays in one place.
   if (!loginOriginCheck(pageUrl, login.host).ok) {
     return { ok: false, host: pageHost, text: `This page's host (${pageHost}) does not match the saved login's host (${login.host}).` };
   }
@@ -238,7 +192,6 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
   }
 
   const secrets = await login.secrets();
-  const port = await streamPort(deps.engine);
   let filled: FilledField[] = [];
   let moved = false;
   const fill = async (name: string, text: string, keep?: string): Promise<boolean> => {
@@ -246,7 +199,7 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
     if (!focus || !stillHere(focus.href)) { moved = true; return false; }
     if (focus.same === true) return true;
     if (focus.focused !== true) return false;
-    await deps.insertText(port, text);
+    await deps.insertText(text);
     return true;
   };
   try {
@@ -259,7 +212,6 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
       if (await fill("password", secrets.password)) filled.push("password");
     }
     if (!moved && codeBoxes > 0 && secrets.totp) {
-      // A code about to expire is not worth typing: wait for the next one.
       const left = secrets.totp.period * 1000 - (now() % (secrets.totp.period * 1000));
       if (left < 3_000) await sleep(left + 250);
       const code = totpCode(secrets.totp, now());
@@ -271,7 +223,6 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
     }
   } finally {
     const checked = evaluated(await deps.engine(["eval", call(CHECK_FIELDS, nonce)]).catch(() => null));
-    // Only fields that hold text count as filled.
     if (checked) filled = filled.filter((field) => field === "code" ? checked.code0 === true : checked[field] === true);
   }
   if (moved && !filled.length) {
@@ -292,21 +243,4 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
     ok: true, host: pageHost, loginId: login.id, filled,
     text: `Filled ${joinWords(filled.map((field) => FIELD_WORDS[field]))} for ${login.username || "the saved login"}${who} on ${pageHost}.${next}${note} You never see the password; do not read it back from the page.`,
   };
-}
-
-/** The engine's input relay: one `keyboard insertText` on the page the
- * engine is driving, over its loopback stream (the Browser tab's own path,
- * server/browser-live.ts). The text travels only in this request's body. */
-export async function streamInsertText(port: number, text: string): Promise<void> {
-  const origin = `http://127.0.0.1:${port}`;
-  const response = await fetch(`${origin}/api/command`, {
-    method: "POST", redirect: "error",
-    headers: { "Content-Type": "application/json", Origin: origin },
-    body: JSON.stringify({ action: "keyboard", subaction: "insertText", text }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  const body = await response.text().catch(() => "");
-  let success = false;
-  try { success = response.ok && (JSON.parse(body) as { success?: unknown })?.success === true; } catch { /* reported below */ }
-  if (!success) throw new Error("The browser did not take the typing.");
 }
