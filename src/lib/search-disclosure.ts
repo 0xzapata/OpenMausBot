@@ -1,9 +1,30 @@
 import { useEffect, useState, type SetStateAction } from "react";
 
 const chosen = new Map<string, boolean>();
+const listeners = new Map<string, Set<() => void>>();
 
 export function forgetSearchDisclosuresForTests(): void {
   chosen.clear();
+  listeners.clear();
+}
+
+function subscribeDisclosure(key: string, onChange: () => void): () => void {
+  let bucket = listeners.get(key);
+  if (!bucket) {
+    bucket = new Set();
+    listeners.set(key, bucket);
+  }
+  bucket.add(onChange);
+  return () => {
+    bucket.delete(onChange);
+    if (bucket.size === 0) listeners.delete(key);
+  };
+}
+
+function publishDisclosure(key: string): void {
+  const bucket = listeners.get(key);
+  if (!bucket) return;
+  for (const onChange of bucket) onChange();
 }
 
 export function useSearchDisclosure(
@@ -15,6 +36,9 @@ export function useSearchDisclosure(
   const [own, setOwn] = useState(() => chosen.get(key) ?? initial);
   const [during, setDuring] = useState<boolean | null>(null);
   useEffect(() => setDuring(null), [query]);
+  useEffect(() => subscribeDisclosure(key, () => {
+    if (chosen.has(key)) setOwn(chosen.get(key) === true);
+  }), [key]);
   const searching = Boolean(query.trim());
   const open = searching ? (during ?? matches) : own;
   const set = (next: SetStateAction<boolean>) => {
@@ -25,6 +49,7 @@ export function useSearchDisclosure(
     }
     chosen.set(key, value);
     setOwn(value);
+    publishDisclosure(key);
   };
   return [open, set];
 }
