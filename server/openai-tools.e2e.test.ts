@@ -4,8 +4,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 
-// The fixture can only write one fixed file, provided by the test inside the
-// launcher's disposable home. Provider-supplied arguments cannot select a path.
+// The fixture can only write one fixed file in the launcher's disposable home: provider arguments cannot select a path.
 const MCP_FIXTURE = `
 import { createInterface } from 'node:readline';
 import { writeFileSync } from 'node:fs';
@@ -31,24 +30,16 @@ type ChatRequest = {
   tools?: Array<{ function: { name: string; description?: string } }>;
 };
 
-// The chat drivers keep the system message to the stable half of the
-// prompt, so the provider's cached prefix survives a memory write. Memory is
-// volatile: it rides the newest user message, under this label, on every
-// request (server/drivers/prompt-split.ts, openai-chat.ts).
+// The chat drivers keep the system message to the stable half of the prompt, so the provider's cached prefix survives a memory write.
 const CONTEXT_NOTE = "Context from OpenMausBot updated since this conversation started; it replaces any earlier copy:";
 const MEMORY = "Your memory (MEMORY.md):\n# Memory\n- Fixture prefers concise replies.";
-// Who on the team is busy changes whenever a teammate starts or finishes
-// work, so it is volatile too: it must never reach the cached system message.
+// Team availability changes whenever a teammate starts or finishes, so it must never reach the cached system message.
 const AVAILABILITY = "Team availability";
-/** What the model was actually given: the system message and the newest
- * user message, which carries the volatile context note. */
 function delivered(request: ChatRequest) {
   const system = request.messages.find((message) => message.role === "system")?.content ?? "";
   const turn = request.messages.findLast((message) => message.role === "user")?.content ?? "";
   return { system, turn, all: `${system}\n${turn}` };
 }
-/** Memory reaches the model inside the turn that carries `text`, and not
- * through the cacheable system prefix. */
 function expectMemoryInTurn(request: ChatRequest, text: string) {
   const { system, turn } = delivered(request);
   expect(system).not.toContain("Fixture prefers concise replies.");
@@ -184,8 +175,6 @@ it.each(["openaiCompat", "groq", "meta"] as const)("%s runs structured MCP calls
       if (mode === "allow" || mode === "deny" || mode === "selected") {
         expect(requests).toHaveLength(before + 2);
         const continued = requests[before + 1]!;
-        // The tool continuation resends the same prefix byte for byte, and
-        // its newest user message still carries the memory note.
         expect(delivered(continued)).toEqual(first);
         const result = continued.messages.find((message) => message.role === "tool");
         expect(result?.tool_call_id).toBe("fixture-call");
