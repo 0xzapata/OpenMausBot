@@ -50,6 +50,20 @@ describe("workspace credential migration", () => {
     expect(config.xai.key).toBe("xai-secret");
   });
 
+  it("keeps the Jev and OpenRouter decision keys apart, with the model and provider left in the file", () => {
+    const result = migrateWorkspaceCredentials({
+      decider: { provider: "openrouter", openrouterModel: "openai/gpt-4o-mini", key: "jev-secret", openrouterKey: "sk-or-secret", enabled: true },
+      openrouter: { key: "engine-openrouter-key" },
+    }, {});
+    expect(result.credentials).toEqual({ jevApiKey: "jev-secret", openrouterDeciderKey: "sk-or-secret" });
+    expect(result.config.decider).toEqual({ provider: "openrouter", openrouterModel: "openai/gpt-4o-mini", enabled: true });
+    expect(result.config.openrouter).toEqual({ key: "engine-openrouter-key" });
+    expect(workspaceCredentialEnv(result.credentials)).toEqual({
+      OMB_JEV_API_KEY: "jev-secret",
+      OMB_OPENROUTER_DECIDER_KEY: "sk-or-secret",
+    });
+  });
+
   it("is idempotent: a second boot over migrated output changes nothing", () => {
     const first = migrateWorkspaceCredentials(
       { xai: { key: "xai-secret" }, tts: { key: "tts-secret", voice: "narrator" } },
