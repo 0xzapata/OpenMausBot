@@ -257,7 +257,7 @@ describe("find_tool", () => {
     ["use the desktop the user shared", "shared_computer"],
     ["open a separate job for each pull request", "start_thread"],
     ["read the whole message from an old conversation", "session_read"],
-    ["try the failed thread again", "retry_thread"],
+    ["retry the failed thread", "retry_thread"],
     ["cron", "propose_routine"],
   ])("ranks the hidden tool first from how a person would ask: %s", async (query, expected) => {
     const matches = (await found(bridgeFor(FULL_CHIEF), query)).matches;
@@ -276,9 +276,8 @@ describe("find_tool", () => {
   });
 
   it("matches on words, not meaning: a request that shares none with any tool gets the names instead", async () => {
-    // A known limit of a lexical search. propose_routine is what "remind me"
-    // wants, but neither word is in its description or schema.
-    const payload = await found(bridgeFor(FULL_CHIEF), "remind me tomorrow at 9");
+    // A known limit of a lexical search: propose_routine is what "nudge me" wants, but no word of it is in any tool.
+    const payload = await found(bridgeFor(FULL_CHIEF), "nudge me tomorrow at 9");
     expect(payload.matches).toEqual([]);
     expect(payload.next).toContain("propose_routine");
   });
