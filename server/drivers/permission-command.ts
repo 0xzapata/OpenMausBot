@@ -1,12 +1,34 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
+import { safetyFloorClears } from "../safety-floor-gate.ts";
+
 /** Approval identity preserves every command byte, including whitespace and
  * newlines. Callers must supply native shell input, never a display preview. */
 export function permissionCommand(command: unknown, cwd: unknown): { command: string; cwd: string } | undefined {
   if (typeof command !== "string" || !command.trim() || command.includes("\0")) return undefined;
   if (typeof cwd !== "string" || !isAbsolute(cwd) || cwd.includes("\0")) return undefined;
   return { command, cwd };
+}
+
+const BARE_WORD = /^[\w@%+=:,./-]+$/;
+
+/** Codex's legacy execCommandApproval sends argv, not a line: it is quoted for POSIX sh so the floor reads what runs. */
+function floorCommandLine(command: unknown): string | undefined {
+  if (typeof command === "string") return command.trim() ? command : undefined;
+  if (!Array.isArray(command) || !command.length || !command.every((word) => typeof word === "string")) return undefined;
+  return command.map((word: string) => BARE_WORD.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`).join(" ");
+}
+
+/** A shell request's event fields: the exact-command descriptor, which needs a known cwd, and the raw command line
+ * the safety floor reads, which does not. */
+export function shellRequest(command: unknown, cwd: unknown): { command: ReturnType<typeof permissionCommand>; commandLine: string | undefined } {
+  return { command: permissionCommand(command, cwd), commandLine: floorCommandLine(command) };
+}
+
+/** Whether a driver may answer a request itself with nobody looking; when false it must raise the request instead. */
+export function answersAlone(command: unknown): boolean {
+  return safetyFloorClears(floorCommandLine(command));
 }
 
 export function permissionLaunchCwd(cwd: string): string | undefined {
@@ -23,4 +45,11 @@ export function acpPermissionCommand(rawInput: unknown, launchCwd: string | unde
   if (directories.some((value) => typeof value !== "string" || !isAbsolute(value) || value.includes("\0"))) return undefined;
   if (new Set(directories).size > 1) return undefined;
   return permissionCommand(input.command, directories[0] ?? launchCwd);
+}
+
+/** shellRequest for an ACP tool call: only a shell-typed call gets the descriptor, but any call naming a command
+ * line carries it for the safety floor. */
+export function acpShellRequest(isShellCommand: boolean, rawInput: unknown, launchCwd: string | undefined): ReturnType<typeof shellRequest> {
+  const command = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? (rawInput as Record<string, unknown>).command : undefined;
+  return { command: isShellCommand ? acpPermissionCommand(rawInput, launchCwd) : undefined, commandLine: shellRequest(command, undefined).commandLine };
 }
