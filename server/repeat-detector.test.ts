@@ -31,7 +31,6 @@ describe("toolItemKey", () => {
       if (r.threshold) hits.push(r.threshold);
     }
     expect(hits).toEqual([]);
-    // the same path over and over is still a loop
     for (let i = 0; i < 5; i++) {
       const r = d.record("t1", toolItemKey("Running list_directory", '{"path":"/notes/0"}')!);
       if (r.threshold) hits.push(r.threshold);

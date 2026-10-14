@@ -7,13 +7,7 @@ export function callKey(tool: string, args: string | undefined): string | null {
   return `${tool}:${a}`;
 }
 
-/** A started tool item's key. A title with more than a bare identifier is
- * a call with arguments (ACP: "echo hi", "Read src/x.ts"); a bare "Bash" is
- * not countable. An adapter may title every call alike ("Running
- * list_directory") and keep what differs in the input, so the input, when
- * the item carries one, is part of the call: the pair is encoded whole, so
- * no title and input can run together into another call's, and kept
- * verbatim: "a b" and "a  b" are two paths. */
+/** Antigravity's ACP adapter titles every call alike ("Running list_directory") and carries what differs only in the input. */
 export function toolItemKey(title: string | undefined, input: string | undefined): string | null {
   const t = (title ?? "").trim();
   if (!/\s|\//.test(t)) return null;

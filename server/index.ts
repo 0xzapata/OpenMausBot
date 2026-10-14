@@ -8100,7 +8100,8 @@ bus.subscribe((event: RuntimeEvent) => {
   if (event.type === "turn.completed" || event.type === "session.exited") return void repeats.settle(event.threadId);
   let key: string | null = null, shown: string | undefined; // shown: the title only, never the input the key counts on
   if (event.type === "item.started" && event.itemType === "tool") {
-    key = toolItemKey(event.title, event.input); shown = event.title?.trim();
+    key = toolItemKey(event.title, event.input);
+    shown = event.title?.trim();
   } else if (event.type === "request.opened" && event.requestType === "permission") key = callKey(event.tool, event.summary);
   if (!key) return;
   const { threshold } = repeats.record(event.threadId, key);
