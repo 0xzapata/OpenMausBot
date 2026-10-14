@@ -34,9 +34,7 @@ it("Clive reviews multi-provider teams once, continues after each decision, and 
     // On Ask, so each team setup waits on Clive's review card.
     await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvalMode: "ask" });
     const state = async () => (await api("GET", "/api/bots")).bots;
-    // The fixture pins its starter's name (control-omb.ts), but identity is
-    // still the honest comparison: "Quill" once collided with a randomly
-    // named starter and looked like a leaked planned bot (#1257).
+    // The fixture pins its starter's name, but identity is the honest comparison: a name once collided with a random starter.
     const initialBotIds = new Set((await state()).map((bot: any) => bot.id));
     const setupBots = async () => (await state()).filter((bot: any) => !initialBotIds.has(bot.id));
     let previousPid: number | undefined;
@@ -114,7 +112,6 @@ it("Clive reviews multi-provider teams once, continues after each decision, and 
     expect(card.teamSetupRequest.operations).toHaveLength(3);
     expect(card.subtitle).toContain("Authorize @Clive");
     expect(card.subtitle).toContain("Chief of Staff: No → Yes");
-    // Origin is forgeable by an active bot shell: it cannot self-grant teams.
     await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" }, 403);
     expect(await setupBots()).toHaveLength(0);
     await finish();
@@ -139,7 +136,6 @@ it("Clive reviews multi-provider teams once, continues after each decision, and 
     const created = saved.filter((bot: any) => !initialBotIds.has(bot.id));
     expect(created.map((bot: any) => bot.name).sort()).toEqual(["Mira", "Patch", "Quill"]);
     const engineer = created.find((bot: any) => bot.name === "Patch");
-    // A new teammate starts at the default level, Full access, not its Chief's Ask.
     expect(engineer).toMatchObject({ title: "Implementation and verification engineer", section: "Engineering", chiefOfStaff: true, modelSelection: selection(codex), approvalMode: "full", autoApprove: false, composio: false });
     expect(engineer.managedSections).toBeUndefined();
     expect(saved.find((bot: any) => bot.id === chief.id).managedSections).toEqual(expect.arrayContaining(plan.newTeams));
@@ -155,8 +151,6 @@ it("Clive reviews multi-provider teams once, continues after each decision, and 
     await finish(); await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: updated.requestId, behavior: "allow" }); await continueOnce(updated.requestId);
     const changed = (await state()).find((bot: any) => bot.id === engineer.id);
     expect(changed).toMatchObject({ section: "Growth", modelSelection: selection(claude), description: "Shared delivery specialist" });
-    // The existing thread stays, with its history; it has no model of its
-    // own, so it follows Patch onto Claude.
     expect(changed.tasks.find((task: any) => task.threadId === engineer.threadId))
       .toMatchObject({ modelSelection: selection(claude), followsBotModel: true });
 

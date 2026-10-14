@@ -1,7 +1,3 @@
-// The inside of a widget's card, under its header: a Card stacks its children
-// to the mock's rhythm, a ListView draws its rows and folds the ones past
-// `limit` behind "Show all". A ListView with a `name` is one choice: its
-// rows are a radio group.
 import { Fragment, useState, type KeyboardEvent } from "react";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
@@ -10,12 +6,9 @@ import { useWidgetForm, WidgetRadioMark } from "./WidgetControls";
 import { WIDGET_ROW, WIDGET_ROW_CONTROLS, WidgetListRow, WidgetNodeView } from "./WidgetNodes";
 import { ALIGN, fourSides, kids } from "./widget-style";
 
-/** Rows that bring their own height (44px) and are parted by a rule, not by room. */
 const isRow = (node: WidgetNode | undefined): boolean => node?.type === "Row" || node?.type === "Checkbox";
-/** Rows of any kind sit closer to the card's edge than text does. */
 const isRows = (node: WidgetNode | undefined): boolean => isRow(node) || node?.type === "ListViewItem";
 
-/** The room between two children of a card. A Divider carries its own. */
 function roomBetween(above: WidgetNode | undefined, below: WidgetNode | undefined): number {
   if (!above || !below || above.type === "Divider" || below.type === "Divider") return 0;
   return isRow(above) && isRow(below) ? 0 : 12;
@@ -25,8 +18,6 @@ export function WidgetBody({ root, headed }: { root: WidgetNode; headed: boolean
   const children = kids(root);
   if (root.type === "ListView") return <ListBody root={root} items={children} headed={headed} />;
   if (!children.length) return null;
-  // 16 at the sides, as on every ask in the chat (AskCard). Under a header the header's own foot is the
-  // room above; without one, rows start 6 from the edge and anything else 16.
   const [top, right, bottom, left] = fourSides(root.padding)
     ?? [headed ? 0 : isRows(children[0]) ? 6 : 16, 16, isRows(children[children.length - 1]) ? 6 : 16, 16];
   return (
@@ -57,7 +48,6 @@ function ListBody({ root, items, headed }: { root: WidgetNode; items: WidgetNode
   const form = useWidgetForm();
   const limit = widgetNumber(root, "limit");
   const name = widgetString(root, "name");
-  // a chosen row is never left behind the fold: a list that holds one past its limit opens whole
   const chosenAt = name ? items.findIndex((item) => item.value === form.values[name]) : -1;
   const shown = limit && !all && items.length > limit && chosenAt < limit ? items.slice(0, limit) : items;
   if (!items.length) return null;
@@ -73,7 +63,6 @@ function ListBody({ root, items, headed }: { root: WidgetNode; items: WidgetNode
         </div>
       )}
       {shown.length < items.length && (
-        // unfolding is the reader's own: it works on a settled, read-only card too
         <button
           type="button"
           onClick={() => setAll(true)}
@@ -86,10 +75,6 @@ function ListBody({ root, items, headed }: { root: WidgetNode; items: WidgetNode
   );
 }
 
-/** The rows of a list with a `name`: one of them is chosen, as in a radio group. The whole row is the
- * target, the chosen row keeps its fill and its mark, and its `value` is the list's value in the card's
- * form state, so confirm sends it like any other field. Tab lands on the chosen row (the first, while
- * none is), and the arrow keys move the choice. */
 function ChoiceRows({ rows, name, required }: { rows: WidgetNode[]; name: string; required: boolean }) {
   const form = useWidgetForm();
   const chosen = form.values[name];
@@ -129,10 +114,8 @@ function ChoiceRows({ rows, name, required }: { rows: WidgetNode[]; name: string
             aria-checked={checked}
             aria-disabled={form.locked || undefined}
             tabIndex={index === stop && !form.locked ? 0 : -1}
-            // where a press that found nothing chosen sends the focus
             data-widget-field={index === stop ? name : undefined}
             onClick={(event) => {
-              // a button or link inside the row is its own press, not a choice of the row
               const inner = (event.target as Element).closest(WIDGET_ROW_CONTROLS);
               if (!inner) choose(row);
             }}

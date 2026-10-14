@@ -2,20 +2,11 @@ import { peerName, renderRoster, reachablePeers, type RosterMember } from "./pee
 
 export type ChiefTeamMember = RosterMember;
 
-// The Chief's roster stays wider than an ordinary bot's (peer-roster.ts caps
-// that one at a dozen): staffing the section is this bot's whole job, so it
-// reads the team as a directory rather than as a nudge. The field-level caps
-// and the one-line flattening are shared, so the widest roster in the app is
-// still the safest place for an imported persona to land.
 const ROSTER_MAX_BOTS = 40;
 
 const sectionKey = (section?: string): string => section?.trim() || "";
 
-/** Dynamic system context for a section's Chief of Staff.
- * It names the current team on every turn, while list_bots remains the
- * authoritative tool for IDs and live availability at delegation time.
- * Who is busy right now is not part of it: that changes turn to turn, so it
- * rides the volatile half (teammateAvailabilityPrompt in peer-roster.ts). */
+/** Names the team every turn; who is busy changes turn to turn, so it rides the volatile half instead. */
 export function chiefOfStaffSystemPrompt(
   chiefId: string,
   bots: ChiefTeamMember[],
@@ -24,14 +15,8 @@ export function chiefOfStaffSystemPrompt(
   const chief = bots.find((bot) => bot.id === chiefId);
   const chiefSection = sectionKey(chief?.section);
   const sectionName = peerName(chiefSection) || "General";
-  // A Chief with its own allow-list is bound by it here too: the roster and
-  // the endpoints must agree, or the prompt names teammates the tools will
-  // then refuse to reach.
+  // The roster honours the Chief's own allow-list, or the prompt would name teammates the tools then refuse.
   const team = reachablePeers(bots, chief ?? { id: chiefId, name: "" });
-  // `about: true` keeps the blurb the Chief staffs from. The ordinary-bot
-  // roster drops it (peer-roster.ts); widening the Chief's existing exposure
-  // was never in scope, and narrowing it here would silently change how a
-  // Chief picks a specialist.
   const roster = renderRoster(team, {
     max: ROSTER_MAX_BOTS,
     empty: "- No other visible bots are available yet.",

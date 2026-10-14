@@ -1,6 +1,3 @@
-// The bus is the seam every client depends on: events must arrive
-// stamped with their instanceId, cross-driver leaks must be dropped, and
-// neither logging nor a broken listener may take down the stream.
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -254,7 +251,6 @@ describe("EventBus", () => {
     const bus = new EventBus((_path: string, data: string) => { writes.push(data); });
     for (let i = 0; i < 260; i++) bus.publish(testEvent({ eventId: `e${i}` }));
     bus.publish(testEvent({ eventId: "done", type: "turn.completed", ok: true } as Partial<RuntimeEvent>));
-    // Another thread's end, with nothing of its own lost, lands unmarked.
     bus.publish(testEvent({ eventId: "other-done", threadId: "thread-2", type: "turn.completed", ok: true } as Partial<RuntimeEvent>));
     bus.publish(testEvent({ eventId: "error-end", threadId: "thread-3", type: "runtime.error", message: "boom", terminal: true } as Partial<RuntimeEvent>));
     await bus.flush();
@@ -346,10 +342,6 @@ describe("EventBus", () => {
   });
 });
 
-// A provider streams a reply as many small text deltas. The bus publishes
-// them merged, at most one per thread every 50 ms, so the log, the listeners
-// and every connected client handle a few frames per second instead of one
-// per token. Nothing else is delayed, and nothing changes order.
 describe("EventBus streamed text", () => {
   const delta = (text: string, over: Partial<RuntimeEvent> = {}): RuntimeEvent =>
     testEvent({ type: "content.delta", streamKind: "assistant_text", delta: text, turnId: "turn-1", ...over } as Partial<RuntimeEvent>);

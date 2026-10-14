@@ -19,8 +19,7 @@ vi.mock("@/state/store", async (importOriginal) => {
     dispatch: fixture.dispatch,
   }) };
 });
-// The real useCaptionChrome rides along: it only asks this module for the
-// window chrome, and these tests render the desktop-neutral layout.
+// The real useCaptionChrome rides along: it only asks this module for the window chrome.
 vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   ...await importOriginal<typeof import("./DesktopCapabilities")>(),
   useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false }, host: { packaged: true, platform: fixture.platform }, localComputer: { available: false, reasonCode: fixture.localReasonCode, message: fixture.localMessage } }, ready: true }),
@@ -31,8 +30,7 @@ vi.mock("@/lib/thread-preferences", async (importOriginal) => ({
   useShowThreads: () => fixture.showThreads,
 }));
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: vi.fn() }));
-// Record every popover menu's items; the trigger still renders so the markup
-// assertions elsewhere in this file see the same header.
+// The trigger still renders, so the markup assertions in this file see the same header.
 vi.mock("./SidebarPopoverMenu", async (importOriginal) => ({
   ...await importOriginal<typeof import("./SidebarPopoverMenu")>(),
   SidebarPopoverMenu: (props: { ariaLabel: string; items: never[]; renderTrigger: (state: { open: boolean }) => unknown }) => {
@@ -95,7 +93,6 @@ describe("header name", () => {
     fixture.advanced = false;
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
     expect(markup).not.toContain('aria-label="Rename Pepper"');
-    // one button holds the avatar and the name together
     const pill = markup.match(/<button[^>]*data-chathead-pill="true"[^>]*>([\s\S]*?)<\/button>/);
     expect(pill?.[0]).toContain('aria-label="Open Pepper&#x27;s profile"');
     expect(pill?.[1]).toContain(">Pepper</span>");
@@ -123,11 +120,9 @@ describe("header name", () => {
         return markup.slice(start, markup.indexOf("data-chathead-status", start));
       };
       expect(pillOf(busyMarkup)).not.toContain("animate-status-pulse");
-      // the same pill markup busy or not, so its width cannot change
       expect(pillOf(busyMarkup)).toBe(pillOf(idleMarkup));
       expect(busyMarkup).toMatch(/<span role="status" class="sr-only" data-chathead-status="true">Working…<\/span>/);
       expect(idleMarkup).toMatch(/<span role="status" class="sr-only" data-chathead-status="true"><\/span>/);
-      // the turn stays visible without the dots: the header's Stop button
       expect(busyMarkup).toContain('title="Stop this turn"');
     }
     fixture.advanced = true;
@@ -139,13 +134,10 @@ describe("header name", () => {
     }));
     const button = (markup: string) => markup.match(/<button[^>]*data-tour="computer"[^>]*>[\s\S]*?<\/button>/)?.[0] ?? "";
     expect(button(working("browser", true))).toContain('data-testid="computer-button-live"');
-    // The button keeps its own name; the dot only adds to it.
     expect(button(working("browser", true))).toContain('aria-label="Bot&#x27;s computer, In use now"');
     expect(button(working("browser", false))).toContain('aria-label="Bot&#x27;s computer"');
-    // Idle, or working on a computer rather than the browser: no dot.
     expect(button(working("browser", false))).not.toContain("computer-button-live");
     expect(button(working("local", true))).not.toContain("computer-button-live");
-    // An Auto conversation pinned to the browser by its first turn counts too.
     const pinned = renderToStaticMarkup(createElement(ChatView, {
       bot: { ...bot, computer: undefined, busy: true, tasks: (bot.tasks ?? []).map((task) => ({ ...task, busy: true, surface: "browser" as const })) },
     }));
@@ -172,9 +164,7 @@ describe("glass header", () => {
     expect(frame).toBeLessThan(header);
     expect(header).toBeLessThan(name);
     expect(name).toBeLessThan(scroller);
-    // The glass is tinted with the chat's own background, not the sidebar's.
     expect(markup.slice(frame, header)).toContain("[--glass-tint:var(--color-app)]");
-    // The transcript is padded by the header's measured height.
     expect(markup.slice(scroller)).toMatch(/class="glass-scroller-content[^"]*"[^>]*role="log"/);
   });
 });
@@ -237,7 +227,6 @@ describe("thread control placement", () => {
       expect(markup).not.toContain('role="alertdialog"');
       delete window.ogb;
     }
-    // Custom keeps its rule: nothing is sent without the desktop bridge.
     fixture.dispatch.mockClear();
     renderToStaticMarkup(createElement(ChatView, { bot }));
     fixture.approval!.onSelect("custom");
@@ -277,9 +266,6 @@ describe("thread control placement", () => {
     expect(markup).toContain("Sign in to Claude</button>");
     expect(markup).toMatch(/<summary[^>]*>Details<\/summary><p[^>]*>Not logged in · Please run \/login<\/p>/);
     expect(markup).not.toContain(">Retry<");
-    // an update offer is not a sign-in: the row keeps the engine's words,
-    // on a company-managed Claude too (chat cannot update it, so no offer
-    // shows, but the row is still about the update, as the list says)
     const update = { name: "error: Claude Code 2.1.268 does not support this model", ok: false, setup: true, claudeUpdate: true };
     for (const engine of [claude, { ...claude, readOnly: true }]) {
       const row = renderToStaticMarkup(createElement(FailedTurnRow, { tool: update, engine }));
@@ -294,7 +280,6 @@ describe("thread control placement", () => {
     expect(markup).toContain(">The service is busy right now. Try again in a moment.</span>");
     expect(markup).toMatch(/<summary[^>]*>Details<\/summary><p[^>]*>API Error: 529/);
     expect(markup).toContain(" Retry</button>");
-    // a cause already written for a person stays the headline, with nothing to expand
     const plain = renderToStaticMarkup(createElement(FailedTurnRow, { tool: { name: "error: no activity for 10 minutes — the turn was stopped", ok: false }, engine: undefined }));
     expect(plain).toContain(">no activity for 10 minutes — the turn was stopped</span>");
     expect(plain).not.toContain(">Details</summary>");
@@ -309,7 +294,6 @@ describe("thread control placement", () => {
     }));
     expect(markup).toContain("Update Claude for me");
     expect(markup).toContain("I&#x27;ll do it myself");
-    // the offer replaces the plain Retry until they pick a path
     expect(markup).not.toContain(">Retry<");
   });
   it("updates only a local Claude Code engine from chat", () => {
@@ -366,8 +350,6 @@ describe("thread control placement", () => {
       fixture.showToolCalls = false;
     }
   });
-  // A bot saved on a retired model runs another one; with Tool calls off
-  // (the default) the notice saying so was dropped with the tool steps.
   it.each([false, true])("shows a model notice as a status row when tool calls are %s", (showToolCalls) => {
     fixture.showToolCalls = showToolCalls;
     const explanation = "OpenCode no longer offers opencode/x-preview-f-free, so this conversation uses opencode/big-pickle.";
@@ -424,18 +406,12 @@ describe("thread control placement", () => {
       ...bot,
       messages: [{ id: "mixed-script", role: "user", kind: "text", at: 1, text }],
     } }));
-    // unicode-bidi does not inherit: setting it on the bubble leaves this
-    // inner text block LTR. Keep the class directly on the node with prose.
+    // unicode-bidi does not inherit, so the class must sit on the node holding the prose.
     expect(markup).toMatch(/<div class="chat-text[^"]*"[^>]*>(?:شغّل|שלום|مرحبا)/);
     expect(markup).not.toMatch(/class="[^"]*chat-text[^"\n]*bg-bubble-user/);
   });
 
   it("wraps the header into a name line and a chip line when the column is narrow", () => {
-    // On a phone, or with a panel beside the chat, the header's chip group
-    // cannot shrink: the name truncated to nothing and the rename pencil
-    // landed under the export button. Below 30rem the header wraps instead.
-    // The query lives on the container's child row: a container query never
-    // matches the container element itself. (Approach from #1289.)
     const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false } }));
     expect(markup).toContain("@container/chathead");
     const row = /data-chathead-row="[^"]*" class="([^"]*)"/.exec(markup)!;
@@ -447,13 +423,9 @@ describe("thread control placement", () => {
   });
 
   it("keeps the Chief of Staff badge on one line instead of stacking a word per line", () => {
-    // #1871: the badge shrank with the name and wrapped "Chief / of / Staff",
-    // taller than the header row.
     const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false, chiefOfStaff: true } }));
     const badge = /<span title="Chief of Staff" class="([^"]*)"><svg[^>]*lucide-crown[^]*?<\/svg> <span class="([^"]*)">Chief of Staff<\/span>/.exec(markup)!;
     expect(badge[1].split(" ")).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
-    // In a narrow column it folds to the crown, so the name keeps the room;
-    // the label stays for screen readers and as the tooltip.
     expect(badge[2].split(" ")).toContain("@max-4xl/chathead:sr-only");
   });
 
@@ -484,16 +456,11 @@ describe("thread control placement", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
     const pill = markup.slice(markup.indexOf("rounded-3xl bg-composer"), markup.indexOf("<textarea"));
     expect(pill.match(/data-testid="place-chip"/g) ?? []).toHaveLength(advanced ? 1 : 0);
-    // Nowhere else in the chat either: Simple follows the bot's Works on.
     expect(markup.includes("Where this conversation works")).toBe(advanced);
     fixture.advanced = true;
   });
 });
 
-// A polite live region on the whole transcript re-reads every change: the
-// ticking "Thinking 3s", each activity label, every chip. The log stays a
-// landmark people can browse, and one quiet status line speaks when a
-// reply is done or an approval is waiting.
 describe("screen reader announcements", () => {
   it("keeps the transcript log out of live announcements", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
@@ -514,8 +481,6 @@ describe("screen reader announcements", () => {
   });
 });
 
-// On an OMB Cloud home a guest writes only in conversations it opened: in
-// any other, one button starts its own instead of a send that fails.
 describe("a guest's composer on a Cloud home", () => {
   it("offers a new conversation in one click, with no dialog", () => {
     const onNew = vi.fn();
@@ -570,7 +535,6 @@ describe("the way back to the bot's own conversation", () => {
   it("never with threads shown, nor in the main thread itself", () => {
     expect(header(true, visiting)).not.toContain("data-chathead-back");
     expect(header(false, { ...visiting, threadId: "main" })).not.toContain("data-chathead-back");
-    // a bot whose main thread this window has no row for yet stays put
     expect(header(false, { ...visiting, mainThreadId: "unknown" })).not.toContain("data-chathead-back");
   });
 });

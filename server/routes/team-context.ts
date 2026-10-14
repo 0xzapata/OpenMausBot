@@ -1,9 +1,4 @@
-// A team's shared context, moved out of server/index.ts's inline routes
-// into the route table (server/routes/README.md): the brief a person owns
-// (/api/section-context) and the team memory bots propose and people
-// curate (/api/team-memory). Both take the section as a query parameter,
-// required even for General (""). The table runs after the auth gate;
-// scope rules stay keyed by path in server/request-auth.ts.
+// Both routes take the section as a query parameter, required even for General ("").
 import { z } from "zod";
 
 import { SECTION_CONTEXT_MAX_BYTES, readSectionContext, sectionContextKey, sectionContextLabel, writeSectionContext } from "../section-context.ts";
@@ -19,16 +14,8 @@ export interface TeamContextRouteDeps {
 export function createTeamContextRoutes(deps: TeamContextRouteDeps): RouteHandler {
   const { store, teamMemory } = deps;
   return async ({ req, res, url, path, method, json, readBody }) => {
-    /** scratch for route matches, shared by every `path.match` below */
     let m: RegExpMatchArray | null = null;
-    // ── section context: a user-owned team brief ────────────────────────
-    // Bots receive this in their system context, but no agent tool can write
-    // it. That keeps one bot from silently changing every teammate's future
-    // turns. The section query parameter is required even for General (""),
-    // so a malformed client cannot accidentally read or replace that brief.
-    // ── team memory: the section's shared people, places, decisions, terms ──
-    // The person's view and their edits. Same section rule as the brief:
-    // the query parameter is required even for General.
+    // Bots receive the brief in their system context, but no agent tool can write it: one bot cannot change every teammate's turns.
     if (path === "/api/team-memory" && (method === "GET" || method === "POST")) {
       if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
       const section = sectionContextKey(url.searchParams.get("section") ?? "");
@@ -46,7 +33,6 @@ export function createTeamContextRoutes(deps: TeamContextRouteDeps): RouteHandle
           { kind: body.kind as TeamMemoryKind, name: String(body.name ?? ""), detail: String(body.detail ?? ""), aliases: Array.isArray(body.aliases) ? body.aliases.map(String) : undefined },
           { botId: "", botName: "you", threadId: "", at: Date.now() },
         );
-        // the person's own entry never waits on the person
         if (proposed.status === "proposed") teamMemory.resolve(section, proposed.entry.id, "accept");
         return json(res, 201, { entries: teamMemory.list(section) });
       } catch (error) {

@@ -7,8 +7,10 @@ import { deviceFlowUnavailable, type DeviceSignInStatus } from "./DeviceSignIn";
 
 const SIGN_IN_HOSTS = ["claude.com", "claude.ai", "console.anthropic.com", "platform.claude.com"];
 
-/** Never turn arbitrary process output into a link: only Anthropic's own
- * sign-in pages over https. The server applies the same rule first. */
+/**
+ * Security: never turn arbitrary process output into a link; only Anthropic's own sign-in pages over https. The server
+ * applies the same rule first.
+ */
 export function claudeSignInLink(value: string | null | undefined): string | null {
   if (!value) return null;
   try {
@@ -25,8 +27,6 @@ function endedFlow(phase: "expired" | "failed"): DeviceSignInStatus {
   return { phase, flowId: null, authorizationUrl: null, expiresAt: null, ...(phase === "failed" ? { message: t("engineSetup.device.flowEnded") } : {}) };
 }
 
-/** Settings → Engines → Claude on a hosted server: open Anthropic's sign-in
- * page, paste the code it shows, done. The server drives the unmodified CLI. */
 export function ClaudeSignIn({ instanceId }: { instanceId: string }) {
   const { refreshInstances, refreshModels } = useStore();
   const [auth, setAuth] = useState<DeviceSignInStatus | null>(null);
@@ -41,8 +41,6 @@ export function ClaudeSignIn({ instanceId }: { instanceId: string }) {
     await refreshModels(instanceId);
   };
 
-  // Expire the link locally when the server says it does, and poll the
-  // outcome while a code is being checked.
   useEffect(() => {
     if (auth?.phase !== "waiting" || !auth.flowId) return;
     const remaining = auth.expiresAt ? Date.parse(auth.expiresAt) - Date.now() : Number.NaN;
@@ -84,7 +82,6 @@ export function ClaudeSignIn({ instanceId }: { instanceId: string }) {
       if (next.phase === "succeeded") await refresh();
     } catch (cause) {
       if (deviceFlowUnavailable(cause)) {
-        // the server already knows the outcome; ask it rather than guess
         try {
           const { auth: next }: { auth: DeviceSignInStatus } = await api(`${base}/status?flowId=${encodeURIComponent(auth.flowId)}`);
           setAuth(next);

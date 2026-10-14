@@ -23,10 +23,9 @@ export function supportsApprovalMode(driverKind: string | undefined, mode: Appro
 
 /** Whether switching engines must first drop this level to Ask. A Custom
  * grant's rules belong to one provider's tool semantics, so it never crosses
- * engines. Full carries silently to any engine: the person gave this bot Full
- * access, and changing its engine must not take it back or ask again (owner
- * decision, Oct 12). Auto-accept edits stops at an engine without it.
- * Adapted from tahodev's provider-switch guard (#1120). */
+ * engines; Full carries silently to any engine; Auto-accept edits stops at an
+ * engine without it.
+ * Adapted from tahodev's provider-switch guard. */
 export function modelSwitchNeedsAsk(
   mode: ApprovalMode,
   fromDriver: string | undefined,
@@ -59,10 +58,8 @@ export function setDefaultApprovalMode(mode: ApprovalMode): void {
   defaultApprovalMode = mode;
 }
 
-/** Resolve the durable mode. A bot or conversation nobody has set a level on
- * runs at the default. The legacy Auto bit, written before approvalMode
- * existed, stays safe Auto, and an unknown persisted value fails closed to
- * Ask. */
+/** An unset level runs at the default, the pre-approvalMode Auto bit reads as
+ * safe Auto, and an unknown persisted value fails closed to Ask. */
 export function approvalModeFor(bot: {
   approvalMode?: unknown;
   autoApprove?: unknown;

@@ -30,7 +30,7 @@ import { join } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
 import { audienceWithin } from "./bot-visibility.ts";
-import { skillsLibraryEnabled, type AppConfig } from "./config.ts";
+import type { AppConfig } from "./config.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
 import {
@@ -42,6 +42,7 @@ import {
   readSkillLibraryIndex,
   retireLibrarySkill,
   skillLibraryEvents,
+  skillsLibraryEnabled,
   skillsLibraryRoot,
   updateLibrarySkill,
 } from "./skill-library.ts";

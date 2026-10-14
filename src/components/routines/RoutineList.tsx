@@ -15,8 +15,6 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
   error?: boolean;
   onOpen: (routine: Routine) => void;
   onLogs: (routine: Routine) => void;
-  /** Pause or resume from the card: its state badge becomes an on/off
-   * switch. A finished one-shot keeps the badge; there is nothing to resume. */
   onToggle?: (routine: Routine) => void;
 }) {
   const sorted = [...routines].sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) || a.name.localeCompare(b.name));
@@ -38,7 +36,6 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
             ? <Switch checked={routine.enabled} aria-label={t("routines.toggle", { name: routine.name })} onClick={() => onToggle(routine)} />
             : <span className={cn("shrink-0 rounded-full bg-inset px-2 py-0.5 text-[10px]", routine.enabled && routine.nextRunAt != null ? "text-accent" : "text-ink-secondary")}>{routineScheduleState(routine)}</span>}
         </div>
-        {/* The badge said Paused; with a switch in its place the line says it. */}
         {(switched || routineNextLabel(routine) !== routineScheduleState(routine)) && <div className="mt-2 text-[11.5px] text-ink-secondary">{routineNextLabel(routine)}</div>}
         <div className="mt-1 flex items-start justify-between gap-2">
           <div className="min-w-0 text-[11.5px]">

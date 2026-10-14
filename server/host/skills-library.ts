@@ -13,11 +13,11 @@ import { randomUUID } from "node:crypto";
 
 import type { SkillRequestCardData, SkillShareRecord } from "../../shared/skill-request.ts";
 import { narrowestAudience, intersectAudience } from "../bot-visibility.ts";
-import { DATA_DIR, skillsLibraryEnabled, type AppConfig } from "../config.ts";
+import { DATA_DIR, type AppConfig } from "../config.ts";
 import { appendDecision } from "../decision-log.ts";
 import { UNDO_STALE, type DirectApply } from "../direct-apply.ts";
 import { redactSecretsInText } from "../redact.ts";
-import { readLibrarySkillFile, readSkillLibraryIndex } from "../skill-library.ts";
+import { readLibrarySkillFile, readSkillLibraryIndex, skillsLibraryEnabled } from "../skill-library.ts";
 import {
   conversationAssignedSkills,
   prepareShareNote,

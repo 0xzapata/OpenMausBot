@@ -1,11 +1,7 @@
 /**
- * Durable payload carried by a chat routine confirmation card.
- *
- * Tool input is normalized before it reaches this shape: timestamps are
- * milliseconds, weekly day names are the scheduler's numeric weekday values,
- * and every text field has already been scrubbed for credential-shaped data.
- * Keeping the normalized operation on the card lets a confirmation survive an
- * app restart without asking the model to interpret the request again.
+ * Durable payload carried by a chat routine confirmation card. Tool input
+ * arrives normalized (milliseconds, numeric weekdays, credential-scrubbed
+ * text), so a confirmation survives a restart without asking the model again.
  */
 
 import type { RoutineCronSchedule } from "./routine-schedule.ts";
@@ -52,7 +48,7 @@ export interface RoutineRequestDefinition {
   instructions: string;
   schedule: RoutineRequestSchedule;
   runOn: RoutineRequestRunOn;
-  /** Legacy calendar/display length. It does not stop an active run. */
+  /** Calendar/display length only: it does not stop an active run. */
   durationMinutes: number;
   /** Optional safety cap for active work. Missing means no timeout. */
   timeoutMinutes?: number;
@@ -124,7 +120,7 @@ export interface RoutineRequestCardData {
   threadId: string;
   createdAt: number;
   operation: RoutineRequestOperation;
-  /** Written after a successful confirmation. Useful for support/debugging. */
+  /** Written after a successful confirmation. */
   appliedAt?: number;
   resultId?: string;
   undo?: RoutineRequestUndo;

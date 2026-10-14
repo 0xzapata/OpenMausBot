@@ -397,7 +397,6 @@ export function EventEditor({
     ? toLocalDateInput(schedule.endsAt)
     : toLocalDateInput(addDays(startOfDay(Math.max(Date.now(), initialAt)), 7)));
   const [botIds, setBotIds] = useState(lockedBotId ? [lockedBotId] : existingRoutine ? [existingRoutine.botId] : existingCall?.botIds ?? seed.botIds);
-  // A routine without a thread of its own reports into the bot's main thread.
   const [resultsThreadId, setResultsThreadId] = useState<string | null | undefined>((existingRoutine ? existingRoutine.resultsThreadId : seed.resultsThreadId) ?? null);
   const selectBots = (ids: string[]) => {
     if (ids[0] !== botIds[0]) setResultsThreadId(null);
@@ -466,7 +465,6 @@ export function EventEditor({
       setIntervalTimeoutDefaultApplied(true);
     }
     if (isCronChoice(choice)) {
-      // Switching from a preset to Advanced starts with what the person chose.
       if (choice === "cron" && cron?.schedule) setCronDraft((draft) => ({ ...draft, expression: cron.schedule!.expression }));
       setCronChanged(true);
     }
@@ -552,7 +550,6 @@ export function EventEditor({
           durationMinutes,
           timeoutMinutes,
           overlap,
-          // Room goals can't carry a report yet, and a one-time run has no next run.
           continuity: routineTarget === "bot" && recurrence !== "none" && continuity,
           runOnStartup: recurrence !== "none" && runOnStartup,
           attachments: routineTarget === "room-goal" ? [] : attachments as RoutineContextAttachment[],
@@ -605,8 +602,6 @@ export function EventEditor({
   );
   const canSwitchKind = !routinesOnly && !existingRoutine && !existingCall && !lockedBotId;
   const advanced = useAdvancedMode();
-  // Simple mode keeps the basics up front. A schedule or setting the basics
-  // cannot show opens More options straight away, so nothing saved is hidden.
   const [moreOpen, setMoreOpen] = useState(() => !(["none", "daily", "weekdays", "weekly"] as RecurrenceChoice[]).includes(recurrence)
     || routineTarget === "room-goal"
     || attachments.length > 0
@@ -1253,9 +1248,7 @@ function CalendarEventCard({
   const ownerBots = ownerIds.flatMap((id) => bots.find((bot) => bot.id === id) ?? []);
   const primary = ownerBots[0];
   const name = isCall ? item.call.name : run?.routineName ?? routine?.name ?? "Routine";
-  // The bot's own colour tints the chip; calls and unknown bots use theme tokens.
   const color = isCall ? "var(--color-accent)" : primary ? MAUS_COLORS[primary.color] : "var(--color-ink-tertiary)";
-  // A paused routine's projected occurrence: shown, but it will not run.
   const paused = Boolean(routine && !run && !routine.enabled);
   const [previewDuration, setPreviewDuration] = useState(item.durationMinutes);
   useEffect(() => setPreviewDuration(item.durationMinutes), [item.durationMinutes]);
@@ -1410,7 +1403,6 @@ function CalendarGrid({
       const item = JSON.parse(raw) as { kind: EventKind; id: string; at: number };
       onMove(item, at);
     } catch {
-      // Ignore drags from another application.
     }
   };
 
@@ -1474,7 +1466,6 @@ export function EventDetails({
   onEdit: () => void;
   onCallChanged: (id: string | null) => void;
   onOpenRoom: (id: string) => void;
-  /** Opens one of the routine's recent runs in this drawer. */
   onOpenRun?: (run: RoutineRun) => void;
 }) {
   const { state, dispatch } = useStore();
@@ -1483,7 +1474,6 @@ export function EventDetails({
   const [working, setWorking] = useState(false);
   const runNowPending = useRef(false);
   const [starting, setStarting] = useState(false);
-  // undefined preserves the selected historical run; null clears it for a new attempt.
   const [submittedRun, setSubmittedRun] = useState<RoutineRun | null | undefined>(undefined);
   const [error, setError] = useState("");
   const isCall = item.kind === "call";
@@ -1501,9 +1491,6 @@ export function EventDetails({
   const primary = invited[0];
   const executionOwner = isRoomGoal ? goalGroup : primary;
   const canOpenExecution = Boolean(executionThreadId && (executionOwner?.threadId === executionThreadId || executionOwner?.tasks?.some((task) => task.threadId === executionThreadId)));
-  // A run snapshots where it reported (older runs: the chat that made the
-  // routine). A routine without a chosen thread reports to the main thread,
-  // which its own view opens; a run never redirects to it.
   const resultsThreadId = run ? run.resultsThreadId ?? run.sourceThreadId : routine?.resultsThreadId;
   const openResultsId = resultsThreadId ?? (!run && routine?.target === "bot" ? primary?.mainThreadId : undefined);
   const canOpenResults = openResultsId && [...state.bots, ...state.groups].some((owner) => owner.threadId === openResultsId || owner.tasks?.some((task) => task.threadId === openResultsId));
@@ -1545,13 +1532,11 @@ export function EventDetails({
     setSubmittedRun(null);
     setWorking(true);
     setError("");
-    // The store flushes pending model and approval-level changes before it
-    // starts the run. Keep this button pending through that barrier and the
-    // POST so a double-click cannot create two routine runs.
+    // Stays pending through the store's settings flush and the POST, so a double-click cannot create two runs.
     dispatch({
       type: "runRoutine",
       routineId: routine.id,
-      // Prefer subsequent SSE records over this response, which may already be stale.
+      // Prefer later SSE records over this response, which may already be stale.
       onStarted: setSubmittedRun,
       onError: (cause) => setError(cause instanceof Error ? cause.message : String(cause)),
       onSettled: () => {
@@ -1821,7 +1806,6 @@ export function RoutinesPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
   const [webhookCreateRequest, setWebhookCreateRequest] = useState(0);
   const [error, setError] = useState("");
   const visibleBots = state.bots.filter((bot) => !bot.hidden);
-  // Webhooks are an Advanced-mode tool; Simple mode keeps triggers elsewhere.
   const webhooksAvailable = advanced && !routinesOnly;
   const shownSection = section === "webhooks" && !webhooksAvailable ? "calendar" : section;
   const viewDays = layout === "day" ? 1 : 7;
@@ -1853,8 +1837,6 @@ export function RoutinesPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
 
   const items = useMemo<CalendarEventItem[]>(() => {
     const routineItems = projectedRoutineItems(state.routines, state.routineRuns, rangeStart, rangeEnd).map((item) => ({ ...item, kind: "routine" as const }));
-    // Paused routines keep their place on the grid, muted, so they are easy
-    // to find and resume. Only upcoming slots: a paused slot never ran.
     const now = Date.now();
     const pausedRoutines = state.routines.filter((routine) => !routine.enabled);
     const pausedItems = projectedRoutineItems(pausedRoutines.map((routine) => ({ ...routine, enabled: true })), state.routineRuns, rangeStart, rangeEnd)
@@ -1921,8 +1903,6 @@ export function RoutinesPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
     setSelected(null);
     setQuick({ kind: "routine", at: nextHour(), durationMinutes: 30, botIds: [], ...seed });
   }, []);
-  // Advanced keeps the quick popover (with its Routine / Call switch); Simple
-  // goes straight to the plain editor, which has a time and Repeat choices.
   const createRoutine = () => {
     if (section === "webhooks") setSection("calendar");
     if (advanced) return openCreate({ kind: "routine" });
@@ -2064,7 +2044,6 @@ export function RoutinesPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
             </div>
           )}
         </div>
-        {/* Beside the grid when there is room; over it on a narrow window. */}
         {drawerOpen && liveSelected && (
           <div className="absolute inset-y-0 right-0 z-30 flex shadow-2xl @min-[760px]/routines:static @min-[760px]/routines:shadow-none">
             <EventDetails key={`${liveSelected.kind}:${liveSelected.id}`} item={liveSelected} bots={state.bots} onClose={() => setSelected(null)} onEdit={editSelected} onOpenRun={openRun} onCallChanged={(id) => { if (id) setCalls((current) => current.filter((call) => call.id !== id)); else void loadCalls(); }} onOpenRoom={onOpenRoom} />
@@ -2079,10 +2058,10 @@ export function RoutinesPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
   );
 }
 
-/** Desktop only: the one lever the app has against a sleeping computer.
- * The scheduler runs inside the local server, so while the Mac sleeps no
- * routine fires; the shell holds a power assertion for the hour before a
- * due routine and while one runs, plugged in only, and this row shows it. */
+/**
+ * While the Mac sleeps no routine fires: the shell holds a power assertion the hour before a due routine and while one
+ * runs, plugged in only.
+ */
 function RoutineWakeBar() {
   const bridge = typeof window !== "undefined" ? window.ogb?.routines : undefined;
   const [state, setState] = useState<DesktopRoutineWake | null>(null);

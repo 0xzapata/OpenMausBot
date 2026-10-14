@@ -1,24 +1,5 @@
-// Who may answer a card on a workspace several people share, and the record
-// of who did. The real server runs against the fake ACP CLI in "permission"
-// mode (every turn asks to run `echo hi`), with an email sign-in list naming
-// one admin and two members, whose sessions are issued before boot.
-//
-//   1. a member may answer a card for a request they sent; another member
-//      may not, on either respond route
-//   2. a member may answer any card on a thread they started
-//   3. a thread a bot opened while working on a member's request leads back
-//      to that member: the delegated work's cards are theirs to answer
-//   4. a card that names nobody (owner-sent, a Slack-style guarded send, a
-//      routine) may be answered by any member, exactly as before
-//   5. an admin, and the owner on this machine, may answer any card
-//   6. the decision row and the card both name who answered
-//   7. with service loopback trust, a session-less local caller (the Slack
-//      worker) may decline a card but never approve one
-//   8. Undo on a change that applied without a person follows the same
-//      rule: the member who started the thread may, another member may not
-//
-// No new card, prompt or gate appears anywhere: the provider's own approval
-// is the card, and these only decide whose answer it accepts.
+// The fake ACP CLI in "permission" mode (every turn asks to run `echo hi`), and an email sign-in list naming one admin and
+// two members whose sessions are issued before boot.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -76,7 +57,6 @@ async function start(env: NodeJS.ProcessEnv = {}) {
     try {
       if ((await fetch(`${BASE}/api/health`)).ok) return;
     } catch {
-      /* not up yet */
     }
     if (Date.now() > deadline) throw new Error(`server never came up:\n${log}`);
     await new Promise((r) => setTimeout(r, 150));
@@ -164,7 +144,7 @@ posixOnly("who may answer a card on a shared workspace", () => {
       expect(refused.status, path).toBe(403);
       expect(refused.body.error).toMatch(refusal);
     }
-    expect((await openCard(bot.threadId))?.card.requestId).toBe(requestId); // still open
+    expect((await openCard(bot.threadId))?.card.requestId).toBe(requestId);
 
     const answered = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId, behavior: "allow" }, ADA);
     expect(answered.status, JSON.stringify(answered.body)).toBe(200);
@@ -179,7 +159,6 @@ posixOnly("who may answer a card on a shared workspace", () => {
     const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Bob's thread" }, BOB);
     expect(task.status).toBe(201);
     const threadId = task.body.task.threadId as string;
-    // Who a thread was opened for is server-private: not on a task or a room thread.
     expect(JSON.stringify(task.body)).not.toContain("startedBy");
     const room = await api("POST", "/api/groups", { memberIds: [bot.id], name: "Bob's room" }, BOB);
     expect(room.status, JSON.stringify(room.body)).toBe(201);
@@ -188,7 +167,6 @@ posixOnly("who may answer a card on a shared workspace", () => {
     expect(JSON.stringify(roomTask.body)).not.toContain("startedBy");
     expect(JSON.stringify((await api("GET", "/api/bots?messages=0", undefined, BOB)).body)).not.toContain("startedBy");
     const requestId = await cardFrom(bot, threadId, ADA);
-    // Ada sent it, Bob started the thread: both may answer; here Bob declines.
     const answered = await api("POST", `/api/bots/${bot.id}/respond`, { requestId, behavior: "deny", threadId }, BOB);
     expect(answered.status, JSON.stringify(answered.body)).toBe(200);
     expect((await decision(requestId, "user-denied"))?.actor).toMatchObject({ kind: "session", email: BOB });
@@ -215,7 +193,6 @@ posixOnly("who may answer a card on a shared workspace", () => {
     expect(opened.status, JSON.stringify(openedBody)).toBe(200);
     expect(openedBody.receipts[0]).toMatchObject({ outcome: "queued", threadId: expect.any(String) });
     const helperThreadId = openedBody.receipts[0]!.threadId;
-    // Ada approves her own request; the handoff's turn runs in the thread opened for her.
     expect((await api("POST", `/api/threads/${opener.threadId}/respond`, { requestId: source, behavior: "allow" }, ADA)).status).toBe(200);
     const delegated = await openCard(helperThreadId);
     expect(delegated, `the handoff never asked:\n${log.slice(-2_000)}`).not.toBeNull();
@@ -229,7 +206,6 @@ posixOnly("who may answer a card on a shared workspace", () => {
 
   it("lets any member answer a card that names nobody, as before", async () => {
     const bot = await makeBot("Unnamed");
-    // Sent by the owner on this machine: no session, no thread starter.
     const requestId = await cardFrom(bot, bot.threadId);
     const answered = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId, behavior: "allow" }, BOB);
     expect(answered.status, JSON.stringify(answered.body)).toBe(200);
@@ -284,7 +260,6 @@ posixOnly("who may answer a card on a shared workspace", () => {
     const approve = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId, behavior: "allow" });
     expect(approve.status).toBe(403);
     expect(approve.body.error).toMatch(/can only decline/);
-    // The bot-scoped route and the standing grant are not service routes at all.
     expect((await api("POST", `/api/bots/${bot.id}/respond`, { requestId, behavior: "allow" })).status).toBe(403);
     expect((await api("POST", `/api/bots/${bot.id}/always-allow`, { allowKey: "shell:echo" })).status).toBe(403);
     expect((await api("POST", `/api/threads/${bot.threadId}/undo`, { requestId })).status).toBe(403);

@@ -18,11 +18,7 @@ export function replySpeaker(message: Message, userName = "User"): string {
   return message.role === "user" ? userName : (message.from?.name ?? "Assistant");
 }
 
-/** What a message replies to. A press on a widget (POST /api/bots/:id/messages
- * with `widgetAction`) is known as one only because the route that checked it
- * says so here: the control's label and the action the bot attached to it. A
- * widget row without `widgetPress` was replied to in typed words. Nothing is
- * ever read back out of the message text to decide which. */
+/** A widget press is known only from the route that checked it (`widgetPress`), never read back from the message text. */
 export type ReplyTarget = Message & { widgetPress?: { label: string; action: WidgetAction } };
 
 const WIDGET_OPEN = "--- widget ---";
@@ -32,15 +28,10 @@ const CLOSING_FENCE = /-{3,}\s*end\s*widget\s*-{3,}/gi;
 /** Nothing a bot wrote into its widget may close the fence it is quoted in. */
 function inFence(text: string): string {
   let out = text;
-  // One pass leaves no fence behind; the second look is only to be sure.
   for (let pass = 0; pass < 4 && out.search(CLOSING_FENCE) !== -1; pass += 1) out = out.replace(CLOSING_FENCE, "- end widget -");
   return out;
 }
 
-/** A reply to a widget row. With `widgetPress` it is a press: the model gets
- * its own widget's text and, inside the same fence, the control and action.
- * Without, the person typed the reply, and no control is named whatever the
- * words are. */
 function promptWithWidget(text: string, target: ReplyTarget): string {
   const press = target.widgetPress;
   const excerpt = inFence(replyExcerpt(target.text ?? ""));
@@ -70,9 +61,7 @@ function promptWithWidget(text: string, target: ReplyTarget): string {
   ].join("\n");
 }
 
-/** Add the reply relationship to a provider turn without altering the text
- * persisted in the transcript. The quote is explicitly conversation data:
- * it cannot grant tools or override the current system prompt. */
+/** The quote is conversation data: it cannot grant tools or override the current system prompt. */
 export function promptWithReply(text: string, target: ReplyTarget | undefined, userName = "User"): string {
   if (!target?.text) return text;
   if (target.kind === "widget") return promptWithWidget(text, target);
@@ -87,7 +76,6 @@ export function promptWithReply(text: string, target: ReplyTarget | undefined, u
   ].join("\n");
 }
 
-/** Compact relationship marker used while replaying room/direct history. */
 export function transcriptText(message: Message, messagesById: ReadonlyMap<string, Message>, userName = "User"): string {
   if (!message.text || !message.replyToId) return message.text ?? "";
   const target = messagesById.get(message.replyToId);

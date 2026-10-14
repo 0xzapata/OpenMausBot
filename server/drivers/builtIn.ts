@@ -1,5 +1,3 @@
-// Built-in driver registration — upstream builtInDrivers.ts: a static
-// array, nothing more. Adding a driver = write drivers/<x>.ts, append.
 import type { AnyProviderDriver } from "../contracts.ts";
 import { AntigravityDriver } from "./antigravity.ts";
 import { ClaudeDriver } from "./claude.ts";

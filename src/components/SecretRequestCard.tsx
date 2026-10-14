@@ -6,9 +6,7 @@ import { cn } from "@/lib/cn";
 import { api, useStore, type ConfigStatus, type Message } from "@/state/store";
 import { ASK_FIELD, ASK_PRIMARY_BUTTON, ASK_QUIET_BUTTON, AskCard, AskSettledLine, returnFocusToComposer } from "./AskCard";
 
-// The key a bot asked for. It waits in the shared ask card with a masked
-// field, and once saved folds into one line that names the key and never
-// its value: the value goes straight to the host's settings, not the chat.
+// Security: the value goes straight to the host's settings, never into the chat.
 
 export function SecretRequestCard({
   botId,
@@ -32,8 +30,6 @@ export function SecretRequestCard({
   const provided = outcome === "provided";
   const declined = outcome === "dismissed";
   const superseded = secret.superseded === true;
-  // Stop ended the turn this card paused: nothing resumes, whatever is
-  // saved afterwards (the key is kept, as it says).
   const stopped = secret.stopped === true;
   const description = superseded
     ? "This request was replaced by a newer one for the same key. Use the newest card to provide it."
@@ -56,8 +52,6 @@ export function SecretRequestCard({
         ? "The key is safe; resuming failed"
         : "Waiting to resume safely";
 
-  // A successful decline has no durable card to show. If its continuation
-  // failed, bring the card back with the same retry affordance as a saved key.
   if (declined && (secret.resumed || !error)) return null;
 
   const notifyProvided = async () => {

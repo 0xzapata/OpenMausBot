@@ -1,7 +1,4 @@
 // @vitest-environment happy-dom
-// Full access in bot settings applies at once, to the bot and every thread,
-// with no confirmation and from any client (owner decision, Oct 12). The
-// warning for Auto on this computer stays.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
