@@ -16,7 +16,8 @@ describe("chat text follows the writer's direction", () => {
     expectDirAuto("ChatView.tsx", "value={draft}");
     expectDirAuto("OptionCard.tsx", "value={custom}");
     expectDirAuto("QuestionCard.tsx", "value={draft.custom}");
-    expectDirAuto("CitationUI.tsx", '{"\\u201C"}{flat');
+    expectDirAuto("CitationUI.tsx", "value={comment}");
+    expectDirAuto("ComposerQuotes.tsx", '{"\\u201C"}{flat');
     expectDirAuto("ChatFindBar.tsx", "value={query}");
     expectDirAuto("RawMarkdownToggle.tsx", 'data-testid="raw-markdown-view"');
     expectDirAuto("GroupView.tsx", "value={bulletinDraft}");
@@ -26,7 +27,7 @@ describe("chat text follows the writer's direction", () => {
     expectDirAuto("SearchResults.tsx", "line-clamp-2");
 
     const quotes = source("CitationUI.tsx").match(/<pre dir="auto"[^>]*>\{citation\.quote\}/g) ?? [];
-    expect(quotes).toHaveLength(1);
+    expect(quotes).toHaveLength(2);
     const pins = [source("ChatView.tsx"), source("GroupView.tsx")].map((text) => text.includes('dir="auto" className="truncate text-[12.5px] text-ink-secondary"'));
     expect(pins).toEqual([true, true]);
   });

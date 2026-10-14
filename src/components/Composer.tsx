@@ -32,7 +32,7 @@ import { ComposerMenuRow } from "./ComposerMenuRow";
 import { MentionTextarea } from "./MentionTextarea";
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
 import { splitTranscriptCitations } from "@/lib/citations";
-import { useComposerQuotes } from "./CitationUI";
+import { useComposerQuotes } from "./ComposerQuotes";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { PlaceChip } from "./PlaceChip";
 import { ApprovalModeSelector } from "./ApprovalModeSelector";

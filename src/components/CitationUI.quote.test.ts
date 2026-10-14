@@ -2,7 +2,8 @@
 import { act, createElement, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ComposerQuoteChip, CitationSelectionToolbar, quoteLineDirection } from "./CitationUI";
+import { CitationSelectionToolbar } from "./CitationUI";
+import { ComposerQuoteChip, quoteLineDirection } from "./ComposerQuotes";
 import { MentionTextarea } from "./MentionTextarea";
 import { CITATION_MAX_QUOTE_LENGTH, citationAttachment, type CitationAttachment } from "@/lib/citations";
 import { addToPromptChord, isAddToPromptShortcut, removesQuoteChip } from "@/lib/citations-dom";
