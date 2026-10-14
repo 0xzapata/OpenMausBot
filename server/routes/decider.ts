@@ -8,24 +8,26 @@
 // GET /api/decider/models: the OpenRouter models Settings offers (a curated
 // list, plus what OpenRouter's public catalog adds). Needs no key and spends
 // nothing; Admin-scoped like the rest.
-import { OPENROUTER_MODEL_ID_MAX, type AppConfig } from "../config.ts";
+import type { AppConfig } from "../config.ts";
+import { OPENROUTER_MODEL_ID_MAX } from "../decider/config.ts";
 import type { Decider } from "../decider/index.ts";
-import type { OpenRouterModelCatalog } from "../decider/openrouter-models.ts";
+import { createOpenRouterModelCatalog, type OpenRouterModelCatalog } from "../decider/openrouter-models.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 export interface DeciderRouteDeps {
   decider: Pick<Decider, "testKey">;
-  models: Pick<OpenRouterModelCatalog, "load">;
+  models?: Pick<OpenRouterModelCatalog, "load">;
   config(): AppConfig;
 }
 
 const MAX_KEY_LENGTH = 512;
 
 export function createDeciderRoutes(deps: DeciderRouteDeps): RouteHandler {
+  const models = deps.models ?? createOpenRouterModelCatalog();
   return async ({ req, res, path, method, json, readBody }) => {
     if (path === "/api/decider/models" && method === "GET") {
       res.setHeader("cache-control", "no-store");
-      return json(res, 200, await deps.models.load(deps.config().decider?.openrouterBaseUrl));
+      return json(res, 200, await models.load(deps.config().decider?.openrouterBaseUrl));
     }
     if (path !== "/api/decider/test" || method !== "POST") return PASS;
     const body = await readBody(req, 8192);
