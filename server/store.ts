@@ -2226,9 +2226,9 @@ export class Store {
     return this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
   }
 
-  workThread(botId: string, fromBotId: string, fromThreadId: string): TaskRecord | undefined {
+  workThread(botId: string, fromBotId: string, fromThreadId: string, roomLane = false): TaskRecord | undefined {
     return this.tasks(botId).find((t) => t.openedBy?.kind === "work" && t.openedBy.botId === fromBotId &&
-      t.openedBy.threadId === fromThreadId && t.archivedAt === undefined);
+      t.openedBy.threadId === fromThreadId && Boolean(t.openedBy.roomLane) === roomLane && t.archivedAt === undefined);
   }
 
   projectBotForTask(botId: string, threadId: string): BotRecord | null {

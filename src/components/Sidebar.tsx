@@ -134,7 +134,7 @@ import { ShortcutHint } from "./ShortcutHint";
 import { citationPreviewText } from "@/lib/citations";
 import { plainPreviewText } from "@/lib/plain-preview";
 import { isClientCancellation } from "../../shared/client-cancel";
-import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
+import { roomThreadSpeakerId, roomThreadWorking, roomWorkingPreview } from "@/lib/room-threads";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import { PinnedBotRoster } from "./PinnedCircleThreads";
@@ -186,12 +186,8 @@ function openBotContextMenu(onMenu: (menu: MenuState) => void, botId: string, ev
 }
 
 function groupPreview(group: Group, bots: Bot[], instances: InstanceInfo[]): string {
-  const speakerId = group.busyBotId ?? roomSpeakerIds(group)[0];
-  if (speakerId) {
-    return t("sidebar.preview.botWorking", {
-      name: bots.find((b) => b.id === speakerId)?.name ?? t("sidebar.preview.aBot"),
-    });
-  }
+  const working = roomWorkingPreview(group, (botId) => bots.find((b) => b.id === botId)?.name);
+  if (working) return working;
   if (group.working) return t("sidebar.preview.teamWorking");
   const last = lastNonReceipt(group.messages);
   if (!last) return t("sidebar.preview.noMessages");

@@ -89,6 +89,7 @@ import { DataResultChip } from "./DataResultChip";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { dayLabel, localDay } from "@/lib/transcript-derivations";
 import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
+import { RoomQueueList, RoutedByLine, roomMemberQueueTitle } from "./RoomQueueList";
 
 export function RoomToolChip({ message, roomId }: { message: Message; roomId?: string }) {
   const { state, dispatch } = useStore();
@@ -566,15 +567,6 @@ export function RoomHoldsBanner({ group, members }: { group: Group; members: Bot
           </button>
         ))}
       </div>
-    </div>
-  );
-}
-
-export function RoutedByLine({ routedBy }: { routedBy: NonNullable<Message["routedBy"]> }) {
-  const percent = Math.round(Math.min(1, Math.max(0, routedBy.probability)) * 100);
-  return (
-    <div data-testid="routed-by" className="mt-1 px-1 text-[11px] text-ink-secondary">
-      {t(routedBy.provider === "openrouter" ? "room.routedBy.openrouter" : "room.routedBy", { percent: String(percent) })}
     </div>
   );
 }
@@ -1263,6 +1255,7 @@ export function GroupView({ group }: { group: Group }) {
   const contextWarnings = roomContextWarnings(group, members);
   const memberMauses = members.map((b) => {
     const busy = group.busyBotId === b.id;
+    const queueTitle = busy ? undefined : roomMemberQueueTitle(group, members, b);
     const contextWarning = contextWarnings.find((warning) => warning.bot.id === b.id);
     const busyElsewhere = !busy && speakersElsewhere.has(b.id);
     const held = !group.dm && Boolean(group.holds?.[b.id]);
@@ -1276,14 +1269,15 @@ export function GroupView({ group }: { group: Group }) {
         title={
           held
             ? t("room.holds.avatarHeld", { name: b.name })
-            : busyElsewhere
+            : queueTitle ?? (busyElsewhere
               ? t("room.memberWorkingElsewhere", { name: b.name })
-              : `${b.name}${busy ? " — working…" : ""}${contextWarning ? ` — ${t("contextWarning.short", { percent: contextWarning.percent })}` : ""}`
+              : `${b.name}${busy ? " — working…" : ""}${contextWarning ? ` — ${t("contextWarning.short", { percent: contextWarning.percent })}` : ""}`)
         }
         className={cn(
           "relative inline-flex rounded-full",
           busy && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
           busyElsewhere && "ring-1 ring-hairline ring-offset-1 ring-offset-app",
+          queueTitle && !busyElsewhere && "ring-1 ring-accent/30 ring-offset-1 ring-offset-app",
         )}
       >
         <span className={cn("inline-flex", held && "opacity-50 grayscale")}>
@@ -1576,6 +1570,7 @@ export function GroupView({ group }: { group: Group }) {
               since={speaker ? group.turnStartedAt ?? null : null}
             />
           )}
+          <RoomQueueList group={group} members={members} />
           {threadSpeaker && !group.dm && members.length > 1 && !group.holds?.[threadSpeaker.id] && (
             <div className="flex justify-start pl-12">
               <button

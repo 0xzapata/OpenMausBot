@@ -289,6 +289,8 @@ import { threadModelFallback, type ThreadEngine } from "./thread-model.ts";
 import { computerEngineMoveText, removedComputerInstanceIds, writeComputerEngineMoveLines } from "./computer-engine-removal.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
+import { createRoomAccess } from "./host/room-access.ts";
+import { createRoomJobs, parallelRoomJobsEnabled, type RoomRoundLine } from "./host/room-jobs.ts";
 import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
 import { pageSize, slimMessage } from "./host/message-pages.ts";
@@ -4074,6 +4076,7 @@ type GroupTurnOperation = {
   cancellation: AbortController;
   providerHandshakePending: boolean;
   queuedQueueIds?: string[];
+  line?: RoomRoundLine;
   goalRun?: {
     runId: string;
     cardMessageId: string;
@@ -4357,39 +4360,9 @@ const channelTaskBlocked = (group: GroupRecord) =>
 
 // Load coordination state before registering store listeners or recovering routines: recovery can emit room changes synchronously.
 const groupQueues = new Map<string, Promise<void>>();
-function roomRootProblem(node: Pick<HandoffView, "groupId" | "threadId" | "botId">): string | undefined {
-  const group = node.groupId ? store.group(node.groupId) : undefined;
-  const bot = store.bot(node.botId);
-  if (!bot || bot.hidden) return "The addressed agent no longer exists";
-  if (!group || !(group.dm ? group.threadId === node.threadId : store.groupTaskByThread(group.id, node.threadId))) return "Destination room task no longer exists";
-  if (!group.memberIds.includes(bot.id)) return "The addressed agent is no longer a member of this room";
-  return undefined;
-}
-function roomHandoffProblem(node: Pick<HandoffView, "groupId" | "threadId" | "botId"> & Partial<Pick<HandoffView, "kind">>, parent?: Pick<HandoffView, "groupId" | "threadId" | "botId">): string | undefined {
-  const group = node.groupId ? store.group(node.groupId) : undefined;
-  const bot = store.bot(node.botId);
-  if (!bot || bot.hidden) return "The addressed agent no longer exists";
-  if (node.groupId && (!group || group.dm || !store.groupTaskByThread(group.id, node.threadId))) return "Destination room task no longer exists";
-  if (!node.groupId && !store.taskByThread(bot.id, node.threadId)) return "Destination bot task no longer exists";
-  if (group && !group.memberIds.includes(bot.id)) return "The addressed agent is no longer a member of this room";
-    // Every reader matters: the sender's grant never gives a specialist another team's transcript.
-  const outsideSection = (room: GroupRecord, speaker: BotRecord) => room.memberIds.some(id => {
-    const member = store.bot(id);
-    return member && !canAccessTeam(speaker, member.section) && !coordinatorSupervises(member, speaker);
-  });
-  if (group && outsideSection(group, bot)) return "Destination room includes a member outside the agent's section";
-  if (group && roomSetupPending(group)) return "Destination room setup is unfinished";
-  if (parent) {
-    const from = store.bot(parent.botId);
-    const source = parent.groupId ? store.group(parent.groupId) : undefined;
-    if (!from || from.hidden || (parent.groupId ? !source || !source.memberIds.includes(from.id) || !store.groupTaskByThread(source.id, parent.threadId) : !store.taskByThread(from.id, parent.threadId))) return "Source membership or task was removed";
-      // Supervision alone never grants a direct chat or another room's access.
-    const sharedSupervisor = source && group && source.id === group.id && parent.threadId === node.threadId && coordinatorSupervises(bot, from);
-    if ((!canAccessTeam(from, bot.section) && !sharedSupervisor) || (source && outsideSection(source, from))) return "Room work cannot cross the sender's section boundary";
-    if (source && group && source.id === group.id && parent.threadId !== node.threadId) return "Same-room work must stay in the originating conversation";
-    if (!peerAllowed(from, bot)) return "The recipient is not an allowed peer of the sender";
-  }
-}
+const { roomRootProblem, roomHandoffProblem, roomSetupPending, laneRoomThread } = createRoomAccess({ store });
+const roomJobs = createRoomJobs({ store, coordinator: { all: () => coordinator.all() }, cfg, laneRoomThread,
+  operations: groupId => groupTurnOperations.get(groupId) ?? [], speakerOf: threadId => groupSpeakers.get(threadId)?.botId });
 
 // Claude reuses a session's first system prompt across --resume, so assignment bodies and results must travel in the user turn.
 function coordinationSystemInstructions(): string {
@@ -4799,6 +4772,8 @@ function publicGroupState(record: GroupRecord): WireGroup {
     busyBotId: currentSpeaker?.botId ?? (activeWorking ? record.busyBotId : null),
     ...(currentSpeaker?.since ? { turnStartedAt: currentSpeaker.since } : {}),
     working: groupIsWorking(record) || openHandoffs.length > 0,
+    // Always present, so a frame with nobody waiting clears the last one.
+    queue: roomJobs.roomLineOf(record),
   };
 }
 
@@ -12421,17 +12396,21 @@ function startGroupTurn(
       }
       const spoken = new Set<string>();
       const skillAuthoringClaim = { claimed: false };
+      if (round.length > 1) operation.line = { pending: round.map(responder => responder.id) };
+      const advanceLine = (current: string | undefined) => {
+        const room = roomJobs.advanceRound(operation, current, spoken) ? store.group(groupId) : undefined;
+        if (room) broadcast({ kind: "group", group: publicGroupState(room) });
+      };
+      advanceLine(undefined);
       for (const responder of round) {
         if (operation.cancelled) break;
         if (spoken.has(responder.id)) continue;
         const verdict = await waitForChatRoomMember(operation, threadId, responder);
         if (verdict === "stop") break;
-        if (verdict === "skip") {
-          spoken.add(responder.id);
-          continue;
-        }
+        if (verdict === "skip") { spoken.add(responder.id); advanceLine(undefined); continue; }
         const stamp = routedBy ? { botId: responder.id, routedBy } : undefined;
         if (stamp) routedRoomReplies.set(threadId, stamp);
+        advanceLine(responder.id);
         let proceed: boolean;
         try {
           proceed = await runGroupMemberTurn(
@@ -12550,19 +12529,6 @@ function deliverCalendarCall(call: CalendarCall, scheduledFor: number): void {
   const messages = [...threadIds].flatMap((threadId) => store.messagesFor(threadId));
   if (messages.some((message) => message.sendId === sendId)) return;
   startGroupTurn(group.id, text, undefined, sendId);
-}
-
-function roomSetupPending(group: GroupRecord): boolean {
-  const hasMarker =
-    Object.prototype.hasOwnProperty.call(group, "setupCompletedAt") ||
-    Object.prototype.hasOwnProperty.call(group, "setupSkippedAt");
-  return (
-    !group.dm &&
-    hasMarker &&
-    group.setupCompletedAt == null &&
-    group.setupSkippedAt == null &&
-    store.messagesFor(group.threadId).length === 0
-  );
 }
 
 function resolveReplyTarget(threadId: string, value: unknown): Message | undefined {
@@ -13532,6 +13498,7 @@ function configStatus() {
       claudeUserMcp: claudeUserMcpEnabled(cfg),
       autoRecall: autoRecallEnabled(cfg),
       roomMemoryCapture: roomMemoryCaptureEnabled(cfg),
+      parallelRoomJobs: parallelRoomJobsEnabled(cfg),
       llmThreadTitles: llmThreadTitlesEnabled(cfg),
     },
     onboarding: {
@@ -15646,6 +15613,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const mode: NonNullable<HandoffOptions["mode"]> = call.consult ? "consult" : call.reply === "none" ? "notify" : "work";
         const reply: NonNullable<HandoffOptions["reply"]> = call.reply === "none" ? "none" : EXTERNAL ? "poll" : "resume";
         const returns = reply === "none" ? "nothing comes back from it" : reply === "poll" ? "read its result with assignment_status" : "its result will resume you";
+        const lanes = Boolean(destination) && roomJobs.useLanes(destination!, targets[0]!.threadId, targets.length, mode);
         const receipts: PeerDeliveryReceipt[] = [];
         const refused: string[] = [];
         for (const target of targets) {
@@ -15655,6 +15623,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             const recipient = store.bot(target.botId);
             if (!recipient) throw new Error("The recipient no longer exists");
             const continued = destination || fresh ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
+            const lane = destination && lanes ? roomJobs.openLane(destination, target.threadId, target.botId, internalSender, call.message) : undefined;
+            if (lane?.created) createdThread = lane.threadId;
+            if (lane) applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, lane.threadId);
             if (!destination) {
               const opened = { botId: internalSender.id, name: internalSender.name, threadId: address.threadId, at: Date.now() };
               const task = continued ?? (fresh
@@ -15665,8 +15636,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (!continued) createdThread = task.threadId;
               applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId);
             }
-            const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, target, call.message, {
-              mode, reply, thread: call.thread, approvalGranted, rework: call.rework, requestBatchKey,
+            const routed = lane ? { botId: target.botId, threadId: lane.threadId } : target;
+            const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, routed, call.message, {
+              mode, reply, thread: lane ? "new" : call.thread, approvalGranted, rework: call.rework, ...(lane ? {} : { requestBatchKey }),
               ...(call.doneWhen ? { doneWhen: call.doneWhen } : {}),
             });
             if (duplicate && createdThread) store.deleteTask(target.botId, createdThread);
@@ -15675,7 +15647,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (fresh && !EXTERNAL) internalCapability.openedThreads += 1;
             }
             createdThread = undefined;
-            const title = destination ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
+            const title = destination && !lane ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
             const finished: Partial<Record<HandoffView["status"], string>> = {
               completed: "it already finished and its result stands; send it with rework=true to run it again",
               failed: "it failed; send it with rework=true to retry", cancelled: "it was cancelled; send it with rework=true to retry",
@@ -15688,11 +15660,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               outcome: notSent ? "failed" : !duplicate || node.status === "queued" ? "queued" : "injected",
               detail: notSent ?? (duplicate
                 ? `already sent: it is ${node.status === "queued" ? "queued" : "under way"} and ${returns}`
-                : title
-                  ? `sent to "${title}"; it runs after anything still running there`
-                  : "handed to the coordinator; the teammate's turn has not started yet"),
+                : lane
+                  ? `runs in its own thread "${lane.title}", in parallel with the other room jobs; its result posts in this room and ${returns}`
+                  : title
+                    ? `sent to "${title}"; it runs after anything still running there`
+                    : "handed to the coordinator; the teammate's turn has not started yet"),
               requestId: node.id,
-              ...(destination ? {} : { threadId: node.threadId }),
+              ...(destination && !lane ? {} : { threadId: node.threadId }),
             }));
             if (!duplicate) {
               if (!EXTERNAL) delegatedThisTurn(node.id);
@@ -15700,7 +15674,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 from: { botId: internalSender.id, name: internalSender.name, color: internalSender.color },
                 tool: { name: "Sent to " + recipient.name + (destination && destination.id !== source?.id ? " · " + destination.name : ""), ok: true,
                   ...(call.reason ? { output: call.reason } : {}) },
-                ...(destination ? { comm: { groupId: destination.id, threadId: node.threadId, withBotId: recipient.id, withName: recipient.name, withColor: recipient.color } }
+                ...(destination && !lane ? { comm: { groupId: destination.id, threadId: node.threadId, withBotId: recipient.id, withName: recipient.name, withColor: recipient.color } }
                   : { threadRef: { botId: recipient.id, threadId: node.threadId, title: store.taskByThread(recipient.id, node.threadId)?.title ?? "Teammate work" } }),
               });
             }
@@ -15714,13 +15688,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           }
         }
         const sent = refused.length < receipts.length;
+        const lead = destination && sent ? roomJobs.describeRoomJobs(destination, targets[0]!.threadId, receipts,
+          { senderId: internalSender.id, returns, lanes, awaited: reply !== "none" }) : "";
         if (EXTERNAL) coordinator.endTurn(generation, { ok: sent, text: sent ? "" : refused.join("; ") });
         const message = reply === "none"
           ? "Sent one way. Nothing comes back and nothing resumes you; continue your turn."
           : reply === "poll"
             ? "Handed to the coordinator. Read each result with assignment_status (id: a receipt's requestId, or rootId for the whole call), long-polling with wait_ms."
             : "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait.";
-        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message } : { error: refused.join("; ") }),
+        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message: lead ? `${lead} ${message}` : message } : { error: refused.join("; ") }),
           ...(EXTERNAL && sent ? { rootId: generation } : {}) } };
       };
       if (method === "GET" && path === "/api/internal/assignment-status") {
