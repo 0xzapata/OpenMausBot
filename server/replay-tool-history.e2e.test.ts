@@ -1,9 +1,3 @@
-// Tool history in a rebuilt session, end to end through the isolated
-// launcher and the fake engines: what the provider is actually sent when a
-// rewind makes the harness replay the thread, with context.replayToolHistory
-// off (today's replay, untouched) and on; that a turn which resumes its
-// session is sent no replay either way; and that another engine switched in
-// mid-thread is told what the first one ran.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";

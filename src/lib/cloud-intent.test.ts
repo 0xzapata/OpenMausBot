@@ -53,7 +53,6 @@ describe("the waiting job", () => {
     expect(module.cloudIntentShown(true, { ...snapshot(), pending: "watch my page" })).toBe(false);
     module.setPendingIntent(null);
     expect(saved.has("omb.cloudIntent.pending")).toBe(false);
-    // A reload finds a job still waiting.
     const again = await load("watch my page");
     const { createElement } = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -65,7 +64,6 @@ describe("the waiting job", () => {
     const { module } = await load();
     expect(module.cloudIntentShown(true, { pending: null, reopened: false, dismissed: true, sent: null })).toBe(false);
     expect(module.cloudIntentShown(false, { pending: null, reopened: true, dismissed: false, sent: null })).toBe(true);
-    // Edit from the sign-in: asked again even though a job is waiting.
     expect(module.cloudIntentShown(false, { pending: "x", reopened: true, dismissed: false, sent: null })).toBe(true);
   });
 });
@@ -84,9 +82,7 @@ describe("the job once sent", () => {
     const routine = (id: string, botId: string, createdAt: number) => ({ id, botId, createdAt });
     expect(module.jobRoutine([routine("old", "b2", 1_000), routine("other", "b1", 10_500_000)], sent)).toBeUndefined();
     expect(module.jobRoutine([routine("later", "b2", 10_900_000), routine("first", "b2", 10_400_000)], sent)?.id).toBe("first");
-    // A minute's grace for the two clocks.
     expect(module.jobRoutine([routine("skew", "b2", 9_970_000)], sent)?.id).toBe("skew");
-    // Another device, without this one's record: any routine counts.
     expect(module.jobRoutine([routine("any", "b1", 1)], null)?.id).toBe("any");
   });
 });

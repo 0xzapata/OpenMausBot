@@ -1,10 +1,4 @@
 // @vitest-environment happy-dom
-// The profile menu is one fixed-width sheet anchored to its trigger: above
-// it, on its start edge, inside the window, the same whether the sidebar is
-// wide, narrow or collapsed. Its keyboard: Enter or an arrow opens it on the
-// first item, arrows Home and End move, the inline end arrow opens a
-// submenu and the start arrow or Escape closes just that, Escape and an
-// outside press close the menu and give focus back to the trigger.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,9 +14,7 @@ import {
 
 const viewport = { width: 1280, height: 800 };
 const menu = { width: ANCHORED_MENU_WIDTH, height: 300 };
-// the profile row of a 300px sidebar, at the bottom of the window
 const wideRow = { left: 12, right: 288, top: 740, bottom: 784 };
-// the avatar of a sidebar collapsed to icons
 const avatar = { left: 14, right: 58, top: 740, bottom: 784 };
 
 describe("anchoredMenuPosition", () => {
@@ -34,7 +26,6 @@ describe("anchoredMenuPosition", () => {
   it("anchors to the trigger's right edge in RTL, and stays inside the window", () => {
     const rtlRow = { left: 980, right: 1268, top: 740, bottom: 784 };
     expect(anchoredMenuPosition(rtlRow, menu, viewport, true)).toEqual({ left: 1268 - 280, top: 434 });
-    // a collapsed RTL rail's avatar near the left edge would push it out
     expect(anchoredMenuPosition({ left: 0, right: 44, top: 740, bottom: 784 }, menu, viewport, true).left).toBe(8);
   });
 
