@@ -1435,17 +1435,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
       <TranscriptAnnouncer threadKey={transcriptKey} snapshot={announcement} />
 
-      {!following && (
-        <button
-          onClick={jumpToLatest}
-          aria-label={t("chat.jumpToLatestAria")}
-          className="animate-pop-in absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
-          style={{ bottom: composerDock.height }}
-        >
-          <ArrowDown size={13} /> {t("chat.jumpToLatest")}
-        </button>
-      )}
-
       <div ref={composerDockRef} className="pointer-events-none absolute inset-x-0 bottom-0 z-[2]">
       {lastRunStep && showRun(recordedRun) && showRunCard && runDismissed.get(transcriptKey) !== lastRunStep.id && (
         <div className="flex justify-end px-5 pb-2">
@@ -1460,6 +1449,17 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               composerDockRef.current?.querySelector("textarea")?.focus();
             }}
           />
+        </div>
+      )}
+      {!following && (
+        <div className="relative">
+          <button
+            onClick={jumpToLatest}
+            aria-label={t("chat.jumpToLatestAria")}
+            className="animate-pop-in pointer-events-auto absolute bottom-2 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+          >
+            <ArrowDown size={13} /> {t("chat.jumpToLatest")}
+          </button>
         </div>
       )}
       <LiveCallBar bot={bot} />
