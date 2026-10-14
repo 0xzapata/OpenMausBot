@@ -1024,6 +1024,31 @@ owner's session or a per-turn capability.
 
 Verification: [external runtime fixture](verification/external-runtime.md).
 
+## A bot stuck on a failing command
+
+Every server shows a chat notice when a bot repeats the same tool call 5, 10
+and 20 times in one turn. That notice only tells you. The loop guard, which is
+off by default, also tells the bot:
+
+- Set `loopGuard.enabled` to `true` in `config.json` (or through
+  `PUT /api/config`), or start the server with `OMB_LOOP_GUARD=1`. When the
+  same whole shell command fails the same way five times in a row
+  (`loopGuard.steerAt`, 2-1000), the server puts one short note into the
+  running turn saying so. A command that succeeds, or that fails differently,
+  ends the count, so a turn that re-runs its tests after each edit or polls a
+  build is left alone.
+- Stopping the turn is a separate choice. Set `loopGuard.stopAt` (2-1000), or
+  `OMB_LOOP_GUARD_STOP_AT`, and the turn is stopped at that many identical
+  failures in a row, with a line in the chat that names the command and offers
+  Retry. Leave it unset and the guard never stops a turn. A wait that fails
+  until something is ready (`curl -f` against a server that is still starting)
+  counts as a failing command, which is why the stop is not on by default.
+
+The note needs an engine that accepts a message in the middle of a turn
+(Claude Code, Codex, Pi, Muse Code). ACP agents cannot take one, so they get
+only the stop, and only if you set it. Bots on API models and turns in a room
+are not covered yet.
+
 ## Updating
 
 For the npm service, [install the chosen new version](deploy-vps.md#update)
