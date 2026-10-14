@@ -37,8 +37,6 @@ it("Chief creation uses the workspace default or a validated explicit model with
       role: "Specialist", instructions: "Complete assigned work.",
       ...(modelSelection === undefined ? {} : { modelSelection }),
     }, expected, token);
-    // Below Full Access every creation is one review card: nothing exists
-    // until the person applies it, after the Chief's turn has ended.
     const idle = () => expect.poll(async () => !(await api("GET", "/api/bots")).bots.find((bot: any) => bot.id === chief.id).busy, { timeout: 20_000 }).toBe(true);
     const apply = async (pending: any) => {
       expect(pending).toMatchObject({ state: "pending", applied: false });
@@ -70,14 +68,11 @@ it("Chief creation uses the workspace default or a validated explicit model with
     expect(bots.length).toBe(before + 2);
     expect(bots.find((bot: any) => bot.id === chief.id).modelSelection).toEqual(chiefModel);
     for (const [id, modelSelection] of [[first.id, defaultModel], [second.id, explicit]]) {
-      // Not the Chief's Ask: a new specialist starts at the default, Full access.
       expect(bots.find((bot: any) => bot.id === id)).toMatchObject({
         section: "Design", modelSelection, approvalMode: "full", autoApprove: false, composio: false, approvePeerComms: false,
         soul: "Complete assigned work.",
       });
     }
-    // Changing the config revokes old capabilities. A fresh authorized turn
-    // sees the new default; previously created bots keep their selected models.
     await api("PATCH", "/api/config", { defaultModelSelection: explicit });
     unlinkSync(gate);
     unlinkSync(fixture.fixtureDumpPath);

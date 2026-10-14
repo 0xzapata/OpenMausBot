@@ -43,8 +43,6 @@ describe("live browser route authorization", () => {
     const path = `/api/bots/${botId}/browser/${suffix}`;
     const body = method === "POST" ? { viewerId: "forged", type: "take" } : undefined;
     expect((await call(method, path, body, remote)).status).toBe(403);
-    // A client session the bot is shown to is the person it asks to sign
-    // in: it gets past authorization to the same feature gates as the owner.
     expect((await call("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
     const client = await call(method, path, body, { ...remote, authorization: `Bearer ${clientToken}` });
     expect(client.status).toBe(503);
@@ -52,14 +50,11 @@ describe("live browser route authorization", () => {
     const crossOrigin = await call(method, path, body, { ...remote, cookie: ownerCookie, origin: "https://attacker.invalid" });
     expect(crossOrigin.status).toBe(403);
     expect(crossOrigin.body.error).toContain("cross-origin");
-    // The authenticated owner gets past authorization to the feature gates;
-    // no native browser is installed or launched in this fixture. The built-in
-    // browser is on by default, so the first gate met is the missing engine…
+    // No native browser is installed or launched in this fixture; the built-in browser is on by default, so the first gate met is the missing engine.
     expect((await call("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
     const onByDefault = await call(method, path, body, { ...remote, cookie: ownerCookie });
     expect(onByDefault.status).toBe(503);
     expect(onByDefault.body.error).toContain("Install the browser engine");
-    // …and a browser the person switched off still refuses before the engine.
     expect((await call("PATCH", "/api/config", { features: { browser: false } })).status).toBe(200);
     const owner = await call(method, path, body, { ...remote, cookie: ownerCookie });
     expect(owner.status).toBe(409);
@@ -91,8 +86,7 @@ describe("profile list compare-and-swap", () => {
     const currentBot = (await call("GET", "/api/bots")).body.bots.find((bot: any) => bot.id === botId);
     expect(currentBot.browserProfile).toBe("work");
 
-    // A reviewed, current deletion clears assignments on the server, not by
-    // optimistic renderer edits. The fixture has no engine or saved logins.
+    // The fixture has no engine or saved logins.
     const removed = await call("PATCH", "/api/config", { browserProfiles: [original[1]], expectedBrowserProfiles: renamed });
     expect(removed.status).toBe(200);
     expect(removed.body.browserProfiles).toEqual([original[1]]);
