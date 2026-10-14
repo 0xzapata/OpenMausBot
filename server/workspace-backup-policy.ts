@@ -1,3 +1,5 @@
+import { readlinkSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseStoredConfig } from "./config.ts";
 
 // Connection sections stay on the destination whole: a restored URL must never redirect an API key kept from that device.
@@ -52,4 +54,16 @@ export function ephemeralWorkspaceTokenPath(path: string): boolean {
 /** Not a consistent snapshot while the engine holds it open (unflushed WAL), and reloadable from its sources. */
 export function liveDataEnginePath(path: string): boolean {
   return /^bots\/[^/]+\/(?:data\.duckdb(?:\.wal)?$|data-tmp(?:\/|$))/.test(path);
+}
+
+/** Read the link text, never follow it. */
+export function managedTaskSkillLink(source: string, path: string, roots: string[]): boolean {
+  const match = /^task-workspaces\/([^/]+)\/[^/]+\/\.(?:claude|agents|grok)\/skills\/[^/]+$/.exec(path);
+  if (!match) return false;
+  let target: string;
+  try { target = resolve(dirname(source), readlinkSync(source).replace(/^\\\\\?\\/, "")); } catch { return false; }
+  return roots.some((root) => {
+    const rel = relative(join(root, "workspaces", match[1], "skills"), target);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  });
 }

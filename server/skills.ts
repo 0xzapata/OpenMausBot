@@ -21,11 +21,12 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { z } from "zod";
 
-import { writeFileAtomic, writeFileAtomicIfChanged } from "./atomic.ts";
+import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
 import { librarySkillFilePath, listLibrarySkills, type LibrarySkillListing } from "./skill-library.ts";
+import { readManagedLinks, writeManagedLinks } from "./skill-link-registry.ts";
 import { workspaceDir } from "./workspace.ts";
 import { isSkillName, parseSkillMd, scanSkillText, SKILL_FILE_MAX_BYTES, type ParsedSkill } from "../shared/skill-md.ts";
 import { parseSkillCommand } from "../shared/skill-command.ts";
@@ -98,7 +99,6 @@ const skillManifestEntrySchema = z.object({
   }).optional(),
 });
 const skillManifestSchema = z.record(z.string(), skillManifestEntrySchema);
-const managedLinksSchema = z.array(z.string());
 
 function skillsDir(botId: string): string {
   return join(workspaceDir(botId), "skills");
@@ -202,25 +202,6 @@ function skillStateDir(botId: string): string {
 
 function manifestPath(botId: string): string {
   return join(skillStateDir(botId), "skills.json");
-}
-
-function managedLinksPath(botId: string): string {
-  return join(skillStateDir(botId), "managed-links.json");
-}
-
-function readManagedLinks(botId: string): string[] {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(managedLinksPath(botId), "utf8"));
-    const result = managedLinksSchema.safeParse(parsed);
-    return result.success ? result.data.filter(isSkillName) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeManagedLinks(botId: string, names: string[]): void {
-  mkdirSync(skillStateDir(botId), { recursive: true, mode: 0o700 });
-  writeFileAtomicIfChanged(managedLinksPath(botId), `${JSON.stringify([...new Set(names)].sort(), null, 2)}\n`, { mode: 0o600 });
 }
 
 function manifestFromFile(path: string): SkillManifest | null {
@@ -366,12 +347,14 @@ const NATIVE_SKILL_DIRS = [".claude/skills", ".agents/skills", ".grok/skills"];
 function removeNativeLinksForUnsafeSkillsRoot(
   botId: string,
   root: string,
+  linkRoot: string,
+  threadId: string | undefined,
   previouslyManaged: string[],
   beforeRemove?: (link: string) => void,
 ): void {
   const retry = new Set<string>();
   for (const dir of NATIVE_SKILL_DIRS) {
-    const linkDir = nativeLinkDirectory(root, dir, false);
+    const linkDir = nativeLinkDirectory(linkRoot, dir, false);
     if (!linkDir) {
       for (const name of previouslyManaged) retry.add(name);
       continue;
@@ -398,7 +381,7 @@ function removeNativeLinksForUnsafeSkillsRoot(
     }
   }
   try {
-    writeManagedLinks(botId, [...retry]);
+    writeManagedLinks(botId, [...retry], threadId);
   } catch {
   }
 }
@@ -406,13 +389,14 @@ function removeNativeLinksForUnsafeSkillsRoot(
 /** Links, not copies; junctions on Windows, where directory symlinks need privileges. */
 export function syncSkillLinks(
   botId: string,
-  options: { beforeRemove?: (link: string) => void } = {},
+  options: { beforeRemove?: (link: string) => void; task?: { threadId: string; folder: string } } = {},
 ): void {
   const root = workspaceDir(botId);
-  const previouslyManaged = readManagedLinks(botId);
+  const linkRoot = options.task?.folder ?? root, threadId = options.task?.threadId;
+  const previouslyManaged = readManagedLinks(botId, threadId);
   // The bot can replace its skills root: never follow it, but still revoke existing app links.
   if (directoryEntryState(skillsDir(botId)) === "unsafe") {
-    removeNativeLinksForUnsafeSkillsRoot(botId, root, previouslyManaged, options.beforeRemove);
+    removeNativeLinksForUnsafeSkillsRoot(botId, root, linkRoot, threadId, previouslyManaged, options.beforeRemove);
     return;
   }
   const manifest = readManifest(botId);
@@ -422,7 +406,7 @@ export function syncSkillLinks(
   const desired = new Map(enabled.map(([name, entry]) => [name, skillTarget(root, name, entry)]));
   const managed = new Set<string>();
   for (const dir of NATIVE_SKILL_DIRS) {
-    const linkDir = nativeLinkDirectory(root, dir, enabled.length > 0);
+    const linkDir = nativeLinkDirectory(linkRoot, dir, enabled.length > 0);
     if (!linkDir) continue;
     let existing: string[] = [];
     try {
@@ -466,7 +450,7 @@ export function syncSkillLinks(
     }
   }
   try {
-    writeManagedLinks(botId, [...managed]);
+    writeManagedLinks(botId, [...managed], threadId);
   } catch {
   }
 }
