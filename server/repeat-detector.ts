@@ -19,11 +19,12 @@ export function callKey(tool: string, args: string | undefined): string | null {
  * not countable. An adapter may title every call alike ("Running
  * list_directory") and keep what differs in the input, so the input, when
  * the item carries one, is part of the call: the pair is encoded whole, so
- * no title and input can run together into another call's. */
+ * no title and input can run together into another call's, and kept
+ * verbatim: "a b" and "a  b" are two paths. */
 export function toolItemKey(title: string | undefined, input: string | undefined): string | null {
   const t = (title ?? "").trim();
   if (!/\s|\//.test(t)) return null;
-  return callKey("tool", input ? JSON.stringify([t, input]) : t);
+  return input ? `tool:${JSON.stringify([t, input])}` : callKey("tool", t);
 }
 
 export class RepeatDetector {

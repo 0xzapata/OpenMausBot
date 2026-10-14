@@ -42,6 +42,7 @@ describe("toolItemKey", () => {
   it("never lets a title and an input run together into another call's key", () => {
     expect(toolItemKey("Read a", "b c")).not.toBe(toolItemKey("Read a b", "c"));
     expect(toolItemKey("Read a b c", undefined)).not.toBe(toolItemKey("Read a", "b c"));
+    expect(toolItemKey("Running list_directory", '{"path":"/notes/a b"}')).not.toBe(toolItemKey("Running list_directory", '{"path":"/notes/a  b"}'));
   });
 });
 
