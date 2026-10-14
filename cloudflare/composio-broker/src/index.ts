@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { planAccountLink } from "../../../shared/connector-account-link";
+
 interface InstallationRow {
   id: string;
   composio_user_id: string;
@@ -553,23 +555,20 @@ async function authorize(
   // work, with the alias guardrails degrading to first-account behavior.
   const accounts = await listConnectedAccounts(env, installation.composio_user_id, [slug]).catch(() => []);
   const serviceAccounts = accounts.filter((account) => account.toolkit?.slug?.toLowerCase() === slug);
-  const usableAccounts = serviceAccounts.filter((account) => /^(active|initiated|initializing|pending)$/i.test(account.status ?? ""));
-  if (usableAccounts.length >= MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit) {
-    return json({ error: `${slug} already has the maximum of ${MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit} accounts` }, 409);
-  }
-  if (serviceAccounts.length > 0 && !alias) {
-    if (serviceAccounts.every((account) => /^(initializing|initiated|expired)$/i.test(account.status ?? ""))) {
-      // Keep abandoned flows/grants intact; a unique alias cannot replace them.
-      alias = `omb-retry-${crypto.randomUUID()}`;
-    } else {
-      return json({ error: "Add an account alias so the existing connection is not replaced" }, 400);
-    }
-  }
-  if (alias && serviceAccounts.some((account) => account.alias?.trim().toLowerCase() === alias.toLowerCase())) {
-    return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
+  const plan = planAccountLink(
+    slug,
+    serviceAccounts,
+    alias,
+    MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit,
+    () => `omb-retry-${crypto.randomUUID()}`,
+  );
+  if (!plan.ok) return json({ error: plan.error }, plan.status);
+  for (const id of plan.replace) {
+    const removed = await composioRequest(env, `/connected_accounts/${encodeURIComponent(id)}?revoke_on_delete=true`, { method: "DELETE" });
+    if (!removed.ok) return json({ error: await upstreamError(removed, "Removing the earlier sign-in failed") }, 502);
   }
   const linkRequest: AccountLinkRequest = { toolkit: slug };
-  if (alias) linkRequest.alias = alias;
+  if (plan.alias) linkRequest.alias = plan.alias;
   const response = await composioRequest(env, `/tool_router/session/${encodeURIComponent(session.sessionId)}/link`, {
     method: "POST",
     body: JSON.stringify(linkRequest),

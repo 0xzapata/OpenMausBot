@@ -86,7 +86,7 @@ export const CLOUD_HOME_PLACE = "the user's My Cloud, their always-on OpenMausBo
 
 export function cloudHomePrompt(sharedComputerTools: boolean): string {
   return ` You run on ${CLOUD_HOME_PLACE}.` + (sharedComputerTools
-    ? " If they ask for something on their own Mac or PC, check list_shared_computers: a Mac they lend to My Cloud is reachable through shared_computer, within the folders and apps it allows. If none is lent and online, say so in one sentence: they can turn on Let My Cloud use this Mac under Settings → MausBot Cloud in the desktop app on that Mac."
+    ? " If they ask for something on their own Mac or PC, check list_shared_computers: a computer they lend to My Cloud is reachable through shared_computer, within the folders and apps it allows. If none is lent and online, say so in one sentence: they can turn on Let My Cloud use this computer under Settings → MausBot Cloud in the desktop app on that computer."
     : " You cannot see or use their Mac or PC, its screen or its files from here. If they ask for something on it, say so in one sentence.")
     + " Offer what works here: the built-in browser and their cloud computer, a desktop in the cloud. Call it their cloud computer, as the app does. Never ask them to set up this computer or a Local VM; neither exists here.";
 }
@@ -97,7 +97,9 @@ export const COMPOSIO_PROMPT =
 export function composioSystemPrompt(grants: Record<string, ConnectorToolGrant> | undefined): string {
   if (grants === undefined) return COMPOSIO_PROMPT;
   const services = Object.keys(grants);
-  if (services.length === 0) return "";
+  if (services.length === 0) {
+    return " No connected apps are assigned to this bot. If a task needs one, or an app's sign-in has expired, call COMPOSIO_MANAGE_CONNECTIONS to show the user a card that connects it, and ask them to allow that app for this bot in OpenMausBot.";
+  }
   const named = services.map(connectorServiceLabel).join(", ");
   return ` The user's connected apps assigned to this bot (${named}) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Only the tools this bot was granted will run; when a needed tool is refused, tell the user and ask them to grant it in OpenMausBot. Reach for the granted services before telling the user you have no access.`;
 }

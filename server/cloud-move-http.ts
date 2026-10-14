@@ -12,6 +12,7 @@ import {
 } from "./cloud-move.ts";
 import { commitPendingWorkspaceRestore, createWorkspaceBackup, stageWorkspaceBackup } from "./workspace-backup.ts";
 import type { RequestAuth } from "./request-auth.ts";
+import type { WorkspaceLeftBehind } from "../shared/workspace-backup.ts";
 
 export const CLOUD_MOVE_PREFIX = "/api/cloud-move";
 const failure = (message: string, status: number) => Object.assign(new Error(message), { status });
@@ -39,7 +40,7 @@ export function createCloudMoveRoutes(options: {
   exclusive: <T>(work: () => Promise<T>, keepLocked?: boolean) => Promise<T>;
   authorized: (req: IncomingMessage, auth: RequestAuth) => boolean;
   status: () => { busy: boolean; pendingRestore: boolean };
-  restored: { id?: string; restored?: boolean; rolledBack?: boolean; safetyCopyPath?: string };
+  restored: { id?: string; restored?: boolean; rolledBack?: boolean; safetyCopyPath?: string; leftBehind?: WorkspaceLeftBehind };
   restart: () => void;
   freeBytes?: (path: string) => number;
   volumeBytes?: (path: string) => number;
@@ -145,6 +146,7 @@ export function createCloudMoveRoutes(options: {
           ...identity,
           ...options.status(),
           lastRestoreId: options.restored.restored ? options.restored.id ?? null : null,
+          leftBehind: options.restored.restored ? options.restored.leftBehind ?? null : null,
           rolledBackId: options.restored.rolledBack ? options.restored.id ?? null : null,
         });
         return true;

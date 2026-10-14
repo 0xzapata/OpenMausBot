@@ -238,8 +238,12 @@ describe("composioSystemPrompt", () => {
     expect(composioSystemPrompt(undefined)).toBe(COMPOSIO_PROMPT);
   });
 
-  it("is absent when no tools are granted", () => {
-    expect(composioSystemPrompt({})).toBe("");
+  it("offers only a connection card when no tools are granted", () => {
+    const prompt = composioSystemPrompt({});
+    expect(prompt).toContain("No connected apps are assigned to this bot");
+    expect(prompt).toContain("COMPOSIO_MANAGE_CONNECTIONS");
+    expect(prompt).not.toContain("COMPOSIO_MULTI_EXECUTE_TOOL");
+    expect(prompt.startsWith(" ")).toBe(true);
   });
 
   it("names exactly the granted services for a partial grant", () => {
@@ -275,9 +279,9 @@ describe("cloudHomePrompt", () => {
     }
   });
 
-  it("points to a lent Mac only when the turn has the shared-computer tools", () => {
-    expect(cloudHomePrompt(true)).toContain("check list_shared_computers: a Mac they lend to My Cloud is reachable through shared_computer");
-    expect(cloudHomePrompt(true)).toContain("turn on Let My Cloud use this Mac under Settings → MausBot Cloud in the desktop app on that Mac");
+  it("points to a lent computer only when the turn has the shared-computer tools", () => {
+    expect(cloudHomePrompt(true)).toContain("check list_shared_computers: a computer they lend to My Cloud is reachable through shared_computer");
+    expect(cloudHomePrompt(true)).toContain("turn on Let My Cloud use this computer under Settings → MausBot Cloud in the desktop app on that computer");
     expect(cloudHomePrompt(false)).not.toMatch(/shared_computer|list_shared_computers/);
     expect(cloudHomePrompt(false)).toContain("You cannot see or use their Mac or PC, its screen or its files from here.");
   });

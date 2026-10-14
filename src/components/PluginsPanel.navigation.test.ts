@@ -190,6 +190,41 @@ describe("Apps pop-up", () => {
     if (typeof cleanup === "function") cleanup();
   });
 
+  it("shows an app whose only account expired as signed out, and reconnects that account under its own label", async () => {
+    fixture.overrides.set(STATUS, { gmail: { connected: true, pending: false, status: "EXPIRED", accounts: [{ id: "ca_old", alias: "work", status: "EXPIRED" }] } });
+    vi.mocked(api).mockClear();
+    vi.mocked(api).mockResolvedValueOnce({ removed: 1 }).mockResolvedValueOnce({ url: "https://auth.example.test/again" });
+    const page = { opener: {}, closed: false, location: { replace: vi.fn() }, close: vi.fn() };
+    vi.stubGlobal("window", { open: () => page });
+    const { html, nodes: tree } = render();
+    const tile = nodes(tree.find((node) => node.props["data-app-tile"] === "gmail"));
+    expect(tile.some((node) => node.props["aria-label"] === "Connected")).toBe(false);
+    expect(tile.some((node) => node.props.title === "Signed out. Reconnect to keep using it.")).toBe(true);
+    expect(html).not.toContain("1 connected");
+    const button = tile.find((node) => node.type === "button")!;
+    expect(button.props.children).toBe("Reconnect");
+    expect(tile.filter((node) => node.type === "button").map((node) => node.props.children)).not.toContain("Add account");
+    button.props.onClick!();
+    await vi.waitFor(() => expect(page.location.replace).toHaveBeenCalledWith("https://auth.example.test/again"));
+    expect(vi.mocked(api).mock.calls).toEqual([
+      ["/api/connectors/gmail/accounts/ca_old", { method: "DELETE" }],
+      ["/api/connectors/gmail/authorize", { method: "POST", body: JSON.stringify({ alias: "work" }) }],
+    ]);
+  });
+
+  it("offers Reconnect on a dead account beside a working one", () => {
+    fixture.overrides.set(STATUS, { gmail: { connected: true, pending: false, status: "ACTIVE", accounts: [
+      { id: "ca_personal", alias: "personal", status: "ACTIVE" },
+      { id: "ca_work", alias: "work", status: "FAILED" },
+    ] } });
+    const { html, nodes: tree } = render();
+    const tile = nodes(tree.find((node) => node.props["data-app-tile"] === "gmail"));
+    expect(tile.some((node) => node.props["aria-label"] === "Connected")).toBe(true);
+    expect(tile.find((node) => node.type === "button")!.props.children).toBe("Add account");
+    expect(html).toContain('aria-label="Reconnect work to Gmail"');
+    expect(html).not.toContain('aria-label="Reconnect personal to Gmail"');
+  });
+
   it("shows the required alias form for mixed active and unfinished accounts", async () => {
     fixture.overrides.set(STATUS, { gmail: { connected: true, pending: true, status: "ACTIVE", accounts: [
       { id: "ca_active", alias: "work", status: "ACTIVE" },
