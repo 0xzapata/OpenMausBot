@@ -133,6 +133,25 @@ describe("header name", () => {
     fixture.advanced = true;
   });
 
+  it("marks the computer button live while a turn works in the browser, so a closed panel still shows it", () => {
+    const working = (computer: Bot["computer"], busy: boolean) => renderToStaticMarkup(createElement(ChatView, {
+      bot: { ...bot, computer, busy, tasks: (bot.tasks ?? []).map((task) => ({ ...task, busy })) },
+    }));
+    const button = (markup: string) => markup.match(/<button[^>]*data-tour="computer"[^>]*>[\s\S]*?<\/button>/)?.[0] ?? "";
+    expect(button(working("browser", true))).toContain('data-testid="computer-button-live"');
+    // The button keeps its own name; the dot only adds to it.
+    expect(button(working("browser", true))).toContain('aria-label="Bot&#x27;s computer, In use now"');
+    expect(button(working("browser", false))).toContain('aria-label="Bot&#x27;s computer"');
+    // Idle, or working on a computer rather than the browser: no dot.
+    expect(button(working("browser", false))).not.toContain("computer-button-live");
+    expect(button(working("local", true))).not.toContain("computer-button-live");
+    // An Auto conversation pinned to the browser by its first turn counts too.
+    const pinned = renderToStaticMarkup(createElement(ChatView, {
+      bot: { ...bot, computer: undefined, busy: true, tasks: (bot.tasks ?? []).map((task) => ({ ...task, busy: true, surface: "browser" as const })) },
+    }));
+    expect(button(pinned)).toContain('data-testid="computer-button-live"');
+  });
+
   it("centres the bot in the header's middle column, with the controls in the last", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
     const row = markup.match(/data-chathead-row="true" class="([^"]*)"/)?.[1] ?? "";
