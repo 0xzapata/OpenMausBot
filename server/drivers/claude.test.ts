@@ -33,6 +33,7 @@ import { TEAM_TOOLS_FAILED } from "./team-tools.ts";
 import { claudeLimitMessage } from "./claude-limits.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
+import { BASH_MAX_TIMEOUT_MS } from "../system-prompt.ts";
 import { ephemeralWorkspaceTokenPath } from "../workspace-backup-policy.ts";
 import * as procs from "../procs.ts";
 import * as localInject from "./local-inject.ts";
@@ -98,6 +99,10 @@ describe("ClaudeDriver.decodeConfig", () => {
     } else {
       expect(command).toContain("'/tmp/it'\\''s $OMB_HOOK_TEST `literal`/helper.ts'");
     }
+  });
+
+  it("hooks failed tool calls too, so a timed-out command can be given a hint", () => {
+    expect(Object.keys(claudeHookSettings("/tmp/helper.ts"))).toContain("PostToolUseFailure");
   });
 
   it("keeps the per-turn hook token where workspace backups never look", () => {
@@ -1739,6 +1744,22 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1");
     expect(seen.argv[seen.argv.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
     expect(seen.argv).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("lets a Bash call ask for up to ten minutes, unless the person set their own cap", async () => {
+    const dump = join(scratch, "bash-timeout.json");
+    await create(undefined, { FAKE_CLAUDE_DUMP: dump });
+    await instance.adapter.sendTurn({ threadId: "t-bash-timeout", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).env.BASH_MAX_TIMEOUT_MS).toBe(String(BASH_MAX_TIMEOUT_MS));
+
+    recorder.stop();
+    await instance.dispose();
+    const own = join(scratch, "bash-timeout-own.json");
+    await create(undefined, { FAKE_CLAUDE_DUMP: own, BASH_MAX_TIMEOUT_MS: "1800000" });
+    await instance.adapter.sendTurn({ threadId: "t-bash-timeout-own", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(own, "utf8")).env.BASH_MAX_TIMEOUT_MS).toBe("1800000");
   });
 
   it("does not end the current turn or its approvals on a background-task result", async () => {
