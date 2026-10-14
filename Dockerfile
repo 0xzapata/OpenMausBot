@@ -18,6 +18,11 @@
 # HOME is the /data volume, so engine CLI logins (~/.claude, ~/.codex, ~/.grok,
 # ...) and OpenMausBot's own state (~/.openmausbot) persist across container
 # restarts.
+#
+# A plain `docker run` of either image wants `--init --shm-size=512m`, as the
+# compose files set: the bots' browsers leave exited processes for an init to
+# collect, and Chrome needs shared memory (docs/browser-packaging.md, "Process
+# hygiene"). On Fly Machines (the Cloud home) Fly's own init is PID 1.
 
 FROM caddy:2.10.2 AS edge
 # Official Caddy carries a privileged-port file capability. The Cloud home's

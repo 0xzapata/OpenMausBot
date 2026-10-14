@@ -29,8 +29,7 @@ import { SettingRow } from "./SettingsPrimitives";
 const SECTIONS = ["Identity", "Soul", "Skills", "Memory", "Routines", "Access", "Model", "Permissions", "Voice & alerts"] as const;
 type Section = typeof SECTIONS[number];
 
-/** Companion pairing permits creation, but not reading host defaults or
- * patching host settings. Keep its existing single-request creation flow. */
+/** Companion pairing permits creation, but not reading host defaults or patching host settings. */
 export function CompanionNewBotDialog() {
   const { state, dispatch } = useStore();
   const dialog = useRef<HTMLDivElement>(null);
@@ -111,7 +110,6 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => () => draft.dispose(), [draft]);
   // Disabling the focused Create button drops focus to the page in Chromium.
-  // Keep keyboard dismissal and focus trapping inside the pending dialog.
   useEffect(() => { if (saving) dialog.current?.focus(); }, [saving]);
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -167,8 +165,8 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
       else if (action.type === "setModel" && action.botId === draft.id) {
         draft.setModel(action.selection);
         if (action.resetApprovalToAsk) draft.patch({ approvalMode: "ask" });
-      } else if (action.type === "routinePatched") { /* Applied by the draft transport. */ }
-      else if (action.type === "toggleSettings") { /* Editor links stay inside this dialog. */ }
+      } else if (action.type === "routinePatched") {}
+      else if (action.type === "toggleSettings") {}
       else parent.dispatch(action);
     },
   };
@@ -259,22 +257,16 @@ function DraftSection({ active, draft, defaultsMode }: { active: Section; draft:
   return <VoiceSection bot={bot} derived={derived} />;
 }
 
-/** Starting role: presets from the organization and imported files first,
- * then the built-in roles. A preset fills name, look and instructions (all
- * still editable); its skills and notes are added when the bot is created. */
 function StartingRole({ draft, defaultsMode }: { draft: BotCreationDraft; defaultsMode: boolean }) {
   const [presets, setPresets] = useState<BotPreset[]>([]);
   const [loads, setLoads] = useState(0);
   const [error, setError] = useState("");
-  // The draft's picture came from a preset (so the next preset may replace it).
   const presetPicture = useRef(false);
   useEffect(() => {
-    // Defaults are the installation's own; presets are for one new bot.
     if (defaultsMode) return;
     let cancelled = false;
     void api<{ presets: BotPreset[] }>("/api/bot-presets")
       .then(result => { if (!cancelled) setPresets(result.presets); })
-      // Members and older servers: the built-in roles only.
       .catch(() => { if (!cancelled) setPresets([]); });
     return () => { cancelled = true; };
   }, [defaultsMode, loads]);

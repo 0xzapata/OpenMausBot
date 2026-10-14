@@ -1,6 +1,4 @@
-// The registry's contract is forward/backward compatibility: a config
-// written by a newer or differently-built app must load as an
-// unavailable shadow, never crash the fleet. These tests pin that.
+// A config written by a newer or differently built app must load as an unavailable shadow, never crash the fleet.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,15 +27,11 @@ describe("ProviderRegistry", () => {
     const fake = makeFakeDriver();
     const registry = new ProviderRegistry([fake.driver]);
     await registry.load({ a: { driver: "fake" } });
-    // decodeConfig must NOT have been called — defaultConfig() is used verbatim
     expect(fake.decodedConfigs).toHaveLength(0);
     expect(registry.get("a")).not.toBeNull();
   });
 
   it("reports cli as overridden only when the raw config sets it", async () => {
-    // Regression: override detection used to read the DECODED config, whose
-    // cli field is always filled in with the driver default — every instance
-    // then showed as "custom" though nothing was touched.
     const fake = makeFakeDriver();
     fake.driver.defaultConfig = () => ({ cli: "fakebin" });
     const registry = new ProviderRegistry([fake.driver]);
@@ -121,8 +115,7 @@ describe("ProviderRegistry", () => {
     const first = makeFakeDriver({ kind: "first" });
     const second = makeFakeDriver({ kind: "second" });
     const broken = makeFakeDriver({ kind: "broken", failCreate: "boom at create" });
-    // Gate each create on a promise this test controls: "second" is released
-    // before "first", so completion order is the reverse of config order.
+    // "second" is released before "first", so completion order is the reverse of config order.
     const started: string[] = [];
     const release = [first, second, broken].map((handle) => {
       let open!: () => void;
@@ -144,14 +137,11 @@ describe("ProviderRegistry", () => {
     const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
     let done = false;
     void loading.then(() => (done = true));
-    // Every create must be in flight before any gate opens — the serial loop
-    // this replaces could not start one while an earlier one was pending.
     await settle();
     expect(started).toEqual(["first", "second", "broken"]);
     expect(done).toBe(false);
     release[1]();
     await settle();
-    // A ready instance is usable before the slowest one lands.
     expect(registry.get("second")).not.toBeNull();
     expect(registry.get("first")).toBeNull();
     release[0]();
@@ -187,8 +177,6 @@ describe("ProviderRegistry", () => {
     expect(registry.entries().map((e) => e.instanceId)).toEqual(["slow"]);
   });
 
-  // A settings save replaces only the engines it changed: the list the model
-  // picker shows must not reorder because one of them was rebuilt.
   it("keeps a replaced instance in its place and adds a new one at the end", async () => {
     const fake = makeFakeDriver();
     const registry = new ProviderRegistry([fake.driver]);
@@ -304,8 +292,7 @@ describe("ProviderRegistry", () => {
 });
 
 describe.skipIf(process.platform === "win32")("installing an npm engine from Settings", () => {
-  // A stand-in npm on PATH: records its arguments and drops the expected
-  // executable into the prefix it was given. No registry, no network.
+  // A stand-in npm on PATH: records its arguments and drops the expected executable into its prefix.
   const FAKE_NPM = `#!/usr/bin/env node
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -364,8 +351,7 @@ process.exit(0);
     withFakeNpm(true);
     const fake = makeFakeDriver();
     Object.assign(fake.driver, { install: { command: { linux: "npm install -g fake-engine" } } });
-    // The PATH scan also looks in standard install locations, so "no npm" is
-    // injected rather than simulated through PATH.
+    // The PATH scan also looks in standard install locations, so "no npm" is injected rather than simulated.
     const without = new ProviderRegistry([fake.driver], { enginesBaseDir: join(scratch, "data"), npmAvailable: () => false });
     await without.load({ a: { driver: "fake" } });
     expect((await without.describe())[0].install?.server).toBeUndefined();

@@ -1,11 +1,4 @@
-// Engine hooks, end to end (Phase 0, item 0.2): the real harness server with
-// the fake Claude CLI honouring the hooks block of its private --settings
-// file. A PostToolUse hook delivers the full tool result to the harness,
-// which spills it to a private file, attaches it to the tool's activity row,
-// and lets the turn's digest claim full evidence. A forged bearer is refused.
-// With OMB_HOOKS=0 the driver registers nothing and the digest says so.
-//
-// Same POSIX gating as branching.test.ts (the fake CLI is a shebang script).
+// POSIX-gated: the fake CLI is a shebang script.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -134,7 +127,6 @@ posixOnly("engine hooks e2e (fake Claude honouring the settings hooks)", () => {
     const spilled = files.map((file) => readFileSync(file, "utf8")).find((text) => text.startsWith("line "))!;
     expect(spilled.length).toBeGreaterThan(10_000);
     expect(spilled).toContain(BIG.slice(0, 200));
-    // the row's own preview stays bounded; the file has the rest
     expect((bash.output ?? "").length).toBeLessThan(7_000);
     const digest: Msg = bot.messages.find((m: Msg) => m.kind === "digest");
     expect(digest.digest?.hookCoverage).toBe("full");
@@ -152,8 +144,7 @@ posixOnly("engine hooks e2e: compaction", () => {
 
   it("records the compaction in the transcript and hands the latest digests back to the engine as plain-text context", async () => {
     const bot = await h.runTurn();
-    // the fake ran PreCompact then SessionStart(compact) at the start of its
-    // SECOND turn; run one more turn so the first turn's digest exists first
+    // The fake runs PreCompact then SessionStart(compact) at the start of its second turn, so run one more turn.
     expect((await h.api("POST", `/api/bots/${bot.id}/messages`, { text: "and again, after compaction" })).status).toBe(202);
     await h.waitFor(async () => {
       const b = await h.getBot(bot.id);
@@ -165,8 +156,7 @@ posixOnly("engine hooks e2e: compaction", () => {
       "context compaction started (auto)",
       "context compacted — re-sent the last 1 digest",
     ]);
-    // the fake echoes what SessionStart's stdout gave it, which must be the
-    // first turn's digest line
+    // The fake echoes what SessionStart's stdout gave it: the first turn's digest line.
     const replies: Msg[] = after.messages.filter((m: Msg) => m.role === "bot" && m.kind === "text" && m.text);
     expect(replies.at(-1)!.text).toContain("[What ");
     expect(replies.at(-1)!.text).toContain("did in an earlier turn");

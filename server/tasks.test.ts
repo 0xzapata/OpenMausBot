@@ -1,9 +1,3 @@
-// Tasks: a bot's separate contexts.
-//
-// The load-bearing property is isolation — each task keeps its own
-// transcript AND its own provider session. If resume cursors leaked
-// between tasks, a "fresh" task would silently resume the previous
-// conversation, which is the exact thing tasks exist to prevent.
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,8 +15,7 @@ async function freshStore() {
 }
 
 afterEach(async () => {
-  // freshStore resets the module graph, so this closes the same SQLite
-  // module instance that the freshly imported Store used.
+  // freshStore resets the module graph, so this closes the same SQLite module instance the fresh Store used.
   const { closeMessageDb } = await import("./message-db.ts");
   closeMessageDb();
   vi.unstubAllEnvs();
@@ -46,7 +39,6 @@ describe("tasks", () => {
     expect(task.threadId).not.toBe(firstThread);
     expect(store.bot(bot.id)!.threadId).toBe(task.threadId);
     expect(store.tasks(bot.id).map((t) => t.threadId)).toEqual([task.threadId, firstThread]);
-    // a brand new context: nothing carried over from the greeting thread
     expect(store.messagesFor(task.threadId)).toHaveLength(0);
     expect(store.messagesFor(firstThread).length).toBeGreaterThan(0);
   });
@@ -73,7 +65,6 @@ describe("tasks", () => {
     store.setResumeCursor(bot.id, "claude", "session-one");
 
     const second = store.createTask(bot.id)!;
-    // the new task must NOT inherit the old session
     expect(store.activeTask(bot.id)!.resumeCursors.claude).toBeUndefined();
     store.setResumeCursor(bot.id, "claude", "session-two");
 
@@ -92,7 +83,6 @@ describe("tasks", () => {
     store.titleTaskFromFirstMessage(bot.id, "Audit the payroll spreadsheet\nand flag anything odd");
     expect(store.activeTask(bot.id)!.title).toBe("Audit the payroll spreadsheet");
 
-    // only the first message names it
     store.titleTaskFromFirstMessage(bot.id, "something else entirely");
     expect(store.activeTask(bot.id)!.title).toBe("Audit the payroll spreadsheet");
     expect(titleFromMessage("x".repeat(80))).toHaveLength(48);
@@ -105,7 +95,6 @@ describe("tasks", () => {
     const titled = store.titleTaskFromFirstMessage(bot.id, "Audit the payroll", task.threadId);
     expect(titled?.threadId).toBe(task.threadId);
     expect(titled?.title).toBe("Audit the payroll");
-    // nothing more to name once the row carries a title
     expect(store.titleTaskFromFirstMessage(bot.id, "a second message", task.threadId)).toBeNull();
   });
 
@@ -123,8 +112,6 @@ describe("tasks", () => {
     const bot = store.createBot();
     const task = store.createTask(bot.id)!;
     store.titleTaskFromFirstMessage(bot.id, "Audit the payroll", task.threadId);
-    // a person renames the row back to a sentinel: the first message
-    // already had its naming attempt, so a later message cannot retitle it
     store.renameTask(bot.id, task.threadId, "New thread");
     expect(store.titleTaskFromFirstMessage(bot.id, "a follow-up message", task.threadId)).toBeNull();
     expect(store.activeTask(bot.id)!.title).toBe("New thread");
@@ -135,12 +122,9 @@ describe("tasks", () => {
     const bot = store.createBot();
     const task = store.createTask(bot.id)!;
     const snippet = store.titleTaskFromFirstMessage(bot.id, "Audit the payroll", task.threadId)!.title;
-    // a person's rename wins over anything generated later
     store.renameTask(bot.id, task.threadId, "Payroll audit");
     expect(store.retitleTask(bot.id, task.threadId, snippet, "Payroll checks")).toBeNull();
     expect(store.activeTask(bot.id)!.title).toBe("Payroll audit");
-    // and where nothing intervened, the generated title lands once — a
-    // second answer aimed at the same snippet finds nothing to replace
     const other = store.createTask(bot.id)!;
     const otherSnippet = store.titleTaskFromFirstMessage(bot.id, "Draft the announcement", other.threadId)!.title;
     expect(store.retitleTask(bot.id, other.threadId, otherSnippet, "Draft announcement")).toMatchObject({ threadId: other.threadId });
@@ -153,9 +137,7 @@ describe("tasks", () => {
     const bot = store.createBot();
     const task = store.createTask(bot.id)!;
     store.renameTask(bot.id, task.threadId, "Payroll audit");
-    // asked for explicitly, so the title it started from may be a person's
     expect(store.retitleTask(bot.id, task.threadId, "Payroll audit", "Quarterly payroll export")).toMatchObject({ title: "Quarterly payroll export" });
-    // a rename that lands mid-flight stands; the late answer is dropped
     store.renameTask(bot.id, task.threadId, "Export checks");
     expect(store.retitleTask(bot.id, task.threadId, "Quarterly payroll export", "Payroll export review")).toBeNull();
     expect(store.taskByThread(bot.id, task.threadId)!.title).toBe("Export checks");
@@ -186,7 +168,6 @@ describe("tasks", () => {
 
     expect(store.deleteTask(bot.id, second.threadId)).toBeTruthy();
     expect(store.tasks(bot.id)).toHaveLength(1);
-    // deleting the ACTIVE task falls back to one that still exists
     expect(store.bot(bot.id)!.threadId).toBe(first);
     expect(store.messagesFor(second.threadId)).toHaveLength(0);
 
@@ -204,7 +185,6 @@ describe("tasks", () => {
       title: UNTITLED_THREAD, resumeCursors: {},
       busy: false, unread: false, activity: "idle",
     });
-    // Fresh context follows the bot's model; the old thread's own is gone.
     expect(replacement.modelSelection).toBeUndefined();
     expect(store.projectBotForTask(bot.id, replacement.threadId)?.modelSelection).toEqual(bot.modelSelection);
     expect(replacement.pinnedMessageId).toBeUndefined();
@@ -238,7 +218,6 @@ describe("tasks", () => {
 
     for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
       expect(existsSync(join(dir, `${second.threadId}.ndjson`))).toBe(false);
-      // the surviving task keeps its logs
       expect(existsSync(join(dir, `${first}.ndjson`))).toBe(true);
     }
   });
@@ -279,7 +258,6 @@ describe("tasks", () => {
     const migrated = reloaded.tasks(bot.id);
     expect(migrated).toHaveLength(1);
     expect(migrated[0]).toMatchObject({ threadId: bot.threadId, resumeCursors: { claude: "old-session" } });
-    // and it is named from the conversation rather than left blank
     expect(migrated[0]!.title).not.toBe(UNTITLED_TASK);
   });
 });
