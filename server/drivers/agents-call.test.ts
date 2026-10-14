@@ -190,7 +190,6 @@ describe("memory_update", () => {
     const bot = "bot-memory-full";
     writeMemoryFile(bot, Array.from({ length: MEMORY_MAX_LINES }, (_, i) => `- 2026-09-01 · old ${i}\n`).join(""));
     const ctx = context({ botId: bot, client: harness(bot) });
-    // refusals of another kind (a stale passage) do not close it either
     for (let i = 0; i < 4; i += 1) {
       const stale = await callTool("memory_update", { action: "remove", old_text: "no such passage" }, ctx);
       expect(stale).toMatchObject({ isError: true });

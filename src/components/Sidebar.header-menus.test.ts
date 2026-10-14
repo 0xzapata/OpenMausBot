@@ -1,7 +1,3 @@
-// The small menus in the sidebar header — New or share (+) and Active
-// Threads — must close on Escape and on a press outside them, and
-// must not lay an invisible backdrop over the window that eats the click the
-// user aimed at something else.
 import { Children, isValidElement, type EffectCallback, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -61,10 +57,10 @@ const trigger = (label: string) => render().find((node) => node.type === "button
 
 let window: EventTarget;
 function runEffects() {
-  // the sidebar's other effects reach for desktop bridges this test does not
-  // stub; only the listeners they manage to bind matter here
+  // The sidebar's other effects reach for desktop bridges this test does not stub; only the listeners they bind matter
+  // here.
   for (const effect of fixture.effects) {
-    try { effect(); } catch { /* unrelated effect */ }
+    try { effect(); } catch {}
   }
 }
 function key(name: string, prevented = false) {
@@ -123,7 +119,6 @@ describe.each(menus)("sidebar header menu: $name", ({ label, item }) => {
 
   it("closes on a press outside it, and not on one inside it", () => {
     const tree = open();
-    // "mount" the innermost element that wraps both the trigger and the menu
     const INSIDE = { closest: () => null };
     const root = tree.filter((node) => {
       const ref = node.props.ref as { current: unknown } | undefined;

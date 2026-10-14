@@ -1,11 +1,3 @@
-// The server's status and read-only logs, moved out of server/index.ts's
-// inline routes into the route table (server/routes/README.md): the health
-// handshake, the browser engine install, the fleet agent, the edition and
-// brand, a thread's inspector events, plan usage, a provider key test, the
-// decision log and admin activity (JSON and CSV), a bot's activity and its
-// outbound allowance. The browser-engine install promise and its error stay
-// in index.ts (the config frame and the idle check read them) and reach here
-// as get/set views.
 import { DEFAULT_OUTBOUND_POLICY } from "../../shared/outbound.ts";
 import { readBotActivity } from "../activity.ts";
 import { activityCsv, activityEntries, parseActivityWhat, readAdminActivityRange } from "../admin-activity.ts";
@@ -29,15 +21,12 @@ export interface StatusRouteDeps {
   store: Pick<Store, "bot" | "bots" | "tasks" | "groupByThread">;
   cfg: AppConfig;
   outboundCounts: Pick<OutboundCounts, "today">;
-  /** Where the web UI's files are served from, when this server serves them (index.ts `STATIC_DIR`). */
   staticDir: string | null;
   sharedWorkspaceFullAccessEnabled(): boolean;
   adminActivityRecording(): boolean;
   configStatus(): ConfigStatus;
   broadcast(payload: Record<string, unknown>): void;
-  /** The browser engine install in progress, if one is (index.ts `browserEngineInstall`). */
   browserEngineInstall: { get(): Promise<void> | null; set(install: Promise<void> | null): void };
-  /** Why the last install failed, shown in the config frame until the next one starts. */
   browserEngineInstallError: { set(error: string | null): void };
 }
 
@@ -47,21 +36,15 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
     configStatus, broadcast, browserEngineInstall, browserEngineInstallError,
   } = deps;
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
-    /** scratch for route matches, shared by every `path.match` below */
     let m: RegExpMatchArray | null = null;
-    // identity handshake for the packaged app's port fallback: the forked
-    // child proves it is OURS by echoing its pid (a stray dev server has
-    // the same API shape but a different pid)
+    // The packaged app's port fallback: the forked child proves it is ours by echoing its pid.
     if (method === "GET" && path === "/api/health") {
       return json(res, 200, { app: "openmausbot", pid: process.pid, static: Boolean(STATIC_DIR), capabilities: {
         guardedMessages: 1, guardedRequests: 1, guardedFullAccess: 1, guardedOnBehalfOf: 1,
         ...(sharedWorkspaceFullAccessEnabled() ? { sharedWorkspaceFullAccess: 1 } : {}),
       } });
     }
-    // The bots' browser engine: install it on this machine (agent-browser +
-    // a Chrome for Testing, a one-time download), or ask how that is going.
-    // One install at a time; the config frame's browserEngine tells the rest.
-    // JSON only, so a form posted from another local page cannot start it.
+    // JSON-only, so a form posted from another local page cannot start the install. One install at a time.
     if (method === "POST" && path === "/api/browser-engine/install") {
       const mediaType = String(req.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
       if (mediaType !== "application/json") {
@@ -85,9 +68,7 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       }
       return json(res, 202, { installing: true });
     }
-    // ── the fleet: client workspaces on this server, through the root agent ──
-    // Admin scope by default plus the `admin` entitlement; the socket's own
-    // permissions decide whether this workspace may drive the agent at all.
+    // Admin scope plus the `admin` entitlement; the socket's own permissions decide whether this workspace may drive the agent.
     const fleetRoute = /^\/api\/fleet(?:\/(workspaces(?:\/([a-z0-9-]+)(?:\/(users|suspend|resume))?)?|upgrade))?$/.exec(path);
     if (fleetRoute) {
       if (!entitled("admin")) return json(res, 403, { error: "Workspaces need an enterprise licence with the admin feature." });
@@ -110,20 +91,15 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       }
     }
 
-    // Which edition this server runs and why (see server/enterprise.ts). Read-only.
     if (method === "GET" && path === "/api/edition") {
       // A member learns what is entitled; when the key lapses is for admins.
       const status = editionStatus();
       return json(res, 200, auth.scopes.includes("admin") ? status : editionForMembers(status));
     }
-    // The brand for this deployment (server/brand.ts): read per request so edits show on reload.
     if (method === "GET" && path === "/api/brand") {
       return json(res, 200, loadBrand());
     }
 
-    // ── inspector: a thread's runtime events + native protocol tee ──
-    // Both logs already exist on disk; this only reads them back. Threads
-    // belong to bots or rooms — anything else is not a thread we know.
     m = path.match(/^\/api\/threads\/([\w-]+)\/events$/);
     if (m && method === "GET") {
       const threadId = m[1];
@@ -140,13 +116,7 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       return json(res, 200, readThreadEvents({ eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR, threadId, limit }));
     }
 
-    // ── the fleet-wide authorization decision log ──
-    // Read-only like the inspector above: the rows were written at the
-    // request.opened fold and in answerRequest; this only reads them back,
-    // newest last, same order as thread events.
-
-    // Subscription windows (5-hour and weekly), not the token ledger above.
-    // Same admin gate as /api/usage: this route is unlisted, so it stays admin.
+    // Subscription windows (5-hour and weekly). Unlisted, so it stays admin.
     if (method === "GET" && path === "/api/plan-usage") {
       res.setHeader("cache-control", "no-store");
       const report = await loadPlanUsage({
@@ -156,9 +126,7 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       return json(res, 200, report);
     }
 
-    // ── provider key check: does a pasted or saved key open the provider's door ──
-    // One read-only request from this server; the verdict never carries the
-    // key. Admin scope by default, like every route not opened to clients.
+    // One read-only request from this server; the verdict never carries the key.
     if (method === "POST" && path === "/api/keys/test") {
       const body = await readBody(req, 8192);
       const provider = body?.provider;
@@ -176,8 +144,6 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       const url = typeof body?.url === "string" && body.url.trim() ? body.url.trim() : (saved && "url" in saved ? saved.url : undefined);
       res.setHeader("cache-control", "no-store");
       const verdict = await checkProviderKey({ provider: kind, key, url });
-      // A Test is a real use the person chose: the engines on this key agree
-      // with its verdict. Claude runs its key through its CLI, not here.
       if (kind !== "anthropic") {
         const base = providerBaseUrl(kind, url);
         if (verdict.ok) noteKeyAccepted(base, key);
@@ -194,8 +160,6 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       }
       return json(res, 200, { decisions: readDecisions(DATA_DIR, parsedLimit ?? 200) });
     }
-    // Settings → Activity: admin actions and approvals together, filtered by
-    // who, what and when; the same list as CSV. Admin scope by default.
     if (method === "GET" && (path === "/api/admin-activity" || path === "/api/admin-activity.csv")) {
       const fromParam = url.searchParams.get("from") || new Date(Date.now() - 29 * 24 * 60 * 60_000).toISOString().slice(0, 10);
       const range = parseUsageRange(fromParam, url.searchParams.get("to"));
@@ -228,8 +192,6 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
         recording: adminActivityRecording(),
       });
     }
-    // The same rows for an auditor's spreadsheet, over a date range. Admin
-    // scope by default (not in CLIENT_ALLOW, not a service route).
     if (method === "GET" && path === "/api/decisions.csv") {
       const range = parseUsageRange(url.searchParams.get("from"), url.searchParams.get("to"));
       if (!range) return json(res, 400, { error: "from and to must be YYYY-MM-DD, from no later than to, at most a year apart" });
@@ -243,11 +205,6 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       return;
     }
 
-    // ── a bot's activity: what it did, with the outcome ──
-    // Read-only over the same two logs as the inspector and the decision
-    // route above. The bot's own threads (its DM and every task) carry the
-    // tool runs; the decision log carries the bot's requests wherever they
-    // happened, since those rows name the bot.
     m = path.match(/^\/api\/bots\/([\w-]+)\/activity$/);
     if (m && method === "GET") {
       const bot = store.bot(m[1]);
@@ -263,7 +220,6 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       });
     }
 
-    // ── a bot's outbound allowance: the policy, and how much of it is spent ──
     m = path.match(/^\/api\/bots\/([\w-]+)\/outbound$/);
     if (m && method === "GET") {
       const bot = store.bot(m[1]);

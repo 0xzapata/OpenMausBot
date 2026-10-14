@@ -1,5 +1,3 @@
-// Settings → Servers: Copy this computer here on each server this app added
-// (docs/copy-workspace.md), opening the same copy panel as Settings → OMB Cloud.
 import { Children, createElement, isValidElement, type EffectCallback, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -76,7 +74,6 @@ it("is not offered without the desktop app's copy, or to a companion connected t
 });
 
 it("a server's own Copy brings the person here, on that server's copy, to start it themselves", async () => {
-  // The window switched to this computer at ?desktop-settings=workspaces&copy-to=vps.
   const replaced: string[] = [];
   stub({});
   vi.stubGlobal("window", { ...window, location: { search: "?desktop-settings=workspaces&copy-to=vps", href: "http://127.0.0.1:1/?desktop-settings=workspaces&copy-to=vps" },
@@ -84,10 +81,8 @@ it("a server's own Copy brings the person here, on that server's copy, to start 
   await mount(); await mount();
   expect(vi.mocked(move.state).mock.calls).toContainEqual(["vps"]);
   expect(render().html).toContain("from this computer to VPS");
-  // The panel is open, and nothing started: the person starts it here.
   expect(move.start).not.toHaveBeenCalled();
   expect(replaced.at(-1)).toBe("/?desktop-settings=workspaces");
-  // Already on this page: main's message names the panel; Computer access stays its own.
   f.values = [];
   let listener: (id?: string | null, panel?: "copy") => void = () => {};
   stub({});
@@ -101,7 +96,6 @@ it("a server's own Copy brings the person here, on that server's copy, to start 
   expect(render().html).toContain("from this computer to VPS");
 });
 
-// ── Local environments (Environments on this computer) ─────────────────────
 const LOCAL_ENV = { id: "env-1", kind: "local", name: "Work", dataDir: "/home/me/.openmausbot-work", missing: false };
 const GONE_ENV = { id: "env-2", kind: "local", name: "Old", dataDir: "/home/me/.openmausbot-old", missing: true };
 const envState = (overrides: Record<string, unknown> = {}) => ({
@@ -146,14 +140,12 @@ it("creates an environment with the chosen folder — and without one when the f
   forms()[0]!.props.onSubmit!({ preventDefault: () => {} });
   await flush();
   expect(environments.create).toHaveBeenCalledWith("Work", "/data/work");
-  // The form is empty again, so a second create without a path sends none.
   expect(envFormFields()[0]!.props.value).toBe("");
   expect(envFormFields()[1]!.props.value).toBe("");
   envFormFields()[0]!.props.onChange!({ target: { value: "Solo" } });
   forms()[0]!.props.onSubmit!({ preventDefault: () => {} });
   await flush();
   expect(environments.create).toHaveBeenLastCalledWith("Solo", undefined);
-  // A failed create says one generic thing, whatever main's reason was.
   environments.create.mockResolvedValueOnce({ ok: false, error: "duplicate" });
   envFormFields()[0]!.props.onChange!({ target: { value: "Work" } });
   forms()[0]!.props.onSubmit!({ preventDefault: () => {} });
@@ -179,7 +171,6 @@ it("asks what to do with the folder when forgetting a local environment, and del
   await mount();
   expect(render().html).not.toContain("Also delete this folder");
   expect(environments.forget).not.toHaveBeenCalled();
-  // Keep the files (default): no purge argument at all.
   rowButton("Forget Work")!.props.onClick!();
   await mount();
   textButton("Forget")!.props.onClick!();

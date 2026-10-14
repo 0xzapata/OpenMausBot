@@ -1,9 +1,4 @@
-// App settings → Skills: the shared skills library (features.skillsLibrary).
-// One place to browse every skill on this machine, see which bots use each,
-// assign and remove with one click, and import new skills as pasted text.
-// Local browse only by design: no registry and no network fetch of any kind
-// (the skills.sh question, #1782, is still open upstream), so an import is
-// exactly the bytes pasted here.
+// Security: local browse only, with no registry and no network fetch, so an import is exactly the bytes pasted here.
 import { Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "@/lib/i18n";
@@ -12,8 +7,6 @@ import { useStore } from "@/state/store";
 import { Card, Switch } from "./SettingsPrimitives";
 import type { SkillsLibrarySkillWire } from "../../shared/wire";
 
-/** Pure browse filter: the query matches name, description and source;
- * the tag narrows to rows carrying it. Exported for the component test. */
 export function filterLibrarySkills(
   skills: readonly SkillsLibrarySkillWire[],
   query: string,
@@ -27,8 +20,6 @@ export function filterLibrarySkills(
   });
 }
 
-/** The chip row under a skill: source, version, import date, tags. Kept as a
- * pure exported piece so the test can render it without a store. */
 export function LibrarySkillMeta({ skill }: { skill: SkillsLibrarySkillWire }) {
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-ink-secondary">
@@ -95,8 +86,8 @@ export function SkillsSection() {
     setWorking(label);
     setError("");
     try {
-      // Read the complete current list while mutations are serialized: a
-      // second row (or a failed browse refresh) must not overwrite a prior assignment.
+      // Read the complete current list while mutations are serialized, so a second row never overwrites an earlier
+      // assignment.
       const listing = await fetch("/api/skills-library");
       const listed = (await listing.json()) as { skills?: SkillsLibrarySkillWire[]; error?: string };
       if (!listing.ok) throw new Error(listed.error ?? t("skills.library.loadError"));

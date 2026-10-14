@@ -108,8 +108,7 @@ export function TeamCanvas({ sections, canManage, onMove, onInstructions, onMemo
   const current = useRef({ view, positions, tiles, selectedId: state.selectedId, settingsOpen: state.settingsOpen });
   current.current = { view, positions, tiles, selectedId: state.selectedId, settingsOpen: state.settingsOpen };
 
-  // Layout is personal presentation, not team configuration. Key it to the
-  // workspace's identity so switching hosted workspaces never shares a layout.
+  // Keyed to the workspace's identity, so switching hosted workspaces never shares a layout.
   useEffect(() => {
     let active = true;
     void api("/.well-known/openmausbot/environment", { signal: AbortSignal.timeout(5_000) }).then((environment) => {
@@ -119,8 +118,8 @@ export function TeamCanvas({ sections, canManage, onMove, onInstructions, onMemo
         const saved = parsePositions(localStorage.getItem(storageKey.current));
         setPositions((previous) => ({ ...saved, ...previous }));
         setBotOrders(parseBotOrders(localStorage.getItem(`${storageKey.current}:bot-order`)));
-      } catch { /* Private browsing may disable storage; the canvas still works. */ }
-    }).catch(() => { /* Older companions can use the canvas without persistence. */ }).finally(() => { if (active) setLayoutLoaded(true); });
+      } catch {}
+    }).catch(() => {}).finally(() => { if (active) setLayoutLoaded(true); });
     return () => { active = false; };
   }, []);
 
@@ -130,7 +129,7 @@ export function TeamCanvas({ sections, canManage, onMove, onInstructions, onMemo
     try {
       localStorage.setItem(storageKey.current, JSON.stringify(Object.fromEntries(sections
         .filter((section) => Object.hasOwn(next, section.key)).map((section) => [section.key, next[section.key]]))));
-    } catch { /* A full/disabled store must not prevent arranging teams. */ }
+    } catch {}
   };
   const personalOrder = (key: string) => Object.hasOwn(botOrders, key) ? botOrders[key] : [];
   const saveBotOrder = (section: TeamMapSection<Bot>, lane: Bot[], bot: Bot, index: number) => {
@@ -141,7 +140,7 @@ export function TeamCanvas({ sections, canManage, onMove, onInstructions, onMemo
     setBotOrders(next);
     if (storageKey.current) {
       try { localStorage.setItem(`${storageKey.current}:bot-order`, JSON.stringify(next)); }
-      catch { /* Personal ordering remains usable when browser storage is unavailable. */ }
+      catch {}
     }
     setAnnouncement(t("canvas.arrangedBot", { name: bot.name, team: section.name }));
   };
@@ -174,8 +173,6 @@ export function TeamCanvas({ sections, canManage, onMove, onInstructions, onMemo
     observer.observe(element);
     return () => observer.disconnect();
   }, [fit]);
-  // Fit membership changes too: a growing team can push later rows outside
-  // the view. Ordinary status updates and manual arranging never trigger this.
   const teamSizes = JSON.stringify(tiles.map(({ key, width, height }) => [key, width, height]));
   useEffect(() => { fit(); }, [fit, teamSizes, layoutLoaded]);
   useEffect(() => {
@@ -219,8 +216,7 @@ export function TeamCanvas({ sections, canManage, onMove, onInstructions, onMemo
     const tile = teamKey === undefined ? undefined : tiles.find((item) => item.key === teamKey);
     gesture.current = bot ? { ...common, kind: "bot", bot } : tile ? { ...common, kind: "team", key: tile.key, origin: tile } : { ...common, kind: "pan" };
     suppressClick.current = false;
-    // Capture only after the drag threshold, otherwise a simple button click
-    // would be retargeted to the canvas and never open settings.
+    // Capture only after the drag threshold: capturing earlier retargets a plain click to the canvas.
   };
   const destinationAt = (x: number, y: number) => {
     const section = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-team-key]");
