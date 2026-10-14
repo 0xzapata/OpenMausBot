@@ -1,12 +1,3 @@
-// Pending approval, ported from the upstream pattern: an approval does
-// not sit in the transcript waiting to be noticed — it takes over the
-// composer. The prompt is disabled, a strip above it says exactly what
-// is being asked, and the send row is replaced by the decisions.
-//
-// Faithful details worth keeping: one at a time with an "n of N" counter,
-// the detail printed raw in a monospace block that is NEVER truncated
-// (it scrolls instead), and the buttons ordered least-destructive-last so
-// the primary action sits under your thumb.
 import { memo } from "react";
 import { useStore, type Bot, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -26,7 +17,6 @@ export interface Pending {
   message: Message;
   requestId: string;
   tool: string;
-  /** the narrow grant "always allow" writes, computed server-side */
   allowKey?: string;
   allowSession?: boolean;
   commandAllowlist?: { command: string; cwd: string; providerInstanceId: string };
@@ -35,8 +25,7 @@ export interface Pending {
   heldCode?: string;
 }
 
-/** The persisted payload is the authoritative marker. Tool names are
- * provider-authored display strings and can collide with ours. */
+/** Security: the persisted payload is the marker; provider-authored tool names can collide with ours. */
 export function isRoutineApproval(pending: Pending): boolean {
   return Boolean(pending.message.card?.routineRequest);
 }
@@ -49,11 +38,8 @@ export function isProfileApproval(pending: Pending): boolean {
   return Boolean(pending.message.card?.profileRequest);
 }
 
-/** Open approvals on a thread, oldest first — answered/dismissed drop out. */
 export function pendingApprovals(messages: Message[]): Pending[] {
   return messages
-    // An expired proposal is terminal: it must not take over the composer
-    // or offer its decision buttons anywhere.
     .filter((m) => m.kind === "options" && m.card?.requestId && m.card.tool && !m.card.answered && !m.card.dismissed && !m.card.expired)
     .map((m) => ({
       message: m,
@@ -68,9 +54,6 @@ export function pendingApprovals(messages: Message[]): Pending[] {
     }));
 }
 
-/** Routine cards can carry every instruction the user asked for (up to
- * 20,000 characters). Calls should announce the concise, visible title and
- * let the user review those details on screen instead of reading them all. */
 export function spokenApprovalPrompt(pending: Pending, requester: string): string {
   if (pending.message.card?.teamSetupRequest) return `${requester}: ${pending.message.card.title} Review the details and choose ${pending.message.card.options[0]} or ${pending.message.card.options[1] ?? "Cancel"}.`;
   const isRoutineRequest = isRoutineApproval(pending);
@@ -88,16 +71,10 @@ export function spokenApprovalPrompt(pending: Pending, requester: string): strin
     });
   }
   if (isProfileRequest) {
-    // pending.detail is the full subtitle — the whole diff for a soul
-    // change. Speak the card's concise title instead, the same way the
-    // routine/skill branches do, and let the user read the diff on screen.
     const title = pending.message.card?.title.trim() || t("approval.voice.defaultUpdateProfile");
     return t("approval.voice.profile", { requester, title });
   }
   if (!isRoutineRequest) {
-    // pending.tool can be an ACP toolCall kind rather than a tool name —
-    // speak the same verb phrase the card header shows, so voice never
-    // reads "wants to other".
     return t("approval.voice.command", { requester, tool: toolLabel(pending.tool), detail: pending.detail });
   }
   const title = pending.message.card?.title.trim() || t("approval.voice.defaultConfirmRoutine");
@@ -142,13 +119,9 @@ export const PendingApprovalPanel = memo(function PendingApprovalPanel({
   pending: Pending;
   count: number;
   index: number;
-  /** The active locale. Not read here: it is the memo key, the same way the
-   * transcript takes one. Every line in this panel comes from the catalog,
-   * and nothing else about a pending approval changes with the language. */
   locale?: string;
 }) {
   const heldNote = tFromServer(pending.heldCode, pending.held);
-  // A held outbound action names where it sends and what, not its slug.
   const outbound = pending.message.card ? outboundSummary(pending.message.card) : undefined;
   return (
     <div
@@ -188,7 +161,6 @@ export const PendingApprovalPanel = memo(function PendingApprovalPanel({
               : pending.tool}
         </span>}
       </div>
-      {/* never truncated — long commands wrap and scroll */}
       <pre
         tabIndex={0}
         aria-label={
@@ -220,7 +192,6 @@ export function PendingApprovalActions({
 }: {
   pending: Pending;
   threadId: string;
-  /** who asked — "always allow" is remembered against them */
   bot?: Bot;
   onCancelTurn: () => void;
 }) {
@@ -244,8 +215,6 @@ export function PendingApprovalActions({
       behavior,
       message: behavior === "deny" ? "Denied by the user." : undefined,
       reviewedSha256: behavior === "allow" ? reviewedSha256 : undefined,
-      // a harness-native card (peer comms) remembers a grant on the bot; a
-      // provider's card hands the allow to the provider for its session
       alwaysAllow: always && bot && pending.allowKey ? { botId: bot.id, key: pending.allowKey } : undefined,
       always: always && !pending.allowKey && pending.allowSession ? true : undefined,
       rememberCommand: rememberCommand || undefined,
