@@ -11,6 +11,9 @@ import { removeTempDir } from "./testing/cleanup.ts";
 import { openSse, type SseRecorder } from "./testing/sse.ts";
 import { withoutTurnClock } from "./testing/turn-clock-text.ts";
 
+/** The picture the inert browser takes: a 1x1 JPEG. */
+const JPEG = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
+
 describe.skipIf(process.platform === "win32")("direct final-screen settlement", () => {
   let session: VerificationServer;
   let fixture: string;
@@ -49,32 +52,20 @@ describe.skipIf(process.platform === "win32")("direct final-screen settlement", 
     fixture = mkdtempSync(join(tmpdir(), "omb-screen-settle-"));
     evidence = [];
     const browser = join(fixture, "agent-browser");
+    // The harness takes every picture over the engine's loopback relay
+    // (browser-relay.ts), never a `screenshot` CLI spawn. So, run as `mcp`,
+    // the inert engine is also its own daemon: a FakeRelay whose port it
+    // writes to `<session>.stream` where agent-browser keeps it
+    // (browserDaemonFile), and whose screenshot holds at the capture gates.
     writeFileSync(browser, [
       "#!/usr/bin/env node",
       'import { existsSync, mkdirSync, writeFileSync } from "node:fs";',
-      'import { createServer } from "node:http";',
-      'import { dirname } from "node:path";',
+      'import { homedir } from "node:os";',
+      'import { join } from "node:path";',
       'import { createInterface } from "node:readline";',
-      'const PICTURE = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";',
       `const dir = ${JSON.stringify(fixture)};`,
       'const args = process.argv.slice(2);',
       'if (args[0] === "mcp") {',
-      `  const { browserDaemonFile } = await import(${JSON.stringify(pathToFileURL(join(process.cwd(), "server/browser-engine.ts")).href)});`,
-      '  const relay = createServer(async (req, res) => {',
-      '    let raw = ""; for await (const chunk of req) raw += chunk;',
-      '    const command = JSON.parse(raw);',
-      '    if (command.action === "screenshot") {',
-      '      writeFileSync(dir + "/capture.entered", "started");',
-      '      while (!existsSync(dir + "/capture.gate")) await new Promise(resolve => setTimeout(resolve, 10));',
-      '      if (existsSync(command.path)) writeFileSync(command.path, Buffer.from(PICTURE, "base64"));',
-      '      writeFileSync(dir + "/capture.finished", "finished");',
-      '    }',
-      '    const data = command.action === "session_info" ? { session: process.env.AGENT_BROWSER_SESSION, backgroundPid: process.pid } : { connected: true };',
-      '    res.end(JSON.stringify({ success: true, data }));',
-      '  }).listen(0, "127.0.0.1", () => {',
-      '    const file = browserDaemonFile(process.env, ".stream");',
-      '    mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, String(relay.address().port));',
-      '  });',
       '  createInterface({ input: process.stdin }).on("line", line => {',
       '    const message = JSON.parse(line); if (message.id === undefined) return;',
       '    const result = message.method === "initialize" ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "inert-browser", version: "1" } }',
@@ -82,6 +73,22 @@ describe.skipIf(process.platform === "win32")("direct final-screen settlement", 
       '      : { content: [{ type: "text", text: "inert browser action" }] };',
       '    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");',
       '  });',
+      `  const { FakeRelay } = await import(${JSON.stringify(new URL("./testing/fake-relay.ts", import.meta.url).href)});`,
+      '  const env = process.env;',
+      '  const relay = new FakeRelay(env.AGENT_BROWSER_SESSION);',
+      `  relay.picture = Buffer.from(${JSON.stringify(JPEG)}, "base64");`,
+      '  relay.onCommand = async (command) => {',
+      '    if (command.action !== "screenshot") return;',
+      '    writeFileSync(join(dir, "capture.entered"), "started");',
+      '    while (!existsSync(join(dir, "capture.gate"))) await new Promise(resolve => setTimeout(resolve, 10));',
+      '    // Once the relay has written the picture and answered (right after this returns).',
+      '    setImmediate(() => writeFileSync(join(dir, "capture.finished"), "finished"));',
+      '  };',
+      '  await relay.start();',
+      '  const base = env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "agent-browser") : join(env.HOME || homedir(), ".agent-browser");',
+      '  const run = env.AGENT_BROWSER_SOCKET_DIR || (env.AGENT_BROWSER_NAMESPACE ? join(base, "namespaces", env.AGENT_BROWSER_NAMESPACE, "run") : base);',
+      '  mkdirSync(run, { recursive: true });',
+      '  writeFileSync(join(run, env.AGENT_BROWSER_SESSION + ".stream"), String(relay.port));',
       '} else if (args[0] === "session") process.stdout.write(JSON.stringify({ success: true, data: { sessions: [] } }));',
       'else process.stdout.write("1.0.0\\n");',
     ].join("\n"), { mode: 0o700 });
@@ -156,8 +163,7 @@ describe.skipIf(process.platform === "win32")("direct final-screen settlement", 
       { headers: { origin: session.info.url } });
     expect(image.status).toBe(200);
     expect(image.headers.get("content-type")).toBe("image/jpeg");
-    expect(Buffer.from(await image.arrayBuffer()).toString("base64"))
-      .toBe("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==");
+    expect(Buffer.from(await image.arrayBuffer()).toString("base64")).toBe(JPEG);
   }, 30_000);
 
   it("bounds capture settlement and discards a late frame after the thread is deleted", async () => {

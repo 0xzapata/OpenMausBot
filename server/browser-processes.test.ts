@@ -117,8 +117,10 @@ describe.skipIf(!posix)("browsers whose engine was killed under them", () => {
     const latePid = join(home, "late.pid");
     const ready = join(home, "ready");
     const orphan = start(process.execPath, ["-e", `process.on("SIGTERM", () => { const late = require("node:child_process").spawn("sleep", ["30"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(latePid)}, String(late.pid)); process.exit(0); }); require("node:fs").writeFileSync(${JSON.stringify(ready)}, ""); ${IDLE}`, "--", "--remote-debugging-port=0", `--user-data-dir=${profileFolder(home)}`], daemonEnv(home, "bot-late"));
-    await vi.waitFor(async () => expect((await orphanedBrowsers(home)).map((found) => found.session)).toEqual(["bot-late"]), { timeout: 5_000 });
+    // Its command line and environment, which find it, exist from the start;
+    // a SIGTERM before node has run the script above would simply kill it.
     await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(async () => expect((await orphanedBrowsers(home)).map((found) => found.session)).toEqual(["bot-late"]), { timeout: 5_000 });
     const [found] = await orphanedBrowsers(home);
     expect(await stopBrowserProcesses(found!.tree)).toBe(true);
     const late = Number(readFileSync(latePid, "utf8"));
