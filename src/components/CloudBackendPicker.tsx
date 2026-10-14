@@ -1,10 +1,3 @@
-// The Boat / Self-hosted VPS segmented control shown under the "Runs on"
-// picker whenever a bot can end up on a cloud computer. One component, two
-// homes (ComputerPanel and the bot settings dialog's Access section), so the
-// copy can never drift apart. Both backends follow one rule
-// (shared/cloud-computer.ts), so neither is offered or refused on its own.
-// My Cloud's cloud computers are the plan's own, so there it is not shown at
-// all.
 import type { CloudBackend } from "../../shared/wire";
 import { cn } from "@/lib/cn";
 import { useStore } from "@/state/store";

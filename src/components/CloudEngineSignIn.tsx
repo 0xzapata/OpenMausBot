@@ -1,17 +1,3 @@
-// Shown on an OMB Cloud home in place of a chat until one of the person's own
-// engines is signed in (docs/cloud-pro.md; lib/onboarding cloudSignInDue).
-// Cloud Pro includes no AI: the person brings a Claude, ChatGPT or Grok
-// account, or an API key. A free trial's AI credit runs bots until then; once
-// it is used up, this says so first. Each choice opens the setup that already
-// exists for it: the paste-code Claude sign-in and the Codex and Grok device codes
-// (EngineSetup, the card the model picker shows), or the model-provider keys
-// in Settings → Connections. Grok is offered only where this Cloud computer
-// has the Grok CLI. Once an engine can run, the chat takes this screen's place.
-//
-// It borrows the welcome flow's look: the guide mascot, copy that rises in a
-// beat at a time, and choices that open in place. A first job given before
-// any AI (CloudIntent) waits at the top; once an engine can run, the screen
-// says so for a moment and hands the job to the chat as a `/setup` request.
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Check, Info, KeyRound, RefreshCw } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
@@ -31,7 +17,6 @@ import { useStore, type InstanceInfo } from "@/state/store";
 type Choice = "claude" | "codex" | "grok";
 type ChoiceKind = "claudeAgent" | "codex" | "grokAgent";
 
-/** The person's own engine of that kind: not a local-model or read-only one. */
 export function cloudEngine(instances: readonly InstanceInfo[], driverKind: ChoiceKind): InstanceInfo | undefined {
   return instances.find((instance) => instance.driverKind === driverKind && instance.access !== "custom" && !instance.readOnly);
 }
@@ -41,14 +26,11 @@ export function CloudEngineSignIn() {
   const [open, setOpen] = useState<Choice | null>(null);
   const [checking, setChecking] = useState(false);
   const [motion, setMotion] = useState<{ kind: MausMotion; key: number }>({ kind: "none", key: 0 });
-  // The entrance waits one frame: a motion issued in the commit that mounts
-  // the avatar lands before its engine has drawn (WelcomeFlow).
+  // One frame late: a motion issued in the avatar's mounting commit is lost.
   useEffect(() => {
     const frame = requestAnimationFrame(() => setMotion({ kind: "arrive", key: 1 }));
     return () => cancelAnimationFrame(frame);
   }, []);
-  // A waiting first job starts once an engine can run: a beat to say so, then
-  // the chat takes over with the job as its first message.
   const { pending } = useCloudIntent();
   const ready = state.instances.some(engineReady);
   const latest = useRef(state);
@@ -75,18 +57,14 @@ export function CloudEngineSignIn() {
   const choices: Array<{ id: Choice; driverKind: ChoiceKind; label: string; hint: string }> = [
     { id: "claude", driverKind: "claudeAgent", label: t("cloudSignIn.claude"), hint: t("cloudSignIn.claudeHint") },
     { id: "codex", driverKind: "codex", label: t("cloudSignIn.codex"), hint: t("cloudSignIn.codexHint") },
-    // Grok Build needs its CLI on this Cloud computer; an older image has none.
     ...(cloudEngine(state.instances, "grokAgent")?.snapshot.state === "available"
       ? [{ id: "grok" as const, driverKind: "grokAgent" as const, label: t("cloudSignIn.grok"), hint: t("cloudSignIn.grokHint") }]
       : []),
   ];
-  // The guide looks around while the Cloud answers, listens once a way in is
-  // open, and is proud the moment it connects.
   let face: MausState = "curious";
   if (handing) face = "proud";
   else if (checking) face = "searching";
   else if (open) face = "listening";
-  // Shown here because the trial's AI credit can no longer run a bot.
   const credit = state.instances.find((instance) => instance.trialCredit && instance.trialCredit !== "active")?.trialCredit;
 
   return (
@@ -99,8 +77,6 @@ export function CloudEngineSignIn() {
         <div className="animate-rise flex flex-col items-center text-center" style={staggerIndex(0)}>
           <MausAvatar color="green" state={face} motion={motion.kind} motionKey={motion.key} size={64} label={brand().name} />
         </div>
-        {/* The job this sign-in is for, as it will be sent. It is the same
-            element as the box it was typed in, and as the composer after. */}
         {pending && (
           <figure data-cloud-intent-pending className="mt-6 rounded-2xl bg-composer px-4 pb-3 pt-2.5 ring-1 ring-composer-ring" style={{ viewTransitionName: "cloud-intent" }}>
             <figcaption className="flex items-center justify-between gap-3 text-[11.5px] text-ink-secondary">
@@ -133,9 +109,6 @@ export function CloudEngineSignIn() {
           {t(pending ? "cloudSignIn.introForJob" : "cloudSignIn.intro")}
         </p>
 
-        {/* The sign-ins are one choice, side by side (two, or three where
-            Grok's CLI is on this computer); the picked one opens a single
-            panel underneath, pointed at its tile. */}
         <div role="group" aria-label={t("cloudSignIn.title")} inert={handing} className={cn("mt-8 grid gap-3 transition-opacity duration-300 ease-out", choices.length === 3 ? "grid-cols-3" : "grid-cols-2", handing && "opacity-40")}>
           {choices.map((choice, i) => {
             const picked = open === choice.id;
@@ -168,7 +141,6 @@ export function CloudEngineSignIn() {
           })}
         </div>
 
-        {/* Connected: the way in has done its job, and steps back. */}
         {open && !handing && (() => {
           const index = choices.findIndex((candidate) => candidate.id === open);
           const choice = choices[index]!;
@@ -176,7 +148,6 @@ export function CloudEngineSignIn() {
           return (
             <div id="cloud-sign-in-panel" className="step-open mt-3">
               <div className="relative rounded-2xl border border-hairline/50 bg-card px-4 pb-4 pt-4">
-                {/* The pointer glides under whichever tile is picked. */}
                 <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 transition-transform duration-300 ease-[cubic-bezier(0.23,1,0.32,1)]" style={{ transform: `translateX(${(index / choices.length) * 100}%)` }}>
                   <span className="absolute top-0 size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[2px] border-l border-t border-hairline/50 bg-card" style={{ left: `${50 / choices.length}%` }} />
                 </span>
@@ -190,7 +161,6 @@ export function CloudEngineSignIn() {
           );
         })()}
 
-        {/* An API key is a different road: it leaves for Settings. */}
         <div className="animate-rise mt-7 flex items-center gap-3 text-[11.5px] text-ink-secondary" style={staggerIndex(3 + choices.length)}>
           <span className="h-px flex-1 bg-hairline/50" />
           {t("cloudSignIn.or")}

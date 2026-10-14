@@ -1,8 +1,4 @@
-// Every engine the server registers must have a capability row, and the
-// row must say what the driver really does: the level rule and the
-// continuation rule read these flags, never driver names. The expected
-// table is written out in full so a change in shared/approval-mode.ts or
-// in a driver's resume path is a visible diff here, not a silent shift.
+// The expected table is written out in full so any change to an engine's flags is a visible diff here.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -10,7 +6,6 @@ import { BUILT_IN_DRIVERS } from "../drivers/builtIn.ts";
 import { ENGINE_KINDS, engineCapabilities, type EngineCapabilities } from "./capabilities.ts";
 
 const chat: EngineCapabilities = { resume: false, nativeReviewer: false, full: true, edits: false, stepCap: 64, subagents: false };
-// No permissive mode of its own: Full is the harness answering what it leaves.
 const bare: EngineCapabilities = { resume: true, nativeReviewer: false, full: true, edits: false, subagents: false };
 
 const EXPECTED: Record<string, EngineCapabilities> = {
@@ -57,7 +52,6 @@ describe("engineCapabilities", () => {
     const none: EngineCapabilities = { resume: false, nativeReviewer: false, full: true, edits: false, subagents: false };
     expect(engineCapabilities(undefined)).toEqual(none);
     expect(engineCapabilities("someFutureEngine")).toEqual(none);
-    // a prototype name is not an engine
     expect(engineCapabilities("constructor")).toEqual(none);
     expect(engineCapabilities("__proto__")).toEqual(none);
   });

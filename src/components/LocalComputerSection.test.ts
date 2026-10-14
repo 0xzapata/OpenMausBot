@@ -135,8 +135,6 @@ describe("computer inventory request wiring", () => {
         body: JSON.stringify({ confirmName: vpsName }),
       },
     ]);
-    // Sleep is reversible and intentionally skips confirmation; all three
-    // destructive actions above remain explicitly gated.
     expect(confirm).toHaveBeenCalledTimes(3);
   });
 });
@@ -211,7 +209,6 @@ describe("Local VM inventory UI", () => {
       onDelete: vi.fn(),
     }));
 
-    // Refresh and Delete cannot race one another.
     expect(markup.match(/disabled=""/g)).toHaveLength(2);
   });
 
@@ -292,7 +289,6 @@ describe("cloud computer inventory UI", () => {
   it("disables lifecycle actions while refreshing an existing inventory", () => {
     const markup = renderCard({ instances: [ownedCloudComputer], loading: true });
 
-    // Refresh, Sleep, and Delete all wait for one authoritative snapshot.
     expect(markup.match(/disabled=""/g)).toHaveLength(3);
   });
 
@@ -334,8 +330,6 @@ describe("cloud computer inventory UI", () => {
     expect(pending.overrides).toEqual({ [ownedCloudComputer.boxId]: "deleting" });
     const markup = renderCard({ instances: pending.instances });
     expect(markup).toContain("Removing");
-    // Sleep and Delete stay unavailable until the bounded confirmation pass
-    // either observes absence or restores the provider's actual row.
     expect(markup.match(/disabled=""/g)).toHaveLength(2);
   });
 
@@ -506,7 +500,6 @@ describe("VPS computer inventory UI", () => {
   it("disables removal while refreshing an existing inventory", () => {
     const markup = renderCard({ instances: [ownedVps], loading: true });
 
-    // Refresh and Remove cannot race one another.
     expect(markup.match(/disabled=""/g)).toHaveLength(2);
   });
 

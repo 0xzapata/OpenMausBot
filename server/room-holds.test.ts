@@ -33,7 +33,6 @@ describe("room member holds", () => {
     expect(stopWordPlacement("@Scout what does `stop` do?")).toBeNull();
     expect(stopWordPlacement('@Scout the log said "stop"')).toBeNull();
     expect(stopWordPlacement("@Scout look:\n```\nstop\n```")).toBeNull();
-    // a quoted line keeps its @mention but not its stop word
     expect(stopWordPlacement("> stop @Scout\nwhat did they mean?")).toBeNull();
     expect(classifyHoldDirective("> stop @Scout\nwhat did they mean?", ["scout"]).release).toEqual(["scout"]);
   });
@@ -53,7 +52,6 @@ describe("room member holds", () => {
   it("applies directives to the room's holds and reports what changed", () => {
     const first = applyHoldDirective(undefined, classifyHoldDirective("stop @Scout", ["scout"]), members, 10);
     expect(first).toEqual({ holds: { scout: { at: 10 } }, held: ["scout"], released: [] });
-    // Holding again changes nothing (the first stop's time stands).
     const again = applyHoldDirective(first.holds, classifyHoldDirective("stop @Scout", ["scout"]), members, 20);
     expect(again.holds).toBe(first.holds);
     expect(again.held).toEqual([]);

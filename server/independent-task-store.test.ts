@@ -47,8 +47,6 @@ describe("independent bot task state", () => {
     const bot = store.createBot({}, { seedMessages: false });
     store.patchBot(bot.id, { approvalMode: "ask", autoApprove: false });
     const first = bot.threadId;
-    // The opening thread inherits until it has its own copy. A later thread,
-    // and any thread whose level was chosen in the composer, keeps that copy.
     store.patchTask(bot.id, first, { approvalMode: "ask", autoApprove: false, alwaysAllow: ["Read"] });
     const model = store.projectBotForTask(bot.id, first)?.modelSelection;
     store.appendMessage(first, { role: "user", kind: "text", text: "Keep this conversation" });
@@ -250,7 +248,6 @@ describe("independent bot task state", () => {
       approvalMode: "auto",
       alwaysAllow: ["Bash:git"],
     });
-    // No model of its own: it moved with the bot's.
     expect(store.projectBotForTask(bot.id, second.threadId)).toMatchObject({
       modelSelection: selection(),
       alwaysAllow: ["Read"],
@@ -344,24 +341,19 @@ describe("independent bot task state", () => {
     const group = store.createGroup("Timer group", [lead.id, other.id], false);
     expect(group.busyBotId).toBeNull();
     expect(group.turnStartedAt).toBeUndefined();
-    // Patches that never touch the speaker leave the stamp alone.
     store.patchGroup(group.id, { unread: true });
     expect(group.turnStartedAt).toBeUndefined();
     store.patchGroup(group.id, { busyBotId: lead.id });
     const started = group.turnStartedAt!;
     expect(started).toBeGreaterThan(0);
-    // An unrelated patch mid-turn, or re-claiming the same member, is the
-    // same turn: the stamp must not move.
     store.patchGroup(group.id, { bulletin: "changed" });
     store.patchGroup(group.id, { busyBotId: lead.id });
     expect(group.turnStartedAt).toBe(started);
-    // A different speaker is a new turn: the count restarts.
     await new Promise((done) => setTimeout(done, 3));
     store.patchGroup(group.id, { busyBotId: other.id });
     expect(group.turnStartedAt!).toBeGreaterThan(started);
     store.patchGroup(group.id, { busyBotId: null });
     expect(group.turnStartedAt).toBeUndefined();
-    // Neither the speaker nor the stamp survives persistence or a reload.
     const saved = savedGroups().find((row) => row.id === group.id)!;
     expect(saved).not.toHaveProperty("busyBotId");
     expect(saved).not.toHaveProperty("turnStartedAt");
@@ -418,7 +410,6 @@ describe("independent bot task state", () => {
       pinnedMessageId: "legacy-pin",
       unread: true,
     });
-    // A thread without a model of its own follows the bot; none is filled in.
     expect(migrated.taskByThread(bot.id, second.threadId)).toMatchObject({ activity: "idle", busy: false });
     expect(migrated.projectBotForTask(bot.id, second.threadId)?.modelSelection).toEqual(raw.modelSelection);
     expect(migrated.messagesFor(first).at(-1)?.text).toBe("Original conversation");
@@ -544,7 +535,6 @@ describe("independent bot task state", () => {
     const sibling = store.createBot();
     const project = store.createProject(bot.id, "General", "⭐")!;
     store.patchTask(bot.id, bot.threadId, { modelSelection: { instanceId: "codex", model: "existing-thread" } });
-    // A thread a folder holds follows the bot's model.
     expect(store.createTask(bot.id, undefined, false, project.id)?.modelSelection).toBeUndefined();
     expect(store.createTask(sibling.id, undefined, false, project.id)).toBeNull();
     expect(store.patchTask(sibling.id, sibling.threadId, { projectId: project.id })).toBeNull();

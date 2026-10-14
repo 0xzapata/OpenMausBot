@@ -1,13 +1,8 @@
-// Page health and recorded browser steps against the real engine: the
-// pinned agent-browser and its Chrome, a local fixture page with a load-time
-// console error, a 500 endpoint, a dead port and a flood of errors, through
-// the real BrowserRuntime, relay, observer and store. No model, no server.
-//
-// Needs the pinned agent-browser binary. It runs when one resolves (the tools
-// directory, OMB_AGENT_BROWSER_PATH or PATH) or when OMB_UI_E2E=1 asks for the
-// verified download; otherwise it is skipped with a printed reason. With
-// Chrome for Testing (CI's ui-smoke job, the Docker image) the page starts at
-// 1280x577, so the size checks here are real.
+// Page health and recorded browser steps against the pinned agent-browser and
+// its Chrome, through the real BrowserRuntime, relay, observer and store. Runs
+// when agent-browser resolves (tools directory, OMB_AGENT_BROWSER_PATH or PATH)
+// or OMB_UI_E2E=1 asks for the download; otherwise skipped. Chrome for Testing
+// starts the page at 1280x577, so the size checks are real.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -105,8 +100,7 @@ describe("page health and browser steps on the real engine", () => {
       onTiming: (timing) => timings.push(timing),
     });
     // Full Chrome headless on macOS sometimes stalls 10-20 s on a fresh
-    // browser's first capture (browser-steps.ts SCREENSHOT_MS); take it here,
-    // before the checks. The bundled headless shell and Linux never did.
+    // browser's first capture; take it here, before the checks.
     await runtime.agentRpc(session, spec, "tools/call", { name: "agent_browser_open", arguments: { url: `${base}/` } }, undefined, ctx(false));
     const warm = await new RelayPorts().port(target());
     if (warm) await relay(warm, { action: "screenshot", path: join(home, "warm-up.jpg"), format: "jpeg", quality: 70 }, { timeoutMs: 60_000 }).catch(() => {});
@@ -175,7 +169,6 @@ describe("page health and browser steps on the real engine", () => {
     expect(last()).toMatchObject({ kind: "click", imageSkipped: null, image: expect.stringMatching(/^step-\d+\.jpg$/u) });
     expect(JSON.stringify(steps())).not.toContain("fake-shadow-pass");
 
-    // A target below the fold: the window scrolls to it, and the marker moves with the page.
     await call("click", { selector: "#far" });
     expect(last()).toMatchObject({ marker: { approx: true }, page: { scrollAfter: { y: expect.any(Number) } } });
     expect((last().page as { scrollAfter: { y: number } }).scrollAfter.y).toBeGreaterThan(0);
@@ -196,14 +189,12 @@ describe("page health and browser steps on the real engine", () => {
   run("never hands the bot what the page reported while a person held the browser", async () => {
     await call("open", { url: `${base}/` }, false);
     await runtime.take(session, "person");
-    // The person's own click: its POST answers 500 and the page throws.
     const port = (await new RelayPorts().port(target()))!;
     expect((await relay(port, { action: "click", selector: "#signup" }, { timeoutMs: 10_000 })).success).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 600));
     runtime.release(session, "person");
     const next = (await call("snapshot", {}, false)).join("\n");
     expect(next).not.toContain("Page reported");
-    // What the bot itself causes afterwards is its news again.
     await call("click", { selector: "#signup" }, false);
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect((await call("snapshot", {}, false)).join("\n")).toContain('1 failed request: POST "/api/signup" → 500');
@@ -219,10 +210,8 @@ describe("page health and browser steps on the real engine", () => {
     expect(children.length).toBeGreaterThan(0);
     for (const [pid] of children) process.kill(Number(pid), "SIGKILL");
     await expect.poll(async () => (await relay(port, { action: "stream_status" }, { timeoutMs: 2_000 })).data?.connected, { timeout: 10_000 }).toBe(false);
-    // A preview frame takes nothing and starts nothing.
     await expect(runtime.previewFrame(session, () => import("../../server/browser-relay.ts").then((module) => module.captureFrame(ports, target())))).rejects.toThrow(/no open page/);
     expect((await relay(port, { action: "stream_status" }, { timeoutMs: 2_000 })).data?.connected).toBe(false);
-    // The bot's own call starts it again: sized, and the bot hears its pages are gone.
     const snapshot = await call("snapshot", {}, false);
     expect(snapshot.join("\n")).toContain("The browser had stopped and was started again during this call");
     const size = await call("eval", { script: "innerWidth + 'x' + innerHeight" }, false);
@@ -295,7 +284,6 @@ describe("recorded browser steps through the real server", () => {
       expect(jpegSize(image.body as Buffer)).toEqual({ width: 1280, height: 720 });
       const archive = await api("GET", `/api/threads/${bot.threadId}/evidence.tar`);
       expect(archive).toMatchObject({ status: 200, type: "application/x-tar" });
-      // Deleting the bot deletes its conversations, and their steps with them.
       const folder = join(fixture.info.dataDir, "evidence", bot.threadId);
       expect(existsSync(folder)).toBe(true);
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);

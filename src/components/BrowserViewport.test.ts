@@ -14,8 +14,7 @@ const key = (eventType: string, value = "a", modifiers = 0) => ({
   ...(eventType === "keyDown" && value.length === 1 ? { text: value } : {}),
 });
 
-// A frame's pixels keep its page's aspect: a reported frame arrives here as a
-// 2x (HiDPI) image unless a test supplies the image size itself.
+// A reported frame arrives as a 2x (HiDPI) image unless a test supplies the image size.
 function viewport(driving = true, metadata?: { deviceWidth: number; deviceHeight: number },
   natural = metadata ? { width: metadata.deviceWidth * 2, height: metadata.deviceHeight * 2 } : { width: 1280, height: 720 }) {
   fixture.effects = [];
@@ -55,7 +54,6 @@ describe("browser frame coordinate mapping", () => {
     expect(browserFrameSize(1280, 577, 1280, 720)).toEqual({ width: 1280, height: 577 });
     expect(browserViewportPoint(pane, 1280, 577, 1280, 720, 640, 288.5)).toEqual({ x: 640, y: 288.5 });
     expect(browserViewportPoint(pane, 1280, 577, 1280, 720, 100, 576)).toEqual({ x: 100, y: 576 });
-    // The same page in a smaller pane, letterboxed, still lands on the page's own coordinates.
     expect(browserViewportPoint({ left: 0, top: 0, width: 640, height: 640 }, 1280, 577, 1280, 720, 320, 320)).toEqual({ x: 640, y: 288.5 });
   });
   it("keeps the reported size for consistent, HiDPI and downscaled frames", () => {
@@ -144,7 +142,6 @@ describe("browser viewport input forwarding", () => {
       { type: "input_mouse", eventType: "mouseReleased", x: 40, y: 50, button: "right", clickCount: 1, modifiers: 0 },
       { type: "input_keyboard", eventType: "keyUp", key: "A", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 0 },
     ]);
-    // Further cleanup cannot repeat a release or replay the printable key.
     props.onPointerUp!(pointer); props.onPointerCancel!(pointer);
     expect(input).toHaveBeenCalledTimes(2);
   });
@@ -156,7 +153,6 @@ describe("browser viewport input forwarding", () => {
     const tab = keyEvent("Tab", "Tab", 9);
     const shiftTab = keyEvent("Tab", "Tab", 9, true);
     props.onKeyDown!(tab); props.onKeyUp!(tab);
-    // A lone Shift does not count as typing in the page, so Shift+Tab still moves on.
     props.onKeyDown!(keyEvent("Shift", "ShiftLeft", 16, true)); props.onKeyDown!(shiftTab);
     expect(tab.preventDefault).not.toHaveBeenCalled();
     expect(shiftTab.preventDefault).not.toHaveBeenCalled();
@@ -166,7 +162,6 @@ describe("browser viewport input forwarding", () => {
     props.onKeyDown!(inPage);
     expect(inPage.preventDefault).toHaveBeenCalledOnce();
     expect(input).toHaveBeenLastCalledWith(expect.objectContaining({ eventType: "keyDown", key: "Tab" }));
-    // Leaving the page resets it; a click in the page counts as using it again.
     props.onBlur!({} as never);
     input.mockClear();
     props.onKeyDown!(tab);

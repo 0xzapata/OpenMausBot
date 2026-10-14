@@ -76,7 +76,6 @@ describe("PlaceChip composer trigger", () => {
 
 describe("the menu's first row", () => {
   afterEach(() => { fixture.menuOpen = false; });
-  /** The open menu's radio rows: whether each is checked, and its words. */
   const rows = (props: Partial<ComponentProps<typeof PlaceChip>>) => {
     fixture.menuOpen = true;
     const html = renderToStaticMarkup(createElement(PlaceChip, { bot, live: false, onPin: () => {}, ...props }));
@@ -95,7 +94,6 @@ describe("the menu's first row", () => {
     expect(menu[0]).toEqual({ checked: true, text: "Auto Picks the right place for each task" });
     expect(html).not.toContain("Follow this bot");
     expect(html).toContain('aria-label="Where this conversation works: Auto"');
-    // Auto once, then the four places as before: no second Auto row.
     expect(menu).toHaveLength(5);
     expect(menu.filter((row) => row.text.startsWith("Auto"))).toHaveLength(1);
   });

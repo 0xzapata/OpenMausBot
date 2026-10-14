@@ -1,6 +1,4 @@
 // @vitest-environment happy-dom
-// The presence line rotates gently through a phase's phrases, starts over
-// when the bot moves to a new step, and crossfades in place.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";

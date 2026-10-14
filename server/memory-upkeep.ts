@@ -1,25 +1,3 @@
-// Memory upkeep: the background half of a bot's memory. On for every bot
-// unless switched off (BotRecord.memoryUpkeep === false). The main agent
-// keeps reading and writing its notes as before; this adds what happens
-// without it choosing:
-//   - capture: finished 1:1 turns (and, with Learn from group chats on, a
-//     member bot's room turns) are read after the chat goes quiet; core
-//     facts go to MEMORY.md, detail to a topic file per subject that upkeep
-//     creates and names, with other words for it (server/memory-capture.ts);
-//     turns still waiting at shutdown are saved as ids and captured after
-//     the next start;
-//   - About me: a durable fact about the person, from their own words, is
-//     added to the shared About me and listed in Settings with Remove
-//     (server/profile-learned.ts);
-//   - tidy-up: nightly, and on demand, expired entries are archived, exact
-//     duplicates merged (MEMORY.md and topic files) and contradictions in
-//     MEMORY.md struck (server/memory-tidy.ts).
-// Every memory write is a journal row with actor "upkeep", so the Memory
-// panel shows it and Undo works. The model steps need a one-shot text call
-// (`generateText`: Claude and the chat-completion engines, or
-// `generateMemoryText`: the ACP engines, server/drivers/acp/background-text.ts,
-// and Codex, server/drivers/codex-background-text.ts); on any other
-// engine they are skipped and only the deterministic tidy steps run.
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -36,12 +14,9 @@ import { appendMemoryArchive, ARCHIVE_TOPIC, ensureWorkspace, listMemoryTopics, 
 export const CAPTURE_MAX_TURNS = 6;
 export const MODEL_TIMEOUT_MS = 60_000;
 export const TIDY_CHECK_MS = 10 * 60_000;
-/** Below this many live entries there is nothing a contradiction pass may change. */
 export const MIN_ENTRIES_FOR_CONTRADICTIONS = 5;
 const ARCHIVE_PATH = `memory/${ARCHIVE_TOPIC}`;
-/** At most this many threads' waiting turns are kept across a restart. */
 export const MAX_PENDING_THREADS = 50;
-/** A topic file past this size gains nothing more from capture. */
 export const TOPIC_MAX_BYTES = 64 * 1024;
 
 export interface UpkeepEngine {
@@ -55,7 +30,6 @@ export interface UpkeepBot {
   memoryEnabled?: boolean;
 }
 
-/** On unless switched off: every bot keeps its memory in shape by default. */
 export function upkeepEnabled(bot: Pick<UpkeepBot, "memoryUpkeep" | "memoryEnabled"> | undefined): bot is UpkeepBot {
   return Boolean(bot) && bot!.memoryUpkeep !== false && bot!.memoryEnabled !== false;
 }
@@ -63,28 +37,15 @@ export function upkeepEnabled(bot: Pick<UpkeepBot, "memoryUpkeep" | "memoryEnabl
 export interface UpkeepDeps {
   bots: () => readonly UpkeepBot[];
   bot: (id: string) => UpkeepBot | undefined;
-  /** The bot's engine when it may receive memory text (policy allows), else null. */
   engine: (botId: string) => UpkeepEngine | null;
-  /** A turn is running for the bot: the scheduled tidy waits. */
   busy: (botId: string) => boolean;
-  /** Append facts about the person to the shared About me; returns how many were added. */
   addToAboutMe: (from: { botId: string; botName: string }, texts: readonly string[]) => number;
-  /** `chat "Title"` or `room "Name"`, for the source of a captured entry. */
   sourceLabel: (botId: string, threadId: string) => string;
-  /** Whether this thread may still feed this bot's memory, asked again
-   * when a batch is captured: a room turn queued before Learn from group
-   * chats was switched off, or before the room or the bot changed who can
-   * see them, is dropped instead. Absent: every queued turn may. */
+  /** Asked again at capture, so a turn queued before a visibility change is dropped. */
   mayCapture?: (botId: string, threadId: string) => boolean;
-  /** The turn as capture reads it, rebuilt from the transcript, or null when
-   * it is gone (thread deleted, rewound) or no longer capturable. Without it
-   * turns still waiting at shutdown are dropped, as before. */
   restoreTurn?: (botId: string, threadId: string, turnId: string) => CaptureTurn | null;
   quietMs: () => number;
   tidyHour: () => number;
-  /** Wraps each synchronous burst of writes this makes to one bot's memory
-   * (capture, organize, tidy), so the host can tell them from writes made
-   * elsewhere (an OMB Cloud home: server/lending-memory.ts). */
   writing?: <T>(botId: string, write: () => T) => T;
   now?: () => Date;
   log?: (line: string) => void;
@@ -96,23 +57,16 @@ export interface TidyReport {
   duplicates: number;
   superseded: number;
   deferred: number;
-  /** MEMORY.md entries moved into topic files. */
   organized?: number;
-  /** Whether the contradiction step ran (needs a text engine and five entries). */
   contradictionsChecked: boolean;
-  /** Why it did not run, in the person's words. */
   note?: string;
 }
 
 export interface CaptureReport {
   at: number;
-  /** Facts appended to MEMORY.md. */
   added: number;
-  /** Facts filed into topic files. */
   topics: number;
-  /** Facts added to the shared About me. */
   aboutMe: number;
-  /** MEMORY.md entries moved into topic files afterwards. */
   organized?: number;
   note?: string;
 }
@@ -121,7 +75,6 @@ interface UpkeepState {
   bots: Record<string, { lastTidy?: TidyReport; lastCapture?: CaptureReport; core?: string[] }>;
 }
 
-/** How many "this entry is core" judgements are remembered per bot. */
 const MAX_CORE = 500;
 
 function statePath(): string {
@@ -142,12 +95,9 @@ function saveState(state: UpkeepState): void {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
     writeFileAtomic(statePath(), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   } catch {
-    // status is a convenience; losing it only means the tidy may run again
   }
 }
 
-// Turns still waiting at shutdown, kept as ids only: the transcript already
-// holds the text, and a thread deleted meanwhile leaves nothing behind.
 interface PendingCapture {
   batches: { botId: string; threadId: string; turnIds: string[] }[];
 }
@@ -157,7 +107,6 @@ function pendingPath(): string {
 }
 
 function savePending(batches: readonly CaptureBatch[]): void {
-  // per bot and thread: a room's thread holds every member bot's turns
   const byThread = new Map<string, { botId: string; threadId: string; turnIds: string[] }>();
   for (const batch of batches) {
     const ids = batch.turns.map((turn) => turn.turnId).filter((id): id is string => typeof id === "string" && id.length > 0);
@@ -175,12 +124,10 @@ function savePending(batches: readonly CaptureBatch[]): void {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
     writeFileAtomic(pendingPath(), `${JSON.stringify(state)}\n`, { mode: 0o600 });
   } catch {
-    // best effort: losing it only means those turns are not captured
   }
 }
 
-/** Read and remove the saved turns. Removed first, so a start that fails
- * part way never replays them twice. */
+/** Removed before replay, so a start that fails part way never replays them twice. */
 function takePending(): PendingCapture["batches"] {
   let raw: string;
   try {
@@ -226,29 +173,17 @@ async function askModel(engine: UpkeepEngine, prompt: string): Promise<string | 
 export const NO_TEXT_ENGINE = "This bot's engine cannot make the quick background model call upkeep uses, so only expired notes and exact duplicates are tidied.";
 
 export interface MemoryUpkeep {
-  /** A finished turn of an upkeep bot, for capture: 1:1, or a room's. */
   noteTurn(botId: string, threadId: string, turn: CaptureTurn): void;
-  /** Capture a thread's waiting turns now, without waiting for the quiet spell. */
   flushThread(threadId: string): void;
-  /** Forget a bot's waiting turns (switch turned off, bot deleted). */
   dropBot(botId: string): void;
-  /** Run one capture batch; resolves when written. Exposed for tests. */
   capture(batch: CaptureBatch): Promise<CaptureReport>;
   tidy(botId: string): Promise<TidyReport>;
   status(botId: string): { lastTidy?: TidyReport; lastCapture?: CaptureReport; modelSteps: boolean };
-  /** One scheduler pass: tidy every due bot. Exposed for tests. */
   tick(): Promise<void>;
-  /** Start the scheduler, and queue again the turns that were still
-   * waiting when the last run stopped. */
   start(): void;
-  /** Shutdown: stop the scheduler and save the waiting turns as ids, so the
-   * next start captures them instead of losing them. No model call here. */
   stop(): void;
-  /** Backup maintenance: nothing writes until resume, and batches that
-   * came due meanwhile run then. */
   pause(): void;
   resume(): void;
-  /** Wait for captures in flight (tests, shutdown). */
   idle(): Promise<void>;
 }
 
@@ -304,12 +239,10 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       return report;
     }
     if (paused) {
-      // a backup began while the model answered: run it again after
       deferred.push(batch);
       return { at, added: 0, topics: 0, aboutMe: 0, note: "deferred until the backup finishes" };
     }
-    // Re-read after the await: the bot or the person may have written since.
-    // From here to the journal rows there is no await, so no write interleaves.
+    // Re-read after the await; from here to the journal rows there is no await, so no write interleaves.
     if (!upkeepEnabled(deps.bot(bot.id))) return off;
     if (!allowed()) return refused;
     const { parsed, added, topics } = writing(bot.id, () => {
@@ -327,12 +260,9 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
         }
         if (updateMemory(bot.id, { action: "append", text: candidate.text, ...(candidate.until ? { until: candidate.until } : {}) }, { source, now: now() }).ok) added += 1;
       }
-      // Older entries the appends moved out are journaled first, as the
-      // tidy-up does, so undoing the newest row (MEMORY.md) brings them back.
+      // The archive is journaled before MEMORY.md, so undoing the newest row brings moved entries back.
       recordMemoryChange(bot.id, { path: ARCHIVE_PATH, actor: "upkeep", via: "capture", threadId: batch.threadId, before: archiveBefore, after: readRaw(bot.id, ARCHIVE_PATH) });
       if (added) recordMemoryChange(bot.id, { path: "MEMORY.md", actor: "upkeep", via: "capture", threadId: batch.threadId, before, after: readRaw(bot.id, "MEMORY.md") });
-      // Detail goes to a topic file the bot keeps for that subject, created
-      // with a header (title and other words for it) the first time.
       const existing = new Map(listMemoryTopics(bot.id).map((topic) => [topic.name.toLowerCase(), topic.name]));
       let topics = 0;
       for (const [wanted, candidates] of byTopic) {
@@ -358,14 +288,9 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       }
       return { parsed, added, topics };
     });
-    // Only the owner's own words reach About me: on a shared workspace
-    // another person's facts are not the owner's profile. Every parsed fact
-    // counts, not only new ones — the bot may already have noted it in its
-    // own memory, and About me is where every other bot learns it.
+    // Only the owner's own words reach About me: another person's facts are not the owner's profile.
     const owner = batch.turns.every((turn) => turn.owner !== false);
     const aboutMe = owner ? deps.addToAboutMe({ botId: bot.id, botName: bot.name }, parsed.filter((c) => c.aboutUser).map((c) => c.text)) : 0;
-    // whoever wrote MEMORY.md — the bot, the person or this capture — detail
-    // that is not core moves to its topic now, not only at night
     const organized = await organize(bot.id);
     const report: CaptureReport = { at, added, topics, aboutMe, organized };
     record(bot.id, { lastCapture: report });
@@ -385,9 +310,6 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     },
   });
 
-  /** Move MEMORY.md entries that are not core into their topic files. One
-   * model call over entries not judged before; lines move unchanged, topics
-   * first so undoing the newest row (MEMORY.md) never loses one. */
   async function organize(botId: string): Promise<number> {
     const engine = deps.engine(botId);
     if (!engine?.generateText) return 0;
@@ -399,12 +321,10 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     if (!candidates.length) return 0;
     const answer = await askModel(engine, organizePrompt(candidates, memoryTopicIndex(botId)));
     if (answer === null || paused || !upkeepEnabled(deps.bot(botId))) return 0;
-    // the line numbers are the file's as read; a write since means ask again later
     const before = readRaw(botId, "MEMORY.md") ?? "";
     if (before !== first) return 0;
     const proposed = parseMoves(answer, candidates);
     if (proposed === null) return 0;
-    // Deferred moves are not core: let the next pass reconsider them.
     const moved = new Set(proposed.map((move) => move.entry.line));
     const moves = proposed.slice(0, MAX_MOVES);
     const judgedCore = candidates.filter((entry) => !moved.has(entry.line)).map((entry) => factIdentity(entry.body));
@@ -477,9 +397,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       }
     }
     if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
-    // Re-read after the await. If the notes changed meanwhile, the model's
-    // line numbers no longer point at the same facts: keep only the
-    // deterministic steps this time.
+    // Re-read after the await: if the notes changed, the model's line numbers are stale.
     const before = readRaw(botId, "MEMORY.md") ?? "";
     if (before !== first && contradictions.length) {
       contradictions = [];
@@ -488,17 +406,13 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const plan = planTidy(before, today, contradictions);
     if (planChanges(plan)) {
       const { text, archived } = applyTidy(before, plan, today);
-      // The archive is written first: a line is never out of MEMORY.md
-      // before it is in the archive, and the newest journal row — the one a
-      // person undoes — is MEMORY.md, whose undo brings the line back.
+      // The archive is written first: a line is never out of MEMORY.md before it is in the archive.
       writing(botId, () => {
         if (archived.length) appendArchive(botId, archived);
         writeMemoryFile(botId, text);
       });
       recordMemoryChange(botId, { path: "MEMORY.md", actor: "upkeep", via: "tidy", before, after: readRaw(botId, "MEMORY.md") });
     }
-    // Topic files get the two steps that need no model: expired lines to the
-    // archive (written first, as above) and exact duplicates merged.
     let topicExpired = 0;
     let topicDuplicates = 0;
     for (const topic of listMemoryTopics(botId)) {
@@ -571,7 +485,6 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     capture: (batch) => track(capture(batch)),
     tidy,
     status(botId) {
-      // the core judgements are upkeep's own bookkeeping, not status
       const { lastTidy, lastCapture } = loadState().bots[botId] ?? {};
       return { ...(lastTidy ? { lastTidy } : {}), ...(lastCapture ? { lastCapture } : {}), modelSteps: Boolean(deps.engine(botId)?.generateText) };
     },
@@ -593,7 +506,6 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       }
       timer = setInterval(() => void tick(), TIDY_CHECK_MS);
       timer.unref?.();
-      // a first pass shortly after start catches a night the computer slept through
       const first = setTimeout(() => void tick(), 60_000);
       first.unref?.();
     },
