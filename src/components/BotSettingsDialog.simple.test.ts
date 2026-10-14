@@ -194,6 +194,7 @@ describe("the bot settings panel in Simple mode", () => {
     expect(html).toContain("Before Scout acts");
     expect(html).toContain("Ask me first");
     expect(html).toContain("Decide for me");
+    expect(html).toContain("Full access");
     expect(html).toContain("Where Scout works");
     expect(html).toContain("All settings");
     expect(html).not.toContain("SOUL.md");
@@ -348,11 +349,26 @@ describe("the bot settings panel in Simple mode", () => {
     });
   });
 
-  it("selects neither choice and says so when another level is in use", () => {
+  it("shows Full access, the default level, as its own choice and applies it to every thread", () => {
     fixture.derived.approvalMode = "full";
     const rendered = panel(makeBot());
+    expect(find(rendered, "data-approval-choice", "full").props["aria-pressed"]).toBe(true);
     expect(find(rendered, "data-approval-choice", "ask").props["aria-pressed"]).toBe(false);
-    expect(find(rendered, "data-approval-choice", "auto").props["aria-pressed"]).toBe(false);
+    expect(rendered.html).toContain("Acts without checking");
+    expect(rendered.html).not.toContain("A custom setting is in use.");
+    // From Ask, the Full choice moves the bot and every thread, as Permissions does.
+    fixture.derived.approvalMode = "ask";
+    click(find(panel(makeBot()), "data-approval-choice", "full"));
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({
+      type: "updateBot", botId: "scout", patch: { approvalMode: "full", applyToAllThreads: true },
+    });
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("selects no choice and says so when another level is in use", () => {
+    fixture.derived.approvalMode = "edits";
+    const rendered = panel(makeBot());
+    for (const mode of ["ask", "auto", "full"]) expect(find(rendered, "data-approval-choice", mode).props["aria-pressed"]).toBe(false);
     expect(rendered.html).toContain("A custom setting is in use.");
     expect(patch).not.toHaveBeenCalled();
   });

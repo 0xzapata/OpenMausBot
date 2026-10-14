@@ -477,6 +477,8 @@ it("keeps the person's request on work a thread the bot opened on itself hands o
 // later line is its own root (decision 3): it neither lends the parked root
 // its words nor takes the parked root's request away.
 it("keeps the person's request on work handed on after a card answer, on the root that asked", () => fixture(async (f) => {
+  // On Ask, so the proposed deletion waits on its card.
+  await f.api(`/api/bots/${f.chief.id}`, { approvalMode: "ask" }, "PATCH");
   const seen = new Set<string>();
   // The card comes at the end of a whole chief turn (the fake CLI's launch,
   // the agents proxy, three tool calls): the same room every other poll on

@@ -1229,15 +1229,16 @@ describe("§1 storage", () => {
 // ── §3 Level ───────────────────────────────────────────────────────────
 
 describe("§3 one level rule", () => {
-  it("S25 a Chief at full with a person origin lifts the child to full where the engine supports it; outside lineage inherits nothing", async () => {
+  it("S25 a Chief at full with a person origin lifts the child to full on every engine; outside lineage inherits nothing", async () => {
     const w = world();
     const root = beginChief(w, { level: "full" });
     const lifted = ok(enqueueFrom(w, root, workFor("dev", "Build", { levels: { own: "ask", chief: "full" }, driverKind: "claudeAgent" })));
     expect(lifted.level).toBe("full");
     expect(lifted.levelSource).toBe("chief");
-    const capped = ok(enqueueFrom(w, root, workFor("qa", "Test", { levels: { own: "ask", chief: "full" }, driverKind: "unknownAgent" })));
-    expect(capped.level).toBe("ask");
-    expect(capped.levelSource).toBe("engine_cap");
+    // Every engine runs Full access, even one this harness does not know.
+    const anyEngine = ok(enqueueFrom(w, root, workFor("qa", "Test", { levels: { own: "ask", chief: "full" }, driverKind: "unknownAgent" })));
+    expect(anyEngine.level).toBe("full");
+    expect(anyEngine.levelSource).toBe("chief");
     const edits = ok(enqueueFrom(w, root, workFor("ops", "Deploy", { levels: { own: "ask", chief: "auto" }, driverKind: "geminiAgent" })));
     expect(edits.level).toBe("edits");
     expect(edits.levelSource).toBe("engine_cap");

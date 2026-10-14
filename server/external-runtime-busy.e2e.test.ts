@@ -58,7 +58,8 @@ it.each(["already busy", "became busy during approval"])(
       // One slot per bot: the peer's running turn holds its work thread too,
       // so "busy" means the consultation has to wait for that turn to end.
       await api("PATCH", "/api/config", { threads: { maxConcurrentPerBot: 1 } });
-      await api("PATCH", `/api/bots/${source.id}`, { approvePeerComms: true });
+      // Peer review applies below Full access.
+      await api("PATCH", `/api/bots/${source.id}`, { approvePeerComms: true, approvalMode: "ask" });
       writeFileSync(join(session.info.dataDir, "external-runtimes.json"), JSON.stringify({ [source.id]: { token: TOKEN, threadId: sourceThread } }), { mode: 0o600 });
       const requestText = `Only this queued request: ${scenario}`;
       const occupy = async () => {

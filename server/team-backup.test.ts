@@ -6,6 +6,7 @@ import { Store, UNTITLED_TASK } from "./store.ts";
 import { RoutineManager } from "./routines.ts";
 import { createTeamBackup, importTeamBackup } from "./team-backup.ts";
 import { parseTeamBackup } from "../shared/team-backup.ts";
+import { approvalModeFor } from "../shared/approval-mode.ts";
 import { soulFile, soulHash } from "./bot-folder.ts";
 import { appendMemoryLog, readMemoryFile, readMemoryLog, readMemoryTopic, searchMemoryFiles, updateMemory, workspaceDir, writeMemoryTopic } from "./workspace.ts";
 
@@ -66,7 +67,9 @@ describe("additive portable team backups", () => {
     const backup = createTeamBackup(store, routines.listRoutines(), "Selected tools");
     expect(backup.bots.find((bot) => bot.key === chief.id)).toHaveProperty("toolScope", scope);
     const restored = importTeamBackup(store, routines, backup, selection());
-    expect(restored.bots.find((bot) => bot.name === "Mira 2")).toMatchObject({ toolScope: scope, computer: "off", composio: false, approvalMode: "ask", connectorTools: {} });
+    expect(restored.bots.find((bot) => bot.name === "Mira 2")).toMatchObject({ toolScope: scope, computer: "off", composio: false, connectorTools: {} });
+    // No level of its own: an imported bot starts at the default, like any new bot.
+    expect(approvalModeFor(restored.bots.find((bot) => bot.name === "Mira 2")!)).toBe("full");
     expect(restored.bots.find((bot) => bot.name === "Scout 2")).toHaveProperty("toolScope", { allow: [] });
     const invalid = structuredClone(backup) as unknown as { bots: Array<{ toolScope: unknown }> };
     invalid.bots[0].toolScope = { allow: null };
@@ -133,7 +136,8 @@ describe("additive portable team backups", () => {
     expect(importedChief.soul).toBe(chief.soul);
     expect(importedChief.soulHash).toBe(soulHash(chief.soul!));
     expect(readFileSync(soulFile(importedChief.id), "utf8")).toBe(chief.soul);
-    expect(importedChief).toMatchObject({ section: "Engineering 2", chiefOfStaff: true, description: chief.description, computer: "off", composio: false, browser: false, approvalMode: "ask", autoApprove: false, resumeCursors: {}, playbooks: chief.playbooks });
+    expect(importedChief).toMatchObject({ section: "Engineering 2", chiefOfStaff: true, description: chief.description, computer: "off", composio: false, browser: false, resumeCursors: {}, playbooks: chief.playbooks });
+    expect(approvalModeFor(importedChief)).toBe("full");
     expect(result.bots.find((bot) => bot.name === "Ava 2")).toMatchObject({ section: "Operations 2", chiefOfStaff: true });
     expect(result.bots.find((bot) => bot.name === "Archived 2")).toMatchObject({ hidden: true });
     expect(importedChief).not.toHaveProperty("cwd");
@@ -286,7 +290,9 @@ describe("additive portable team backups", () => {
     const imported = importTeamBackup(store, routines, backup, selection()).bots.find((bot) => bot.name === "Mira 2")!;
     expect(imported.id).not.toBe(chief.id);
     expect(imported.threadId).not.toBe(chief.threadId);
-    expect(imported.approvalMode).toBe("ask");
+    // The file's level and legacy Auto bit are dropped: it runs at the default.
+    expect(imported.approvalMode).toBeUndefined();
+    expect(approvalModeFor(imported)).toBe("full");
     expect(JSON.stringify(parseTeamBackup(backup))).not.toMatch(/live-approval|secret-session|\/etc\/passwd|approvalMode/);
   });
 

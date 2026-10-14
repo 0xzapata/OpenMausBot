@@ -2509,6 +2509,7 @@ describe("harness HTTP API", () => {
         name: "Channel Chief",
         section: "Channel creation test",
         chiefOfStaff: true,
+        approvalMode: "ask",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       });
       expect(selected.status).toBe(200);
@@ -2608,7 +2609,7 @@ describe("harness HTTP API", () => {
     const [chief, peer, second, excluded, foreign] = bots;
     const roomIds: string[] = [];
     try {
-      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, peers: [peer.id, second.id] })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvalMode: "ask", peers: [peer.id, second.id] })).status).toBe(200);
       const token = await mintTestCapability(BASE, chief.id, chief.threadId);
       const create = (body: unknown) => chiefRoomRequest(BASE, token, "create-room", body);
       const managed = await create({ name: "Managed room", memberIds: [peer.id, peer.id], bulletin: "A short brief." });
@@ -2772,7 +2773,7 @@ describe("harness HTTP API", () => {
     const chief = (await api("POST", "/api/bots")).body.bot;
     let createdId: string | undefined;
     try {
-      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvalMode: "ask" })).status).toBe(200);
       const token = await mintTestCapability(BASE, chief.id, chief.threadId);
       const create = async (name: string, cwd: unknown) => {
         const response = await fetch(`${BASE}/api/internal/create-bot`, {
@@ -2811,7 +2812,7 @@ describe("harness HTTP API", () => {
   it("keeps create_bot on its review card below Full Access, whatever the Chief always allows", async () => {
     const chief = (await api("POST", "/api/bots")).body.bot;
     try {
-      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvalMode: "ask" })).status).toBe(200);
       // Every key a standing grant could plausibly carry for this tool.
       const grants = ["create_bot", "mcp__agents__create_bot", "mcp__openmausbot__create_bot", "propose_team_setup", "set_up_team"];
       expect((await api("PATCH", `/api/bots/${chief.id}`, { alwaysAllow: grants })).status).toBe(200);
@@ -2937,7 +2938,7 @@ describe("harness HTTP API", () => {
   it("keeps Chief room changes behind pending user approvals", async () => {
     const bot = (await api("POST", "/api/bots", { name: "Pending Chief", section: "Pending room" })).body.bot;
     const peer = (await api("POST", "/api/bots", { name: "Pending peer", section: "Pending room" })).body.bot;
-    await api("PATCH", `/api/bots/${bot.id}`, { chiefOfStaff: true });
+    await api("PATCH", `/api/bots/${bot.id}`, { chiefOfStaff: true, approvalMode: "ask" });
     const room = (await api("POST", "/api/groups", { name: "Pending room", memberIds: [bot.id], section: "Pending room" })).body.group;
     try {
       const roomToken = await mintTestCapability(BASE, bot.id, room.threadId);
@@ -4446,7 +4447,7 @@ describe("harness HTTP API", () => {
     const target = (await api("POST", "/api/bots", { name: "Deletion Target", section: "Deletion race" })).body.bot;
     let targetDeleted = false;
     try {
-      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvalMode: "ask" })).status).toBe(200);
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       managedBoatRows = [{
         id: "bx_456789ab",
@@ -7745,6 +7746,7 @@ describe("harness HTTP API", () => {
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).body.bot;
       created.push(bot.id);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask" })).status).toBe(200);
       // A conversation that already holds its own Ask level.
       const older = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Older Ask thread" })).body.task;
       expect(older.approvalMode).toBe("ask");
@@ -7794,9 +7796,6 @@ describe("harness HTTP API", () => {
         modelSelection: { instanceId: "codex", model: "fixture-codex-model" }, settings: { approvalMode: "custom" },
       });
       expect(customBirth.status).toBe(403);
-      expect((await api("POST", "/api/bots", {
-        modelSelection: { instanceId: "ghost", model: "fixture-ghost-model" }, settings: { approvalMode: "full" },
-      })).status).toBe(400);
     } finally {
       for (const id of created) await api("DELETE", `/api/bots/${id}`);
     }
@@ -7823,13 +7822,13 @@ describe("harness HTTP API", () => {
       // Threads opened with New thread save the level they started at.
       for (const title of ["New thread one", "New thread two"]) {
         const task = (await api("POST", `/api/bots/${bot.id}/tasks`, { title })).body.task;
-        expect(task.approvalMode).toBe("ask");
+        expect(task.approvalMode).toBe("full");
         opened.push(task.threadId);
       }
       // A bot's own panel moves the default and the threads that follow it.
       const panel = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto" });
       expect(panel.status).toBe(200);
-      expect(levels(panel.body.bot)).toEqual(["auto", "ask", "ask"]);
+      expect(levels(panel.body.bot)).toEqual(["auto", "full", "full"]);
 
       expect((await api("PATCH", `/api/bots/${bot.id}`, { applyToAllThreads: true })).status).toBe(400);
       expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", applyToAllThreads: "yes" })).status).toBe(400);
@@ -7856,7 +7855,7 @@ describe("harness HTTP API", () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     try {
       const opened = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "New thread" })).body.task;
-      expect(opened.approvalMode).toBe("ask");
+      expect(opened.approvalMode).toBe("full");
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "local", approvalMode: "auto", acknowledgeLocalAuto: true })).status).toBe(200);
       // The bot already runs Auto on this computer, but that thread does not.
       const blind = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", applyToAllThreads: true });
@@ -7935,25 +7934,6 @@ describe("harness HTTP API", () => {
       expect(applied.body.task).toMatchObject({ approvalMode: "edits", autoApprove: false });
     } finally {
       await api("DELETE", `/api/bots/${claude.id}`);
-    }
-  });
-
-  it("pins provider approval support at the bot settings gate", async () => {
-    const bot = (await api("POST", "/api/bots", {
-      modelSelection: { instanceId: "ghost", model: "fixture-ghost-model" },
-    })).body.bot;
-    try {
-      // An engine without a Full mapping: the bot-level PATCH must refuse
-      // Full before the trusted-desktop transition.
-      const refused = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" });
-      expect(refused.status).toBe(400);
-      expect(refused.body.error).toMatch(/does not support the selected approval level, or changing providers requires choosing Ask first/);
-      const stored = (await api("GET", "/api/bots")).body.bots.find(
-        (candidate: { id: string }) => candidate.id === bot.id,
-      );
-      expect(stored.approvalMode).toBeUndefined();
-    } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
 
@@ -9252,6 +9232,20 @@ describe("harness HTTP API", () => {
       expect(system).not.toContain("OPENMAUSBOT STATUS");
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("saves Record browser steps as a true-or-false bot setting, shown to the app", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Visitor" })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { recordBrowserSteps: "yes" })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { recordBrowserSteps: true })).status).toBe(200);
+      const listed = async () => (await api("GET", "/api/bots")).body.bots.find((entry: { id: string }) => entry.id === bot.id);
+      expect((await listed()).recordBrowserSteps).toBe(true);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { recordBrowserSteps: false })).status).toBe(200);
+      expect((await listed()).recordBrowserSteps).toBe(false);
+    } finally {
       await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
@@ -10826,6 +10820,7 @@ describe("harness HTTP API", () => {
     let legacyRoutineId = "";
     try {
       const selected = await api("PATCH", `/api/bots/${bot.id}`, {
+        approvalMode: "ask",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       });
       expect(selected.status).toBe(200);
@@ -11254,6 +11249,7 @@ describe("harness HTTP API", () => {
     let teammateId = "";
     let outsiderId = "";
     try {
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { approvalMode: "ask" })).status).toBe(200);
       const teammate = (await api("POST", "/api/bots", { name: "Ops helper" })).body.bot;
       const outsider = (await api("POST", "/api/bots", { name: "Other section", section: "Routine elsewhere" })).body.bot;
       teammateId = teammate.id;
@@ -11370,6 +11366,7 @@ describe("harness HTTP API", () => {
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     const teammate = (await api("POST", "/api/bots", {})).body.bot;
     try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask" })).status).toBe(200);
       const token = await mintTestCapability(BASE, bot.id, bot.threadId);
       const post = (body: Record<string, unknown>) => fetch(`${BASE}/api/internal/routine-requests`, {
         method: "POST",
@@ -11401,7 +11398,7 @@ describe("harness HTTP API", () => {
     const soulFileOf = (botId: string) => join(home, ".openmausbot", "bots", botId, "SOUL.md");
     const bot = (await api("POST", "/api/bots", { name: "Scout" })).body.bot;
     try {
-      await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+      await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
 
       // Internal routes take a per-turn capability now (main), not the raw
       // comms token from the engine's MCP config.
@@ -11487,7 +11484,7 @@ describe("harness HTTP API", () => {
     const a = (await api("POST", "/api/bots", { name: "Ari" })).body.bot;
     const b = (await api("POST", "/api/bots", { name: "Bo" })).body.bot;
     try {
-      await api("PATCH", `/api/bots/${a.id}`, { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+      await api("PATCH", `/api/bots/${a.id}`, { approvalMode: "ask", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
 
       // Internal routes take a per-turn capability now (main), not the raw
       // comms token from the engine's MCP config.
@@ -11610,6 +11607,7 @@ describe("harness HTTP API", () => {
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     try {
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        approvalMode: "ask",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
 
@@ -13347,13 +13345,12 @@ describe("bot memory API", () => {
       const fresh = await api("GET", `/api/bots/${bot.id}/overview`);
       expect(fresh.status).toBe(200);
       expect(fresh.body.who.name).toBe("Kiwi");
+      // A fresh bot is at Full access, the default: no Ask or proposal-card lines.
       expect(fresh.body.wont).toEqual([
-        "Command approvals use Ask mode; saved permissions and provider rules still apply.",
         "Cannot initiate contact with other bots.",
         "Has no connected apps.",
         "Can't use a computer.",
         "Won't act on a schedule.",
-        "Profile proposal cards require your approval.",
       ]);
       expect(fresh.body.recent).toEqual([]);
 

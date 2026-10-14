@@ -62,7 +62,8 @@ posixOnly("Live call e2e", () => {
     const res = await fetch(`${base}/api/bots/${bot.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ modelSelection: { instanceId, model } }),
+      // On Ask: the calls read cards aloud, and the Slack-style relay expects Ask.
+      body: JSON.stringify({ modelSelection: { instanceId, model }, approvalMode: "ask" }),
     });
     expect(res.status).toBe(200);
     return bot;

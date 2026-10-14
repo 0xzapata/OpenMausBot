@@ -213,9 +213,9 @@ describe("delegatedApprovalMode", () => {
     expect(delegatedApprovalMode({ ...base, recipientMode: "custom", recipientDriverKind: "codex" })).toBeNull();
   });
   it("steps down to the next level the teammate's engine has", () => {
-    // No Full mode (hermes): the Chief's Full becomes Approve for me.
-    expect(delegatedApprovalMode({ ...base, recipientDriverKind: "hermes" })).toBe("auto");
-    expect(delegatedApprovalMode({ ...base, recipientDriverKind: undefined })).toBe("auto");
+    // Every engine runs Full, the default level, so a Chief's Full arrives whole.
+    expect(delegatedApprovalMode({ ...base, recipientDriverKind: "hermesAgent" })).toBe("full");
+    expect(delegatedApprovalMode({ ...base, recipientDriverKind: undefined })).toBe("full");
     // Codex has no Auto-accept edits (its Ask already writes the workspace).
     expect(delegatedApprovalMode({ ...base, senderMode: "edits", recipientDriverKind: "codex" })).toBeNull();
     expect(delegatedApprovalMode({ ...base, senderMode: "auto", recipientDriverKind: "codex" })).toBe("auto");

@@ -1,11 +1,13 @@
-// Settings → Decision model. One master switch, the Jev key (write-only:
-// the server reports configured-or-not, never the value), and one switch per
-// thing it decides. Saving a key turns it on; there is no confirm step. The
-// packaged desktop keeps the key in its OS-encrypted store; elsewhere it goes
-// to the server's own 0600 config, like every other workspace key. On a Cloud
-// Pro home Jev is included: it works with no key, there is nothing to clear,
-// and a key pasted here replaces it.
-import { useState } from "react";
+// Settings → Decision model. A provider (TypeSafe Jev, or OpenRouter with a
+// model picked from a list), one master switch, that provider's key
+// (write-only: the server reports configured-or-not, never the value), and
+// one switch per thing it decides. Saving a key turns it on; there is no
+// confirm step. The packaged desktop keeps the key in its OS-encrypted store;
+// elsewhere it goes to the server's own 0600 config, like every other
+// workspace key. On a Cloud Pro home Jev is included: it works with no key,
+// there is nothing to clear, and a key pasted here replaces it. OpenRouter is
+// never included.
+import { useEffect, useState } from "react";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -13,8 +15,13 @@ import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { Card, SettingRow, Switch } from "./SettingsPrimitives";
 
-const KEY_URL = "https://typesafe.ai";
+const KEY_URL = { jev: "https://typesafe.ai", openrouter: "https://openrouter.ai/keys" } as const;
+/** What a room decision may take (server/decider/room-routing.ts): a slower
+ * model is not wrong, but rooms would fall back to the lead. */
+const ROOM_BUDGET_MS = 1_500;
 
+type Provider = "jev" | "openrouter";
+type ModelList = { source: "openrouter" | "builtin"; models: Array<{ id: string; name: string; group: "recommended" | "more"; api?: "chat" | "decisions" }> };
 type TestResult = { ok: true; latencyMs: number } | { ok: false; reason: string; status?: number };
 
 const FAILURES: Record<string, LocaleKey> = {
@@ -36,8 +43,25 @@ const INCLUDED_FAILURES: Record<string, LocaleKey> = {
   rate_limited: "decider.included.error.limited",
 };
 
+const OPENROUTER_FAILURES: Record<string, LocaleKey> = {
+  ...FAILURES,
+  rejected: "decider.openrouter.error.rejected",
+  unreachable: "decider.openrouter.error.unreachable",
+  timeout: "decider.openrouter.error.timeout",
+  rate_limited: "decider.openrouter.error.rateLimited",
+  overloaded: "decider.openrouter.error.overloaded",
+  malformed: "decider.openrouter.error.malformed",
+};
+
 /** A fixed sentence per failure: the vendor's own body never reaches the UI. */
-export function deciderFailureText(result: { reason: string; status?: number }, included = false): string {
+export function deciderFailureText(result: { reason: string; status?: number }, included = false, provider: Provider = "jev"): string {
+  if (provider === "openrouter") {
+    // 402: OpenRouter's own answer for an account with no credits left.
+    if (result.reason === "http_error" && result.status === 402) return t("decider.openrouter.error.credits");
+    if (result.reason === "http_error") return t("decider.openrouter.error.http", { status: String(result.status ?? "?") });
+    const key = OPENROUTER_FAILURES[result.reason];
+    return key ? t(key) : t("decider.error.other");
+  }
   if (included && result.reason === "http_error" && result.status === 402) return t("decider.included.error.subscription");
   if (included && INCLUDED_FAILURES[result.reason]) return t(INCLUDED_FAILURES[result.reason]!);
   if (result.reason === "http_error") return t("decider.error.http", { status: String(result.status ?? "?") });
@@ -52,6 +76,8 @@ const COMING_SOON: LocaleKey[] = ["decider.jobs.browserClicks", "decider.jobs.to
 export function DecisionModelSettings() {
   const { state, dispatch } = useStore();
   const decider = state.config?.decider;
+  const provider: Provider = decider?.provider === "openrouter" ? "openrouter" : "jev";
+  const openrouter = provider === "openrouter";
   const configured = decider?.configured ?? false;
   // Cloud Pro's decisions, with no key saved: nothing to clear or replace.
   const included = configured && decider?.included === true;
@@ -64,6 +90,7 @@ export function DecisionModelSettings() {
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verdict, setVerdict] = useState<{ ok: boolean; text: string } | null>(null);
+  const [models, setModels] = useState<ModelList | null>(null);
   const draft = value.trim();
   const clearing = !draft && ownKey;
 
@@ -82,6 +109,24 @@ export function DecisionModelSettings() {
     }
   };
 
+  // The model list is only needed while OpenRouter is the provider. If it
+  // cannot be loaded the picker shows just the model in use.
+  useEffect(() => {
+    if (!openrouter || models) return;
+    let cancelled = false;
+    api<ModelList>("/api/decider/models").then(
+      (list) => { if (!cancelled) setModels(list); },
+      () => undefined,
+    );
+    return () => { cancelled = true; };
+  }, [openrouter, models]);
+
+  const choose = (decision: { provider: Provider } | { openrouterModel: string; openrouterApi: "chat" | "decisions" }) => {
+    setValue("");
+    setVerdict(null);
+    void patch(decision);
+  };
+
   const save = async () => {
     if (saving || (!draft && !ownKey)) return;
     setSaving(true);
@@ -89,8 +134,8 @@ export function DecisionModelSettings() {
     setVerdict(null);
     try {
       const status = window.ogb?.setCredential
-        ? await window.ogb.setCredential("jevApiKey", draft)
-        : await api<ConfigStatus>("/api/config", { method: "PUT", body: JSON.stringify({ decider: { key: draft } }) });
+        ? await window.ogb.setCredential(openrouter ? "openrouterDeciderKey" : "jevApiKey", draft)
+        : await api<ConfigStatus>("/api/config", { method: "PUT", body: JSON.stringify({ decider: { [openrouter ? "openrouterKey" : "key"]: draft } }) });
       applied(status);
       setValue("");
     } catch (cause) {
@@ -111,8 +156,16 @@ export function DecisionModelSettings() {
     try {
       const result = await api<TestResult>("/api/decider/test", { method: "POST", body: JSON.stringify(draft ? { key: draft } : {}) });
       setVerdict(result.ok
-        ? { ok: true, text: t("decider.test.ok", { ms: String(result.latencyMs) }) }
-        : { ok: false, text: deciderFailureText(result, testingIncluded) });
+        ? {
+          ok: true,
+          text: openrouter
+            ? [
+              t("decider.openrouter.test.ok", { ms: String(result.latencyMs) }),
+              ...(result.latencyMs > ROOM_BUDGET_MS ? [t("decider.test.slow")] : []),
+            ].join(" ")
+            : t("decider.test.ok", { ms: String(result.latencyMs) }),
+        }
+        : { ok: false, text: deciderFailureText(result, testingIncluded, provider) });
     } catch (cause) {
       setVerdict({ ok: false, text: cause instanceof Error ? cause.message : String(cause) });
     } finally {
@@ -125,10 +178,54 @@ export function DecisionModelSettings() {
       <section className="space-y-2 px-4">
         <p className="text-[13px] leading-relaxed text-ink-secondary">{t("decider.intro")}</p>
       </section>
-      <SettingRow title={t("decider.master")} subtitle={configured ? undefined : t("decider.masterNeedsKey")}>
+      <SettingRow title={t("decider.provider.label")}>
+        <select
+          data-testid="decider-provider"
+          value={provider}
+          onChange={(event) => choose({ provider: event.target.value === "openrouter" ? "openrouter" : "jev" })}
+          disabled={switching || !state.config}
+          aria-label={t("decider.provider.label")}
+          className="w-48 cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:outline-none disabled:opacity-50"
+        >
+          <option value="jev">{t("decider.provider.jev")}</option>
+          <option value="openrouter">{t("decider.provider.openrouter")}</option>
+        </select>
+      </SettingRow>
+      {openrouter && (
+        <SettingRow title={t("decider.model.label")} subtitle={models?.source === "builtin" ? t("decider.model.builtinNote") : undefined}>
+          <select
+            data-testid="decider-model"
+            value={decider?.model ?? ""}
+            onChange={(event) => choose({
+              openrouterModel: event.target.value,
+              openrouterApi: models?.models.find((model) => model.id === event.target.value)?.api ?? "chat",
+            })}
+            disabled={switching}
+            aria-label={t("decider.model.label")}
+            className="w-64 max-w-full cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:outline-none disabled:opacity-50"
+          >
+            {/* A saved model the list does not carry (newer, or off-list) stays selectable. */}
+            {decider?.model && !models?.models.some((model) => model.id === decider.model) && (
+              <option value={decider.model}>{decider.model}</option>
+            )}
+            {(["recommended", "more"] as const).map((group) => {
+              const inGroup = models?.models.filter((model) => model.group === group) ?? [];
+              return inGroup.length > 0 && (
+                <optgroup key={group} label={t(group === "recommended" ? "decider.model.recommended" : "decider.model.more")}>
+                  {inGroup.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+                </optgroup>
+              );
+            })}
+          </select>
+        </SettingRow>
+      )}
+      <SettingRow
+        title={t(openrouter ? "decider.openrouter.master" : "decider.master")}
+        subtitle={configured ? undefined : t("decider.masterNeedsKey")}
+      >
         <Switch
           data-testid="decider-master"
-          aria-label={t("decider.master")}
+          aria-label={t(openrouter ? "decider.openrouter.master" : "decider.master")}
           checked={enabled}
           disabled={!configured || switching || !state.config}
           onClick={() => void patch({ enabled: !enabled })}
@@ -136,7 +233,7 @@ export function DecisionModelSettings() {
         />
       </SettingRow>
 
-      <Card title={t("decider.key.label")}>
+      <Card title={t(openrouter ? "decider.openrouter.key.label" : "decider.key.label")}>
         <div role="status" className="mb-2 flex items-center gap-2 text-[13px] text-ink-secondary">
           <span className={cn("size-1.5 rounded-full", configured ? "bg-success" : "bg-raised-hover")} />
           <span className={configured ? "text-success" : undefined}>
@@ -150,8 +247,8 @@ export function DecisionModelSettings() {
             onChange={(event) => { setVerdict(null); setError(null); setValue(event.target.value); }}
             onKeyDown={(event) => event.key === "Enter" && void save()}
             disabled={saving}
-            placeholder={ownKey ? t("keys.replace") : t("decider.key.placeholder")}
-            aria-label={t("decider.key.label")}
+            placeholder={ownKey ? t("keys.replace") : t(openrouter ? "decider.openrouter.key.placeholder" : "decider.key.placeholder")}
+            aria-label={t(openrouter ? "decider.openrouter.key.label" : "decider.key.label")}
             autoComplete="off"
             spellCheck={false}
             className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
@@ -182,12 +279,12 @@ export function DecisionModelSettings() {
         {error && <p role="alert" className="mt-1 text-[12px] text-danger">{error}</p>}
         {verdict && <p role="status" className={cn("mt-1 text-[12px]", verdict.ok ? "text-success" : "text-danger")}>{verdict.text}</p>}
         <a
-          href={KEY_URL}
+          href={KEY_URL[provider]}
           target="_blank"
           rel="noopener noreferrer"
           className="mt-2 inline-flex cursor-pointer items-center gap-1 text-[12px] text-accent hover:underline"
         >
-          {t("decider.key.getKey")}
+          {t(openrouter ? "decider.openrouter.key.getKey" : "decider.key.getKey")}
           <ExternalLink size={11} aria-hidden="true" />
         </a>
       </Card>

@@ -33,7 +33,7 @@ import {
   type AppConfig,
 } from "../config.ts";
 import type { InstanceConfigMap, ModelSelection } from "../contracts.ts";
-import { deciderIncludedHere, deciderSavePatch, type Decider } from "../decider/index.ts";
+import { deciderIncludedHere, deciderPatchKey, deciderSavePatch, type Decider } from "../decider/index.ts";
 import type { ProviderRegistry } from "../harness/registry.ts";
 import { HOSTED_PROVIDER_SETTINGS_ERROR } from "../hosted-models.ts";
 import { forgetKey } from "../key-rejections.ts";
@@ -477,10 +477,14 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
       // A pasted decision-model key is tried once (one tiny yes/no call).
       // Only a refusal blocks the save: an offline or overloaded service must
       // not stop a person saving a key that may well be fine.
-      if (patch.decider?.key) {
-        const check = await decider.testKey({ key: patch.decider.key });
+      const deciderKey = patch.decider ? deciderPatchKey(patch.decider, cfg.decider) : null;
+      if (deciderKey) {
+        const check = await decider.testKey(deciderKey.check);
         if (!check.ok && check.reason === "rejected") {
-          return json(res, 400, { error: "Jev rejected this key. Check it at typesafe.ai and paste it again.", code: "decider_rejected" });
+          const error = deciderKey.provider === "openrouter"
+            ? "OpenRouter rejected this key. Check it at openrouter.ai/keys and paste it again."
+            : "Jev rejected this key. Check it at typesafe.ai and paste it again.";
+          return json(res, 400, { error, code: "decider_rejected" });
         }
       }
       if (patch.browserProfiles !== undefined) {
@@ -570,6 +574,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
           if (persisted.tts?.key !== undefined) persisted.tts.key = "";
           if (persisted.tts?.fishKey !== undefined) persisted.tts.fishKey = "";
           if (persisted.decider?.key !== undefined) persisted.decider.key = "";
+          if (persisted.decider?.openrouterKey !== undefined) persisted.decider.openrouterKey = "";
           if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
           if (persisted.imageGen?.customApiKey !== undefined) persisted.imageGen.customApiKey = "";
           if (persisted.live?.key !== undefined) persisted.live.key = "";

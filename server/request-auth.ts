@@ -317,6 +317,8 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["GET"], path: /^\/api\/threads\/[\w-]+\/messages$/ },
   { methods: ["GET"], path: /^\/api\/threads\/[\w-]+\/messages\/[\w-]+\/image$/ },
   { methods: ["GET"], path: /^\/api\/threads\/[\w-]+\/export$/ },
+  // recorded browser steps, read like the transcript (server/routes/browser-evidence.ts)
+  { methods: ["GET"], path: /^\/api\/threads\/[\w-]+\/evidence(?:\.tar|\/[A-Za-z0-9-]{8,64}\/step-\d{6,12}\.jpg)?$/ },
   { methods: ["POST"], path: /^\/api\/threads\/[\w-]+\/messages\/[\w-]+\/file$/ },
   // a conversation's job: who is working on it and how it ended (routes/jobs.ts)
   { methods: ["GET"], path: /^\/api\/threads\/[\w-]+\/job$/ },

@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { approvalModeFor } from "../../shared/approval-mode.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import type { VerbContext } from "./context.ts";
 import { Output } from "./output.ts";
@@ -128,8 +129,10 @@ describe("team apply", () => {
       "POST /api/bots", "PATCH /api/bots/bot-1", "POST /api/bots", "PATCH /api/bots/bot-2",
       "POST /api/bots/bot-1/skill-template", "PATCH /api/bots/bot-1", "tool create_channel",
     ]);
-    expect(state.bots.find((bot) => bot.name === "Priya")).toMatchObject({ section: "Launch Room", approvalMode: "full", computer: "browser",
+    expect(state.bots.find((bot) => bot.name === "Priya")).toMatchObject({ section: "Launch Room", computer: "browser",
       browserProfile: "guest", toolScope: { deny: ["mcp:mail:*"] } });
+    // A new bot is at Full access already, so the file's `approval: full` writes nothing.
+    expect(approvalModeFor(state.bots.find((bot) => bot.name === "Priya")!)).toBe("full");
     expect(state.bots.find((bot) => bot.name === "Room Lead")).toMatchObject({ chiefOfStaff: true, managedSections: [], soul: "Lead the rehearsal.", cwd: "/work/room" });
 
     writes.length = 0;
@@ -215,7 +218,7 @@ describe("team apply", () => {
     // someone else's Priya, in Sales, listed before the team's own
     const { client, writes, state } = workspace({ sections: ["Sales", "Launch Room"], bots: [
       { id: "sales-priya", name: "Priya", section: "Sales", title: "Account manager", soul: "Sell." },
-      { id: "room-priya", name: "Priya", section: "Launch Room", title: "Buyer" }] });
+      { id: "room-priya", name: "Priya", section: "Launch Room", title: "Buyer", approvalMode: "ask" }] });
     const applied = await reconcile(client, file(), options());
     expect(applied.lines).toContain('bot "Priya": update title "Buyer" → "Skeptical buyer"; approval Ask → Full access; computer auto → browser; browser profile its own → guest; tools changed');
     expect(state.bots.find((bot) => bot.id === "sales-priya")).toEqual({ id: "sales-priya", name: "Priya", section: "Sales", title: "Account manager", soul: "Sell.",

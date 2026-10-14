@@ -4,6 +4,7 @@ import type { ServerResponse } from "node:http";
 import { promisify } from "node:util";
 import { BROWSER_VIEWPORT_ARGS, browserRuntimeEnv, ownsBrowserViewport, type BrowserRuntime } from "./browser-runtime.ts";
 import { closeBrowserSession } from "./browser-engine.ts";
+import { relay } from "./browser-relay.ts";
 
 const execute = promisify(execFile);
 const MAX_FRAME = 3 * 1024 * 1024;
@@ -459,21 +460,11 @@ export class BrowserLive {
       viewer.pressedKeys.add(key);
     }
     if (type === "input_mouse" && eventType === "mousePressed") viewer.pressedButtons.add(String(fields.button));
-    const origin = `http://127.0.0.1:${viewer.port}`;
     try {
-      // The native command relay awaits the daemon's CDP reply. A WS send is
-      // only an enqueue, so it cannot serve as the human hand-back barrier.
-      const response = await fetch(`${origin}/api/command`, { method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", Origin: origin }, body: JSON.stringify(command), signal: AbortSignal.timeout(30_000) });
-      if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error("input rejected"); }
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      for await (const chunk of response.body) {
-        size += chunk.length;
-        if (size > 65536) throw new Error("input response too large");
-        chunks.push(chunk);
-      }
-      if (object(JSON.parse(Buffer.concat(chunks).toString("utf8")))?.success !== true) throw new Error("input failed");
+      // The native command relay (browser-relay.ts) awaits the daemon's CDP
+      // reply. A WS send is only an enqueue, so it cannot serve as the human
+      // hand-back barrier.
+      if (!(await relay(viewer.port, command, { timeoutMs: 30_000, maxBytes: 65_536 })).success) throw new Error("input failed");
       if (command.action === "press" || (command.action === "input_keyboard" && eventType === "keyUp")) viewer.pressedKeys.delete(key);
       if (type === "input_mouse" && eventType === "mouseReleased") viewer.pressedButtons.delete(String(fields.button));
     } catch { throw new BrowserLiveError("The browser could not confirm this input. Restart the browser before continuing.", 503); }

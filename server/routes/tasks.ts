@@ -168,9 +168,6 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
           return json(res, 403, { error: "New Full tasks require the operator's dedicated shared-workspace policy" });
         }
         if (bot.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
-        if (!supportsApprovalMode(bot.modelSelection, "full")) {
-          return json(res, 400, { error: "This provider does not support Full access" });
-        }
       }
       if (phoneSecretSubmissions.hasBot(bot.id)) {
         return json(res, 409, { error: "this bot is securely saving a credential — try again when it finishes" });

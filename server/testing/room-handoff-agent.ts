@@ -65,6 +65,32 @@ async function askPermission(server: AgentsIntegration, ask: { tool_name: string
   }
 }
 
+/** One call on the turn's built-in browser tools (the harness browser proxy
+ * Claude mounted, server/harness-mcp-proxy.ts), for a plan step that names
+ * `server: "browser"`: the same path a model's browser call takes. */
+async function browserToolCall(server: AgentsIntegration, name: string, args: unknown): Promise<any> {
+  const child = spawn(server.command, server.args, { env: { ...process.env, ...server.env }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stderr.resume();
+  try {
+    return await new Promise((resolve, reject) => {
+      createInterface({ input: child.stdout }).on("line", line => {
+        try {
+          const data = JSON.parse(line);
+          if (data.id === 2) resolve(data);
+        } catch { reject(new Error("Fixture browser MCP returned malformed JSON")); }
+      });
+      child.on("error", reject);
+      child.on("exit", (code, signal) => reject(new Error(`Fixture browser MCP exited before answering: ${signal ?? code}`)));
+      const send = (id: number, method: string, params: unknown) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      send(1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "claude-code", version: "fixture" } });
+      send(2, "tools/call", { name, arguments: args });
+    });
+  } finally {
+    child.stdin.destroy();
+    await waitForExit(child, { signal: "SIGTERM", graceMs: 500 });
+  }
+}
+
 /** Screen calls as the bridge of a mounted computer makes them: each one
  * first asks the harness whether this turn may act (control-client.ts), and
  * the harness may hold that check open while the computer is busy. Each
@@ -191,7 +217,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
     const id = ++serial; pending.set(id, { resolve, reject });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
-  const timer = setTimeout(() => fail(new Error("Fixture MCP run timed out")), 20_000);
+  const timer = setTimeout(() => fail(new Error("Fixture MCP run timed out")), typeof plan.timeoutMs === "number" ? plan.timeoutMs : 20_000);
   let delayTimer: ReturnType<typeof setTimeout> | undefined;
   let gateTimer: ReturnType<typeof setInterval> | undefined;
   const evidence: unknown[] = [];
@@ -203,7 +229,9 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
       evidence.push(await call("tools/list"));
       evidence.push(await call("tools/call", { name: "list_room_targets", arguments: {} }));
       for (const step of steps) {
-        const response = await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: step.arguments });
+        const browser = step.server === "browser" ? (launch ? undefined : JSON.parse(readAtLaunch(arg("--mcp-config"))).mcpServers?.browser as AgentsIntegration | undefined) : undefined;
+        if (step.server === "browser" && !browser) throw new Error("A scripted browser step needs the turn's browser tools");
+        const response = browser ? await browserToolCall(browser, step.tool, step.arguments) : await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: step.arguments });
         evidence.push({ step, response });
         if (Boolean(response.error || response.result?.isError) !== Boolean(step.expectError)) throw new Error(`Unexpected tool outcome: ${JSON.stringify(response)}`);
       }
