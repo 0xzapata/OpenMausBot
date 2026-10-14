@@ -393,7 +393,7 @@ import {
   composioSystemPrompt,
   customMcpPrompt,
   CREDENTIAL_PROMPT,
-  THREADS_PROMPT,
+  THREADS_PROMPT, WIDGET_PROMPT,
   LEARN_PROMPT,
   PROFILE_PROMPT,
   TEAM_MEMORY_PROMPT,
@@ -11898,7 +11898,7 @@ async function startTurn(
           // model mostly did not think to make.
           ? peerRosterSystemPrompt(sectionPeers)
           : "";
-      const credentialPrompt = integrations.agents ? CREDENTIAL_PROMPT + THREADS_PROMPT : "";
+      const credentialPrompt = integrations.agents ? CREDENTIAL_PROMPT + THREADS_PROMPT + WIDGET_PROMPT : "";
       const routinePrompt = integrations.agents ? ROUTINE_PROMPT : "";
       const profilePrompt = integrations.agents ? PROFILE_PROMPT : "";
       const recallPrompt = integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "";

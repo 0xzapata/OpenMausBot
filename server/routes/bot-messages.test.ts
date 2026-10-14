@@ -177,12 +177,12 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     // The press is the whole message: words, a reply target or a Data context sent beside it are not the client's to choose.
     const body = {
       threadId, sendId: SEND, text: "words the client must not get to choose", replyToId: "some-other-message", dataContext: { nonsense: true },
-      widgetAction: { messageId: widgetId, ref: "confirm", values: { runs: "daily", report: "discord:releases" } },
+      widgetAction: { messageId: widgetId, ref: "confirm", values: { days: "mon,tue,wed,thu,fri,sat,sun", report: "discord:releases" } },
     };
 
     const first = await post(body);
     expect(first.status, JSON.stringify(first.body)).toBe(202);
-    const text = "Create routine\nRuns: Every day\nStarts: 2026-10-14\nAt: 9:00 AM\nReport to: Discord · #releases\nStop if any check is red: yes";
+    const text = "Create routine\nRuns on: Every day\nStarts: 2026-10-14\nAt: 09:00\nReport to: Discord · #releases\nStop if any check is red: yes";
     expect(first.body).toMatchObject({ ok: true, threadId, message: { role: "user", kind: "text", text, replyToId: widgetId, sendId: SEND } });
     // What the send path was handed: the server's words, as a reply to the widget row.
     expect(state.accepted).toHaveLength(1);
@@ -204,7 +204,7 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     const settled = row(widgetId).widget!.settled!;
     expect(settled).toEqual({
       ref: "confirm", label: "Create routine", tone: "confirm", at: expect.any(Number), sendId: SEND,
-      values: { runs: "daily", starts: "2026-10-14", at: "9:00 AM", report: "discord:releases", stopOnRed: true },
+      values: { days: "mon,tue,wed,thu,fri,sat,sun", starts: "2026-10-14", at: "09:00", report: "discord:releases", stopOnRed: true },
     });
     expect(patches).toHaveBeenCalledTimes(1);
 
@@ -216,7 +216,7 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     expect(patches).toHaveBeenCalledTimes(1);
 
     // The same sendId for a different answer is not that retry.
-    const changed = await post({ ...body, widgetAction: { ...body.widgetAction, values: { runs: "monday" } } });
+    const changed = await post({ ...body, widgetAction: { ...body.widgetAction, values: { days: "mon" } } });
     expect(changed.status).toBe(409);
     expect(sent()).toHaveLength(1);
     expect(patches).toHaveBeenCalledTimes(1);
@@ -338,7 +338,7 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     const { store, threadId, state, post, cancelQueued, show, row, sent } = await fixture();
     const widgetId = show("routineForm");
     state.busy = true;
-    const press = { threadId, sendId: SEND, widgetAction: { messageId: widgetId, ref: "confirm", values: { runs: "daily" } } };
+    const press = { threadId, sendId: SEND, widgetAction: { messageId: widgetId, ref: "confirm", values: { days: "sat,sun" } } };
     const queued = await post(press);
     expect(queued.status, JSON.stringify(queued.body)).toBe(202);
     expect(queued.body).toMatchObject({ ok: true, queued: true, threadId, queueId: expect.any(String) });
