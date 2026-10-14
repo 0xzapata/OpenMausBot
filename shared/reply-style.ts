@@ -1,9 +1,4 @@
-// How a bot shapes its replies. "default" is the unchanged behavior and is
-// what an absent field means. "conversational" asks the model for short,
-// plain replies split into small messages, and the chat shows each of those
-// messages as its own bubble. The split is a view of one stored reply, so
-// the transcript, copy, reply, speak and every engine see the same text.
-
+/** An absent style means "default". */
 export const REPLY_STYLES = ["default", "conversational"] as const;
 export type ReplyStyle = (typeof REPLY_STYLES)[number];
 
@@ -14,17 +9,13 @@ export function isConversational(style: ReplyStyle | undefined): boolean {
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const LIST_OR_TABLE = /^ {0,3}([-*+]\s|\d{1,3}[.)]\s|\|)/;
 
-/** Split a conversational reply on its blank-line message breaks. A code
- * fence is never cut, even when it holds blank lines, and the blocks of one
- * loose list or table stay together. An unclosed fence (a reply still
- * streaming) keeps everything after it in the last part, so the parts that
- * are already complete never change while the rest streams in. */
+/** Splits on blank lines but never inside a code fence, and keeps one loose list or table together. An unclosed fence keeps the rest in the last part, so finished parts never change. */
 export function splitConversationalReply(text: string): string[] {
   const parts: string[] = [];
   let current: string[] = [];
   let fence: string | null = null;
   const flush = () => {
-    // only trailing space goes: leading indentation can make a code block
+    // Leading indentation can make a code block, so only trailing space goes.
     const block = current.join("\n").trimEnd();
     current = [];
     if (!block.trim()) return;

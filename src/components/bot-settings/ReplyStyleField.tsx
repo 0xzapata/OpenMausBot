@@ -1,5 +1,3 @@
-// Reply style: Default keeps today's replies, Conversational asks for short
-// plain replies that the chat shows as several small bubbles.
 import { t } from "@/lib/i18n";
 import type { Bot } from "@/state/store";
 import { REPLY_STYLES, type ReplyStyle } from "../../../shared/reply-style";

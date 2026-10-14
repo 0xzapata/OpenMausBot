@@ -22,7 +22,6 @@ import { useBotSettingsDerived } from "./bot-settings/useBotSettingsDerived";
 import { BotEditorContext } from "./bot-settings/BotEditorContext";
 import { inputCls } from "./bot-settings/field";
 import { RoutineEditor } from "./RoutinesPage";
-import { FullAccessWarning } from "./FullAccessWarning";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { SharePresetDialog } from "./SharePresetDialog";
 import { SettingRow } from "./SettingsPrimitives";
@@ -30,8 +29,7 @@ import { SettingRow } from "./SettingsPrimitives";
 const SECTIONS = ["Identity", "Soul", "Skills", "Memory", "Routines", "Access", "Model", "Permissions", "Voice & alerts"] as const;
 type Section = typeof SECTIONS[number];
 
-/** Companion pairing permits creation, but not reading host defaults or
- * patching host settings. Keep its existing single-request creation flow. */
+/** Companion pairing permits creation, but not reading host defaults or patching host settings. */
 export function CompanionNewBotDialog() {
   const { state, dispatch } = useStore();
   const dialog = useRef<HTMLDivElement>(null);
@@ -81,7 +79,7 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   const savingRef = useRef(false);
   const alive = useRef(true);
   const [error, setError] = useState("");
-  const [warning, setWarning] = useState<"full" | "local" | null>(null);
+  const [warning, setWarning] = useState<"local" | null>(null);
   const [audience, setAudience] = useState<VisibilityMode>("everyone");
   const [people, setPeople] = useState("");
   const ownerOrAdmin = useOwnerOrAdmin();
@@ -112,7 +110,6 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => () => draft.dispose(), [draft]);
   // Disabling the focused Create button drops focus to the page in Chromium.
-  // Keep keyboard dismissal and focus trapping inside the pending dialog.
   useEffect(() => { if (saving) dialog.current?.focus(); }, [saving]);
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -136,7 +133,6 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   }, []);
   const save = async () => {
     if (!ready || savingRef.current || parent.state.botCreationPending) return;
-    if (!defaultsMode && draft.bot.approvalMode === "full" && !draft.consent.confirmFullAccess) { setWarning("full"); return; }
     if (!defaultsMode && draft.bot.approvalMode === "auto" && draft.bot.computer === "local" && !draft.consent.acknowledgeLocalAuto) { setWarning("local"); return; }
     const visibility = choosesVisibility ? visibilityFromForm(audience, people) : null;
     if (visibility && !visibility.ok) { setError(t("botSettings.visibility.needPeople")); return; }
@@ -169,8 +165,8 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
       else if (action.type === "setModel" && action.botId === draft.id) {
         draft.setModel(action.selection);
         if (action.resetApprovalToAsk) draft.patch({ approvalMode: "ask" });
-      } else if (action.type === "routinePatched") { /* Applied by the draft transport. */ }
-      else if (action.type === "toggleSettings") { /* Editor links stay inside this dialog. */ }
+      } else if (action.type === "routinePatched") {}
+      else if (action.type === "toggleSettings") {}
       else parent.dispatch(action);
     },
   };
@@ -232,7 +228,6 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
           {saving && <Loader2 size={15} className="animate-spin" />}{t(defaultsMode ? "newBot.saveDefaults" : "newBot.create")}
         </button>
       </div>
-      <FullAccessWarning open={warning === "full"} onCancel={() => setWarning(null)} onConfirm={() => { draft.consent.confirmFullAccess = true; setWarning(null); void save(); }} />
       <LocalComputerAutoWarning open={warning === "local"} onCancel={() => setWarning(null)} onConfirm={() => { draft.consent.acknowledgeLocalAuto = true; setWarning(null); void save(); }} />
     </div>
   </div>;
@@ -262,22 +257,16 @@ function DraftSection({ active, draft, defaultsMode }: { active: Section; draft:
   return <VoiceSection bot={bot} derived={derived} />;
 }
 
-/** Starting role: presets from the organization and imported files first,
- * then the built-in roles. A preset fills name, look and instructions (all
- * still editable); its skills and notes are added when the bot is created. */
 function StartingRole({ draft, defaultsMode }: { draft: BotCreationDraft; defaultsMode: boolean }) {
   const [presets, setPresets] = useState<BotPreset[]>([]);
   const [loads, setLoads] = useState(0);
   const [error, setError] = useState("");
-  // The draft's picture came from a preset (so the next preset may replace it).
   const presetPicture = useRef(false);
   useEffect(() => {
-    // Defaults are the installation's own; presets are for one new bot.
     if (defaultsMode) return;
     let cancelled = false;
     void api<{ presets: BotPreset[] }>("/api/bot-presets")
       .then(result => { if (!cancelled) setPresets(result.presets); })
-      // Members and older servers: the built-in roles only.
       .catch(() => { if (!cancelled) setPresets([]); });
     return () => { cancelled = true; };
   }, [defaultsMode, loads]);

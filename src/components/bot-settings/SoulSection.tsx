@@ -1,5 +1,3 @@
-// Soul: the bot's standing instructions (SOUL.md), plus a short intro so a
-// bot's Read all link into this section always lands somewhere legible.
 import type { Bot } from "@/state/store";
 import { SoulField } from "../SoulField";
 import { ProposalStatus } from "./ProposalStatus";

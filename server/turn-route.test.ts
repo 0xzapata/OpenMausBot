@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyTurn, fastModelFor, routeTurn, type RouteInput } from "./turn-route.ts";
+import { classifyTurn, fastModelFor, routeDirectTurn, routeTurn, type RouteInput } from "./turn-route.ts";
 import type { ModelCatalog } from "./contracts.ts";
 
 const plain = { attachments: 0, priorTurnUsedTools: false };
@@ -100,5 +100,39 @@ describe("routeTurn", () => {
   it("lowers an explicit effort when the engine has no quick model", () => {
     expect(routeTurn({ ...base, catalog: { default: "x", options: [{ id: "claude-opus-5", label: "Opus" }] } }))
       .toEqual({ tier: "simple", model: "claude-opus-5", effort: "low", variant: "v" });
+  });
+});
+
+describe("long conversations", () => {
+  const windowed: ModelCatalog = { default: "claude-opus-5", options: [
+    { id: "claude-opus-5", label: "Claude Opus 5", contextWindow: 1_000_000 },
+    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", contextWindow: 200_000 },
+  ] };
+  const input: RouteInput = {
+    conversational: true, followsBotModel: true, automated: false, signals: { text: "hi there", ...plain },
+    model: "claude-opus-5", effort: "high", catalog: windowed,
+  };
+
+  it("stays on the configured model when the thread would crowd the quick model's window", () => {
+    expect(routeTurn({ ...input, contextTokens: 150_000 })).toEqual({ tier: "simple", model: "claude-opus-5", effort: "high", variant: undefined });
+    expect(routeTurn({ ...input, contextTokens: 40_000 }).quickModel).toBe("Claude Haiku 4.5");
+  });
+});
+
+describe("routeDirectTurn", () => {
+  const bot = { replyStyle: "conversational" as const, modelSelection: { instanceId: "claude", model: "claude-opus-5" } };
+  const instance = { models: claude, adapter: { capabilities: { effortLevels: ["low", "high"] as const } } };
+  const message = { text: "and the other one?", images: [] };
+
+  it("reads tool use after the last ask from the thread", () => {
+    const quiet = [{ role: "user", kind: "text" }, { role: "bot", kind: "text" }];
+    const worked = [{ role: "user", kind: "text" }, { role: "bot", kind: "activity" }, { role: "bot", kind: "text" }];
+    expect(routeDirectTurn(bot, {}, quiet, message, instance, false).quickModel).toBe("Claude Haiku 4.5");
+    expect(routeDirectTurn(bot, {}, worked, message, instance, false).tier).toBe("complex");
+  });
+
+  it("leaves a thread with its own model and an automated turn alone", () => {
+    expect(routeDirectTurn(bot, { modelSelection: bot.modelSelection }, [], message, instance, false).tier).toBeNull();
+    expect(routeDirectTurn(bot, {}, [], message, instance, true).tier).toBeNull();
   });
 });

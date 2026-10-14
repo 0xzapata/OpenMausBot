@@ -1,9 +1,3 @@
-// Triggers: webhooks as a sentence. "When <something happens>, <this bot>
-// should <do this>." The builder on top is the same create call the
-// Automations page's Webhooks tab makes (POST /api/webhooks); the source
-// presets only fill in the name. Everything the full editor offers — event
-// types, where it runs, how many at once, rotating the private URL, the
-// delivery log — stays one "Advanced options" away on each trigger.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Check, Copy, ExternalLink, Laptop, Cloud, Link2, Loader2, Pencil, RotateCw, Trash2, Webhook, X, Zap } from "lucide-react";
 
@@ -29,8 +23,6 @@ import {
   webhookActivity,
 } from "./WebhooksPanel";
 
-/** What can start a trigger. Picking one only names the trigger: every
- * source is the same private URL underneath. Brand names stay as written. */
 export const TRIGGER_SOURCES: Array<{ id: string; labelKey?: LocaleKey; label?: string }> = [
   { id: "link", labelKey: "triggers.source.linkRequest" },
   { id: "typeform", label: "Typeform" },
@@ -46,8 +38,6 @@ export function triggerSourceLabel(id: string): string {
   return source.labelKey ? t(source.labelKey) : source.label ?? "";
 }
 
-/** The request the builder sends: exactly what the full editor sends for a
- * new webhook with its advanced options left alone. */
 export function triggerInput(draft: { source: string; customName: string; botId: string; prompt: string }, bots: Bot[]): WebhookTriggerInput {
   const prompt = draft.prompt.trim();
   const named = draft.source === "custom" ? draft.customName.trim() : triggerSourceLabel(draft.source);
@@ -95,7 +85,6 @@ export function TriggersPanel() {
       ).filter((element) => element.getClientRects().length > 0);
     (dialog?.querySelector<HTMLElement>("select") ?? dialog)?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      // The full editor, when open, owns Escape and its own focus trap.
       if (event.defaultPrevented || editingRef.current) return;
       if (event.key === "Escape") {
         event.preventDefault();
@@ -152,8 +141,7 @@ export function TriggersPanel() {
       style={glassPopupFrameStyle()}
       onMouseDown={(event) => event.target === event.currentTarget && close()}
     >
-      {/* A sibling, not the parent: a backdrop-filter on an ancestor would
-          stop the pop-up's own glass from seeing the app behind it. */}
+      {/* A sibling, not the parent: a backdrop-filter on an ancestor would stop the pop-up's own glass from seeing the app behind it. */}
       <div aria-hidden="true" className="glass-scrim pointer-events-none absolute inset-0" />
       <div
         ref={dialogRef}
@@ -174,7 +162,6 @@ export function TriggersPanel() {
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-7 sm:px-8">
-          {/* the builder: one sentence */}
           <form
             data-trigger-builder
             className="glass-card rounded-2xl p-4 sm:p-5"
@@ -262,7 +249,6 @@ export function TriggersPanel() {
                     onEdit={() => setEditing(webhook)}
                     onOpenChat={(threadId) => {
                       close();
-                      // offered only while the webhook's bot is here
                       const bot = state.bots.find((candidate) => candidate.id === webhook.botId);
                       if (bot) openBotThread(dispatch, bot, threadId, showThreads);
                     }}
@@ -319,7 +305,6 @@ function TriggerRow({
     [webhook, state.webhookAttempts, state.routineRuns],
   );
   const busy = working !== null;
-  // Turning on before the first test request is refused by the server too.
   const waitingForTest = Boolean(webhook.verificationPending && !webhook.enabled);
   const botName = bot?.name ?? t("triggers.deletedBot");
   return (

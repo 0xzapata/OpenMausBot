@@ -1,7 +1,4 @@
 // @vitest-environment happy-dom
-// A conversational bot's reply is one stored message drawn as several small
-// bubbles, split on its blank-line breaks. Code fences stay whole, copy
-// still copies the whole reply, and a default bot keeps one bubble.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -64,7 +61,6 @@ describe("conversational replies", () => {
   it("draws one bubble per message break and keeps the code block whole", async () => {
     await draw(profile({ replyStyle: "conversational" }));
     expect(segments()).toEqual(["Found it.", "```ts\nconst a = 1;\n\nconst b = 2;\n```", "Want me to run it?"]);
-    // one stored message, so one row and one set of actions
     expect(document.querySelectorAll("[data-conversational-reply]")).toHaveLength(1);
   });
 
