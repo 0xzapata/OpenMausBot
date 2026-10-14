@@ -2323,7 +2323,6 @@ describe("tool bridge", () => {
     const tools = new Map((await listed(chief)).map((tool) => [tool.name, tool]));
     for (const name of ["find_tool", "use_tool"]) {
       const schema = tools.get(name).inputSchema;
-      // the same guard the catalog's own schemas pass (#544, the 0.1.38 field failure)
       expect(JSON.stringify(schema)).not.toMatch(/"(oneOf|anyOf|allOf|const|format)":/);
       expect(schema.type).toBe("object");
       expect(schema).not.toHaveProperty("anyOf");

@@ -277,8 +277,7 @@ describe("agents proxy tools/list golden with the tool bridge on", () => {
   });
 
   it("uses no JSON-Schema keyword a provider conversion is known to drop or mangle", () => {
-    // #544, and the flat-schema rule of agents-proxy.test.ts: the bridge's own
-    // two schemas carry no branches, and use_tool's arguments is a plain object.
+    // The bridge's two schemas carry no branches, and use_tool's arguments is a plain object.
     for (const [name, wire] of Object.entries(wires)) {
       expect(wire.match(/"(\$ref|\$defs|definitions|oneOf|anyOf|allOf)":/g), name).toBeNull();
     }
