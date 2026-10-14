@@ -38,6 +38,11 @@ describe("toolItemKey", () => {
     }
     expect(hits).toEqual([5]);
   });
+
+  it("never lets a title and an input run together into another call's key", () => {
+    expect(toolItemKey("Read a", "b c")).not.toBe(toolItemKey("Read a b", "c"));
+    expect(toolItemKey("Read a b c", undefined)).not.toBe(toolItemKey("Read a", "b c"));
+  });
 });
 
 describe("RepeatDetector", () => {

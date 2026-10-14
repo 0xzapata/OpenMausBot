@@ -18,11 +18,12 @@ export function callKey(tool: string, args: string | undefined): string | null {
  * a call with arguments (ACP: "echo hi", "Read src/x.ts"); a bare "Bash" is
  * not countable. An adapter may title every call alike ("Running
  * list_directory") and keep what differs in the input, so the input, when
- * the item carries one, is part of the call. */
+ * the item carries one, is part of the call: the pair is encoded whole, so
+ * no title and input can run together into another call's. */
 export function toolItemKey(title: string | undefined, input: string | undefined): string | null {
   const t = (title ?? "").trim();
   if (!/\s|\//.test(t)) return null;
-  return callKey("tool", input ? `${t} ${input}` : t);
+  return callKey("tool", input ? JSON.stringify([t, input]) : t);
 }
 
 export class RepeatDetector {
