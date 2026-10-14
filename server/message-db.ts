@@ -443,10 +443,19 @@ function newestAts(threadIds: readonly string[], where: string): Map<string, num
 }
 
 export function deleteThread(threadId: string): void {
+  deleteThreads([threadId]);
+}
+
+/** One transaction: every listed thread goes, or none does. */
+export function deleteThreads(threadIds: readonly string[]): void {
+  if (threadIds.length === 0) return;
   writeFollowups((connection) => {
-    connection.prepare("DELETE FROM chat_followups WHERE thread_id = ?").run(threadId);
-    connection.prepare("DELETE FROM messages WHERE thread_id = ?").run(threadId);
-    connection.prepare("DELETE FROM thread_state WHERE thread_id = ?").run(threadId);
+    const statements = [
+      connection.prepare("DELETE FROM chat_followups WHERE thread_id = ?"),
+      connection.prepare("DELETE FROM messages WHERE thread_id = ?"),
+      connection.prepare("DELETE FROM thread_state WHERE thread_id = ?"),
+    ];
+    for (const id of threadIds) for (const statement of statements) statement.run(id);
   });
 }
 

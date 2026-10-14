@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DATA_DIR } from "./config.ts";
 import { closeMessageDb,
   deleteThread,
+  deleteThreads,
   indexMemoryFile,
   indexedMemoryFiles,
   insertMessage,
@@ -103,6 +104,36 @@ describe("message-db", () => {
     const thread = readThread("t4", legacy("t4"));
     expect(thread.messages).toEqual([]);
     expect(thread.activeLeafId).toBeNull();
+  });
+
+  it("deleteThreads removes every listed thread's rows, state and followups in one transaction and leaves the rest", () => {
+    for (const id of ["b1", "b2", "keep"]) {
+      insertMessage(id, msg("m1", `text of ${id}`));
+      setActiveLeaf(id, "m1");
+    }
+    deleteThreads(["b1", "b2", "never-existed"]);
+    for (const id of ["b1", "b2"]) {
+      const thread = readThread(id, legacy(id));
+      expect(thread.messages).toEqual([]);
+      expect(thread.activeLeafId).toBeNull();
+    }
+    expect(readThread("keep", legacy("keep")).messages).toHaveLength(1);
+    expect(() => deleteThreads([])).not.toThrow();
+  });
+
+  it("deleteThreads rolls the whole batch back when any statement fails", () => {
+    for (const id of ["r1", "r2"]) {
+      insertMessage(id, msg("m1", `text of ${id}`));
+      setActiveLeaf(id, "m1");
+    }
+    // A second connection makes the last statement for r2 fail, after r1 was fully deleted.
+    const breaker = new DatabaseSync(join(DATA_DIR, "messages.db"));
+    breaker.exec(`CREATE TRIGGER boom BEFORE DELETE ON thread_state WHEN old.thread_id = 'r2'
+      BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    expect(() => deleteThreads(["r1", "r2"])).toThrow("boom");
+    const counts = breaker.prepare("SELECT thread_id, count(*) AS n FROM messages GROUP BY thread_id ORDER BY thread_id").all();
+    breaker.close();
+    expect(counts.map((row) => ({ ...row }))).toEqual([{ thread_id: "r1", n: 1 }, { thread_id: "r2", n: 1 }]);
   });
 
   it("recall ranks by relevance, scopes to the given threads, and survives updates and deletes", () => {

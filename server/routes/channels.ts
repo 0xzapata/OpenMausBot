@@ -27,6 +27,7 @@ import type { BotRecord, GroupRecord, Message, Store } from "../store.ts";
 import type { ThreadStarters } from "../thread-starters.ts";
 import { extractSteerImages } from "../turn-images.ts";
 import type { UsageTrigger } from "../usage-ledger.ts";
+import { bulkDeleteThreadIds, type BulkDeleteRefusal } from "./bulk-delete.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 export type MessagePage = { messages: Array<Message | Record<string, unknown>>; hasMore?: boolean; activeLeafId: string | null };
@@ -34,7 +35,7 @@ export type MessagePage = { messages: Array<Message | Record<string, unknown>>; 
 export interface ChannelRouteDeps {
   store: Pick<Store,
     | "group" | "groupTaskByThread" | "bot" | "switchGroupTask" | "setGroupTaskTurnTimeout" | "setGroupTaskPinned"
-    | "renameGroupTask" | "patchGroup" | "messagesFor" | "groupTasks" | "deleteGroupTask" | "deleteGroup"
+    | "renameGroupTask" | "patchGroup" | "messagesFor" | "groupTasks" | "deleteGroupTasks" | "deleteGroup"
     | "createGroupTask" | "appendMessage">;
   cfg: Pick<AppConfig, "profile" | "budgets">;
   /** The desktop app owns this server, so a loopback caller is its owner. */
@@ -95,6 +96,27 @@ export function createChannelRoutes(deps: ChannelRouteDeps): RouteHandler {
     stagedSkillCleanupsForThread, rejectDeletedThreadSkillStages,
   } = deps;
   const DESKTOP_MANAGED = deps.desktopManaged;
+  const deleteRefusal = (auth: RequestAuth, groupId: string, threadId: string): { status: 403 | 404 | 409; error: string } | null => {
+    if (phoneSecretSubmissions.hasThread(threadId)) {
+      return { status: 409, error: "this task is securely saving a credential — try again when it finishes" };
+    }
+    if (groupThreadIsWorking(groupId, threadId)) return { status: 409, error: "this task is running — stop it first" };
+    if (!store.groupTaskByThread(groupId, threadId)) return { status: 404, error: "no such channel task" };
+    const notYours = cloudThreadRefusal(auth, threadId);
+    return notYours ? { status: 403, error: notYours } : null;
+  };
+  const deleteGroupTasks = (groupId: string, threadIds: string[]) => {
+    const stagedSkillCleanups = new Map(threadIds.map((threadId) => [threadId, stagedSkillCleanupsForThread(threadId)]));
+    const result = store.deleteGroupTasks(groupId, threadIds);
+    for (const threadId of result?.deleted ?? []) {
+      lastReply.delete(threadId);
+      clearTurnDigestState(threadId);
+      skillReview.dropThread(threadId);
+      revokeInternalCapabilitiesForThread(threadId);
+      rejectDeletedThreadSkillStages(stagedSkillCleanups.get(threadId) ?? []);
+    }
+    return result;
+  };
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
     let m: RegExpMatchArray | null = null;
     const routines = deps.routines();
@@ -118,6 +140,26 @@ export function createChannelRoutes(deps: ChannelRouteDeps): RouteHandler {
       // Who opened it decides who may answer its cards on a shared workspace.
       if (auth.kind === "session") threadStarters.set(task.threadId, actorKey(auth));
       return json(res, 201, { group: groupWithThread(store.group(group.id)!), task });
+    }
+
+    m = path.match(/^\/api\/groups\/([\w-]+)\/tasks\/delete$/);
+    if (m && method === "POST") {
+      const parsed = bulkDeleteThreadIds(await readBody(req));
+      if (!parsed.ok) return json(res, 400, { error: parsed.error });
+      const group = store.group(m[1]);
+      if (!group) return json(res, 404, { error: "no such channel" });
+      if (group.dm) return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
+      const allowed: string[] = [];
+      const refused: BulkDeleteRefusal[] = [];
+      for (const threadId of parsed.threadIds) {
+        const refusal = deleteRefusal(auth, group.id, threadId);
+        if (!refusal) allowed.push(threadId);
+        else refused.push({ threadId, reason: refusal.status === 409 ? "busy" : "not-found" });
+      }
+      if (allowed.length >= (group.tasks?.length ?? 1)) return json(res, 400, { error: "a channel keeps at least one task" });
+      const result = deleteGroupTasks(group.id, allowed);
+      if (!result) return json(res, 400, { error: "a channel keeps at least one task" });
+      return json(res, 200, { group: groupWithThread(result.group), deleted: result.deleted, refused });
     }
 
     m = path.match(/^\/api\/groups\/([\w-]+)\/tasks\/([\w-]+)$/);
@@ -190,24 +232,11 @@ export function createChannelRoutes(deps: ChannelRouteDeps): RouteHandler {
       const group = store.group(m[1]);
       if (!group) return json(res, 404, { error: "no such channel" });
       if (group.dm) return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
-      if (phoneSecretSubmissions.hasThread(m[2])) {
-        return json(res, 409, { error: "this task is securely saving a credential — try again when it finishes" });
-      }
-      if (groupThreadIsWorking(group.id, m[2])) {
-        return json(res, 409, { error: "this task is running — stop it first" });
-      }
-      if (!store.groupTaskByThread(group.id, m[2])) return json(res, 404, { error: "no such channel task" });
-      const notYours = cloudThreadRefusal(auth, m[2]);
-      if (notYours) return json(res, 403, { error: notYours });
-      const stagedSkillCleanups = stagedSkillCleanupsForThread(m[2]);
-      lastReply.delete(m[2]);
-      const updated = store.deleteGroupTask(group.id, m[2]);
-      if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
-      clearTurnDigestState(m[2]);
-      skillReview.dropThread(m[2]);
-      revokeInternalCapabilitiesForThread(m[2]);
-      rejectDeletedThreadSkillStages(stagedSkillCleanups);
-      return json(res, 200, { group: groupWithThread(updated) });
+      const refusal = deleteRefusal(auth, group.id, m[2]);
+      if (refusal) return json(res, refusal.status, { error: refusal.error });
+      const updated = deleteGroupTasks(group.id, [m[2]]);
+      if (!updated?.deleted.length) return json(res, 400, { error: "a channel keeps at least one task" });
+      return json(res, 200, { group: groupWithThread(updated.group) });
     }
 
     m = path.match(/^\/api\/groups\/([\w-]+)$/);
