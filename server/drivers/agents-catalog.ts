@@ -13,6 +13,7 @@
 import { CREDENTIAL_TARGETS } from "../../shared/credential-request.ts";
 import { OPTIONS_CARD_LIMITS, WATCHER_OPTIONS_CARD_BOT_ID } from "../../shared/options-card.ts";
 import { agentToolAnnotations } from "../agent-tool-policy.ts";
+import { WIDGET_TOOL_DEFINITIONS } from "./agents-widget-tools.ts";
 
 /** Which tools a turn is shown. The harness decides each of these when it
  * builds the integration (server/index.ts agentsIntegration); the server
@@ -370,6 +371,7 @@ const TOOL_DEFINITIONS = [
       required: ["path"],
     },
   },
+  ...WIDGET_TOOL_DEFINITIONS,
   {
     name: "post_to_room",
     description:

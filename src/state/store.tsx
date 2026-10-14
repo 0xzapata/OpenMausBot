@@ -179,10 +179,10 @@ export interface SecretRequestCardData {
  * the person to take over, and help = the sign-in card it stands for. */
 export type ComputerControlState = { held: boolean; helpReason: string | null; help?: import("../../shared/wire").ComputerHelpRef | null };
 
-export interface Message {
+export interface Message extends Pick<import("../../shared/wire").WireMessage, "widget"> {
   id: string;
   role: "bot" | "user";
-  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "signin" | "routine.run" | "goal.run" | "digest" | "compaction" | "call";
+  kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "signin" | "routine.run" | "goal.run" | "digest" | "compaction" | "call" | "widget";
   text?: string;
   /** digest messages: what the turn did, rendered in `text` and structured here. */
   digest?: TurnDigest;
