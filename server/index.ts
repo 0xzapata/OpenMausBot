@@ -315,7 +315,7 @@ import { recordLiveCall, spokenLineFields, titleLiveCall } from "./live-call-rec
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
 import { turnStartLogLine } from "./turn-log.ts";
 import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./turn-outcome.ts";
-import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS } from "./turn-context.ts";
+import { buildRecoveryText, buildTurnContext, engineIsFresh, replaysNatively } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
 import { extractTurnImages } from "./turn-images.ts";
 import { callTitleExcerpt, threadTitlePrompt, type ThreadTitleSource } from "./thread-title.ts";
@@ -8937,7 +8937,7 @@ async function startTurn(
           rewound,
           fresh: fresh || contextReset,
           externallyUpdated: Boolean(externalContextMarker) || handedStale,
-          replaysNatively: NATIVELY_REPLAYING_DRIVER_KINDS.includes(instance.driverKind),
+          replaysNatively: replaysNatively(instance.driverKind),
         });
         // Snapshot the cursor now: an external result can clear it during async setup.
         const resumeCursor = resume ? task.resumeCursors[instanceId] : undefined;

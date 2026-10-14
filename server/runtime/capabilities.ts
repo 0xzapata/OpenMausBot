@@ -12,7 +12,10 @@ export interface EngineCapabilities {
 
 const CHAT_STEP_CAP = 64;
 
-type EngineRow = Pick<EngineCapabilities, "resume" | "stepCap">;
+// transcript: the engine sends the thread as SendTurnInput.transcript messages, so the turn text must not replay it inline too.
+type EngineRow = Pick<EngineCapabilities, "resume" | "stepCap"> & { transcript?: true };
+
+const CHAT_ROW: EngineRow = { resume: false, stepCap: CHAT_STEP_CAP, transcript: true };
 
 const ENGINES: Readonly<Record<string, EngineRow>> = {
   claudeAgent: { resume: true },
@@ -30,14 +33,18 @@ const ENGINES: Readonly<Record<string, EngineRow>> = {
   hermesAgent: { resume: true },
   clineAgent: { resume: true },
   customAcp: { resume: true },
-  "openai-compat": { resume: false, stepCap: CHAT_STEP_CAP },
-  grok: { resume: false, stepCap: CHAT_STEP_CAP },
-  minimax: { resume: false, stepCap: CHAT_STEP_CAP },
-  mistral: { resume: false, stepCap: CHAT_STEP_CAP },
-  cerebras: { resume: false, stepCap: CHAT_STEP_CAP },
-  groq: { resume: false, stepCap: CHAT_STEP_CAP },
-  meta: { resume: false, stepCap: CHAT_STEP_CAP },
+  "openai-compat": CHAT_ROW,
+  grok: CHAT_ROW,
+  minimax: CHAT_ROW,
+  mistral: CHAT_ROW,
+  cerebras: CHAT_ROW,
+  groq: CHAT_ROW,
+  meta: CHAT_ROW,
 };
+
+export function replaysTranscriptNatively(driverKind: string | undefined): boolean {
+  return driverKind !== undefined && Object.hasOwn(ENGINES, driverKind) && ENGINES[driverKind]!.transcript === true;
+}
 
 export const ENGINE_KINDS: readonly string[] = Object.keys(ENGINES);
 
