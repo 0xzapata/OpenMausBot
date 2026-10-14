@@ -199,6 +199,22 @@ describe("parseSkillMd", () => {
     expect(parsed).toMatchObject({ name: "code-review", description: expect.stringContaining("Reviews") });
     if (!("error" in parsed)) expect(parsed.body).toContain("Do the thing.");
   });
+
+  it("reads descriptions with a colon+space, an unmatched quote, or wrapping quotes without losing bytes", () => {
+    // (source frontmatter value → what the parsed skill must say)
+    const cases: Array<[string, string]> = [
+      ["Show me your work: evidence, not vibes.", "Show me your work: evidence, not vibes."],
+      ['Proves it works, then shows the receipt"', 'Proves it works, then shows the receipt"'],
+      ['"Use this when: deploying fragile services"', "Use this when: deploying fragile services"],
+      ["'aren't truncated by the reader'", "aren't truncated by the reader"],
+      ['"Escaped \\"inner\\" quotes survive"', 'Escaped "inner" quotes survive'],
+    ];
+    for (const [frontmatter, description] of cases) {
+      const parsed = parseSkillMd(SKILL("quote-safe", frontmatter));
+      expect("error" in parsed, `${frontmatter} must parse`).toBe(false);
+      if (!("error" in parsed)) expect(parsed.description).toBe(description);
+    }
+  });
 });
 
 describe("scanSkillText", () => {
@@ -274,6 +290,54 @@ describe("install → review → enable lifecycle", () => {
 
     const again = installSkill(bot, "src", [{ path: "SKILL.md", content: SKILL("deploy-helper") }]);
     expect("error" in again).toBe(true);
+  });
+
+  it("imports a colon-and-quote description byte-faithfully and re-reads the same value", () => {
+    const source = '---\nname: show-me-your-work\ndescription: Show me your work: evidence, not vibes.\n---\n\n# Show me your work\n\nBody.\n';
+    const installed = installSkill(bot, "src", [{ path: "SKILL.md", content: source }]);
+    expect(installed).toMatchObject({ name: "show-me-your-work", description: "Show me your work: evidence, not vibes." });
+    const stored = readSkillFile(bot, "show-me-your-work");
+    expect(stored).toBe(source);
+    const reread = parseSkillMd(stored ?? "");
+    expect("error" in reread).toBe(false);
+    if (!("error" in reread)) expect(reread.description).toBe("Show me your work: evidence, not vibes.");
+  });
+
+  it("imports a description that ends in a quote without truncating it", () => {
+    const source = '---\nname: prove-it-works\ndescription: Proves it works, then shows the receipt"\n---\n\n# Prove it works\n\nBody.\n';
+    const installed = installSkill(bot, "src", [{ path: "SKILL.md", content: source }]);
+    expect(installed).toMatchObject({ name: "prove-it-works", description: 'Proves it works, then shows the receipt"' });
+    expect(readSkillFile(bot, "prove-it-works")).toBe(source);
+  });
+
+  it("imports a double-quoted description and unwraps it for the listing", () => {
+    const source = '---\nname: quoted-deploy\ndescription: "Use this when: deploying fragile services"\n---\n\n# Quoted deploy\n\nBody.\n';
+    const installed = installSkill(bot, "src", [{ path: "SKILL.md", content: source }]);
+    expect(installed).toMatchObject({ name: "quoted-deploy", description: "Use this when: deploying fragile services" });
+    expect(readSkillFile(bot, "quoted-deploy")).toBe(source);
+  });
+
+  it("preserves extra frontmatter fields such as disable-model-invocation through install", () => {
+    const source = "---\nname: gated\ndescription: Only the person can run it.\ndisable-model-invocation: true\nallowed-tools: Read, Grep\n---\n\n# Gated\n\nBody.\n";
+    const installed = installSkill(bot, "src", [{ path: "SKILL.md", content: source }]);
+    expect(installed).toMatchObject({ name: "gated" });
+    expect(readSkillFile(bot, "gated")).toBe(source);
+  });
+
+  it("reports non-markdown siblings and subfolders in skippedFiles, not an empty list", () => {
+    const installed = installSkill(bot, "src", [
+      { path: "SKILL.md", content: SKILL("solo-markdown") },
+      { path: "run.sh", content: "" },
+      { path: "scripts/", content: "" },
+    ]);
+    expect(installed).toMatchObject({
+      name: "solo-markdown",
+      skippedFiles: ["run.sh", "scripts/"],
+      warnings: [
+        expect.stringContaining("run.sh"),
+        expect.stringContaining("scripts/"),
+      ],
+    });
   });
 
   it("removes cleanly", () => {
