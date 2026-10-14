@@ -1,7 +1,4 @@
 // @vitest-environment happy-dom
-// Settings → Logins: the list says where each login works and as whom,
-// never its password; Add and Change send what was typed once and forget
-// it; Delete asks a second click.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,7 +62,6 @@ describe("Settings → Logins", () => {
     expect(rows[0]).toContain("2FA");
     expect(rows[0]).toContain("Saved from a chat · Pepper · Used 2 min ago");
     expect(rows[1]).toContain("Added here · All bots · Not used yet");
-    // Rows only: nothing in the list takes or shows a password.
     expect(host.querySelector("[data-logins-list]")!.querySelectorAll("input")).toHaveLength(0);
   });
 
@@ -89,7 +85,6 @@ describe("Settings → Logins", () => {
     fixture.api.mockResolvedValueOnce({ logins: [CARD_LOGIN], onePassword: OFF }).mockResolvedValueOnce({ login: CARD_LOGIN }).mockResolvedValueOnce({ logins: [CARD_LOGIN], onePassword: OFF });
     await render();
     await click("Change the login for accounts.example.com");
-    // Only the secrets and the picker: the password field is empty, as there is nothing to show.
     expect(host.querySelector<HTMLInputElement>('input[name="password"]')!.value).toBe("");
     await type("password", "fake-new-pass");
     await act(async () => { host.querySelector<HTMLInputElement>('input[type="radio"]')!.click(); });
@@ -130,7 +125,6 @@ describe("Settings → Logins", () => {
     await click("Disconnect");
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(fixture.api).toHaveBeenNthCalledWith(4, "/api/logins/1password", { method: "DELETE" });
-    // The field is back, and the token typed before is gone from it.
     expect(host.querySelector<HTMLInputElement>('input[name="onePasswordToken"]')!.value).toBe("");
   });
 

@@ -372,9 +372,6 @@ describe("connected-apps broker boundaries", () => {
     expect(() => normalizeAccountAlias("bad\nalias")).toThrow(/printable/i);
   });
 
-  // Composio prefixes slugs that would otherwise lead with a digit, so
-  // 1Password arrives as `_1password`. The catalog lists those toolkits, so
-  // routing them to the 404 branch stranded every one of them at Connect.
   it("routes underscore-prefixed toolkit slugs instead of 404ing them", async () => {
     const token = "a".repeat(64);
     const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
@@ -556,10 +553,8 @@ describe("MCP relay Session reuse", () => {
     expect((await relay.mcp("mcp-1")).calls).toEqual(["MCP trs_dropped_new"]);
   });
 
-  // The desktop server drops mcp-session-id when it no longer knows which
-  // backend a transport session belongs to (after a restart, for example). An
-  // uncached request would look the Session up and deliver the message, so
-  // reuse must not turn that into a failure.
+  // The desktop server drops mcp-session-id when it no longer knows a transport
+  // session's backend (after a restart, say).
   it("still delivers a message without an mcp-session-id when Composio dropped the Session", async () => {
     const relay = relayHarness("trs_server_restart");
     await relay.mcp();

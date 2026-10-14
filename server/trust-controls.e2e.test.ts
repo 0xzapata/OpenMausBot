@@ -1,5 +1,3 @@
-// Actual authenticated HTTP and local connector relay, all under the shared
-// disposable launcher. Synthetic sessions, local stub, fake engine only.
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -87,8 +85,7 @@ beforeAll(async () => {
   const address = broker.address() as { port: number };
   brokerOrigin = `http://127.0.0.1:${address.port}`;
   fixture = await launchVerificationServer();
-  // Seed an already-granted Full task in this fixture only. The public API
-  // correctly refuses to create operator grants outside the desktop channel.
+  // Seed an already-granted Full task here only: the public API refuses operator grants outside the desktop channel.
   const created = await fetch(fixture.info.url + "/api/bots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Existing Full grant" }) });
   expect(created.status).toBe(201);
   fullBot = (await created.json() as any).bot;
@@ -122,7 +119,7 @@ beforeAll(async () => {
   closeSync(log);
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    try { if ((await fetch(fixture.info.url + "/api/health")).ok) return; } catch { /* starting */ }
+    try { if ((await fetch(fixture.info.url + "/api/health")).ok) return; } catch {}
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   throw new Error("isolated trust server did not start");
@@ -185,7 +182,6 @@ it("shows each outbound batch recipient and amount with explicit preview truncat
   expect(card.card.subtitle).toContain("second@fixture.test");
   expect(card.card.subtitle).toContain('"amount":42');
   expect(card.card.subtitle).toContain("[arguments truncated]");
-  // The short form phones lead with: one entry per call, no arguments.
   expect(card.card.outboundRequest).toEqual({
     tool: "GMAIL_SEND_EMAIL",
     app: "Gmail",
@@ -245,6 +241,24 @@ it("never treats arbitrary workbench code as a counted daily allowance", async (
   await api("PATCH", `/api/bots/${b.id}`, { connectorScopes: { apps: { gmail: "write" } } });
   expect((await relay(token, "COMPOSIO_REMOTE_BASH_TOOL", { command: "curl -X POST https://fixture.test/send" })).body.result.isError).toBe(true);
   expect(relayed).toHaveLength(before);
+});
+
+it("tells a scoped bot its multi-execute arguments were unreadable, not that it lacks access", async () => {
+  const b = await bot("Misshapen batch");
+  await api("PATCH", `/api/bots/${b.id}`, { connectorScopes: { apps: { gmail: "write" } } });
+  const token = await mint(b.id, b.threadId);
+  const before = relayed.length;
+  const refused = await relay(token, "COMPOSIO_MULTI_EXECUTE_TOOL", { tool_calls: [{ tool_slug: "GMAIL_FETCH_EMAILS", arguments: {} }] });
+  expect(refused.body.result.isError).toBe(true);
+  const text = refused.body.result.content[0].text;
+  expect(text).not.toContain("has not been given access");
+  expect(text).not.toContain("do not retry");
+  expect(text).toContain("could not read");
+  expect(text).toContain("tools: [{ tool_slug, arguments }]");
+  expect(relayed).toHaveLength(before);
+  const resent = await relay(token, "COMPOSIO_MULTI_EXECUTE_TOOL", { tools: [{ tool_slug: "GMAIL_FETCH_EMAILS", arguments: {} }] });
+  expect(resent.body.result.content[0].text).toBe("relay-ok");
+  expect(relayed).toHaveLength(before + 1);
 });
 
 it("keeps accepted facts through a replacement review and rejects autonomous restricted memory", async () => {

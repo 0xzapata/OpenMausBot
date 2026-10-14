@@ -48,21 +48,17 @@ describe("welcomeDue", () => {
 
   it("honours the old localStorage gate for one release", () => {
     expect(welcomeDue({}, { remoteClient: false, legacyDone: true })).toBe(false);
-    // but a server record, once present, wins over the browser
     expect(welcomeDue({ onboarding: { ...done, version: 0 } }, { remoteClient: false, legacyDone: true })).toBe(true);
   });
 
   it("decides who gets the tour on a fresh workspace", () => {
     const fresh = { onboarding: EMPTY_ONBOARDING };
     const cases = [
-      // the desktop app's own window: exactly as before
       { who: "local desktop", options: { remoteClient: false, legacyDone: false, ...LOCAL_VIEWER }, due: true },
       { who: "remote client", options: { remoteClient: true, legacyDone: false, ...LOCAL_VIEWER }, due: false },
       { who: "hosted admin", options: { remoteClient: false, legacyDone: false, hosted: true, canSave: true }, due: true },
-      // PUT /api/config is admin-only: a member could never finish it
       { who: "hosted member", options: { remoteClient: false, legacyDone: false, hosted: true, canSave: false }, due: false },
       { who: "member of a self-hosted server", options: { remoteClient: false, legacyDone: false, hosted: false, canSave: false }, due: false },
-      // a hosted session that has not proved it may save waits
       { who: "hosted, scope unknown", options: { remoteClient: false, legacyDone: false, hosted: true }, due: false },
     ];
     for (const { who, options, due } of cases) expect(welcomeDue(fresh, options), who).toBe(due);
@@ -75,13 +71,10 @@ describe("welcomeViewer", () => {
     expect(welcomeViewer({ kind: "session", scopes: ["admin", "client"], hosted: true })).toEqual({ hosted: true, canSave: true });
     expect(welcomeViewer({ kind: "session", scopes: ["client"], hosted: true })).toEqual({ hosted: true, canSave: false });
     expect(welcomeViewer({ kind: "session", scopes: ["client"] })).toEqual({ hosted: false, canSave: false });
-    // a shared server's local service trust (no admin scope) cannot save either
     expect(welcomeViewer({ kind: "loopback", scopes: ["client"], trust: "service" })).toEqual({ hosted: false, canSave: false });
-    // an answer without scopes is today's owner; only a literal true is hosted
     expect(welcomeViewer({})).toEqual(LOCAL_VIEWER);
     expect(welcomeViewer(null)).toEqual(LOCAL_VIEWER);
     expect(welcomeViewer({ scopes: ["admin"], hosted: "yes" })).toEqual({ hosted: false, canSave: true });
-    // an OMB Cloud home says so; only a literal true counts
     expect(welcomeViewer({ kind: "session", scopes: ["admin", "client"], cloudHome: true })).toEqual({ hosted: false, canSave: true, cloudHome: true });
     expect(welcomeViewer({ kind: "session", scopes: ["admin", "client"], cloudHome: "yes" })).toEqual({ hosted: false, canSave: true });
   });
@@ -89,11 +82,9 @@ describe("welcomeViewer", () => {
   it("calls only a hosted session without admin scope a hosted member", () => {
     expect(hostedMember({ hosted: true, canSave: false })).toBe(true);
     expect(hostedMember({ hosted: true, canSave: true })).toBe(false);
-    // the owner's own paired browser on a personal server is not a team member
     expect(hostedMember({ hosted: false, canSave: false })).toBe(false);
     expect(hostedMember(LOCAL_VIEWER)).toBe(false);
     expect(hostedMember(null)).toBe(false);
-    // spotlights wait for the answer, then stay as before except for hosted members
     expect(spotlightsQuiet(null)).toBe(true);
     expect(spotlightsQuiet({ hosted: true, canSave: false })).toBe(true);
     expect(spotlightsQuiet({ hosted: false, canSave: false })).toBe(false);
@@ -102,8 +93,6 @@ describe("welcomeViewer", () => {
 });
 
 describe("first run on an OMB Cloud home", () => {
-  // What the machine's /api/auth/session answers the desktop app once
-  // "Connect to my Cloud" has paired it (server/index.ts, cloud-home.ts).
   const connected = welcomeViewer({ kind: "session", scopes: ["admin", "client"], via: "cookie", cloudHome: true });
   const engine = (id: string, authenticated: boolean | undefined, state = "available") => ({ id, state, authenticated });
   const ready = (instance: ReturnType<typeof engine>) => instance.state === "available" && instance.authenticated !== false;
@@ -124,7 +113,6 @@ describe("first run on an OMB Cloud home", () => {
     expect(cloudSignInDue(connected, { connected: false, instances: signedOut }, ready)).toBe(false);
     expect(cloudSignInDue(connected, { connected: true, instances: [] }, ready)).toBe(false);
     expect(cloudSignInDue(null, { connected: true, instances: signedOut }, ready)).toBe(false);
-    // a paired phone without admin scope cannot sign engines in
     expect(cloudSignInDue({ ...connected, canSave: false }, { connected: true, instances: signedOut }, ready)).toBe(false);
     for (const viewer of [LOCAL_VIEWER, { hosted: true, canSave: true }, welcomeViewer({ kind: "session", scopes: ["admin", "client"] })]) {
       expect(cloudSignInDue(viewer, { connected: true, instances: signedOut }, ready)).toBe(false);
@@ -167,7 +155,6 @@ describe("engineSummary", () => {
     const summary = engineSummary(rows, ok, { company: true });
     expect(summary.allReady).toBe(true);
     expect(summary.company).toBe(1);
-    // personal rows stay listed, below, as before
     expect(summary.ready.map((row) => row.id)).toEqual([]);
     expect(summary.setup.map((row) => row.id)).toEqual(["claude", "codex"]);
   });

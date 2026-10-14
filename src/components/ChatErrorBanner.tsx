@@ -3,8 +3,6 @@ import { t } from "@/lib/i18n";
 import { plainErrorLine } from "@/lib/plain-error";
 import type { AppState } from "@/state/store";
 
-/** The chat and room notice line: a thread or bot reference that no longer
- * resolves. Quiet, not an error; the store clears it after a few seconds. */
 export function ChatNotice({ notice }: { notice: AppState["notice"] }) {
   if (!notice) return null;
   return (
@@ -20,10 +18,6 @@ export function ChatNotice({ notice }: { notice: AppState["notice"] }) {
   );
 }
 
-/** The chat and room error line. Callers pass the store error; dismissing
- * clears it, and the store clears it on its own after a few seconds. A
- * machine's words (a bare HTTP status, "Failed to fetch", a JSON body) read
- * as one plain line, with the original under Details. */
 export function ChatErrorBanner({ message, onDismiss }: { message: string | null; onDismiss: () => void }) {
   if (!message) return null;
   const plain = plainErrorLine(message);
