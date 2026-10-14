@@ -5,7 +5,6 @@ import { useShowThreads } from "@/lib/thread-preferences";
 import { useCopyFeedback } from "@/lib/copy-text";
 import {
   AlertTriangle,
-  ArrowDown,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -145,6 +144,7 @@ import { useCanWriteIn } from "@/lib/cloud-guest";
 import { latestFailure, latestReply, type TranscriptSnapshot } from "@/lib/transcript-announcer";
 import { pendingApprovals } from "./PendingApproval";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
+import { JumpToLatestButton } from "./JumpToLatestButton";
 
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
@@ -1453,13 +1453,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       )}
       {!following && (
         <div className="relative">
-          <button
-            onClick={jumpToLatest}
-            aria-label={t("chat.jumpToLatestAria")}
-            className="animate-pop-in pointer-events-auto absolute bottom-2 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
-          >
-            <ArrowDown size={13} /> {t("chat.jumpToLatest")}
-          </button>
+          <JumpToLatestButton onClick={jumpToLatest} className="pointer-events-auto bottom-2" />
         </div>
       )}
       <LiveCallBar bot={bot} />
