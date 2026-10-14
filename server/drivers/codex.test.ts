@@ -12,14 +12,9 @@ import type { ProviderInstance, RuntimeEvent } from "../contracts.ts";
 import { DATA_DIR, NATIVE_DIR } from "../config.ts";
 import { ChatGptPlanAuthController } from "./chatgpt-plan-auth.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
-import {
-  CODEX_SIGN_IN_EXPIRED,
-  CodexDriver,
-  codexNativeIncomingLogMessage,
-  codexSignInRefused,
-  codexUpdateCommand,
-  codexUserError,
-} from "./codex.ts";
+import { CodexDriver, codexNativeIncomingLogMessage, codexUpdateCommand } from "./codex.ts";
+import { CODEX_SIGN_IN_EXPIRED, codexNotSignedIn, codexSignInRefused, codexUserError } from "./codex-errors.ts";
+import { CODEX_USAGE_LIMIT_REACHED } from "../../shared/codex-usage-limit.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { TEAM_TOOLS_FAILED } from "./team-tools.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
@@ -51,9 +46,9 @@ const CONTROL_PLANE_FIXTURE = {
 
 describe("CodexDriver.decodeConfig", () => {
   it("makes plan/provider failures actionable without changing billing", () => {
-    expect(codexUserError("provider_not_configured", false)).toContain("Continue with ChatGPT");
-    expect(codexUserError("provider_not_configured", true)).toContain("API billing will not be used");
-    expect(codexUserError("x".repeat(500) + "subscription_sharing_usage_limit_exceeded", true)).toMatch(/^subscription_sharing_usage_limit_exceeded:/);
+    expect(codexUserError("provider_not_configured", "own")).toContain("Continue with ChatGPT");
+    expect(codexUserError("provider_not_configured", "plan")).toContain("API billing will not be used");
+    expect(codexUserError("x".repeat(500) + "subscription_sharing_usage_limit_exceeded", "plan")).toMatch(/^subscription_sharing_usage_limit_exceeded:/);
     expect(() => CodexDriver.decodeConfig({ authMode: "chatgpt-plan", managed: {} })).toThrow("cannot be combined");
   });
   it("defaults to the codex binary with fullAuto off", () => {
@@ -2827,6 +2822,7 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
       expect(message).toContain("workspace routing discovery unauthorized (401)");
       expect(message).not.toContain("Reconnecting");
       expect(done).toMatchObject({ ok: false, stopReason: message });
+      expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
       const refused = await instance.snapshot();
       expect(refused).toMatchObject({ state: "available", authenticated: false, reason: CODEX_SIGN_IN_EXPIRED });
       expect(refused).not.toHaveProperty("account");
@@ -2912,6 +2908,92 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
       expect(codexSignInRefused({ message: "unexpected status 401 Unauthorized", codexErrorInfo: null })).toBe(false);
       expect(codexSignInRefused({ message: "Reconnecting... 1/5", codexErrorInfo: "serverOverloaded" })).toBe(false);
     });
+
+    it.each([["this computer", undefined], ["My Cloud", "home"]])("ends the turn at once, without starting Codex, when Codex has no login on %s", async (_where, role) => {
+      if (role) vi.stubEnv("OMB_CLOUD_ROLE", role);
+      const codexHome = join(scratch, ".codex");
+      mkdirSync(codexHome, { recursive: true });
+      await create({ mode: "logged-out", environment: { HOME: scratch, USERPROFILE: scratch, CODEX_HOME: codexHome } });
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: false });
+      const spawn = vi.spyOn(procs, "spawnCli");
+      const { done, errors } = await runTurn("t-no-login");
+      expect(errors).toEqual([expect.objectContaining({ message: codexNotSignedIn(), setup: true })]);
+      expect(codexNotSignedIn().includes("Sign-ins don't copy over when you move to My Cloud.")).toBe(Boolean(role));
+      expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it("says Codex isn't signed in when Codex ran a turn holding no login", async () => {
+      const codexHome = join(scratch, ".codex");
+      mkdirSync(codexHome, { recursive: true });
+      await create({ environment: { HOME: scratch, USERPROFILE: scratch, CODEX_HOME: codexHome, FAKE_CODEX_MISSING_BEARER: "1", FAKE_CODEX_STATE: join(scratch, "launches") } });
+      const { done, errors } = await runTurn("t-no-bearer");
+      expect(errors).toEqual([expect.objectContaining({ message: codexNotSignedIn(), setup: true })]);
+      expect(done).toMatchObject({ ok: false });
+      expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
+    });
+
+    it("runs the turn again once when Codex started without the login it has now", async () => {
+      vi.stubEnv("FAKE_CODEX_RETRY_SCALE", "0.001");
+      await create({ environment: { ...signedIn(), FAKE_CODEX_MISSING_BEARER: "1", FAKE_CODEX_STATE: join(scratch, "launches") } });
+      const { done, errors } = await runTurn("t-login-race");
+      expect(done).toMatchObject({ ok: true });
+      expect(errors).toEqual([]);
+      expect(recorder.events.filter((e) => e.type === "turn.retrying")).toEqual([expect.objectContaining({ attempt: 1, reason: "auth" })]);
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+    });
+
+    it("runs a turn again only once for a login race", async () => {
+      vi.stubEnv("FAKE_CODEX_RETRY_SCALE", "0.001");
+      await create({ environment: { ...signedIn(), FAKE_CODEX_MISSING_BEARER: "2", FAKE_CODEX_STATE: join(scratch, "launches") } });
+      const { done, errors } = await runTurn("t-login-race-twice");
+      expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(1);
+      expect(errors).toEqual([expect.objectContaining({ setup: true })]);
+      expect(done).toMatchObject({ ok: false });
+    });
+
+    it.each(["signin-refused", "auth-recovery"])("runs a refused turn (%s) again once when another Codex stored a new login meanwhile", async (mode) => {
+      vi.stubEnv("FAKE_CODEX_RETRY_SCALE", "0.001");
+      const environment = signedIn();
+      await create({ mode, environment });
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "t-rotated", text: "hi" });
+      writeFileSync(join(environment.CODEX_HOME, "auth.json"), JSON.stringify({ tokens: { refresh_token: "rotated-fixture" } }));
+      process.env.FAKE_CODEX_MODE = "happy";
+      await expect(recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId)).resolves.toMatchObject({ ok: true });
+      expect(recorder.events.filter((e) => e.type === "runtime.error")).toEqual([]);
+      expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(1);
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+    });
+
+    it("says a ChatGPT account's Codex usage limit is OpenAI's, not MausBot's, and leaves a custom provider's words alone", async () => {
+      await create({ mode: "usage-limit" });
+      const { done, errors } = await runTurn("t-limit");
+      expect(errors).toHaveLength(1);
+      const message = (errors[0] as { message: string }).message;
+      expect(message.startsWith(CODEX_USAGE_LIMIT_REACHED)).toBe(true);
+      expect(message).toContain("resets at 5:23 PM");
+      expect(errors[0]).not.toHaveProperty("setup");
+      expect(done).toMatchObject({ ok: false, stopReason: message });
+      const custom = await runTurn("t-limit-custom", "badprov::badmodel");
+      expect((custom.errors[0] as { message: string }).message).toMatch(/^You've hit your usage limit\. Upgrade to Pro/);
+    });
+  });
+
+  it("words Codex's own usage limit and missing login plainly, only for Codex's own sign-in", () => {
+    const plus = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 5:23 PM.";
+    const said = codexUserError(plus, "own");
+    expect(said).toContain("ChatGPT");
+    expect(said).toContain("not your MausBot plan");
+    expect(said).toMatch(/It resets at 5:23 PM \([^)]+\)\./);
+    expect(said).not.toContain("Pro");
+    expect(codexUserError("You've hit your usage limit for gpt-6.1-sol. Switch to another model now, or try again at Oct 17th, 2026 5:23 PM.", "own"))
+      .toContain("resets at Oct 17th, 2026 5:23 PM (");
+    expect(codexUserError("You've hit your usage limit.", "own")).not.toContain("resets at");
+    expect(codexUserError("Quota reached.", "own", "usageLimitExceeded")).toContain(CODEX_USAGE_LIMIT_REACHED);
+    expect(codexUserError(plus, "other")).toBe(plus);
+    const noBearer = "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses";
+    expect(codexUserError(noBearer, "own")).toBe(codexNotSignedIn());
+    expect(codexUserError(noBearer, "other")).toBe(noBearer);
   });
 
   it("auto-retries a transient turn/start failure, then completes with one final message", async () => {

@@ -5,7 +5,8 @@
 //     mcp-app-approval | mcp-form | permissions-approval | question | multi-question | mixed-question |
 //     empty-question | malformed-question | config-profile | config-profile-unsupported | config-read-error |
 //     image | logged-in-stdout | logged-out | unauthorized | late-request | retry-then-complete | signin-refused |
-//     auth-recovery | mcp-401 | legacy-error | key-401 | recovered-403 | recovered-401 | recovering-403
+//     auth-recovery | mcp-401 | legacy-error | key-401 | recovered-403 | recovered-401 | recovering-403 | usage-limit
+//   FAKE_CODEX_MISSING_BEARER  the first N launches fail their turn as codex-cli 0.160.1 holding no login does (count in FAKE_CODEX_STATE)
 //   FAKE_CODEX_LAUNCH_CRASHES  the first N launches die pre-ack at turn/start, transient stderr, exit 1 (count in FAKE_CODEX_STATE)
 //   FAKE_CODEX_LAUNCH_KILLS  the same by SIGKILL (POSIX-shaped; win32 reports exit 1, signal null)
 //   FAKE_CODEX_LAUNCH_SILENT  the same with exit 1 and no stderr
@@ -643,6 +644,32 @@ process.stdin.on("data", (chunk) => {
           out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
           notify("error", { message: "stream disconnected before completion" });
           notify("turn/completed", { turn: { status: "failed", error: { message: "stream disconnected before completion" } } });
+          break;
+        }
+        if (process.env.FAKE_CODEX_MISSING_BEARER && process.env.FAKE_CODEX_STATE) {
+          let launched = 0;
+          try {
+            launched = Number(readFileSync(process.env.FAKE_CODEX_STATE, "utf8")) || 0;
+          } catch {}
+          writeFileSync(process.env.FAKE_CODEX_STATE, String(launched + 1));
+          if (launched < (Number(process.env.FAKE_CODEX_MISSING_BEARER) || 0)) {
+            out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+            const prompt = { type: "userMessage", id: "u1", content: msg.params?.input ?? [] };
+            notify("item/started", { item: prompt });
+            notify("item/completed", { item: prompt });
+            const said = "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses";
+            notify("error", { willRetry: true, error: { message: "Reconnecting... 1/5", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 401 } }, additionalDetails: said } });
+            const error = { message: said, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } }, additionalDetails: null };
+            notify("error", { willRetry: false, error });
+            notify("turn/completed", { turn: { status: "failed", error } });
+            break;
+          }
+        }
+        if (mode === "usage-limit") {
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          const error = { message: "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 5:23 PM.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
+          notify("error", { willRetry: false, error });
+          notify("turn/completed", { turn: { status: "failed", error } });
           break;
         }
         if (mode === "unauthorized") {
