@@ -8075,11 +8075,7 @@ const handoffs = new Handoffs({
     .filter((m) => m.role === "bot" && m.kind === "text" && !m.from && m.turnId === turnId).map((m) => m.id),
 });
 
-
-const loopingEngine = (threadId: string) => {
-  const bot = store.botByThread(threadId);
-  return bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined;
-};
+const loopingEngine = (threadId: string, bot = store.botByThread(threadId)) => bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined;
 const repeats = createLoopGuard({
   settings: () => loopGuardSettings(cfg),
   append: (threadId, tool) => void store.appendMessage(threadId, { role: "bot", kind: "activity", tool }),

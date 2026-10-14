@@ -14,6 +14,7 @@ import { isModelVariant, type InstanceConfigMap, type McpServerSpec, type ModelS
 import { DEFAULT_WINDOW_MINUTES, MAX_WINDOW_MINUTES } from "./cache-keepwarm.ts";
 import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-icon.ts";
 import { loopGuardConfigSchema, type LoopGuardConfig } from "./host/loop-guard.ts";
+import { migrateLegacyFeatureFlags } from "./legacy-feature-flags.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import { deciderConfigSchema, type DeciderConfig } from "./decider/config.ts";
@@ -789,25 +790,7 @@ export function ensureDirs() {
     }
   }
   for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
-  migrateLegacyFeatureFlags();
-}
-
-function migrateLegacyFeatureFlags(): void {
-  const p = join(DATA_DIR, "config.json");
-  try {
-    if (!existsSync(p)) return;
-    const disk = jsonObjectSchema.safeParse(parseJson(readFileSync(p, "utf8")));
-    if (!disk.success) return;
-    const features = jsonObjectSchema.safeParse(disk.data.features);
-    if (!features.success || !Object.hasOwn(features.data, "skillRecorder")) return;
-    const next: JsonObject = { ...features.data };
-    if (!Object.hasOwn(next, "skillAuthoring")) next.skillAuthoring = next.skillRecorder === true;
-    delete next.skillRecorder;
-    writeFileAtomic(p, JSON.stringify({ ...disk.data, features: next }, null, 2), { mode: 0o600 });
-    console.log(`[config] features.skillRecorder renamed to features.skillAuthoring (${String(next.skillAuthoring)})`);
-  } catch (error) {
-    console.error(`[config] could not rename features.skillRecorder: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  migrateLegacyFeatureFlags(DATA_DIR);
 }
 
 let lastIgnoredConfigWarning = "";
