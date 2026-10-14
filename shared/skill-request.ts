@@ -20,11 +20,15 @@ export interface SkillRequestCardData {
   preview?: string;
   /** Binds approval to the exact bytes shown in preview. */
   sha256?: string;
+  /** references/<topic>.md files shown in full beside the SKILL.md; absent when the skill is SKILL.md alone. */
+  references?: Array<{ path: string; content: string }>;
+  /** Binds approval to the exact references shown. */
+  referencesSha256?: string;
   warnings: string[];
   createdAt: number;
   /** An update that applied without a person: the SKILL.md it replaced, so
    * Undo can put it back while the skill is unchanged since. */
-  previous?: { preview: string; source: string };
+  previous?: { preview: string; source: string; references?: Array<{ path: string; content: string }> };
 }
 
 /** The hash a current client may echo after it displayed the complete

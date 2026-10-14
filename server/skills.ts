@@ -1,4 +1,4 @@
-// Per-bot Agent Skills: SKILL.md only (supporting files are skipped), imported disabled until a person enables it.
+// Per-bot Agent Skills: imports keep SKILL.md only and land disabled; learned skills may add reviewed references/<topic>.md files.
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -27,6 +27,10 @@ import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
 import { librarySkillFilePath, listLibrarySkills, type LibrarySkillListing } from "./skill-library.ts";
 import { readManagedLinks, writeManagedLinks } from "./skill-link-registry.ts";
+import {
+  directoryEntryState, entryExistsWithoutFollowing, formatKb, isSkillReferencePath, learnedSkillDirectoryMatches, publishReviewedRevision,
+  readReferenceFiles, referenceLimitError, referencePathError, REFERENCES_ADVICE, skillReferencesSha256, STAGED_SKILL_FILE_MAX_BYTES,
+} from "./skill-storage.ts";
 import { workspaceDir } from "./workspace.ts";
 import { isSkillName, parseSkillMd, scanSkillText, SKILL_FILE_MAX_BYTES, type ParsedSkill } from "../shared/skill-md.ts";
 import { parseSkillCommand } from "../shared/skill-command.ts";
@@ -40,14 +44,13 @@ export {
   SKILL_NAME_MAX,
   type ParsedSkill,
 } from "../shared/skill-md.ts";
+export { STAGED_SKILL_FILE_MAX_BYTES } from "./skill-storage.ts";
 
 export const INDEX_MAX_SKILLS = 30;
 export const INDEX_MAX_BYTES = 4_000;
 const loggedIndexOmissions = new Map<string, string>();
 export const MAX_STAGED_SKILLS = 20;
 export const STAGED_GIST_MAX = 240;
-export const STAGED_SKILL_FILE_MAX_BYTES = 32 * 1024;
-
 interface SkillManifestEntry {
   description: string;
   enabled: boolean;
@@ -58,6 +61,7 @@ interface SkillManifestEntry {
   compatibility?: string;
   warnings: string[];
   skippedFiles: string[];
+  referencesSha256?: string;
   /** Replay guard for a crash between promotion and card settlement. Never exposed to agents. */
   appliedStageId?: string;
   storageRevision?: string;
@@ -87,6 +91,7 @@ const skillManifestEntrySchema = z.object({
   compatibility: z.string().optional(),
   warnings: z.array(z.string()),
   skippedFiles: z.array(z.string()),
+  referencesSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   appliedStageId: z.string().optional(),
   storageRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   package: z.object({
@@ -102,17 +107,6 @@ const skillManifestSchema = z.record(z.string(), skillManifestEntrySchema);
 
 function skillsDir(botId: string): string {
   return join(workspaceDir(botId), "skills");
-}
-
-type DirectoryEntryState = "missing" | "directory" | "unsafe";
-
-function directoryEntryState(path: string): DirectoryEntryState {
-  try {
-    const stat = lstatSync(path);
-    return stat.isDirectory() && !stat.isSymbolicLink() ? "directory" : "unsafe";
-  } catch {
-    return "missing";
-  }
 }
 
 function existingSkillsRoot(botId: string): string | null {
@@ -155,15 +149,6 @@ function skillTarget(root: string, name: string, entry: SkillManifestEntry): str
   return entry.storageRevision
     ? join(root, "skills", ".revisions", entry.storageRevision)
     : join(root, "skills", name);
-}
-
-function entryExistsWithoutFollowing(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Checks each app-created level without following symlinks before scanning or creating below it. */
@@ -475,7 +460,10 @@ function skillContentMatches(botId: string, name: string, entry: SkillManifestEn
     if (!directory) return false;
     const file = join(directory, "SKILL.md");
     if (!lstatSync(file).isFile()) return false;
-    return createHash("sha256").update(readFileSync(file)).digest("hex") === entry.sha256;
+    if (createHash("sha256").update(readFileSync(file)).digest("hex") !== entry.sha256) return false;
+    if (!entry.referencesSha256) return true;
+    const references = readReferenceFiles(directory);
+    return references !== null && skillReferencesSha256(references) === entry.referencesSha256;
   } catch {
     return false;
   }
@@ -578,13 +566,13 @@ export function setSkillEnabled(botId: string, name: string, enabled: boolean): 
   return skillListing(botId, name, entry);
 }
 
-function removeReviewedRevision(botId: string, revision: string, sha256: string): void {
+function removeReviewedRevision(botId: string, revision: string, sha256: string, referencesSha256?: string): void {
   const root = existingSkillsRoot(botId);
   if (!root) return;
   const revisions = join(root, ".revisions");
   if (directoryEntryState(revisions) !== "directory") return;
   const directory = join(revisions, revision);
-  if (!learnedSkillDirectoryMatches(directory, sha256)) return;
+  if (!learnedSkillDirectoryMatches(directory, sha256, referencesSha256)) return;
   try {
     rmSync(directory, { recursive: true, force: true });
   } catch {
@@ -593,11 +581,11 @@ function removeReviewedRevision(botId: string, revision: string, sha256: string)
 
 function retireReviewedSkillStorage(botId: string, name: string, entry: SkillManifestEntry): void {
   if (entry.storageRevision) {
-    removeReviewedRevision(botId, entry.storageRevision, entry.sha256);
+    removeReviewedRevision(botId, entry.storageRevision, entry.sha256, entry.referencesSha256);
     return;
   }
   const directory = existingSkillDirectory(botId, name);
-  if (!directory || !learnedSkillDirectoryMatches(directory, entry.sha256)) return;
+  if (!directory || !learnedSkillDirectoryMatches(directory, entry.sha256, entry.referencesSha256)) return;
   try {
     rmSync(directory, { recursive: true, force: true });
   } catch {
@@ -646,7 +634,7 @@ export function removeSkill(botId: string, name: string): { removed: true } | { 
   // While the target still exists, so ownership can be proven without deleting a user-replaced path.
   syncSkillLinks(botId);
   if (entry.storageRevision) {
-    removeReviewedRevision(botId, entry.storageRevision, entry.sha256);
+    removeReviewedRevision(botId, entry.storageRevision, entry.sha256, entry.referencesSha256);
   } else if (target && targetState === "directory") {
     rmSync(target, { recursive: true, force: true });
   }
@@ -664,6 +652,7 @@ export interface StagedSkillWrite {
   source: string;
   files: Array<{ path: string; content: string }>;
   sha256: string;
+  referencesSha256?: string;
   warnings: string[];
   skippedFiles: string[];
   createdAt: string;
@@ -684,6 +673,7 @@ const stagedSkillWriteSchema = z.object({
   source: z.string(),
   files: z.array(z.object({ path: z.string(), content: z.string() })),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  referencesSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   warnings: z.array(z.string()),
   skippedFiles: z.array(z.string()),
   createdAt: z.string(),
@@ -769,22 +759,40 @@ function preparedSkillFiles(
 function preparedLearnedSkill(
   files: Array<{ path: string; content: string }>,
 ): PreparedSkillFiles | { error: string } {
-  if (files.length !== 1 || files[0]?.path !== "SKILL.md") {
+  const skillMds = files.filter((file) => file.path === "SKILL.md");
+  if (skillMds.length !== 1 || files.some((file) => file.path !== "SKILL.md" && file.path.endsWith("SKILL.md"))) {
     return { error: "learned skills must contain exactly one SKILL.md" };
   }
-  return preparedSkillFiles(files);
+  const limitError = referenceLimitError(files);
+  if (limitError) return { error: limitError };
+  const prepared = preparedSkillFiles([skillMds[0]!]);
+  if ("error" in prepared) return prepared;
+  const references = files
+    .filter((file) => file.path !== "SKILL.md")
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    .map((file) => ({ path: file.path, content: file.content }));
+  return {
+    ...prepared,
+    files: [prepared.files[0]!, ...references],
+    warnings: [
+      ...prepared.warnings,
+      ...references.flatMap((file) => scanSkillText(file.content).map((warning) => `${file.path}: ${warning}`)),
+    ],
+  };
 }
 
-function learnedSkillDirectoryMatches(directory: string, sha256: string): boolean {
-  if (directoryEntryState(directory) !== "directory") return false;
+/** Empty when the skill has no references; null when they no longer match review. */
+export function readSkillReferences(botId: string, name: string): Array<{ path: string; content: string }> | null {
+  if (!isSkillName(name)) return null;
+  const entry = readManifest(botId)[name];
+  if (!entry) return null;
+  if (!entry.referencesSha256) return [];
+  const directory = skillDirectory(botId, name, entry);
+  if (!directory || !learnedSkillDirectoryMatches(directory, entry.sha256, entry.referencesSha256)) return null;
   try {
-    const entries = readdirSync(directory);
-    if (entries.length !== 1 || entries[0] !== "SKILL.md") return false;
-    const file = join(directory, "SKILL.md");
-    if (!lstatSync(file).isFile()) return false;
-    return createHash("sha256").update(readFileSync(file)).digest("hex") === sha256;
+    return readReferenceFiles(directory);
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -794,99 +802,7 @@ function installedLearnedSkillMatches(
   entry: SkillManifestEntry,
 ): boolean {
   const directory = skillDirectory(botId, name, entry);
-  return directory ? learnedSkillDirectoryMatches(directory, entry.sha256) : false;
-}
-
-function directoryIdentity(path: string): { dev: number; ino: number } | null {
-  try {
-    const stat = lstatSync(path);
-    return stat.isDirectory() && !stat.isSymbolicLink() ? { dev: stat.dev, ino: stat.ino } : null;
-  } catch {
-    return null;
-  }
-}
-
-function sameDirectoryIdentity(path: string, expected: { dev: number; ino: number }): boolean {
-  const current = directoryIdentity(path);
-  return current?.dev === expected.dev && current.ino === expected.ino;
-}
-
-/** The manifest selects this revision in a separate atomic write, so a crash never half-replaces a skill. */
-function publishReviewedRevision(
-  botId: string,
-  stageId: string,
-  skillMd: string,
-  sha256: string,
-): string {
-  // No agent-writable path is opened until the complete directory is published as one rename.
-  const state = skillStateDir(botId);
-  mkdirSync(state, { recursive: true, mode: 0o700 });
-  if (directoryEntryState(state) !== "directory") {
-    throw new Error("the protected skill state path is not a real directory");
-  }
-  const preparedRoot = join(state, "reviewed-revisions");
-  const preparedRootState = directoryEntryState(preparedRoot);
-  if (preparedRootState === "unsafe") {
-    throw new Error("the protected revision path is not a real directory");
-  }
-  if (preparedRootState === "missing") mkdirSync(preparedRoot, { mode: 0o700 });
-  const revision = createHash("sha256").update(stageId).digest("hex");
-  const prepared = join(preparedRoot, revision);
-  if (!learnedSkillDirectoryMatches(prepared, sha256)) {
-    if (entryExistsWithoutFollowing(prepared)) {
-      if (directoryEntryState(prepared) !== "directory") {
-        throw new Error("the protected reviewed revision is not a real directory");
-      }
-      rmSync(prepared, { recursive: true, force: true });
-    }
-    const temporary = join(preparedRoot, `.prepare-${revision}-${randomUUID()}`);
-    try {
-      mkdirSync(temporary, { mode: 0o700 });
-      writeFileAtomic(join(temporary, "SKILL.md"), skillMd, { mode: 0o600 });
-      if (!learnedSkillDirectoryMatches(temporary, sha256)) {
-        throw new Error("the protected reviewed bytes do not match the approval card");
-      }
-      renameSync(temporary, prepared);
-    } catch (error) {
-      rmSync(temporary, { recursive: true, force: true });
-      throw error;
-    }
-  }
-
-  const root = ensureSkillsRoot(botId);
-  if (!root) throw new Error("the workspace skills path must be a real directory, not a symlink or file");
-  const rootIdentity = directoryIdentity(root);
-  if (!rootIdentity) throw new Error("the workspace skills path changed during update");
-  const revisions = join(root, ".revisions");
-  const revisionsState = directoryEntryState(revisions);
-  if (revisionsState === "unsafe") throw new Error("the skill revisions path is not a real directory");
-  if (revisionsState === "missing") mkdirSync(revisions, { mode: 0o700 });
-  const revisionsIdentity = directoryIdentity(revisions);
-  if (!revisionsIdentity) throw new Error("the skill revisions path could not be created safely");
-
-  const target = join(revisions, revision);
-  if (learnedSkillDirectoryMatches(target, sha256)) {
-    try {
-      rmSync(prepared, { recursive: true, force: true });
-    } catch {}
-    return revision;
-  }
-  if (entryExistsWithoutFollowing(target)) {
-    throw new Error("the reviewed revision path already exists with different content");
-  }
-  if (!sameDirectoryIdentity(root, rootIdentity) || !sameDirectoryIdentity(revisions, revisionsIdentity)) {
-    throw new Error("the workspace skills path changed during update");
-  }
-
-  renameSync(prepared, target);
-  if (
-    !sameDirectoryIdentity(root, rootIdentity) ||
-    !sameDirectoryIdentity(revisions, revisionsIdentity) ||
-    !learnedSkillDirectoryMatches(target, sha256)
-  ) {
-    throw new Error("the reviewed revision changed while it was being published");
-  }
-  return revision;
+  return directory ? learnedSkillDirectoryMatches(directory, entry.sha256, entry.referencesSha256) : false;
 }
 
 function commitNewSkillFiles(
@@ -904,7 +820,9 @@ function commitNewSkillFiles(
   try {
     mkdirSync(staged, { mode: 0o700 });
     for (const file of files) {
-      writeFileSync(join(staged, file.path), file.content, { mode: 0o600 });
+      const path = join(staged, file.path);
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, file.content, { mode: 0o600 });
     }
     if (directoryEntryState(root) !== "directory" || entryExistsWithoutFollowing(target)) {
       throw new Error("the workspace skills path changed during installation");
@@ -929,10 +847,15 @@ function installPreparedSkill(
   const manifest = readManifest(botId);
   const skillMd = prepared.files[0]!.content;
   const sha256 = createHash("sha256").update(skillMd).digest("hex");
+  const referencesSha256 = skillReferencesSha256(prepared.files);
   const existing = manifest[name];
   if (existing) {
     if (options.appliedStageId && existing.appliedStageId === options.appliedStageId) {
-      if (existing.sha256 !== sha256 || !installedLearnedSkillMatches(botId, name, existing)) {
+      if (
+        existing.sha256 !== sha256 ||
+        existing.referencesSha256 !== referencesSha256 ||
+        !installedLearnedSkillMatches(botId, name, existing)
+      ) {
         return { error: "the installed learned skill no longer matches the reviewed content" };
       }
       syncSkillLinks(botId);
@@ -950,6 +873,7 @@ function installPreparedSkill(
     compatibility: prepared.parsed.compatibility,
     warnings: prepared.warnings,
     skippedFiles: prepared.skippedFiles,
+    ...(referencesSha256 ? { referencesSha256 } : {}),
     appliedStageId: options.appliedStageId,
     ...(options.package ? { package: options.package } : {}),
   };
@@ -996,9 +920,14 @@ function updatePreparedSkill(
   const existing = manifest[name];
   const skillMd = prepared.files[0]!.content;
   const sha256 = createHash("sha256").update(skillMd).digest("hex");
+  const referencesSha256 = skillReferencesSha256(prepared.files);
   if (!existing) return { error: `no imported skill named "${name}" — create it instead` };
   if (existing.appliedStageId === options.appliedStageId) {
-    if (existing.sha256 !== sha256 || !installedLearnedSkillMatches(botId, name, existing)) {
+    if (
+      existing.sha256 !== sha256 ||
+      existing.referencesSha256 !== referencesSha256 ||
+      !installedLearnedSkillMatches(botId, name, existing)
+    ) {
       return { error: "the installed learned skill no longer matches the reviewed update" };
     }
     syncSkillLinks(botId);
@@ -1013,7 +942,8 @@ function updatePreparedSkill(
     return { error: "the installed skill changed after this update was proposed — review a fresh update" };
   }
   try {
-    const storageRevision = publishReviewedRevision(botId, options.appliedStageId, skillMd, sha256);
+    const dirs = { state: skillStateDir(botId), ensureSkillsRoot: () => ensureSkillsRoot(botId) };
+    const storageRevision = publishReviewedRevision(dirs, options.appliedStageId, prepared.files, sha256, referencesSha256);
     // Re-read just before the swap: keeps unrelated manifest changes and the user's latest enabled choice.
     const latestManifest = readManifest(botId);
     const latest = latestManifest[name];
@@ -1026,8 +956,10 @@ function updatePreparedSkill(
     ) {
       return { error: "the installed skill changed after this update was proposed — review a fresh update" };
     }
+    const { referencesSha256: _previousReferences, ...unchanged } = latest;
     const entry: SkillManifestEntry = {
-      ...latest,
+      ...unchanged,
+      ...(referencesSha256 ? { referencesSha256 } : {}),
       description: prepared.parsed.description,
       source,
       sha256,
@@ -1056,9 +988,12 @@ export function stageSkillWrite(
   input: {
     action: StagedSkillAction;
     targetName?: string;
+    /** A reference with empty content removes that file. */
     files: Array<{ path: string; content: string }>;
     gist?: string;
     source?: string;
+    /** False replaces the whole reference set; by default an update keeps references it does not mention. */
+    keepReferences?: boolean;
   },
 ): StagedSkillWrite | { error: string } {
   if (input.action !== "create" && input.action !== "update") {
@@ -1070,9 +1005,23 @@ export function stageSkillWrite(
   }));
   const candidate = redactedFiles.find((file) => file.path === "SKILL.md" || file.path.endsWith("/SKILL.md"));
   if (candidate && Buffer.byteLength(candidate.content, "utf8") > STAGED_SKILL_FILE_MAX_BYTES) {
-    return { error: `learned SKILL.md files must be at most ${STAGED_SKILL_FILE_MAX_BYTES / 1024}KB` };
+    const attempted = Buffer.byteLength(candidate.content, "utf8");
+    const currentText = input.action === "update" && input.targetName ? readSkillFile(botId, input.targetName.trim()) : null;
+    const current = currentText === null ? "" : `, the current version is ${formatKb(Buffer.byteLength(currentText, "utf8"))}`;
+    return {
+      error:
+        `learned SKILL.md files must be at most ${STAGED_SKILL_FILE_MAX_BYTES / 1024}KB; ` +
+        `this SKILL.md is ${formatKb(attempted)}${current}. ${REFERENCES_ADVICE}`,
+    };
   }
-  const prepared = preparedLearnedSkill(redactedFiles);
+  const removals = new Set(
+    redactedFiles.filter((file) => file.path !== "SKILL.md" && !file.content.trim()).map((file) => file.path),
+  );
+  for (const path of removals) if (!isSkillReferencePath(path)) return { error: referencePathError(path) };
+  if (removals.size && input.action !== "update") {
+    return { error: `empty reference content removes a file only on update; give ${[...removals][0]} its content` };
+  }
+  let prepared = preparedLearnedSkill(redactedFiles.filter((file) => file.path === "SKILL.md" || !removals.has(file.path)));
   if ("error" in prepared) return prepared;
   const { parsed } = prepared;
   const targetName = input.targetName?.trim() ?? "";
@@ -1099,6 +1048,20 @@ export function stageSkillWrite(
   if (input.action === "update" && existing && !skillContentMatches(botId, parsed.name, existing)) {
     return { error: "stored SKILL.md changed after review — restore or remove it before proposing an update" };
   }
+  if (input.action === "update" && input.keepReferences !== false) {
+    const installed = readSkillReferences(botId, parsed.name);
+    if (installed === null) {
+      return { error: "stored skill references changed after review — restore or remove the skill before proposing an update" };
+    }
+    const merged = new Map(installed.map((file) => [file.path, file]));
+    for (const path of removals) {
+      if (!merged.has(path)) return { error: `cannot remove ${path}: the skill has no such reference file` };
+      merged.delete(path);
+    }
+    for (const file of prepared.files.slice(1)) merged.set(file.path, file);
+    prepared = preparedLearnedSkill([prepared.files[0]!, ...merged.values()]);
+    if ("error" in prepared) return prepared;
+  }
   const store = readStaged(botId);
   for (const [id, staged] of Object.entries(store.writes)) {
     if (manifest[staged.name]?.appliedStageId === id) delete store.writes[id];
@@ -1116,7 +1079,8 @@ export function stageSkillWrite(
     .slice(0, STAGED_GIST_MAX);
   const source = redactSecretsInText(input.source?.trim() || `${LEARN_SOURCE_PREFIX}${parsed.name}`);
   const sha256 = createHash("sha256").update(prepared.files[0]!.content).digest("hex");
-  if (input.action === "update" && sha256 === existing!.sha256) {
+  const referencesSha256 = skillReferencesSha256(prepared.files);
+  if (input.action === "update" && sha256 === existing!.sha256 && referencesSha256 === existing!.referencesSha256) {
     return { error: `skill "${parsed.name}" already matches the proposed SKILL.md` };
   }
   const entry: StagedSkillWrite = {
@@ -1127,6 +1091,7 @@ export function stageSkillWrite(
     source,
     files: prepared.files,
     sha256,
+    ...(referencesSha256 ? { referencesSha256 } : {}),
     warnings: prepared.warnings,
     skippedFiles: prepared.skippedFiles,
     createdAt: new Date().toISOString(),
@@ -1160,9 +1125,9 @@ export function rejectStagedSkillWrite(
   if (!staged && !alreadyApplied) return { error: "no such staged skill" };
   if (staged?.action === "update" && !alreadyApplied) {
     const revision = createHash("sha256").update(id).digest("hex");
-    removeReviewedRevision(botId, revision, staged.sha256);
+    removeReviewedRevision(botId, revision, staged.sha256, staged.referencesSha256);
     const prepared = join(skillStateDir(botId), "reviewed-revisions", revision);
-    if (learnedSkillDirectoryMatches(prepared, staged.sha256)) {
+    if (learnedSkillDirectoryMatches(prepared, staged.sha256, staged.referencesSha256)) {
       try {
         rmSync(prepared, { recursive: true, force: true });
       } catch {}
@@ -1177,8 +1142,15 @@ export function rejectStagedSkillWrite(
 export function applyStagedSkillWrite(
   botId: string,
   id: string,
-  options: { expectedSha256?: string; onApplied?: (skill: SkillListing) => void } = {},
+  options: {
+    expectedSha256?: string;
+    /** Null: the reviewer saw no references. Omitted: not checked. */
+    expectedReferencesSha256?: string | null;
+    onApplied?: (skill: SkillListing) => void;
+  } = {},
 ): SkillListing | { error: string } {
+  const referencesExpected = (actual: string | undefined) =>
+    options.expectedReferencesSha256 === undefined || (options.expectedReferencesSha256 ?? undefined) === actual;
   const store = readStaged(botId);
   const staged = store.writes[id];
   if (!staged) {
@@ -1187,6 +1159,7 @@ export function applyStagedSkillWrite(
     const [name, entry] = applied;
     if (
       (options.expectedSha256 && entry.sha256 !== options.expectedSha256) ||
+      !referencesExpected(entry.referencesSha256) ||
       !installedLearnedSkillMatches(botId, name, entry)
     ) {
       return { error: "the installed learned skill no longer matches the reviewed content" };
@@ -1199,7 +1172,13 @@ export function applyStagedSkillWrite(
   const prepared = preparedLearnedSkill(staged.files);
   if ("error" in prepared) return prepared;
   const sha256 = createHash("sha256").update(prepared.files[0]!.content).digest("hex");
-  if (sha256 !== staged.sha256 || (options.expectedSha256 && sha256 !== options.expectedSha256)) {
+  const referencesSha256 = skillReferencesSha256(prepared.files);
+  if (
+    sha256 !== staged.sha256 ||
+    (options.expectedSha256 && sha256 !== options.expectedSha256) ||
+    referencesSha256 !== staged.referencesSha256 ||
+    !referencesExpected(referencesSha256)
+  ) {
     return { error: "the staged skill changed after review — create a new proposal" };
   }
   const installed = staged.action === "create"
@@ -1221,13 +1200,14 @@ export function applyStagedSkillWrite(
 
 export function applySkillWriteWithReceipt(
   botId: string,
-  staged: Pick<StagedSkillWrite, "id" | "sha256">,
+  staged: Pick<StagedSkillWrite, "id" | "sha256" | "referencesSha256">,
   recordApplied: (skill: SkillListing) => void,
 ): { result: SkillListing; settlementPending?: true; message?: string } | { error: string } {
   let installed: SkillListing | undefined;
   try {
     const result = applyStagedSkillWrite(botId, staged.id, {
       expectedSha256: staged.sha256,
+      expectedReferencesSha256: staged.referencesSha256 ?? null,
       onApplied: (skill) => {
         installed = skill;
         recordApplied(skill);
@@ -1243,7 +1223,12 @@ export function applySkillWriteWithReceipt(
 
 export function undoSkillWrite(
   botId: string,
-  write: { stagedId: string; name: string; action: StagedSkillAction; previous?: { skillMd: string; source: string } },
+  write: {
+    stagedId: string;
+    name: string;
+    action: StagedSkillAction;
+    previous?: { skillMd: string; source: string; references?: Array<{ path: string; content: string }> };
+  },
 ): { undone: true } | { stale: true } | { error: string } {
   const entry = readManifest(botId)[write.name];
   if (!entry || entry.appliedStageId !== write.stagedId || !installedLearnedSkillMatches(botId, write.name, entry)) {
@@ -1257,11 +1242,15 @@ export function undoSkillWrite(
   const staged = stageSkillWrite(botId, {
     action: "update",
     targetName: write.name,
-    files: [{ path: "SKILL.md", content: write.previous.skillMd }],
+    files: [{ path: "SKILL.md", content: write.previous.skillMd }, ...(write.previous.references ?? [])],
     source: write.previous.source,
+    keepReferences: false,
   });
   if ("error" in staged) return staged;
-  const applied = applyStagedSkillWrite(botId, staged.id, { expectedSha256: staged.sha256 });
+  const applied = applyStagedSkillWrite(botId, staged.id, {
+    expectedSha256: staged.sha256,
+    expectedReferencesSha256: staged.referencesSha256 ?? null,
+  });
   if ("error" in applied) {
     rejectStagedSkillWrite(botId, staged.id);
     return applied;

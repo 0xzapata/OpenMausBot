@@ -1087,11 +1087,11 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const r = await api("/api/internal/skills/stage", {
       method: "POST",
       body: JSON.stringify({
-        fromBotId: BOT_ID,
-        fromThreadId: THREAD_ID,
+        fromBotId: BOT_ID, fromThreadId: THREAD_ID,
         action: args.action,
         skill_name: skillName || undefined,
         skill_md: skillMd,
+        ...(Array.isArray(args.references) ? { references: args.references } : {}),
         gist: typeof args.gist === "string" ? args.gist : undefined,
         source,
       }),

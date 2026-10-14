@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
@@ -18,6 +17,7 @@ import type { Destination } from "./surface.ts";
 import { newId, type ModelSelection } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
+import { scrubbedSkillRequest } from "./skill-request-card.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
 import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk, type ApprovalMode } from "../shared/approval-mode.ts";
 import { lastChangeRequestUrl } from "../shared/thread-link.ts";
@@ -195,30 +195,7 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
             : { ...operation },
       };
     }
-    if (card.skillRequest) {
-      const originalPreview = card.skillRequest.preview;
-      const preview = originalPreview === undefined
-        ? undefined
-        : redactSecretsInText(originalPreview);
-      // Keep the digest only when this pass changed nothing and it matches the preview, so a card never shows one SKILL.md and approves another.
-      const previewSha256 = preview !== undefined && preview === originalPreview
-        ? createHash("sha256").update(preview).digest("hex")
-        : undefined;
-      const sha256 = card.skillRequest.sha256 !== undefined
-        && card.skillRequest.sha256 === previewSha256
-        ? card.skillRequest.sha256
-        : undefined;
-      card.skillRequest = {
-        ...card.skillRequest,
-        gist: redactSecretsInText(card.skillRequest.gist),
-        source: card.skillRequest.source === undefined
-          ? undefined
-          : redactSecretsInText(card.skillRequest.source),
-        preview,
-        sha256,
-        warnings: card.skillRequest.warnings.map((warning) => redactSecretsInText(warning)),
-      };
-    }
+    if (card.skillRequest) card.skillRequest = scrubbedSkillRequest(card.skillRequest);
     if (card.profileRequest) {
       const scrubChanges = (changes: ProfileRequestChanges): ProfileRequestChanges => {
         const out = { ...changes };

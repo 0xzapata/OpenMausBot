@@ -1950,6 +1950,18 @@ describe("agents-proxy MCP surface", () => {
     });
     expect(updated.result.content[0].text).toContain("current version remains unchanged");
 
+    expect(manage.inputSchema.properties.references.items.required).toEqual(["path", "content"]);
+    await callTool("skill_manage", {
+      action: "update",
+      skill_name: "file-expense",
+      skill_md: "---\nname: file-expense\ndescription: Files expenses.\n---\n\nFor edge cases, read references/edge-cases.md.\n",
+      references: [{ path: "references/edge-cases.md", content: "# Edge cases\n" }],
+      source: "conversation",
+    });
+    expect(lastSkillStageBody).toMatchObject({
+      references: [{ path: "references/edge-cases.md", content: "# Edge cases\n" }],
+    });
+
     lastSkillStageBody = null;
     const missingTarget = await callTool("skill_manage", {
       action: "update",
