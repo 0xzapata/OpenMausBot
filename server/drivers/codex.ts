@@ -748,8 +748,6 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const approvalMode: ApprovalMode = turn.approvalMode ?? (config.fullAuto ? "full" : "ask");
       for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
         if ("url" in server) continue;
-        // The registry allows the one shared value ("1"); a turn can carry
-        // servers that never passed through it, so the same rule re-checks.
         const reserved = Object.entries(server.env).find(([key, value]) => isReservedMcpEnvEntry(key, value));
         if (reserved) {
           throw new Error(`Custom MCP server “${name}” cannot set reserved environment variable “${reserved[0]}”`);

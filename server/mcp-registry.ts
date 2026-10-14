@@ -54,13 +54,7 @@ export function isHarnessOwnedMcpEnvName(name: string): boolean {
   return name === "ELECTRON_RUN_AS_NODE" || name.startsWith("OMB_") || name.startsWith("OGB_");
 }
 
-/** The harness-owned rule with its one value exception. ELECTRON_RUN_AS_NODE
- * carries no secret; every harness proxy sets it to "1" so the packaged
- * app's own binary can run as node, and Codex resolves each mount's names
- * against the one shared environment its app-server runs in. "1" is exactly
- * what the harness already sets there, so a custom server may share it; any
- * other value would overwrite the harness's own proxies. OMB_/OGB_ names
- * stay reserved at every value — they carry bearers and routing. */
+/** Codex shares one environment across MCP children: OMB_/OGB_ carry bearers, and ELECTRON_RUN_AS_NODE may only repeat the "1" the harness proxies need. */
 export function isReservedMcpEnvEntry(name: string, value: string): boolean {
   if (name === "ELECTRON_RUN_AS_NODE") return value !== "1";
   return isHarnessOwnedMcpEnvName(name);
@@ -213,8 +207,7 @@ function parseStdio(raw: unknown, mutation: boolean, existing?: StoredMcpServer)
   }
   const env = resolveSecrets(incoming, existing && !isRemoteMcpServer(existing) ? existing.env : undefined);
   if (!env.ok) return env;
-  // Judged on resolved values, so a "keep" placeholder for an allowed value
-  // passes and the harness-owned rule sees what would actually run.
+  // Checked after resolving, so a kept write-only value is judged by what would run.
   const invalidEnv = Object.entries(env.values).map(([name, value]) => environmentEntryError(name, value)).find((error) => error !== null);
   if (invalidEnv) return { ok: false, error: invalidEnv };
   return {
