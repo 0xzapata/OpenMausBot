@@ -1,5 +1,3 @@
-// Registry and stylesheet are two halves of one contract: a width listed here
-// without a CSS block silently renders as full width, so it gets a test.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -24,9 +22,16 @@ describe("chat width", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("defaults to full width", () => {
-    expect(DEFAULT_CHAT_WIDTH).toBe("full");
-    expect(readChatWidth()).toBe("full");
+  it("defaults to the standard width", () => {
+    expect(DEFAULT_CHAT_WIDTH).toBe("standard");
+    expect(readChatWidth()).toBe("standard");
+  });
+
+  it("keeps the standard width at the original bubble cap", () => {
+    const body = css.match(/:root\s*\{\s*(--chat-bubble-max[^}]*)\}/)?.[1] ?? "";
+    expect(body).toMatch(/--chat-bubble-max:\s*42rem/);
+    expect(body).toMatch(/--chat-bubble-pct:\s*78%/);
+    expect(body).toMatch(/--chat-card-pct:\s*88%/);
   });
 
   it("gives every non-default width a stylesheet block that sets the bubble variables", () => {
@@ -40,22 +45,21 @@ describe("chat width", () => {
   });
 
   it("registers every stylesheet block", () => {
-    // SAFETY: the assertion only fits toContain()'s parameter type.
-    for (const id of blocks) expect(CHAT_WIDTH_IDS).toContain(id as (typeof CHAT_WIDTH_IDS)[number]);
+    for (const id of blocks) expect<readonly string[]>(CHAT_WIDTH_IDS).toContain(id);
   });
 
   it("stamps a chosen width, remembers it, and clears the attribute for the default", () => {
-    applyChatWidth("compact");
-    expect(document.documentElement.dataset.chatWidth).toBe("compact");
-    expect(readChatWidth()).toBe("compact");
+    applyChatWidth("full");
+    expect(document.documentElement.dataset.chatWidth).toBe("full");
+    expect(readChatWidth()).toBe("full");
     applyChatWidth(DEFAULT_CHAT_WIDTH);
     expect(document.documentElement.dataset.chatWidth).toBeUndefined();
-    expect(readChatWidth()).toBe("full");
+    expect(readChatWidth()).toBe("standard");
   });
 
   it("ignores an unknown stored value", () => {
     localStorage.setItem("omb-chat-width", "huge");
-    expect(readChatWidth()).toBe("full");
+    expect(readChatWidth()).toBe("standard");
   });
 
   it.each(CHAT_WIDTH_IDS)("restores %s before paint without changing other appearance preferences", (id) => {
@@ -63,7 +67,7 @@ describe("chat width", () => {
     localStorage.setItem("omb-color-user-bubbles", "1");
     document.documentElement.dataset.skin = "midnight";
     applyChatWidth(readChatWidth());
-    expect(document.documentElement.dataset.chatWidth).toBe(id === "full" ? undefined : id);
+    expect(document.documentElement.dataset.chatWidth).toBe(id === DEFAULT_CHAT_WIDTH ? undefined : id);
     expect(document.documentElement.dataset.skin).toBe("midnight");
     expect(localStorage.getItem("omb-color-user-bubbles")).toBe("1");
   });
@@ -73,10 +77,10 @@ describe("chat width", () => {
       getItem: () => { throw new Error("blocked"); },
       setItem: () => { throw new Error("quota"); },
     });
-    expect(readChatWidth()).toBe("full");
+    expect(readChatWidth()).toBe("standard");
     expect(() => applyChatWidth("wide")).not.toThrow();
     expect(document.documentElement.dataset.chatWidth).toBe("wide");
-    applyChatWidth("full");
+    applyChatWidth("standard");
     expect(document.documentElement.dataset.chatWidth).toBeUndefined();
   });
 

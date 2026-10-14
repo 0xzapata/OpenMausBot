@@ -12,6 +12,7 @@ import {
   provisionManagedEndpoint,
   sweepManagedEndpointCleanup,
 } from "./endpoints";
+import { registerPushDevice, sendPush, unregisterPushDevice } from "./push";
 import { capacityHealth, reportEndpointAccountProblems, scanTunnelCapacity } from "./tunnel-capacity";
 import {
   createInstallation,
@@ -69,6 +70,7 @@ async function route(
   config: ControlPlaneConfig,
   requestId: string,
   cloudflareFetch: CloudflareFetch,
+  apnsFetch: typeof fetch,
 ) {
   const url = new URL(request.url);
   if (request.method === "OPTIONS") return preflight(request, config);
@@ -130,6 +132,16 @@ async function route(
     }
   }
 
+  if (request.method === "POST" && url.pathname === "/v1/installations/self/push/register") {
+    return registerPushDevice(request, env);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/installations/self/push/unregister") {
+    return unregisterPushDevice(request, env);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/installations/self/push/send") {
+    return sendPush(request, env, apnsFetch, requestId);
+  }
+
   const rotate = url.pathname.match(ROTATE_ROUTE);
   if (request.method === "POST" && rotate) {
     return rotateInstallationCredential(request, rotate[1], env, auth);
@@ -155,7 +167,7 @@ async function route(
   return errorResponse(404, "not_found");
 }
 
-export function createWorker(cloudflareFetch: CloudflareFetch = fetch) {
+export function createWorker(cloudflareFetch: CloudflareFetch = fetch, apnsFetch: typeof fetch = fetch) {
   return {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
       const requestId = crypto.randomUUID();
@@ -187,7 +199,7 @@ export function createWorker(cloudflareFetch: CloudflareFetch = fetch) {
         }
         const boundedRequest = await withBoundedRequestBody(request);
         return secureResponse(
-          await route(boundedRequest, env, ctx, config, requestId, cloudflareFetch),
+          await route(boundedRequest, env, ctx, config, requestId, cloudflareFetch, apnsFetch),
           request,
           config,
           requestId,

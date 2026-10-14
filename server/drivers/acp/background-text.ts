@@ -65,7 +65,7 @@ export function runAcpOneShot(input: AcpOneShotInput): Promise<string> {
       else resolve(output.trim());
     };
     const abort = () => finish(new Error(`${name} background call aborted`));
-    const timer = setTimeout(() => finish(new Error(`${name} background call timed out`)), input.timeoutMs ?? BACKGROUND_TEXT_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(new Error(`${name} background call timed out`)), input.timeoutMs ?? input.options?.timeoutMs ?? BACKGROUND_TEXT_TIMEOUT_MS);
     timer.unref?.();
 
     const send = (message: unknown) => {

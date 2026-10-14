@@ -158,7 +158,7 @@ export function CommandRow({
   );
 }
 
-function ServerEngineInstall({ instance, mode, command }: { instance: InstanceInfo; mode: "install" | "update"; command: string | null }) {
+function ServerEngineInstall({ instance, mode, command, quiet = false }: { instance: InstanceInfo; mode: "install" | "update"; command: string | null; quiet?: boolean }) {
   const { state, dispatch, refreshModels } = useStore();
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -191,7 +191,8 @@ function ServerEngineInstall({ instance, mode, command }: { instance: InstanceIn
         type="button"
         disabled={busy}
         onClick={() => void run()}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-semibold text-white hover:brightness-110 disabled:cursor-wait disabled:opacity-70"
+        className={cn("flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-[12.5px] font-semibold disabled:cursor-wait disabled:opacity-70",
+          quiet ? "bg-control text-ink hover:bg-raised-hover" : "bg-accent text-white hover:brightness-110")}
       >
         {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
         {busy
@@ -210,14 +211,17 @@ function ServerEngineInstall({ instance, mode, command }: { instance: InstanceIn
   );
 }
 
+/** `quiet` keeps an optional update from competing with a card's main action (Sign in). */
 export function EngineUpdateNotice({
   update,
   instance,
   className,
+  quiet = false,
 }: {
   update: NonNullable<InstanceInfo["snapshot"]["update"]>;
   instance?: InstanceInfo;
   className?: string;
+  quiet?: boolean;
 }) {
   return (
     <div
@@ -232,7 +236,7 @@ export function EngineUpdateNotice({
         </div>
       </div>
       {instance?.install?.server
-        ? <ServerEngineInstall instance={instance} mode="update" command={update.command} />
+        ? <ServerEngineInstall instance={instance} mode="update" command={update.command} quiet={quiet} />
         : <CommandRow command={update.command} actionLabel={t("engineSetup.openUpdate")} compact />}
     </div>
   );

@@ -1,19 +1,12 @@
-// How wide a message bubble may grow in the chat column. Pure CSS like fonts:
-// each non-default width is one `:root[data-chat-width=…]` block in styles.css
-// that sets the --chat-* variables the bubbles read; this module only decides
-// which one is active and remembers it. "full" is the default and sets no attribute.
-
-export const CHAT_WIDTH_IDS = ["full", "wide", "compact"] as const;
+export const CHAT_WIDTH_IDS = ["standard", "wide", "full"] as const;
 export type ChatWidthId = (typeof CHAT_WIDTH_IDS)[number];
 
-export const DEFAULT_CHAT_WIDTH: ChatWidthId = "full";
+export const DEFAULT_CHAT_WIDTH: ChatWidthId = "standard";
 
 const KEY = "omb-chat-width";
 
 function isChatWidthId(value: unknown): value is ChatWidthId {
-  // SAFETY: the assertion only satisfies includes()' parameter type; the
-  // check itself is what decides, and a non-member returns false.
-  return CHAT_WIDTH_IDS.includes(value as ChatWidthId);
+  return (CHAT_WIDTH_IDS as readonly unknown[]).includes(value);
 }
 
 function getStore(): Storage | undefined {
@@ -33,13 +26,12 @@ export function readChatWidth(): ChatWidthId {
   }
 }
 
-/** Stamp the width on the document and remember it (main.tsx before first paint, then on each change in Settings). */
 export function applyChatWidth(id: ChatWidthId): void {
   if (id === DEFAULT_CHAT_WIDTH) delete document.documentElement.dataset.chatWidth;
   else document.documentElement.dataset.chatWidth = id;
   try {
     getStore()?.setItem(KEY, id);
   } catch {
-    /* quota / private mode — the width still applies for this session */
+    // Storage can be full or blocked in private mode; the width still applies this session.
   }
 }

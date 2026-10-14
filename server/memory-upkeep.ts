@@ -13,6 +13,7 @@ import { appendMemoryArchive, ARCHIVE_TOPIC, ensureWorkspace, listMemoryTopics, 
 
 export const CAPTURE_MAX_TURNS = 6;
 export const MODEL_TIMEOUT_MS = 60_000;
+export const MAX_TOPIC_CHECKS = 4;
 export const TIDY_CHECK_MS = 10 * 60_000;
 export const MIN_ENTRIES_FOR_CONTRADICTIONS = 5;
 const ARCHIVE_PATH = `memory/${ARCHIVE_TOPIC}`;
@@ -59,6 +60,8 @@ export interface TidyReport {
   deferred: number;
   organized?: number;
   contradictionsChecked: boolean;
+  topicChecks?: number;
+  topicsDeferred?: number;
   note?: string;
 }
 
@@ -72,7 +75,7 @@ export interface CaptureReport {
 }
 
 interface UpkeepState {
-  bots: Record<string, { lastTidy?: TidyReport; lastCapture?: CaptureReport; core?: string[] }>;
+  bots: Record<string, { lastTidy?: TidyReport; lastCapture?: CaptureReport; core?: string[]; topicCursor?: string }>;
 }
 
 const MAX_CORE = 500;
@@ -148,6 +151,24 @@ function takePending(): PendingCapture["batches"] {
   }
 }
 
+function dropPending(botId: string): void {
+  let parsed: Partial<PendingCapture>;
+  try {
+    parsed = JSON.parse(readFileSync(pendingPath(), "utf8")) as Partial<PendingCapture>;
+  } catch {
+    return;
+  }
+  if (!Array.isArray(parsed?.batches)) return;
+  const kept = parsed.batches.filter((batch) => batch?.botId !== botId);
+  if (kept.length === parsed.batches.length) return;
+  try {
+    if (kept.length) writeFileAtomic(pendingPath(), `${JSON.stringify({ batches: kept })}\n`, { mode: 0o600 });
+    else rmSync(pendingPath(), { force: true });
+  } catch {
+    // best effort: a deleted bot's saved turns are refused at capture anyway
+  }
+}
+
 function readRaw(botId: string, relative: string): string | null {
   try {
     return readMemoryText(join(workspaceDir(botId), relative));
@@ -156,9 +177,9 @@ function readRaw(botId: string, relative: string): string | null {
   }
 }
 
-async function askModel(engine: UpkeepEngine, prompt: string): Promise<string | null> {
+async function askModel(engine: UpkeepEngine, prompt: string, timeoutMs = MODEL_TIMEOUT_MS): Promise<string | null> {
   if (!engine.generateText) return null;
-  const expiry = AbortSignal.timeout(MODEL_TIMEOUT_MS);
+  const expiry = AbortSignal.timeout(timeoutMs);
   try {
     const answer = await Promise.race([
       engine.generateText(prompt, { signal: expiry }),
@@ -176,6 +197,7 @@ export interface MemoryUpkeep {
   noteTurn(botId: string, threadId: string, turn: CaptureTurn): void;
   flushThread(threadId: string): void;
   dropBot(botId: string): void;
+  forgetBot(botId: string): void;
   capture(batch: CaptureBatch): Promise<CaptureReport>;
   tidy(botId: string): Promise<TidyReport>;
   status(botId: string): { lastTidy?: TidyReport; lastCapture?: CaptureReport; modelSteps: boolean };
@@ -196,7 +218,9 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
   let paused = false;
   const deferred: CaptureBatch[] = [];
 
-  const record = (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport }) => {
+  const record = (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport; topicCursor?: string }) => {
+    // a capture or tidy that was out when its bot was deleted leaves nothing behind
+    if (!deps.bot(botId)) return;
     const state = loadState();
     state.bots[botId] = { ...state.bots[botId], ...patch };
     saveState(state);
@@ -415,12 +439,42 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     }
     let topicExpired = 0;
     let topicDuplicates = 0;
-    for (const topic of listMemoryTopics(botId)) {
-      if (topic.name === ARCHIVE_TOPIC) continue;
+    let topicSuperseded = 0;
+    let topicDeferred = 0;
+    let topicChecks = 0;
+    let topicsDeferred = 0;
+    let topicCursor = loadState().bots[botId]?.topicCursor;
+    const deadline = Date.now() + MODEL_TIMEOUT_MS;
+    const topics = listMemoryTopics(botId).filter(topic => topic.name !== ARCHIVE_TOPIC).sort((a, b) => a.name.localeCompare(b.name));
+    const cursorAt = topics.findIndex(topic => topic.name === topicCursor) + 1;
+    for (const topic of [...topics.slice(cursorAt), ...topics.slice(0, cursorAt)]) {
       const path = `memory/${topic.name}`;
       const topicBefore = readRaw(botId, path);
       if (topicBefore === null) continue;
-      const topicPlan = planTidy(topicBefore, today);
+      const topicCandidates = contradictionCandidates(topicBefore, today);
+      let topicContradictions: Contradiction[] = [];
+      if (engine?.generateText && topicCandidates.length >= 2) {
+        const remaining = deadline - Date.now();
+        if (topicChecks >= MAX_TOPIC_CHECKS || remaining <= 0) topicsDeferred++;
+        else {
+          topicChecks++;
+          topicCursor = topic.name;
+          const answer = await askModel(engine, contradictionPrompt(topicCandidates), remaining);
+          if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
+          if (readRaw(botId, path) !== topicBefore) {
+            topicsDeferred++;
+            continue;
+          }
+          if (answer !== null) {
+            topicContradictions = parseContradictions(answer, topicCandidates.length);
+            contradictionsChecked = true;
+            if (note?.startsWith("Contradictions are checked from")) note = undefined;
+          } else topicsDeferred++;
+        }
+      }
+      const topicPlan = planTidy(topicBefore, today, topicContradictions, 1);
+      topicSuperseded += topicPlan.superseded.length;
+      topicDeferred += topicPlan.deferred;
       if (!planChanges(topicPlan)) continue;
       const tidied = applyTidy(topicBefore, topicPlan, today);
       writing(botId, () => {
@@ -431,17 +485,20 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       topicExpired += topicPlan.expired.length;
       topicDuplicates += topicPlan.duplicates.length;
     }
+    if (topicsDeferred) note = [note, `${topicsDeferred} topic checks deferred because of the budget, a timeout or concurrent edits.`].filter(Boolean).join(" ");
     const report: TidyReport = {
       at,
       expired: plan.expired.length + topicExpired,
       duplicates: plan.duplicates.length + topicDuplicates,
-      superseded: plan.superseded.length,
-      deferred: plan.deferred,
+      superseded: plan.superseded.length + topicSuperseded,
+      deferred: plan.deferred + topicDeferred,
       ...(organized ? { organized } : {}),
       contradictionsChecked,
+      topicChecks,
+      topicsDeferred,
       ...(note ? { note } : {}),
     };
-    record(botId, { lastTidy: report });
+    record(botId, { lastTidy: report, topicCursor });
     if (report.expired || report.duplicates || report.superseded || organized) log(`memory upkeep: tidied ${bot?.name ?? botId} — ${report.expired} expired, ${report.duplicates} duplicate(s), ${report.superseded} contradicted`);
     return report;
   }
@@ -482,6 +539,15 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     },
     flushThread: (threadId) => buffer.flush(threadId),
     dropBot: (botId) => buffer.dropBot(botId),
+    forgetBot(botId) {
+      buffer.dropBot(botId);
+      for (let i = deferred.length - 1; i >= 0; i--) if (deferred[i]!.botId === botId) deferred.splice(i, 1);
+      dropPending(botId);
+      const state = loadState();
+      if (!state.bots[botId]) return;
+      delete state.bots[botId];
+      saveState(state);
+    },
     capture: (batch) => track(capture(batch)),
     tidy,
     status(botId) {

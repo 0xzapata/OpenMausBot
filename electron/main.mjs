@@ -21,7 +21,7 @@ import {
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
 import { evictStartupCacheOnce } from "./startup-cache-eviction.mjs";
 import { activateExistingWindow, releaseSingleInstanceLock } from "./single-instance.mjs";
-import { pollServerIdentity } from "./server-boot-probe.mjs";
+import { bootFailureMessage, listeningSignal, pollServerIdentity, SERVER_BOOT_TIMEOUT_MS, SERVER_LISTENING_GRACE_MS } from "./server-boot-probe.mjs";
 import { createServerSupervisor } from "./server-supervisor.mjs";
 import { serverChildLaunch } from "./server-child-launch.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
@@ -1302,7 +1302,11 @@ async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmen
   utilityServerExits.set(proc, new Promise((resolve) => {
     resolveServerExit = resolve;
   }));
-  proc.stdout?.on("data", (d) => slog(`[out] ${String(d).trimEnd()}`));
+  const listening = listeningSignal();
+  proc.stdout?.on("data", (d) => {
+    listening.hear(String(d));
+    slog(`[out] ${String(d).trimEnd()}`);
+  });
   proc.stderr?.on("data", (d) => slog(`[err] ${String(d).trimEnd()}`));
   proc.on("message", (message) => {
     if (!serverSupervisor.isCurrent(proc)) return;
@@ -1335,17 +1339,11 @@ async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmen
     pid: () => proc.pid,
     bootTimeoutMs: SERVER_BOOT_TIMEOUT_MS,
     isExited: () => exited || desktopShutdownStarted,
+    isListening: listening.heard,
+    listeningGraceMs: SERVER_LISTENING_GRACE_MS,
   });
   if (identity.outcome === "ready" && serverSupervisor.isCurrent(proc)) return { proc };
-  if (identity.outcome === "exited") {
-    slog(`child on port ${port} exited before answering /api/health`);
-  } else {
-    slog(
-      identity.outcome === "foreign-owner"
-        ? `port ${port} answered health checks from another process`
-        : `child on port ${port} did not answer /api/health within ${SERVER_BOOT_TIMEOUT_MS / 1000}s`,
-    );
-  }
+  slog(bootFailureMessage(port, identity));
   const stopped = await stopUtilityServer(proc);
   if (!stopped) {
     slog(`child on port ${port} did not exit after termination; refusing to start a sibling server`);
@@ -1411,8 +1409,6 @@ function buildErrorPage({ allPortsOccupied }) {
     )
   );
 }
-
-const SERVER_BOOT_TIMEOUT_MS = 60_000;
 
 let cuaReady = Promise.resolve({ mode: "unavailable", reason: "not-started" });
 const androidDevice = createAndroidDeviceController({ resourcesPath: process.resourcesPath });

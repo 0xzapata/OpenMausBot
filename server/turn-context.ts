@@ -1,6 +1,9 @@
 import type { DriverKind } from "./contracts.ts";
+import { replaysTranscriptNatively } from "./runtime/capabilities.ts";
 
-export const NATIVELY_REPLAYING_DRIVER_KINDS: readonly DriverKind[] = ["grok", "openai-compat", "minimax"];
+export function replaysNatively(kind: DriverKind): boolean {
+  return replaysTranscriptNatively(kind);
+}
 
 // rewound and fresh coincide today but stay distinct: rewound also invalidates other instances' cursors.
 export interface TurnContextInput {

@@ -57,6 +57,12 @@ describe("composeEnvelope: assignment with person lineage", () => {
       .toContain("Ownership is yours: results, failures and questions stay in this thread; @Chief is not waiting and will not be resumed.");
   });
 
+  it("tells a bot's assignee to ask its requester by ending the turn, never with coordinate_bots", () => {
+    expect(envelope).toContain("Ask @Chief or anyone above it by ending your turn with the question, never coordinate_bots.");
+    expect(composeEnvelope(assignment({ requester: { kind: "person" } }), names)).not.toContain("never coordinate_bots");
+    expect(composeEnvelope(assignment({ reply: "none", mode: "notify" }), names)).not.toContain("never coordinate_bots");
+  });
+
   it("carries the brief after the harness part, labelled with its author", () => {
     expect(envelope.endsWith("\n\nBrief from @Chief:\nAdd a CSV export to the reports page and push the branch.")).toBe(true);
   });

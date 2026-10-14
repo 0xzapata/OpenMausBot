@@ -43,8 +43,8 @@ describe("full-backup browser state", () => {
   });
 
   it("carries the chat width choice and clears it for older backups", () => {
-    const storage = memory({ "omb-chat-width": "compact" });
-    expect(collectWorkspaceClientState(storage)).toEqual({ "omb-chat-width": "compact" });
+    const storage = memory({ "omb-chat-width": "full" });
+    expect(collectWorkspaceClientState(storage)).toEqual({ "omb-chat-width": "full" });
     applyWorkspaceClientState({ "omb-chat-width": "wide" }, storage);
     expect(storage.getItem("omb-chat-width")).toBe("wide");
     applyWorkspaceClientState({}, storage);

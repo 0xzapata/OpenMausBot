@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { hostTimeout } from "./testing/host-timeout.ts";
 import { freePortBlock } from "./testing/ports.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -259,7 +260,7 @@ describe("goal-driven channel runs", () => {
       const state = (await api("GET", "/api/bots?messages=30")).body;
       const current = state.groups.find((candidate: { id: string }) => candidate.id === room.id);
       return current?.messages.find((message: { kind: string }) => message.kind === "goal.run")?.goalRun;
-    }, { timeout: 10_000 }).toMatchObject({
+    }, { timeout: hostTimeout(10_000) }).toMatchObject({
       status: "completed",
       coordinatorBotId: lead.id,
       turnCount: 3,
@@ -338,7 +339,7 @@ describe("goal-driven channel runs", () => {
           detail: cards[0]?.goalRun?.detail,
           turnCount: cards[0]?.goalRun?.turnCount,
         };
-      }, { timeout: 10_000 }).toEqual({
+      }, { timeout: hostTimeout(10_000) }).toEqual({
         working: false,
         count: 1,
         id: cardId,
@@ -429,7 +430,7 @@ describe("goal-driven channel runs", () => {
             message.text?.includes("reply to:")
           ),
         };
-      }, { timeout: 10_000 }).toEqual({
+      }, { timeout: hostTimeout(10_000) }).toEqual({
         roomWorking: false,
         cards: 1,
         status: "completed",
@@ -596,7 +597,7 @@ describe("goal-driven channel runs", () => {
           roomWorking: current?.working,
           leadBusy: state.bots.find((bot: { id: string }) => bot.id === lead.id)?.busy,
         };
-      }, { timeout: 10_000 }).toEqual({
+      }, { timeout: hostTimeout(10_000) }).toEqual({
         runStatus: "running",
         detached: true,
         activeThreadId: originalThreadId,
@@ -619,7 +620,7 @@ describe("goal-driven channel runs", () => {
           roomWorking: current?.working,
           leadBusy: state.bots.find((bot: { id: string }) => bot.id === lead.id)?.busy,
         };
-      }, { timeout: 10_000 }).toEqual({
+      }, { timeout: hostTimeout(10_000) }).toEqual({
         runStatus: "cancelled",
         runThreadId: backgroundThreadId,
         activeThreadId: originalThreadId,
@@ -686,7 +687,7 @@ describe("goal-driven channel runs", () => {
           roomWorking: current?.working,
           leadBusy: state.bots.find((bot: { id: string }) => bot.id === lead.id)?.busy,
         };
-      }, { timeout: 10_000 }).toEqual({
+      }, { timeout: hostTimeout(10_000) }).toEqual({
         runStatus: "running",
         detached: true,
         activeThreadId: originalThreadId,
@@ -708,7 +709,7 @@ describe("goal-driven channel runs", () => {
           roomWorking: current?.working,
           leadBusy: state.bots.find((bot: { id: string }) => bot.id === lead.id)?.busy,
         };
-      }, { timeout: 10_000 }).toEqual({
+      }, { timeout: hostTimeout(10_000) }).toEqual({
         runStatus: "cancelled",
         runThreadId: backgroundThreadId,
         activeThreadId: originalThreadId,
@@ -779,7 +780,7 @@ describe("goal-driven channel runs", () => {
         const running = calendar.runs.find((run: { id: string }) => run.id === runId);
         backgroundThreadId = running?.threadId ?? "";
         return { status: running?.status, threadId: running?.threadId };
-      }, { timeout: 10_000 }).toMatchObject({ status: "running", threadId: expect.any(String) });
+      }, { timeout: hostTimeout(10_000) }).toMatchObject({ status: "running", threadId: expect.any(String) });
 
       const opened = await api("POST", `/api/groups/${room.id}/tasks/${backgroundThreadId}`);
       expect(opened.status).toBe(200);
@@ -796,7 +797,7 @@ describe("goal-driven channel runs", () => {
           leadBusy: state.bots.find((bot: { id: string }) => bot.id === lead.id)?.busy,
           workerBusy: state.bots.find((bot: { id: string }) => bot.id === worker.id)?.busy,
         };
-      }, { timeout: 10_000 }).toMatchObject({
+      }, { timeout: hostTimeout(10_000) }).toMatchObject({
         activeThreadId: backgroundThreadId,
         roomWorking: true,
         status: "working",
@@ -945,7 +946,7 @@ describe("goal-driven channel runs", () => {
       await expect.poll(async () => {
         const calendar = (await api("GET", "/api/routines")).body;
         return calendar.runs.find((run: { id: string }) => run.id === runId);
-      }, { timeout: 10_000 }).toMatchObject({
+      }, { timeout: hostTimeout(10_000) }).toMatchObject({
         id: runId,
         status: "completed",
         target: "room-goal",
@@ -1035,7 +1036,7 @@ describe("goal-driven channel runs", () => {
       const current = state.groups.find((candidate: { id: string }) => candidate.id === room.id);
       return current?.messages.find((message: { kind: string }) => message.kind === "goal.run")?.goalRun;
       // the failed attempt is retried once, and a retry costs a turn, so the count is two
-    }, { timeout: 10_000 }).toMatchObject({ status: "failed", turnCount: 2 });
+    }, { timeout: hostTimeout(10_000) }).toMatchObject({ status: "failed", turnCount: 2 });
   });
 
   it("validates mode and binds it to the send id", async () => {
@@ -1099,7 +1100,7 @@ describe("goal-driven channel runs", () => {
         working: current?.working,
         sends: userLines.map((message: { sendId?: string }) => message.sendId),
       };
-    }, { timeout: 10_000 }).toEqual({ working: false, sends: [firstSendId, secondSendId] });
+    }, { timeout: hostTimeout(10_000) }).toEqual({ working: false, sends: [firstSendId, secondSendId] });
 
     const state = (await api("GET", "/api/bots?messages=30")).body;
     const current = state.groups.find((candidate: { id: string }) => candidate.id === room.id);

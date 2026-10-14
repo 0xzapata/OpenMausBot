@@ -439,8 +439,8 @@ function ChatWidthRow() {
         value={current}
         aria-label={t("settings.chatWidth.aria")}
         onChange={(event) => {
-          // SAFETY: the options are rendered from CHAT_WIDTH_IDS, so the value is always a member.
-          const id = event.target.value as ChatWidthId;
+          const id = CHAT_WIDTH_IDS.find((width) => width === event.target.value);
+          if (!id) return;
           applyChatWidth(id);
           setCurrent(id);
         }}
