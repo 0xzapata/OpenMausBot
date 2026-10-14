@@ -53,3 +53,15 @@ it("shows omitted notes as searchable and sends a revision when pinning", async 
   await vi.waitFor(() => expect(request.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
   expect(JSON.parse(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body)).toEqual({ pinned: true, expectedRevision: "revision-one" });
 });
+
+it("re-enables controls after refreshing a response without capacity data", async () => {
+  let pinned = false;
+  request.mockImplementation(async (_path: string, init?: RequestInit) => {
+    if (init?.method === "PATCH") { pinned = true; return { entries: [{ ...entry, pinned }] }; }
+    return { entries: [{ ...entry, pinned }], loadedIds: [entry.id] };
+  });
+  await render();
+  flushSync(() => document.querySelector<HTMLButtonElement>('[aria-label="Pin Colour"]')!.click());
+  await vi.waitFor(() => expect(request.mock.calls.length).toBe(3));
+  await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[aria-label="Remove Colour"]')!.disabled).toBe(false));
+});

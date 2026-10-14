@@ -98,6 +98,7 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
       const result = await request();
       if (generation.current !== requestGeneration) return false;
       setEntries(result.entries);
+      setBusyId(null);
       if (result.loadedIds) setLoadedIds(result.loadedIds); else void load();
       return true;
     } catch (cause) {
