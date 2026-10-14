@@ -146,6 +146,8 @@ export interface SendTurnInput {
     dweb?: { url: string };
     /** The user's MCP servers, mounted without any pre-allow; a driver skips a kind it cannot speak. */
     custom?: Record<string, McpServerSpec>;
+    /** Characters of one tool result per `custom` server; 0 = never trim, a missing name = the app default. */
+    customResultBudgets?: Record<string, number>;
   };
   cwd?: string;
   /** Also load the person's own CLI MCP setup (Claude Code user scope, claude.ai connectors). */

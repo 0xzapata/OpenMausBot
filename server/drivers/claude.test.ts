@@ -1711,6 +1711,45 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.mcpConfig.mcpServers.shop).toMatchObject({ command: "npx", args: ["shop"] });
   });
 
+  it("gives each bot server its own result budget, over the app-wide one", async () => {
+    const dump = join(scratch, "gate-own.json");
+    await create(undefined, { FAKE_CLAUDE_DUMP: dump, OMB_MCP_RESULT_BUDGET: "0" });
+
+    await instance.adapter.sendTurn({
+      threadId: "t-gate-own",
+      text: "hi",
+      integrations: {
+        custom: { motion: { command: "effectcraft-mcp", args: [], env: {} }, shop: { command: "npx", args: ["shop"], env: {} } },
+        customResultBudgets: { motion: 40_000 },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.mcpConfig.mcpServers.motion.env.OMB_GATE_BUDGET).toBe("40000");
+    // the others keep the app-wide setting (here: off)
+    expect(seen.mcpConfig.mcpServers.shop).toMatchObject({ command: "npx", args: ["shop"] });
+  });
+
+  it("gates a URL server with its own result limit; other URL servers keep their native connection", async () => {
+    const dump = join(scratch, "gate-own-url.json");
+    await create(undefined, { FAKE_CLAUDE_DUMP: dump });
+
+    await instance.adapter.sendTurn({
+      threadId: "t-gate-own-url",
+      text: "hi",
+      integrations: {
+        custom: { motion: { type: "http", url: "https://motion.example.test/mcp", headers: {} }, docs: { type: "http", url: "https://docs.example.test/mcp", headers: {} } },
+        customResultBudgets: { motion: 40_000 },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.mcpConfig.mcpServers.motion.env.OMB_GATE_BUDGET).toBe("40000");
+    expect(seen.mcpConfig.mcpServers.docs).toEqual({ type: "http", url: "https://docs.example.test/mcp", headers: {} });
+  });
+
   it("leaves an http project server unmounted by the gate rather than mangling it", async () => {
     await create();
     const dump = join(scratch, "gate-http.json");
