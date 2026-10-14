@@ -71,7 +71,8 @@ it("keeps the selected API model for direct, group and scheduled Boat turns and 
     await api("PATCH", "/api/config", { openaiCompat: { key: "synthetic-model-key", url: origin + "/v1", model: "other-default" } });
     const { bot } = await control(["new-bot", "--name", "Boat API fixture"]);
     await control(["set-model", "--bot", bot.id, "--instance", "openaiCompat", "--model", "chosen-vision-model"]);
-    await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", browser: false });
+    // On Ask, so each computer call stops on its card.
+    await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", browser: false, approvalMode: "ask" });
     let group: any;
     for (const scenario of ["direct", "held", "group"]) {
       if (scenario === "group") ({ group } = await api("POST", "/api/groups", { name: "Boat fixture room", memberIds: [bot.id], setup: { bulletin: "", defaultResponder: { kind: "member", botId: bot.id } } }));

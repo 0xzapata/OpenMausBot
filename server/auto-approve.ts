@@ -53,12 +53,12 @@ const LEVEL_RANK: Partial<Record<ApprovalMode, number>> = { ask: 0, edits: 1, au
 /** The level work a bot hands to a teammate starts at, or null to keep the
  * teammate's own. A Chief of Staff's level flows down: the person set it on
  * the Chief so the team's work runs that way, and switching every thread the
- * Chief opens with a teammate back off "Ask for approval" was the friction
- * people reported. Only a Chief passes its level on, only the level of the
+ * Chief opens with a teammate someone set lower was the friction people
+ * reported. Only a Chief passes its level on, only the level of the
  * conversation it delegates from, and only upward: a teammate already on a
  * higher level keeps it, and one on Custom keeps its own config. The level
- * is capped at what the teammate's engine implements (Full or Auto-accept
- * edits are not everywhere), stepping down to the next level it has. A bot
+ * is capped at what the teammate's engine implements (Auto-accept edits is
+ * not everywhere), stepping down to the next level it has. A bot
  * never raises itself this way. */
 export function delegatedApprovalMode(input: {
   senderIsChief: boolean;

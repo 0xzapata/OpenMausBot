@@ -54,6 +54,8 @@ async function policyBot() {
     name: "Hosted policy fixture", requireAvailableModel: true, modelSelection: { instanceId: "claude", model: provider.models.default },
   } });
   expect(created.status, JSON.stringify(created.body)).toBe(201);
+  // Everywhere else bots start at Full access; here Full comes only from the operator's policy.
+  expect(created.body.bot.approvalMode).toBe("ask");
   return policyBotId = created.body.bot.id as string;
 }
 async function policyHealth(enabled: boolean, cookie?: string) {
@@ -233,13 +235,6 @@ describe("hosted bridge in the full server", () => {
       existingTasks = created.body.bot.tasks;
       policyEvidence.push({ newTask: created.body.task, botDefaults: { approvalMode: created.body.bot.approvalMode, autoApprove: created.body.bot.autoApprove, alwaysAllow: created.body.bot.alwaysAllow } });
     }
-    const unsupported = await call("/api/bots", { method: "POST", local: true,
-      body: { name: "Unavailable provider fixture", modelSelection: { instanceId: "fixture", model: "fixture-only" } } });
-    expect(unsupported.status).toBe(201);
-    const rejected = await call(`/api/bots/${unsupported.body.bot.id}/tasks`, { method: "POST", local: true,
-      body: { title: "Unsupported Full", approvalMode: "full" } });
-    expect(rejected.status).toBe(400);
-    expect(rejected.body.error).toContain("provider does not support Full");
   }, 30_000);
   it("fails closed if a configured deployment loses its enterprise hook, with local owner access retained", async () => {
     await restart({ OMB_ENTERPRISE_DIR: join(home, "absent-layer"), OMB_ADMIN_MEMBERSHIP: "portal", OMB_SHARED_WORKSPACE_FULL_ACCESS: "1" });

@@ -45,7 +45,8 @@ it("preserves peer approval outcomes through real HTTP responses and sends no wo
     const from = (await cli("new-bot", "--name", "Approval source")).bot;
     const target = (await cli("new-bot", "--name", "Approval target")).bot;
     target.threadId = target.activeTaskId;
-    await api("PATCH", `/api/bots/${from.id}`, { approvePeerComms: true });
+    // Peer review applies below Full access.
+    await api("PATCH", `/api/bots/${from.id}`, { approvePeerComms: true, approvalMode: "ask" });
     // Reuse the shared launcher's disposable data and restricted environment.
     // The import hook controls only the peer timer, not approval or dispatch.
     await waitForExit(fixture.child, { signal: "SIGTERM" });

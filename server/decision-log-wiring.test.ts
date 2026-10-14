@@ -190,7 +190,7 @@ posixOnly("authorization decisions are logged", () => {
   it(
     "a card and the human's allow write two rows",
     async () => {
-      const bot = await makePermissionBot({ name: "Askme" });
+      const bot = await makePermissionBot({ name: "Askme", approvalMode: "ask" });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "run it" })).status).toBe(202);
 
       const card = await waitForBotCard(bot.id);
@@ -220,7 +220,7 @@ posixOnly("authorization decisions are logged", () => {
   it(
     "a human deny writes its row too",
     async () => {
-      const bot = await makePermissionBot({ name: "Refused" });
+      const bot = await makePermissionBot({ name: "Refused", approvalMode: "ask" });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "run it" })).status).toBe(202);
 
       const card = await waitForBotCard(bot.id);

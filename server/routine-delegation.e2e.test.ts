@@ -151,7 +151,7 @@ describe("routine delegation through the isolated harness", () => {
   }, 60_000);
 
   it("completes the routine when the person denies its hand-off, instead of leaving it waiting", async () => {
-    await api("PATCH", `/api/bots/${source.id}`, { approvePeerComms: true });
+    await api("PATCH", `/api/bots/${source.id}`, { approvePeerComms: true, approvalMode: "ask" });
     const run = await start();
     // The route asks the person before anything is queued, so the call
     // stays open until the card is answered.
@@ -255,7 +255,7 @@ describe("routine delegation through the isolated harness", () => {
   }, 45_000);
 
   it("does not dispatch an approved handoff after the routine was cancelled", async () => {
-    await api("PATCH", `/api/bots/${source.id}`, { approvePeerComms: true });
+    await api("PATCH", `/api/bots/${source.id}`, { approvePeerComms: true, approvalMode: "ask" });
     const run = await start();
     const pending = raw("POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "Produce the fixture report." }, await token(run.threadId));
     await expect.poll(async () => (await messages(run.threadId)).some((message) => message.card?.tool === "delegate_bot"), { timeout: 15_000 }).toBe(true);
