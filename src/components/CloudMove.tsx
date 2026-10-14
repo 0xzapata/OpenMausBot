@@ -84,10 +84,17 @@ function fitNote(overview: CloudMoveOverview | null, server: string, cloud: bool
     ...(fit.maxBytes ? { maxBytes: fit.maxBytes } : {}), ...(fit.largest ? { largest: true as const } : {}), ...(fit.volumeBytes ? { volumeBytes: fit.volumeBytes } : {}) }, server, cloud);
 }
 
+function leftBehindStep(state: CloudMoveState, server: string): string[] {
+  const left = state.leftBehind, path = left?.paths[0];
+  if (!left || !path) return [];
+  const line = t(left.bots === 1 ? "cloudMove.leftBehindFolderOne" : left.bots ? "cloudMove.leftBehindFolders" : "cloudMove.leftBehindFiles", { count: left.bots, path, server });
+  return [state.destination?.kind === "cloud" ? `${line} ${t("cloudMove.leftBehindLend")}` : line];
+}
+
 export function moveNextSteps(state: CloudMoveState): string[] {
   if (state.phase !== "done" || state.action === "restore") return [];
   const server = state.destination?.name || t("cloudMove.thisServer");
-  return [...(state.routines ? [t("cloudMove.doneRoutines", { count: state.routines, server })] : []), t("cloudMove.donePhone", { server })];
+  return [...(state.routines ? [t("cloudMove.doneRoutines", { count: state.routines, server })] : []), ...leftBehindStep(state, server), t("cloudMove.donePhone", { server })];
 }
 
 export function moveView(overview: CloudMoveOverview | null, state: CloudMoveState, { onServerPage = false }: { onServerPage?: boolean } = {}): MoveView {
