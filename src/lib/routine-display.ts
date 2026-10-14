@@ -27,9 +27,12 @@ export function routineDateTime(at: number): string {
   return new Date(at).toLocaleString(activeLocale(), { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+export function routineFinished(routine: Routine): boolean {
+  return routine.schedule.type === "once" && routine.nextRunAt == null && routine.schedule.at <= Date.now();
+}
+
 export function routineScheduleState(routine: Routine): string {
-  // A consumed one-shot has no next date. It is not a paused recurring schedule.
-  if (routine.schedule.type === "once" && routine.nextRunAt == null && routine.schedule.at <= Date.now()) return t("routines.finishedSchedule");
+  if (routineFinished(routine)) return t("routines.finishedSchedule");
   return routine.enabled ? t("routines.activeSchedule") : t("routines.pausedSchedule");
 }
 
@@ -38,10 +41,6 @@ export function routineNextLabel(routine: Routine): string {
   return routine.nextRunAt == null ? t("routines.noNextRun") : t("routines.nextRun", { time: routineDateTime(routine.nextRunAt) });
 }
 
-/** Where a routine runs, in the Computer panel's words. My Cloud is always
- * on, so its routines run on schedule; a desktop starts them while
- * OpenMausBot is open there. A Cloud home offers no Local VM or this
- * computer, so a copied bot's setting reads as My Cloud. */
 export function routineRunsOn({ roomGoal, runOn, computer, cloudHome }: {
   roomGoal: boolean; runOn?: string; computer?: string | null; cloudHome: boolean;
 }): { label: string; hint: string } {

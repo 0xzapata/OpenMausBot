@@ -52,7 +52,6 @@ function StatusIcon({ status }: { status: GroupGoalRunCardData["status"] }) {
   }
 }
 
-/** One durable terminal receipt for a goal-driven channel run. */
 export function GoalRunCard({ message }: { message: Message }) {
   const run = message.goalRun;
   if (!run) {

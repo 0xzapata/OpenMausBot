@@ -1,20 +1,9 @@
-// The job runtime's public types: one record for every hand-off between
-// bots (chat coordination, routines, webhooks, goal runs, external
-// runtimes, one-way notices, consultations), one lifecycle, one wake lane.
-// docs/runtime-contract.md is the contract these types implement; the
-// scenario suite in server/runtime/*.test.ts proves it.
-//
-// Everything here is plain data or a port interface. The runtime itself
-// (runtime.ts) never touches the store (store.ts) of another module and
-// never reads model text to decide anything: lineage, level and outcomes
-// come from the harness's own records.
+// The job runtime's public types: one record for every hand-off between bots, one lifecycle, one wake lane.
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
-
-// ── identity and lineage ───────────────────────────────────────────────
 
 /** Where the work ultimately started. Immutable down the whole tree. */
 export type OriginKind = "person" | "routine" | "outside";
-/** The concrete source behind an outside origin, for framing and audit. */
+/** The concrete source behind an outside origin. */
 export type OriginSource = "chat" | "routine" | "webhook" | "relay" | "external_runtime" | "guest" | "peer" | "api";
 
 export interface Origin {
@@ -22,11 +11,9 @@ export interface Origin {
   source: OriginSource;
   /** The thread, routine or webhook the work came from, when known. */
   ref?: string;
-  /** The person's own request, harness-quoted (at most 400 characters), when
-   * kind is "person". Never model text. */
+  /** The person's own request, harness-quoted (at most 400 characters), when kind is "person". Never model text. */
   quote?: string;
-  /** Who the work is for when a bot acts for a named person (Cloud guest,
-   * external interface with an identity). */
+  /** Who the work is for when a bot acts for a named person. */
   onBehalfOf?: string;
 }
 
@@ -48,15 +35,10 @@ export type DestinationKind = "work_thread" | "standing_thread" | "room_thread";
 
 export interface Assignee {
   botId: string;
-  /** Where the turn runs. `threadId` is empty only on a row the legacy
-   * ledger import (import-legacy.ts) wrote for an item that named no thread
-   * (its target's standing thread at the time): the kind is then
-   * "standing_thread" and the host resolves or refuses it at dispatch.
-   * Nothing else writes an empty thread id. */
+  /** `threadId` is empty only on a legacy-import row that named no thread: the kind is then
+   * "standing_thread" and the host resolves or refuses it at dispatch. */
   destination: { kind: DestinationKind; threadId: string; groupId?: string };
 }
-
-// ── the record ─────────────────────────────────────────────────────────
 
 /** work: do it with your own tools. consult: answer from what you know, act
  * on nothing. notify: one-way, nothing comes back. */
@@ -110,6 +92,9 @@ export interface Assignment {
   brief: string;
   /** The requester's own completion criterion, if it gave one. */
   doneWhen?: string;
+  /** A root that is one step of a room goal run (the run's id): it neither parks nor continues in
+   * place and is not run again after a restart. Never changed after begin. */
+  goalRunId?: string;
   status: Status;
   outcome?: Outcome;
   outcomeDetail?: string;
@@ -119,9 +104,8 @@ export interface Assignment {
   executions: number;
   /** Turns of it a restart cut and ran again in place. */
   restarts: number;
-  /** Set while its next turn follows a restart: "rerun" its own cut turn runs
-   * again; "cut" its turn was cut after handing out work; "teammates" only
-   * work it waits on was cut. Cleared when that turn settles. */
+  /** Set until the turn after a restart settles: "rerun" its cut turn runs again; "cut" it was cut after
+   * handing out work; "teammates" only work it waits on was cut. */
   restart?: "rerun" | "cut" | "teammates";
   createdAt: number;
   startedAt?: number;
@@ -144,11 +128,19 @@ export interface Assignment {
   answer?: string;
   /** On a root only: the budget window since its last durable progress. */
   budgets?: { since: number; requests: number; executions: number; wakes: number };
+  /** While parked on the person's cards (a root): the ids of the cards the
+   * turn left open; the answer arrives when the person acts on them. */
+  cards?: string[];
+  /** The next execution continues the last one in place: after a step cap,
+   * or a wait the host could not hold (a computer seat). Cleared at dispatch. */
+  continuation?: { note: string; handoffPath?: string; count: number };
+  /** While a node continues in place, for the loop guard: `stale` counts consecutive continuations
+   * with no successful tool call; `errors` holds the last three tool error texts. */
+  guard?: { stale: number; errors: string[] };
   /** A peer-review card allowed this before it was sent. */
   approved?: boolean;
   /** A room brief shown once per call: every recipient of that call shares it. */
   batchKey?: string;
-  /** Schema version of the row. */
   version: 1;
 }
 
@@ -157,12 +149,19 @@ export interface TurnEvidence {
   filesChanged?: string[];
   toolCalls?: number;
   summary?: string;
+  /** Tool calls of this execution that returned ok. */
+  okToolCalls?: number;
+  /** The tool error texts of this execution, oldest first, at most 3, each clipped to 200 chars. */
+  errors?: string[];
+  /** Outward actions this execution completed — sends, posts, publishes, commits, pushes, payments —
+   * as short labels ("GMAIL_SEND_EMAIL", "git push", "COMPOSIO_PROXY_EXECUTE"). */
+  outward?: string[];
 }
 
 export type EventKind =
   | "enqueued" | "refused" | "admitted" | "started" | "progress" | "parked" | "answered"
   | "waiting" | "resume_due" | "settled" | "reported" | "woken" | "cancelled"
-  | "restart_reconciled" | "budget" | "stalled";
+  | "restart_reconciled" | "budget" | "stalled" | "continued";
 
 export interface AssignmentEvent {
   id: number;
@@ -187,12 +186,8 @@ export interface InboxItem {
   deliveredAt?: number;
 }
 
-// ── requests into the runtime ──────────────────────────────────────────
-
 export interface EnqueueRequest {
-  /** The requesting conversation's own assignment (a root or a child that is
-   * running); absent when a person, a routine or an external runtime opens
-   * a new root. */
+  /** The requesting conversation's own running assignment; absent when a new root opens. */
   parentId?: string;
   origin: Origin;
   requester: Requester;
@@ -205,11 +200,9 @@ export interface EnqueueRequest {
   /** The requester's own level and, for a Chief lineage, the Chief
    * conversation's level, as the harness knows them. */
   levels: { own: Level; chief?: Level };
-  /** The assignee's engine, for the level cap (shared/approval-mode.ts). */
+  /** The assignee's engine, for the level cap. */
   driverKind?: string;
-  /** A peer-review card allowed this before it was sent. */
   approved?: boolean;
-  /** A room brief shown once per call. */
   batchKey?: string;
 }
 
@@ -217,23 +210,22 @@ export type EnqueueResult =
   | { ok: true; assignment: Assignment; duplicate: boolean }
   | { ok: false; reason: string; outcome: "refused" | "budget" | "duplicate" };
 
-// ── ports the host implements ──────────────────────────────────────────
-
 export interface RunInput {
-  /** Which turn of the node this is: its first; a resume that returns its
-   * settled children's results; its own turn run again after a restart cut
-   * it; or the turn after the person answered its question. */
-  turn: "first" | "resume" | "rerun" | "answered";
+  /** first; resume (returns settled children's results); rerun (after a restart cut it); answered; continued. */
+  turn: "first" | "resume" | "rerun" | "answered" | "continued";
   /** Not the node's first turn (any `turn` but "first"). */
   resumed: boolean;
   /** What the restart did, for the first line of the turn ("" when nothing). */
   restartNote: string;
-  /** The harness-written envelope (envelope.ts) that opens the turn. */
+  /** The harness-written envelope that opens the turn. */
   envelope: string;
   /** The person's answer to the question this assignment was parked on. */
   answer?: string;
   /** The settled children whose results this (resume) turn returns. */
   settled?: Assignment[];
+  /** For a continued turn: why it continues and, after a step cap, where
+   * the steps so far are listed. */
+  continuation?: { note: string; handoffPath?: string };
   level: Level;
   mode: Mode;
 }
@@ -241,7 +233,21 @@ export interface RunInput {
 export type RunResult =
   | { kind: "completed"; text: string; evidence?: TurnEvidence }
   | { kind: "failed"; outcome: Exclude<Outcome, "done" | "needs_input">; text: string; evidence?: TurnEvidence }
-  | { kind: "needs_input"; question: string; evidence?: TurnEvidence };
+  | { kind: "needs_input"; question: string; cards?: string[]; evidence?: TurnEvidence }
+  /** The turn stopped short (a step cap, a seat it could not get) and the
+   * same node continues in place with its next execution. */
+  | { kind: "continue"; text: string; note: string; handoffPath?: string; evidence?: TurnEvidence };
+
+/** How a host-run root turn ended (Runtime.end). */
+export interface EndResult {
+  ok: boolean;
+  text: string;
+  evidence?: TurnEvidence;
+  /** The turn left the person something to act on: it parks until they do. */
+  needsInput?: { question: string; cards?: string[] };
+  /** The turn stopped short and continues in place. */
+  continue?: { note: string; handoffPath?: string };
+}
 
 export interface Owner {
   botId?: string;
@@ -260,9 +266,7 @@ export interface EnvelopeNames {
   thread?: string;
 }
 
-/** What the runtime needs from the server. Every method is synchronous and
- * cheap unless it returns a promise. None may throw into the runtime: a
- * throw is logged and treated as "not now". */
+/** What the runtime needs from the server. No method may throw into the runtime: a throw is logged and read as "not now". */
 export interface TurnRunner {
   /** Recheck addresses and routes right before every dispatch. A string
    * refuses the assignment with that reason. */
@@ -283,6 +287,9 @@ export interface TurnRunner {
   changed(assignments: readonly Assignment[]): void;
   /** Display names for the envelope of a turn (ids are the fallback). */
   names(a: Assignment, parent?: Assignment): EnvelopeNames;
+  /** What the cut turn of this node already did outward, as short labels. Read at open() only: a
+   * turn that acted outward is not run again. Absent or empty: the turn reruns once. */
+  outward?(a: Assignment): string[];
 }
 
 export interface Clock {
@@ -322,8 +329,6 @@ export const DEFAULT_LIMITS: Limits = {
   turnStallMs: 20 * 60_000,
   inputWaitMs: 30 * 60_000,
 };
-
-// ── read models ────────────────────────────────────────────────────────
 
 export interface LiveEdge {
   sourceBotId: string;

@@ -1,6 +1,4 @@
 // @vitest-environment happy-dom
-// A room message uses the same tray, copy control, and error boundary as a
-// 1:1 bubble. One throwing card or markdown node stays in that row.
 import { createElement, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -72,7 +70,6 @@ describe("room message actions", () => {
     expect(html).toContain("Copy message");
     expect(html).toContain("Reply to message");
     expect(html).toContain('aria-haspopup="menu"');
-    // the rest waits in the more menu, as in a 1:1 chat
     expect(html).not.toContain("Show raw markdown");
     expect(html).not.toContain("Pin message");
   });
@@ -107,8 +104,6 @@ describe("room message actions", () => {
       ],
     };
     const html = markup([reply]);
-    // The inline delivery stays inline, and the other file keeps main's
-    // compact beneath-reply gallery rather than a duplicate attachment card.
     expect(html.match(/title="Save a copy"/g)).toHaveLength(1);
     expect(html).toContain(">notes.md<");
     expect(html).not.toContain('aria-label="Save a copy of notes.md"');
@@ -128,6 +123,7 @@ describe("room message boundary", () => {
       createElement("p", null, "still here"),
     )));
     expect(host.textContent).toContain("plain words");
+    expect(host.querySelector(".chat-text")?.className).toContain("max-w-[min(var(--chat-bubble-max),var(--chat-bubble-pct))]");
     expect(host.textContent).toContain("still here");
   });
 });

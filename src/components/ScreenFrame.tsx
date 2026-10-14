@@ -1,9 +1,3 @@
-// A frame of the bot's computer in the transcript. The frame is a screenshot
-// the user often needs to actually read, so it opens in the same viewer as
-// attached images rather than sitting as an inert thumbnail-sized <img>.
-//
-// The pixels always come from the server's image route: live frames and
-// transcript pages carry only a flag, so one path serves both.
 import { useState } from "react";
 import { ZoomIn } from "lucide-react";
 
@@ -11,7 +5,6 @@ import { AttachmentPreviewDialog, type MessageAttachmentContext, type PreviewIma
 import { t } from "@/lib/i18n";
 import type { Message } from "@/state/store";
 
-/** The viewer entry for one frame; the image route doubles as its download. */
 export function screenFramePreview(message: MessageAttachmentContext, mime = "image/png"): PreviewImage {
   const src = `/api/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.messageId)}/image`;
   return {
@@ -22,7 +15,6 @@ export function screenFramePreview(message: MessageAttachmentContext, mime = "im
   };
 }
 
-/** Nothing when the server holds no image for this screen message. */
 export function ScreenFrame({ threadId, message }: { threadId: string; message: Message }) {
   const [open, setOpen] = useState(false);
   if (!message.hasImage && !message.png) return null;

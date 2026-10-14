@@ -22,7 +22,7 @@ vi.mock("@/components/EngineLibrary", () => ({ engineReady: (instance: { snapsho
   instance.snapshot.state === "available" && instance.snapshot.authenticated !== false }));
 import { AppNotices } from "./AppNotices";
 import { CLOUD_NOTICE_DISMISSED } from "./CloudNotice";
-import { CLOUD_INTRO, localDay, STAR_NOTICE } from "@/lib/notices";
+import { PRODUCT_HUNT_NOTICE, PRODUCT_HUNT_UNTIL, PRODUCT_HUNT_URL, CLOUD_INTRO, localDay, STAR_NOTICE } from "@/lib/notices";
 import { track } from "@/lib/analytics";
 import { api } from "@/state/store";
 
@@ -53,9 +53,7 @@ let now: number;
 
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 const render = () => { f.index = 0; f.effects = []; return renderToStaticMarkup(createElement(AppNotices, { viewer, now: () => now })); };
-/** Renders, runs what React runs after each render and lets answers land, until it settles. */
 async function settle(rounds = 4) { for (let i = 0; i < rounds; i++) { render(); f.effects.forEach(effect => effect()); await flush(); } return render(); }
-/** A fresh launch of this window (everything re-read). */
 const launch = () => { f.values = []; return settle(); };
 type Node = ReactElement<Record<string, any>>;
 const nodes = (value: ReactNode): Node[] => {
@@ -84,6 +82,8 @@ beforeEach(() => {
     return f.state.config;
   });
   vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
+  // The Product Hunt card comes first while it lasts; the tests before its own are about the cards after it.
+  storage.set(PRODUCT_HUNT_NOTICE, "1");
   bridges = {
     cloud: { state: vi.fn(async () => account), onState: vi.fn(() => () => {}), offer: vi.fn(async () => offer), begin: vi.fn(async () => account),
       signInAgain: vi.fn(async () => account), connectHome: vi.fn(async () => account) },
@@ -107,14 +107,11 @@ describe("the card after the update", () => {
     expect(html).not.toContain('aria-modal="true"');
     expect(bridges.cloud.offer).toHaveBeenCalled();
     expect(track).toHaveBeenCalledWith("cloud_card_shown", { variant: "signed_out" });
-    // Shown today: counted on this device and in the workspace record, and not again today.
     expect(JSON.parse(storage.get(`${CLOUD_INTRO}:days`)!)).toEqual([localDay(NOW)]);
     expect(hints()).toContain(`${CLOUD_INTRO}:day-1`);
     expect(await settle()).toContain(INTRO);
     expect(await launch()).toBe("");
-    // Not even the star, the same day: the card after the update holds it.
     now = NOW + 3 * 3600_000; expect(await launch()).toBe("");
-    // Tomorrow it shows again; signed in with no plan, without the sign-in link.
     now = NOW + DAY; account = free;
     const again = await launch();
     expect(again).toContain(INTRO); expect(again).not.toContain("Sign in to your Cloud plan");
@@ -134,7 +131,6 @@ describe("the card after the update", () => {
   });
 
   it("never to someone new this launch, who pays or may pay, on a branded build, or a desktop signed in with an organization", async () => {
-    // A brand new install: its first conversation is in this launch.
     expect(await launch()).toBe("");
     returning();
     for (const state of [paid(), paid({ trial: trial("active") }), { ...free, purchase: { state: "confirming" as const } },
@@ -156,7 +152,7 @@ describe("the card after the update", () => {
     expect(track).toHaveBeenCalledWith("cloud_card_action", { action: "start" });
     expect(storage.get(CLOUD_INTRO)).toBe("1"); expect(hints()).toContain(CLOUD_INTRO);
     expect(render()).toBe("");
-    now = NOW + 5 * DAY; storage.clear(); expect(await launch()).not.toContain(INTRO);
+    now = NOW + 5 * DAY; storage.clear(); storage.set(PRODUCT_HUNT_NOTICE, "1"); expect(await launch()).not.toContain(INTRO);
   });
 
   it("Show me how starts the one-step tip; Not now, the X and Escape end it for good, then say where Add a Cloud lives", async () => {
@@ -166,7 +162,7 @@ describe("the card after the update", () => {
     expect(track).toHaveBeenCalledWith("cloud_card_action", { action: "howto" });
     expect(storage.get(CLOUD_INTRO)).toBe("1");
     for (const close of ["Not now", "Dismiss for good", "Escape"]) {
-      storage.clear(); f.state.config.onboarding.hintsSeen = withTourFinished(undefined); now += DAY;
+      storage.clear(); storage.set(PRODUCT_HUNT_NOTICE, "1"); f.state.config.onboarding.hintsSeen = withTourFinished(undefined); now += DAY;
       expect(await launch(), close).toContain(INTRO);
       if (close === "Escape") {
         const card = tree().find(node => node.type === "aside")!;
@@ -194,8 +190,7 @@ describe("the card after the update", () => {
     now = NOW + 3 * DAY;
     const after = await launch();
     expect(after).not.toContain(INTRO); expect(after).toContain(STAR);
-    // Someone who closed the earlier card: one day.
-    storage.clear(); f.state.config.onboarding.hintsSeen = [...withTourFinished(undefined), "pro-introduction-dismissed-v3"];
+    storage.clear(); storage.set(PRODUCT_HUNT_NOTICE, "1"); f.state.config.onboarding.hintsSeen = [...withTourFinished(undefined), "pro-introduction-dismissed-v3"];
     now = NOW + 10 * DAY; expect(await launch()).toContain(INTRO);
     now = NOW + 11 * DAY; expect(await launch()).not.toContain(INTRO);
   });
@@ -225,14 +220,12 @@ describe("the free trial's notice, here and on My Cloud", () => {
     expect(html).toContain("Your free trial ends on"); expect(html).toContain("Includes $5 of Claude credit: $3.20 left.");
     expect(html).toContain("Prefer Personal at $29?");
     expect(bridges.plan.noticeSeen).toHaveBeenCalledOnce();
-    // Main now says it was seen today: still up here, until closed.
     snapshot = { ...snapshot, notice: undefined };
     expect(await settle()).toContain("Your free trial ends on");
     expect(bridges.plan.noticeSeen).toHaveBeenCalledOnce();
     press("Manage subscription"); await flush();
     expect(bridges.plan.manage).toHaveBeenCalledOnce();
     expect(render()).toBe("");
-    // Not due: nothing, and the queue goes on (My Cloud is ready).
     expect(await launch()).not.toContain("Your free trial");
   });
 
@@ -243,15 +236,12 @@ describe("the free trial's notice, here and on My Cloud", () => {
     snapshot = { status: "none", trial: trial("ended", { deleteAt: NOW + 3 * DAY, keep: "checkout" }), notice: "ended" };
     f.state.config.onboarding.hintsSeen = [...withTourFinished(undefined), "cloud-setup-hidden"];
     expect(await launch()).toContain("Your free trial has ended");
-    // Its engine sign-in first.
     f.state.instances = [{ instanceId: "claude", snapshot: { state: "available", authenticated: false } }];
     expect(await launch()).toBe("");
-    // Nothing else of the queue here: no card after the update, no star, no My Cloud card.
     f.state.instances = [{ instanceId: "claude", snapshot: { state: "available", authenticated: true } }];
     snapshot = { status: "none" };
     expect(await launch()).toBe("");
     expect(bridges.cloud.offer).not.toHaveBeenCalled();
-    // A page main refuses: nothing, and not asked again.
     snapshot = new Error("only available in this app's window");
     expect(await launch()).toBe("");
   });
@@ -266,7 +256,6 @@ describe("This computer's My Cloud card and the star", () => {
     expect(bridges.cloud.connectHome).toHaveBeenCalledOnce();
     press("Not now");
     expect(storage.get(CLOUD_NOTICE_DISMISSED)).toBe("1"); expect(hints()).toContain(CLOUD_NOTICE_DISMISSED);
-    // Then the star, on a later launch.
     expect(await launch()).toContain(STAR);
   });
 
@@ -279,5 +268,40 @@ describe("This computer's My Cloud card and the star", () => {
     expect(await launch()).toContain(STAR);
     press("Not now");
     expect(storage.get(STAR_NOTICE)).toBe("1"); expect(await launch()).toBe("");
+  });
+});
+
+describe("the Product Hunt launch card", () => {
+  const PH = "live on Product Hunt";
+  const fresh = () => { storage.delete(PRODUCT_HUNT_NOTICE); };
+
+  it("comes first, for everyone (new or not, any plan), and the upvote opens the launch and ends it for good", async () => {
+    fresh(); account = paid({ machine: ready });
+    const html = await launch();
+    expect(html).toContain(PH); expect(html).toContain("Upvote on Product Hunt");
+    expect(html).not.toContain(STAR); expect(html).not.toContain("Your always-on bots are on My Cloud");
+    press("Upvote on Product Hunt"); await flush();
+    expect(window.ogb?.openExternal).toHaveBeenCalledWith(PRODUCT_HUNT_URL);
+    expect(vi.mocked(track)).toHaveBeenCalledWith("product_hunt_card", { action: "upvote" });
+    expect(storage.get(PRODUCT_HUNT_NOTICE)).toBe("1"); expect(hints()).toContain(PRODUCT_HUNT_NOTICE);
+    expect(await launch()).toContain("Your always-on bots are on My Cloud");
+  });
+
+  it("Not now, the X and Escape end it for good too", async () => {
+    fresh();
+    expect(await launch()).toContain(PH);
+    press("Not now");
+    expect(vi.mocked(track)).toHaveBeenCalledWith("product_hunt_card", { action: "not_now" });
+    expect(storage.get(PRODUCT_HUNT_NOTICE)).toBe("1");
+    expect(await launch()).not.toContain(PH);
+  });
+
+  it("never on a branded build or an organization's desktop, never after the launch window, never over setup or an update", async () => {
+    fresh(); f.brand = "file";
+    expect(await launch()).not.toContain(PH);
+    f.brand = "default"; now = PRODUCT_HUNT_UNTIL;
+    expect(await launch()).not.toContain(PH);
+    now = NOW; f.updater = { status: "available", version: "9.9.9" };
+    expect(await launch()).not.toContain(PH);
   });
 });

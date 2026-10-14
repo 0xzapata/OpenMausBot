@@ -200,7 +200,6 @@ describe("Settings → Appearance", () => {
     expect(html).toContain("as Japanese input does. Ctrl+Enter sends whichever you choose.");
     expect(html).toContain(`<option value="${sendKey}" selected="">${label}</option>`);
     const options = [...html.matchAll(/<option value="(enter|shift-enter|mod-enter)"[^>]*>([^<]*)</g)].map((match) => [match[1], match[2]]);
-    // only the key, so the closed menu fits its 240px column in every language
     expect(options).toEqual([["enter", "Enter"], ["shift-enter", "Shift+Enter"], ["mod-enter", "Ctrl+Enter"]]);
     expect(fixture.setSendKey).not.toHaveBeenCalled();
     expect(fixture.api).not.toHaveBeenCalled();

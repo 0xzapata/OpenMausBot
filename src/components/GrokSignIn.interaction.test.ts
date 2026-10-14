@@ -1,5 +1,3 @@
-// Grok Build's sign-in card, driven like a person would: start, see the code,
-// cancel or fail, and try again, against the engine's own auth routes.
 import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setLocale } from "@/lib/i18n";

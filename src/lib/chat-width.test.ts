@@ -81,7 +81,7 @@ describe("chat width", () => {
   });
 
   it("leaves no hard-coded 42rem bubble cap in the components", () => {
-    for (const f of ["ChatView", "GroupView", "ScreenFrame", "RoutineRunCard", "GoalRunCard"]) {
+    for (const f of ["ChatView", "GroupView", "MessageBoundary", "ScreenFrame", "RoutineRunCard", "GoalRunCard", "widget/WidgetMessage"]) {
       expect(readFileSync(join(root, "components", `${f}.tsx`), "utf8")).not.toMatch(/min\(42rem/);
     }
   });

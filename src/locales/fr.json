@@ -1165,6 +1165,7 @@
   "room.pinHint": "Épingler ce message en haut du groupe",
   "room.fallbackBot": "Bot",
   "room.aBot": "Un bot",
+  "room.memberWorkingElsewhere": "{name} travaille dans un autre fil",
   "room.responder.everyone": "Les messages simples vont à tous les membres du groupe ; les @mentions priment",
   "room.responder.mentions": "Seuls les bots explicitement @mentionnés répondent",
   "room.responder.lead": "Les messages simples sont reçus par {name} ; les @mentions priment",
@@ -1593,5 +1594,11 @@
   "settings.sendKey.subtitle": "Choisissez Shift+Enter ou {key} pour qu'Enter passe plutôt à la ligne, pratique si votre méthode de saisie valide le texte avec Enter, comme pour le japonais. {key} envoie quel que soit votre choix. Sur cet appareil uniquement.",
   "computer.files.homeFolder": "Dossier personnel",
   "computer.files.changeDefaultFolder": "Modifier le dossier par défaut",
-  "computer.files.pinnedFolderHint": "Cette conversation conserve son dossier actuel. Modifiez le dossier par défaut pour les nouvelles conversations."
+  "computer.files.pinnedFolderHint": "Cette conversation conserve son dossier actuel. Modifiez le dossier par défaut pour les nouvelles conversations.",
+  "task.workingElsewhere": "En cours dans d’autres fils : {count}",
+  "room.holds.banner": "Arrêtés par vous : {names}. Mentionnez un bot avec @ ou écrivez resume pour le faire revenir.",
+  "room.holds.resume": "Reprendre {name}",
+  "room.holds.stop": "Arrêter {name}",
+  "room.holds.stopTitle": "Arrêter seulement {name} ; le reste du salon continue",
+  "room.holds.avatarHeld": "{name} — en pause (arrêté par vous)"
 }

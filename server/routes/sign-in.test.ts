@@ -7,7 +7,6 @@ import { createSignInCardRoutes } from "./sign-in-cards.ts";
 import { dispatchRoutes, PASS, type RouteContext } from "./table.ts";
 
 function context(path: string, method = "POST", body: unknown = {}): RouteContext {
-  // These handlers only hand req/res to the injected reader/reply; no sockets.
   return {
     req: {} as IncomingMessage, res: {} as ServerResponse,
     path, method, url: new URL(path, "http://fixture.invalid"),
@@ -21,7 +20,7 @@ describe("sign-in card route", () => {
     const result = { status: 200, body: { resumed: true, [action === "done" ? "done" : "cancelled"]: true } };
     const settle = vi.fn(() => result);
     const ctx = context(`/api/bots/bot-1/sign-in-cards/card-2/${action}`, "POST", { threadId: "thread-3" });
-    expect(await dispatchRoutes([createSignInCardRoutes({ settle })], ctx)).toBe(true);
+    expect(await dispatchRoutes([createSignInCardRoutes({ settle, saveLogin: vi.fn() })], ctx)).toBe(true);
     expect(ctx.readBody).toHaveBeenCalledExactlyOnceWith(ctx.req);
     expect(settle).toHaveBeenCalledExactlyOnceWith("bot-1", "thread-3", "card-2", action === "done" ? "done" : "cancelled");
     expect(ctx.json).toHaveBeenCalledExactlyOnceWith(ctx.res, result.status, result.body);
@@ -30,14 +29,14 @@ describe("sign-in card route", () => {
   it.each([undefined, null, 42])("preserves threadId conversion for %s", async threadId => {
     const settle = vi.fn(() => ({ status: 404, body: { error: "no such sign-in request" } }));
     const ctx = context("/api/bots/b/sign-in-cards/m/done", "POST", { threadId });
-    await createSignInCardRoutes({ settle })(ctx);
+    await createSignInCardRoutes({ settle, saveLogin: vi.fn() })(ctx);
     expect(settle).toHaveBeenCalledExactlyOnceWith("b", String(threadId ?? ""), "m", "done");
   });
 
   it.each([403, 404, 409])("preserves a %s settlement refusal", async status => {
     const result = { status, body: { error: "fixture refusal" } };
     const ctx = context("/api/bots/b/sign-in-cards/m/cancel");
-    await createSignInCardRoutes({ settle: () => result })(ctx);
+    await createSignInCardRoutes({ settle: () => result, saveLogin: vi.fn() })(ctx);
     expect(ctx.json).toHaveBeenCalledExactlyOnceWith(ctx.res, status, result.body);
   });
 
@@ -50,7 +49,7 @@ describe("sign-in card route", () => {
   ])("passes %s %s without reading or settling", async (method, path) => {
     const settle = vi.fn(() => ({ status: 200, body: {} }));
     const ctx = context(path!, method);
-    expect(await createSignInCardRoutes({ settle })(ctx)).toBe(PASS);
+    expect(await createSignInCardRoutes({ settle, saveLogin: vi.fn() })(ctx)).toBe(PASS);
     expect(ctx.readBody).not.toHaveBeenCalled();
     expect(settle).not.toHaveBeenCalled();
     expect(ctx.json).not.toHaveBeenCalled();
@@ -61,7 +60,7 @@ describe("sign-in card route", () => {
     const settle = vi.fn(() => ({ status: 200, body: {} }));
     const ctx = context("/api/bots/b/sign-in-cards/m/done");
     ctx.readBody = vi.fn().mockRejectedValue(error);
-    await expect(createSignInCardRoutes({ settle })(ctx)).rejects.toBe(error);
+    await expect(createSignInCardRoutes({ settle, saveLogin: vi.fn() })(ctx)).rejects.toBe(error);
     expect(settle).not.toHaveBeenCalled();
     expect(ctx.json).not.toHaveBeenCalled();
   });
@@ -158,5 +157,5 @@ it("keeps internal dispatch inside the capability gate with its guarded reader",
   ]) expect(before).toContain(guard);
   expect(call.arguments[0]!.getText(source)).toContain("readBody: readInternalBody");
   expect(call.arguments[0]!.getText(source)).toContain("requestSignIn(internalSender, internalCapability.threadId, site, reason)");
-  expect(text.match(/ROUTES\.push\(createSignInCardRoutes\(\{ settle: settleSignIn \}\)\)/g)).toHaveLength(1);
+  expect(text.match(/ROUTES\.push\(createSignInCardRoutes\(\{ settle: settleSignIn, saveLogin: saveLoginFromCard \}\)\)/g)).toHaveLength(1);
 });
