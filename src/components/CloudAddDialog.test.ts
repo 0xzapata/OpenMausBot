@@ -61,14 +61,12 @@ describe("each view of the buying journey says one thing and offers one next ste
     const plain = text(html);
     for (const word of words) expect(plain, word).toContain(word);
     for (let i = 1; i < words.length; i++) expect(plain.indexOf(words[i - 1]!), words[i]).toBeLessThanOrEqual(plain.indexOf(words[i]!));
-    // One tab stop for the plan picker, on the plan picked.
     expect(html).toContain('aria-checked="true" tabindex="0" data-plan="pro"');
     expect(html).toContain('aria-checked="false" tabindex="-1" data-plan="max"');
     for (const gone of ["Compare plans", "launch", "$89", "Recommended", "AI credit"]) expect(plain).not.toContain(gone);
     button(tree, "Start free trial")!.props.onClick(); expect(handlers.checkout).toHaveBeenCalledOnce();
     tree.find(node => node.props["data-plan"] === "max")!.props.onClick(); expect(handlers.choose).toHaveBeenCalledWith("max");
     button(tree, "Sign in to your Cloud plan")!.props.onClick(); expect(handlers.signIn).toHaveBeenCalledOnce();
-    // Picking a plan rewrites the charge line.
     expect(text(panel({ status: "signed-out" }, TRIAL, { chosen: "personal" }).html)).toContain("Personal starts at $29/month + tax.");
   });
 
@@ -80,11 +78,9 @@ describe("each view of the buying journey says one thing and offers one next ste
     for (const gone of ["free trial", "Today", "reminder", "Sign in to your Cloud plan", "Claude credit"]) expect(plain).not.toContain(gone);
     expect(text(panel(free, PLAIN, { chosen: "max" }).html)).toContain("Get Max · $99/month");
     expect(text(panel(free, { ...PLAIN, refundDays: undefined }).html)).not.toContain("money-back");
-    // A plan the Admin no longer trials shows no trial, while the others do.
     const mixed = { ...TRIAL, plans: [PLANS[0]!, PLANS[1]!, { ...PLANS[2]!, trialDays: undefined }] };
     expect(text(panel(free, mixed, { chosen: "max" }).html)).toContain("Get Max · $99/month");
     expect(text(panel(free, mixed).html)).toContain("Start free trial");
-    // No reminder email from the Admin: no reminder line.
     expect(text(panel(free, { ...TRIAL, reminderDays: undefined }).html)).not.toContain("reminder");
   });
 
@@ -99,9 +95,7 @@ describe("each view of the buying journey says one thing and offers one next ste
 
   it("signing in, then the checkout in the browser, then the payment, then My Cloud starting and ready", () => {
     const signing = panel({ status: "connecting", enrollment: { userCode: "ABCDE-FGHJK", expiresAt: NOW + 600_000 } }, undefined, { offerShown: TRIAL });
-    // A plain sign-in ("Sign in to your Cloud plan") ends at connecting: no trial or checkout follows it.
     expect(text(signing.html)).toContain("Finish in your browser Sign in with your email. Check that your browser shows this code: ABCDE-FGHJK Connect this app. Cancel");
-    // On the way to a checkout, its last step says what comes next.
     const toTrial = panel({ status: "connecting", enrollment: { userCode: "ABCDE-FGHJK", expiresAt: NOW + 600_000 }, checkout: { plan: "pro", startedAt: NOW, signIn: true } }, TRIAL);
     expect(text(toTrial.html)).toContain("ABCDE-FGHJK Connect this app, then start your free trial.");
     button(signing.tree, "Reopen browser")!.props.onClick(); expect(signing.handlers.reopenBrowser).toHaveBeenCalledOnce();
@@ -112,18 +106,14 @@ describe("each view of the buying journey says one thing and offers one next ste
     expect(text(waiting.html)).toContain("Checkout is open in your browser. When you're done, come back here: My Cloud starts by itself.");
     button(waiting.tree, "Reopen checkout")!.props.onClick(); expect(waiting.handlers.checkout).toHaveBeenCalledOnce();
     button(waiting.tree, "Change plan")!.props.onClick(); expect(waiting.handlers.changePlan).toHaveBeenCalledOnce();
-    // Signed in on the way to a checkout: the browser's page after approval has the next step, nothing is open yet; the
-    // dialog never says a checkout is open, and its button opens the same checkout if that page is gone.
     const afterSignIn = panel({ ...free, checkout: { plan: "pro", startedAt: NOW - 60_000, signIn: true } }, TRIAL);
     expect(text(afterSignIn.html)).toContain("Finish in your browser Your browser shows the next step. When you're done, come back here: My Cloud starts by itself.");
     expect(text(afterSignIn.html)).not.toContain("Checkout is open");
     button(afterSignIn.tree, "Start free trial")!.props.onClick(); expect(afterSignIn.handlers.checkout).toHaveBeenCalledOnce();
     expect(text(panel({ ...free, checkout: { plan: "pro", startedAt: NOW - 60_000, signIn: true } }, PLAIN).html)).toContain("Get Pro · $49/month");
-    // 30 minutes on: a trial checkout says the trial hasn't started (it charges nothing); a paid one, that no payment was seen.
     expect(text(panel({ ...free, checkout: { plan: "pro", startedAt: NOW - 31 * 60_000 } }, TRIAL).html)).toContain("Your free trial hasn't started yet. If you finished checkout, it shows up here within a few minutes.");
     expect(text(panel({ ...free, checkout: { plan: "pro", startedAt: NOW - 31 * 60_000 } }, TRIAL).html)).not.toContain("payment");
     expect(text(panel({ ...free, checkout: { plan: "pro", startedAt: NOW - 31 * 60_000 } }, PLAIN).html)).toContain("We haven't seen a payment yet. If you paid, it shows up here within a few minutes.");
-    // A sign-in that ended, or a code that expired, says so with the offer it returns to.
     expect(text(panel({ status: "signed-out", message: "enrollment-expired" }, TRIAL).html)).toContain("The sign-in code expired, so nothing changed. Start again when you're ready.");
     expect(text(panel({ status: "signed-out", message: "enrollment-ended" }, TRIAL).html)).toContain("The sign-in ended before this app was connected, so nothing changed.");
     expect(text(panel({ ...free, purchase: { state: "confirming", tier: "pro" } }, TRIAL).html)).toContain("Payment received Pro · payment received");
@@ -179,7 +169,6 @@ describe("the dialog", () => {
     tree().find(node => node.props["data-plan"] === "pro")!.props.onKeyDown({ key: "ArrowDown", preventDefault: prevent, currentTarget: { parentElement: { querySelector: (selector: string) => selector === '[data-plan="max"]' ? max : null } } });
     expect(prevent).toHaveBeenCalledOnce(); expect(focus).toHaveBeenCalledOnce();
     expect(text(render())).toContain("Max starts at $99/month + tax.");
-    // The checkout opens: the view changes, and its heading takes focus (the button pressed is gone).
     const heading = { focus: vi.fn() };
     vi.stubGlobal("document", { querySelector: (selector: string) => selector === "#cloud-add-title" ? heading : null, activeElement: null });
     button(tree(), "Start free trial")!.props.onClick(); await flush();
@@ -198,7 +187,6 @@ describe("the dialog", () => {
     button(tree(), "Start free trial")!.props.onClick(); await flush();
     expect(text(render())).toContain("Checkout couldn't open. Nothing was charged.");
     button(tree(), "Try again")!.props.onClick(); await settle();
-    // A conflict that changed nothing here (a checkout already being prepared) says so, instead of nothing happening.
     bridge.checkout.mockResolvedValueOnce({ outcome: "conflict", state: free });
     button(tree(), "Start free trial")!.props.onClick(); await flush();
     expect(text(render())).toContain("A checkout is already being prepared. Try again in a moment.");

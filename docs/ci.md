@@ -123,9 +123,6 @@ that passed is still seen. Fix the test, then delete its entry;
 `scripts/testing/ci-retry-list.test.ts` fails on an entry whose test no longer
 exists.
 
-Vitest jobs have the same 35-minute cap on every platform, leaving room for
-setup and normal suite growth. Individual test and request deadlines are unchanged.
-
 Windows runners run the suite about 1.45x slower than Linux. Every test and
 hook timeout doubles there (`server/testing/host-timeout.ts`): the defaults in
 `vite.config.ts`, and a test's own timeout written as `hostTimeout(ms)`. Linux

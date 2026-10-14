@@ -150,7 +150,6 @@ describe("Settings → Engines → setup cards", () => {
     fixture.instances = ["claudeAgent", "codex", "openai-compat"].map((driverKind) => ({
       instanceId: `company.fixture.${driverKind}`, displayName: `Company ${driverKind}`, driverKind, readOnly: true,
       snapshot: { state: "available", authenticated: true }, models: { default: "model", options: [] },
-      // Ignore even accidentally supplied mutation metadata for read-only rows.
       authentication: { method: "device-code", signOut: true }, install: { signInCommand: "fixture login" },
     }));
     const companyOnly = renderToStaticMarkup(createElement(EnginesSettings));
@@ -220,8 +219,6 @@ describe("Settings → Engines → setup cards", () => {
     expect(renderToStaticMarkup(createElement(EnginesSettings))).not.toContain("Sign in with Google");
   });
 
-  // MOCA-292: a key engine has no CLI, so it used to drop off this page the
-  // moment its key was saved, even a mistyped one, with no way back to it.
   it("keeps an API-key engine listed after its key is saved and links to changing the key", () => {
     vi.stubGlobal("window", {});
     vi.stubGlobal("navigator", { userAgent: "Linux" });
@@ -244,13 +241,11 @@ describe("Settings → Engines → setup cards", () => {
     expect(saved).toContain("Change key");
     expect(saved).not.toContain("OpenAI needs an API key");
 
-    // A remote client cannot reach this server's key settings.
     vi.stubGlobal("window", { ogb: { remoteClient: { active: true } } });
     const remote = renderToStaticMarkup(createElement(EnginesSettings));
     expect(remote).toContain("open Settings → API keys on the computer running OpenMausBot");
     expect(remote).not.toContain("Change key");
 
-    // A Company-managed key is not the person's to change.
     vi.stubGlobal("window", {});
     fixture.instances = [{ ...openai({ state: "available", authenticated: true, version: null }), managed: { organizationId: "org", organizationName: "Acme" } }];
     expect(renderToStaticMarkup(createElement(EnginesSettings))).not.toContain("Change key");

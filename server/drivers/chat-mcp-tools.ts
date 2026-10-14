@@ -1,5 +1,5 @@
-// Per-turn MCP transport for the shared Chat Completions runtime. Approval is
-// owned by the caller; only registered, schema-validated calls reach this file.
+// Per-turn MCP transport for the Chat Completions runtime: approval is the caller's, and only
+// registered, schema-validated calls arrive here.
 import { createHash } from "node:crypto";
 import type { ValidateFunction } from "ajv";
 import { stripControlPlaneEnv } from "../config.ts";
@@ -18,38 +18,25 @@ export interface ChatToolDefinition {
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 export interface ChatToolResult { text: string; ok: boolean; images?: ChatImagePart[] }
-/** How one call is shown to the person: the tool named on its approval card
- * and in the transcript, the input previewed there, whether a card is needed
- * at all, and what "Always allow this session" on that card keeps allowed:
- * the exact tool on its exact server, the server as launched (a changed
- * command, URL or credential is another server, as it is a new process to a
- * warm Claude). No grant for the person's own computer, which no engine lets
- * a session-wide allow cover. */
+/** How a call is shown and granted. A grant names the exact tool on the server as launched; the
+ * person's own computer never gets a session-wide one. */
 export interface ChatToolCallView { title: string; input: Record<string, unknown>; ask: boolean; grant?: string }
-/** The transport cannot safely continue this turn. A dispatched operation may
- * already have taken effect, so callers must not retry it through a new round. */
+/** A dispatched operation may already have taken effect: never retry it through a new round. */
 export class ChatToolSessionError extends Error {}
 export interface ChatToolSession {
   definitions: ChatToolDefinition[];
   validate(name: string, args: unknown): void;
-  /** A searched server's search_tools and describe_tool read only its
-   * catalog, so they need no card; call_tool is shown as the tool it runs.
-   * OpenMausBot's own agents server needs none either, as on Claude
-   * (pre-allowed mcp__agents) and Codex (auto-approved mount): the harness
-   * authorizes each of its routes itself. */
+  /** Directory reads and OpenMausBot's own agents server need no card; call_tool shows the tool it runs. */
   view(name: string, args: Record<string, unknown>): ChatToolCallView;
   execute(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ChatToolResult>;
   close(): Promise<void>;
 }
 
 type Server = { command: string; args: string[]; env: Record<string, string> };
-/** A provider-safe tool name: the server's name and the tool's, joined. */
 function chatToolName(server: string, tool: string): string {
   return `${server}_${tool}`.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "mcp_tool";
 }
 const STARTUP_MS = 8_000;
-/** Historic per-call ceiling for a bot's MCP tools; a turn can override it
- * with SendTurnInput.mcpCallTimeoutMs (server config `mcp.callTimeoutMinutes`). */
 const DEFAULT_CALL_MS = 10 * 60_000;
 const FRAME_BYTES = 2 * 1024 * 1024;
 const OUTPUT_BYTES = 50 * 1024;
@@ -64,9 +51,7 @@ function object(value: unknown): value is Record<string, unknown> {
 }
 function aborted(): Error { return new Error("MCP operation cancelled"); }
 
-/** These servers are a chat-runtime bot's tools, the counterpart of an engine
- * CLI's children: the operator's control-plane secrets never ride along. What
- * the server entry itself names is a deliberate grant and is applied last. */
+/** A chat-runtime bot's tools never get the operator's control-plane secrets; the entry's own env is applied last. */
 export function chatMcpEnvironment(serverEnv: Record<string, string>, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source, PATH: augmentedPath() };
   stripControlPlaneEnv(env);
@@ -86,9 +71,7 @@ class ChatMcpClient {
   constructor(server: Server, computerUse = false) {
     this.frameBytes = computerUse ? 32 * 1024 * 1024 : FRAME_BYTES;
     try {
-      // The desktop shell inherits Finder's bare PATH, where `npx`-style
-      // servers cannot find `node` and exit at once. Widen it the way the
-      // Claude and Codex drivers do; a PATH the user set on the server wins.
+      // The desktop shell inherits Finder's bare PATH, where `npx`-style servers cannot find `node`.
       this.child = spawnCli(server.command, server.args, {
         stdio: ["pipe", "pipe", "pipe"], env: chatMcpEnvironment(server.env),
       });
@@ -107,7 +90,6 @@ class ChatMcpClient {
     this.closed = true;
     for (const entry of this.pending.values()) entry.reject(error);
     this.pending.clear();
-    // Capture rejection here; mount/execute finally await close and surface it.
     void this.close().catch(() => {});
   }
 
@@ -117,8 +99,7 @@ class ChatMcpClient {
     for (const entry of this.pending.values()) entry.reject(new Error("MCP session closed"));
     this.pending.clear();
     this.buffer = "";
-    // Confirm within the codebase-default grace: Windows reaps the tree via
-    // taskkill /T, which can exceed shorter budgets on a loaded machine.
+    // Windows reaps the tree via taskkill /T, which can exceed shorter budgets on a loaded machine.
     this.closing = killCliTree(this.child, 5_000).then((stopped) => {
       if (!stopped) throw new Error("MCP server shutdown could not be confirmed; execution outcome may be uncertain");
     });
@@ -178,7 +159,7 @@ class ChatMcpClient {
         };
         const cancel = () => {
           try { this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "Cancelled" } }); }
-          catch { /* cleanup owns transport failure */ }
+          catch {}
           finish(aborted());
         };
         const timer = setTimeout(() => finish(new Error("MCP request timed out; execution outcome may be uncertain")), timeout);
@@ -231,10 +212,7 @@ function boundedText(value: string): string {
   return `${bytes.subarray(0, end).toString()}\n[MCP result truncated at 50KB; request less output.]`;
 }
 
-/** Optional fields a tool documents as "omit to use the default", where a
- * blank string is an error instead. Smaller models fill optional fields with
- * "" rather than leaving them out; dropping the blank restores the documented
- * call. agent_browser_read: "Omit url to read the active tab." */
+/** Smaller models fill optional fields with "" instead of omitting them; for these a blank means omitted. */
 const BUILT_IN_BROWSER_BLANK_MEANS_OMITTED: Record<string, readonly string[]> = {
   agent_browser_read: ["url"],
 };
@@ -252,8 +230,6 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   if (!parsed.ok) throw new Error(parsed.error);
   const scope = parsed.scope;
   const servers: Array<[string, Server]> = [];
-  /** URL servers this runtime searches rather than lists (mcp-directory.ts):
-   * every tool here rides every request, under a 128-tool cap. */
   const searchable = new Set<string>();
   const eligible = (server: string) => scope === undefined || canUseMcpServer(scope, server);
   if (computerUse && integrations?.localComputer && eligible("computer")) servers.push(["computer", integrations.localComputer]);
@@ -288,26 +264,16 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   const registered = new Map<string, { client: ChatMcpClient; server: string; launch: string; builtInBrowser: boolean; agents: boolean; hostComputer: boolean; name: string; schema: ValidateFunction; searched: boolean }>();
   try {
     if (signal.aborted) throw aborted();
-    // Start independent servers concurrently; consume results in config order
-    // so names and collision suffixes remain stable across startup timings.
+    // Concurrent starts, consumed in config order so names and collision suffixes stay stable.
     const mounts = await Promise.allSettled(servers.map(async ([name, descriptor]) => {
       if (signal.aborted || closed) throw aborted();
-      // Every mounted MCP server can return images when the caller enables
-      // image delivery, including custom servers. Text stays bounded below.
       const client = new ChatMcpClient(descriptor, computerUse);
       clients.push(client);
-      // A searched server's three directory tools are already narrowed to
-      // the selection by the proxy, which checks call_tool's target as well.
       const include = (tool: unknown) => scope === undefined || (object(tool) && typeof tool.name === "string"
         && ((searchable.has(name) && isDirectoryTool(tool.name)) || allowsTool(scope, { kind: "mcp", server: name, name: tool.name })));
-      // A searched URL server answers over the internet: its initialize and
-      // whole tools/list get the URL budget; command servers keep theirs.
       const tools = await client.tools(signal, include, searchable.has(name) ? REMOTE_MCP_STARTUP_MS : STARTUP_MS);
-      // Harness mounts are known by the descriptor the harness passed, never
-      // by a name a configured server could also claim.
-      // What the server is, for a grant: hashed, so no credential is kept.
-      // A bridge into a machine minted a fresh bearer this turn, so its
-      // grants last a turn, as a warm engine restarts for it (perTurn).
+      // Harness mounts are known by descriptor, never by a name a configured server could claim. A grant
+      // hashes the descriptor (no credential kept); machine bridges mint a bearer per turn, so theirs last a turn.
       const launch = createHash("sha256").update(JSON.stringify(descriptor)).digest("hex");
       return { name, client, launch, builtInBrowser: descriptor === integrations?.browser, agents: descriptor === integrations?.agents,
         hostComputer: descriptor === integrations?.localComputer && integrations?.localComputer?.scope === "local-computer", tools };
@@ -342,7 +308,6 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
     }
     if (signal.aborted || closed) throw aborted();
   } catch (error) { await close(); throw error; }
-  /** The upstream tool a call runs (see directoryCallTarget). */
   const target = (tool: { name: string; searched: boolean }, args: unknown) => tool.searched ? directoryCallTarget(tool.name, args) : tool.name;
   const validate = (name: string, args: unknown) => {
     if (closed || signal.aborted) throw new ChatToolSessionError("MCP session closed");
@@ -350,9 +315,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
     if (!tool) throw new Error("The requested tool was not advertised for this turn");
     const excluded = (runs: string | undefined) => scope !== undefined && runs !== undefined
       && !allowsTool(scope, { kind: "mcp", server: tool.server, name: runs });
-    // A searched server's directory checks its own tools' arguments and
-    // answers a mistake with guidance: a wrong name or a malformed search
-    // ran nothing, and must not end the turn as a failed tool call.
+      // A directory mistake ran nothing and must not end the turn as a failed call.
     const directory = tool.searched && isDirectoryTool(tool.name);
     if (!directory && excluded(tool.name)) throw new Error("Tool selection excludes this tool");
     omitBlankDefaults(tool.builtInBrowser, tool.name, args);

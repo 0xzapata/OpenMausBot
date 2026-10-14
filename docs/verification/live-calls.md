@@ -27,19 +27,23 @@ is "The call id and the call row" in
   by call id and reads the whole transcript, so a record lists only its own
   call's work, also the steps that land after the row.
 
-## Live calls need Pro
+## Live calls from a phone need Pro
 
-Starting a call needs an active OMB Cloud plan of any tier (Personal, Pro or
-Max). Without one, `POST /api/live/session` answers
-`402 { "error": "Live calls need a Pro plan.", "needsPro": true }` before it
-would ask for a key (`409 needsKey`) and before anything reaches OpenAI, for
-every client; the companion passes it to the phones unchanged. The desktop then
+A call from the desktop app (client `desktop`, or `web` on this computer) is
+free. A call from a phone needs an active OMB Cloud plan of any tier (Personal,
+Pro or Max): a call that comes through the companion (it carries the paired
+device, which the phone cannot choose or drop) or names client `ios`/`android`
+(`liveCallFromPhone` in `server/live-call-controller.ts`). Without one,
+`POST /api/live/session` answers
+`402 { "error": "Live calls from your phone need a Pro plan.", "needsPro": true }`
+before it would ask for a key (`409 needsKey`) and before anything reaches
+OpenAI; the companion passes it to the phones unchanged. The desktop then
 shows the Pro card under the call button instead of the key form, with an offer
 only for someone signed out (signing in first) or free. A payment still being
 linked counts as Pro. While the plan cannot be checked (not read yet, signing
 in, OMB Cloud unreachable, or this computer's sign-in ended) the plan last
 verified decides. A Cloud home always counts. The plan is asked only when a
-call starts, so a plan change never ends a running call. The rule is
+phone's call starts, so a plan change never ends a running call. The rule is
 `liveCallsAllowed` in `electron/pro-plan.mjs`; the design is "Live calls need
 Pro" in the spec above.
 

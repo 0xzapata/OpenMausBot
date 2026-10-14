@@ -17,8 +17,7 @@ const PASSWORD = "fixture-only backup password";
 const SUMMARY = { format: "openmaus.workspace-backup", version: 1, id: UPLOAD_ID, bytes: 4096, bots: 1, conversations: 2, messages: 3 };
 const partEtag = partNumber => `"${partNumber.toString(16).padStart(32, "0")}"`;
 
-// These are synthetic opaque container bytes, not a real encrypted workspace.
-// The real encryption and replacement workflow is tested by the server fixture.
+// Synthetic opaque container bytes; the real encryption and replacement workflow is the server fixture's.
 function archiveChunk(offset, length) {
   const chunk = Buffer.alloc(length, 0xa5);
   if (offset < MAGIC.length) MAGIC.copy(chunk, 0, offset, Math.min(MAGIC.length, offset + length));

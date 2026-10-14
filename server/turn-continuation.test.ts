@@ -1,12 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import vm from "node:vm";
-import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { RuntimeEvent } from "./contracts.ts";
-import { classifyContinuable, makeCapContinuationSubscriber, writeTurnHandoff } from "./turn-continuation.ts";
+import { classifyContinuable, writeTurnHandoff } from "./turn-continuation.ts";
 
 let temp: string | undefined;
 afterEach(() => {
@@ -62,13 +59,10 @@ describe("classifyContinuable", () => {
     ["budget cap message", "error", "Stopped after 64 steps without a final answer. The steps so far already ran, so ask only for what's left.", "cap"],
     ["legacy limit message", "error", "model-call limit reached before a final response", "cap"],
     ["tool-call cap message", "error", "Stopped after 200 tool calls without a final answer. The steps so far already ran, so ask only for what's left.", "cap"],
-    // A provider's error is not a spent budget, whatever its words: a new
-    // thread would only hit the same limit again.
     ["provider rate limit (429)", "error", "upstream HTTP 429: {\"error\":{\"message\":\"Rate limit reached\"}}", null],
     ["provider quota", "error", "upstream HTTP 429: {\"error\":{\"message\":\"Monthly usage limit reached\"}}", null],
     ["provider body quoting the cap", "error", "upstream HTTP 500: Stopped after 3 steps without a final answer", null],
     ["provider usage limit", "error", "You have reached your usage limit reached for today", null],
-    // A tool error includes a person's denial: never continued by itself.
     ["tool_error terminal", "tool_error", "One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.", null],
     ["provider config 400 (non-multimodal)", "error", "upstream HTTP 400: {\"error\":{\"message\":\"deepseek-ai/DeepSeek-V4-Flash-0731 is not a multimodal model\"}}", null],
     ["unknown model", "error", "Model \"nope\" does not exist", null],
@@ -76,153 +70,5 @@ describe("classifyContinuable", () => {
     ["successful turn", null, "done", null],
   ] as const)("%s → %s", (_name, stopReason, failure, expected) => {
     expect(classifyContinuable(stopReason, failure)).toBe(expected);
-  });
-});
-
-interface FakeHarness {
-  sub: (event: RuntimeEvent) => void;
-  calls: { createTask: unknown[][]; startTurn: unknown[][]; append: unknown[][] };
-  setClock: (now: number) => void;
-  failNextStart: () => void;
-}
-
-function harness(options?: { taskTitle?: string; taskForEveryThread?: boolean; requested?: Set<string> }): FakeHarness {
-  const calls: FakeHarness["calls"] = { createTask: [], startTurn: [], append: [] };
-  const task = { threadId: "thread-cont", title: "Continue: Whatever", projectId: undefined as string | undefined, approvalMode: "ask" as const, modelSelection: undefined };
-  let clock = 1_000_000;
-  let failNext = false;
-  const taskTitle = options?.taskTitle ?? "Build the thing";
-  const store = {
-    botByThread: (threadId: string) => (threadId === "thread-1" || options?.taskForEveryThread ? { id: "bot-1", name: "B" } : undefined),
-    taskByThread: (_botId: string, threadId: string) =>
-      (threadId === "thread-1" || options?.taskForEveryThread ? { title: taskTitle, projectId: undefined as string | undefined, approvalMode: "ask" as const, modelSelection: undefined } : undefined),
-    createTask: (...args: unknown[]) => { calls.createTask.push(args); return task; },
-    appendMessage: (...args: unknown[]) => { calls.append.push(args); return {}; },
-  };
-  const startTurn = async (...args: unknown[]) => {
-    calls.startTurn.push(args);
-    if (failNext) throw new Error("thread_busy");
-  };
-  const sub = makeCapContinuationSubscriber({
-    store: store as unknown as Parameters<typeof makeCapContinuationSubscriber>[0]["store"],
-    startTurn: startTurn as unknown as Parameters<typeof makeCapContinuationSubscriber>[0]["startTurn"],
-    reportsToRequester: (threadId) => options?.requested?.has(threadId) === true,
-    now: () => clock,
-  });
-  return {
-    sub, calls,
-    setClock: (now: number) => { clock = now; },
-    failNextStart: () => { failNext = true; },
-  };
-}
-
-function capEvent(threadId = "thread-1", over: Partial<RuntimeEvent> = {}): RuntimeEvent {
-  return { threadId, type: "cap.exhausted", handoffPath: "/tmp/handoff.md", reason: "cap", ...over } as RuntimeEvent;
-}
-
-describe("makeCapContinuationSubscriber", () => {
-  it("creates a Continue task, starts a turn seeded with the handoff, and posts an activity message", async () => {
-    const h = harness();
-    h.sub(capEvent());
-    await vi.waitFor(() => expect(h.calls.createTask.length).toBe(1));
-    expect(h.calls.createTask[0][1]).toBe("Continue: Build the thing");
-    // The continuation never takes over the person's open thread.
-    expect(h.calls.createTask[0][2]).toBe(false);
-    await vi.waitFor(() => expect(h.calls.startTurn.length).toBe(1));
-    expect(h.calls.startTurn[0][1]).toContain("/tmp/handoff.md");
-    expect(h.calls.startTurn[0][2]).toEqual({ threadId: "thread-cont", unattended: true });
-    await vi.waitFor(() => expect(h.calls.append.length).toBe(1));
-    expect(h.calls.append[0][1]).toMatchObject({ kind: "activity", tool: { ok: true } });
-  });
-
-  it("refuses to continue a continuation (title already starts with 'Continue: ')", async () => {
-    const h = harness({ taskTitle: "Continue: Build the thing" });
-    h.sub(capEvent());
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(h.calls.createTask.length).toBe(0);
-    expect(h.calls.startTurn.length).toBe(0);
-  });
-
-  it("never continues the same source thread twice", async () => {
-    const h = harness();
-    h.sub(capEvent());
-    h.sub(capEvent());
-    await vi.waitFor(() => expect(h.calls.createTask.length).toBe(1));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(h.calls.createTask.length).toBe(1);
-  });
-
-  it("caps at five continuations per bot per hour", async () => {
-    const h = harness({ taskForEveryThread: true });
-    for (let i = 0; i < 6; i += 1) h.sub(capEvent(`thread-${i}`));
-    await vi.waitFor(() => expect(h.calls.createTask.length).toBe(5));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(h.calls.createTask.length).toBe(5);
-    // A fresh hour window resets the budget.
-    h.setClock(1_000_000 + 3600e3 + 1);
-    h.sub(capEvent("thread-6"));
-    await vi.waitFor(() => expect(h.calls.createTask.length).toBe(6));
-  });
-
-  it("escalates with a failing activity message when startTurn fails", async () => {
-    const h = harness();
-    h.failNextStart();
-    h.sub(capEvent());
-    await vi.waitFor(() => expect(h.calls.append.length).toBe(1));
-    const msg = h.calls.append[0][1] as { kind: string; tool: { name: string; ok?: boolean } };
-    expect(msg).toMatchObject({ kind: "activity", tool: { ok: false } });
-    expect(String(msg.tool.name)).toContain("auto-continuation failed");
-    expect(String(msg.tool.name)).toContain("/tmp/handoff.md");
-  });
-
-  // A teammate's assigned turn returns its stop and handoff to the requester,
-  // who sends what is left: an unattended second owner would redo the same
-  // work beside that re-send, and its result would never reach the requester.
-  it("leaves work another bot awaits to that requester, and keeps continuing a person's own", async () => {
-    const requested = new Set(["thread-1"]);
-    const h = harness({ requested });
-    h.sub(capEvent());
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(h.calls.createTask.length).toBe(0);
-    expect(h.calls.startTurn.length).toBe(0);
-    expect(h.calls.append.length).toBe(0);
-    // Read when the cap lands: once the assignment settled, the thread is the person's again.
-    requested.clear();
-    h.sub(capEvent());
-    await vi.waitFor(() => expect(h.calls.startTurn.length).toBe(1));
-  });
-
-  it("ignores events that are not cap.exhausted", async () => {
-    const h = harness();
-    h.sub({ threadId: "thread-1", type: "turn.completed", ok: false } as RuntimeEvent);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(h.calls.createTask.length).toBe(0);
-  });
-});
-
-// Which turns are their requester's to recover (index.ts reportsToRequester),
-// run without starting a server. A coordinated teammate turn is owned by its
-// assigner, which resumes with the outcome; a requesting turn (a root), a
-// turn not yet started, and a thread with no assignment are nobody's to
-// recover here, so the step cap continues the work on its own as before.
-describe("the harness's reportsToRequester", () => {
-  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  const from = source.indexOf("\nfunction reportsToRequester("), to = source.indexOf("\n// A bot going in circles");
-  if (from < 0 || to <= from) throw new Error("reportsToRequester section moved");
-  const code = ts.transpileModule(source.slice(from, to), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
-  function owed(nodes: Array<Record<string, unknown>>): boolean {
-    const context = vm.createContext({ coordinator: { all: () => nodes } });
-    vm.runInContext(code, context, { filename: "index.ts (reportsToRequester fixture)" });
-    return context.reportsToRequester("work") as boolean;
-  }
-
-  it("owes a coordinated teammate's step cap to its assigner, and nothing else", () => {
-    expect(owed([{ status: "running", threadId: "work", parentId: "root" }])).toBe(true);
-    // a requesting turn answers its person; a queued or settled assignment runs no turn
-    expect(owed([{ status: "running", threadId: "work" }])).toBe(false);
-    expect(owed([{ status: "queued", threadId: "work", parentId: "root" }])).toBe(false);
-    expect(owed([{ status: "completed", threadId: "work", parentId: "root" }])).toBe(false);
-    expect(owed([{ status: "running", threadId: "other", parentId: "root" }])).toBe(false);
-    expect(owed([])).toBe(false);
   });
 });

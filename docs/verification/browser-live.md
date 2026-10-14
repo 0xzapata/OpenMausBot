@@ -72,6 +72,19 @@ UI and harness, then removes its temporary data; the server log remains.
    time never hands it back while the request is open. **Done** on the card
    (or from a second window) hands the browser back and resumes Pepper with
    “the person finished signing in”; **Cancel** resumes it with “declined”.
+9. Saved logins: on the same card choose **Save a login** and save a test
+   account (fake values) for the test page's host. Pepper resumes and calls
+   `fill_login`; the page's username and password boxes fill, the tool result
+   names only what was filled, and **Settings → Logins** lists the login
+   without its password. Open the same page under another host (a subdomain,
+   or plain http on a non-local address) and call `fill_login` again: it
+   refuses and types nothing. Ask Pepper to take a snapshot and to `eval` the
+   password box's value: both answers show `••••••`.
+10. 1Password (only with a test account and a test vault, never a real one):
+   connect a service account limited to one vault holding a test Login item
+   for the test page's host. Its row appears read-only, marked From 1Password;
+   `fill_login` fills it like a saved login. Unit tests use a fake SDK and
+   reach no network.
 
 Focused automated coverage:
 
@@ -82,7 +95,9 @@ pnpm exec vitest run server/browser-engine.test.ts server/browser-runtime.test.t
   src/lib/browser-input-queue.test.ts src/lib/browser-control.test.ts src/lib/browser-profiles.test.ts \
   src/components/BrowserProfilesManager.test.ts src/components/BrowserViewport.test.ts \
   src/components/BrowserPanel.test.ts src/components/SignInRequestCard.test.ts \
-  server/sign-in-request.e2e.test.ts
+  server/sign-in-request.e2e.test.ts server/login-fill.test.ts server/login-store.test.ts \
+  server/totp.test.ts server/routes/logins.test.ts src/components/LoginsSettings.test.ts \
+  server/saved-login.e2e.test.ts server/onepassword.test.ts scripts/prepare-duckdb.test.mjs
 ```
 
 Those tests cover native transport lifecycle, owner/session scoping, gate races,
