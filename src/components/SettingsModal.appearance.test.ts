@@ -236,6 +236,28 @@ describe("Settings → Appearance", () => {
     expect(fixture.api).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["standard", "Standard"],
+    ["wide", "Wide"],
+    ["full", "Full width"],
+  ])("shows the saved chat width (%s) alongside message colors", (width, label) => {
+    vi.stubGlobal("localStorage", { getItem: (key: string) => key === "omb-chat-width" ? width : null });
+    const html = render();
+    expect(html).toContain('aria-label="Chat width"');
+    expect(html).toContain(`<option value="${width}" selected="">${label}</option>`);
+    for (const option of ["Standard", "Wide", "Full width"]) expect(html).toContain(`>${option}</option>`);
+    expect(html).toContain("Color my messages");
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("finds chat width and message colors in Appearance", () => {
+    const appearance = SECTIONS.find((section) => section.id === "appearance")!;
+    for (const query of ["width", "wide", "full width", "bubble", "color"]) {
+      expect(sectionMatches(appearance, query), query).toBe(true);
+    }
+  });
+
   it("offers the run card visibility toggle in Appearance", () => {
     fixture.showRunCard = true;
     const html = render();
