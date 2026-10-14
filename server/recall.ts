@@ -132,7 +132,6 @@ export function memoryPassages(botId: string, query: string): RecallPassage[] {
   }
   return hits
     .filter((hit) => recalled(hit.file) && enoughMatches(query, hit.snippet))
-    .slice(0, MEMORY_HITS)
     .map((hit) => ({ source: "memory" as const, label: hit.file, at: hit.at, snippet: plain(hit.snippet) }));
 }
 
