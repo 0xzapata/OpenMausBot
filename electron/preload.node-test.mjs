@@ -73,6 +73,12 @@ test("browser control forwards a separate per-device capability, not the cloud g
   ]);
 });
 
+test("account prepare asks for the secure address over its own channel and sends nothing from the page", async () => {
+  const before = invocations.length;
+  await exposed.api.companionAccount.prepare({ endpoint: "https://evil.example.test" });
+  assert.deepEqual(invocations.slice(before), [["companion-account:prepare"]]);
+});
+
 test("onOpenAppSettings subscribes to the exact app:open-settings channel, forwards every emit, and unsubscribes cleanly", () => {
   // Channel contract: electron/main.mjs answers the Preferences… item with
   // webContents.send("app:open-settings"). Listening on any other name would

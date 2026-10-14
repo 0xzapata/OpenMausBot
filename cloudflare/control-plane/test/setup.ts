@@ -10,6 +10,8 @@ declare global {
     interface Env {
       MIGRATION_DB: D1Database;
       TEST_MIGRATIONS: D1Migration[];
+      /** wrangler.jsonc's CLOUDFLARE_ENDPOINT_ACCOUNTS, as JSON. */
+      TEST_PRODUCTION_ENDPOINT_ACCOUNTS: string;
     }
   }
 }

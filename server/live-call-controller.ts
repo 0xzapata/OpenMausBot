@@ -74,9 +74,9 @@ export interface LiveCallDeps {
   personKey?(auth: RequestAuth): string | undefined;
   activity(botId: string, threadId: string): LiveActivity;
   broadcast(frame: { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }): void;
-  /** Whether the person's plan allows a Live call now (server/pro-plan.ts).
-   * Asked when a call starts and never during one: a plan change never cuts
-   * off a running call. */
+  /** Whether the person's plan allows a Live call from a phone now
+   * (server/pro-plan.ts). Asked when a phone's call starts and never during
+   * one: a plan change never cuts off a running call. */
   pro(): boolean;
   settings(): { key: string; voice: string; readTypedReplies: boolean; idleMinutes: number };
   createSession(input: { key: string; sdp: string; botId: string; threadId: string; voice: string }): Promise<{ sessionId: string; sdp: string }>;
@@ -107,12 +107,20 @@ export class LiveCallSignedOutError extends LiveSessionError {
   }
 }
 
-/** Live calls need an active Pro plan (electron/pro-plan.mjs). Refused before
- * the key is asked for: there is no point asking for a key a call cannot use. */
+/** Live calls from a phone need an active Pro plan (electron/pro-plan.mjs);
+ * the desktop app's own calls are free. Refused before the key is asked
+ * for: there is no point asking for a key a call cannot use. */
 export class LiveCallNeedsProError extends LiveSessionError {
   constructor() {
-    super("Live calls need a Pro plan.", 402);
+    super("Live calls from your phone need a Pro plan.", 402);
   }
+}
+
+/** A call from a phone: a paired device the companion vouched for (the
+ * phone cannot choose its device id or drop it), or a phone app by its own
+ * account. Everything else is the desktop app or a browser on this computer. */
+export function liveCallFromPhone(input: { device?: string; client: LiveClient }): boolean {
+  return Boolean(input.device) || input.client === "ios" || input.client === "android";
 }
 
 type AppendKind = "instructions" | "thinking" | "commentary";
@@ -206,7 +214,7 @@ export class LiveCallController {
   async start(input: { auth: RequestAuth; device?: string; botId: string; botName: string; threadId: string; client: LiveClient; sdp: string }): Promise<{ call: LiveCallState; sdp: string }> {
     if (this.call && this.call.state.status !== "ended") throw new LiveCallBusyError({ ...this.call.state });
     if (input.device && this.revokedDevices.has(input.device)) throw new LiveCallSignedOutError();
-    if (!this.deps.pro()) throw new LiveCallNeedsProError();
+    if (liveCallFromPhone(input) && !this.deps.pro()) throw new LiveCallNeedsProError();
     const settings = this.deps.settings();
     const key = settings.key.trim();
     if (!key) throw new LiveSessionError("Add an OpenAI API key to use Live calls.", 409);

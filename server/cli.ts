@@ -13,6 +13,7 @@
 //   openmausbot status
 //   openmausbot login [--email you@example.com]
 //   openmausbot logout
+//   openmausbot run | send | wait | doctor | team apply | export | …  (headless/main.ts)
 //
 // `serve` starts the server, waits for it, and prints a pairing link with a
 // QR code: scan it with the phone or open it on a laptop. `--tailscale` asks
@@ -46,6 +47,7 @@ import { startFleetAgent } from "./fleet-agent.ts";
 import { fleetLayout } from "./fleet.ts";
 import { explainTailscaleFailure, tailscaleServe, tailscaleServeOff, tailscaleStatus, type TailscaleStatus } from "./tailscale.ts";
 import { defaultSetupIo, SetupCancelled, type SetupIo } from "./cli-prompts.ts";
+import { HEADLESS_VERB_NAMES, USAGE } from "./cli-usage.ts";
 import { normalizePhoneOrigin, phonePairingInstructions, runPhoneSetup } from "./cli-phone-setup.ts";
 import type { AppConfig } from "./config.ts";
 import {
@@ -219,77 +221,6 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
   }
   return options;
 }
-
-export const USAGE = `openmausbot — your team of AI bots, ready in a few steps
-
-  openmausbot                         set up once, then open your workspace
-  openmausbot setup [--data-dir DIR]
-  openmausbot start [the same options as serve]
-  openmausbot serve [--port 8799] [--data-dir DIR] [--label NAME]
-                    [--public-url https://host] [--tailscale | --tunnel | --domain HOST] [--no-pair]
-  openmausbot pair  [--label NAME] [--client] [--phone ios|android]
-                    [--public-url https://host]
-  openmausbot sessions [revoke ID]
-  openmausbot status
-  openmausbot login [--email you@example.com]
-  openmausbot logout
-  openmausbot access list | add EMAIL [--chat-only] | remove EMAIL
-  openmausbot service install [--domain HOST | --tunnel | --tailscale] [--port N] [--data-dir DIR] | uninstall
-  openmausbot browser install [--with-deps] | status
-  openmausbot fleet init --domain HOST [--operator USER] | create NAME --admin EMAIL [--member EMAIL] [--brand FILE]
-                    [--anthropic-key-file FILE] [--cap USD] [--license-key KEY] [--memory 1G]
-                  | list | users NAME add|remove EMAIL [--chat-only] | suspend NAME | resume NAME
-                  | delete NAME --yes [--keep-data] | upgrade   (all take --dry-run)
-                  | agent [--socket PATH] [--group USER]   (root; installed by init --operator)
-
-setup   choose AI access and optional phone access; keep existing bots and chats
-start   same as openmausbot: use your saved settings and open the workspace
-serve   starts the server without prompts and prints a pairing link + QR code
-pair    mints a pairing code against a running server (--client: chat only)
-sessions lists paired devices; "sessions revoke ID" signs one out
-status  what the server says about itself
-login   signs this machine in to an OpenMausBot account (an emailed code)
-        and reserves its public address for --tunnel
-logout  releases that address and signs out
-access  who may sign in with an emailed code at /pair: an address or
-        @domain; --chat-only gives chat and approvals without settings.
-        Takes effect at once, no restart.
-service keep the server running across reboots: writes a systemd unit
-        (Linux) or a launchd agent (macOS) for the same serve options and
-        prints the commands that install it. Install the package
-        permanently first (npm install -g openmausbot).
-browser install: the bots' browser engine (agent-browser, pinned) into the
-        data dir, and Chrome for Testing into the user's browser cache.
-        --with-deps also installs
-        the Linux libraries Chrome needs (run as root once). Then run
-        browser install as the user running serve, from that user's home.
-        status: what the current user and data directory have.
-fleet   many client workspaces on one Linux server, each its own account,
-        service, data folder, brand, sign-in list and keys at NAME.HOST
-        behind the system Caddy. Plans are printed unless run as root;
-        --dry-run always prints. Install the package permanently first.
-        init --operator USER also installs the fleet agent, a root service
-        on a Unix socket only USER may open, so the workspace running as
-        USER manages the others from Settings → Installations.
-
---tailscale  serve over your tailnet: Tailscale terminates HTTPS and the
-             link uses this machine's MagicDNS name (needs Tailscale signed in
-             and HTTPS certificates enabled for the tailnet)
---tunnel     serve at a public https://c-… address through a
-             Cloudflare tunnel: no domain, no proxy, no open port. Run
-             \`openmausbot login\` once on this machine first.
---domain     serve at https://HOST on your own domain: a pinned Caddy is
-             downloaded once and run alongside the server, and gets the
-             certificate itself. Point the domain's DNS at this machine and
-             open ports 80 and 443.
-
---no-open   do not open a browser window
---no-pair   skip phone setup and do not print a pairing code
---local     start locally this time, ignoring saved remote-access settings
-
-Install once with \`npm install -g openmausbot\`, then type \`openmausbot\`.
-Or run without a global install: \`npx openmausbot\`. Node 24+ is required.
-`;
 
 /** Terminal in, terminal out; tests substitute all three. */
 export interface CliIo {
@@ -1205,6 +1136,8 @@ export async function runOnboardingCommand(
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
+  // The verbs that drive a running workspace load only when used: serve never pays for them.
+  if (HEADLESS_VERB_NAMES.has(argv[0] ?? "") || (argv[0] === "help" && HEADLESS_VERB_NAMES.has(argv[1] ?? ""))) return (await import("./headless/main.ts")).runHeadless(argv);
   const options = parseArgs(argv);
   if ("error" in options) {
     console.error(`${options.error}\n\n${USAGE}`);

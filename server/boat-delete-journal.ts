@@ -40,7 +40,7 @@ export interface BoatDeletionIdentity {
 
 export interface BoatDeletionOperationReceipt {
   id: string;
-  kind: "box";
+  kind: "sandbox";
   targetId: string;
   status: BoatDeletionStatus;
 }
@@ -384,7 +384,7 @@ function parseOperation(
   if (
     typeof operation.id !== "string"
     || !OPERATION_ID.test(operation.id)
-    || operation.kind !== "box"
+    || operation.kind !== "sandbox"
     || operation.targetId !== boxId
     || typeof operation.status !== "string"
     || !PROVIDER_STATUSES.has(operation.status)

@@ -1,6 +1,9 @@
 #!/usr/bin/env -S node --experimental-strip-types
-// Thin, agent-friendly CLI over the same guarded MCP operations exposed to
-// external clients. It deliberately owns no second API client or wait loop.
+// The openmausbot headless verbs (server/headless/main.ts) for verifying an
+// isolated fixture: every verb, with its flags and its JSON result, plus the
+// fixture launcher and the renderer verbs (`ui`). One difference on purpose:
+// a verb that changes something never runs on a server it merely found, so a
+// recipe cannot reach the person's own app by accident.
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +11,9 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 
-import { handleToolCall, request, validateBaseUrl } from "./mcp-server.ts";
+import { EXIT, HeadlessError } from "../server/headless/args.ts";
+import { runHeadlessCommand } from "../server/headless/main.ts";
+import type { handleToolCall, request } from "./mcp-server.ts";
 import { launchUi, runControlOmbUi } from "./testing/control-omb-ui.ts";
 import { removeTempDir, waitForExit } from "../server/testing/cleanup.ts";
 import { freePortBlock } from "../server/testing/ports.ts";
@@ -19,27 +24,17 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
  * that collides with the starter (#1257). */
 export const FIXTURE_STARTER_BOT_NAME = "Fixture Starter";
 const FAKE_CLI = join(ROOT, "server", "testing", "fake-claude-cli.ts");
-// `ui` verbs never discover anything: each takes the handle its launch printed.
-const MUTATING = new Set([
-  "new-bot", "new-channel", "send", "send-channel", "interrupt", "set-model", "edit",
-  "ui click", "ui type", "ui press", "ui flag", "ui eval",
-]);
 
-export class ControlOmbError extends Error {
-  readonly hint?: string;
-
+/** A control-omb refusal: the headless verbs' own error, with control-omb's (message, hint) shape. */
+export class ControlOmbError extends HeadlessError {
   constructor(message: string, hint?: string) {
-    super(message);
-    this.hint = hint;
+    super(message, EXIT.failed, hint);
   }
 }
 
-type ToolCaller = typeof handleToolCall;
-type Requester = typeof request;
-
 export interface ControlOmbDependencies {
-  callTool?: ToolCaller;
-  request?: Requester;
+  callTool?: typeof handleToolCall;
+  request?: typeof request;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -56,40 +51,44 @@ export const HELP_UI = `renderer (needs a ui launch handle; every verb takes --u
   ui wait-settle --ui HANDLE [--timeout 30]
   ui help`;
 
-export const HELP = `control-omb — verify a running OpenMausBot instance through its shared MCP core
+export const HELP = `control-omb — the openmausbot headless verbs (docs/headless-cli.md), for verifying a fixture
 
-read-only:
-  doctor [--url URL]
-  bots [--url URL]
-  channels [--url URL]
-  models [--url URL]
-  messages --bot ID [--task ID] [--limit 30] [--url URL]
-  messages --channel ID [--task ID] [--limit 30] [--url URL]
-  wait --bot ID [--task ID] [--timeout 30] [--url URL]
-  wait --channel ID [--task ID] [--timeout 30] [--url URL]
+read-only (every verb also takes --url URL):
+  doctor
+  bots
+  channels
+  models
+  messages --bot ID [--task ID] [--limit 30]
+  messages --channel ID [--task ID] [--limit 30]
+  wait --bot ID [--task ID] [--timeout 30] [--for job|turn]
+  wait --channel ID [--task ID] [--timeout 30]
+  export --thread ID --out DIR
+  events --job THREAD_ID --until-settled
 
 mutating (an explicit --url or OPENMAUSBOT_URL/OMB_PORT is required):
-  new-bot --name NAME [--url URL]
-  new-channel --name NAME --members ID,ID [--url URL]
-  send --bot ID --text TEXT [--task ID] [--dry-run] [--url URL]
-  send-channel --channel ID --text TEXT [--task ID] [--dry-run] [--url URL]
-  interrupt --bot ID [--task ID] [--dry-run] [--url URL]
-  interrupt --channel ID [--task ID] [--dry-run] [--url URL]
-  edit --bot ID --message ID --text TEXT [--task ID] [--dry-run] [--url URL]
-  set-model --bot ID --instance ID --model ID [--task ID] [--effort LEVEL] [--dry-run] [--url URL]
+  new-bot --name NAME [--section TEAM]
+  new-channel --name NAME --members ID,ID
+  send --bot ID --text TEXT [--task ID] [--dry-run]
+  send-channel --channel ID --text TEXT [--task ID] [--dry-run]
+  run --bot ID --text TEXT [--wait job|turn|none] [--timeout 5m] [--export DIR]
+  interrupt --bot ID [--task ID] [--tree] [--dry-run]
+  interrupt --channel ID [--task ID] [--dry-run]
+  edit --bot ID --message ID --text TEXT [--task ID] [--dry-run]
+  set-model --bot ID --instance ID --model ID [--task ID] [--effort LEVEL] [--dry-run]
+  team apply FILE [--dry-run | --check]
 
 ${HELP_UI}
 
 isolated fixture:
   node --experimental-strip-types scripts/control-omb.ts launch
 
-Output is JSON. launch and ui launch own a temporary fake-engine server until interrupted.`;
+Output is JSON. wait defaults to 30 seconds here. launch and ui launch own a temporary fake-engine server until interrupted.`;
 
 const commonOptions = {
   url: { type: "string" },
 } satisfies ParseArgsOptionsConfig;
 
-/** Strict flag parsing for one command; `ui` verbs parse their tail the same way. */
+/** Strict flag parsing for one `ui` verb. */
 export function parse(
   command: string,
   args: string[],
@@ -110,50 +109,7 @@ export function parse(
   }
 }
 
-function required(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new ControlOmbError(`${name} is required`);
-  return value.trim();
-}
-
-function positiveInteger(value: unknown, name: string, fallback: number, maximum: number): number {
-  if (value === undefined) return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) {
-    throw new ControlOmbError(`${name} must be an integer from 1 to ${maximum}`);
-  }
-  return parsed;
-}
-
-function configuredUrl(raw: unknown, env: NodeJS.ProcessEnv, requiredForMutation: boolean): string | undefined {
-  const explicit = typeof raw === "string" && raw.trim()
-    ? raw.trim()
-    : env.OPENMAUSBOT_URL?.trim() || (env.OMB_PORT ? `http://127.0.0.1:${env.OMB_PORT}` : "");
-  if (!explicit) {
-    if (requiredForMutation) {
-      throw new ControlOmbError(
-        "mutating commands require an explicit OpenMausBot instance",
-        "start `control-omb launch`, then pass its URL with --url",
-      );
-    }
-    return undefined;
-  }
-  return validateBaseUrl(explicit);
-}
-
-function target(values: Record<string, unknown>): { type: "bot" | "channel"; id: string } {
-  const bot = typeof values.bot === "string" ? values.bot.trim() : "";
-  const channel = typeof values.channel === "string" ? values.channel.trim() : "";
-  if (Boolean(bot) === Boolean(channel)) {
-    throw new ControlOmbError("provide exactly one of --bot ID or --channel ID");
-  }
-  return bot ? { type: "bot", id: bot } : { type: "channel", id: channel };
-}
-
-function dryRun(command: string, values: Record<string, unknown>, tool: string, args: Record<string, unknown>) {
-  return values["dry-run"] === true ? { ok: true, dryRun: true, command, tool, arguments: args } : null;
-}
-
-/** Map friendly CLI commands onto the already-tested MCP tool boundary. */
+/** Run one verb and return its result: the same verbs as `openmausbot`, never on a found server when it changes something. */
 export async function runControlOmb(
   argv: string[],
   dependencies: ControlOmbDependencies = {},
@@ -163,163 +119,13 @@ export async function runControlOmb(
   if (command === "launch") throw new ControlOmbError("launch is available only from the executable CLI");
   // The first positional after `ui` is the verb; its tail is parsed strictly per verb.
   if (command === "ui") return runControlOmbUi(args);
-
-  const env = dependencies.env ?? process.env;
-  const callTool = dependencies.callTool ?? handleToolCall;
-  const requester = dependencies.request ?? request;
-  const mutation = MUTATING.has(command);
-  const call = async (tool: string, input: Record<string, unknown>, rawUrl: unknown) => {
-    const url = configuredUrl(rawUrl, env, mutation);
-    const fetcher = url
-      ? (path: string, options: RequestInit = {}) => requester(path, options, url)
-      : requester;
-    return callTool(tool, input, fetcher);
-  };
-
-  if (command === "doctor") {
-    const values = parse(command, args);
-    const endpoint = configuredUrl(values.url, env, false);
-    const [rawHealth, models] = await Promise.all([
-      call("get_system_health", {}, values.url),
-      call("list_available_models", {}, values.url),
-    ]);
-    const health = rawHealth as { status: string; endpoint?: string; app: string; packaged: boolean };
-    const instances = (models as { instances?: Array<{ instanceId?: string; snapshot?: { state?: string } }> }).instances ?? [];
-    return {
-      ok: health.app === "openmausbot"
-        && instances.some((instance) => instance.snapshot?.state === "available"),
-      health: endpoint ? { ...health, endpoint } : health,
-      availableEngines: instances
-        .filter((instance) => instance.snapshot?.state === "available")
-        .map((instance) => instance.instanceId),
-      instances,
-    };
-  }
-
-  if (command === "bots" || command === "channels" || command === "models") {
-    const values = parse(command, args);
-    const tool = command === "bots" ? "list_bots" : command === "channels" ? "list_channels" : "list_available_models";
-    return call(tool, {}, values.url);
-  }
-
-  if (command === "new-bot") {
-    const values = parse(command, args, {
-      name: { type: "string" },
-      title: { type: "string" },
-      section: { type: "string" },
-    });
-    return call("create_bot", {
-      name: required(values.name, "--name"),
-      ...(values.title ? { title: values.title } : {}),
-      ...(values.section ? { section: values.section } : {}),
-    }, values.url);
-  }
-
-  if (command === "new-channel") {
-    const values = parse(command, args, {
-      name: { type: "string" },
-      members: { type: "string" },
-      section: { type: "string" },
-    });
-    const memberIds = required(values.members, "--members").split(",").map((id) => id.trim()).filter(Boolean);
-    if (!memberIds.length || new Set(memberIds).size !== memberIds.length) {
-      throw new ControlOmbError("--members must contain unique comma-separated bot IDs");
-    }
-    return call("create_channel", {
-      name: required(values.name, "--name"),
-      member_ids: memberIds,
-      ...(values.section ? { section: values.section } : {}),
-    }, values.url);
-  }
-
-  if (command === "send" || command === "send-channel") {
-    const values = parse(command, args, {
-      bot: { type: "string" },
-      channel: { type: "string" },
-      text: { type: "string" },
-      task: { type: "string" },
-      "dry-run": { type: "boolean", default: false },
-    });
-    const expected = command === "send" ? "bot" : "channel";
-    const destination = target(values);
-    if (destination.type !== expected) throw new ControlOmbError(`${command} requires --${expected} ID`);
-    const tool = expected === "bot" ? "send_bot_message" : "send_channel_message";
-    const input = {
-      [`${expected}_id`]: destination.id,
-      text: required(values.text, "--text"),
-      ...(values.task !== undefined ? { task_id: required(values.task, "--task") } : {}),
-    };
-    return dryRun(command, values, tool, input) ?? call(tool, input, values.url);
-  }
-
-  if (command === "edit") {
-    // The rewind a person performs in the composer: edit an earlier user
-    // message, fork the thread there, and answer again. It is the only
-    // mapped way to make the harness REBUILD a thread rather than resume
-    // the provider's session, which is what a replay path needs to be
-    // observable from the control surface at all.
-    const values = parse(command, args, {
-      bot: { type: "string" }, message: { type: "string" }, text: { type: "string" },
-      task: { type: "string" }, "dry-run": { type: "boolean", default: false },
-    });
-    const input = {
-      bot_id: required(values.bot, "--bot"),
-      message_id: required(values.message, "--message"),
-      text: required(values.text, "--text"),
-      ...(values.task !== undefined ? { task_id: required(values.task, "--task") } : {}),
-    };
-    return dryRun(command, values, "edit_bot_message", input) ?? call("edit_bot_message", input, values.url);
-  }
-
-  if (command === "set-model") {
-    const values = parse(command, args, {
-      bot: { type: "string" }, task: { type: "string" }, instance: { type: "string" },
-      model: { type: "string" }, effort: { type: "string" },
-      "dry-run": { type: "boolean", default: false },
-    });
-    const input = {
-      bot_id: required(values.bot, "--bot"),
-      instance_id: required(values.instance, "--instance"),
-      model: required(values.model, "--model"),
-      ...(values.task !== undefined ? { task_id: required(values.task, "--task") } : {}),
-      ...(values.effort !== undefined ? { effort: required(values.effort, "--effort") } : {}),
-    };
-    return dryRun(command, values, "set_bot_model", input) ?? call("set_bot_model", input, values.url);
-  }
-
-  if (command === "wait" || command === "messages" || command === "interrupt") {
-    const values = parse(command, args, {
-      bot: { type: "string" },
-      channel: { type: "string" },
-      task: { type: "string" },
-      timeout: { type: "string" },
-      limit: { type: "string" },
-      "dry-run": { type: "boolean", default: false },
-    });
-    const destination = target(values);
-    const pinned = values.task !== undefined ? { task_id: required(values.task, "--task") } : {};
-    if (command === "wait") {
-      return call("wait_for_conversation", {
-        target_type: destination.type,
-        target_id: destination.id,
-        ...pinned,
-        timeout_seconds: positiveInteger(values.timeout, "--timeout", 30, 120),
-      }, values.url);
-    }
-    if (command === "messages") {
-      const tool = destination.type === "bot" ? "get_bot_messages" : "get_channel_messages";
-      return call(tool, {
-        [`${destination.type}_id`]: destination.id,
-        ...pinned,
-        limit: positiveInteger(values.limit, "--limit", 30, 200),
-      }, values.url);
-    }
-    const tool = "interrupt_conversation";
-    const input = { target_type: destination.type, target_id: destination.id, ...pinned };
-    return dryRun(command, values, tool, input) ?? call(tool, input, values.url);
-  }
-
-  throw new ControlOmbError(`unknown command ${JSON.stringify(command)}`, "run control-omb help");
+  return runHeadlessCommand(argv, {
+    env: dependencies.env ?? process.env,
+    ...(dependencies.callTool ? { callTool: dependencies.callTool } : {}),
+    ...(dependencies.request ? { request: dependencies.request } : {}),
+    requireExplicitForMutations: true,
+    defaultWaitMs: 30_000,
+  });
 }
 
 export interface VerificationServer {
@@ -462,7 +268,10 @@ export async function launchVerificationServer(
       throw new ControlOmbError("Local VM verification requires an explicit loopback Podman machine");
     }
   }
-  const port = await freePortBlock([0, 1]);
+  // OMB_TEST_PORTS=19975-19999 keeps a recipe's fixture in a range of its own:
+  // from the environment it is given, else this process's (a whole suite).
+  const range = /^(\d+)-(\d+)$/.exec((parentEnv.OMB_TEST_PORTS ?? process.env.OMB_TEST_PORTS)?.trim() ?? "");
+  const port = range ? await freePortBlock([0, 1], Number(range[1]), Number(range[2]) - Number(range[1])) : await freePortBlock([0, 1]);
   if (signal?.aborted) throw new ControlOmbError("verification launch cancelled");
   const url = `http://127.0.0.1:${port}`;
   // Native browser daemons use UNIX sockets; a macOS temp home can exceed
@@ -510,7 +319,7 @@ export async function launchVerificationServer(
     OMB_AGENT_BROWSER_PATH: browser.binaryPath,
     AGENT_BROWSER_EXECUTABLE_PATH: browser.executablePath,
   });
-  if (boatFixtureApi) childEnv.OMB_BOX_API = boatFixtureApi;
+  if (boatFixtureApi) childEnv.OMB_BOAT_API = boatFixtureApi;
   if (staticDir) childEnv.OMB_STATIC_DIR = staticDir;
   const child = spawn(process.execPath, verificationServerArgs(childEnv), {
     cwd: ROOT,
@@ -595,7 +404,7 @@ export async function launchVerificationServer(
 export function controlResultSucceeded(command: string, result: unknown): boolean {
   if (command === "doctor") return (result as { ok?: unknown })?.ok === true;
   if (command === "wait") return (result as { status?: unknown })?.status === "settled";
-  if (command === "ui") return (result as { ok?: unknown })?.ok !== false;
+  if (command === "ui" || command === "run" || command === "team") return (result as { ok?: unknown })?.ok !== false;
   return true;
 }
 
@@ -660,7 +469,7 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    const failure = error instanceof ControlOmbError
+    const failure = error instanceof HeadlessError
       ? { ok: false, error: error.message, ...(error.hint ? { hint: error.hint } : {}) }
       : { ok: false, error: error instanceof Error ? error.message : String(error) };
     process.stderr.write(`${JSON.stringify(failure, null, 2)}\n`);

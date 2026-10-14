@@ -20,6 +20,9 @@ export const MANAGED_COMPANION_ENDPOINT_FIELD = "managedCompanionEndpointUrl";
 export const MANAGED_COMPANION_TOKEN_FIELD = "managedCompanionConnectorToken";
 export const MANAGED_COMPANION_ORIGIN_VERSION_FIELD = "managedCompanionOriginVersion";
 export const MANAGED_COMPANION_ORIGIN_VERSION = 2;
+/** When an address nothing needs is given back (epoch ms). It belongs to the
+ * address, so saving or clearing the address clears it too. */
+export const MANAGED_COMPANION_RELEASE_AT_FIELD = "managedCompanionReleaseAt";
 
 const TOKEN_FILE_PATTERN = /^connector-([1-9][0-9]*)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.token$/;
 const TOKEN_MIN_BYTES = 40;
@@ -86,12 +89,14 @@ export function withManagedCompanionTunnelAccess(credentials, provision) {
   if (!endpoint || !validConnectorToken(token)) {
     throw new Error("The companion service returned an invalid managed endpoint");
   }
-  return {
+  const next = {
     ...credentials,
     [MANAGED_COMPANION_ENDPOINT_FIELD]: endpoint,
     [MANAGED_COMPANION_TOKEN_FIELD]: token,
     [MANAGED_COMPANION_ORIGIN_VERSION_FIELD]: MANAGED_COMPANION_ORIGIN_VERSION,
   };
+  delete next[MANAGED_COMPANION_RELEASE_AT_FIELD];
+  return next;
 }
 
 export function withoutManagedCompanionTunnelAccess(credentials) {
@@ -99,6 +104,7 @@ export function withoutManagedCompanionTunnelAccess(credentials) {
   delete next[MANAGED_COMPANION_ENDPOINT_FIELD];
   delete next[MANAGED_COMPANION_TOKEN_FIELD];
   delete next[MANAGED_COMPANION_ORIGIN_VERSION_FIELD];
+  delete next[MANAGED_COMPANION_RELEASE_AT_FIELD];
   return next;
 }
 
