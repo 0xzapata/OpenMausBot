@@ -11,8 +11,8 @@ import { openStartupModelCatalog, writeStartupModelCache } from "../startup-mode
 import { writeFileAtomic, writeFileAtomicIfChanged } from "../atomic.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { claudeAuthStatus } from "./claude-auth-status.ts";
 import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
-import { hostTimeZone } from "../turn-clock.ts";
 import { ClaudeLoginController } from "./claude-login-auth.ts";
 
 import type {
@@ -33,6 +33,8 @@ import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { askInputSummary, commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS, USAGE_LIMIT } from "./retry.ts";
+import { claudeLimitRefusal, claudeUsageLimit, claudeLimitMessage, type ClaudeLimit } from "./claude-limits.ts";
+import { TEAM_TOOLS_FAILED, teamToolsFailed } from "./team-tools.ts";
 import { sessionIdlePolicy } from "./session-idle.ts";
 import { parseVersionTriple, versionAtLeast } from "./acp/core.ts";
 import {
@@ -44,6 +46,7 @@ import {
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { runKeepWarmPing, type KeepWarmContract } from "./claude-keepwarm.ts";
+import { BACKGROUND_CALL_TIMEOUT_MS, backgroundCallArgs, spawnBackgroundCall } from "./claude-background.ts";
 import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
@@ -56,48 +59,6 @@ import {
   questionChoices,
   type AskQuestion,
 } from "../../shared/ask-question.ts";
-
-/** Whether `claude` is signed in, per the CLI's own `auth status`: credential storage varies by
- * platform (Keychain, a JSON file) and presence checks accept stale credentials. */
-function claudeAuthStatus(
-  cli: string,
-  env: NodeJS.ProcessEnv,
-  run: typeof execCli = execCli,
-): Promise<{ authenticated: boolean; account?: ProviderSnapshot["account"] }> {
-  return new Promise((resolve) => {
-    run(cli, ["auth", "status", "--json"], { timeout: 8000, maxBuffer: 65_536, env }, (_error, stdout) => {
-      try {
-        const status: unknown = JSON.parse(stdout);
-        if (!status || typeof status !== "object" || !("loggedIn" in status) || status.loggedIn !== true) {
-          return resolve({ authenticated: false });
-        }
-        const identity = status as { email?: unknown; orgName?: unknown; authMethod?: unknown };
-        const boundedText = (value: unknown, max: number): string | undefined =>
-          typeof value === "string" && value.trim().length > 0 && value.length <= max && !/[\p{Cc}\p{Cf}]/u.test(value)
-            ? value.trim() : undefined;
-        const candidateEmail = boundedText(identity.email, 254);
-        const email = candidateEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidateEmail) ? candidateEmail : undefined;
-        const organization = boundedText(identity.orgName, 160);
-        const account = {
-          ...(email ? { email } : {}),
-          ...(organization ? { organization } : {}),
-          ...(identity.authMethod === "api_key" ? { method: "api-key" as const } : {}),
-        };
-        resolve({ authenticated: true, ...(Object.keys(account).length ? { account } : {}) });
-      } catch {
-        resolve({ authenticated: false });
-      }
-    });
-  });
-}
-
-export async function claudeSignedIn(
-  cli: string,
-  env: NodeJS.ProcessEnv,
-  run: typeof execCli = execCli,
-): Promise<boolean> {
-  return (await claudeAuthStatus(cli, env, run)).authenticated;
-}
 
 /** Parent-session credentials/routing a named account must not inherit. */
 export const CLAUDE_ACCOUNT_ENV_KEYS = [
@@ -145,63 +106,6 @@ export function claudeVersionTooOld(
   return /\bClaude Code v?\d+(?:\.\d+)+ does not support this model\b/i.test(text);
 }
 
-export interface ClaudeLimit {
-  /** the CLI's rateLimitType: five_hour, seven_day, seven_day_opus, seven_day_sonnet,
-   * seven_day_overage_included or overage (2.1.295) */
-  window: string | null;
-  /** epoch seconds */
-  resetsAt: number | null;
-}
-
-/** The window refusing this account per the CLI's `rate_limit_info` ("allowed", "allowed_warning",
- * "rejected"; on `rate_limit_event` since 2.1.272 and on the refused call's `api_error_params` since
- * 2.1.295), or null. A rejected window with extra usage in use still runs the turn on credits. */
-export function claudeLimitRefusal(info: unknown): ClaudeLimit | null {
-  if (!info || typeof info !== "object") return null;
-  const { status, rateLimitType, resetsAt, isUsingOverage } = info as Record<string, unknown>;
-  if (status !== "rejected" || isUsingOverage === true) return null;
-  return {
-    window: typeof rateLimitType === "string" ? rateLimitType : null,
-    resetsAt: typeof resetsAt === "number" && Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null,
-  };
-}
-
-/** The CLI's api-error frame for a usage-limit refusal: `api_error: "usage_limit_reached"` (2.1.295),
- * the words ("You've hit your weekly limit · resets …"), or an earlier refusing `rate_limit_event`.
- * It outranks whatever else the frame says: 2.1.272 answered a limited account with "does not
- * support this model". */
-export function claudeUsageLimit(
-  frame: { error?: unknown; is_api_error_message?: unknown; api_error?: unknown },
-  text: string,
-  refused = false,
-): boolean {
-  if (frame.is_api_error_message !== true && typeof frame.error !== "string") return false;
-  return refused || frame.api_error === "usage_limit_reached" || USAGE_LIMIT.test(text);
-}
-
-const CLAUDE_LIMIT_NAMES: Record<string, string> = {
-  five_hour: "5-hour limit",
-  seven_day: "weekly limit",
-  seven_day_opus: "weekly Opus limit",
-  seven_day_sonnet: "weekly Sonnet limit",
-};
-
-export function claudeLimitMessage(limit: ClaudeLimit | null, said?: string, now = Date.now(), timeZone = hostTimeZone()): string {
-  const name = limit?.window && Object.hasOwn(CLAUDE_LIMIT_NAMES, limit.window) ? CLAUDE_LIMIT_NAMES[limit.window] : "usage limit";
-  const meanwhile = /^seven_day_(?:opus|sonnet)$/.test(limit?.window ?? "") ? "choose another model for this bot" : "switch this bot to another engine or Claude account";
-  if (limit?.resetsAt && limit.resetsAt * 1000 > now) {
-    let resets: string;
-    try {
-      resets = `${new Date(limit.resetsAt * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone })} (${timeZone})`;
-    } catch {
-      resets = `${new Date(limit.resetsAt * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
-    }
-    return `This Claude account has reached its ${name}, which resets ${resets}. Until then, ${meanwhile}.`;
-  }
-  const words = said?.trim().replace(/[.\s]+$/, "");
-  return `This Claude account has reached its ${name}${words ? ` (Claude says: "${words}")` : ""}. For now, ${meanwhile}.`;
-}
-
 /** What an error `result` says failed: its `errors` (2.1.295: "No conversation found with session
  * ID: …"), else its text, else its kind. */
 export function claudeResultError(frame: { errors?: unknown; result?: unknown; subtype?: unknown; terminal_reason?: unknown }): string {
@@ -219,7 +123,7 @@ function claudeEnvironment(
   configDir?: string,
   instanceEnvironment: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...source, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
+  const env: NodeJS.ProcessEnv = { BASH_MAX_TIMEOUT_MS: "600000", ...source, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
   if (configDir?.trim()) {
     env.CLAUDE_CONFIG_DIR = resolveClaudeConfigDir(configDir, env);
     for (const key of CLAUDE_ACCOUNT_ENV_KEYS) {
@@ -328,6 +232,8 @@ export const CLAUDE_FLAG_FLOORS = {
   // Keep-warm pings only. Not bisected: both are in every 2.1 build checked.
   "--fork-session": [2, 1, 0],
   "--no-session-persistence": [2, 1, 0],
+  // Background calls. Not bisected: the guest path passes it from 2.1.257.
+  "--tools": [2, 1, 257],
 } as const satisfies Record<string, ClaudeCliVersion>;
 
 const withWhy = (refusal: string, why: string | undefined) => why ? `${refusal} ${why}` : refusal;
@@ -573,7 +479,7 @@ export function claudeHookSettings(helperPath: string): Record<string, unknown> 
     ? '"%OMB_HOOK_NODE%" "%OMB_HOOK_HELPER%"'
     : [process.execPath, helperPath].map(path => `'${path.replace(/'/g, "'\\''")}'`).join(" ");
   const entry = [{ matcher: "", hooks: [{ type: "command", command, timeout: 5 }] }];
-  return { PostToolUse: entry, PreCompact: entry, SessionStart: entry, Stop: entry };
+  return { PostToolUse: entry, PostToolUseFailure: entry, PreCompact: entry, SessionStart: entry, Stop: entry };
 }
 
 export function permissionSocketPath(threadId: string, botId?: string) {
@@ -1013,6 +919,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           resolve(err ? null : stdout.trim() || null),
         );
       });
+    const ensureCliVersion = async (env: NodeJS.ProcessEnv): Promise<void> => {
+      if (cliVersionChecked) return;
+      const version = await readCliVersion(env);
+      if (version) [cliVersion, cliVersionChecked] = [parseClaudeCliVersion(version), true];
+    };
     let helpRead: { version: string; done: Promise<void> } | null = null;
     const readCliHelp = (version: string, env: NodeJS.ProcessEnv): Promise<void> => {
       if (helpRead?.version === version) return helpRead.done;
@@ -1074,6 +985,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       } | null;
       idleTimer: ReturnType<typeof setTimeout> | null;
       closing: boolean;
+      /** The engine could not start the `agents` MCP server: retired after this turn so the next one reconnects. */
+      teamToolsFailed?: boolean;
       stderr: string;
       costTotal: number | null | undefined;
       /** Root close can precede a failed group stop; retry its finalization. */
@@ -1209,13 +1122,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         args.push("--disallowedTools", config.disallowedTools.join(","));
       }
       const turnEnvironment = environment();
-      if (!cliVersionChecked) {
-        const version = await readCliVersion(turnEnvironment);
-        if (version) {
-          cliVersion = parseClaudeCliVersion(version);
-          cliVersionChecked = true;
-        }
-      }
+      await ensureCliVersion(turnEnvironment);
       if (turn.guestConfined && !claudeCliSupports(cliVersion, "--restricted")) {
         throw new Error(withWhy("This Claude Code is too old to run this turn without a shell. Update Claude Code.", turn.confinedWhy));
       }
@@ -1584,8 +1491,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         active.delete(threadId);
         session.turn = null;
         retryState.delete(threadId);
-        // `claude update` cannot change code this child already loaded: retire it before completing.
-        if (stopReason === "update_required") closeSession(threadId, "update required");
+        // `claude update` cannot change code this child already loaded, and a signed-out child can keep holding the shared OAuth refresh lock: retire both before completing.
+        if (stopReason === "update_required" || stopReason === "auth_required") closeSession(threadId, stopReason === "auth_required" ? "authentication required" : "update required");
+        else if (session.teamToolsFailed) closeSession(threadId, "team tools did not connect");
         const cost = turnCostFromRunningTotal(total, session.costTotal ?? null);
         if (total !== null) session.costTotal = total;
         emit({ ...base(threadId, t.turnId), type: "turn.completed", ok, stopReason, cost, ...(usage ? { usage } : {}) });
@@ -1638,6 +1546,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 break;
               }
               session.sawInit = true;
+              if (!session.teamToolsFailed && Array.isArray(o.mcp_servers) && o.mcp_servers.some(teamToolsFailed)) {
+                session.teamToolsFailed = true;
+                emit({ ...base(threadId, currentTurnId()), type: "runtime.notice", message: TEAM_TOOLS_FAILED });
+              }
               if (session.turn) session.turn.awaitingInit = false;
               session.nativePermissionMode = typeof o.permissionMode === "string" ? o.permissionMode : null;
               if (typeof o.session_id === "string") session.sessionId = o.session_id;
@@ -2079,6 +1991,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     const login = new ClaudeLoginController({ cli: config.cli, environment, onAuthenticated: async () => { await refreshModels(); } });
+    let lastAuth: Awaited<ReturnType<typeof claudeAuthStatus>> = {};
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const env = environment();
@@ -2093,27 +2006,24 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (!input.environment.ANTHROPIC_API_KEY) return { state: "unavailable", version, reason: NO_ANTHROPIC_KEY };
         return { state: "available", version, authenticated: true, account: { method: "api-key" }, ...(update ? { update } : {}), ...(warning ? { warning } : {}), billing: "metered" };
       }
-      const auth = await claudeAuthStatus(config.cli, env);
+      const probed = await claudeAuthStatus(config.cli, env);
+      const auth = probed.authenticated === undefined ? lastAuth : (lastAuth = probed);
       // Turns run on the CLI's own login, so its reported cost is what the call would bill.
       return { state: "available", version, ...auth, ...(update ? { update } : {}), ...(warning ? { warning } : {}), billing: "subscription" };
     };
 
     /** One-shot call, prompt on stdin (approval summaries can hold secrets), no tools or MCP servers. */
-    const generateReview = (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"]): Promise<string> =>
-      new Promise((resolve, reject) => {
+    const generateReview = async (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"], timeoutMs?: number): Promise<string> => {
+      await ensureCliVersion(environment());
+      return new Promise((resolve, reject) => {
         if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) {
           reject(new Error(NO_ANTHROPIC_KEY));
           return;
         }
         const model = config.managedModels?.[0] ?? "claude-haiku-4-5";
-        const child = spawnCli(
-          config.cli,
-          ["-p", "--model", model, "--output-format", onUsage ? "json" : "text"],
-          {
-            stdio: ["pipe", "pipe", "pipe"],
-            env: environment(model),
-          },
-        );
+        const env = environment(model);
+        const args = backgroundCallArgs({ model, outputFormat: onUsage ? "json" : "text", supports: (flag) => cliVersion !== null && claudeCliSupports(cliVersion, flag), isolated: !inheritsUserConfig(env) });
+        const { child, removeCwd } = spawnBackgroundCall(config.cli, args, env);
         let stdout = "";
         let stderr = "";
         let settled = false;
@@ -2122,6 +2032,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           settled = true;
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
+          removeCwd();
           if (error) reject(error);
           else resolve(stdout.trim());
         };
@@ -2132,7 +2043,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const timer = setTimeout(() => {
           killCliTree(child);
           finish(new Error("Claude review timed out"));
-        }, 60_000);
+        }, timeoutMs ?? BACKGROUND_CALL_TIMEOUT_MS);
         timer.unref?.();
         child.stdout.setEncoding("utf8");
         child.stderr.setEncoding("utf8");
@@ -2183,6 +2094,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           child.stdin.end(prompt);
         }
       });
+    };
 
     return {
       instanceId,
@@ -2267,7 +2179,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return () => listeners.delete(listener);
         },
       },
-      generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage),
+      generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage, options?.timeoutMs),
       reviewPermission: generateReview,
       dispose: async () => {
         try {

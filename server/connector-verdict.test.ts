@@ -5,6 +5,7 @@ import {
   COMPOSIO_MULTI_EXECUTE_TOOL,
   connectorCallFromFrame,
   connectorRefusalText,
+  connectorScopeRefusalText,
   connectorUnrecognizedText,
   evaluateConnectorTools,
   serviceSlugFor,
@@ -194,6 +195,17 @@ describe("refusal text", () => {
     const text = connectorUnrecognizedText(COMPOSIO_MULTI_EXECUTE_TOOL, "the tools list was empty");
     expect(text).toContain(COMPOSIO_MULTI_EXECUTE_TOOL);
     expect(text).toContain("the tools list was empty");
+    expect(text).toContain("tools: [{ tool_slug, arguments }]");
     expect(text).toContain("Ask the person");
+  });
+
+  it("tells a scoped bot its call was unreadable before it blames access", () => {
+    const unreadable = connectorCallFromFrame(toolsCall(COMPOSIO_MULTI_EXECUTE_TOOL, { tool_calls: [{ tool_slug: "GMAIL_FETCH_EMAILS" }] }));
+    const text = connectorScopeRefusalText(unreadable, "app", "Scout", "Composio", "Proxy execute");
+    expect(text).toContain("could not read");
+    expect(text).not.toContain("has not been given access");
+    const tools = connectorCallFromFrame(toolsCall("GMAIL_SEND_EMAIL", {}));
+    expect(connectorScopeRefusalText(tools, "app", "Scout", "Gmail", "Send email")).toContain("Scout has not been given access to Gmail");
+    expect(connectorScopeRefusalText(tools, "write", "Scout", "Gmail", "Send email")).toContain("Gmail is read-only for Scout, and Send email would write to it");
   });
 });

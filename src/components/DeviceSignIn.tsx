@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Copy, ExternalLink, Loader2, LogIn, X } from "lucide-react";
 import { api, ApiError, useStore } from "@/state/store";
 import { t } from "@/lib/i18n";
@@ -120,18 +120,28 @@ export function DeviceSignInProgress({ auth, browserPkce = false, provider = "co
   );
 }
 
-export function DeviceSignIn({ instanceId, browserPkce = false, provider = "codex" }: { instanceId: string; browserPkce?: boolean; provider?: DeviceSignInProvider }) {
+/** `autoStart` begins at once; `onDone` hears the outcome so an account list can close the panel. */
+export function DeviceSignIn({ instanceId, browserPkce = false, provider = "codex", autoStart = false, onDone }: {
+  instanceId: string;
+  browserPkce?: boolean;
+  provider?: DeviceSignInProvider;
+  autoStart?: boolean;
+  onDone?: (signedIn: boolean) => void;
+}) {
   const { refreshInstances, refreshModels } = useStore();
   const [auth, setAuth] = useState<DeviceSignInStatus | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(autoStart);
+  const started = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const base = `/api/instances/${encodeURIComponent(instanceId)}/auth`;
   const copy = DEVICE_SIGN_IN_COPY[provider];
   const failed = t(browserPkce ? "engineSetup.chatgpt.failed" : copy.failed);
 
+  // The sign-in already succeeded: a failed catalog refresh must not read as a failed sign-in.
   const refresh = async () => {
-    await refreshInstances();
-    await refreshModels(instanceId);
+    try { await refreshInstances(); } catch {}
+    try { await refreshModels(instanceId); } catch {}
+    onDone?.(true);
   };
 
   useEffect(() => {
@@ -147,10 +157,7 @@ export function DeviceSignIn({ instanceId, browserPkce = false, provider = "code
           if (controller.signal.aborted) return;
           setAuth(next);
           setError(null);
-          if (next.phase === "succeeded") {
-            await refreshInstances();
-            await refreshModels(instanceId);
-          }
+          if (next.phase === "succeeded") await refresh();
         })
         .catch((cause: unknown) => {
           if (controller.signal.aborted) return;
@@ -168,7 +175,7 @@ export function DeviceSignIn({ instanceId, browserPkce = false, provider = "code
       if (expiryTimer !== null) window.clearTimeout(expiryTimer);
       controller.abort();
     };
-  }, [auth, base, browserPkce, busy, failed, instanceId, refreshInstances, refreshModels]);
+  }, [auth, base, browserPkce, busy, failed, instanceId, refreshInstances, refreshModels, onDone]);
 
   const start = async () => {
     setBusy(true);
@@ -193,11 +200,18 @@ export function DeviceSignIn({ instanceId, browserPkce = false, provider = "code
     try {
       await api(`${base}/cancel`, { method: "POST", body: JSON.stringify({ flowId: auth.flowId }) });
       setAuth({ phase: "cancelled", flowId: null, authorizationUrl: null, expiresAt: null });
+      onDone?.(false);
     } catch (cause) {
       if (deviceFlowUnavailable(cause)) setAuth(endedFlow("failed", browserPkce));
       else setError(cause instanceof Error ? cause.message : failed);
     } finally { setBusy(false); }
   };
+
+  useEffect(() => {
+    if (!autoStart || started.current) return;
+    started.current = true;
+    void start();
+  }, [autoStart]);
 
   const startLabel = busy ? t(browserPkce ? "engineSetup.chatgpt.starting" : "engineSetup.device.starting")
     : auth || error ? t("engineSetup.device.tryAgain")
