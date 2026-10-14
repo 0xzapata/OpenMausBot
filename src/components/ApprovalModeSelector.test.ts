@@ -90,10 +90,10 @@ describe("approval mode selector", () => {
     expect(render("full", false, false)).toContain('aria-label="Auto (full access) for Antigravity"');
   });
 
-  it("explains Auto fallbacks and does not elevate unknown providers", () => {
+  it("explains Auto fallbacks and offers Full, the default level, on every provider", () => {
     expect(approvalModeOptionsFor("grokAgent").find((option) => option.mode === "auto")?.description).toContain("automatic review to approve routine actions");
     expect(approvalModeOptionsFor("customAgent").find((option) => option.mode === "auto")?.description).toContain("behaves like Ask");
-    expect(approvalModeOptionsFor("customAgent").map((option) => option.mode)).toEqual(["ask", "auto"]);
+    expect(approvalModeOptionsFor("customAgent").map((option) => option.mode)).toEqual(["ask", "auto", "full"]);
   });
 
   it("offers Full without the packaged desktop bridge and hides only Custom", () => {

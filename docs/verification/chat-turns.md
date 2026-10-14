@@ -149,10 +149,7 @@ This does not prove resumption or cleanup of real provider sessions after a cras
 Every hand-off between bots is an assignment on the job runtime
 (docs/runtime-contract.md §9): `coordinate_bots` from a chat, a room, a
 routine run, a webhook run, a goal run, a Cloud guest's turn or a standing
-external runtime, and the deprecated aliases `delegate_bot`, `ask_bot`,
-`send_to_bot`, `start_thread` on a peer, `check_delegation` and
-`wait_delegation`, which map onto it for one release and add a deprecation
-line to their result. There is no mailbox: a queued assignment is bounded by
+external runtime. There is no mailbox: a queued assignment is bounded by
 the runtime's queue clock (§6, 24 hours, `failed(expired)` and reported), its
 windows restart at boot, and nothing outside `server/runtime/` holds hand-off
 state. The ledger the mailbox kept (`delegations.json`,

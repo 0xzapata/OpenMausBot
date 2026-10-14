@@ -2,12 +2,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Bot, InstanceInfo } from "@/state/store";
+import { persistBotUpdate, type Bot, type InstanceInfo } from "@/state/store";
 import { EFFORT_LEVELS } from "../../shared/wire";
 import {
   applyTeamPlan,
   planNeedsLocalAutoConsent,
   planTeamChange,
+  TEAM_APPROVAL_MODES,
   teamBots,
   teamEffortChoices,
   teamModelChoices,
@@ -45,21 +46,56 @@ describe("team-wide settings", () => {
 
   it("plans an approval level per bot: unchanged, busy, unsupported and Full on every thread", () => {
     const bots = [
-      bot("ask"),
+      bot("ask", { approvalMode: "ask" }),
       bot("already", { approvalMode: "full" }),
-      bot("busy", { busy: true }),
-      bot("antigravity", { modelSelection: { instanceId: "ag", model: "x" } }),
+      bot("busy", { approvalMode: "ask", busy: true }),
+      bot("antigravity", { approvalMode: "ask", modelSelection: { instanceId: "ag", model: "x" } }),
     ];
     const plan = planTeamChange(bots, [...instances, engine("ag", "antigravityAgent", ["x"])], { kind: "approval", mode: "full" });
     expect(plan.map((row) => row.status)).toEqual(["apply", "unchanged", "skip", "apply"]);
     expect(plan[0]).toMatchObject({ patch: { approvalMode: "full", applyToAllThreads: true } });
     expect(plan[2]).toMatchObject({ reason: expect.stringMatching(/busy/) });
-    // Antigravity's picker offers no Auto: the team change says so instead of
-    // writing a level that bot's own panel would never offer.
     const auto = planTeamChange([bots[3]!], [engine("ag", "antigravityAgent", ["x"])], { kind: "approval", mode: "auto" });
     expect(auto[0]).toMatchObject({ status: "skip", reason: "Ag does not offer this approval level" });
     expect(planTeamChange([bot("codex", { modelSelection: { instanceId: "codex", model: "gpt-5" } })], instances,
       { kind: "approval", mode: "edits" })[0]).toMatchObject({ status: "skip" });
+  });
+
+  it("sends every level to each bot and every one of its threads, the same way, as the bot API receives it", async () => {
+    const withOpened = (id: string, botMode: "ask" | "full", threadMode: "ask" | "full") => bot(id, { approvalMode: botMode, tasks: [
+      { threadId: `${id}-t`, title: "Main", createdAt: 1 }, { threadId: `${id}-new`, title: "New thread", createdAt: 2, approvalMode: threadMode },
+    ] });
+    const bots = [withOpened("a", "ask", "full"), withOpened("b", "full", "ask")];
+    for (const mode of TEAM_APPROVAL_MODES) {
+      const sent: unknown[] = [];
+      const request = vi.fn(async (path: string, init?: RequestInit) => {
+        sent.push([path, JSON.parse(String(init?.body))]);
+        return { bot: bots[0]! };
+      });
+      const plan = planTeamChange(bots, instances, { kind: "approval", mode });
+      await applyTeamPlan(plan, (target, patch) => persistBotUpdate(target.id, patch, new AbortController().signal, request, undefined, target));
+      expect(sent, mode).toEqual(bots.map((target) => [`/api/bots/${target.id}`, { approvalMode: mode, applyToAllThreads: true }]));
+    }
+  });
+
+  it("sends a model as a bulk change, so each bot's threads with a model of their own keep it", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: bot("a") }));
+    const plan = planTeamChange([bot("a")], instances, { kind: "model", model: "sonnet" });
+    await applyTeamPlan(plan, (target, patch) => persistBotUpdate(target.id, patch, new AbortController().signal, request, undefined, target));
+    expect(request.mock.calls.map(([path, init]) => [path, JSON.parse(String(init?.body))])).toEqual([
+      ["/api/bots/a", { modelSelection: { instanceId: "claude", model: "sonnet" }, keepThreadModels: true }],
+    ]);
+  });
+
+  it("calls a bot already set only when every one of its threads is, and skips one with any thread working", () => {
+    const tasks = (...modes: Array<"ask" | "auto" | undefined>) => modes.map((approvalMode, index) => ({ threadId: `t${index}`, title: "T", createdAt: index, approvalMode }));
+    const plan = planTeamChange([
+      bot("all", { approvalMode: "auto", tasks: tasks(undefined, "auto") }),
+      bot("opened", { approvalMode: "auto", tasks: tasks(undefined, "ask") }),
+      bot("working", { approvalMode: "ask", tasks: [...tasks(undefined), { threadId: "w", title: "W", createdAt: 9, busy: true }] }),
+    ], instances, { kind: "approval", mode: "auto" });
+    expect(plan.map((row) => row.status)).toEqual(["unchanged", "apply", "skip"]);
+    expect(plan[2]).toMatchObject({ reason: expect.stringMatching(/busy/) });
   });
 
   it("asks for the local-computer consent only when Auto reaches a bot on this computer", () => {
@@ -77,7 +113,7 @@ describe("team-wide settings", () => {
     ];
     const toOpus = planTeamChange(bots, instances, { kind: "model", model: "opus" });
     expect(toOpus.map((row) => row.status)).toEqual(["apply", "skip", "skip", "skip"]);
-    expect(toOpus[0]).toMatchObject({ patch: { modelSelection: { instanceId: "claude", model: "opus", effort: "low" } } });
+    expect(toOpus[0]).toMatchObject({ patch: { modelSelection: { instanceId: "claude", model: "opus", effort: "low" }, keepThreadModels: true } });
     expect(toOpus[1]).toMatchObject({ reason: "Codex does not offer opus" });
     expect(toOpus[3]).toMatchObject({ reason: "its engine is not available" });
 
@@ -87,7 +123,6 @@ describe("team-wide settings", () => {
     expect(high[2]).toMatchObject({ reason: "Pi uses reasoning variants instead of effort levels" });
     expect(planTeamChange([bots[0]!], instances, { kind: "model", effort: "xhigh" })[0]).toMatchObject({ status: "skip", reason: "Claude does not offer this effort level" });
 
-    // Clearing the effort, and a variant only following its own model.
     expect(planTeamChange([bots[0]!], instances, { kind: "model", effort: null })[0])
       .toMatchObject({ patch: { modelSelection: { instanceId: "claude", model: "sonnet" } } });
     expect(planTeamChange([bots[2]!], instances, { kind: "model", model: "local" })[0]).toMatchObject({ status: "unchanged" });
@@ -115,9 +150,9 @@ describe("team-wide settings", () => {
       if (target.id === "b") throw new Error("Stop this bot's turn before changing its approval level");
     }, { acknowledgeLocalAuto: true });
     expect(order).toEqual([
-      'a:{"approvalMode":"auto"}',
-      'b:{"approvalMode":"auto"}',
-      'e:{"approvalMode":"auto","acknowledgeLocalAuto":true}',
+      'a:{"approvalMode":"auto","applyToAllThreads":true}',
+      'b:{"approvalMode":"auto","applyToAllThreads":true}',
+      'e:{"approvalMode":"auto","applyToAllThreads":true,"acknowledgeLocalAuto":true}',
     ]);
     expect(results.map((row) => row.status)).toEqual(["applied", "skipped", "skipped", "unchanged", "applied"]);
     expect(results[1]).toMatchObject({ reason: "Stop this bot's turn before changing its approval level" });

@@ -220,8 +220,8 @@ pnpm exec vitest run src/components/routines/RoutineViews.test.ts src/components
 
 The hand-off integration tests (`server/routine-delegation.e2e.test.ts`,
 `server/runtime-paths.e2e.test.ts`) launch their own shared-control fixtures.
-A routine turn hands work on with `coordinate_bots` or its `delegate_bot` /
-`ask_bot` aliases; the run's root on the job runtime names the run as its
+A routine turn hands work on with `coordinate_bots`; the run's root on the
+job runtime names the run as its
 requester with routine lineage (docs/runtime-contract.md §9). They verify a
 busy peer delaying completion until its result resumes the same run as a
 routine turn, a denied hand-off refused with that outcome and no assignment

@@ -1,5 +1,3 @@
-// What is worth interrupting someone for. The policy is small, so the
-// tests are mostly about the cases where the answer is "stay quiet".
 import { describe, expect, it } from "vitest";
 
 import { buildNotification, buildSpendNotification, summarize } from "./notify.ts";
@@ -33,7 +31,6 @@ describe("buildNotification", () => {
       title: "Scout resumed with results",
       body: "Results in from Atlas",
     });
-    // the toggle rules this frame like every other
     expect(buildNotification("delegation-settled", { ...bot, notifications: false }, "thread-1", "Results in from Atlas")).toBeNull();
   });
 
@@ -42,7 +39,6 @@ describe("buildNotification", () => {
     for (const kind of ["approval", "question", "done", "routine-failed", "turn-failed"] as const) {
       expect(buildNotification(kind, quiet, "thread-1", "anything")).toBeNull();
     }
-    // absent means "not turned off" — older bot records predate the flag
     expect(buildNotification("approval", { ...bot, notifications: undefined }, "thread-1", "x")).not.toBeNull();
     expect(buildNotification("approval", { ...bot, notifications: true }, "thread-1", "x")).not.toBeNull();
   });
@@ -50,14 +46,11 @@ describe("buildNotification", () => {
   it("does not buzz for a finish with nothing to say", () => {
     expect(buildNotification("done", bot, "thread-1", "   ")).toBeNull();
     expect(buildNotification("done", bot, "thread-1", "")).toBeNull();
-    // ...but a blocked bot is worth knowing about even with a thin summary
     expect(buildNotification("approval", bot, "thread-1", "")).not.toBeNull();
     expect(buildNotification("turn-failed", bot, "thread-1", "")).not.toBeNull();
   });
 
   it("uses the thread it was raised on, not the bot's current one", () => {
-    // a routine runs a bot in a detached task; the notification has to open
-    // that conversation, not whatever the bot happens to be showing
     expect(buildNotification("done", bot, "other-thread", "done")?.threadId).toBe("other-thread");
   });
 
@@ -66,14 +59,12 @@ describe("buildNotification", () => {
     const frame = buildNotification("done", bot, "thread-1", "pushed the branch", { avatarUrl });
     expect(frame).toMatchObject({ botId: "bot-1", body: "pushed the branch", avatarUrl });
 
-    // no profile image → the frame stays exactly as before
     expect(buildNotification("done", bot, "thread-1", "pushed")?.avatarUrl).toBeUndefined();
   });
 });
 
 describe("sign-in requests", () => {
   it("names the room in the title and carries its id for grouping", () => {
-    // the card is in the room the bot asked from, so that is what opens
     expect(buildNotification("sign-in", bot, "room-thread", "the dashboard is behind a login", {
       group: { id: "room-1", name: "Launch" }, site: "example.com",
     })).toMatchObject({
@@ -83,7 +74,6 @@ describe("sign-in requests", () => {
       title: "Scout in Launch needs you to sign in to example.com",
       body: "the dashboard is behind a login",
     });
-    // a 1:1 request is untouched — no room to name, nothing to group under
     const direct = buildNotification("sign-in", bot, bot.threadId, "the dashboard is behind a login", { site: "example.com" });
     expect(direct?.title).toBe("Scout needs you to sign in to example.com");
     expect(direct?.groupId).toBeUndefined();

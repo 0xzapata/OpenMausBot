@@ -2,9 +2,6 @@ import { useSyncExternalStore } from "react";
 
 export const USER_BUBBLE_COLOR_KEY = "omb-color-user-bubbles";
 
-// Renderer preference only. Off until the person turns it on, so an update
-// does not repaint every existing chat. Simple mode (#2173) kept existing
-// installs on the look they already had. The same rule applies here.
 let sessionChoice: boolean | undefined;
 const listeners = new Set<() => void>();
 
@@ -54,7 +51,6 @@ export function setColorUserBubbles(enabled: boolean): void {
   try {
     storage()?.setItem(USER_BUBBLE_COLOR_KEY, enabled ? "1" : "0");
   } catch {
-    // The switch still takes effect for this session when storage is full.
   }
   notify();
 }
