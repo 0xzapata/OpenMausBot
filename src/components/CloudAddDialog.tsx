@@ -1,13 +1,5 @@
-// The Add a Cloud dialog (docs/cloud-pro.md, "Add a Cloud"): the one way to
-// buy OpenMausBot Cloud in the app, opened from the card after the update,
-// Show me how, the server menu, Settings and the routine screen. It covers the
-// buying journey only, one view per state from lib/cloud-plan cloudAddView:
-// the offer (the Admin's plans, trial, credit and money-back, nothing
-// hardcoded), signing in, the checkout open in the browser, the payment
-// received, My Cloud starting, and My Cloud ready. A payment problem, an ended
-// sign-in or a Cloud that can't be reached go to Settings → OpenMausBot Cloud.
-// Checkout never runs in the app: main opens Dodo's own checkout page in the
-// default browser, and the app follows its own session, never the return.
+// Security: checkout never runs in the app; main opens the provider's checkout page in the default browser and the app
+// follows its own session, never the return.
 import { useEffect, useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import type { CloudAccountState, CloudCheckoutOutcome } from "../../electron/cloud-account.mjs";
@@ -27,9 +19,6 @@ const shortDate = (value: number) => new Intl.DateTimeFormat(activeLocale(), { d
 const PRIMARY = "inline-flex min-h-10 w-full items-center justify-center rounded-lg bg-accent px-4 py-2 text-[14px] font-medium text-accent-ink hover:opacity-90 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus";
 const QUIET = "py-2 text-[12.5px] text-ink-secondary hover:text-ink";
 
-/** The plan an arrow key moves the plan picker to (a radio group: Down and
- * Right go on, Up and Left back, wrapping; Home and End to either end), or
- * null for any other key. */
 export function planFromKey(tiers: readonly string[], current: string, key: string): string | null {
   const at = tiers.indexOf(current);
   if (at === -1 || !tiers.length) return null;
@@ -38,7 +27,6 @@ export function planFromKey(tiers: readonly string[], current: string, key: stri
   return next === null ? null : tiers[next]!;
 }
 
-/** What a view's buttons do. */
 export interface CloudAddActions {
   choose(tier: string): void;
   checkout(): void;
@@ -51,13 +39,9 @@ export interface CloudAddActions {
   close(): void;
 }
 
-/** The dialog's content for one view: no state of its own. `chosen`: the
- * plan picked (else the offer's preselected one); `offerShown`: the last
- * offer this dialog read, for the terms once the trial has started. */
 export function CloudAddPanel({ view, chosen, offerShown, now, busy = false, openFailed = false, actions }: {
   view: CloudAddView; chosen: string | null; offerShown: CloudOffer | null; now: number; busy?: boolean; openFailed?: boolean; actions: CloudAddActions;
 }) {
-  // The heading takes focus when the view changes (CloudAddDialog), so a screen reader says the new step.
   const heading = (title: string, subtitle?: string) => <>
     <h2 id="cloud-add-title" tabIndex={-1} className="pe-8 text-[17px] font-semibold text-ink outline-none">{title}</h2>
     {subtitle && <p className="mt-1 text-[13px] leading-relaxed text-ink-secondary">{subtitle}</p>}
@@ -94,7 +78,6 @@ export function CloudAddPanel({ view, chosen, offerShown, now, busy = false, ope
         <div role="radiogroup" aria-label={t("cloudAdd.plans")} className="mt-4 flex flex-col gap-2">
           {offer.plans.map(entry => {
             const row = planRow(entry), selected = entry.tier === plan.tier;
-            // One tab stop for the group, on the plan picked; the arrow keys move between plans.
             const onKeyDown = (event: { key: string; preventDefault(): void; currentTarget: { parentElement: HTMLElement | null } }) => {
               const next = planFromKey(offer.plans.map(item => item.tier), plan.tier, event.key);
               if (!next) return;
@@ -149,8 +132,6 @@ export function CloudAddPanel({ view, chosen, offerShown, now, busy = false, ope
       </div>;
     }
     case "waiting": {
-      // Signed in on the way to a checkout: the browser's page after approval has the next step. If that tab is gone, this
-      // opens the same checkout (the Admin hands back an open one for the same offer).
       const plan = view.browser === "signin" && offerShown ? offerPlan(offerShown, view.plan) : null;
       return <div data-cloud-add={view.browser === "signin" ? "waiting-signin" : "waiting"}>
         {heading(t("cloudAdd.browserTitle"), t(view.browser === "signin" ? "cloudAdd.waitingSignIn" : "cloudAdd.waiting"))}
@@ -203,17 +184,14 @@ export function CloudAddPanel({ view, chosen, offerShown, now, busy = false, ope
   }
 }
 
-/** The dialog, open while the store says (state.cloudAdd), on This computer's page only. */
 export function CloudAddDialog({ now = Date.now }: { now?: () => number }) {
   const { state, dispatch } = useStore();
   const request = state.cloudAdd;
   const bridge = window.ogb?.remoteClient?.active ? undefined : window.ogb?.cloudAccount;
   const [account, setAccount] = useState<CloudAccountState | null>(null);
-  // What this person may buy (undefined while it is being read), the plan picked, and the last offer shown.
   const [offer, setOffer] = useState<CloudOffer | null | undefined>(undefined);
   const [chosen, setChosen] = useState<string | null>(null);
   const [error, setError] = useState<"failed" | "rate-limited" | null>(null);
-  // A checkout refused as a conflict that changed nothing here (one already being prepared): said with the offer.
   const [conflict, setConflict] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -229,7 +207,6 @@ export function CloudAddDialog({ now = Date.now }: { now?: () => number }) {
     return () => { active = false; unsubscribe(); };
   }, [open, bridge]);
   const view = open ? cloudAddView(account, offer, { now: now(), error, choosing, conflict }) : null;
-  // The offer is read when the dialog opens, on Try again, and when what this account may buy changes.
   const buying = view?.kind === "offer" || view?.kind === "checking" || view?.kind === "unreachable" || view?.kind === "waiting";
   const offerKey = open && buying && account ? `${account.status}:${JSON.stringify(account.offer ?? null)}:${asked}` : null;
   useEffect(() => {
@@ -242,15 +219,12 @@ export function CloudAddDialog({ now = Date.now }: { now?: () => number }) {
     dispatch({ type: "closeCloudAdd" });
     setError(null); setConflict(false); setChoosing(false); setOpenFailed(false); setReported([]); setChosen(null);
   };
-  // Escape closes it and Tab stays inside it, before anything underneath
-  // (Settings, when opened from there) hears the key: the capture phase, and
-  // the key marked handled.
+  // Capture phase, key marked handled: Escape and Tab reach this before anything underneath (Settings).
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") { event.preventDefault(); close(); return; }
       if (event.key !== "Tab") return;
-      // The plan picker is one tab stop (its other plans take tabindex -1).
       const controls = [...(document.querySelector("[data-cloud-add-dialog]")?.querySelectorAll<HTMLElement>("button:not([disabled]):not([tabindex='-1'])") ?? [])];
       if (!controls.length) return;
       event.preventDefault();
@@ -261,9 +235,7 @@ export function CloudAddDialog({ now = Date.now }: { now?: () => number }) {
     (document.querySelector("[data-cloud-add-dialog] button") as HTMLElement | null)?.focus();
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open]);
-  // Payment problems, an ended sign-in and an unreachable Cloud have their one message and action in Settings.
   const kind = view?.kind ?? null;
-  // A new step takes focus at its heading, so it is read out and Tab stays in the dialog (the button pressed may be gone).
   useEffect(() => {
     if (!kind || kind === "checking" || kind === "settings") return;
     if ((document.activeElement as HTMLElement | null)?.closest?.("[data-cloud-add-dialog]")) return;
@@ -296,14 +268,11 @@ export function CloudAddDialog({ now = Date.now }: { now?: () => number }) {
     if (outcome === "opened" || outcome === "signing-in") { setChoosing(false); setError(null); setConflict(false); track("cloud_checkout_opened", { plan, trial, source: request.source }); }
     else if (outcome === "rate-limited") setError("rate-limited");
     else if (outcome === "failed") setError("failed");
-    // A conflict: the account changed (a plan, a payment being linked), and the state just read says what now; when it
-    // still offers the same, a checkout was already being prepared, and the offer says so.
     else setConflict(true);
   });
   const actions: CloudAddActions = {
     choose: tier => { setChosen(tier); setChoosing(true); setConflict(false); },
     checkout,
-    // Signed out, someone who already pays signs in; the dialog follows that sign-in.
     signIn: () => run(async () => setAccount(await bridge.begin())),
     reopenBrowser: () => run(async () => setAccount(await bridge.reopen())),
     cancelSignIn: () => run(async () => setAccount(await bridge.cancel())),

@@ -169,8 +169,8 @@ here, or a backup restored in Settings); a routine made from the owner's bot tem
 or a proposal the owner approved, is recorded as theirs when it is made.
 Every other routine is nobody's: it runs confined, like a guest's, and
 reports into a conversation that is nobody's. An owner's routine reports
-into a conversation that is the owner's: the bot's main thread, unless
-someone else opened that one.
+into a conversation that is the owner's: the bot's main thread, which only
+a conversation the owner opened can be.
 
 A webhook is the owner's: only their own devices can create, edit or rotate
 one, so its runs work at the bot's own level, in its project folder, with its
@@ -571,8 +571,8 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   routine the owner wrote or last rewrote from one of those devices, or a run
   of it the owner started by hand. Never a webhook-started run (its payload
   comes from outside), a guest's conversation or routine (a device paired
-  with chat-only access), a routine someone else rewrote, a room, a bot's
-  delegated or peer turn, a local process on the Cloud, or anything the
+  with chat-only access), a routine someone else rewrote, a room, a turn a
+  teammate handed a bot (`coordinate_bots`), a local process on the Cloud, or anything the
   harness cannot trace. A conversation qualifies only while the owner opened
   it and it holds nobody else's words, anywhere in it, before or during the
   turn: one line from a guest, a teammate bot or a local process (sent,
@@ -608,11 +608,13 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   (judged by the conversation the turn runs in, a room's for a room turn,
   never by whichever of the bot's conversations is active).
   So does a room turn whose latest line from a person is a guest's, and any
-  work a guest's turn hands a teammate (delegation, coordination, a room
-  handoff), however deep. A delegation or a question to a teammate runs in a
-  new conversation of the guest's own on that teammate, never in the owner's
-  conversation with it, and is never folded into a turn running there. It
-  works in a folder of its own, never the bot's
+  work a guest's turn hands a teammate (`coordinate_bots`: work, a question
+  with `consult`, a room hand-off), however deep — every hand-off is an
+  assignment on the job runtime with the guest's outside lineage
+  (docs/runtime-contract.md §4, §9). Work or a question for a teammate runs
+  in the work thread the guest's conversation has with that teammate, opened
+  as the guest's, never in the owner's conversation with it, and is never
+  folded into a turn running there. It works in a folder of its own, never the bot's
   project folder the owner's conversations share, and a card it raises
   never offers "always allow". One that already ran in another folder keeps
   it, except a conversation a revoked session opened: it is unpinned at boot,
@@ -629,7 +631,7 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   | --- | --- |
   | Claude Code (2.1.257 or newer) | `--restricted` and only Read, Grep, Glob, Edit, Write and WebSearch: no Bash, PowerShell or WebFetch; reads outside its folder refused outright (`blockReadsOutsideWorkingDirectories`, plus deny rules); the folder's own `.mcp.json` and settings never load; only the harness's own MCP tools are pre-allowed, every other call asks the owner. The session's `init` must list no command-running tool, or the turn stops. An older Claude Code refuses. |
   | Codex / ChatGPT (codex-cli 0.159) | no environment (`environments: []`: no `exec_command`, `apply_patch` or `view_image`, and calls to them are refused), `features.shell_tool`, `unified_exec` and `view_image` off and web search disabled, proven in `config/read` before the turn starts, or the turn refuses. |
-  | API models (OpenAI-compatible, MiniMax, Mistral, Grok API) | no shell or file tool on the machine at all; every MCP call asks the owner. |
+  | API models (OpenAI-compatible, MiniMax, Mistral, Grok API) | no shell or file tool on the machine at all; only the harness's own agents tools are pre-allowed, every other MCP call asks the owner, and no owner's "Always allow this session" applies or is kept. |
   | Cursor, Qwen, Gemini, Hermes, Pi, OpenCode, Grok Build, Antigravity, Droid, Kimi, a custom ACP engine, Boat | refused: each runs its own shell or reads files outside its folder without asking in Ask (Qwen, Gemini, OpenCode and Pi could have it switched off; that needs a separate process per guest conversation, a follow-up). |
 - Everything the owner's own devices write carries one owner identity, so
   pairing a device again (or revoking one) never makes the owner's earlier
@@ -680,7 +682,7 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   guest's included, controls the Cloud machine: it can change other bots'
   files and these records.
 - Not covered yet: a bot whose memory changed can still pass its words to
-  other bots through rooms, `ask_bot` and delegation, and a turn that may use
+  other bots through rooms and `coordinate_bots`, and a turn that may use
   the Mac can still read room names and routine listings through its tools.
 
 ### What the Cloud can see: `GET /api/shared-computers`
@@ -834,7 +836,7 @@ For each service the Admin has configured, it also sets:
 
 | Variable | Fly | Value |
 | --- | --- | --- |
-| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. It keeps Boat's own `/api/box/v1` ending. Bots use it only for cloud computers, as a tool on their own engine; no turn runs on Boat's own agent, so nothing calls its `/prompt`, `/events`, `/prompts/{id}` or `/interrupt` routes. |
+| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. The app speaks Boat's public API v1 (`/sandboxes`, `sandbox` envelopes); this relay still serves Boat's retired box API (`/boxes`, `box` envelopes), so for a base ending in `/api/box/v1` the app translates paths and answers in one place, `server/boat-relay.ts`. A base ending in `/api/v1` gets v1 as it is. Bots use it only for cloud computers, as a tool on their own engine; no turn runs on Boat's own agent, so nothing calls its `/prompt`, `/events`, `/prompts/{id}` or `/interrupt` routes. |
 | `OMB_CLOUD_BOAT_TOKEN` | secret | This machine's Boat relay token (`box_omb_…`). It is not a Boat key and works only through the relay. |
 | `OMB_CLOUD_VOICE_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/voice/v1`, the Admin's voice relay. |
 | `OMB_CLOUD_VOICE_TOKEN` | secret | This machine's voice relay token (`omb_voice_…`). |
@@ -855,7 +857,7 @@ computers belong to this machine on every request.
   that key's cloud computers are deleted: removing a Boat key that still has
   computers is refused). The choice is made on every request.
 - **Each credential goes to one place.** The relays know only the Admin's
-  accounts, so an own key goes only to the provider (`OMB_BOX_API`,
+  accounts, so an own key goes only to the provider (`OMB_BOAT_API`,
   `OMB_ELEVENLABS_API` or `decider.baseUrl` when set, for development and
   tests, else Boat's, ElevenLabs' and Jev's own APIs) and an included token
   only to its relay, whatever those settings say.
@@ -869,7 +871,10 @@ computers belong to this machine on every request.
   JSON). `server/decider/relay.ts` checks each request before it is sent; one
   that does not fit is not sent, and the room falls back as for any other
   decision-model failure. Any other decision job, now or added later, uses
-  only the person's own Jev key until the relay accepts it too.
+  only the person's own Jev key until the relay accepts it too. The relay
+  speaks Jev's API only: included decisions are Jev's, and with OpenRouter
+  selected in **Settings → Decision model** nothing is included (it needs an
+  OpenRouter key of the person's own).
 - **Included decisions are on until switched off.** While the decision model
   runs on the included token, its master switch counts as on unless the person
   switched it off in **Settings → Decision model**; an explicit off always

@@ -113,8 +113,6 @@ describe("desktop notifications", () => {
       vi.fn(),
     );
 
-    // one bot across two threads shares a tag, so the platform replaces
-    // rather than stacks; another bot gets its own key
     expect(notices[0]?.options?.tag).toBe(`openmausbot:${frame.botId}`);
     expect(notices[1]?.options?.tag).toBe(`openmausbot:${frame.botId}`);
     showNotification({ ...frame, botId: "bot-2" }, vi.fn());

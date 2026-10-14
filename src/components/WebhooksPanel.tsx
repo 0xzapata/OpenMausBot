@@ -29,7 +29,8 @@ import {
   webhookCredentialStore,
 } from "@/lib/webhook-credentials";
 import { WEBHOOK_DEFAULT_MAX_PENDING_RUNS, WEBHOOK_MAX_PENDING_RUNS_LIMIT, webhookActivationDefaults, webhookMaxPendingRunsInput, type WebhookAttempt, type WebhookCredential, type WebhookTrigger, type WebhookTriggerInput } from "@/lib/webhooks";
-import { api, useStore, type Bot } from "@/state/store";
+import { api, openBotThread, useStore, type Bot } from "@/state/store";
+import { useShowThreads } from "@/lib/thread-preferences";
 import { copyText } from "@/lib/copy-text";
 import { t } from "@/lib/i18n";
 
@@ -182,8 +183,6 @@ export function WebhookEditor({ webhook, bots, onClose, onCredential }: { webhoo
 
 export interface ActivityItem { id: string; at: number; outcome: WebhookAttempt["outcome"]; eventName: string; preview: string; reason?: string; run?: RoutineRun }
 
-/** Recent deliveries for one webhook: recorded attempts, plus runs from
- * before attempts were recorded. Newest first, at most 30. */
 export function webhookActivity(webhook: WebhookTrigger, webhookAttempts: WebhookAttempt[], routineRuns: RoutineRun[]): ActivityItem[] {
   const runById = new Map(routineRuns.map((run) => [run.id, run]));
   const attemptsByRun = new Set(webhookAttempts.map((attempt) => attempt.runId).filter(Boolean));
@@ -207,17 +206,14 @@ export function webhookActivity(webhook: WebhookTrigger, webhookAttempts: Webhoo
   return [...attempts, ...legacy].sort((a, b) => b.at - a.at).slice(0, 30);
 }
 
-/** Pause/enable, delete, and the private-URL copy, shared by the Automations
- * page's Webhooks tab and the Triggers pop-up. `copy: "link"` puts the
- * private URL itself on the clipboard; the default is the terminal command. */
 export function useWebhookActions() {
   const { dispatch } = useStore();
   const [credentials, setCredentials] = useState<Record<string, WebhookCredential>>(() =>
     loadWebhookCredentials(webhookCredentialStore()),
   );
   const [working, setWorking] = useState<string | null>(null);
-  // A second click can arrive before React paints the shared disabled state.
-  // Claim synchronously, so rotations cannot race and save a revoked URL.
+  // A second click can arrive before React paints the disabled state: claim synchronously so rotations cannot race and
+  // save a revoked URL.
   const workingRef = useRef(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedKind, setCopiedKind] = useState<"command" | "link">("command");
@@ -289,8 +285,6 @@ export function useWebhookActions() {
   return { credentials, setCredentials, rememberCredential, working, copiedId, copiedKind, error, setError, invoke, createAndCopyCommand };
 }
 
-/** A destination-first webhook view: choose a MAUS endpoint on the left, then
- * either copy its setup command or inspect its deliveries on the right. */
 export function WebhooksPanel({
   bots,
   createRequest,
@@ -301,6 +295,7 @@ export function WebhooksPanel({
   onCreateHandled: () => void;
 }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const [editor, setEditor] = useState<WebhookTrigger | "new" | null>(null);
   const { credentials, setCredentials, working, copiedId, error, setError, invoke, createAndCopyCommand } = useWebhookActions();
   const [selectedId, setSelectedId] = useState<string | null>(state.webhooks[0]?.id ?? null);
@@ -423,7 +418,7 @@ export function WebhooksPanel({
                         <span className={cn("size-2 shrink-0 rounded-full", item.outcome === "rejected" || item.run?.status === "failed" ? "bg-danger" : item.run && ["queued", "running", "waiting"].includes(item.run.status) ? "animate-pulse bg-accent" : item.outcome === "ignored" || item.outcome === "duplicate" ? "bg-ink-secondary/50" : "bg-success")} />
                         <div className="min-w-0 flex-1"><div className="flex items-center gap-1.5 text-[11.5px]"><span className="truncate font-medium text-ink">{item.eventName}</span><span className="shrink-0 text-ink-secondary">· {relativeTime(item.at)}</span></div><div className="mt-0.5 truncate font-mono text-[10px] text-ink-tertiary">{item.reason || item.preview || "Empty payload"}</div></div>
                         <span className={cn("shrink-0 text-[10px] font-medium", outcomeTone(item.outcome, item.run))}>{outcomeLabel(item.outcome, item.run)}</span>
-                        {item.run?.threadId && selectedBot && <button onClick={() => { dispatch({ type: "select", id: selectedBot.id }); dispatch({ type: "switchTask", botId: selectedBot.id, threadId: item.run!.threadId! }); }} className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[10.5px] text-ink-secondary hover:bg-raised hover:text-ink" title="Open this execution in the MAUS chat"><ExternalLink size={11} />Open chat</button>}
+                        {item.run?.threadId && selectedBot && <button onClick={() => openBotThread(dispatch, selectedBot, item.run!.threadId!, showThreads)} className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[10.5px] text-ink-secondary hover:bg-raised hover:text-ink" title="Open this execution in the MAUS chat"><ExternalLink size={11} />Open chat</button>}
                       </div>
                     ))}
                   </div>

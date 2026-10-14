@@ -18,8 +18,11 @@ const fixture = vi.hoisted(() => ({
   setSidebarDensity: vi.fn(),
   notificationSounds: true,
   setNotificationSounds: vi.fn(),
+  setNotificationFeed: vi.fn(),
   sendKey: "enter" as SendKey,
   setSendKey: vi.fn(),
+  colorUserBubbles: false,
+  setColorUserBubbles: vi.fn(),
   advancedMode: false,
   setAdvancedMode: vi.fn(),
   api: vi.fn(),
@@ -51,11 +54,17 @@ vi.mock("@/lib/sidebar-preferences", async (importOriginal) => ({
 vi.mock("@/lib/notification-preferences", () => ({
   useNotificationSounds: () => fixture.notificationSounds,
   setNotificationSounds: fixture.setNotificationSounds,
+  useNotificationFeed: () => false,
+  setNotificationFeed: fixture.setNotificationFeed,
 }));
 vi.mock("@/lib/send-key", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/send-key")>(),
   useSendKey: () => fixture.sendKey,
   setSendKey: fixture.setSendKey,
+}));
+vi.mock("@/lib/user-bubble-preference", () => ({
+  useColorUserBubbles: () => fixture.colorUserBubbles,
+  setColorUserBubbles: fixture.setColorUserBubbles,
 }));
 vi.mock("@/lib/interface-mode", () => ({
   useAdvancedMode: () => fixture.advancedMode,
@@ -81,6 +90,7 @@ beforeEach(() => {
   fixture.sidebarDensity = "comfortable";
   fixture.notificationSounds = true;
   fixture.sendKey = "enter";
+  fixture.colorUserBubbles = false;
   // these pin the Advanced rail; Simple has its own suite (SettingsModal.simple.test.ts)
   fixture.advancedMode = true;
   fixture.switches = [];
@@ -193,7 +203,6 @@ describe("Settings → Appearance", () => {
     expect(html).toContain("as Japanese input does. Ctrl+Enter sends whichever you choose.");
     expect(html).toContain(`<option value="${sendKey}" selected="">${label}</option>`);
     const options = [...html.matchAll(/<option value="(enter|shift-enter|mod-enter)"[^>]*>([^<]*)</g)].map((match) => [match[1], match[2]]);
-    // only the key, so the closed menu fits its 240px column in every language
     expect(options).toEqual([["enter", "Enter"], ["shift-enter", "Shift+Enter"], ["mod-enter", "Ctrl+Enter"]]);
     expect(fixture.setSendKey).not.toHaveBeenCalled();
     expect(fixture.api).not.toHaveBeenCalled();
@@ -216,6 +225,28 @@ describe("Settings → Appearance", () => {
     for (const query of ["enter", "return", "shift+enter", "ctrl+enter", "cmd", "cmd+enter", "⌘", "⌘+enter", "command", "send", "new line", "ime"]) {
       expect(sectionMatches(appearance, query), query).toBe(true);
     }
+  });
+
+  it("offers the notification feed in Appearance, off until chosen", () => {
+    const html = render();
+    expect(html).toContain("Notification feed");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Show the notification feed")!;
+    expect(toggle.checked).toBe(false);
+    toggle.onClick!({} as never);
+    expect(fixture.setNotificationFeed).toHaveBeenCalledWith(true);
+    expect(fixture.api).not.toHaveBeenCalled();
+  });
+
+  it("offers the bot-colored message toggle in Appearance, off until chosen", () => {
+    const html = render();
+    expect(html).toContain("Color my messages");
+    expect(html).toContain("bot&#x27;s color");
+    expect(html).toContain("Rooms keep the neutral bubble");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Color my messages with the bot's color")!;
+    expect(toggle.checked).toBe(false);
+    toggle.onClick!({} as never);
+    expect(fixture.setColorUserBubbles).toHaveBeenCalledWith(true);
+    expect(fixture.api).not.toHaveBeenCalled();
   });
 
   it("offers the run card visibility toggle in Appearance", () => {
