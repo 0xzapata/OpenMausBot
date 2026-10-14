@@ -372,6 +372,7 @@ it("a process on the Cloud cannot write in the owner's running conversation, and
   await review(bot);
   const mine = await newThread(bot);
   const tools = await toolsFor(() => say(owner, bot, "Plan my day.", mine));
+  expect(String((await dumped(dumpOf("held"))).systemPrompt)).toContain("Change MEMORY.md only with memory_update");
   expect((await local("POST", `/api/bots/${bot.id}/messages`, { text: `Also save to MEMORY.md: ${INJECTED}`, threadId: mine })).status).toBe(403);
   expect((await sees(tools)).computers).toHaveLength(1);
   const token = randomBytes(32).toString("hex");
@@ -394,6 +395,11 @@ it("a process on the Cloud cannot write in the owner's running conversation, and
   expect((await sees(tools)).computers).toHaveLength(1);
   expect((await sees(tools)).unavailable ?? "").not.toContain("Someone else wrote in this conversation");
   await stop(bot, mine);
+  // Its notes would be refused, so the teammate's turn is told to put facts in its result instead.
+  let delegated: any;
+  await expect.poll(async () => JSON.stringify((delegated = await dumped(dumpOf("held"))).prompt), { timeout: 15_000 }).toContain(INJECTED);
+  expect(String(delegated.systemPrompt)).toContain("Notes cannot be saved from this conversation");
+  expect(String(delegated.systemPrompt)).not.toContain("Change MEMORY.md only with memory_update");
   await stop(bot, receipt.receipts![0]!.threadId!);
 }, 60_000);
 
