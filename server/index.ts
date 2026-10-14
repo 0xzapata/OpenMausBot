@@ -411,7 +411,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { RepeatDetector, callKey } from "./repeat-detector.ts";
+import { RepeatDetector, callKey, toolItemKey } from "./repeat-detector.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -8098,16 +8098,16 @@ const handoffs = new Handoffs({
 bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
   if (event.type === "turn.completed" || event.type === "session.exited") return void repeats.settle(event.threadId);
-  let key: string | null = null;
+  let key: string | null = null, shown: string | undefined; // shown: the title only, never the input the key counts on
   if (event.type === "item.started" && event.itemType === "tool") {
-    const title = event.title ?? "";
-    if (/\s|\//.test(title.trim())) key = callKey("tool", title);
+    key = toolItemKey(event.title, event.input);
+    shown = event.title?.trim();
   } else if (event.type === "request.opened" && event.requestType === "permission") key = callKey(event.tool, event.summary);
   if (!key) return;
   const { threshold } = repeats.record(event.threadId, key);
   if (!threshold) return;
   const [tool, ...rest] = key.split(":");
-  const args = rest.join(":");
+  const args = shown ?? rest.join(":");
   store.appendMessage(event.threadId, {
     role: "bot",
     kind: "activity",
