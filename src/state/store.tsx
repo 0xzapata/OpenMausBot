@@ -537,8 +537,8 @@ export interface Bot {
   fallback?: Array<{ instanceId: string; model: string }>;
   /** Whether this bot gets the app's built-in browser (Browser tab). On unless switched off. */
   browser?: boolean;
-  /** Memory upkeep (Bot settings → Memory): background capture and the
-   * nightly tidy-up. On unless explicitly false. */
+  recordBrowserSteps?: boolean; // Access → Browser → Record browser steps; off unless true
+  /** Memory upkeep (Bot settings → Memory): capture and the nightly tidy-up. On unless false. */
   memoryUpkeep?: boolean;
   /** Prompt-cache keep-warm for this bot's Claude threads: true/false
    * overrides the workspace setting, absent follows it (null clears over PATCH). */
@@ -765,7 +765,9 @@ export interface ConfigStatus {
    * (off while no key is saved). `included`: Cloud Pro's decisions, no key
    * saved. */
   decider?: {
-    provider: "jev";
+    provider: "jev" | "openrouter";
+    /** The OpenRouter model in use; present only while OpenRouter is the provider. */
+    model?: string;
     configured: boolean;
     included?: boolean;
     enabled: boolean;

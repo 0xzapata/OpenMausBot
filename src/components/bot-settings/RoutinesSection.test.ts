@@ -14,10 +14,25 @@ vi.mock("@/components/DesktopCapabilities", () => ({
   useDesktopCapabilities: () => ({ capabilities: { host: { homeDir: undefined } } }),
 }));
 
+const dispatch = vi.hoisted(() => vi.fn());
 vi.mock("@/state/store", () => ({
   api: vi.fn(),
-  useStore: () => ({ state: { routinesLoadState: "ready" }, dispatch: vi.fn() }),
+  useStore: () => ({ state: { routinesLoadState: "ready" }, dispatch }),
 }));
+
+// The real list, with the props the section handed it kept for the tests
+// that call its handlers.
+const listProps = vi.hoisted(() => ({ last: null as null | { onToggle?: (routine: Routine) => void } }));
+vi.mock("../routines/RoutineList", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../routines/RoutineList")>();
+  return {
+    ...real,
+    RoutineList: (props: Parameters<typeof real.RoutineList>[0]) => {
+      listProps.last = props;
+      return real.RoutineList(props);
+    },
+  };
+});
 
 const { RoutinesSection } = await import("./RoutinesSection");
 
@@ -97,10 +112,21 @@ describe("RoutinesSection", () => {
     expect(markup).toContain("Weekly digest");
   });
 
-  it("chips an enabled routine Active and a disabled one Paused", () => {
+  it("gives each routine an on/off switch, and says Paused under one that is off", () => {
     const markup = render([activeRoutine, pausedRoutine], []);
-    expect(markup).toContain(">Active<");
+    expect(markup).toMatch(/aria-label="Run Morning brief on its schedule"[^>]*role="switch" aria-checked="true"/);
+    expect(markup).toMatch(/aria-label="Run Weekly digest on its schedule"[^>]*role="switch" aria-checked="false"/);
+    // The switch took the badge's place; the state still reads in words.
+    expect(markup).not.toContain(">Active<");
     expect(markup).toContain(">Paused<");
+  });
+
+  it("pauses and resumes from the switch through the same update the Routines page sends", () => {
+    render([activeRoutine, pausedRoutine], []);
+    listProps.last!.onToggle!(activeRoutine);
+    expect(dispatch).toHaveBeenLastCalledWith({ type: "updateRoutine", routineId: "r1", patch: { enabled: false } });
+    listProps.last!.onToggle!(pausedRoutine);
+    expect(dispatch).toHaveBeenLastCalledWith({ type: "updateRoutine", routineId: "r2", patch: { enabled: true } });
   });
 
   it("shows the next run time for a routine that has one", () => {

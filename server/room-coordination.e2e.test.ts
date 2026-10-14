@@ -399,7 +399,7 @@ it("stops awaiting on Stop in the source room: the running downstream turn is le
 }), 45_000);
 
 it.each(["allow", "deny"])("honors %s on the sender's peer-approval card", behavior => withRooms(async f => {
-  await f.api(`/api/bots/${f.sender.id}`, { approvePeerComms: true }, "PATCH");
+  await f.api(`/api/bots/${f.sender.id}`, { approvePeerComms: true, approvalMode: "ask" }, "PATCH");
   f.plan[f.sender.id].steps[0].expectError = behavior === "deny";
   await f.start();
   let card: any;
@@ -418,7 +418,7 @@ it.each(["allow", "deny"])("honors %s on the sender's peer-approval card", behav
 it.each(["allow", "deny"])("presents all peer approvals together and dispatches only if every recipient is allowed (%s)", behavior => withRooms(async f => {
   const reviewer = (await f.cli("new-bot", "--name", "Reviewer", "--section", "A")).bot;
   await f.tool("update_channel", { channel_id: f.destination.id, member_ids: [f.target.id, reviewer.id] });
-  await f.api(`/api/bots/${f.sender.id}`, { approvePeerComms: true }, "PATCH");
+  await f.api(`/api/bots/${f.sender.id}`, { approvePeerComms: true, approvalMode: "ask" }, "PATCH");
   f.plan[reviewer.id] = { reply: "Reviewed CSV" };
   f.plan[f.sender.id].steps[0].arguments.bot_ids.push(reviewer.id);
   f.plan[f.sender.id].steps[0].expectError = behavior === "deny";

@@ -366,8 +366,8 @@ const agentSchema = z.object({
   description: optionalText(4_000),
   soul: soulSchema.optional(),
   appearance: appearanceSchema,
-  /** A suggestion only: every imported bot starts on Ask. */
-  approval: z.enum(["ask", "auto"], { error: "must be ask or auto" }).optional(),
+  /** A suggestion only: every imported bot starts on Ask. Record browser steps travels as set (no card). */
+  approval: z.enum(["ask", "auto"], { error: "must be ask or auto" }).optional(), recordBrowserSteps: z.boolean().optional(),
   playbooks: z.array(key).max(40).optional(),
   skills: z.array(skillName).max(AGENT_MAX_SKILLS).optional(),
   connections: z.array(connKey).max(PACKAGE_MAX_CONNECTIONS).optional(),

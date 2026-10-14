@@ -1945,7 +1945,7 @@ export class Store {
         next = { id: operation.botId, threadId: operation.threadId, name: operation.fields.name,
           title: "", description: "", soul: "", notifications: true, color: COLORS[nextBots.length % COLORS.length], unread: false,
           resumeCursors: {}, createdAt, ...operation.fields, modelSelection,
-          approvalMode: "ask", autoApprove: false, composio: false, approvePeerComms: false,
+          autoApprove: false, composio: false, approvePeerComms: false,
           // No connector tools until someone grants them. An absent record
           // would mean every tool once connected apps are turned on.
           connectorTools: {},
@@ -1953,7 +1953,6 @@ export class Store {
           // a restricted Chief never creates a bot everyone sees.
           ...(chief.visibility && chief.visibility !== "everyone" ? { visibility: structuredClone(chief.visibility) } : {}),
           tasks: [{ threadId: operation.threadId, title: UNTITLED_THREAD, createdAt, updatedAt: createdAt, resumeCursors: {},
-            approvalMode: "ask", autoApprove: false,
             unread: false, activity: "idle", busy: false }],
         };
         // "" is the private-workspace spelling on proposal; the record

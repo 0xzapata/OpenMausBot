@@ -4,9 +4,9 @@
 // any engine turn starts. It never does the work itself.
 //
 // Modelled on server/tts/index.ts: a key-free status for Settings, a key
-// check, and one module per vendor behind a common shape, so another backend
-// (a local Jev-compatible server through `baseUrl`, an LLM) plugs in here
-// without touching a caller.
+// check, and one module per vendor behind a common shape: TypeSafe Jev, or an
+// OpenRouter model (openrouter.ts). Another backend plugs in here without
+// touching a caller.
 //
 // The contract every caller relies on: it NEVER throws into a turn. No key,
 // the switch off, the job off, a timeout, an HTTP error, an overloaded
@@ -16,15 +16,17 @@
 // On a Cloud Pro home, decisions are included: with no Jev key of the
 // person's own, the Admin's relay token (included-services.ts) is used, only
 // ever with the relay's URL and only for the requests the relay accepts
-// (relay.ts), and the switch counts as on until turned off.
+// (relay.ts), and the switch counts as on until turned off. The relay speaks
+// Jev's API only: with OpenRouter selected there is nothing included.
 import type { AppConfig } from "../config.ts";
 import { deciderCredential, type ServiceCredential } from "../included-services.ts";
 import { jevBackend } from "./jev.ts";
 import { appendDeciderLog, stateHash } from "./log.ts";
+import { OPENROUTER_DEFAULT_API, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_DEFAULT_MODEL, openrouterBackend } from "./openrouter.ts";
 import { KEY_CHECK_QUESTION, KEY_CHECK_STATE, relayAccepts, relaySeam } from "./relay.ts";
 import type {
   Answers, AskOptions, BackendResult, ChoiceAnswer, ChoiceQuestion, DeciderBackend, DeciderFailure, DeciderJob,
-  DeciderProvider, DeciderQuestion, DeciderResult, DeciderSeam, ScoreAnswer, YesNoAnswer,
+  DeciderProvider, DeciderQuestion, DeciderResult, DeciderSeam, OpenRouterApi, ScoreAnswer, YesNoAnswer,
 } from "./types.ts";
 
 export { DECIDER_JOBS } from "./types.ts";
@@ -41,7 +43,7 @@ const offBackend: { id: "off"; decide(): Promise<BackendResult> } = {
   id: "off",
   decide: async () => ({ ok: false, reason: "disabled" }),
 };
-const BACKENDS: Record<DeciderProvider, DeciderBackend> = { jev: jevBackend };
+const BACKENDS: Record<DeciderProvider, DeciderBackend> = { jev: jevBackend, openrouter: openrouterBackend };
 
 type DeciderConfig = NonNullable<AppConfig["decider"]>;
 
@@ -50,13 +52,36 @@ export function deciderProvider(cfg: AppConfig): DeciderProvider | "off" {
   return provider in BACKENDS ? (provider as DeciderProvider) : "off";
 }
 
+/** The OpenRouter model a call asks: the saved one, else the default. */
+export function deciderModel(cfg: AppConfig): string {
+  return cfg.decider?.openrouterModel?.trim() || OPENROUTER_DEFAULT_MODEL;
+}
+
+/** The OpenRouter API that model is served by. With no model saved it is the
+ * default model's, whatever a stale `openrouterApi` says. */
+export function deciderApi(cfg: AppConfig): OpenRouterApi {
+  if (!cfg.decider?.openrouterModel?.trim()) return OPENROUTER_DEFAULT_API;
+  return cfg.decider.openrouterApi === "decisions" ? "decisions" : "chat";
+}
+
 /** The key a call uses and the one base URL it goes to: the person's own
  * (a draft being tested, else the config value or the desktop's encrypted
  * store handed over as env) with `decider.baseUrl` or Jev's own, else Cloud
  * Pro's included token with the Admin's relay, but only where the relay
- * accepts that seam: any other job has only an own key. Resolved on every
+ * accepts that seam: any other job has only an own key. With OpenRouter, only
+ * an own OpenRouter key (`decider.openrouterBaseUrl` or OpenRouter's own
+ * address): the relay is Jev's, so nothing is included. Resolved on every
  * call. */
-function deciderAccount(cfg: AppConfig, seam?: DeciderSeam, draft?: string): ServiceCredential | null {
+function deciderAccount(
+  cfg: AppConfig,
+  seam?: DeciderSeam,
+  draft?: string,
+  provider: DeciderProvider | "off" = deciderProvider(cfg),
+): ServiceCredential | null {
+  if (provider === "openrouter") {
+    const token = draft?.trim() || cfg.decider?.openrouterKey?.trim();
+    return token ? { token, api: cfg.decider?.openrouterBaseUrl?.trim() || OPENROUTER_DEFAULT_BASE_URL, included: false } : null;
+  }
   const account = deciderCredential(draft?.trim() || cfg.decider?.key, cfg.decider?.baseUrl);
   return account?.included && seam && !relaySeam(seam) ? null : account;
 }
@@ -95,11 +120,13 @@ export function deciderReady(cfg: AppConfig, job: DeciderJob): boolean {
 
 /** What Settings needs. Never the key, and not the base URL either: that is
  * an operator setting with no UI. `included`: the decisions are Cloud Pro's,
- * not a saved key. */
+ * not a saved key. `model`: the OpenRouter model in use. */
 export function describeDecider(cfg: AppConfig) {
   const account = deciderAccount(cfg);
+  const provider = deciderProvider(cfg);
   return {
-    provider: "jev" as const,
+    provider: provider === "off" ? "jev" as const : provider,
+    ...(provider === "openrouter" ? { model: deciderModel(cfg), api: deciderApi(cfg) } : {}),
     configured: Boolean(account),
     ...(account?.included ? { included: true as const } : {}),
     enabled: deciderEnabled(cfg),
@@ -115,28 +142,67 @@ export function describeDecider(cfg: AppConfig) {
  * decisions here (`included`): then it falls back to them as it stands.
  * Explicit values in the same patch win. Jobs merge per job, because
  * saveConfig replaces a section's nested objects whole. Returns an error for
- * a switch-on with no key and nothing included. */
+ * a switch-on with no key and nothing included.
+ *
+ * All of that is about the active provider's key (`key` for Jev,
+ * `openrouterKey` for OpenRouter, the provider the patch selects or else the
+ * saved one). The other provider's key is only trimmed: saving or clearing it
+ * never flips the switch. Cloud Pro's included decisions are Jev's alone. */
 export function deciderSavePatch(
   patch: Partial<DeciderConfig>,
   current: DeciderConfig | undefined,
   included = false,
 ): { ok: true; patch: Partial<DeciderConfig> } | { ok: false; error: string } {
   const next: Partial<DeciderConfig> = { ...patch };
-  const savingKey = typeof patch.key === "string" && Boolean(patch.key.trim());
-  const clearingKey = typeof patch.key === "string" && !patch.key.trim();
+  const provider = patch.provider ?? current?.provider ?? "jev";
+  const field = provider === "openrouter" ? "openrouterKey" : "key";
+  const includedHere = included && field === "key";
+  const activeKey = patch[field];
+  const savingKey = typeof activeKey === "string" && Boolean(activeKey.trim());
+  const clearingKey = typeof activeKey === "string" && !activeKey.trim();
+  // A model id saved without its API is a chat model: never keep the last one's.
+  if (patch.openrouterModel !== undefined && patch.openrouterApi === undefined) next.openrouterApi = "chat";
   if (typeof patch.key === "string") next.key = patch.key.trim();
+  if (typeof patch.openrouterKey === "string") next.openrouterKey = patch.openrouterKey.trim();
   if (savingKey) {
     next.enabled = patch.enabled ?? true;
     next.jobs = { ...current?.jobs, roomRouting: true, ...patch.jobs };
   } else if (clearingKey) {
-    if (!included) next.enabled = false;
+    if (!includedHere) next.enabled = false;
   } else if (patch.jobs) {
     next.jobs = { ...current?.jobs, ...patch.jobs };
   }
-  if (next.enabled === true && !savingKey && !current?.key?.trim() && !included) {
-    return { ok: false, error: "Save a Jev API key before turning on fast decisions." };
+  if (next.enabled === true && !savingKey && !current?.[field]?.trim() && !includedHere) {
+    const key = field === "key" ? "a Jev API key" : "an OpenRouter API key";
+    return { ok: false, error: `Save ${key} before turning on fast decisions.` };
   }
   return { ok: true, patch: next };
+}
+
+/** The key a Settings save pastes, as the arguments for checking it once:
+ * the active provider's, else the other's. Null when the patch has no key. */
+export function deciderPatchKey(
+  patch: Partial<DeciderConfig>,
+  current: DeciderConfig | undefined,
+): { provider: DeciderProvider; check: { key: string; provider: DeciderProvider; model?: string; api?: OpenRouterApi } } | null {
+  const jevKey = patch.key?.trim();
+  const openrouterKey = patch.openrouterKey?.trim();
+  const jev = jevKey ? { provider: "jev" as const, check: { key: jevKey, provider: "jev" as const } } : null;
+  const savedModel = (patch.openrouterModel ?? current?.openrouterModel)?.trim();
+  // A model in this patch brings its own API (none means chat); else the saved one's.
+  const api = patch.openrouterModel !== undefined ? patch.openrouterApi : patch.openrouterApi ?? current?.openrouterApi;
+  const openrouter = openrouterKey
+    ? {
+      provider: "openrouter" as const,
+      check: {
+        key: openrouterKey,
+        provider: "openrouter" as const,
+        model: savedModel || OPENROUTER_DEFAULT_MODEL,
+        api: savedModel ? (api === "decisions" ? "decisions" as const : "chat" as const) : OPENROUTER_DEFAULT_API,
+      },
+    }
+    : null;
+  return (patch.provider ?? current?.provider) === "openrouter" ? openrouter ?? jev : jev ?? openrouter;
 }
 
 export interface DeciderDeps {
@@ -171,8 +237,10 @@ export interface Decider {
   yesNo(seam: DeciderSeam, state: unknown, instructions: string, options?: AskOptions): Promise<DeciderResult<YesNoAnswer>>;
   /** One tiny yes/no call with a draft key or the saved one (with neither,
    * Cloud Pro's included decisions through the relay), whatever the switches
-   * say: the Settings Test button, and the check on save. */
-  testKey(input?: { key?: string }, options?: AskOptions): Promise<DeciderResult<YesNoAnswer>>;
+   * say: the Settings Test button, and the check on save. `provider` and
+   * `model` stand in for the saved ones: a save may change them together
+   * with the key. */
+  testKey(input?: { key?: string; provider?: DeciderProvider; model?: string; api?: OpenRouterApi }, options?: AskOptions): Promise<DeciderResult<YesNoAnswer>>;
 }
 
 export function createDecider(deps: DeciderDeps): Decider {
@@ -193,7 +261,7 @@ export function createDecider(deps: DeciderDeps): Decider {
   async function call<Qs extends Record<string, DeciderQuestion>>(
     seam: DeciderSeam,
     backend: DeciderBackend | typeof offBackend,
-    request: { key: string; baseUrl?: string; state: unknown; questions: Qs },
+    request: { key: string; baseUrl?: string; model?: string; state: unknown; questions: Qs },
     options: AskOptions,
   ): Promise<DeciderResult<Answers<Qs>>> {
     const provider = backend.id === "off" ? undefined : backend.id;
@@ -230,6 +298,7 @@ export function createDecider(deps: DeciderDeps): Decider {
         at: new Date().toISOString(),
         seam,
         provider,
+        ...(request.model ? { model: request.model } : {}),
         ok: outcome.ok,
         ...(!outcome.ok ? { reason: outcome.reason, ...(outcome.status ? { status: outcome.status } : {}) } : {}),
         ...(first ? { choice: first.choice } : {}),
@@ -266,7 +335,13 @@ export function createDecider(deps: DeciderDeps): Decider {
       const account = deciderAccount(cfg, seam)!;
       // Through the included token, only the exact requests the relay takes.
       if (account.included && !relayAccepts(seam, state, questions)) return { ok: false, reason: "misconfigured" };
-      return await call(seam, backend, { key: account.token, baseUrl: account.api, state, questions }, options);
+      return await call(seam, backend, {
+        key: account.token,
+        baseUrl: account.api,
+        ...(provider === "openrouter" ? { model: deciderModel(cfg), api: deciderApi(cfg) } : {}),
+        state,
+        questions,
+      }, options);
     } catch {
       return { ok: false, reason: "malformed" };
     }
@@ -295,17 +370,23 @@ export function createDecider(deps: DeciderDeps): Decider {
     async testKey(input = {}, options = {}) {
       try {
         const cfg = deps.config();
-        // A draft or saved own key goes to Jev (or decider.baseUrl); with
-        // neither, Cloud Pro's included token goes to its relay.
-        const account = deciderAccount(cfg, "keyCheck", input.key);
+        // A draft or saved own key goes to the provider (or its operator
+        // base URL); with neither, Cloud Pro's included token goes to its
+        // relay, for Jev only.
+        const provider = input.provider ?? deciderProvider(cfg);
+        const account = deciderAccount(cfg, "keyCheck", input.key, provider);
         if (!account) return { ok: false, reason: "no_key" };
-        const provider = deciderProvider(cfg);
         const backend = provider === "off" ? offBackend : BACKENDS[provider];
         const questions = { answer: { type: "yesno" as const, instructions: KEY_CHECK_QUESTION } };
         if (account.included && !relayAccepts("keyCheck", KEY_CHECK_STATE, questions)) return { ok: false, reason: "misconfigured" };
         return single(await call("keyCheck", backend, {
           key: account.token,
           baseUrl: account.api,
+          ...(provider === "openrouter"
+            ? input.model?.trim()
+              ? { model: input.model.trim(), api: input.api ?? "chat" }
+              : { model: deciderModel(cfg), api: deciderApi(cfg) }
+            : {}),
           state: KEY_CHECK_STATE,
           questions,
         }, { timeoutMs: KEY_CHECK_TIMEOUT_MS, ...options }));

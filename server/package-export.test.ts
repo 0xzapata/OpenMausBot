@@ -317,6 +317,13 @@ describe("whole-team export (package v2)", () => {
     expect(result.filename).toBe("sales-desk-1.0.0.openmaus.json");
   });
 
+  it("carries Record browser steps for the bots that have it on, and nothing for the rest", () => {
+    const input = fixture();
+    input.bots[1] = { ...input.bots[1]!, recordBrowserSteps: true };
+    const agents = createTeamPackageExport(input).document.package.agents;
+    expect(agents.map((agent) => agent.recordBrowserSteps)).toEqual([undefined, true]);
+  });
+
   it("adds starter notes only when asked, within the caps", () => {
     expect(createTeamPackageExport(fixture()).document.package.agents.some((agent) => agent.seed)).toBe(false);
     const withNotes = createTeamPackageExport({ ...fixture(), memoryByBot: new Map([["lead", [

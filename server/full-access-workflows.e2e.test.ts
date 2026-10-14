@@ -101,6 +101,8 @@ it("applies requested Full Access workflows through MCP without duplicate approv
     await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, approvePeerComms: true });
     const ask = (await api("POST", `/api/bots/${chief.id}/tasks`, { title: "Ask sibling" }, 201)).task;
     const peer = (await cli("new-bot", "--name", "Ada", "--section", "Operations")).bot;
+    // Ada's own level is an explicit Ask, so the Chief's Full has something to raise.
+    await api("PATCH", `/api/bots/${peer.id}`, { approvalMode: "ask" });
     const inverse = (await cli("new-bot", "--name", "Thread Full", "--section", "Private")).bot;
     const modelSelection = chief.modelSelection;
     await api("PATCH", "/api/config", { features: { skillAuthoring: true } });
@@ -160,10 +162,11 @@ it("applies requested Full Access workflows through MCP without duplicate approv
     // create_bot takes the same reviewed path, which Full access applies now.
     const createdTheo = created.evidence.find((item: any) => item.step?.tool === "create_bot");
     expect(createdTheo.response.result.content[0].text).toMatch(/^Created @Theo in Operations/);
+    // New specialists start at the default level, Full access, like any new bot.
     expect((await bots()).find(bot => bot.name === "Theo")).toMatchObject({ section: "Operations", title: "Totals checker",
-      soul: "Check fixture totals before each report.", approvalMode: "ask", autoApprove: false, composio: false });
+      soul: "Check fixture totals before each report.", approvalMode: "full", autoApprove: false, composio: false });
     const mira = (await bots()).find(bot => bot.name === "Mira");
-    expect(mira).toMatchObject({ section: "Research", approvalMode: "ask", autoApprove: false, composio: false });
+    expect(mira).toMatchObject({ section: "Research", approvalMode: "full", autoApprove: false, composio: false });
     const routine = (await api("GET", "/api/routines")).routines.find((item: any) => item.name === "Monthly fixture report");
     expect(routine).toMatchObject({ botId: chief.id, enabled: true, schedule });
     expect((await api("GET", `/api/bots/${chief.id}/skills`)).skills).toEqual(expect.arrayContaining([expect.objectContaining({ name: "monthly-fixture-review", enabled: true })]));

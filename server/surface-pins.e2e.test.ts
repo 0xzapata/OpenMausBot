@@ -408,7 +408,8 @@ describe("surface pin provenance against the real server", () => {
   it("never takes a relayed line's conversation for where the person writes, when select_computer continues its turn", async () => {
     await start();
     const { bot } = await apiOk("POST", "/api/bots", { name: "Relayed place bot" });
-    const { task } = await apiOk("POST", `/api/bots/${bot.id}/tasks`, {});
+    // An Ask thread, as a Slack relay's guarded send expects.
+    const { task } = await apiOk("POST", `/api/bots/${bot.id}/tasks`, { approvalMode: "ask" });
     await apiOk("PUT", "/api/config", { box: { token: "box_fixture" } });
     const lastRow = async () => {
       const { messages } = await apiOk("GET", `/api/threads/${task.threadId}/messages?limit=30`);

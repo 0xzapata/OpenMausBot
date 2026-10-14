@@ -50,6 +50,21 @@ describe("signed-in sites", () => {
     expect(host.textContent).not.toContain("share this browser");
   });
 
+  it("bare, it has no fold or title and loads as soon as it is shown", async () => {
+    fixture.api.mockResolvedValueOnce({ running: true, sites: [example, google] }).mockResolvedValueOnce({ running: true, sites: [google] });
+    await render({ bare: true, target: { bot: "pepper" }, sharedBy: ["Pepper"] });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(fixture.api).toHaveBeenCalledTimes(1);
+    expect(fixture.api).toHaveBeenCalledWith("/api/browser-sites?bot=pepper");
+    expect(host.querySelector("details")).toBeNull();
+    expect(host.textContent).not.toContain("Signed-in sites");
+    expect(listed()).toEqual(["example.com", "google.com"]);
+    // Signing out works the same, and does not load the list a second time.
+    await click("Sign out of example.com");
+    expect(fixture.api).toHaveBeenCalledTimes(2);
+    expect(listed()).toEqual(["google.com"]);
+  });
+
   it("signs out of one site, and shows what is left", async () => {
     fixture.api.mockResolvedValueOnce({ running: true, sites: [example, google] }).mockResolvedValueOnce({ running: true, sites: [example] });
     await render({ target: { bot: "pepper" }, sharedBy: ["Pepper"] });

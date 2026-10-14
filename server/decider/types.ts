@@ -1,9 +1,14 @@
 // The decision model's vocabulary, shared by every backend and caller. A
 // question is one of three typed shapes; an answer comes back typed to match.
-// Nothing here names a vendor: `jev` is one backend, and another (a local
-// Jev-compatible server, an LLM) plugs in behind the same types.
+// Nothing here names a vendor: `jev` and `openrouter` are backends, and
+// another (a local Jev-compatible server, another LLM host) plugs in behind
+// the same types.
 
-export type DeciderProvider = "jev";
+export type DeciderProvider = "jev" | "openrouter";
+
+/** How OpenRouter serves a model: as a chat model asked for strict JSON, or
+ * through its Decisions API (models whose output modality is `decisions`). */
+export type OpenRouterApi = "chat" | "decisions";
 
 /** Jobs a person can switch on or off one by one in Settings. */
 export type DeciderJob = "roomRouting";
@@ -112,6 +117,10 @@ export interface AskOptions {
 export interface BackendRequest {
   key: string;
   baseUrl?: string;
+  /** The model to ask, for a backend that has a choice (OpenRouter). */
+  model?: string;
+  /** Which OpenRouter API that model is served by; absent is `chat`. */
+  api?: OpenRouterApi;
   state: unknown;
   questions: Record<string, DeciderQuestion>;
   signal: AbortSignal;

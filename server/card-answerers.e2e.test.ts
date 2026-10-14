@@ -109,7 +109,8 @@ const decision = (requestId: string, kind: DecisionRow["decision"]) => waitFor(a
 async function makeBot(name: string) {
   const created = await api("POST", "/api/bots", { name }, BOSS);
   expect(created.status, JSON.stringify(created.body)).toBe(201);
-  const patched = await api("PATCH", `/api/bots/${created.body.bot.id}`, { modelSelection: { instanceId: "grok", model: "fake-model" } }, BOSS);
+  // On Ask, so the fake engine's permission request becomes a card.
+  const patched = await api("PATCH", `/api/bots/${created.body.bot.id}`, { modelSelection: { instanceId: "grok", model: "fake-model" }, approvalMode: "ask" }, BOSS);
   expect(patched.status).toBe(200);
   return created.body.bot as { id: string; threadId: string };
 }

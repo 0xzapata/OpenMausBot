@@ -13,7 +13,6 @@ import { parseVisibility } from "../bot-visibility.ts";
 import type { createCloudRoutineAuthors } from "../cloud-lending.ts";
 import type { AppConfig } from "../config.ts";
 import type { ModelSelection } from "../contracts.ts";
-import type { createApprovalModeSupport } from "../harness-capabilities.ts";
 import type { hostedModelPolicy } from "../hosted-models.ts";
 import { MAX_MCP_SERVERS, mcpServerNameError } from "../mcp-registry.ts";
 import { journalMemoryWrite } from "../memory-journal.ts";
@@ -45,7 +44,6 @@ export interface BotCreateRouteDeps {
   /** On a Cloud home, the owner's person key; null elsewhere. */
   cloudOwnerKey: string | null;
   hostedModels: ReturnType<typeof hostedModelPolicy>;
-  supportsApprovalMode: ReturnType<typeof createApprovalModeSupport>;
   cloudRoutineAuthors: ReturnType<typeof createCloudRoutineAuthors> | null;
   /** The routine manager, assigned at boot after the routes are built. */
   routines(): RoutineManager | null;
@@ -64,7 +62,7 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
     store, cfg, presetStore, orgInstallStatuses,
     hostedWorkspace: HOSTED_WORKSPACE, hostedFullAccessRefusal: HOSTED_FULL_ACCESS_REFUSAL, desktopManaged: DESKTOP_MANAGED,
     maxWorkspaceBots: MAX_WORKSPACE_BOTS, cloudOwnerKey: CLOUD_OWNER_KEY,
-    hostedModels, supportsApprovalMode, cloudRoutineAuthors,
+    hostedModels, cloudRoutineAuthors,
     storedAvatarExists, defaultSelection, checkedModelSelection, cloudOwnerSession, wireBot,
   } = deps;
   return async ({ req, res, path, method, auth, json, readBody }) => {
@@ -150,9 +148,6 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
         selection = checked.selection;
       }
       if (hostedModels && !hostedModels.allows(selection)) return json(res, 400, { error: hostedModels.error() });
-      if (settings.approvalMode === "full" && !supportsApprovalMode(selection, "full")) {
-        return json(res, 400, { error: "This provider does not support Full access" });
-      }
       // Keep the capacity check immediately beside the synchronous write.
       // Awaiting provider discovery before this point cannot race the cap.
       if (store.bots.length >= MAX_WORKSPACE_BOTS) {

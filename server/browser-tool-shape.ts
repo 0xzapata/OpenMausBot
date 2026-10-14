@@ -12,15 +12,19 @@
 import { trimResultText } from "./mcp-trim.ts";
 
 /** Launch, session and network settings OpenMausBot owns through the
- * environment (see browser-engine.ts). A model has no business setting them
- * per call — `session` would reach another bot's browser, `extraArgs`,
- * `caCert` and `headed` change the launch — and each one cost more schema
- * than the tool's own description. `headed` in particular overrides
+ * environment (see browser-engine.ts), and the arguments that reach past
+ * the bot's own browser. A model has no business setting them per call —
+ * `session` would reach another bot's browser, `extraArgs`, `caCert`,
+ * `headed`, `webgpu` and `webmcp` change the launch (a relaunch loses the
+ * page), `all` on close closes every bot's browser in the socket folder,
+ * and a screenshot's `path` or `screenshotDir` writes a file anywhere the
+ * server can, the step store included — and each one cost more schema than
+ * the tool's own description. `headed` in particular overrides
  * AGENT_BROWSER_HEADED and the managed config, so a single call can pin a
  * daemon to a launch mode this host cannot satisfy (#1383). */
 export const HARNESS_OWNED_BROWSER_PARAMS: ReadonlySet<string> = new Set([
-  "allowedDomains", "caCert", "clearCaCert", "extraArgs", "headed", "idleTimeout", "namespace",
-  "restore", "restoreCheckFn", "restoreCheckText", "restoreCheckUrl", "restoreSave", "session", "timeoutMs",
+  "all", "allowedDomains", "caCert", "clearCaCert", "extraArgs", "headed", "idleTimeout", "namespace", "path",
+  "restore", "restoreCheckFn", "restoreCheckText", "restoreCheckUrl", "restoreSave", "screenshotDir", "session", "timeoutMs", "webgpu", "webmcp",
 ]);
 
 /** Characters of one browser result that may enter the model's context.
@@ -127,12 +131,34 @@ function listLines(lines: string[]): string {
   return shown.join(", ") + (shown.length < lines.length ? ` and ${lines.length - shown.length} more lines` : "");
 }
 
+const SENSITIVE_PARAM = /token|code|key|secret|pass|pwd|auth|session|sig|otp|state|nonce|credential|ticket|email/iu;
+/** A hash route (`#/settings`, `#!/inbox`) names a page; any other fragment
+ * may carry a token, as OAuth's `#access_token=…` does. */
+const HASH_ROUTE = /^#!?\/[\w\-./~%]*$/u;
+
+/** A page address fit to show or keep: origin, path and query, the values
+ * of sensitive parameters (and any holding an email address) replaced by
+ * `…`, and no credentials or fragment beyond a hash route. A bare host is
+ * read as https, as agent-browser opens it. Empty when it is no address. */
+export function sanitizeUrl(href: string): string {
+  let url: URL;
+  try { url = new URL(href); } catch {
+    try { url = new URL(`https://${href}`); } catch { return ""; }
+    if (!url.hostname.includes(".")) return "";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return url.protocol === "about:" ? "about:blank" : `${url.protocol}…`;
+  const query = [...url.searchParams].map(([key, value]) =>
+    `${encodeURIComponent(key)}=${SENSITIVE_PARAM.test(key) || value.includes("@") ? "…" : encodeURIComponent(value)}`).join("&");
+  const text = `${url.origin}${url.pathname}${query ? `?${query}` : ""}${HASH_ROUTE.test(url.hash) ? url.hash : ""}`;
+  return text.length > 500 ? `${text.slice(0, 499)}…` : text;
+}
+
 /** What a model needs after an action so it does not read the page back:
- * where the page is now, or which lines of visible text the action added or
- * removed. Text only: it does not prove the action did what was meant. */
+ * where the page is now (sanitizeUrl), or which lines of visible text the
+ * action added or removed. Text only: it does not prove the action did what was meant. */
 export function describePageChange(before: PageState, after: PageState): string {
   if (after.url !== before.url) {
-    return `The page is now ${after.url}${after.title ? ` (${JSON.stringify(after.title)})` : ""}. Refs from earlier snapshots do not apply to it; take a snapshot before acting on refs.`;
+    return `The page is now ${sanitizeUrl(after.url) || "a new address"}${after.title ? ` (${JSON.stringify(after.title)})` : ""}. Refs from earlier snapshots do not apply to it; take a snapshot before acting on refs.`;
   }
   const previous = visibleLines(before.text);
   const next = visibleLines(after.text);

@@ -12,8 +12,8 @@
 //      React-style forms see the change), the page's address is checked
 //      again, and the value goes in as real typing: the engine's input relay
 //      (`keyboard insertText`, the call the Browser tab's masked "Type a
-//      password or code" box makes) over its loopback stream, never on a
-//      command line.
+//      password or code" box makes) over its loopback relay
+//      (browser-relay.ts), never on a command line.
 //   4. A last script reports which fields hold text and removes the marks.
 // Two-step logins fill what is visible (the username, then the password on
 // the next page), and a one-time-code field gets a TOTP code made at fill
@@ -38,7 +38,7 @@ export interface FillLoginDeps {
    * null when that browser is not running. */
   engine(args: string[]): Promise<Record<string, unknown> | null>;
   /** Type text into the page's focused field, as real input. */
-  insertText(port: number, text: string): Promise<void>;
+  insertText(text: string): Promise<void>;
   /** Every secret value about to reach the page, so the scrubber knows it. */
   remember(value: string, kind: "password" | "code"): void;
   now?: () => number;
@@ -175,17 +175,6 @@ function joinWords(words: string[]): string {
 
 const FIELD_WORDS: Record<FilledField, string> = { username: "the username", password: "the password", code: "the one-time code" };
 
-/** The engine's local stream, enabled if it is not yet. */
-async function streamPort(engine: FillLoginDeps["engine"]): Promise<number> {
-  let status = await engine(["stream", "status"]);
-  if (status && status.enabled !== true) status = await engine(["stream", "enable"]);
-  const port = status?.port;
-  if (status?.enabled !== true || typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("The browser did not open its local input channel. Restart the browser and try again.");
-  }
-  return port;
-}
-
 export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Promise<FillLoginOutcome> {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -238,7 +227,6 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
   }
 
   const secrets = await login.secrets();
-  const port = await streamPort(deps.engine);
   let filled: FilledField[] = [];
   let moved = false;
   const fill = async (name: string, text: string, keep?: string): Promise<boolean> => {
@@ -246,7 +234,7 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
     if (!focus || !stillHere(focus.href)) { moved = true; return false; }
     if (focus.same === true) return true;
     if (focus.focused !== true) return false;
-    await deps.insertText(port, text);
+    await deps.insertText(text);
     return true;
   };
   try {
@@ -292,21 +280,4 @@ export async function fillLogin(input: FillLoginInput, deps: FillLoginDeps): Pro
     ok: true, host: pageHost, loginId: login.id, filled,
     text: `Filled ${joinWords(filled.map((field) => FIELD_WORDS[field]))} for ${login.username || "the saved login"}${who} on ${pageHost}.${next}${note} You never see the password; do not read it back from the page.`,
   };
-}
-
-/** The engine's input relay: one `keyboard insertText` on the page the
- * engine is driving, over its loopback stream (the Browser tab's own path,
- * server/browser-live.ts). The text travels only in this request's body. */
-export async function streamInsertText(port: number, text: string): Promise<void> {
-  const origin = `http://127.0.0.1:${port}`;
-  const response = await fetch(`${origin}/api/command`, {
-    method: "POST", redirect: "error",
-    headers: { "Content-Type": "application/json", Origin: origin },
-    body: JSON.stringify({ action: "keyboard", subaction: "insertText", text }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  const body = await response.text().catch(() => "");
-  let success = false;
-  try { success = response.ok && (JSON.parse(body) as { success?: unknown })?.success === true; } catch { /* reported below */ }
-  if (!success) throw new Error("The browser did not take the typing.");
 }

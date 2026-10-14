@@ -46,10 +46,10 @@ describe("team-wide settings", () => {
 
   it("plans an approval level per bot: unchanged, busy, unsupported and Full on every thread", () => {
     const bots = [
-      bot("ask"),
+      bot("ask", { approvalMode: "ask" }),
       bot("already", { approvalMode: "full" }),
-      bot("busy", { busy: true }),
-      bot("antigravity", { modelSelection: { instanceId: "ag", model: "x" } }),
+      bot("busy", { approvalMode: "ask", busy: true }),
+      bot("antigravity", { approvalMode: "ask", modelSelection: { instanceId: "ag", model: "x" } }),
     ];
     const plan = planTeamChange(bots, [...instances, engine("ag", "antigravityAgent", ["x"])], { kind: "approval", mode: "full" });
     expect(plan.map((row) => row.status)).toEqual(["apply", "unchanged", "skip", "apply"]);

@@ -246,4 +246,15 @@ describe("container images", () => {
     const today = `date-${new Date().toISOString().slice(0, 10)}`;
     expect(resolve(false)).toEqual({ chrome: today, engines: "@anthropic-ai/claude-code @openai/codex", engines_tag: today });
   });
+
+  // The bots' browsers (docs/browser-packaging.md, "Process hygiene"): an
+  // init collects the browser processes whose parents exit, and Chrome gets
+  // the shared memory OpenMausBot's desktop containers give it.
+  it("runs every compose service of the server image with an init and Chrome's shared memory", () => {
+    for (const file of ["../compose.yaml", "../deploy/docker-compose.yml", "../deploy/podman/compose.yaml"]) {
+      const service = parse(readFileSync(new URL(file, import.meta.url), "utf8")).services.omb;
+      expect(service.init, file).toBe(true);
+      expect(service.shm_size, file).toBe("512m");
+    }
+  });
 });

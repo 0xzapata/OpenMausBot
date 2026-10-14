@@ -10,26 +10,23 @@ export type ApprovalMode = (typeof APPROVAL_MODES)[number];
  * `edits` (auto-accept edits) exists where the engine has such a mode:
  * Claude and Grok `acceptEdits`, Antigravity `auto_edit`, Qwen `auto-edit`,
  * Gemini `auto_edit`. Codex's Ask already runs `workspace-write`, so an edits
- * level would change nothing there. */
+ * level would change nothing there. Full access, the default level, runs on
+ * every engine: in the engine's own most permissive mode, or, where it has
+ * none, with the harness answering the permission requests it leaves (the
+ * chat-completions family, ACP agents such as Kimi or Hermes, Pi's computer
+ * confirms). */
 export function supportsApprovalMode(driverKind: string | undefined, mode: ApprovalMode): boolean {
   if (mode === "custom") return driverKind === "codex";
   if (mode === "edits") return ["claudeAgent", "grokAgent", "antigravityAgent", "qwenAgent", "geminiAgent"].includes(driverKind ?? "");
-  if (mode !== "full") return true;
-  // The chat-completions family has no provider-side reviewer, so Full is
-  // implemented in the harness: createOpenAIChatRuntime answers its own tool
-  // gate instead of opening a card. Without this a bot on one of these
-  // engines could never stop asking — not by its own level, and not through
-  // a Chief's delegated Full access either.
-  return ["codex", "claudeAgent", "antigravityAgent", "cursorAgent", "grokAgent", "opencodeGo", "qwenAgent", "geminiAgent",
-    "clineAgent", "openai-compat", "grok", "minimax", "mistral", "cerebras", "groq", "meta", "museCode"].includes(driverKind ?? "");
+  return true;
 }
 
 /** Whether switching engines must first drop this level to Ask. A Custom
  * grant's rules belong to one provider's tool semantics, so it never crosses
- * engines. Full carries silently to any engine that implements it: the
- * person gave this bot Full access, and changing its engine must not take it
- * back or ask again (owner decision, Oct 12). Every mode stops at an engine
- * that cannot run it. Adapted from tahodev's provider-switch guard (#1120). */
+ * engines. Full carries silently to any engine: the person gave this bot Full
+ * access, and changing its engine must not take it back or ask again (owner
+ * decision, Oct 12). Auto-accept edits stops at an engine without it.
+ * Adapted from tahodev's provider-switch guard (#1120). */
 export function modelSwitchNeedsAsk(
   mode: ApprovalMode,
   fromDriver: string | undefined,
@@ -48,10 +45,24 @@ export function isApprovalMode(value: unknown): value is ApprovalMode {
   return typeof value === "string" && (APPROVAL_MODES as readonly string[]).includes(value);
 }
 
-/** Resolve the durable mode without turning the legacy Auto bit into Full
- * access. Records written before approvalMode existed keep their exact old
- * behavior: autoApprove=true is safe Auto; everything else asks. Unknown
- * persisted values also fail closed to that legacy behavior. */
+/** The level a bot or conversation runs at until a person picks one: Full
+ * access, as in t3code (its DEFAULT_RUNTIME_MODE). Each provider maps it to
+ * its own most permissive mode; a real question or a missing credential
+ * still reaches a person. */
+export const DEFAULT_APPROVAL_MODE: ApprovalMode = "full";
+
+let defaultApprovalMode: ApprovalMode = DEFAULT_APPROVAL_MODE;
+
+/** On a shared company workspace Full access comes only from the operator's
+ * own policy, so its server makes Ask the default once, at startup. */
+export function setDefaultApprovalMode(mode: ApprovalMode): void {
+  defaultApprovalMode = mode;
+}
+
+/** Resolve the durable mode. A bot or conversation nobody has set a level on
+ * runs at the default. The legacy Auto bit, written before approvalMode
+ * existed, stays safe Auto, and an unknown persisted value fails closed to
+ * Ask. */
 export function approvalModeFor(bot: {
   approvalMode?: unknown;
   autoApprove?: unknown;
@@ -65,7 +76,8 @@ export function approvalModeFor(bot: {
     "threadId" in grant && typeof grant.threadId === "string" && typeof bot.threadId === "string" && grant.threadId !== bot.threadId;
   if (grant && !otherThread) return "ask";
   if (isApprovalMode(bot.approvalMode)) return bot.approvalMode;
-  return bot.autoApprove === true ? "auto" : "ask";
+  if (bot.autoApprove === true) return "auto";
+  return bot.approvalMode === undefined ? defaultApprovalMode : "ask";
 }
 
 /** A private late-grant recovery may revoke an elevated mode even after a
