@@ -69,11 +69,13 @@ The value is read once per turn dispatch in `server/index.ts`
 done-after-failure check:
 
 - `correctiveRounds === 0` (default): unchanged — throw `tool_error`.
-- `correctiveRounds > 0`, rounds remain, **and `denials.length === 0`**: reset
-  the `toolFailed` latch, push one corrective user round ("Re-run the failed
-  operations with corrected inputs where possible, verify their state, and
-  then give your final answer. Do not fabricate results."), and `continue`
-  the round loop.
+- `correctiveRounds > 0`, rounds remain, **and `denials.length === 0`**: push
+  one corrective user round ("Re-run the failed operations with corrected
+  inputs where possible, verify their state, and then give your final answer.
+  Do not fabricate results."), and `continue` the round loop. The
+  `toolFailed` latch stays pending through the feed — it is cleared only when
+  the next batch of tool calls actually executes, so a text-only answer that
+  never re-runs the failed operation still ends the turn with `tool_error`.
 - Rounds exhausted or a denial recorded: fall through to the normal
   `tool_error` throw.
 

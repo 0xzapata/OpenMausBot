@@ -697,11 +697,14 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               // the same turn. Bounded by the configured correctiveRounds.
               // A person's denial is never retried: `denials` records any
               // approval "no" or unanswered ask, and the corrective text only
-              // repeats what the tool results already marked ok:false.
+              // repeats what the tool results already marked ok:false. The
+              // toolFailed latch is NOT cleared here: it stays pending until a
+              // corrective round actually runs a tool batch, so a text-only
+              // answer that never re-runs the failed operation still ends the
+              // turn with tool_error.
               const correctiveRounds = turn.toolErrorCorrectiveRounds ?? 0;
               if (correctiveRounds > 0 && correctiveRoundsUsed < correctiveRounds && denials.length === 0) {
                 correctiveRoundsUsed += 1;
-                toolFailed = false;
                 messages.push({ role: "user", content: "Some tool operations in this turn failed (their tool results are marked ok:false). Re-run the failed operations with corrected inputs where possible, verify their state, and then give your final answer. Do not fabricate results." });
                 continue;
               }
@@ -722,6 +725,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             ...(completion.protocolReasoning && !reasoningReplayRejected.has(model) ? { [options.reasoningReplayField ?? "reasoning_content"]: completion.protocolReasoning } : {}),
             ...(completion.protocolReasoningDetails.length ? { reasoning_details: completion.protocolReasoningDetails } : {}),
           });
+          // A fresh tool batch clears the pending-failure latch: the corrective
+          // round's operations are what "recovered" counts as. If any call in
+          // this batch fails, toolFailed is set again below, and a text-only
+          // answer that ran no tools keeps the failure pending (tool_error).
+          toolFailed = false;
           const screenshotParts: ChatContentPart[] = [];
           for (const call of completion.toolCalls) {
             abort.signal.throwIfAborted();
