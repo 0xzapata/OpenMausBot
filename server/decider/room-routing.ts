@@ -11,7 +11,7 @@
 // member), which is exactly what a lead-mode room does today. Nothing here
 // throws.
 import type { Decider } from "./index.ts";
-import type { DeciderFailure } from "./types.ts";
+import type { DeciderFailure, DeciderProvider } from "./types.ts";
 
 /** Turn starts take seconds anyway, and people far from the US West Coast
  * see 400–700 ms round trips; 1.5 s keeps a slow answer usable. */
@@ -53,8 +53,8 @@ export interface RoomRoutingInput {
 }
 
 export type RoomRoute =
-  | { kind: "member"; botId: string; probability: number }
-  | { kind: "everyone"; probability: number }
+  | { kind: "member"; botId: string; probability: number; provider: DeciderProvider }
+  | { kind: "everyone"; probability: number; provider: DeciderProvider }
   | { kind: "fallback"; reason: DeciderFailure | "low_confidence" | "no_choice" };
 
 function clip(value: string, max: number): string {
@@ -117,9 +117,9 @@ export async function decideRoomResponder(
     if (!result.ok) return { kind: "fallback", reason: result.reason };
     const { choice, pTop } = result.answers;
     if (pTop < ROOM_ROUTING_MIN_PROBABILITY) return { kind: "fallback", reason: "low_confidence" };
-    if (choice === EVERYONE_OPTION) return { kind: "everyone", probability: pTop };
+    if (choice === EVERYONE_OPTION) return { kind: "everyone", probability: pTop, provider: result.provider };
     if (!input.members.some((member) => member.id === choice)) return { kind: "fallback", reason: "malformed" };
-    return { kind: "member", botId: choice, probability: pTop };
+    return { kind: "member", botId: choice, probability: pTop, provider: result.provider };
   } catch {
     return { kind: "fallback", reason: "malformed" };
   }

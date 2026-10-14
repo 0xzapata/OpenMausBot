@@ -313,6 +313,7 @@ import {
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { createDecider, deciderReady, describeDecider } from "./decider/index.ts";
+import { createOpenRouterModelCatalog } from "./decider/openrouter-models.ts";
 import { decideRoomResponder, type RoomRoutingInput } from "./decider/room-routing.ts";
 import { createLiveSession, liveAttachUrl, liveHistoryFrom, LiveSessionError, type LiveBot, type LiveHistoryMessage } from "./live-call.ts";
 import { LiveCallController, LiveCallSignedOutError, type LiveSocket } from "./live-call-controller.ts";
@@ -15631,7 +15632,7 @@ function startGroupTurn(
             : [];
         if (picked.length && route.kind !== "fallback") {
           round = picked;
-          routedBy = { provider: "jev", probability: Math.round(route.probability * 100) / 100 };
+          routedBy = { provider: route.provider, probability: Math.round(route.probability * 100) / 100 };
         }
         // What a routed round holds from the start, like any other round.
         for (const responder of round) operation.botIds.add(responder.id);
@@ -17492,7 +17493,7 @@ ROUTES.push(createBotMemoryRoutes({
     broadcast({ kind: "config", ...configStatus() });
   },
 }));
-ROUTES.push(createDeciderRoutes({ decider }));
+ROUTES.push(createDeciderRoutes({ decider, models: createOpenRouterModelCatalog(), config: () => cfg }));
 ROUTES.push(createSignInCardRoutes({ settle: settleSignIn, saveLogin: saveLoginFromCard }));
 ROUTES.push(createRoomHoldRoutes({
   group: (id) => store.group(id),

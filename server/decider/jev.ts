@@ -148,7 +148,7 @@ export function parseJevResponse(
   return { ok: true, answers, ...(inputTokens !== undefined ? { inputTokens } : {}), ...(model ? { model } : {}) };
 }
 
-function refusal(status: number): BackendResult {
+export function refusal(status: number): BackendResult {
   if (status === 401 || status === 403) return { ok: false, reason: "rejected", status };
   if (status === 429) return { ok: false, reason: "rate_limited", status };
   if (status === 529 || status === 503) return { ok: false, reason: "overloaded", status };

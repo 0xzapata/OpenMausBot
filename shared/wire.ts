@@ -537,7 +537,7 @@ export interface WireMessage {
   /** A room reply whose speaker the decision model picked (an Auto room),
    * with how sure it was. Absent on every other message; clients that do
    * not know it ignore it. */
-  routedBy?: { provider: "jev"; probability: number };
+  routedBy?: { provider: "jev" | "openrouter"; probability: number };
   /** Set on the user-role line another bot delivered into this bot's own
    * conversation (coordinate_bots, start_thread). `incident`: the line is
    * OpenMausBot's Team incidents report about that bot's broken run in
