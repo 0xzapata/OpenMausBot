@@ -18,6 +18,7 @@ const fixture = vi.hoisted(() => ({
   setSidebarDensity: vi.fn(),
   notificationSounds: true,
   setNotificationSounds: vi.fn(),
+  setNotificationFeed: vi.fn(),
   sendKey: "enter" as SendKey,
   setSendKey: vi.fn(),
   colorUserBubbles: false,
@@ -53,6 +54,8 @@ vi.mock("@/lib/sidebar-preferences", async (importOriginal) => ({
 vi.mock("@/lib/notification-preferences", () => ({
   useNotificationSounds: () => fixture.notificationSounds,
   setNotificationSounds: fixture.setNotificationSounds,
+  useNotificationFeed: () => false,
+  setNotificationFeed: fixture.setNotificationFeed,
 }));
 vi.mock("@/lib/send-key", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/send-key")>(),
@@ -222,6 +225,16 @@ describe("Settings → Appearance", () => {
     for (const query of ["enter", "return", "shift+enter", "ctrl+enter", "cmd", "cmd+enter", "⌘", "⌘+enter", "command", "send", "new line", "ime"]) {
       expect(sectionMatches(appearance, query), query).toBe(true);
     }
+  });
+
+  it("offers the notification feed in Appearance, off until chosen", () => {
+    const html = render();
+    expect(html).toContain("Notification feed");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Show the notification feed")!;
+    expect(toggle.checked).toBe(false);
+    toggle.onClick!({} as never);
+    expect(fixture.setNotificationFeed).toHaveBeenCalledWith(true);
+    expect(fixture.api).not.toHaveBeenCalled();
   });
 
   it("offers the bot-colored message toggle in Appearance, off until chosen", () => {

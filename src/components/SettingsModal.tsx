@@ -50,7 +50,7 @@ import { WorkspaceBackupSettings } from "./WorkspaceBackupSettings";
 import { CompanyBackupSettings } from "./CompanyBackupSettings";
 import { cn } from "@/lib/cn";
 import { glassPopupFrameStyle } from "@/lib/glass-popup";
-import { setNotificationSounds, useNotificationSounds } from "@/lib/notification-preferences";
+import { NotificationFeedRow, NotificationSoundsRow } from "./NotificationSettingsRows";
 import { setPinnedCircles, setUniversalPins, usePinnedCircles, useUniversalPins } from "@/lib/sidebar-preferences";
 import { setShowThreads, useShowThreadsChoice } from "@/lib/thread-preferences";
 import { setAdvancedMode, useAdvancedMode } from "@/lib/interface-mode";
@@ -390,19 +390,6 @@ function LanguageRow() {
           </option>
         ))}
       </select>
-    </SettingRow>
-  );
-}
-
-function NotificationSoundsRow() {
-  const enabled = useNotificationSounds();
-  return (
-    <SettingRow title={t("settings.notificationSounds.title")} subtitle={t("settings.notificationSounds.subtitle")}>
-      <Switch
-        checked={enabled}
-        aria-label={t("settings.notificationSounds.play")}
-        onClick={() => setNotificationSounds(!enabled)}
-      />
     </SettingRow>
   );
 }
@@ -912,6 +899,7 @@ export function SettingsModal() {
             <PinnedCirclesRow />
             <UniversalPinsRow />
             <NotificationSoundsRow />
+            <NotificationFeedRow />
             {!remoteActive && <ToolCallsRow />}
             <RunCardRow />
           </>

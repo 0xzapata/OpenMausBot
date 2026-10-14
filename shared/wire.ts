@@ -21,7 +21,7 @@ import type { RoutineRunCardData } from "./routine-run.ts";
 import type { WidgetPayload } from "./widget.ts";
 import type { GroupGoalRunCardData } from "./group-goal-run.ts";
 import type { RuntimeEvent } from "./runtime-events.ts";
-import type { Notification } from "./notification.ts";
+import type { NotificationLogEntry } from "./notification.ts";
 import type { Routine, RoutineRun } from "./routines.ts";
 import type { WebhookAttempt, WebhookTrigger } from "./webhooks.ts";
 
@@ -871,7 +871,7 @@ export type ServerFrame =
   | { kind: "thread"; threadId: string; activeLeafId: string }
   | { kind: "bot"; bot: WireBot }
   | { kind: "group"; group: WireGroup }
-  | { kind: "notify"; notification: Notification }
+  | { kind: "notify"; notification: NotificationLogEntry }
   | { kind: "group.deleted"; groupId: string }
   | { kind: "routine"; routine: Routine }
   | { kind: "routine.deleted"; routineId: string }
