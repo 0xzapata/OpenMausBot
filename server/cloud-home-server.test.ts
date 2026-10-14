@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { CLOUD_IGNORED_KEYS, cloudHomePlaceRefusal, cloudPairingSignature } from "./cloud-home.ts";
+import { CLOUD_IGNORED_KEYS, cloudHomePlaceRefusal, cloudPairingSignature, cloudRequestSignature } from "./cloud-home.ts";
 import { cloudHomePrompt } from "./system-prompt.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { freePortBlock } from "./testing/ports.ts";
@@ -66,14 +66,17 @@ beforeAll(async () => {
   // While the hang marker exists, a new turn records itself elsewhere and
   // stays running, so its tool token stays live.
   const cli = join(home, "fixture-claude.mjs");
+  // While the failure marker exists, a turn fails the way it says.
   writeFileSync(cli, `#!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 if (process.argv[2] === "auth") {
   console.log(JSON.stringify({ loggedIn: true, email: "person@example.test" }));
   process.exit(0);
 }
 const hang = existsSync(${JSON.stringify(join(home, "hang"))});
 if (hang) process.env.FAKE_CLAUDE_MODE = "hang";
+const failure = ${JSON.stringify(join(home, "fail.json"))};
+if (!hang && existsSync(failure)) Object.assign(process.env, JSON.parse(readFileSync(failure, "utf8")));
 if (process.argv[2] !== "--version") process.env.FAKE_CLAUDE_DUMP = ${JSON.stringify(join(home, "spawn"))} + (hang ? "-hang.json" : ".json");
 await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-claude-cli.ts")).href)});
 `, { mode: 0o755 });
@@ -390,4 +393,40 @@ it("refuses a bot still set to this computer or a Local VM, saying what is true 
     };
     await expect.poll(failure, { timeout: 15_000 }).toBe(`error: ${cloudHomePlaceRefusal(computer)}`);
   }
+});
+
+it("tells the Admin's signed health read a failed turn's code, never its words, the bot's name or the request", async () => {
+  const words = "You've hit your weekly limit · resets for ada.lovelace@example.test on Secret Merger Plans";
+  writeFileSync(join(home, "fail.json"), JSON.stringify({ FAKE_CLAUDE_MODE: "usage-limit", FAKE_CLAUDE_API_ERROR: words }));
+  let botId = "";
+  try {
+    const created = await api("POST", "/api/bots", { body: {
+      name: "Tallyspoon Ops", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, requireAvailableModel: true,
+    } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    botId = created.body.bot.id;
+    expect((await api("POST", `/api/bots/${botId}/messages`, { body: { text: "Draft the ACME layoffs memo" } })).status).toBe(202);
+  } finally {
+    await expect.poll(async () => {
+      const { bots } = (await api("GET", "/api/bots?messages=10")).body as { bots: Array<{ id: string; messages: Array<{ kind: string; tool?: { ok: boolean } }> }> };
+      return bots.find((bot) => bot.id === botId)?.messages.some((message) => message.kind === "activity" && message.tool?.ok === false);
+    }, { timeout: 15_000 }).toBe(true);
+    rmSync(join(home, "fail.json"), { force: true });
+  }
+  const read = async (key = secret) => {
+    const target = "/api/cloud/health?after=0", timestamp = String(Math.floor(Date.now() / 1000)), nonce = randomBytes(16).toString("base64url");
+    return api("GET", target, { remote: true, headers: { "x-omb-cloud-timestamp": timestamp, "x-omb-cloud-nonce": nonce,
+      "x-omb-cloud-signature": `v1=${cloudRequestSignature(key, timestamp, nonce, "GET", target, "")}` } });
+  };
+  await expect.poll(async () => (await read()).body.incidents?.some((incident: { botId: string }) => incident.botId === botId), { timeout: 15_000 }).toBe(true);
+  const report = await read();
+  expect(report.status).toBe(200);
+  expect(report.body).toMatchObject({ v: 1, turns: { failed24h: expect.any(Number) }, engines: expect.arrayContaining([expect.objectContaining({ kind: "claudeAgent", used: true })]) });
+  expect(report.body.incidents).toContainEqual(expect.objectContaining({ kind: "turn", code: "quota", engine: "claudeAgent", botId, count: 1 }));
+  for (const planted of ["weekly limit", "ada.lovelace@example.test", "Secret Merger Plans", "Tallyspoon Ops", "Draft the ACME", "person@example.test"]) {
+    expect(JSON.stringify(report.body), planted).not.toContain(planted);
+  }
+  expect(log).not.toContain("ada.lovelace@example.test");
+  expect((await read("W".repeat(43))).status).toBe(401);
+  expect((await api("GET", "/api/cloud/health?after=0", { remote: true })).status).toBe(401);
 });

@@ -1019,6 +1019,74 @@ defaults to 300 and is capped at 600; nothing about the request (headers, body
 or code) is logged. Nonces live in memory, so a restart forgets them; a
 captured request is still bounded by its five-minute timestamp window and TLS.
 
+## Health: the Admin's signed read
+
+`GET https://<app>.fly.dev/api/cloud/health?after=<cursor>`, signed like
+pairing, with `canonical`
+
+```text
+v1\n<timestamp>\n<nonce>\nGET\n/api/cloud/health?after=<cursor>\n<base64url SHA-256 of the empty body>
+```
+
+The path and query are signed exactly as sent (`cloudRequestSignature` in
+`server/cloud-home.ts`; the same function signs pairing, with `POST` and
+`/api/cloud/pairing`). The Admin polls each Ready home every 5 minutes and
+passes the `cursor` of its last answer, so it gets only what changed. A
+cursor from another boot, or none (`after=0`), reads everything since this
+boot. Answered before the session gate, with its own nonces: a bad health
+signature never counts toward the pairing lockout. `401` (`invalid_signature`,
+`stale_request`, `replayed_request`), `503` (`busy`) and `405` as for pairing.
+
+`200` (`server/cloud-health.ts`, at most 64 KB; incidents that do not fit
+wait for the next read, `truncated: true`):
+
+```json
+{
+  "v": 1, "version": "0.1.110", "image": "registry.fly.io/…@sha256:…", "bootedAt": 1790000000000, "at": 1790000300000,
+  "cursor": "1790000000000.12", "truncated": false,
+  "incidents": [{ "kind": "turn", "code": "rpc_error", "engine": "codex", "count": 3, "firstAt": 1790000100000, "lastAt": 1790000290000,
+    "botId": "<uuid>", "threadId": "<uuid>", "seq": 12 }],
+  "turns": { "started15m": 6, "failed15m": 3, "started24h": 40, "failed24h": 5 },
+  "routines": [{ "routineId": "<uuid>", "status": "failed", "at": 1790000200000, "consecutiveFailures": 2 }],
+  "engines": [{ "kind": "codex", "used": true, "available": true, "authenticated": false, "version": "0.130.0" }],
+  "connectors": { "checkedAt": 1790000000000, "failed": false, "items": [{ "slug": "gmail", "connected": false }] },
+  "browser": { "available": true, "installing": false, "interrupted": 0 },
+  "system": { "totalBytes": 4294967296, "availableBytes": 2147483648, "rssBytes": 314572800, "load1": 0.4, "cpus": 2,
+    "disk": { "totalBytes": 10737418240, "freeBytes": 8589934592 }, "eventLogWritable": true }
+}
+```
+
+**Incidents** come from one tap on the store: every failed-turn row
+(`shared/failed-turn.ts`, the only way a server writes one) is counted in a
+bucket by `kind` (`place` when the row names a place, else `turn`), `code`
+and `engine`, with counts since boot, first and last time, the last bot and
+thread ids, and a sequence number the cursor follows; at most 200 buckets,
+the one quiet longest dropped first. The code is the first that applies: the
+place's state (`shared/place-view.ts`); a cause the server words itself
+(`stalled`, `restart`, `could_not_start`, `incident_undelivered`,
+`approval_undelivered`, `event_log`); the trial credit's refusal
+(`trial_used_up`, …); the turn's stop reason when it says more than "failed"
+(`auth_required`, `shutdown_timeout`, `provider_safety`, `update_required`,
+`spawn_error`, `quota`); the cause's class (`server/drivers/retry.ts`:
+`auth`, `quota`, `rate_limited`, …); the generic stop reason (`rpc_error`);
+else `unknown`. A turn that ends in `shutdown_timeout`, `auth_required`,
+`update_required`, `spawn_error` or `rpc_error` without a failed row of its own
+counts once too. `turns` counts turns started and failed rows per minute;
+`routines` keeps each routine's last outcome and its failures in a row.
+
+**What it never carries:** a failure's words, a bot's name, a thread's title,
+a prompt, a URL, an email address, a token, or an engine's account
+(`ProviderSnapshot.account`). Only fixed codes, counts, times, versions, engine
+kinds, random ids, connector slugs, booleans and machine numbers. Connected
+apps are looked up in the background at most every 30 minutes, so a slow
+provider never holds the answer. Cloud computers are not listed: through the
+Admin's Boat relay that would count as using an included service and hold back
+updates; a cloud computer that fails a turn arrives as its place's code
+(`cc-unavailable`, `cc-no-start`, `cc-provider`, …).
+
+A home from before this answers `404`; the Admin then reads `/api/health`
+and shows its health as Unknown.
+
 ## What the desktop reads from the Admin
 
 The desktop polls `GET /api/cloud/desktop/session` with its personal device

@@ -652,6 +652,8 @@ export class BrowserRuntime {
   /** An interrupted action left the browser's state unknown; only a restart clears it. */
   interrupted(session: string): boolean { return this.gates.get(session)?.uncertain === true; }
 
+  interruptedCount(): number { return [...this.gates.values()].filter((gate) => gate.uncertain).length; }
+
   /** A disconnected viewer may leave a key or button pressed; an agent must never inherit that input state. */
   abandonHumanInput(session: string, owner: string): void {
     const gate = this.gates.get(session);
