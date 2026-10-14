@@ -3,11 +3,12 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { redactSecretsInText } from "./redact.ts";
+import { recallTerms } from "./message-db.ts";
 import { canonicalJson } from "../shared/package-format.ts";
 
 import { writeFileAtomic } from "./atomic.ts";
 import { newId } from "./contracts.ts";
-import { readSections, sectionMemoryKey, sectionContextLabel } from "./section-context.ts";
+import { readSections, sectionMemoryKey, ensureSectionMemoryKey, sectionContextLabel } from "./section-context.ts";
 
 export const TEAM_MEMORY_KINDS = ["person", "place", "decision", "term"] as const;
 export type TeamMemoryKind = (typeof TEAM_MEMORY_KINDS)[number];
@@ -75,7 +76,7 @@ const emptyFile = (): TeamMemoryFile => ({ version: 2, sections: Object.create(n
 const clean = (value: unknown, max: number): string => (typeof value === "string" ? redactSecretsInText(value).replace(/\s+/g, " ").trim().slice(0, max + 1) : "");
 export class TeamMemoryConflict extends Error {
   readonly status = 409;
-  constructor() { super("This team memory changed. Reload it before saving or approving."); }
+  constructor(message = "This team memory changed. Reload it before saving or approving.") { super(message); }
 }
 export function teamMemoryRevision(entry: TeamMemoryEntry): string {
   const { revision: _revision, ...stored } = entry;
@@ -114,7 +115,7 @@ export class TeamMemory {
       const data = emptyFile();
       // Own keys only, never inherited properties like __proto__.
       for (const [key, value] of Object.entries(input.sections)) {
-        const storageKey = input.version === 1 ? sectionMemoryKey(key) : key;
+        const storageKey = input.version === 1 ? ensureSectionMemoryKey(key) : key;
         data.sections[storageKey] = z.array(entrySchema).parse(value).map(entry => ({ ...entry, key: entry.key ?? `${entry.kind}:${entry.name.toLowerCase()}` }));
       }
       if (input.version === 1) writeFileAtomic(this.file, JSON.stringify(data, null, 2), { mode: 0o600 });
@@ -138,7 +139,7 @@ export class TeamMemory {
 
   private entries(section: string | null | undefined, writing = false): TeamMemoryEntry[] {
     try {
-      const key = sectionMemoryKey(section);
+      const key = writing ? ensureSectionMemoryKey(section) : sectionMemoryKey(section);
       return (this.data.sections[key] ??= []);
     } catch (error) {
       // A damaged team registry must not block conversations or guess ownership.
@@ -194,24 +195,7 @@ export class TeamMemory {
     this.checkRevision(entries[index], expectedRevision);
     if (entries[index].status === "accepted") return { claimed: true, state: "already_settled" };
     if (answer === "accept") {
-      const proposal = entries[index];
-      if (proposal.replaces) {
-        const current = entries.filter(previous => previous.status === "accepted" && (previous.key ?? `${previous.kind}:${previous.name.toLowerCase()}`) === proposal.key);
-        if (current.length !== proposal.replaces.length || current.some(previous => !proposal.replaces!.some(base => base.id === previous.id && base.revision === teamMemoryRevision(previous)))) throw new TeamMemoryConflict();
-      }
-      entries[index].status = "accepted";
-      entries[index].updatedAt = Date.now();
-      // Keep the old accepted fact until a person approves its replacement.
-      const accepted = entries[index];
-      for (const previous of entries) {
-        if (previous.id === id || previous.status !== "accepted") continue;
-        if ((previous.key ?? `${previous.kind}:${previous.name.toLowerCase()}`) !== accepted.key) continue;
-        rememberVersion(previous);
-        accepted.pinned = accepted.pinned ?? previous.pinned;
-        accepted.history = [...(accepted.history ?? []), ...(previous.history ?? [])].slice(-50);
-        previous.status = "superseded";
-        previous.supersededBy = id;
-      }
+      this.acceptEntry(entries, entries[index]);
       this.save();
       return { claimed: true, state: "accepted" };
     }
@@ -220,29 +204,49 @@ export class TeamMemory {
     return { claimed: true, state: "rejected" };
   }
 
+  private acceptEntry(entries: TeamMemoryEntry[], proposal: TeamMemoryEntry): void {
+    const current = entries.filter(previous => previous.status === "accepted" && previous.id !== proposal.id);
+    if (current.some(previous => previous.kind === proposal.kind && sameName(previous.name, proposal.name) && previous.key !== proposal.key)) {
+      throw new TeamMemoryConflict("An accepted entry with this kind and name already exists under another key. Use its key or choose a distinct name.");
+    }
+    const replaced = current.filter(previous => previous.key === proposal.key);
+    if (proposal.replaces && (replaced.length !== proposal.replaces.length || replaced.some(previous => !proposal.replaces!.some(base => base.id === previous.id && base.revision === teamMemoryRevision(previous))))) {
+      throw new TeamMemoryConflict("The accepted fact changed after this proposal. Skip it and create a new proposal against the current fact.");
+    }
+    proposal.status = "accepted";
+    proposal.updatedAt = Date.now();
+    for (const previous of replaced) {
+      rememberVersion(previous);
+      proposal.pinned = proposal.pinned ?? previous.pinned;
+      proposal.history = [...(proposal.history ?? []), ...(previous.history ?? [])].slice(-50);
+      previous.status = "superseded";
+      previous.supersededBy = proposal.id;
+    }
+  }
+
   update(
     section: string | null | undefined,
     id: string,
     patch: Partial<Pick<TeamMemoryEntry, "name" | "detail" | "aliases" | "kind" | "pinned" | "key">>,
     expectedRevision?: string,
   ): TeamMemoryEntry | null {
-    const entry = this.entries(section, true).find((candidate) => candidate.id === id);
+    const entries = this.entries(section, true);
+    const index = entries.findIndex(candidate => candidate.id === id);
+    const entry = entries[index];
     if (!entry || !active(entry)) return null;
     this.checkRevision(entry, expectedRevision);
-    const normalized = TeamMemory.normalize({
-      key: patch.key ?? entry.key,
-      kind: patch.kind ?? entry.kind,
-      name: patch.name ?? entry.name,
-      detail: patch.detail ?? entry.detail,
-      aliases: patch.aliases ?? entry.aliases,
-    });
-    if (this.entries(section).some(candidate => candidate.status === "accepted" && candidate.id !== id && ((candidate.kind === normalized.kind && sameName(candidate.name, normalized.name)) || candidate.key === normalized.key))) {
+    const normalized = TeamMemory.normalize({ key: patch.key ?? entry.key, kind: patch.kind ?? entry.kind,
+      name: patch.name ?? entry.name, detail: patch.detail ?? entry.detail, aliases: patch.aliases ?? entry.aliases });
+    const next = structuredClone(entry);
+    rememberVersion(next);
+    Object.assign(next, normalized, { pinned: patch.pinned ?? entry.pinned, updatedAt: Date.now() });
+    if (entry.status === "proposed") this.acceptEntry(entries, next);
+    else if (entries.some(candidate => candidate.id !== id && candidate.status === "accepted" && (candidate.key === next.key || (candidate.kind === next.kind && sameName(candidate.name, next.name))))) {
       throw new Error("an entry with this kind and name already exists");
     }
-    rememberVersion(entry);
-    Object.assign(entry, normalized, { pinned: patch.pinned ?? entry.pinned, status: "accepted", updatedAt: Date.now() });
+    entries[index] = next;
     this.save();
-    return { ...structuredClone(entry), revision: teamMemoryRevision(entry) };
+    return { ...structuredClone(next), revision: teamMemoryRevision(next) };
   }
 
   remove(section: string | null | undefined, id: string, expectedRevision?: string): boolean {
@@ -268,13 +272,13 @@ export class TeamMemory {
   }
 
   search(section: string | null | undefined, query: string, limit = 12, range?: { since?: number; until?: number }): TeamMemoryEntry[] {
-    const terms = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+    const terms = [...new Set(recallTerms(query))];
     const score = (entry: TeamMemoryEntry) => {
-      const text = [entry.name, entry.detail, entry.key, ...entry.aliases].join(" ").toLowerCase();
-      return terms.filter(term => text.includes(term)).length;
+      const words = new Set(recallTerms([entry.name, entry.detail, entry.key, ...entry.aliases].join(" ")));
+      return terms.filter(term => words.has(term)).length;
     };
     return this.list(section).filter(entry => entry.status === "accepted"
-      && (!terms.length || score(entry) > 0)
+      && (!terms.length || score(entry) === terms.length)
       && (range?.since === undefined || entry.updatedAt >= range.since)
       && (range?.until === undefined || entry.updatedAt <= range.until))
       .sort((a, b) => score(b) - score(a) || b.updatedAt - a.updatedAt).slice(0, Math.min(25, Math.max(1, limit)))

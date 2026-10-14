@@ -35,7 +35,7 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
   const dialogRef = useRef<HTMLDivElement>(null);
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [loadedIds, setLoadedIds] = useState<string[]>([]);
-  const [unsaved, setUnsaved] = useState<string | null>(null);
+  const [unsaved, setUnsaved] = useState<Record<string, { name: string; text: string }>>({});
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const busy = useRef(false);
@@ -115,7 +115,11 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
   const remove = (entry: Entry) => run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}&revision=${entry.revision}`, { method: "DELETE" }));
   const editDetail = (entry: Entry, detail: string) => {
     if (detail.trim() === entry.detail) return;
-    void run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}`, { method: "PATCH", body: JSON.stringify({ detail, expectedRevision: entry.revision }) })).then(saved => setUnsaved(saved ? null : detail));
+    void run(entry.id, () => api(`/api/team-memory/${entry.id}?${query}`, { method: "PATCH", body: JSON.stringify({ detail, expectedRevision: entry.revision }) })).then(saved => setUnsaved(current => {
+      const next = { ...current };
+      if (saved) delete next[entry.id]; else next[entry.id] = { name: entry.name, text: detail };
+      return next;
+    }));
   };
   const add = () => {
     if (!draft.name.trim() || !draft.detail.trim()) return;
@@ -171,7 +175,7 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
           )}
           {entries && <p className="mb-3 text-[12px] text-ink-secondary">{t("teamMemory.loadedSummary", { loaded: loadedIds.length, total: entries.filter(entry => entry.status === "accepted").length })}</p>}
           {error && <div role="alert" className="mb-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">{error} <button onClick={() => void load()} className="underline">{t("teamMemory.reload")}</button></div>}
-          {unsaved && <p className="mb-3 text-[12px] text-ink-secondary">{t("teamMemory.unsaved", { text: unsaved })}</p>}
+          {Object.entries(unsaved).map(([id, draft]) => <p key={id} className="mb-3 text-[12px] text-ink-secondary"><strong>{draft.name}</strong> · {t("teamMemory.unsaved", { text: draft.text })}</p>)}
 
           {proposed.length > 0 && (
             <section className="mb-5 rounded-xl border border-accent/30 bg-accent/5 p-3">

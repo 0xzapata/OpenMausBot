@@ -272,3 +272,43 @@ it("fails closed on unreadable team ownership without blocking prompt constructi
   } finally { writeFileSync(SECTION_CONTEXTS_FILE, original); }
   expect(memory.list("Broken registry team")[0].name).toBe("Private");
 });
+
+
+it("rejects duplicate accepted names under distinct keys without settling the proposal", () => {
+  const first = memory.propose("", { kind: "decision", name: "Colour", detail: "Blue", key: "project/one" }, source).entry;
+  memory.resolve("", first.id, "accept");
+  const second = memory.propose("", { kind: "decision", name: "Colour", detail: "Orange", key: "project/two" }, source).entry;
+  expect(() => memory.resolve("", second.id, "accept")).toThrow(/another key/);
+  expect(memory.list("").find(entry => entry.id === second.id)?.status).toBe("proposed");
+  expect(memory.list("").filter(entry => entry.status === "accepted")).toHaveLength(1);
+});
+
+it("accepts an edited pending replacement while preserving the accepted and proposed versions", () => {
+  const first = memory.propose("", { kind: "decision", name: "Colour", detail: "Blue", key: "project/colour" }, source).entry;
+  memory.resolve("", first.id, "accept");
+  const second = memory.propose("", { kind: "decision", name: "Colour", detail: "Orange", key: "project/colour" }, source).entry;
+  const edited = memory.update("", second.id, { detail: "Amber" }, second.revision)!;
+  expect(edited.status).toBe("accepted");
+  expect(edited.history?.map(version => version.detail)).toEqual(expect.arrayContaining(["Blue", "Orange"]));
+  expect(memory.list("").filter(entry => entry.status === "accepted").map(entry => entry.detail)).toEqual(["Amber"]);
+  const stale = memory.propose("", { kind: "decision", name: "Colour", detail: "Red", key: "project/colour" }, source).entry;
+  memory.update("", edited.id, { detail: "Green" });
+  expect(() => memory.update("", stale.id, { detail: "Pink" }, stale.revision)).toThrow(/changed after/);
+  expect(memory.list("").find(entry => entry.id === stale.id)?.detail).toBe("Red");
+});
+
+it("requires every query term in shared search, including signed numbers", () => {
+  const entry = memory.propose("", { kind: "decision", name: "Grade", detail: "Amber exposure -2", key: "project/grade" }, source).entry;
+  memory.resolve("", entry.id, "accept");
+  expect(memory.search("", "amber exposure")).toHaveLength(1);
+  expect(memory.search("", "amber missing")).toHaveLength(0);
+  expect(memory.search("", "exposure -2")).toHaveLength(1);
+  expect(memory.search("", "exposure 2")).toHaveLength(0);
+});
+
+it("does not allocate section ownership during a read", () => {
+  const before = readFileSync(SECTION_CONTEXTS_FILE, "utf8");
+  expect(memory.systemPrompt("Read only fixture")).toBe("");
+  sectionMemoryKey("Read only fixture");
+  expect(readFileSync(SECTION_CONTEXTS_FILE, "utf8")).toBe(before);
+});

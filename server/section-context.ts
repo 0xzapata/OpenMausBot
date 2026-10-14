@@ -83,6 +83,11 @@ export function readSections(): string[] {
 
 export function sectionMemoryKey(section?: string | null): string {
   const name = sectionContextKey(section);
+  return loadFile(true).memoryKeys[name] ?? name;
+}
+
+export function ensureSectionMemoryKey(section?: string | null): string {
+  const name = sectionContextKey(section);
   const data = loadFile(true);
   if (name && data.sections.includes(name) && !data.memoryKeys[name]) {
     data.memoryKeys[name] = `team:${randomUUID()}`;

@@ -65,3 +65,23 @@ it("re-enables controls after refreshing a response without capacity data", asyn
   await vi.waitFor(() => expect(request.mock.calls.length).toBe(3));
   await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[aria-label="Remove Colour"]')!.disabled).toBe(false));
 });
+
+
+it("retains one entry's failed draft when another entry saves successfully", async () => {
+  const other = { ...entry, id: "other", name: "Audio" };
+  request.mockImplementation(async (path: string, init?: RequestInit) => {
+    if (init?.method === "PATCH" && path.includes("/note?")) throw new Error("conflict");
+    return { entries: [entry, other], loadedIds: [entry.id, other.id] };
+  });
+  await render();
+  const field = document.querySelector<HTMLInputElement>('[aria-label="Colour detail"]')!;
+  field.value = "Keep my orange draft";
+  flushSync(() => field.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+  await vi.waitFor(() => expect(document.body.textContent).toContain("Keep my orange draft"));
+  const audio = document.querySelector<HTMLInputElement>('[aria-label="Audio detail"]')!;
+  audio.value = "Quiet soundtrack";
+  flushSync(() => audio.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+  await vi.waitFor(() => expect(request.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(2));
+  await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[aria-label="Remove Audio"]')!.disabled).toBe(false));
+  expect(document.body.textContent).toContain("Keep my orange draft");
+});
