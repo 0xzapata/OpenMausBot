@@ -15,7 +15,7 @@ import {
   downloadSnippetFile,
   formatLineCount,
   getLanguageDisplayName,
-  getSnippetFileName,
+  getSnippetFileName, parseFenceInfo,
 } from "../lib/code-block";
 import { repairMarkdownTables } from "../lib/markdown-tables";
 import { TRANSCRIPT_WINDOW_SIZE } from "../lib/transcript-window";
@@ -285,23 +285,23 @@ export function blockDirection(node: unknown): "rtl" | "ltr" {
   return textDirection(blockText(node as HastNode));
 }
 
-interface BlockProps {
-  node?: unknown;
-  children?: ReactNode;
-}
+interface BlockProps { node?: unknown; children?: ReactNode; }
 
 export interface CodeBlockProps {
   code: string;
-  lang: string;
+  lang: string; initialWrap?: boolean;
 }
 
-export function CodeBlock({ code, lang }: CodeBlockProps) {
+export function CodeBlock({ code, lang, initialWrap = false }: CodeBlockProps) {
   const highlightable = code.length <= HIGHLIGHT_MAX_CHARS;
   const [html, setHtml] = useState<string | null>(() => highlightable ? highlightCache.get(highlightKey(lang, code)) ?? null : null);
   // React compares dangerouslySetInnerHTML by identity: a fresh object each render rebuilds the highlighted DOM.
   const markup = useMemo(() => (html ? { __html: html } : null), [html]);
   const { state: copied, copy } = useCopyFeedback(code);
-  const [wrapLines, setWrapLines] = useState(false);
+  const [wrapLines, setWrapLines] = useState(initialWrap);
+  useEffect(() => {
+    setWrapLines(initialWrap);
+  }, [initialWrap]);
 
   useEffect(() => {
     if (!highlightable) return setHtml(null);
@@ -840,17 +840,17 @@ const fileName = (path: string) => path.split(/[\\/]/).at(-1) ?? path;
 
 const MessageScopeContext = createContext<MessageScope>({ threads: [] });
 
-function MarkdownCode({ children }: { children?: ReactNode }) {
+function MarkdownCode({ node, children }: BlockProps) {
   const child: any = Array.isArray(children) ? children[0] : children;
   const className: string = child?.props?.className ?? "";
-  const lang = /language-([^\s]+)/.exec(className)?.[1] ?? "";
+  const { lang, wrap } = parseFenceInfo(/language-([^\s]+)/.exec(className)?.[1] ?? "", (node as { children?: { data?: { meta?: unknown } }[] })?.children?.[0]?.data?.meta);
   const flat = (n: any): string =>
     typeof n === "string" ? n : Array.isArray(n) ? n.map(flat).join("") : (n?.props?.children ? flat(n.props.children) : "");
   const code = flat(child?.props?.children).replace(/\n$/, "");
   if (lang.trim().toLowerCase() === "mermaid") {
     return <MermaidDiagram code={code} />;
   }
-  return <CodeBlock code={code} lang={lang} />;
+  return <CodeBlock code={code} lang={lang} initialWrap={wrap} />;
 }
 
 function MarkdownImage(props: ComponentProps<"img"> & ExtraProps) {
