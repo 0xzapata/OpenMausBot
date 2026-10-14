@@ -8,6 +8,7 @@ import type { RoomHold, RoomHeldMessage } from "../shared/wire.ts";
 const STOP_WINDOW = 2;
 const STOP_WORDS = new Set(["stop", "halt", "pause"]);
 const OBJECT_STARTERS = new Set(["this", "that", "these", "those", "the", "a", "an", "my", "our", "your", "his", "her", "their", "its"]);
+const OWN_WORK_OR_URGENCY = new Set(["now", "please", "right", "immediately", "asap", "work", "task", "job", "turn", "run", "reply"]);
 export const MAX_HELD_MESSAGES = 20;
 
 export type HoldDirective = {
@@ -50,7 +51,7 @@ export function stopWordPlacement(text: string): "adjacent" | "distant" | null {
   const takesObject = (index: number) => {
     const next = tokens[index + 1];
     const after = tokens[index + 2];
-    return next !== undefined && OBJECT_STARTERS.has(next) && after !== undefined && !after.startsWith("@");
+    return next !== undefined && OBJECT_STARTERS.has(next) && after !== undefined && !after.startsWith("@") && !OWN_WORK_OR_URGENCY.has(after);
   };
   tokens.forEach((token, index) => {
     if (token.startsWith("@")) mentions.push(index);

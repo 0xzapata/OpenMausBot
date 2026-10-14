@@ -25,6 +25,9 @@ describe("room member holds", () => {
     expect(classifyHoldDirective("@Scout stop that", ["scout"]).hold).toEqual(["scout"]);
     expect(classifyHoldDirective("@Scout stop it now", ["scout"]).hold).toEqual(["scout"]);
     expect(classifyHoldDirective("stop the @Scout", ["scout"]).hold).toEqual(["scout"]);
+    expect(classifyHoldDirective("@Scout stop that now", ["scout"]).hold).toEqual(["scout"]);
+    expect(classifyHoldDirective("@Scout stop this right now", ["scout"]).hold).toEqual(["scout"]);
+    expect(classifyHoldDirective("@Scout pause your work", ["scout"]).hold).toEqual(["scout"]);
   });
 
   it("releases a member addressed directly without a stop word", () => {
