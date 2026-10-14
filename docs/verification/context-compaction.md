@@ -190,6 +190,49 @@ Each API fixture retains exact requests, waits and bounded transcripts in
 `<server-log>.context.json`, prints that location, and closes its exact child and
 temporary home. No live account, computer or user workspace is touched.
 
+## Tool history in a rebuilt session
+
+A session rebuilt from the inline replay (an engine switched in mid-thread, a
+rewind, a session the provider lost, a compaction) is sent what was said. With
+`context.replayToolHistory: true` in config.json, or `OMB_REPLAY_TOOL_HISTORY=1`
+in the server's environment (`0` forces it off), that replay also names each
+earlier tool call on one line, between the two messages it ran between, as
+`[ran: Bash: pnpm test — failed]` or `[ran: Read: server/config.ts — ok]`. It is
+off by default, and off the replay is byte-for-byte what it was.
+
+```sh
+pnpm exec vitest run server/replay-tool-history.e2e.test.ts
+pnpm exec vitest run server/context-rebuild.test.ts server/replay-settings.test.ts server/turn-context.test.ts server/config.test.ts
+```
+
+The fixture's engine runs a command and reads a file each turn. The test rewinds
+with `control-omb edit` and reads the prompt the engine received: no such line
+while the setting is off, both lines in order once it is on (the command, and
+the file read), and the plain message for every turn that resumes its session.
+It then switches the bot to the fixture's Codex and reads what that engine was
+sent: the lines for each of Claude's turns. Its evidence is
+`<server-log>.replay-tools.json`.
+
+A line shows the tool, what it acted on and `ok`, `failed` or `no result
+recorded`. What it acted on is the command beside the chip in the chat, or, for
+a call whose chip shows none (a `Read`, a search), one argument from the input
+preview behind the chip: the command, file, search pattern or query. A web
+address is cut to its scheme and host (`https://hooks.example.com`), wherever it
+is the whole target, so no path, query string or password in it is sent. An
+input that is one plain string (a Codex web search's query) is used only when it
+is a single line of at most 200 characters. Never a tool result, and nothing
+else of the preview (a `Write`'s content, an `Edit`'s old and new text).
+
+Each line is put on one line, redacted, cleared of anything that would open a
+harness note (`escapeNotes` in `server/peer-provenance.ts`), then clipped to 120
+characters; a long path keeps its end. At most 20 lines are sent, the most
+recent, only for calls between the first and last replayed message, and only
+from the bytes of `rebuildBytes` that messages left unused: the messages
+selected are the same with the setting on or off. Engines that replay natively
+(API models sent the transcript itself) and room turns are unchanged. A call is
+still named without a target when its preview is arguments that hold none of
+those at the top level. A URL inside a command is left as the command ran.
+
 ## Bounds and limitations
 
 `context` settings in config.json are optional. `autoCompact: false` disables
