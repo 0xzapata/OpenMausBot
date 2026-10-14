@@ -167,7 +167,7 @@ function indexWrittenMemoryFile(botId: string, relativePath: string): void {
   }
 }
 
-function memoryFilesOnDisk(botId: string): Array<{ path: string; mtimeMs: number; bytes: number }> {
+export function memoryFilesOnDisk(botId: string): Array<{ path: string; mtimeMs: number; bytes: number }> {
   const dir = workspaceDir(botId);
   const names = [
     "MEMORY.md",
