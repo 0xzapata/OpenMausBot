@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { activeLocale, t } from "@/lib/i18n";
 import { useShowThreads } from "@/lib/thread-preferences";
-import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pause, Pin, Plus, Search, Square, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pause, Pin, Plus, Search, Square, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -89,6 +89,7 @@ import { DataResultChip } from "./DataResultChip";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { dayLabel, localDay } from "@/lib/transcript-derivations";
 import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
+import { JumpToLatestButton } from "./JumpToLatestButton";
 
 export function RoomToolChip({ message, roomId }: { message: Message; roomId?: string }) {
   const { state, dispatch } = useStore();
@@ -1597,16 +1598,7 @@ export function GroupView({ group }: { group: Group }) {
       <TranscriptAnnouncer threadKey={transcriptKey} snapshot={announcement} />
 
       {!following && (
-        <button
-          onClick={jumpToLatest}
-          type="button"
-          aria-label={t("chat.jumpToLatestAria")}
-          title={t("chat.jumpToLatest")}
-          className="animate-pop-in absolute left-1/2 z-10 flex size-9 -translate-x-1/2 items-center justify-center rounded-full border border-hairline/40 bg-raised text-ink shadow-lg hover:bg-raised-hover"
-          style={{ bottom: composerDock.height }}
-        >
-          <ArrowDown size={18} aria-hidden="true" />
-        </button>
+        <JumpToLatestButton onClick={jumpToLatest} style={{ bottom: composerDock.height }} />
       )}
 
       <div ref={composerDockRef} className="absolute inset-x-0 bottom-0 z-[2]">
