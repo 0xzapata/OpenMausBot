@@ -369,8 +369,8 @@ export async function requireInstallationAndRead<T>(
         WHERE id = ? AND revoked_at IS NULL`,
     ).bind(now, installation.installation_id),
   ];
-  // The read runs after the writes, as it did as a separate query. A batch is
-  // one transaction, so if the read fails the check-in rolls back with it.
+  // After the writes: a batch is one transaction, so a failed read rolls the
+  // check-in back with it.
   if (read) statements.push(read(installation.installation_id));
   const results = await env.DB.batch(statements);
   installation.last_seen_at = now;

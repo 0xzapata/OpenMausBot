@@ -1,7 +1,3 @@
-// The drivers spawn their CLI detached so that stopping a turn also stops
-// whatever the CLI started (its MCP servers). That guarantee is the whole
-// contract of killCliTree, so it is what gets tested: a grandchild must not
-// survive the kill on either platform.
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import type { Readable } from "node:stream";
@@ -42,7 +38,6 @@ describe("killCliTree", () => {
   });
 
   it("reaps a grandchild, not just the process it was handed", async () => {
-    // a stand-in CLI: spawns one helper, reports its pid, then idles
     const parent = spawnCli(
       process.execPath,
       [
@@ -66,9 +61,7 @@ describe("killCliTree", () => {
 
       await expect(killCliTree(parent)).resolves.toBe(true);
 
-      // Read the parent's death off the child object: a POSIX parent stays a
-      // live pid as a zombie until Node reaps it. The grandchild has no Child
-      // object here, so wait until its pid disappears as the observable proof.
+      // A POSIX parent stays a live pid as a zombie until Node reaps it, so read its death off the child object.
       const exited = () => parent.exitCode !== null || parent.signalCode !== null;
       const deadline = Date.now() + 10_000;
       while ((alive(grandchild) || !exited()) && Date.now() < deadline) {
@@ -82,7 +75,6 @@ describe("killCliTree", () => {
         try {
           process.kill(grandchild, "SIGKILL");
         } catch {
-          /* already gone */
         }
       }
     }

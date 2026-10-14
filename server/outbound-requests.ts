@@ -1,15 +1,3 @@
-// Outbound calls held for a person's answer.
-//
-// The connector relay opens one of these when a bot's tool call would send
-// something and the bot's policy says ask. The relay then waits on
-// `answer`; the respond route resolves it when the card is answered. The
-// contract mirrors the other card services: a request is claimed exactly
-// once, a second answer says so instead of doing anything, and nothing
-// waits forever — the relay has its own deadline, so the hold has one too.
-//
-// In-memory on purpose. A restart drops every held relay along with the
-// proxy process that was waiting on it; the card left on the thread then
-// settles as unavailable, the same way an engine's own request does.
 import { randomUUID } from "node:crypto";
 
 export type OutboundAnswer = "allow" | "deny" | "timeout";
@@ -31,7 +19,6 @@ export type OutboundResolution =
 export class OutboundRequestService {
   private held = new Map<string, Held>();
 
-  /** Hold one call. `answer` settles with the person's verdict or a timeout. */
   open(input: { botId: string; threadId: string; tool: string; timeoutMs: number }): {
     requestId: string;
     answer: Promise<OutboundAnswer>;
@@ -55,7 +42,6 @@ export class OutboundRequestService {
     entry.settle(answer);
   }
 
-  /** The person's answer, from the respond route. */
   resolve(input: { threadId: string; requestId: string; behavior: "allow" | "deny" | "answer" }): OutboundResolution {
     const entry = this.held.get(input.requestId);
     if (!entry || entry.threadId !== input.threadId) return { claimed: false };
@@ -65,14 +51,12 @@ export class OutboundRequestService {
     return { claimed: true, state: answer === "allow" ? "allowed" : "denied" };
   }
 
-  /** Requests still waiting in a thread, oldest first. */
   pending(threadId: string): string[] {
     return [...this.held.entries()]
       .filter(([, entry]) => entry.threadId === threadId && !entry.answered)
       .map(([requestId]) => requestId);
   }
 
-  /** Forget a settled request once its waiter has read the answer. */
   forget(requestId: string): void {
     const entry = this.held.get(requestId);
     if (entry) clearTimeout(entry.timer);

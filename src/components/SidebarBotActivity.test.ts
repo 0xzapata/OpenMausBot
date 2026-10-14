@@ -120,8 +120,6 @@ describe("group attention", () => {
   });
 
   it("shows each thread's own work when a room's threads run side by side", () => {
-    // the open thread is idle; a side thread's member waits on the person
-    // while the room-level flag counts the whole room as working
     const room = group("g", "Crew", "g0", {
       working: true,
       busyBotId: null,

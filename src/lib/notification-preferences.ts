@@ -2,14 +2,6 @@ import { useSyncExternalStore } from "react";
 
 export const NOTIFICATION_SOUNDS_KEY = "omb-notification-sounds";
 
-// Whether desktop notifications on THIS computer may play the platform's
-// alert sound. The server still decides what is worth a notification (each
-// bot's own switch); this only decides whether it dings when it lands. Kept
-// per renderer, like the thread display choice: a laptop in a meeting and a
-// desk machine can differ, and nothing about the conversation is in it.
-//
-// Same shape as thread-preferences.ts: a session choice survives blocked or
-// full storage, and another window's storage event supersedes it.
 let sessionChoice: boolean | undefined;
 const listeners = new Set<() => void>();
 
@@ -21,8 +13,6 @@ function storage(): Storage | undefined {
   }
 }
 
-/** True unless this computer has muted notification sounds. Plain function
- * rather than a hook because the notification path runs outside React. */
 export function notificationSoundsEnabled(): boolean {
   if (sessionChoice !== undefined) return sessionChoice;
   try {
@@ -62,11 +52,8 @@ export function setNotificationSounds(enabled: boolean): void {
     const local = storage();
     const value = enabled ? "1" : "0";
     local?.setItem(NOTIFICATION_SOUNDS_KEY, value);
-    // Notifications also read this outside mounted Settings. Prefer storage
-    // when it works, so another window's change cannot leave a stale override.
     if (local?.getItem(NOTIFICATION_SOUNDS_KEY) === value) sessionChoice = undefined;
   } catch {
-    // The visible setting still changes for this session when storage is full.
   }
   notify();
 }

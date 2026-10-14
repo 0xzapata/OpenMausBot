@@ -1,6 +1,3 @@
-// WCAG 2.x contrast for opaque sRGB colors. Shared by the user-bubble tone
-// and the room name colors so both sides measure the same way.
-
 export type Rgb = { r: number; g: number; b: number };
 
 const HEX = /^#([0-9a-f]{6})$/i;
@@ -30,7 +27,6 @@ export function relativeLuminance(hex: string): number {
   return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
 }
 
-/** Contrast of two opaque colors. Order does not matter. */
 export function contrastRatio(a: string, b: string): number {
   const left = relativeLuminance(a);
   const right = relativeLuminance(b);
@@ -85,15 +81,9 @@ function hslToRgb(h: number, s: number, l: number): Rgb {
   return { r: hue(h + 1 / 3) * 255, g: hue(h) * 255, b: hue(h - 1 / 3) * 255 };
 }
 
-/**
- * Move `hex` along its own hue until it clears `min` against `surface`.
- * Dark surfaces get a lighter shade, light surfaces a deeper one. The result
- * stays as close to the original lightness as the contrast allows.
- */
 export function toneForSurface(hex: string, surface: string, min = 4.5): string {
   if (contrastRatio(hex, surface) >= min) return hex;
   const [h, s, l] = rgbToHsl(parseHex(hex));
-  // A light page needs a deeper shade. A dark page needs a lighter one.
   const towardLight = relativeLuminance(surface) < 0.35;
   let lo = towardLight ? l : 0;
   let hi = towardLight ? 1 : l;
@@ -109,7 +99,6 @@ export function toneForSurface(hex: string, surface: string, min = 4.5): string 
     else hi = mid;
   }
   if (contrastRatio(best, surface) >= min) return best;
-  // Hue at the extreme still short (a near-grey). Step toward black or white.
   let nudged = best;
   const toward = towardLight ? "#ffffff" : "#000000";
   for (let step = 0; step < 24 && contrastRatio(nudged, surface) < min; step += 1) {

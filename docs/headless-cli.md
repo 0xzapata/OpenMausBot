@@ -274,7 +274,7 @@ bots:                                       # at least one
     soul: TEXT | { file: PATH }             # standing instructions, at most 24,000 bytes
     model: claude/claude-sonnet-5-5         # INSTANCE/MODEL; openmausbot models lists them
     effort: none | low | medium | high | xhigh | max
-    approval: ask | edits | auto | full     # Custom is set in the desktop app
+    approval: ask | edits | auto | full     # a new bot starts at full; Custom is set in the desktop app
     computer: auto | off | browser | local | vm | cloud
     cwd: /work/room                         # a full path that exists on the server
     browser: true | false | { enabled: true, profile: guest }
