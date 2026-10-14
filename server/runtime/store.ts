@@ -1,13 +1,4 @@
-// The durable store of the job runtime (docs/runtime-contract.md §1):
-// one row per assignment, an append-only event per transition, and the
-// inbox that is the one wake lane. node:sqlite like messages.db, so nothing
-// new ships with the app; ":memory:" for the suite.
-//
-// The row's columns exist for lookups (tree, status, owners); the record
-// itself travels whole in the json column and is validated on every read,
-// so a row written by a newer or older build is refused, never half-read.
-// Every write the runtime cares about is one transaction: the row and its
-// event land together or not at all (write-before-act).
+// The record travels whole in the json column and is validated on every read: a row from another build is refused, never half-read.
 import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -47,9 +38,6 @@ const assignmentSchema = z.object({
   }),
   assignee: z.object({
     botId: z.string().min(1),
-    // An empty thread id is a legacy-ledger import whose item named no
-    // thread (types.ts, Assignee): allowed on a standing_thread destination
-    // only, so the host resolves or refuses it instead of the read failing.
     destination: z.object({
       kind: z.enum(["work_thread", "standing_thread", "room_thread"]),
       threadId: z.string(),
@@ -81,12 +69,9 @@ const assignmentSchema = z.object({
   question: z.string().optional(),
   answer: z.string().optional(),
   budgets: z.object({ since: z.number(), requests: z.number(), executions: z.number(), wakes: z.number() }).optional(),
-  // A root parked on the person's cards, and a node that continues in place:
-  // both must come back whole, or a park would lose its cards on the next
-  // read (the schema strips what it does not name).
+  // The schema strips any field it does not name: every optional Assignment field must be listed here.
   cards: z.array(z.string()).optional(),
   continuation: z.object({ note: z.string(), handoffPath: z.string().optional(), count: z.number().int().nonnegative() }).optional(),
-  // The loop guard's record outlives the continuation the dispatch consumes.
   guard: z.object({ stale: z.number().int().nonnegative(), errors: z.array(z.string()) }).optional(),
   approved: z.boolean().optional(),
   batchKey: z.string().optional(),
@@ -98,12 +83,11 @@ export interface RuntimeStore {
   get(id: string): Assignment | undefined;
   /** Direct children, createdAt order. */
   children(id: string): Assignment[];
-  /** The root of this id's tree. */
   root(id: string): Assignment | undefined;
-  all(filter?: { rootId?: string; nonTerminal?: boolean; ownerThreadId?: string }): Assignment[];
-  /** Insert a new row and its event in one transaction. */
+  /** `openSince`: only rows not finished before that time. */
+  all(filter?: { rootId?: string; nonTerminal?: boolean; ownerThreadId?: string; assignee?: { botId: string; threadId: string };
+    roots?: boolean; openSince?: number }): Assignment[];
   insert(a: Assignment, event: { kind: EventKind; detail?: string; at?: number }): void;
-  /** Write the whole row and (optionally) an event in one transaction. */
   update(a: Assignment, event?: { kind: EventKind; detail?: string; at?: number }): void;
   /** Nested calls join the outer transaction (a savepoint inside it). */
   transaction<T>(fn: () => T): T;
@@ -112,11 +96,13 @@ export interface RuntimeStore {
   addInbox(item: InboxItem): void;
   inbox(owner: Owner, undeliveredOnly?: boolean): InboxItem[];
   markDelivered(ids: string[], at: number): void;
-  /** Remove terminal trees whose root finished before `before`; never a tree
-   * with a non-terminal node. Returns assignment rows removed. */
   prune(before: number): number;
   close(): void;
 }
+
+const terminalList = TERMINAL.map(s => `'${s}'`).join(", ");
+/** SQLite uses a partial index only for a WHERE that repeats its term, so assignments_live and all({ nonTerminal }) share this. */
+const LIVE = `status NOT IN (${terminalList})`;
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS assignments (
@@ -138,6 +124,11 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS assignments_requester_thread ON assignments(requester_thread_id);
   CREATE INDEX IF NOT EXISTS assignments_requester_run ON assignments(requester_run_id);
   CREATE INDEX IF NOT EXISTS assignments_assignee ON assignments(assignee_bot_id, assignee_thread_id);
+  -- The live rows in all()'s order. NOT IN cannot use assignments_status, so
+  -- without this every nonTerminal read walks the ended rows too, and those
+  -- only grow (#2765). Created on every open, so an existing file gets it too;
+  -- IF NOT EXISTS keeps an older definition, so a change to TERMINAL renames it.
+  CREATE INDEX IF NOT EXISTS assignments_live ON assignments(created_at) WHERE ${LIVE};
   CREATE TABLE IF NOT EXISTS assignment_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     assignment_id TEXT NOT NULL,
@@ -161,8 +152,6 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS inbox_assignment ON inbox(assignment_id);
 `;
 
-const terminalList = TERMINAL.map(s => `'${s}'`).join(", ");
-
 type Row = Record<string, unknown>;
 
 function readAssignment(row: Row): Assignment {
@@ -177,8 +166,6 @@ function readAssignment(row: Row): Assignment {
   return result.data;
 }
 
-/** JSON drops undefined fields; the row read back must equal the row
- * written, so optional fields are never written as null. */
 const toJson = (a: Assignment): string => JSON.stringify(a);
 
 function readInbox(row: Row): InboxItem {
@@ -205,8 +192,7 @@ export function openRuntimeStore(path: string): RuntimeStore {
   const memory = path === ":memory:";
   if (!memory) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    // Briefs and results are private conversations: owner-only from the
-    // first byte, and repaired on a file that inherited a loose umask.
+    // Briefs and results are private: owner-only from the first byte, repaired on a file that inherited a loose umask.
     closeSync(openSync(path, "a", 0o600));
     try {
       chmodSync(path, 0o600);
@@ -239,9 +225,6 @@ export function openRuntimeStore(path: string): RuntimeStore {
     pruneRows: db.prepare("DELETE FROM assignments WHERE root_id = ?"),
   };
 
-  // Nested writes use savepoints, as message-db.ts does: a caught inner
-  // error never commits half of an inner step, and the outermost call
-  // still owns durability.
   let depth = 0;
   function transaction<T>(fn: () => T): T {
     if (depth > 0) {
@@ -299,8 +282,14 @@ export function openRuntimeStore(path: string): RuntimeStore {
       const where: string[] = [];
       const params: SQLInputValue[] = [];
       if (filter.rootId !== undefined) { where.push("root_id = ?"); params.push(filter.rootId); }
-      if (filter.nonTerminal) where.push(`status NOT IN (${terminalList})`);
+      if (filter.nonTerminal) where.push(LIVE);
       if (filter.ownerThreadId !== undefined) { where.push("requester_thread_id = ?"); params.push(filter.ownerThreadId); }
+      if (filter.assignee !== undefined) {
+        where.push("assignee_bot_id = ? AND assignee_thread_id = ?");
+        params.push(filter.assignee.botId, filter.assignee.threadId);
+      }
+      if (filter.roots) where.push("parent_id IS NULL");
+      if (filter.openSince !== undefined) { where.push("(finished_at IS NULL OR finished_at >= ?)"); params.push(filter.openSince); }
       const sql = `SELECT id, json FROM assignments${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, rowid`;
       return (db.prepare(sql).all(...params) as Row[]).map(readAssignment);
     },
@@ -326,8 +315,6 @@ export function openRuntimeStore(path: string): RuntimeStore {
         item.assignmentId, item.kind, item.createdAt, item.deliveredAt ?? null);
     },
     inbox(owner, undeliveredOnly = false) {
-      // Every field the caller names must match: a thread owner with a bot
-      // id reads only that bot's lane; an external runtime reads by run id.
       const where: string[] = [];
       const params: SQLInputValue[] = [];
       if (owner.botId !== undefined) { where.push("owner_bot_id = ?"); params.push(owner.botId); }

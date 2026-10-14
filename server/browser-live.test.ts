@@ -73,6 +73,8 @@ beforeEach(() => {
     abandonHumanInput: vi.fn(),
     interrupted: vi.fn(() => false),
     withHumanAction: vi.fn(async (_session: string, _owner: string, fn: () => unknown) => fn()),
+    watch: vi.fn(() => () => {}),
+    settled: vi.fn(async () => {}),
   } as unknown as BrowserRuntime;
   live = new BrowserLive({ runtime });
   SocketFixture.instances = [];
@@ -206,8 +208,6 @@ describe("authenticated browser viewer relay", () => {
     expect(res.writableEnded).toBe(false);
     expect(res.chunks).toHaveLength(0);
   });
-  // "google" typed in the address bar opened https://google/; the engine
-  // answered that the navigation failed, and the view then asked for a restart.
   it("reports a page that would not open as settled, without the engine's own error, and keeps the view usable", async () => {
     const { action } = await open();
     await action({ type: "take" });
@@ -443,7 +443,6 @@ describe("authenticated browser viewer relay", () => {
     const reply = await a.action({ type: "input_keyboard", eventType: "char", text: secret });
     expect(reply).toEqual({ ok: true });
     expect(nativeInput.mock.calls.map((call) => JSON.parse(call[1].body))).toEqual([{ action: "keyboard", subaction: "insertText", text: secret }]);
-    // A failing page does not repeat it either, in its error or in a log.
     nativeInput.mockImplementationOnce(async () => Response.json({ success: false, error: `bad input ${secret}` }));
     const failure = await a.action({ type: "input_keyboard", eventType: "char", text: secret }).catch((error: Error) => error);
     expect(String(failure)).not.toContain(secret);
@@ -460,7 +459,6 @@ describe("authenticated browser viewer relay", () => {
     expect(held.has("profile-a")).toBe(false);
     expect(a.res.events("control").at(-1)).toEqual({ held: false, owned: false, controlling: false });
     expect(b.res.events("control").at(-1)).toEqual({ held: false, owned: false, controlling: false });
-    // The view stays open: the person can take it again.
     expect(a.res.writableEnded).toBe(false);
     await a.action({ type: "take" });
     expect(held.get("profile-a")).toBe(a.res.id);
@@ -536,6 +534,34 @@ describe("authenticated browser viewer relay", () => {
     ]);
     expect(runtime.abandonHumanInput).not.toHaveBeenCalled();
   });
+  it("keeps the browser it shows from closing while the view is open, and starts its idle time when it closes", async () => {
+    const closeBrowser = vi.fn(async () => true);
+    runtime = new BrowserRuntime({ closeBrowser }); live = new BrowserLive({ runtime });
+    const a = await open();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(await runtime.closeIfIdle("profile-a", 10)).toBe(false);
+    a.socket.close();
+    expect(await runtime.closeIfIdle("profile-a", 10)).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(await runtime.closeIfIdle("profile-a", 10)).toBe(true);
+    expect(closeBrowser).toHaveBeenCalledWith("profile-a", expect.objectContaining({ command: "/trusted/agent-browser" }));
+  });
+  it("waits out an idle close in progress before starting a view", async () => {
+    let finish!: (closed: boolean) => void;
+    runtime = new BrowserRuntime({ closeBrowser: () => new Promise<boolean>((resolve) => { finish = resolve; }) }); live = new BrowserLive({ runtime });
+    const first = await open();
+    first.socket.close();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    const closing = runtime.closeIfIdle("profile-a", 10);
+    execute.mockClear();
+    const opening = open();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(execute).not.toHaveBeenCalled();
+    finish(true);
+    expect(await closing).toBe(true);
+    await opening;
+    expect(execute.mock.calls[0]![1]).toEqual(["stream", "status", "--json", "--no-webmcp"]);
+  });
   it("still requires restart when a held modifier has not been released after a chord", async () => {
     runtime = new BrowserRuntime(); live = new BrowserLive({ runtime });
     const a = await open(); await a.action({ type: "take" });
@@ -576,7 +602,6 @@ describe("authenticated browser viewer relay", () => {
     finish(); await discarded;
     expect(await taking).toEqual({ ok: true, waited: false });
     await a.action({ type: "release" });
-    // The runtime decides when a bot command was in the engine (browser-runtime.test.ts).
     vi.spyOn(runtime, "take").mockResolvedValueOnce(true);
     expect(await a.action({ type: "take" })).toEqual({ ok: true, waited: true });
   });
@@ -677,7 +702,6 @@ describe("opening a view while the bot holds the browser", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await opening;
     expect(res.id).toBeTruthy();
-    // Nothing but waiting reaches the view before it is ready.
     expect(types(res).slice(0, 3)).toEqual(["waiting", "waiting", "ready"]);
     expect(execute).toHaveBeenCalledTimes(3);
     expect(execute.mock.calls[0]?.[2]).toMatchObject({ timeout: 10_000, killSignal: "SIGKILL" });

@@ -34,7 +34,6 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
-/** The card for this account, with the offer read. */
 async function card(state: CloudAccountState, Component = ProSettingsCard) {
   f.values = []; bridge.state.mockResolvedValue(state);
   for (let round = 0; round < 3; round++) { f.index = 0; f.effects = []; renderToStaticMarkup(createElement(Component)); f.effects.forEach(effect => effect()); await flush(); }
@@ -108,7 +107,6 @@ it("never offers a plan to anyone who pays, may pay, or whose state is unknown; 
   expect(await card(signedOut)).toBe("");
 });
 
-// Live uses the current Cloud offer and navigation, without reviving the old marketing popup.
 it("for a Live call, offers the current Cloud plans only to signed-out or verified free accounts", async () => {
   const out = await card(signedOut, LiveProPrompt);
   for (const text of ["Live calls from your phone need a Pro plan", "Personal, Pro or Max", "MausBot Cloud plans from $29/month", "Start free trial", "Compare plans", "Sign in to your Cloud plan"]) expect(out).toContain(text);

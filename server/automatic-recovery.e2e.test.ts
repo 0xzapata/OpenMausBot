@@ -190,7 +190,7 @@ it("recovers a coordinated specialist and returns its result to the Chief exactl
     expect(turns.filter((turn) => turn.botId === chief.id)).toHaveLength(2);
     expect(turns.filter((turn) => turn.botId === specialist.id)).toHaveLength(1);
     expect(turns.find((turn) => turn.botId === specialist.id)).toMatchObject({
-      threadId: child.threadId, model: backup.model, permissionMode: "default",
+      threadId: child.threadId, model: backup.model, permissionMode: "bypassPermissions",
     });
     expect(calls().filter((call) => call.method === "initialize.error")).toHaveLength(1);
     expect(calls().some((call) => call.method === "session/prompt")).toBe(false);
@@ -207,7 +207,7 @@ it("recovers a coordinated specialist and returns its result to the Chief exactl
     expect(fleet.groups).toEqual([]);
     const after = fleet.bots.find((bot: any) => bot.id === specialist.id);
     expect(after.modelSelection).toEqual(primary);
-    expect(after.tasks.find((task: any) => task.threadId === child.threadId)).toMatchObject({ modelSelection: backup, approvalMode: "ask", busy: false });
+    expect(after.tasks.find((task: any) => task.threadId === child.threadId)).toMatchObject({ modelSelection: backup, approvalMode: "full", busy: false });
     expect(after.tasks.find((task: any) => task.threadId === specialist.activeTaskId).modelSelection).toEqual(primary);
     expect(fleet.bots.find((bot: any) => bot.id === chief.id)).toMatchObject({ busy: false, waitingForTeammates: false });
     await control("messages", "--bot", chief.id, "--task", chief.activeTaskId, "--limit", "20");
@@ -251,8 +251,6 @@ it.each([
     await api("PATCH", `/api/bots/${bot.id}/tasks/${threadId}`, { modelSelection: primary, updateBotDefault: true });
     await api("PATCH", `/api/bots/${bot.id}`, { fallback: [{ instanceId: "secondary", model: primary.model }, backup] });
     await control("send", "--bot", bot.id, "--task", threadId, "--text", "DO_NOT_REPLAY_THIS_9S");
-    // The control surface calls a partial-output failure settled; the
-    // transcript's terminal error is the failure evidence in that case.
     expect((await control("wait", "--bot", bot.id, "--task", threadId, "--timeout", "30")).status)
       .toBe(options.afterOutput ? "settled" : "failed");
     expect(backupPrompts()).toHaveLength(0);
@@ -296,8 +294,6 @@ it("stops after one failed backup instead of looping between engines", async () 
     expect(calls().filter((call) => call.method === "initialize.error")).toHaveLength(1);
     const { messages } = await control("messages", "--bot", bot.id, "--task", threadId, "--limit", "20");
     expect(messages.filter((message: any) => message.role === "user" && message.text === "ONLY_ONE_BACKUP_4T")).toHaveLength(1);
-    // the backup's sign-in failure is the one failed-turn row every client
-    // reads (shared/failed-turn.ts): whole, with the flag its sign-in needs
     expect(messages.map((message: any) => message.tool).filter((tool: any) => tool?.ok === false))
       .toEqual([{ name: "error: Not logged in · Please run /login", ok: false, setup: true }]);
   });

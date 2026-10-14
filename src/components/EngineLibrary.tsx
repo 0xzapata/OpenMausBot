@@ -20,16 +20,14 @@ const providers: Record<string, string> = {
   hermesAgent: "Nous Research", clineAgent: "Cline", piAgent: "pi.dev", mistral: "Mistral AI", cerebras: "Cerebras", groq: "Groq", meta: "Meta", museCode: "Meta",
 };
 
-/** One disclosure, not a second settings dialog. Keep its children mounted so
- * closing a card does not abandon an in-progress sign-in or a CLI path draft. */
+/** Children stay mounted so closing a card does not abandon an in-progress sign-in or a CLI path draft. */
 export function EngineCard({ instance, children }: { instance: InstanceInfo; children: ReactNode }) {
   const ready = engineReady(instance);
   const email = instance.snapshot.authenticated === true ? instance.snapshot.account?.email : undefined;
   const subtitle = email ?? (instance.access === "custom"
     ? t("engines.library.custom")
     : providers[instance.driverKind] ?? instance.driverKind);
-  // Some CLIs return their executable name rather than a version. Do not show
-  // duplicated labels such as “Grok · grok”; retain the raw value in details.
+  // Some CLIs return their executable name rather than a version.
   const version = instance.snapshot.version?.match(/\d+\.\d+(?:\.\d+)?(?:[-+][\w.-]+)?/)?.[0];
   return (
     <details data-engine-card={instance.instanceId} className="group/engine min-w-0 rounded-2xl border border-hairline/40 bg-card transition-colors open:col-span-full open:border-hairline/70 hover:border-hairline/70">
@@ -68,9 +66,8 @@ export function EngineSections({ instances, renderEngine }: {
   instances: InstanceInfo[];
   renderEngine: (instance: InstanceInfo) => ReactNode;
 }) {
-  // Flat, instance-keyed siblings keep forms and sign-in state alive when a
-  // refreshed status moves a card between groups. Separate section parents
-  // would remount it and discard unsaved input.
+  // Flat, instance-keyed siblings: separate section parents would remount a card that moves between groups and drop
+  // unsaved input.
   return <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] items-start gap-3">
     {[true, false].flatMap((ready) => {
       const rows = instances.filter((instance) => engineReady(instance) === ready);
