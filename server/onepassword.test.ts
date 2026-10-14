@@ -44,7 +44,6 @@ describe("the 1Password SDK adapter", () => {
       { id: "a", title: "Email", fieldType: "Email", value: "bob@example.com" },
       { id: "b", title: "Password", fieldType: "Concealed", value: "fake-pw-2" },
     ])).toEqual({ username: "bob@example.com", password: "fake-pw-2", totp: null });
-    // The built-in username field wins over another field that only looks like one.
     expect(loginFields([
       { id: "x", title: "Email", fieldType: "Email", value: "other@example.com" },
       { id: "username", title: "Account", fieldType: "Text", value: "alice" },
@@ -93,7 +92,7 @@ describe("1Password logins", () => {
       candidates: async (host) => [...[saved].filter((login) => login.host === host), ...source.candidates(host)],
       available: async () => [{ host: saved.host, username: saved.username }, ...source.hosts()],
     }, {
-      engine: (args) => page!.engine(args), insertText: (port, text) => page!.insertText(port, text),
+      engine: (args) => page!.engine(args), insertText: (text) => page!.insertText(text),
       remember: (value) => { remembered.push(value); }, now: () => now, sleep: async () => undefined,
     });
     const outcome = await fill();
@@ -101,12 +100,10 @@ describe("1Password logins", () => {
     expect(outcome.text).toContain("for alice@example.com (from 1Password) on accounts.example.com.");
     expect(page.field("#password").value).toBe(VAULT_PASSWORD);
     expect(page.field("input[name=otp]").value).toBe(totpCode(parseTotpKey(KEY)!, now));
-    // The scrubber learns the filled password and code; the bot learns neither.
     expect(remembered).toEqual(expect.arrayContaining([VAULT_PASSWORD, totpCode(parseTotpKey(KEY)!, now)]));
     expect(JSON.stringify(outcome)).not.toContain(VAULT_PASSWORD);
     expect(JSON.stringify(page.engineCalls)).not.toContain(VAULT_PASSWORD);
 
-    // The exact-host rule holds for 1Password's logins too.
     page.navigate("https://example.com/login", LOGIN_FORM);
     const typed = page.typed.length;
     const refused = await fill();
@@ -143,7 +140,6 @@ describe("1Password logins", () => {
     now = 11 * 60_000;
     await source.fresh();
     expect(calls.filter((call) => call === "vaults.list")).toHaveLength(2);
-    // The token gone is enough: nothing read with it is offered any more.
     setToken(null);
     expect(source.list()).toEqual([]);
     expect(source.hosts()).toEqual([]);

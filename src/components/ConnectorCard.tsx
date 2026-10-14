@@ -9,10 +9,6 @@ import { mcpSignInLink } from "@/lib/mcp-sign-in";
 import { cn } from "@/lib/cn";
 import { ASK_PRIMARY_BUTTON, ASK_QUIET_BUTTON, AskCard, AskSettledLine } from "./AskCard";
 
-// An app the bot needs you to sign in to. It waits in the shared ask card
-// with one Connect securely button that opens the existing sign-in flow, and
-// folds into one line once the app is connected.
-
 export function ConnectorCard({ botId, threadId, message }: { botId: string; threadId: string; message: Message }) {
   const connector = message.connector!;
   const [busy, setBusy] = useState(false);
@@ -124,8 +120,6 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
   const connected = connector.status === "connected";
   const authorizing = connector.status === "authorizing";
   const error = localError ?? connector.error;
-  // Stop ended the turn this card paused: nothing resumes, whatever is
-  // connected afterwards (the connection is kept).
   const stopped = connector.stopped === true;
 
   if (stopped && !connected) {

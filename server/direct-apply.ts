@@ -1,13 +1,6 @@
-// Which of a bot's proposed changes apply without a person. One rule for
-// routines, skills, profile and default model, on the desktop, a server and
-// a Cloud home alike:
-// - Full access applies everything it always has, with no new limits;
-// - at any other level a bot's change to ITSELF applies directly (its own
-//   routines, skills, profile, model), and the person sees a one-line
-//   receipt with Undo. A change for another bot keeps its card.
-// The one exception is a Cloud home's guest-driven turn, which keeps today's
-// card for everything (`blocked`). Team setup and peer approvals are not
-// changes to the bot itself and stay Full access only.
+// Which proposed changes apply without a person: under Full access everything; at any other level a bot's change to itself
+// (its routines, skills, profile, model) applies with an Undo receipt, and a change for another bot keeps its card. A Cloud
+// home's guest-driven turn keeps the card for everything; team setup and peer approvals stay Full access only.
 
 /** Why a change applied without a person. Also the decision log's source. */
 export type DirectApply = "full-access" | "self";

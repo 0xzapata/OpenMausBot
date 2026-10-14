@@ -22,13 +22,10 @@ describe("the saved logins store", () => {
     expect(saved).toEqual({ id: saved.id, host: "accounts.example.com", username: "alice@example.com", hasTotp: true, source: "settings", bots: "all", createdAt: 1_000 });
     expect(JSON.stringify(saved)).not.toContain(PASSWORD);
 
-    // A fresh store (the next server run) opens what this one sealed.
     const reopened = new LoginStore({ dataDir: dir });
     expect(reopened.list()).toEqual([saved]);
     expect(reopened.usableFor("accounts.example.com", "any-bot")[0]).toMatchObject({ password: PASSWORD, totp: TOTP });
 
-    // On disk: the sealed file and its key, both owner-only, and not one of
-    // the login's words in the clear.
     expect(readdirSync(dir).sort()).toEqual([LOGINS_KEY_FILE, LOGINS_FILE].sort());
     const sealed = readFileSync(join(dir, LOGINS_FILE));
     for (const word of [PASSWORD, "fake-Pa55word", "alice@example.com", "accounts.example.com", TOTP.secret, "password", "username"]) {

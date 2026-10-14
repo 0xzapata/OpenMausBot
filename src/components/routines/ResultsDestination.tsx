@@ -2,7 +2,6 @@ import { useId } from "react";
 import { t } from "@/lib/i18n";
 import type { Bot } from "@/state/store";
 
-/** A destination is just an existing conversation, not another execution mode. */
 export function ResultsDestination({ bot, value, allowCurrent = false, onChange }: {
   bot?: Bot;
   value: string | null | undefined;

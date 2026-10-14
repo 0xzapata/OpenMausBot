@@ -1,10 +1,7 @@
 /**
- * Durable payload on a learned-skill confirmation card.
- *
- * The agent stages a SKILL.md; none of the proposed bytes reach the bot's
- * enabled skill index until the user confirms this card. During an update,
- * the previously approved version stays live. Keeping the staged id on the
- * card lets confirmation survive a restart without asking the model again.
+ * Durable payload on a learned-skill confirmation card. None of the staged
+ * SKILL.md reaches the bot's enabled skill index until the user confirms; during
+ * an update the approved version stays live.
  */
 export type SkillRequestAction = "create" | "update";
 
@@ -17,17 +14,15 @@ export interface SkillRequestCardData {
   action: SkillRequestAction;
   name: string;
   gist: string;
-  /** Human-readable provenance retained with the installed skill. Optional
-   * while old persisted cards are still present in a user's transcript. */
+  /** Human-readable provenance retained with the installed skill. */
   source?: string;
   /** Exact, secret-scrubbed SKILL.md shown as plain text before approval. */
   preview?: string;
   /** Binds approval to the exact bytes shown in preview. */
   sha256?: string;
-  /** references/<topic>.md files the skill keeps beside SKILL.md, shown in
-   * full with it. Absent: the skill is SKILL.md alone. */
+  /** references/<topic>.md files shown in full beside the SKILL.md; absent when the skill is SKILL.md alone. */
   references?: Array<{ path: string; content: string }>;
-  /** Hash over `references` (server/skills.ts skillReferencesSha256). */
+  /** Binds approval to the exact references shown. */
   referencesSha256?: string;
   warnings: string[];
   createdAt: number;

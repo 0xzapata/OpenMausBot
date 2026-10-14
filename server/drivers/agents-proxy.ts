@@ -1,26 +1,12 @@
-// The "agents" MCP server — spawned inside a bot's agent process (via the
-// "agents" integration). Exposes the teammate, room, routine, memory and
-// skill tools, each routed back through the harness so the harness stays the
-// single owner of turns, permissions, and recursion limits.
-//
-// Speaks raw JSON-RPC 2.0 over stdio (no MCP SDK — house style, matches
-// permission-proxy). All state comes from env, injected by the harness when
-// it builds the integration (catalogProfileFromEnv and
-// toolCallContextFromEnv read it). The main ones:
+// The "agents" MCP server inside a bot's agent process: stdio JSON-RPC 2.0 (no MCP SDK), every tool
+// routed through the harness. Env, set by the harness:
 //   OMB_HARNESS_URL  base URL of the harness (http://127.0.0.1:8799)
-//   OMB_BOT_ID       the calling bot's id (excluded from list_bots; sender)
+//   OMB_BOT_ID  the calling bot's id
 //   OMB_COMMS_TOKEN  shared secret for the localhost-only internal endpoints
-//   OMB_TURN_DEPTH   this turn's comms depth (the harness refuses recursion)
-//   OMB_EXTERNAL_RUNTIME  "1" for a standing process: the same tools as every
-//                    turn (the server's allow-list decides what it may call);
-//                    only oversized results are cut instead of cached
-//   OMB_CHIEF_OF_STAFF    "1" for a Chief of Staff, the only bot shown the Chief-only tools
-//
-// This file is the stdio front end only. What the tools are and which a turn
-// sees: agents-catalog.ts. What a call does: agents-call.ts. How the harness
-// is reached: agents-client.ts. The harness spawns THIS file as its own
-// process (server/proxy-paths.ts), and scripts/bundle-server.mjs inlines the
-// other three into it, so a packaged build still ships one agents-proxy.js.
+//   OMB_TURN_DEPTH  this turn's comms depth (the harness refuses recursion)
+//   OMB_EXTERNAL_RUNTIME  "1" for a standing process: oversized results are cut instead of cached
+//   OMB_CHIEF_OF_STAFF  "1" for a Chief of Staff, the only bot shown the Chief-only tools
+// scripts/bundle-server.mjs inlines agents-catalog/-call/-client into this file, which the harness spawns.
 import readline from "node:readline";
 
 import { availableTools, catalogProfileFromEnv } from "./agents-catalog.ts";
@@ -28,8 +14,6 @@ import { callTool, capResult, toolCallContextFromEnv } from "./agents-call.ts";
 import type { Json } from "./agents-client.ts";
 
 const AVAILABLE_TOOLS = availableTools(catalogProfileFromEnv(process.env));
-// A warm engine keeps this process across its turns; the harness keeps
-// every per-turn limit, so nothing here counts.
 const CONTEXT = toolCallContextFromEnv(process.env);
 
 const send = (msg: Json) => process.stdout.write(JSON.stringify(msg) + "\n");
