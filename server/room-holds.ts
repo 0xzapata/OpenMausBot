@@ -7,9 +7,6 @@ import type { RoomHold, RoomHeldMessage } from "../shared/wire.ts";
 
 const STOP_WINDOW = 2;
 const STOP_WORDS = new Set(["stop", "halt", "pause"]);
-/** A stop word followed by one of these and a further word takes an object:
- * "@Engineer stop this bridge" is a task for Engineer, not a hold. A bare
- * "stop that" or "stop it" still holds. */
 const OBJECT_STARTERS = new Set(["this", "that", "these", "those", "the", "a", "an", "my", "our", "your", "his", "her", "their", "its"]);
 export const MAX_HELD_MESSAGES = 20;
 
