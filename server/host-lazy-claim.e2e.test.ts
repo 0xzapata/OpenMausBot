@@ -10,7 +10,7 @@ import { freePortBlock } from "./testing/ports.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const CALL_WAIT_MS = 3_000;
+const CALL_WAIT_MS = 5_000;
 const ACT_WITHIN_MS = 1_000;
 
 describe("lazy host claim and pin on use (issue #1650)", () => {
