@@ -11,6 +11,7 @@ import { approvalModeFor } from "../../shared/approval-mode.ts";
 import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE } from "../../shared/ask-question.ts";
 import type { ResolvedSender, SteerQueueReason } from "../../shared/wire.ts";
 import { admit } from "../admission.ts";
+import { prepareWidgetPress, reopenCancelledPress } from "../chat-widgets.ts";
 import type { ModelSelection, RequestOutcome, SteerOutcome } from "../contracts.ts";
 import { parseDataContext, type DataContext } from "../data-context.ts";
 import type { Handoffs } from "../delta-context.ts";
@@ -18,6 +19,7 @@ import type { ProviderRegistry } from "../harness/registry.ts";
 import { spokenLineFields } from "../live-call-record.ts";
 import { resolvePeerComms, type ApprovalBus } from "../peer-approval.ts";
 import type { PhoneSecretSubmissionRegistry } from "../phone-secret.ts";
+import type { ReplyTarget } from "../replies.ts";
 import type { RequestAuth } from "../request-auth.ts";
 import type { RoutineManager } from "../routines.ts";
 import { acceptedSendMatch, parseSendId } from "../send-idempotency.ts";
@@ -151,6 +153,11 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
     cancelGroupTurnOperations, closeOpenApprovals,
   } = deps;
   const pinnedClientThread = pinnedClientThreadGuard(store);
+  /** Presses that fold their widget, while their message is on its way in:
+   * widget -> the sendId that holds it. The widget is only marked answered
+   * once the message is accepted, and a second tap in between must not send
+   * a second answer. */
+  const pressesInFlight = new Map<string, string | undefined>();
   return async ({ req, res, path, method, auth, json, readBody }) => {
     /** scratch for route matches, shared by every `path.match` below */
     let m: RegExpMatchArray | null = null;
@@ -163,6 +170,11 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
+      // A press on a widget (`widgetAction`) is a person's own tap in one of
+      // this workspace's clients: a relay has no widget to press. A client
+      // that writes the field as null on an ordinary send means no press.
+      const pressed = body.widgetAction !== undefined && body.widgetAction !== null;
+      if (guarded && pressed) return json(res, 400, { error: "guarded sends cannot answer a widget" });
       // External interfaces must opt into a distinct route: an older server
       // returns 404 rather than silently ignoring safety preconditions.
       const guardedBody = guarded ? guardedSendSchema.safeParse(body) : null;
@@ -172,8 +184,10 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
           ? "onBehalfOf must name the person with an email address, a name, or both"
           : "guarded sends require threadId, sendId, text and expectedActiveLeafId" });
       }
-      const text = String(body.text ?? "").trim();
-      if (!text) return json(res, 400, { error: "text required" });
+      // A press sends no words of its own: the server writes them from the
+      // stored widget below, once the task and the sendId are known.
+      const typed = pressed ? "" : String(body.text ?? "").trim();
+      if (!pressed && !typed) return json(res, 400, { error: "text required" });
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       requirePinnedClientThread(bot.id, body.threadId);
@@ -202,8 +216,23 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
       const refused = directSendRefusal(bot.id, threadId);
       if (refused) return json(res, refused.status, refused.body);
       const sendId = parseSendId(body.sendId);
-      const replyTo = resolveReplyTarget(threadId, body.replyToId);
-      const dataContext = parseDataContext(body.dataContext);
+      // The press becomes an ordinary message that replies to its widget:
+      // the label, then one line per field. Nothing is written yet.
+      const press = pressed ? prepareWidgetPress(store, threadId, body.widgetAction, sendId) : null;
+      if (press && !press.ok) return json(res, press.status, { error: press.error });
+      const text = press ? press.text : typed;
+      const target = resolveReplyTarget(threadId, press ? press.messageId : body.replyToId);
+      // Only here is a reply known to be a press: a copy of the widget row
+      // says so to whatever composes the prompt (server/replies.ts). A typed
+      // reply to the same row carries no such mark, whatever its words.
+      const replyTo: ReplyTarget | undefined = press && target ? { ...target, widgetPress: { label: press.label, action: press.action } } : target;
+      const pressKey = press?.settles ? `${threadId}:${press.messageId}` : undefined;
+      if (pressKey && pressesInFlight.has(pressKey) && !(sendId && pressesInFlight.get(pressKey) === sendId)) {
+        return json(res, 409, { error: "That answer is already on its way." });
+      }
+      // A Data context is put in front of the words the model gets, and a
+      // press is read by its first line (server/replies.ts): it carries none.
+      const dataContext = press ? undefined : parseDataContext(body.dataContext);
       const sender = messageSender(auth);
       const guardedStart = guarded
         ? async (currentAtStart: BotRecord): Promise<DirectSendReceipt> => {
@@ -234,6 +263,7 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
             return { ok: true as const, threadId, message };
           }
         : undefined;
+      if (pressKey) pressesInFlight.set(pressKey, sendId);
       try {
         const receipt = await acceptDirectSend({
           botId: bot.id, threadId, text, sendId, replyTo, sender, trigger, dataContext,
@@ -247,10 +277,16 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
           // clears the mark.
           personPresent: auth.kind === "session" || DESKTOP_MANAGED,
         }, guardedStart);
+        // Only an accepted message (started, steered or queued) answers the
+        // widget. A retry of the press that already did changes nothing. A
+        // queued one is remembered by its slot: cancelling it reopens the widget.
+        press?.settle("queueId" in receipt ? receipt.queueId : undefined);
         return json(res, 202, receipt);
       } catch (error) {
         if (error instanceof DirectSendRefused) return json(res, error.status, error.body);
         throw error;
+      } finally {
+        if (pressKey) pressesInFlight.delete(pressKey);
       }
     }
 
@@ -263,6 +299,9 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
       if (!cancelSteeredMessage(bot.id, queueId, bot.threadId)) {
         return json(res, 404, { error: "no such queued message" });
       }
+      // The words never reached the bot. If they were the answer to a
+      // widget, it takes an answer again.
+      reopenCancelledPress(store, bot.threadId, queueId);
       return json(res, 200, { ok: true });
     }
 

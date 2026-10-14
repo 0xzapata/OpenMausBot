@@ -4306,5 +4306,21 @@
   "data.editor.resize": "Resize SQL editor",
   "computer.files.homeFolder": "Home folder",
   "computer.files.changeDefaultFolder": "Change default",
-  "computer.files.pinnedFolderHint": "This chat keeps its current folder. Change the default for new chats."
+  "computer.files.pinnedFolderHint": "This chat keeps its current folder. Change the default for new chats.",
+  "widget.aria.card": "Card from your bot",
+  "widget.showAll": "Show all ({count})",
+  "widget.required": "{label} is required.",
+  "widget.sending": "Sending",
+  "widget.sent": "Sent",
+  "widget.sendFailed": "That did not send. Try again.",
+  "widget.choose": "Choose",
+  "widget.clear": "Clear {label}",
+  "widget.progress": "Progress",
+  "widget.chart.label": "Chart of {series} across {count} points",
+  "widget.time.choose": "Choose a time",
+  "widget.time.options": "Times for {label}",
+  "widget.days.everyDay": "Every day",
+  "widget.days.weekdays": "Weekdays",
+  "widget.days.weekends": "Weekends",
+  "widget.days.none": "No days picked"
 }
