@@ -46,11 +46,13 @@ export type BotUpdatePatch = Partial<
   acknowledgeLocalAuto?: boolean;
   applyToAllThreads?: boolean;
   keepThreadModels?: boolean;
+  /** With modelSelection: the thread this client shows. Body only: Bot.threadId is the server's selection. */
+  threadId?: string;
 };
 
 export type BotStatePatch = Omit<
   BotUpdatePatch,
-  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "applyToAllThreads" | "keepThreadModels"
+  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "applyToAllThreads" | "keepThreadModels" | "threadId"
 > & {
   computer?: Bot["computer"];
   connectorTools?: Bot["connectorTools"];
@@ -104,6 +106,7 @@ const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
     acknowledgeLocalAuto: _localAck,
     applyToAllThreads: _allThreads,
     keepThreadModels: _keepThreadModels,
+    threadId: _threadId,
     computer,
     connectorTools,
     connectorScopes,

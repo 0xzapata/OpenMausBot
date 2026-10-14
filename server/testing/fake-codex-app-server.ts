@@ -21,6 +21,7 @@
 //   FAKE_CODEX_ACCOUNT_MODE  chatgpt (default) | api-key | none | unsupported | error | hang
 //   FAKE_CODEX_RESUME_ERROR  JSON-RPC error rejecting thread/resume
 //   FAKE_CODEX_START_ERROR  JSON-RPC error rejecting thread/start
+//   FAKE_CODEX_MCP_FAILED  MCP server whose startup fails (`mcpServer/startupStatus/updated`) as thread/start begins
 //   FAKE_CODEX_RESTORED_USAGE  report 100/50/10 tokens used before turn/start, as a resumed thread can
 //   FAKE_CODEX_STEER_ERROR  JSON-RPC error rejecting turn/steer
 //   FAKE_CODEX_STEER_ERROR_FILE  reject turn/steer only while this file exists
@@ -526,6 +527,10 @@ process.stdin.on("data", (chunk) => {
       case "thread/start":
         dump();
         developerInstructions = msg.params?.developerInstructions ?? "";
+        if (process.env.FAKE_CODEX_MCP_FAILED) {
+          const name = process.env.FAKE_CODEX_MCP_FAILED;
+          out({ jsonrpc: "2.0", method: "mcpServer/startupStatus/updated", params: { threadId: null, name, status: "failed", error: `MCP client for \`${name}\` timed out after 30 seconds.`, failureReason: null } });
+        }
         if (process.env.FAKE_CODEX_START_ERROR) {
           out({ jsonrpc: "2.0", id: msg.id, error: JSON.parse(process.env.FAKE_CODEX_START_ERROR) });
         } else if (msg.params?.permissions && (!experimentalApi || mode === "config-profile-unsupported")) {

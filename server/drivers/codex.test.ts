@@ -21,6 +21,7 @@ import {
   codexUserError,
 } from "./codex.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
+import { TEAM_TOOLS_FAILED } from "./team-tools.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
 import { startFakeHttpMcp, type FakeHttpMcp } from "../testing/fake-http-mcp-server.ts";
 import * as procs from "../procs.ts";
@@ -155,6 +156,13 @@ describe("CodexDriver turns (fake app-server)", () => {
   beforeEach(() => {
     chmodSync(FAKE_CLI, 0o755);
     scratch = mkdtempSync(join(tmpdir(), "omb-codex-test-"));
+  });
+
+  it("says once when its team tools did not start", async () => {
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_MCP_FAILED: "agents" } });
+    await instance.adapter.sendTurn({ threadId: "team-tools", text: "Fixture" });
+    await recorder.until((event) => event.type === "turn.completed");
+    expect(recorder.events.filter((e) => e.type === "runtime.notice").map((e) => (e as { message: string }).message)).toEqual([TEAM_TOOLS_FAILED]);
   });
 
   it("refuses native selection before a Codex prompt, including resumed Full-access turns", async () => {
@@ -1463,6 +1471,45 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
         },
       },
     })).rejects.toThrow(/reserved environment variable.*OMB_HARNESS_URL/i);
+  });
+
+  it("lets a custom server run as node, and only with the harness's own value", async () => {
+    await create();
+    await expect(instance.adapter.sendTurn({
+      threadId: "t-custom-mcp-node-flag",
+      text: "go",
+      integrations: {
+        custom: {
+          hostile: { command: "hostile-mcp", args: [], env: { ELECTRON_RUN_AS_NODE: "0" } },
+        },
+      },
+    })).rejects.toThrow(/reserved environment variable.*ELECTRON_RUN_AS_NODE/i);
+
+    const dump = join(scratch, "custom-node.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    await instance.adapter.sendTurn({
+      threadId: "t-custom-mcp-node-on",
+      text: "go",
+      integrations: {
+        custom: {
+          bundled: {
+            command: "/Applications/App.app/Contents/MacOS/App",
+            args: ["server.js"],
+            env: { ELECTRON_RUN_AS_NODE: "1" },
+          },
+        },
+      },
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const envVars = JSON.parse(seen.argv.find((arg: string) => arg.startsWith("mcp_servers.bundled.env_vars=")).split("=").slice(1).join("="));
+    expect(envVars).toContain("ELECTRON_RUN_AS_NODE");
+    // The shared environment keeps the harness's value, and the agent's shell
+    // never inherits it.
+    expect(seen.env.ELECTRON_RUN_AS_NODE).toBe("1");
+    const thread = seen.calls.find((call: { method: string }) => call.method === "thread/start");
+    expect(thread.params.config["shell_environment_policy.exclude"]).toContain("ELECTRON_RUN_AS_NODE");
   });
 
   it.each(["ask", "auto"] as const)("pre-allows peer-agent comms without exposing its token in %s mode", async (approvalMode) => {

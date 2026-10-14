@@ -2,7 +2,8 @@
 import { describe, expect, it } from "vitest";
 
 import { claudeSignedIn } from "./claude-auth-status.ts";
-import { claudeAuthFailure, claudeLimitMessage, claudeLimitRefusal, claudeResultError, claudeUsageLimit, claudeVersionTooOld } from "./claude.ts";
+import { claudeAuthFailure, claudeResultError, claudeVersionTooOld } from "./claude.ts";
+import { claudeLimitMessage, claudeLimitRefusal, claudeUsageLimit } from "./claude-limits.ts";
 
 describe("claudeSignedIn", () => {
   it("uses the CLI's machine-readable auth status", async () => {

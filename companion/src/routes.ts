@@ -161,7 +161,7 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // filename, never a path.
   { method: "POST", path: /^\/api\/attachments$/ },
   // The harness honors Range on voice notes so a phone player can seek.
-  { method: "GET", path: /^\/api\/attachments\/[\w-]+\.(?:png|jpe?g|gif|webp|mp3)$/i },
+  { method: "GET", path: /^\/api\/attachments\/[\w-]+\.(?:png|jpe?g|gif|webp|mp3|wav)$/i },
   // Raw upload, capped and stored under a generated filename by the harness.
   { method: "POST", path: /^\/api\/files$/ },
 

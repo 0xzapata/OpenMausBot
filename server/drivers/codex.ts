@@ -1,4 +1,6 @@
 import { codexToolSurfaceArgs } from "./codex-tool-surface.ts";
+import { codexShellDisabled, GUEST_CONFINED_CODEX_ARGS } from "./codex-guest.ts";
+import { TEAM_TOOLS_FAILED, teamToolsFailed } from "./team-tools.ts";
 // The `codex` CLI headless over its app-server JSON-RPC (NDJSON on stdio): completion is
 // `turn/completed`, approvals arrive as server→client requests, resumeCursor is the codex thread id.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -14,7 +16,7 @@ import { cloudHomeConfigured } from "../cloud-home.ts";
 import { serverVersion } from "../environment.ts";
 import { ChatGptPlanAuthController } from "./chatgpt-plan-auth.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
-import { isHarnessOwnedMcpEnvName } from "../mcp-registry.ts";
+import { isReservedMcpEnvEntry } from "../mcp-registry.ts";
 
 import type {
   DriverCreateInput,
@@ -317,17 +319,6 @@ function mcpAppApprovalForm(params: unknown): McpApprovalForm | null {
 
   const tool = boundedLabel(appName) ?? boundedLabel(request.serverName) ?? "app_access";
   return { tool, summary: message, allowResult: { action: "accept", content } };
-}
-
-/** A guest-driven turn's app-server: shell, unified exec and image reads (codex-cli 0.159.0
- * `features`) off, web search too. */
-export const GUEST_CONFINED_CODEX_ARGS = [
-  "-c", "features.shell_tool=false", "-c", "features.unified_exec=false", "-c", "features.view_image=false", "-c", 'web_search="disabled"',
-] as const;
-
-export function codexShellDisabled(config: unknown): boolean {
-  const features = plainRecord(plainRecord(config)?.features);
-  return features?.shell_tool === false && features?.unified_exec === false && features?.view_image === false;
 }
 
 /** Thread-config overrides adding `patterns` to the person's shell exclusions. Codex keeps two
@@ -748,9 +739,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const approvalMode: ApprovalMode = turn.approvalMode ?? (config.fullAuto ? "full" : "ask");
       for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
         if ("url" in server) continue;
-        const reserved = Object.keys(server.env).find(isHarnessOwnedMcpEnvName);
+        const reserved = Object.entries(server.env).find(([key, value]) => isReservedMcpEnvEntry(key, value));
         if (reserved) {
-          throw new Error(`Custom MCP server “${name}” cannot set reserved environment variable “${reserved}”`);
+          throw new Error(`Custom MCP server “${name}” cannot set reserved environment variable “${reserved[0]}”`);
         }
       }
       let autoAcceptPermissions = approvalMode === "full";
@@ -1173,6 +1164,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
       const seenReviews = new Set<string>();
       let reviewWarning = false;
+      let teamToolsNoticed = false;
       let timedOutReview = false;
       const retryMode = approvalMode[0].toUpperCase() + approvalMode.slice(1);
       const reviewNotice = (status: "warning" | "timedOut" | "denied", action?: any) => {
@@ -1203,6 +1195,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       };
       const handleNotification = (msg: any) => {
         const p = msg.params ?? {};
+        // MCP servers start with the thread, before it has an id; this process serves this turn alone.
+        if (msg.method === "mcpServer/startupStatus/updated") {
+          if (!teamToolsNoticed && teamToolsFailed(p)) {
+            teamToolsNoticed = true;
+            emit({ ...base(threadId, turnId), type: "runtime.notice", message: TEAM_TOOLS_FAILED });
+          }
+          return;
+        }
           // The app-server also notifies for native helper threads; only this request's parent writes or settles.
         const connectionError = msg.method === "error" &&
           !("threadId" in p) && !("turnId" in p);
