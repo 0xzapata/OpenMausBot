@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
+import { createChiefNotices } from "./host/chief-notices.ts";
+
 import {
+  chiefEscalationsEnabled,
   ESCALATIONS_THREAD_TITLE,
   EscalationLedger,
   escalationChip,
@@ -13,8 +17,6 @@ import {
   type EscalationBot,
 } from "./escalations.ts";
 
-// Same form every incident report's first line takes: bracketed, names the
-// sender, tells the reader the words below are data (AC-5).
 const FENCE = /^\[.+ from OpenMausBot — not from the person\. .+\]$/;
 
 const bot = (over: Partial<EscalationBot> = {}): EscalationBot => ({
@@ -116,5 +118,30 @@ describe("escalationDeliverable", () => {
 describe("ESCALATIONS_THREAD_TITLE", () => {
   it("is the sibling of the incidents thread", () => {
     expect(ESCALATIONS_THREAD_TITLE).toBe("Team escalations");
+  });
+});
+
+describe("opt-in", () => {
+  const untouched = new Proxy({}, { get: (_, key) => () => { throw new Error(`store.${String(key)} was read with escalations off`); } });
+  const notices = (enabled: boolean, assigner?: unknown) => createChiefNotices({
+    store: untouched as never, notify: () => { throw new Error("notified"); }, threadBusy: () => false, botAtThreadCapacity: () => false,
+    groupTurnActive: () => false, startTurn: async () => undefined, assignerOf: () => assigner, escalationsEnabled: () => enabled,
+  });
+  const input = { kind: "needs-input" as const, bot: { id: "b-mira", name: "Mira", threadId: "th_mira" } as never, threadId: "th_mira", gate: NEEDS_INPUT_GATE, reason: "which repo?", alreadyNotified: false };
+
+  it("does nothing, and touches nothing, while features.chiefEscalations is off", () => {
+    expect(chiefEscalationsEnabled({})).toBe(false);
+    expect(chiefEscalationsEnabled({ features: { chiefEscalations: true } })).toBe(true);
+    expect(notices(false).reportEscalation(input)).toBe("off");
+  });
+
+  it("leaves an assigned thread's question to its assigner, which the runtime already told", () => {
+    expect(notices(true, { id: "assignment" }).reportEscalation(input)).toBe("skipped");
+  });
+
+  it("keeps the Escalations line out of a Chief's prompt unless it is on", () => {
+    const team = [{ id: "chief", name: "Clive", section: "Ops", chiefOfStaff: true }, { id: "mira", name: "Mira", section: "Ops" }];
+    expect(chiefOfStaffSystemPrompt("chief", team, true)).not.toContain("Team escalations");
+    expect(chiefOfStaffSystemPrompt("chief", team, true, true)).toContain("Team escalations");
   });
 });

@@ -270,6 +270,8 @@ const featureConfigSchema = z.object({
   skillsLibrary: z.boolean().optional(),
   /** Memory upkeep also reads a member bot's room turns. Off unless true. */
   roomMemoryCapture: z.boolean().optional(),
+  /** A teammate parked on a gate only the person can lift is reported to its Chief of Staff. Off unless true. */
+  chiefEscalations: z.boolean().optional(),
 });
 const onboardingConfigSchema = z.object({
   completedAt: z.string().trim().max(40).optional(),
@@ -523,7 +525,7 @@ export interface AppConfig {
   context?: { rebuildBytes?: number; compactAt?: number; autoCompact?: boolean; roomCompactAt?: number };
   memory?: { captureQuietMs?: number; tidyHour?: number };
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
-  features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; roomMemoryCapture?: boolean };
+  features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; roomMemoryCapture?: boolean; chiefEscalations?: boolean };
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   browserProfiles?: BrowserProfile[];
   browserEngine?: { attachCdpUrl?: string; idleTimeoutMinutes?: number };
@@ -655,7 +657,6 @@ export function liveSettingsFor(cfg: AppConfig): LiveSettings {
   };
 }
 
-
 export function maxConcurrentBotThreads(cfg: { threads?: { maxConcurrentPerBot?: number } }): number {
   return cfg.threads?.maxConcurrentPerBot ?? DEFAULT_MAX_CONCURRENT_BOT_THREADS;
 }
@@ -742,7 +743,6 @@ export function claudeUserMcpEnabled(cfg: AppConfig): boolean {
 export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
   return cfg.features?.llmThreadTitles === true;
 }
-
 
 export function skillsLibraryEnabled(cfg: AppConfig): boolean {
   return cfg.features?.skillsLibrary === true;

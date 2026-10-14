@@ -1305,6 +1305,10 @@
   "chat.callRecord.waiting": "Waiting",
   "chat.callRecord.expired": "Expired",
   "chat.callRecord.partial": "Some of this call may be in earlier messages. Load earlier messages to see all of it.",
+  "chat.callRecord.open": "Open the call: {title}",
+  "chat.callSheet.kicker": "Live call",
+  "chat.callSheet.empty": "Nothing was asked on this call.",
+  "chat.callSheet.kept": "Your requests and {name}’s answers and steps. Nothing else said on the call is kept.",
   "chat.showFull": "Show full message",
   "chat.showLess": "Show less",
   "chat.generatedImage": "Generated image",
@@ -4313,5 +4317,14 @@
   "widget.days.everyDay": "Every day",
   "widget.days.weekdays": "Weekdays",
   "widget.days.weekends": "Weekends",
-  "widget.days.none": "No days picked"
+  "widget.days.none": "No days picked",
+  "teamMemory.loadedSummary": "{loaded} of {total} accepted notes load automatically. Other notes remain searchable by the bots. Pin essential rules to load them first.",
+  "teamMemory.reload": "Reload latest",
+  "teamMemory.unsaved": "Your unsaved draft: {text}",
+  "teamMemory.loaded": "Loaded",
+  "teamMemory.searchable": "Searchable",
+  "teamMemory.history": "Previous versions",
+  "teamMemory.restore": "Restore text",
+  "teamMemory.pin": "Pin {name}",
+  "teamMemory.unpin": "Unpin {name}"
 }

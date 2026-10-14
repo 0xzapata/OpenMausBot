@@ -47,6 +47,7 @@ function profiles(): Record<string, Profile> {
   for (const name of ["skills+shared+voice", "skills+shared+voice+non-chief"]) {
     all[`${name}+cloud-home`] = { env: { ...all[name]!.env, OMB_CLOUD_HOME: "1" } };
   }
+  all["skills+shared+voice+escalations"] = { env: { ...all["skills+shared+voice"]!.env, OMB_ESCALATIONS: "1" } };
   all["default+legacy-switches"] = {
     env: { ...all.default!.env, OMB_ROOM_TURN: "1", OMB_OWN_THREAD_CREATION: "1", OMB_EXTERNAL_RUNTIME: "1" },
   };
@@ -57,40 +58,32 @@ const PROFILES = profiles();
 const CHIEF_ONLY_TOOLS = ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"];
 const CHIEF_TARGET_TOOLS = ["propose_profile", "propose_model"];
 const CHIEF_PROFILE_TARGET = " A Chief of Staff may pass for_bot_id (from list_bots) for a requested change to another bot in its section.";
-/** The one surface's teamwork tools (docs/runtime-contract.md §9). Every
- * profile mounts all of them. */
-const TEAMWORK_TOOLS = ["list_room_targets", "coordinate_bots", "assignment_status", "raise_escalation", "list_bots", "list_rooms", "list_threads", "close_thread", "start_thread", "post_to_room"];
-/** The profile that mounts the most: checked in whole, as readable JSON.
- * Every other profile is a by-name subset of it and is pinned by tool names,
- * byte count and sha256 in profiles.json. */
-const FULL = "skills+shared+voice";
+const TEAMWORK_TOOLS = ["list_room_targets", "coordinate_bots", "assignment_status", "list_bots", "list_rooms", "list_threads", "close_thread", "start_thread", "post_to_room"];
+/** The fullest profile, checked in whole; every other one is pinned by tool names, bytes and sha256. */
+const FULL = "skills+shared+voice+escalations";
 
-/** Bytes measured when the budget was last set. A profile may not exceed this
- * by more than 2%, and may not undercut it by more than 2% either: a smaller
- * catalog is the goal, so lock the win in by lowering the number. */
-// PR (chief escalation notices): raise_escalation joins the one surface
-// (docs/runtime-contract.md §9) for every profile, +776 B each — the tool
-// that parks a bot on a person-only gate where its Chief can hear it.
+/** Bytes when the budget was last set; a profile may move at most 2% either way (lower it to lock in a win). */
 const BUDGET_BASELINE: Record<string, number> = {
-  "default": 55940,
-  "voice": 56681,
-  "shared": 57685,
-  "shared+voice": 58426,
-  "skills": 57993,
-  "skills+voice": 58734,
-  "skills+shared": 59738,
-  "skills+shared+voice": 60479,
-  "non-chief": 46290,
-  "voice+non-chief": 47031,
-  "shared+non-chief": 48035,
-  "shared+voice+non-chief": 48776,
-  "skills+non-chief": 48343,
-  "skills+voice+non-chief": 49084,
-  "skills+shared+non-chief": 50088,
-  "skills+shared+voice+non-chief": 50829,
-  "skills+shared+voice+cloud-home": 59534,
-  "skills+shared+voice+non-chief+cloud-home": 49884,
-  "default+legacy-switches": 55940,
+  "default": 54535,
+  "voice": 55276,
+  "shared": 56280,
+  "shared+voice": 57021,
+  "skills": 56588,
+  "skills+voice": 57329,
+  "skills+shared": 58333,
+  "skills+shared+voice": 59074,
+  "non-chief": 44885,
+  "voice+non-chief": 45626,
+  "shared+non-chief": 46630,
+  "shared+voice+non-chief": 47371,
+  "skills+non-chief": 46938,
+  "skills+voice+non-chief": 47679,
+  "skills+shared+non-chief": 48683,
+  "skills+shared+voice+non-chief": 49424,
+  "skills+shared+voice+cloud-home": 58129,
+  "skills+shared+voice+non-chief+cloud-home": 48479,
+  "default+legacy-switches": 54535,
+  "skills+shared+voice+escalations": 60245,
 };
 
 const RPC_PREFIX = '{"jsonrpc":"2.0","id":1,"result":';
@@ -204,6 +197,14 @@ describe("agents proxy tools/list golden", () => {
     }
   });
 
+  it("mounts raise_escalation only where chief escalations are on", () => {
+    const names = (wire: string) => toolsOf(wire).map((tool) => tool.name);
+    expect(names(wires[FULL]!).filter((tool) => tool !== "raise_escalation")).toEqual(names(wires["skills+shared+voice"]!));
+    for (const [name, profile] of Object.entries(PROFILES)) {
+      expect(names(wires[name]!).includes("raise_escalation"), name).toBe(profile.env.OMB_ESCALATIONS === "1");
+    }
+  });
+
   it("ignores the switches that once picked a catalog profile", () => {
     expect(wires["default+legacy-switches"]).toBe(wires.default);
     const profile = catalogProfileFromEnv({ OMB_BOT_ID: "bot-golden", OMB_CHIEF_OF_STAFF: "1", OMB_ROOM_TURN: "1", OMB_OWN_THREAD_CREATION: "1", OMB_EXTERNAL_RUNTIME: "1" });
@@ -308,7 +309,7 @@ describe("agents proxy tools/list from the packaged bundle", () => {
 
 describe("agents proxy tools/list wire size", () => {
   it("prints per-tool and total UTF-8 bytes", () => {
-    const shown = [FULL, `${FULL}+non-chief`];
+    const shown = [FULL, "skills+shared+voice+non-chief"];
     const perTool = new Map<string, Record<string, number>>();
     for (const name of shown) {
       for (const tool of toolsOf(wires[name]!)) {

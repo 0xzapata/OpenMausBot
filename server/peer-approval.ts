@@ -30,9 +30,6 @@ export interface ApprovalBus {
   broadcast: (payload: Record<string, unknown>) => void;
   notify?: (notification: Notification | null) => void;
   autoApply?: (botId: string, threadId: string) => boolean;
-  /** Called with every card that lands and waits on the person: the
-   * harness's hook for turning a pending gate into the Chief's escalation
-   * notice. Optional for the same reasons notify is. */
   onPeerApprovalPending?: (from: BotRecord, target: PeerApprovalTarget, action: PeerAction, sourceThreadId: string, message: string) => void;
 }
 
@@ -139,7 +136,6 @@ export function requestPeerApproval(
     // The card must exist before the entry, so a timeout or an answer can always settle it.
     const card = pushApprovalCard(bus, from, target, message, action, requestId, sourceThreadId);
     announceCard(bus, from, card, sourceThreadId);
-    bus.onPeerApprovalPending?.(from, target, action, sourceThreadId, message);
     const timer = setTimeout(() => {
       const pending = pendingComms.get(requestId);
       if (!pending) return;
@@ -158,6 +154,11 @@ export function requestPeerApproval(
       messageId: card.id,
       bus,
     });
+    try {
+      bus.onPeerApprovalPending?.(from, target, action, sourceThreadId, message);
+    } catch (error) {
+      console.warn(`peer approval ${requestId}: pending hook failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   });
 }
 

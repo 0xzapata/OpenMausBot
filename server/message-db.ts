@@ -539,7 +539,7 @@ export function readMessageText(
     .prepare(
       "SELECT at, role, text, json_extract(json, '$.from.name') AS from_name, " +
         "json_extract(json, '$.peerAsk.name') AS peer_name FROM messages " +
-        "WHERE thread_id = ? AND id = ? AND kind = 'text' AND text IS NOT NULL",
+        "WHERE thread_id = ? AND id = ? AND kind IN ('text', 'digest') AND text IS NOT NULL",
     )
     .get(threadId, messageId) as
     | { at: number; role: string; text: string; from_name: string | null; peer_name: string | null }

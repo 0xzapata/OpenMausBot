@@ -8,6 +8,7 @@ import { ensureDirs } from "../../config.ts";
 import type { ProviderDriver, ProviderInstance, TextGenerationUsage } from "../../contracts.ts";
 import { removeTempDir } from "../../testing/cleanup.ts";
 import * as procs from "../../procs.ts";
+import { BACKGROUND_TEXT_TIMEOUT_MS } from "./background-text.ts";
 import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
 import { CursorAgentDriver } from "./cursor.ts";
 import { GeminiAgentDriver } from "./gemini.ts";
@@ -77,6 +78,14 @@ describe("ACP memory one-shot (generateMemoryText)", () => {
     process.env.FAKE_ACP_MODE = "permission";
     const engine = await create(GrokAgentDriver);
     await expect(engine.generateMemoryText!("prompt")).rejects.toThrow(/may not use|tried to use a tool/);
+  });
+
+  it("waits as long as the caller's options say", async () => {
+    process.env.FAKE_ACP_MODE = "hang";
+    const engine = await create(GrokAgentDriver);
+    const started = Date.now();
+    await expect(engine.generateMemoryText!("prompt", { timeoutMs: 500 })).rejects.toThrow(/timed out/);
+    expect(Date.now() - started).toBeLessThan(BACKGROUND_TEXT_TIMEOUT_MS);
   });
 
   it("stops on abort", async () => {

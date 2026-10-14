@@ -1,5 +1,10 @@
 # Team escalations: a parked run reaches the Chief of Staff
 
+Off by default. Turn it on with `"features": { "chiefEscalations": true }` in
+`config.json`, or `PATCH /api/config {"features":{"chiefEscalations":true}}`.
+While it is off nothing below happens: no notice, no line in the Chief's
+prompt, and `raise_escalation` is not mounted.
+
 A healthy run can park on a gate only a person can lift. Three ways it
 happens:
 
@@ -57,7 +62,9 @@ passes — a fourth `raise_escalation` is refused with that reason. A
 Chief's own gates, a bot with no Chief on duty, and one the reach fence
 excludes go to the person as a notification ("Clive hit a problem")
 carrying the escalation chip — never a dead end. Group-room turns and
-room posts never raise escalations: a room's question stays in the room.
+room posts never raise escalations: a room's question stays in the room. A
+`NEEDS INPUT:` question in a thread a teammate assigned goes to that
+assigner, which the runtime already tells, not to the Chief.
 
 What the person sees: the Chief's *Team escalations* thread in the sidebar
 (and on the phone), one entry per gate with the Chief's one-line report of

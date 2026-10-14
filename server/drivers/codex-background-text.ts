@@ -121,7 +121,7 @@ export async function runCodexOneShot(input: CodexOneShotInput): Promise<string>
         else resolve(answer.trim());
       };
       const abort = () => void finish(new Error("Codex background call aborted"));
-      const timer = setTimeout(() => void finish(new Error("Codex background call timed out")), input.timeoutMs ?? CODEX_BACKGROUND_TIMEOUT_MS);
+      const timer = setTimeout(() => void finish(new Error("Codex background call timed out")), input.timeoutMs ?? input.options?.timeoutMs ?? CODEX_BACKGROUND_TIMEOUT_MS);
       timer.unref?.();
 
       const onEvent = (event: any) => {
