@@ -11374,7 +11374,14 @@ async function startTurn(
       const checkpointCwd = cwd && cwd !== privateWorkspace ? cwd : undefined;
       // Engines discover native skills from their cwd. The private task folder
       // is not under the workspace that holds the bot-level links (#2806).
-      if (cwd && cwd === privateWorkspace) syncTaskSkillLinks(bot.id, threadId);
+      // A failure only loses native discovery; the prompt index still lists them.
+      if (cwd && cwd === privateWorkspace) {
+        try {
+          syncTaskSkillLinks(bot.id, threadId);
+        } catch (error) {
+          console.warn(`[skills] linking skills into the task folder failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       // dweb is opt-in: without an explicit daemon URL, do not advertise
       // tools that would fail on every call or spawn an unnecessary proxy.
       const dwebUrl = process.env.DWEB_URL?.trim();

@@ -545,6 +545,29 @@ describe("encrypted full workspace backups", () => {
     await expect(createWorkspaceBackup(root, { password: PASSWORD })).rejects.toThrow(/outside the workspace/);
   });
 
+  // #2806: the app links enabled skills into each conversation's work folder
+  // too. Those point at the same bot's skill store, which is in the backup.
+  it("counts the app's skill links in work folders as managed, not as outside data", async () => {
+    const root = directory();
+    const outside = directory();
+    const skill = join(root, "workspaces", "bot", "skills", "example");
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(join(skill, "SKILL.md"), "# Example");
+    const kind = process.platform === "win32" ? "junction" : "dir";
+    for (const family of [".claude", ".agents", ".grok"]) {
+      const native = join(root, "task-workspaces", "bot", "thread", family, "skills");
+      mkdirSync(native, { recursive: true });
+      symlinkSync(skill, join(native, "example"), kind);
+    }
+    // Same place and name, but another bot's store or outside: an agent's link.
+    mkdirSync(join(root, "workspaces", "other", "skills", "theirs"), { recursive: true });
+    symlinkSync(join(root, "workspaces", "other", "skills", "theirs"), join(root, "task-workspaces", "bot", "thread", ".claude", "skills", "theirs"), kind);
+    symlinkSync(outside, join(root, "task-workspaces", "bot", "thread", ".agents", "skills", "away"), kind);
+    const exported = await createWorkspaceBackup(root, { password: PASSWORD });
+    expect(exported.summary.warnings.some((warning) => warning.startsWith("3 managed skill discovery link(s)"))).toBe(true);
+    expect(exported.summary.warnings.some((warning) => warning.startsWith("2 symbolic link(s) in conversation work folders"))).toBe(true);
+  });
+
   it("recovers an interrupted top-level swap before any application state is loaded", async () => {
     const source = directory();
     json(join(source, "bots.json"), []);
