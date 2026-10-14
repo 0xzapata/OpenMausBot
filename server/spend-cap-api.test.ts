@@ -183,9 +183,9 @@ describe("spend cap and prices through real turns", () => {
     expect((await put({ budgets: { monthlyUsd: 1 } })).status).toBe(200);
     expect((await send(botId, "fourth")).status).toBeLessThan(300);
     expect(JSON.stringify(await control(["wait", "--bot", botId, "--timeout", "30"]))).toContain("settled");
+    await expect.poll(async () => ((await (await api("/api/usage")).json()) as any).total.turns, { timeout: 10_000 }).toBe(3);
     const raised = (await (await api("/api/usage")).json()) as any;
     expect(raised.budget).toMatchObject({ monthlyUsd: 1, exceeded: false });
-    expect(raised.total.turns).toBe(3);
   }, 150_000);
 
   it.each([1, 2])("blocks a goal after %i paid turn(s) without retrying or spending another turn", async (allowedTurns) => {
