@@ -7,9 +7,8 @@ import type { Bot, Message } from "@/state/store";
 import type { ManagedSkill } from "./bot-settings/SkillsSection";
 import type { BotApps } from "./bot-settings/useBotApps";
 
-// Same hook-by-call-order harness as ModelPicker.simple.test.ts: component
-// state survives between renders, effects never run, and handlers are read
-// off the returned element tree.
+// Hook-by-call-order harness: component state survives between renders, effects never run, and handlers are read off
+// the element tree.
 const fixture = vi.hoisted(() => {
   vi.stubGlobal("window", {});
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
@@ -31,7 +30,6 @@ const fixture = vi.hoisted(() => {
     },
     derived: {} as Record<string, unknown>,
     apps: { phase: "ready", apps: [], connectedSlugs: [] } as BotApps,
-    // each place as usePlaceViews answers it: [offered here, can be picked, its few words]
     places: {} as Record<string, [boolean, boolean, string]>,
   };
 });
@@ -138,11 +136,9 @@ const find = (rendered: { nodes: Node[] }, attr: string, value: unknown = true) 
   rendered.nodes.find((node) => node.props[attr] === value)!;
 const click = (node: Node) => (node.props.onClick as () => void)();
 const isSimple = (rendered: { nodes: Node[] }) => rendered.nodes.some((node) => node.type === SimpleBotPanel);
-// the accordion row for a section: its button's aria-expanded
 const rowOpen = (rendered: { nodes: Node[] }, id: string) =>
   (Children.toArray(find(rendered, "data-bot-settings-section", id).props.children)[0] as Node).props["aria-expanded"] === true;
 
-// whether the model picker's own effort band is hidden, its steps being on the Thinking row
 const effortElsewhere = (rendered: { nodes: Node[] }) =>
   String(find(rendered, "data-simple-default-model").props.className).includes("[&_[data-simple-effort]]:hidden");
 const skill = (name: string, enabled: boolean): ManagedSkill => ({ name, description: `${name} helper`, enabled, source: "github:x/y", warnings: [] });
@@ -185,7 +181,6 @@ describe("the bot settings panel in Simple mode", () => {
     expect(tabs).toEqual([
       ["details", "Details"], ["memory", "Memory"], ["library", "Library"], ["skills", "Skills"], ["routines", "Routines"], ["vault", "Vault"],
     ]);
-    // Who it is and what it was told read as one line each, with Edit beside them.
     expect(html).toContain("Name and job");
     expect(html).toContain("Scout · Researcher");
     expect(html).toContain("Instructions");
@@ -198,7 +193,6 @@ describe("the bot settings panel in Simple mode", () => {
     expect(html).toContain("Where Scout works");
     expect(html).toContain("All settings");
     expect(html).not.toContain("SOUL.md");
-    // The rows read in this order.
     const rows = [...html.matchAll(/data-simple-row="(\w+)"/g)].map((match) => match[1]);
     expect(rows).toEqual(["look", "identity", "soul", "approval", "computer", "uses", "phone", "email"]);
   });
@@ -211,7 +205,6 @@ describe("the bot settings panel in Simple mode", () => {
 
     click(find(closed, "data-simple-edit", "look"));
     const open = panel(bot);
-    // The editor Identity has under All settings, writing through the same patch.
     const card = open.nodes.find((node) => node.type === BotProfileAvatarCard)!;
     expect(card.props.bot).toBe(bot);
     expect(card.props.activeState).toBe("idle");
@@ -219,7 +212,6 @@ describe("the bot settings panel in Simple mode", () => {
     expect(open.html).toContain("Use blue mascot color");
     expect(open.html).toContain("Use the Blob body");
 
-    // One row at a time: opening another closes it, and Done closes it too.
     click(find(open, "data-simple-edit", "identity"));
     expect(panel(bot).nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(false);
     click(find(panel(bot), "data-simple-edit", "look"));
@@ -269,7 +261,6 @@ describe("the bot settings panel in Simple mode", () => {
     fixture.storeState = { settingsOpen: true, botSettingsSection: "identity", botSettingsExpandAccordion: true };
     expect(panel(makeBot()).nodes.some((node) => node.props.id === "simple-bot-name-scout")).toBe(true);
 
-    // A section this device merely viewed last opens nothing by itself.
     fixture.values = [];
     fixture.own = 0;
     fixture.storeState = { settingsOpen: true, botSettingsSection: "soul", botSettingsExpandAccordion: true, botSettingsExpandRemembered: true };
@@ -280,7 +271,6 @@ describe("the bot settings panel in Simple mode", () => {
     expect(panel(makeBot({ soul: "" })).html).toContain("No instructions yet.");
     const drifted = panel(makeBot({ soulDrift: true }));
     expect(drifted.nodes.some((node) => node.type === SoulField)).toBe(true);
-    // Nothing to close: the banner inside the box has to be answered.
     expect(drifted.nodes.some((node) => node.props["data-simple-done"] === "soul")).toBe(false);
   });
 
@@ -289,8 +279,6 @@ describe("the bot settings panel in Simple mode", () => {
     const rendered = panel(bot);
     const picker = rendered.nodes.find((node) => node.type === ModelPicker)!;
     expect(picker).toBeDefined();
-    // Contained (in place, never clipped by the scrolling panel) and on the
-    // bot itself, with no thread: a pick is the bot's default.
     expect(picker.props.contained).toBe(true);
     expect(picker.props.bot).toBe(bot);
     expect(picker.props.threadId).toBeUndefined();
@@ -356,7 +344,6 @@ describe("the bot settings panel in Simple mode", () => {
     expect(find(rendered, "data-approval-choice", "ask").props["aria-pressed"]).toBe(false);
     expect(rendered.html).toContain("Acts without checking");
     expect(rendered.html).not.toContain("A custom setting is in use.");
-    // From Ask, the Full choice moves the bot and every thread, as Permissions does.
     fixture.derived.approvalMode = "ask";
     click(find(panel(makeBot()), "data-approval-choice", "full"));
     expect(fixture.dispatch).toHaveBeenLastCalledWith({
@@ -469,15 +456,12 @@ describe("the bot settings panel in Simple mode", () => {
     expect(at("Thinking")).toBeLessThan(at("Before Scout acts"));
 
     expect(rendered.html).toContain("More thinking is slower and more careful.");
-    // No saved step sends nothing, so the row says the model decides.
     expect(panel(makeBot()).html).toContain("Left to the model. Pick a step to set it.");
 
     click(find(rendered, "data-thinking-choice", "high"));
-    // No thread: the step is the bot's own, like a model picked in this panel.
     expect(fixture.dispatch).toHaveBeenLastCalledWith({
       type: "setModel", botId: "scout", selection: { instanceId: "claude", model: "claude-opus-5-5", effort: "high" },
     });
-    // The step already in effect is not sent again.
     (fixture.dispatch as ReturnType<typeof vi.fn>).mockClear();
     click(find(rendered, "data-thinking-choice", "medium"));
     expect(fixture.dispatch).not.toHaveBeenCalled();
@@ -511,7 +495,6 @@ describe("the bot settings panel in Simple mode", () => {
       ["auto", true], ["local", false], ["cloud", false],
     ]);
     expect(rendered.html).toContain("Picks the right place for each task");
-    // The cloud place is always named in full.
     expect(placeOf(rendered, "cloud").props.children).toBe("Cloud computer");
     expect(placeOf(rendered, "auto").props.children).toBe("Auto");
 
@@ -519,7 +502,6 @@ describe("the bot settings panel in Simple mode", () => {
     expect(patch).toHaveBeenLastCalledWith({ computer: "cloud" });
     click(placeOf(rendered, "local"));
     expect(patch).toHaveBeenLastCalledWith({ computer: "local" });
-    // Auto is the absence of a place.
     click(placeOf(panel(makeBot({ computer: "cloud" })), "auto"));
     expect(patch).toHaveBeenLastCalledWith({ computer: null });
   });
@@ -545,7 +527,6 @@ describe("the bot settings panel in Simple mode", () => {
     const rendered = panel(makeBot({ computer: "browser" }));
     expect(places(rendered).every((node) => node.props["aria-pressed"] === false)).toBe(true);
     expect(rendered.html).toContain("Browser: ");
-    // One of the three in effect needs no name: its button is pressed.
     expect(panel(makeBot({ computer: "cloud" })).html).not.toContain("Cloud computer: ");
   });
 
@@ -562,7 +543,6 @@ describe("the bot settings panel in Simple mode", () => {
     });
     expect(panel(bot).nodes.find((node) => node.type === LocalComputerAutoWarning)!.props.open).toBe(false);
 
-    // A bot that asks first goes straight there.
     fixture.derived.approvalMode = "ask";
     click(placeOf(panel(makeBot()), "local"));
     expect(patch).toHaveBeenLastCalledWith({ computer: "local" });
@@ -579,7 +559,6 @@ describe("the bot settings panel in Simple mode", () => {
       apps: [app("a", "write"), app("b", "read"), app("c", null), app("d", "write"), app("e", "write"), app("f", "write")],
     };
     const rendered = panel(bot);
-    // An app that is off for this bot is not something it uses.
     expect([...rendered.html.matchAll(/data-simple-uses="(\w+)"/g)].map((match) => match[1])).toEqual(["a", "b", "d", "e"]);
     expect(rendered.html).toContain("+1 more");
 
@@ -590,7 +569,6 @@ describe("the bot settings panel in Simple mode", () => {
     const setItem = vi.fn();
     vi.stubGlobal("localStorage", { getItem: () => null, setItem });
     (vault.props.onOpenBrowser as () => void)();
-    // Signing in happens in the bot's browser: the Computer panel opens on it.
     expect(setItem).toHaveBeenCalledWith("omb-computer-panel-view:scout", "browser");
     expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleComputer", open: true });
     vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
@@ -609,14 +587,12 @@ describe("the bot settings panel in Simple mode", () => {
     const done = routine({ id: "r3", name: "One-off", enabled: false, nextRunAt: null, schedule: { type: "once", at: 1 } });
     fixture.derived.botRoutines = [paused, done, morning];
     const rendered = panel(makeBot());
-    // Enabled first, then by name, as the Routines page lists them.
     expect(rendered.nodes.filter((node) => node.props["data-simple-routine"] !== undefined).map((node) => node.props["data-simple-routine"]))
       .toEqual(["r1", "r3", "r2"]);
     expect(rendered.html).toContain("Every weekday at");
     expect(rendered.html).toContain("Paused");
     expect(find(rendered, "aria-label", "Run Morning brief on its schedule").props.checked).toBe(true);
     expect(find(rendered, "aria-label", "Run Weekly digest on its schedule").props.checked).toBe(false);
-    // A finished one-shot has nothing to switch back on.
     expect(rendered.nodes.some((node) => node.props["aria-label"] === "Run One-off on its schedule")).toBe(false);
 
     click(find(rendered, "aria-label", "Run Morning brief on its schedule"));
@@ -675,7 +651,6 @@ describe("the Vault tab", () => {
     expect(rendered.html).toContain("What Scout is allowed to use.");
     expect(rendered.html).toContain("github things");
     click(find(rendered, "aria-label", "Scout can use Github"));
-    // Every app was on; one going off lists the rest.
     expect(patch).toHaveBeenLastCalledWith({ connectorScopes: { apps: { gmail: "write", slack: "write" } } });
 
     fixture.apps = { phase: "ready", connectedSlugs: ["github", "gmail", "slack"], apps: [app("github", null), app("gmail", "read"), app("slack", "write")] };
@@ -698,7 +673,6 @@ describe("the Vault tab", () => {
     click(find(off, "aria-label", "Let Scout use apps"));
     expect(patch).toHaveBeenLastCalledWith({ composio: true });
 
-    // Where apps cannot work at all it can still be turned off, never on.
     fixture.derived.canUseConnectedApps = false;
     const cannot = vault(makeBot({ composio: false }));
     expect(find(cannot, "aria-label", "Let Scout use apps").props.disabled).toBe(true);
@@ -728,7 +702,6 @@ describe("the Vault tab", () => {
 
   it("lists the sites the bot's own browser is signed in to, and explains the browsers it cannot list", async () => {
     const { SignedInSites } = await import("./SignedInSites");
-    // Reading a browser's sign-ins is the owner's or an admin's to do.
     expect(vault(makeBot()).nodes.some((node) => node.type === SignedInSites)).toBe(false);
     fixture.ownerOrAdmin = true;
     const own = vault(makeBot());
@@ -736,7 +709,6 @@ describe("the Vault tab", () => {
     expect(sites.props).toMatchObject({ bare: true, target: { bot: "scout" }, sharedBy: ["Scout"], disabled: false });
     expect(own.html).toContain("Sign in once in Scout&#x27;s browser and it stays signed in.");
 
-    // A shared profile names everyone a sign-out reaches.
     fixture.storeState = {
       ...fixture.storeState,
       config: { browserProfiles: [{ id: "team", name: "Team" }] },
@@ -891,7 +863,6 @@ describe("Switch them too beside the bot's model", () => {
     const rendered = dialog(makeBot(onOwn(3)));
     expect(rendered.html).toContain("3 threads use their own model.");
     expect(rendered.html).toContain("Switch them too");
-    // A fresh hook record: the section is captured on its own.
     fixture.values = [];
     fixture.own = 0;
     const section = capture(() => ModelSection({ bot: makeBot(onOwn(3)) }));

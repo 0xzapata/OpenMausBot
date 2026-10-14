@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Model Context Protocol (MCP) Server for OpenMausBot
-// Standard JSON-RPC 2.0 stdio transport for external agent orchestration (Hermes, Claude Desktop, Cursor, etc.).
+// Model Context Protocol (MCP) server for OpenMausBot over JSON-RPC 2.0 stdio,
+// for external agents (Hermes, Claude Desktop, Cursor, etc.).
 import readline from "node:readline";
 
 export function validateBaseUrl(url: string): string {
@@ -828,7 +828,7 @@ function sendReceipt(receipt: unknown) {
 
 /** Hooks a caller can give a long tool call (the openmausbot CLI streams progress). */
 export interface ToolCallHooks {
-  /** Each new state of the job a wait watches (server/job-view.ts JobView). */
+  /** Each new state of the job a wait watches. */
   onProgress?(job: Record<string, any>): void;
 }
 
@@ -1484,5 +1484,4 @@ export function runStdio(): Promise<void> {
   }));
 }
 
-// Start stdio interface when executed directly
 if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.argv[1].endsWith("mcp-server.js"))) void runStdio();

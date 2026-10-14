@@ -78,12 +78,9 @@ async function route(
     if (limited) return limited;
     const auth = createAuth(env, ctx, config, requestId);
     const response = await auth.handler(request);
-    // Better Auth's inline expired-code cleanup is off (see auth.ts), so
-    // sign-in sweeps after responding. It skips 429 and 5xx responses. Other
-    // 4xx responses still sweep, including validation errors that never
-    // reached Better Auth's cleanup; its per-IP sign-in limit bounds them. The
-    // other email-otp routes that check a code no longer sweep; sign-in runs
-    // often enough to keep the table bounded.
+    // Better Auth's inline expired-code cleanup is off, so sign-in sweeps after
+    // responding, except on 429 and 5xx; its per-IP sign-in limit bounds the
+    // other 4xx sweeps.
     if (
       request.method === "POST"
       && url.pathname === SIGN_IN_OTP_PATH

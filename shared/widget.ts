@@ -1,8 +1,6 @@
 // A bot-authored chat widget: the JSON tree `show_widget` posts as a message
-// of kind "widget" (docs/superpowers/specs/2026-10-13-chat-widgets-design.md).
-// Node names and props follow ChatKit's widget components. Model input is
-// normalised here once, into a canonical tree, and nothing else is stored or
-// drawn: every renderer (desktop, iOS, Android) reads canonical trees only.
+// of kind "widget". Node names and props follow ChatKit's widget components.
+// Model input is normalised here once; every renderer reads canonical trees only.
 import type { JsonValue } from "./json.ts";
 
 export const WIDGET_VERSION = 1;
@@ -55,7 +53,7 @@ export interface WidgetButtonSpec {
 }
 
 /** One canonical node. `id` is assigned here ("n1", "n2", ... in document
- * order) and is how a press names its button. Props are per type; see the spec. */
+ * order) and is how a press names its button. */
 export interface WidgetNode {
   type: string;
   id: string;
@@ -117,7 +115,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
 
-// ── Prop readers ────────────────────────────────────────────────────────────
 // A reader turns one raw prop into its canonical value. `undefined` drops the
 // prop (a lenient miss: an unknown token, a CSS value this app does not take).
 // A reader throws only where a silently dropped value would post a broken or
@@ -390,7 +387,6 @@ const chartSeries: Reader = (raw, path) => {
 
 const chartAxis: Reader = (raw, path) => ({ dataKey: text(64, "nonEmpty")(isRecord(raw) ? raw.dataKey : raw, `${path}.dataKey`) });
 
-// ── Node specs ──────────────────────────────────────────────────────────────
 
 const LAYOUT: Record<string, Reader> = {
   gap: spacing(),
@@ -619,7 +615,6 @@ export function parseWidgetInput(value: unknown): ParsedWidgetInput {
   }
 }
 
-// ── Reading a canonical tree ────────────────────────────────────────────────
 
 export const widgetString = (node: WidgetNode, key: string): string | undefined => (typeof node[key] === "string" ? node[key] as string : undefined);
 export const widgetNumber = (node: WidgetNode, key: string): number | undefined => (typeof node[key] === "number" ? node[key] as number : undefined);
@@ -653,7 +648,6 @@ function firstText(node: WidgetNode): string {
   return found;
 }
 
-/** One pressable thing in a widget. */
 export interface WidgetActionEntry {
   /** "confirm", "cancel", or the node id of the button or list item. */
   ref: string;
@@ -878,7 +872,6 @@ export function dayList(days: string): string {
   return picked.map((day) => names[day] ?? day).join(", ");
 }
 
-// ── Text fallback ───────────────────────────────────────────────────────────
 
 function inlineText(node: WidgetNode): string {
   switch (node.type) {

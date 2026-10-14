@@ -18,8 +18,7 @@ export const botDefaultModelSchema = z.object({
 }).strict().refine(value => value.effort === undefined || value.variant === undefined,
   "choose either a model variant or an effort level");
 
-// Preferences only. Consent flags, live grants, bot IDs and execution state
-// cannot be stored here and therefore cannot be replayed as permission grants.
+// Preferences only: consent flags, live grants, bot IDs and execution state can never be replayed as permission grants.
 export const botDefaultsProfileSchema = profilePatchSchema.extend({
   name: z.string().max(100).refine(fitsOnOneLine, "name must fit on one line").optional(),
   section: z.string().trim().max(60).optional(),
@@ -105,8 +104,6 @@ export type BotDefaultsProfile = NewBotDefaults["profile"];
 export type BotRoutineTemplate = NewBotDefaults["routines"][number];
 export type BotSkillTemplate = NewBotDefaults["skills"][number];
 
-/** Explicit values (including empty values) win. A resolved renderer draft
- * opts out so deleted fields and template extras are not restored on POST. */
 export function resolveBotCreationDefaults(saved: NewBotDefaults | undefined, body: Record<string, unknown>) {
   if (body.useDefaults !== undefined && typeof body.useDefaults !== "boolean") {
     throw Object.assign(new Error("useDefaults must be true or false"), { status: 400 });

@@ -1,11 +1,4 @@
-// The full server as an OpenMausBot Cloud home with the free trial's Claude
-// credit, over its real HTTP boundary, against one stub that plays the
-// Admin's relay: an OpenAI-compatible API (chat completions and models) and
-// nothing Anthropic-shaped. With no AI of the person's own, the first bot
-// runs on the credit: a read-only engine, OpenMausBot's own chat engine,
-// whose token reaches only the relay, never config.json, a page, the log,
-// Claude Code or the person's own engine. Used up, it says so in plain words
-// and stops; once the person's own Claude can run, it takes over every bot.
+// One stub plays the Admin's relay: an OpenAI-compatible API (chat completions and models), nothing Anthropic-shaped.
 // Disposable home; a synthetic Claude CLI for the person's own engine; no network.
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -26,7 +19,7 @@ const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const HOST = "omb-t-0123456789ab.fly.dev";
 const secret = randomBytes(32).toString("base64url");
 const TOKEN = `omb_ai_${randomBytes(32).toString("base64url")}`;
-/** The Admin's relay, as server/cloud-credit.ts serves it: CREDIT_RELAY_PATH, with the Cloud given `<origin>${RELAY_PATH}/v1`. */
+/** The Admin's relay path; the Cloud is given `<origin>${RELAY_PATH}/v1`. */
 const RELAY_PATH = "/api/cloud/services/ai";
 const MODELS = { object: "list", data: [
   { object: "model", id: "claude-haiku-4-5", display_name: "Claude Haiku 4.5" },
@@ -84,7 +77,7 @@ beforeAll(async () => {
     });
   });
   await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
-  // OMB_CLOUD_AI_URL exactly as the Admin builds it (cloud-credit.ts `env`): the origin, the relay path and `/v1`.
+  // OMB_CLOUD_AI_URL exactly as the Admin builds it: the origin, the relay path and `/v1`.
   const relayUrl = `http://127.0.0.1:${(stub.address() as AddressInfo).port}${RELAY_PATH}/v1`;
 
   home = mkdtempSync(join(tmpdir(), "omb-cloud-credit-"));
@@ -135,7 +128,7 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
   const deadline = Date.now() + 30_000;
   for (;;) {
     if (child.exitCode !== null) throw new Error(`the Cloud home exited:\n${log}`);
-    try { if ((await api("GET", "/api/health")).body?.pid === child.pid) break; } catch { /* starting */ }
+    try { if ((await api("GET", "/api/health")).body?.pid === child.pid) break; } catch {}
     if (Date.now() > deadline) throw new Error(`the Cloud home did not start:\n${log}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -159,7 +152,6 @@ type Bot = { id: string; busy?: boolean; modelSelection: { instanceId: string; m
 const instances = async () => (await api("GET", "/api/instances")).body.instances as Instance[];
 const credit = async () => (await instances()).find((instance) => instance.instanceId === CLOUD_CREDIT_INSTANCE);
 const bots = async () => (await api("GET", "/api/bots?messages=20")).body.bots as Bot[];
-/** One message to the first bot, and its settled turn. */
 async function turn(text: string): Promise<Bot> {
   const [first] = await bots();
   const before = first!.messages.length;
@@ -185,10 +177,8 @@ describe("the free trial's Claude credit on a Cloud home", { timeout: 90_000 }, 
     const settled = await turn("hello");
     expect(settled.messages.some((message) => message.role === "bot" && message.kind === "text")).toBe(true);
     expect(relayed).toContainEqual(expect.objectContaining({ method: "POST", path: `${RELAY_PATH}/v1/chat/completions`, bearer: `Bearer ${TOKEN}` }));
-    // Only the relay's two routes, never `/v1/v1` (which its route() answers 404) and never an Anthropic route.
     expect(relayed.filter((request) => ![`${RELAY_PATH}/v1/models`, `${RELAY_PATH}/v1/chat/completions`].includes(request.path))).toEqual([]);
     expect(relayed.every((request) => request.apiKey === "")).toBe(true);
-    // The person's own Claude Code never ran for it.
     expect(() => readFileSync(join(home, "own-turn.json"), "utf8")).toThrow();
   });
 
@@ -208,19 +198,16 @@ describe("the free trial's Claude credit on a Cloud home", { timeout: 90_000 }, 
     const [first] = await bots();
     expect(first!.modelSelection.instanceId).toBe("claude");
     expect(first!.messages.filter((message) => message.tool?.name === "notice: Claude is connected, so this conversation uses it now instead of the trial Claude credit.")).toHaveLength(1);
-    // The saved default for new bots moved too.
     expect(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).defaultModelSelection.instanceId).toBe("claude");
     const completions = relayed.filter((request) => request.path.endsWith("/chat/completions")).length;
     const settled = await turn("now on my own");
     const after = settled.messages.slice(settled.messages.findLastIndex((message) => message.role === "user"));
     expect(after.some((message) => message.role === "bot" && message.kind === "text")).toBe(true);
     expect(after.some((message) => message.tool?.name.startsWith("error:"))).toBe(false);
-    // Their own Claude Code ran it, with nothing of the credit's.
     const { env } = JSON.parse(readFileSync(join(home, "own-turn.json"), "utf8"));
     expect(env).not.toHaveProperty("ANTHROPIC_API_KEY"); expect(env).not.toHaveProperty("ANTHROPIC_BASE_URL");
     expect(JSON.stringify(env)).not.toContain(TOKEN); expect(JSON.stringify(env)).not.toContain(RELAY_PATH);
     expect(relayed.filter((request) => request.path.endsWith("/chat/completions"))).toHaveLength(completions);
-    // Read again, nothing moves twice.
     await instances();
     expect((await bots())[0]!.messages.filter((message) => message.tool?.name.startsWith("notice: Claude is connected"))).toHaveLength(1);
   });

@@ -1,10 +1,6 @@
-// A stand-in for the bot's running browser in fill_login tests: one page in
-// happy-dom, answering the engine commands server/login-fill.ts sends
-// (`get url`, `eval`; `stream status|enable` for a relay found through the
-// engine, browser-relay.ts) and taking typed text the way the engine's
-// input relay does (`keyboard insertText` into the focused
-// field, with the input events a React form listens for). It records every
-// engine command, so a test can prove no secret ever went through one.
+// A stand-in for the bot's browser in fill_login tests: one happy-dom page answering the engine commands
+// login-fill sends and taking typed text like the input relay. It records every engine command, so a
+// test can prove no secret went through one.
 import { Window } from "happy-dom";
 
 export class FakeLoginPage {
@@ -13,8 +9,7 @@ export class FakeLoginPage {
   readonly engineCalls: string[][] = [];
   /** Every text typed through the input relay. */
   readonly typed: string[] = [];
-  /** What the page's own scripts saw: field name → last value an input
-   * event carried (a React form's state). */
+  /** What the page's scripts saw: field name → the last value an input event carried. */
   readonly state: Record<string, string> = {};
   streamEnabled = false;
   readonly streamPort = 19_977;
@@ -33,7 +28,6 @@ export class FakeLoginPage {
     return window;
   }
 
-  /** The bot's page moves on: a new document at a new address. */
   navigate(url: string, html: string): void {
     void this.window.happyDOM.close();
     this.window = this.open(url, html);
@@ -53,8 +47,7 @@ export class FakeLoginPage {
     throw new Error(`unexpected engine command: ${args[0]}`);
   }
 
-  /** `keyboard insertText` over the relay: the text goes into the focused
-   * field at its caret, as typing would, with beforeinput and input events. */
+  /** `keyboard insertText` over the relay: into the focused field at its caret, with beforeinput and input events. */
   async insertText(text: string): Promise<void> {
     this.typed.push(text);
     const field = this.window.document.activeElement as unknown as { value: string; dispatchEvent(event: unknown): boolean } | null;
@@ -70,7 +63,6 @@ export class FakeLoginPage {
   }
 }
 
-/** A plain sign-in form: email, password, a button. */
 export const LOGIN_FORM = `
   <form action="/session" method="post">
     <label>Email <input id="email" name="email" type="email" autocomplete="username"></label>

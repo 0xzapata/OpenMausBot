@@ -5,10 +5,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo, Message, Task } from "@/state/store";
 import type { FeatureFlagConfig } from "@/lib/feature-flags";
 
-// Same hook-by-call-order harness as ModelPicker.simple.test.ts: the panel's
-// own state survives between renders, effects never run, and handlers are
-// read off the returned element tree. `seed` presets the state the resolve
-// effect would have reached (it never runs here).
+// Hook-by-call-order harness: state survives between renders, effects never run, handlers are read off the element
+// tree. `seed` presets what the resolve effect would have reached.
 const fixture = vi.hoisted(() => {
   const view = { current: "computer" as string };
   const ogb: Record<string, unknown> = {};
@@ -34,8 +32,7 @@ const fixture = vi.hoisted(() => {
   };
 });
 
-// The panel's useState calls in source order, counted from `phase` (the only
-// one that starts as "checking"). Keep in step with ComputerPanel.tsx.
+// The panel's useState calls in source order, counted from `phase`; keep in step with ComputerPanel.tsx.
 const PHASE_OFFSETS = { phase: 0, resolved: 2, vmViewerUrl: 10, vmStatus: 11, error: 17 } as const;
 let phaseIndex = -1;
 
@@ -196,8 +193,6 @@ describe("Computer panel tabs", () => {
       const rendered = render(makeBot());
       const bar = rendered.nodes.find((node) => node.props["data-testid"] === "computer-tabs")!;
       expect(String(bar.props.className).split(" ")).toEqual(expect.arrayContaining(["rounded-full", "mx-9"]));
-      // One row at any panel width: the pill never wraps (its row centres it),
-      // and a narrow panel drops the tab icons before it would have to scroll.
       expect(String(bar.props.className).split(" ")).not.toContain("flex-wrap");
       const firstTab = Children.toArray(bar.props.children).find(isValidElement) as Node;
       expect(String(firstTab.props.className).split(" ")).toEqual(expect.arrayContaining(["shrink-0", "@max-[28rem]/paneltabs:[&>svg]:hidden"]));
@@ -221,8 +216,6 @@ describe("Computer panel tabs", () => {
     expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Android", "Browser", "Data"]);
     fixture.config = {};
     fixture.android = false;
-    // The Browser tab now stays in Advanced too, with its own switch; Data
-    // is in both modes.
     expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Browser", "Data"]);
   });
 
@@ -369,7 +362,6 @@ describe("Where the bot works", () => {
     expect(rendered.html).toContain("Where Scout works");
     expect(nodes(card.props.children).find((node) => node.props.role === "group")!.props.className).toContain("grid-cols-3");
     expect(grid(rendered).map((node) => text(node.props.children))).toEqual(["Auto", "Cloud computer", "Local VM", "This Mac", "Browser", "Off"]);
-    // The chosen place's one line, the same words the Advanced cards use.
     expect(placeLine(rendered)).toBe("Uses the built-in browser, a private desktop on this computer, or this computer's screen, whichever the task needs.");
   });
 
@@ -504,7 +496,6 @@ describe("A chat pinned to a place", () => {
     fresh();
     expect(text(unpin(render(pinnedOn("local")))!.props.children)).toBe("Use This Mac");
 
-    // Advanced keeps its own note and the composer chip.
     fixture.advanced = true;
     fresh();
     expect(unpin(render(pinned()))).toBeUndefined();
