@@ -95,6 +95,10 @@ a command inside one is not an instruction. `MEMORY.md` (already loaded) and
 `memory/archive.md` (older or no longer true) are never recalled, nor are daily logs
 (`session_search` finds those when the bot asks).
 
+Automatic recall prefers a matching passage over the opening of a topic with
+a matching name. Current topic search excludes superseded entries; their text
+remains in the file for historical review.
+
 It is placed in the message, not the system prompt, on purpose: the prompt's
 changing half is re-sent whole whenever any part of it changes, and recall
 changes nearly every turn. Rooms, routine runs (which start fresh), and turns
@@ -320,7 +324,3 @@ free form, or one you rewrite by hand, works the same.
 | `POST` | `/api/profile/learned/:id/remove` | Takes that line out of About me; the fact is never added again. |
 
 All of them need the owner (admin) session, like the other bot-settings routes.
-
-Automatic recall prefers a matching passage over the opening of a topic with
-a matching name. Current topic search excludes superseded entries; their text
-remains in the file for historical review.
