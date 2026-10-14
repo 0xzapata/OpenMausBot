@@ -1522,7 +1522,7 @@ async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmen
   utilityServerExits.set(proc, new Promise((resolve) => {
     resolveServerExit = resolve;
   }));
-  proc.stdout?.on("data", (d) => slog(`[out] ${String(d).trimEnd()}`));
+  proc.stdout?.on("data", (d) => { listening ||= String(d).includes("openmausbot server on "); slog(`[out] ${String(d).trimEnd()}`); });
   proc.stderr?.on("data", (d) => slog(`[err] ${String(d).trimEnd()}`));
   proc.on("message", (message) => {
     if (!serverSupervisor.isCurrent(proc)) return;
@@ -1541,7 +1541,7 @@ async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmen
     syncDesktopMutationToken(proc);
     syncPhoneSecretKey(proc);
   });
-  let exited = false;
+  let exited = false, listening = false;
   proc.once("exit", (code) => {
     exited = true;
     trustedApprovalMode.rejectProcess(proc);
@@ -1568,7 +1568,7 @@ async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmen
     // child a "foreign owner" on its first health answer.
     pid: () => proc.pid,
     bootTimeoutMs: SERVER_BOOT_TIMEOUT_MS,
-    isExited: () => exited || desktopShutdownStarted,
+    isExited: () => exited || desktopShutdownStarted, isListening: () => listening, listeningGraceMs: SERVER_LISTENING_GRACE_MS,
   });
   if (identity.outcome === "ready" && serverSupervisor.isCurrent(proc)) return { proc };
   if (identity.outcome === "exited") {
@@ -1663,7 +1663,7 @@ function buildErrorPage({ allPortsOccupied }) {
 // first boots write data dirs and pre-listen network calls (managed composio,
 // workspace credentials) can stall a healthy child far past 20s on some
 // machines, which used to surface as the misleading "ports are busy" page.
-const SERVER_BOOT_TIMEOUT_MS = 60_000;
+const SERVER_BOOT_TIMEOUT_MS = 60_000, SERVER_LISTENING_GRACE_MS = 180_000; // + grace once it logs it is listening (#2825)
 
 let cuaReady = Promise.resolve({ mode: "unavailable", reason: "not-started" });
 const androidDevice = createAndroidDeviceController({ resourcesPath: process.resourcesPath });

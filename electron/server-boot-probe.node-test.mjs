@@ -276,3 +276,18 @@ test("each probe's abort timer is the remaining boot budget, not the poll interv
     remainingAtFetch,
   );
 });
+
+test("a child that says it is listening gets the grace before it times out (#2825)", async () => {
+  const startedAt = Date.now();
+  // Answers only after the plain budget, like a listening server too loaded to reply.
+  const lateFetch = async (...args) => {
+    if (Date.now() - startedAt < 400) throw new Error("ECONNREFUSED");
+    return okFetch()(...args);
+  };
+  const probe = (listening) => pollServerIdentity({
+    port: 8799, pid: () => 4242, bootTimeoutMs: 200, listeningGraceMs: 2_000,
+    isListening: () => listening, fetchImpl: lateFetch,
+  });
+  assert.equal((await probe(false)).outcome, "timeout");
+  assert.equal((await probe(true)).outcome, "ready");
+});

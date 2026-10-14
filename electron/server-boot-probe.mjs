@@ -19,6 +19,10 @@
 //   async `spawn` event, so a value grabbed right after fork() is still
 //   undefined and our own freshly-bound child would fail the identity match
 //   and be reaped as a "foreign owner" on its very first health answer.
+// - A child that has said it is listening is booting, not hung: a loaded
+//   machine or a large data dir can keep it from answering for well past the
+//   budget (issue #2825), and reaping it only restarts the same slow boot on
+//   the next port. It gets `listeningGraceMs` more before it times out.
 
 // A healthy child usually binds within a few seconds of fork, and a refused
 // loopback connect costs well under a millisecond, so poll briskly over that
@@ -36,6 +40,8 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *   pid: () => number | undefined,
  *   bootTimeoutMs: number,
  *   isExited?: () => boolean,
+ *   isListening?: () => boolean,
+ *   listeningGraceMs?: number,
  *   now?: () => number,
  *   sleep?: (ms: number) => Promise<void>,
  *   fetchImpl?: typeof fetch,
@@ -47,14 +53,17 @@ export async function pollServerIdentity({
   pid,
   bootTimeoutMs,
   isExited = () => false,
+  isListening = () => false,
+  listeningGraceMs = 0,
   now = Date.now,
   sleep = defaultSleep,
   fetchImpl = globalThis.fetch,
 }) {
   const startedAt = now();
-  const deadline = startedAt + bootTimeoutMs;
+  let deadline = startedAt + bootTimeoutMs;
   for (;;) {
     if (isExited()) return { outcome: "exited" };
+    if (isListening()) deadline = startedAt + bootTimeoutMs + listeningGraceMs;
     const remainingMs = Math.max(0, deadline - now());
     if (remainingMs <= 0) return { outcome: "timeout" };
 
