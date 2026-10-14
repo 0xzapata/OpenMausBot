@@ -1,5 +1,4 @@
-/** A bounded replay of the active branch. Native resumes still receive
- * deltas; this selection is for sessions that need history rebuilt. */
+/** For sessions that need history rebuilt; native resumes still receive deltas. */
 export interface ReplayEntry {
   id: string;
   role: "user" | "assistant";
@@ -51,14 +50,12 @@ export function selectReplay(
   const foldedThrough = record ? history.findIndex((entry) => entry.id === record.foldedThroughId) : -1;
   const cut = record ? (record.firstKeptId ? history.findIndex((entry) => entry.id === record.firstKeptId) : foldedThrough + 1) : -1;
   const recordAt = record ? history.findIndex((entry) => entry.id === record.id) : -1;
-  // Both anchors must still belong to this branch, in their original order.
-  // A stale record must never hide a rewritten or independently selected fork.
+  // Both anchors must still belong to this branch in order: a stale record must never hide a rewritten or other fork.
   const applies = Boolean(record && cut > foldedThrough && foldedThrough >= 0 && recordAt >= cut);
   const representedIds = applies ? history.slice(0, cut).map((entry) => entry.id) : [];
   const entries = history.slice(applies ? cut : 0).filter((entry) =>
     entry.text && entry.id !== record?.id && !options.excludedIds?.has(entry.id));
   const transcript: ReplayEntry[] = [];
-  // Reserve space for the exact omission count and role framing.
   let available = budget - 128;
   if (applies && record) {
     const summary = boundedContextText(record.summary, Math.min(MAX_SUMMARY_BYTES, Math.floor(available / 2)));

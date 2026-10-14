@@ -34,7 +34,6 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
-/** The card for this account, with the offer read. */
 async function card(state: CloudAccountState, Component = ProSettingsCard) {
   f.values = []; bridge.state.mockResolvedValue(state);
   for (let round = 0; round < 3; round++) { f.index = 0; f.effects = []; renderToStaticMarkup(createElement(Component)); f.effects.forEach(effect => effect()); await flush(); }
@@ -108,10 +107,9 @@ it("never offers a plan to anyone who pays, may pay, or whose state is unknown; 
   expect(await card(signedOut)).toBe("");
 });
 
-// Live uses the current Cloud offer and navigation, without reviving the old marketing popup.
 it("for a Live call, offers the current Cloud plans only to signed-out or verified free accounts", async () => {
   const out = await card(signedOut, LiveProPrompt);
-  for (const text of ["Live calls need a Pro plan", "Personal, Pro or Max", "MausBot Cloud plans from $29/month", "Start free trial", "Compare plans", "Sign in to your Cloud plan"]) expect(out).toContain(text);
+  for (const text of ["Live calls from your phone need a Pro plan", "Personal, Pro or Max", "MausBot Cloud plans from $29/month", "Start free trial", "Compare plans", "Sign in to your Cloud plan"]) expect(out).toContain(text);
   press("Sign in to your Cloud plan", LiveProPrompt);
   expect(f.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "cloudAccount", cloudLink: true });
   press("Start free trial", LiveProPrompt);
@@ -133,7 +131,7 @@ it("for a Live call, a paid, pending or unknown plan is never sold another plan"
     [{ status: "unavailable" }, null], [{ status: "connecting" }, null], [{ status: "signed-out", message: "restoring" }, null],
   ] as const) {
     const html = await card(state as CloudAccountState, LiveProPrompt);
-    expect(html).toContain("Live calls need a Pro plan");
+    expect(html).toContain("Live calls from your phone need a Pro plan");
     if (text) expect(html).toContain(text);
     expect(html).toContain("MausBot Cloud settings");
     for (const offer of ["Start free trial", "Compare plans", "$29", "Add a Cloud"]) expect(html).not.toContain(offer);
@@ -146,7 +144,7 @@ it("for a Live call, a browser or remote server only explains the requirement", 
   for (const ogb of [{}, { cloudAccount: bridge, remoteClient: { active: true } }]) {
     vi.stubGlobal("window", { ogb });
     const html = await card(signedOut, LiveProPrompt);
-    expect(html).toContain("Live calls need a Pro plan");
+    expect(html).toContain("Live calls from your phone need a Pro plan");
     for (const more of ["Start free trial", "Compare plans", "Sign in to your Cloud plan", "MausBot Cloud settings"]) expect(html).not.toContain(more);
   }
 });

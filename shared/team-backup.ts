@@ -30,7 +30,7 @@ const task = z.object({
   titleFromFirstMessage: z.literal(true).optional(),
   openedBy: z.object({ botId: key, name, at: timestamp, kind: z.enum(["pair", "work"]).optional() }).optional(),
   closedBy: z.object({ botId: key, name, at: timestamp }).optional(),
-  /** Only true travels. Absence is unpinned, including backups from before pins. */
+  /** Only true travels; absence is unpinned. */
   pinned: z.literal(true).optional(),
   /** A conversation's own turn ceiling. Absence keeps the group default. */
   turnTimeoutMinutes: z.number().int().min(1).max(1_440).optional(),

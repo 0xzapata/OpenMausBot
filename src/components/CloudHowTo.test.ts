@@ -25,7 +25,6 @@ afterEach(() => vi.unstubAllGlobals());
 it("finds the menu button on screen, below it in a full sidebar and beside it in the icons-only one", () => {
   expect(switcherPlacement(doc(rect(10, 140)), 1200, 800)).toBe("below");
   expect(switcherPlacement(doc(rect(8, 40)), 1200, 800)).toBe("right");
-  // A closed drawer (off screen) or a hidden button is no button.
   expect(switcherPlacement(doc(rect(-300, 140), { ...rect(10, 0), width: 0 }), 1200, 800)).toBeNull();
   expect(switcherPlacement(doc(), 1200, 800)).toBeNull();
 });

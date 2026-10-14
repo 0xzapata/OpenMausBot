@@ -1,8 +1,3 @@
-// Copy this computer here, the receiving server's side in isolation
-// (docs/copy-workspace.md): the resumable upload slot, what counts as an empty
-// server, the space check, the routes' owner-only gate and shared-workspace
-// refusal, and the previous workspace. The whole copy over real servers is
-// cloud-move.e2e.test.ts.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -40,14 +35,11 @@ it("resumes an upload by its SHA-256, accepts a repeated part without writing it
   const file = randomBytes(3000), declared = { sha256: sha(file), bytes: file.length };
   expect(beginUpload(dataDir, declared)).toMatchObject({ received: 0 });
   expect(await writeUploadPart(dataDir, declared.sha256, 0, 1000, body(file.subarray(0, 600), file.subarray(600, 1000)))).toBe(1000);
-  // A retry of a part the Cloud already stored (its answer was lost) is a no-op.
   expect(await writeUploadPart(dataDir, declared.sha256, 0, 1000, body(file.subarray(0, 1000)))).toBe(1000);
   await expect(writeUploadPart(dataDir, declared.sha256, 2000, 1000, body(file.subarray(2000)))).rejects.toMatchObject({ status: 409, received: 1000 });
-  // The same file again continues; nothing already received is lost.
   expect(beginUpload(dataDir, declared)).toMatchObject({ received: 1000 });
   expect(await writeUploadPart(dataDir, declared.sha256, 1000, 2000, body(file.subarray(1000)))).toBe(3000);
   expect(readFileSync(await completedUpload(dataDir, declared.sha256)).equals(file)).toBe(true);
-  // A different file replaces the slot.
   const other = randomBytes(100);
   expect(beginUpload(dataDir, { sha256: sha(other), bytes: 100 })).toMatchObject({ received: 0 });
   expect(uploadStatus(dataDir)).toEqual({ sha256: sha(other), bytes: 100, received: 0 });
@@ -57,10 +49,8 @@ it("never lets an upload grow past what it declared, and cuts a failed part back
   const file = randomBytes(1000), declared = { sha256: sha(file), bytes: file.length };
   beginUpload(dataDir, declared);
   await expect(writeUploadPart(dataDir, declared.sha256, 0, 1001, body(file, Buffer.alloc(1)))).rejects.toMatchObject({ status: 413 });
-  // A part that brings more than its declared length is refused and removed.
   await expect(writeUploadPart(dataDir, declared.sha256, 0, 500, body(file))).rejects.toMatchObject({ status: 413 });
   expect(uploadStatus(dataDir)?.received).toBe(0);
-  // A part that ends early is incomplete, and removed too.
   await expect(writeUploadPart(dataDir, declared.sha256, 0, 500, body(file.subarray(0, 200)))).rejects.toMatchObject({ status: 400 });
   expect(uploadStatus(dataDir)?.received).toBe(0);
   await expect(writeUploadPart(dataDir, sha(randomBytes(8)), 0, 10, body(file.subarray(0, 10)))).rejects.toMatchObject({ status: 404 });
@@ -127,12 +117,10 @@ it("keeps one previous Cloud: a new one takes its place only once its restore is
   const first = randomUUID();
   const saved = await prepareNextPreviousCloud(dataDir, first, backup(dataDir));
   expect(saved).toMatchObject({ bots: 2, rooms: 0, chats: 0 });
-  // Waiting for its restore: not the previous Cloud yet.
   expect(previousCloud(dataDir)).toBeNull();
   tidyCloudMoveStorage(dataDir, { restored: true, id: first });
   expect(previousCloud(dataDir)).toMatchObject({ ...saved, bytes: expect.any(Number) });
   expect(JSON.stringify(previousCloud(dataDir))).not.toMatch(/password/);
-  // A later backup whose restore rolled back (or never came) is dropped; the previous stays.
   writeFileSync(join(dataDir, "bots.json"), JSON.stringify([{ id: "three" }]));
   const second = randomUUID();
   await prepareNextPreviousCloud(dataDir, second, backup(dataDir));
@@ -141,7 +129,6 @@ it("keeps one previous Cloud: a new one takes its place only once its restore is
   expect(existsSync(join(dataDir, ".backups", "cloud-previous.next"))).toBe(false);
   const staged = await stagePreviousCloud(dataDir, "0.1.90");
   expect(staged.summary.bots).toBe(2);
-  // A fresh Cloud's backup (its starter bot) is kept but not offered.
   const third = randomUUID();
   await prepareNextPreviousCloud(dataDir, third, backup(dataDir));
   tidyCloudMoveStorage(dataDir, { restored: true, id: third });
@@ -164,18 +151,15 @@ it("once a move's restore is installed, deletes its safety copy and staged files
   tidyCloudMoveStorage(dataDir, restored);
   const left = readdirSync(join(dataDir, ".backups"));
   for (const id of [done, older]) { expect(left).not.toContain(id); expect(left).not.toContain(`safety-${id}`); }
-  // A restore still waiting to be applied, and anything that is not a move's, are left alone.
   for (const id of [pending, other]) { expect(left).toContain(id); expect(left).toContain(`safety-${id}`); }
   expect(restored).not.toHaveProperty("safetyCopyPath");
   expect(JSON.parse(readFileSync(join(dataDir, ".backups", "last-restore.json"), "utf8"))).toEqual({ restored: true, id: done });
   expect(uploadStatus(dataDir)).toBeNull();
-  // A fresh upload stays.
   beginUpload(dataDir, { sha256: "b".repeat(64), bytes: 4096 });
   tidyCloudMoveStorage(dataDir, restored);
   expect(uploadStatus(dataDir)).toMatchObject({ sha256: "b".repeat(64) });
 });
 
-// ── the routes ──────────────────────────────────────────────────────────
 let server: Server | undefined;
 afterEach(async () => { await new Promise<void>((done) => server ? server.close(() => done()) : done()); server = undefined; });
 const ENVIRONMENT = "8d0f6c1e-2b7a-4f3e-9c5d-1a2b3c4d5e6f";
@@ -233,7 +217,6 @@ it("any server receives a copy from its owner's paired app: not the bare loopbac
   expect((await server.call("GET", "/api/cloud-move", server.phone)).status).toBe(403);
   expect((await server.call("POST", "/api/cloud-move/undo", server.phone, {})).status).toBe(403);
   expect((await server.call("POST", "/api/cloud-move/upload", server.owner, { sha256: "a".repeat(64), bytes: 4096 })).status).toBe(200);
-  // Every server sizes its own workspace for its desktop.
   expect((await server.call("GET", "/api/cloud-move/estimate")).status).toBe(200);
 });
 
@@ -246,7 +229,6 @@ it("a workspace shared with other people never receives one, and says why", asyn
   }
   expect(existsSync(join(dataDir, ".backups", "cloud-move"))).toBe(false);
   expect(shared.restarts).toEqual([]);
-  // It still sizes its own workspace, for its own desktop.
   expect((await shared.call("GET", "/api/cloud-move/estimate", shared.owner)).status).toBe(200);
 });
 
@@ -327,12 +309,10 @@ it("swapping back waits out a moment of activity, then keeps what the Cloud has 
   expect(refusals).toBe(-1);
   await expect.poll(() => cloud.restarts.length).toBe(1);
   const pending = JSON.parse(readFileSync(join(dataDir, ".backups", "pending-restore.json"), "utf8")).id;
-  // The swap: what the Cloud had becomes the previous Cloud once startup installs the restore.
   const next = JSON.parse(readFileSync(join(dataDir, ".backups", "cloud-previous.next", "previous.json"), "utf8"));
   expect(next).toMatchObject({ forRestore: pending, contents: { bots: 3 } });
 }, 60_000);
 
-/** A real encrypted backup of a small desktop workspace. */
 async function desktopArchive(marker = "PLAINTEXT-MARKER") {
   writeFileSync(join(desktop, "bots.json"), JSON.stringify([{ id: "a" }, { id: "b" }]));
   mkdirSync(join(desktop, "attachments"), { recursive: true });
@@ -361,7 +341,6 @@ it("a restore the Cloud cannot start leaves nothing staged behind, and a new upl
   expect(stagedJobs()).toEqual([]);
   expect(existsSync(join(dataDir, ".backups", "cloud-previous.next"))).toBe(false);
   expect(cloud.restarts).toEqual([]);
-  // Previewed, then abandoned: the next upload removes it.
   const second = await uploadAndPreview(cloud, file);
   expect(stagedJobs()).toEqual([second]);
   expect((await cloud.call("POST", "/api/cloud-move/upload", cloud.owner, { sha256: sha(file), bytes: file.length })).status).toBe(200);
