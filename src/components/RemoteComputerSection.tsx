@@ -42,9 +42,8 @@ export function RemoteComputerSection() {
 
   const aliveRef = useRef(true);
   const refreshState = useCallback(() => {
-    // Pairing and disconnecting change connection state off the render path;
-    // the bridge's own snapshot is the source of truth, so re-read it after
-    // every transition instead of trusting the action's return value.
+    // The bridge's own snapshot is the truth: re-read it after every transition rather than trusting the action's
+    // return value.
     void bridge?.state().then((next) => {
       if (aliveRef.current) setState(next);
     }).catch(() => {});

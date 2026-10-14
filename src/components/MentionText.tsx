@@ -1,7 +1,6 @@
 import { Fragment, type CSSProperties } from "react";
 import { mentionRanges, type MentionPeer } from "@/lib/mentions";
 
-/** Plain text stays plain text; only known mentions acquire decoration. */
 export function MentionText({ text, peers, everyone = false }: {
   text: string; peers: readonly MentionPeer[]; everyone?: boolean;
 }) {

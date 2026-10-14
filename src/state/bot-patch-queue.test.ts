@@ -314,8 +314,6 @@ describe("bot patch queue", () => {
   });
 
   it("sends the shown thread with a bot model change but never folds it into bot state", async () => {
-    // Bot.threadId is the server's selection; the PATCH's threadId is only
-    // the thread this client shows, which a paired client must name (#2712).
     const sent: BotUpdatePatch[] = [];
     const overlays: BotUpdatePatch[] = [];
     const queue = createBotPatchQueue({
@@ -338,9 +336,6 @@ describe("bot patch queue", () => {
   });
 
   it("carries acknowledgeLocalAuto to the wire but never into a state overlay", async () => {
-    // The consent flag is the server's proof the local-auto warning dialog was
-    // shown (server/index.ts gate). Coalesced with other edits it must still
-    // reach the HTTP body — and must never fold back into renderer bot state.
     const sent: BotUpdatePatch[] = [];
     const overlays: BotUpdatePatch[] = [];
     const queue = createBotPatchQueue({
@@ -408,7 +403,6 @@ describe("bot patch queue", () => {
     });
     queue.enqueue("bot-1", { title: "Ops" }, bot());
     await vi.advanceTimersByTimeAsync(400);
-    // Both levels wait behind the title; the second one is the default only.
     queue.enqueue("bot-1", { approvalMode: "full", applyToAllThreads: true }, bot());
     queue.enqueue("bot-1", { approvalMode: "ask" }, bot());
     release();
@@ -461,8 +455,6 @@ describe("bot patch queue", () => {
   });
 
   it("revive undoes a dispose, so StrictMode's dev probe cannot kill saving", async () => {
-    // StrictMode mounts, runs the cleanup once against the same memoized
-    // queue, and mounts again. dispose → revive must leave a working queue.
     const sent: BotUpdatePatch[] = [];
     const queue = createBotPatchQueue({
       send: async (_botId, patch) => {

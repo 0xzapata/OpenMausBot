@@ -1,19 +1,3 @@
-// The profile row at the very bottom of the sidebar, and the menu it opens.
-//
-// Everything app-level used to sit in that row as unlabelled icons crowding
-// the name: a phone, an update arrow, a gear. Three icons is a guessing game
-// and there was nowhere to put a fourth. They are now a menu that the row
-// opens on click — the shape every desktop app uses for "this is about the
-// app, not about what you are looking at".
-//
-// The update entry is the one item that reports progress in place, so it
-// keeps the menu open and re-labels itself as it works.
-//
-// The phone has two entries: Connect your phone, which opens the pairing
-// this window can do and says where the phone will connect (this computer,
-// your Cloud, this server), and Get the phone app (iPhone and Android). On
-// this computer, a paid Cloud that is Ready adds a Connect your phone line
-// of its own, first: to your Cloud, always on.
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowDownToLine,
@@ -58,7 +42,6 @@ import {
   type PhonePairingAccess,
 } from "@/lib/phone-pairing";
 
-/** "Milind Soni" → "MS", "milind" → "M", "you@x.dev" → "Y", unset → "?" */
 export function profileInitials(profile?: { name?: string; email?: string }): string {
   const name = profile?.name?.trim();
   if (name) {
@@ -72,20 +55,14 @@ export function profileInitials(profile?: { name?: string; email?: string }): st
   return email ? email[0]!.toUpperCase() : "?";
 }
 
-/** The name shown on the row: the profile name, else the email, else "You". */
 export function profileLabel(profile?: { name?: string; email?: string }): string {
   return profile?.name?.trim() || profile?.email?.trim() || t("sidebar.profile.you");
 }
 
 export type UpdatePhase =
   | UpdaterState["status"]
-  /** a check came back with nothing — acknowledged for three seconds so the
-   * click is never silent */
   | "up-to-date";
 
-/** One state machine for the update entry, kept pure so the label/verb pairs
- * can be tested without a bridge. `upToDate` is the 3s acknowledgement after
- * a check that found nothing — otherwise a check is silent. */
 export function updatePhase(state: UpdaterState | null, upToDate: boolean): UpdatePhase {
   const status = state?.status ?? "idle";
   if (status !== "idle") return status;
@@ -101,8 +78,6 @@ export function updateLabel(phase: UpdatePhase, state: UpdaterState | null): str
     case "preparing":
       return t("sidebar.update.preparing");
     case "downloaded":
-      // Named: on My Cloud's page it is this app that restarts, not the Cloud.
-      // An unknown version leaves a double space behind, in every language.
       return (
         state?.installMode === "handoff"
           ? t("sidebar.update.readyInstall", { app: brand().name, version: state?.version ?? "" })
@@ -128,10 +103,6 @@ export function updateLabel(phase: UpdatePhase, state: UpdaterState | null): str
   }
 }
 
-/** A phase that is mid-flight takes no further clicks. `pending` covers the
- * gap between the click and the bridge reporting the state it started: a
- * check and an install round-trip through main first, and without this the
- * row would sit there looking clickable. */
 export function updateBusy(phase: UpdatePhase, pending = false): boolean {
   return pending || phase === "checking" || phase === "downloading" || phase === "preparing" || phase === "installing";
 }
@@ -143,15 +114,10 @@ function UpdateIcon({ phase, pending, size = 18 }: { phase: UpdatePhase; pending
   return <RefreshCw size={size} />;
 }
 
-/** The phases the round update button beside this row speaks for
- * (UpdateIndicator), so the row itself stays quiet about them. */
 export function updateHasButton(phase: UpdatePhase): boolean {
   return phase === "downloading" || phase === "preparing" || phase === "downloaded" || phase === "installing";
 }
 
-/** Whether the updater has something the profile row should say out loud.
- * An idle updater, and the three-second "up to date" tick that follows a
- * check the user asked for from inside the menu, both stay in the menu. */
 export function updateNoteworthy(phase: UpdatePhase, pending = false): boolean {
   return pending || (phase !== "idle" && phase !== "up-to-date" && phase !== "checking");
 }
@@ -163,9 +129,6 @@ interface UpdateEntry {
   label: string;
 }
 
-/** The updater bridge exists only in the packaged app; in dev the entry is
- * absent rather than dead. The desktop app answers only this computer's page
- * and the person's own Cloud page, so until it does there is no entry. */
 export function useUpdateItem(): UpdateEntry | null {
   const state = useUpdaterState();
   const updater = window.ogb?.updater;
@@ -173,11 +136,8 @@ export function useUpdateItem(): UpdateEntry | null {
   const [checkedAt, setCheckedAt] = useState(0);
   const status = state?.status ?? "idle";
 
-  // a check and an install both round-trip through main before the status
-  // changes — spin on the click itself, and let the new status clear it
   useEffect(() => setPending(false), [status]);
 
-  // a check that found nothing lands back on idle — acknowledge it for 3s
   const upToDate = Boolean(checkedAt) && (!state || state.status === "idle") && Date.now() - checkedAt < 3000;
   useEffect(() => {
     if (!upToDate) return;
@@ -198,7 +158,6 @@ export function useUpdateItem(): UpdateEntry | null {
       label,
       icon: <UpdateIcon phase={phase} pending={pending} />,
       disabled: updateBusy(phase, pending) || state?.retryable === false,
-      // progress is reported on the row itself, so the menu stays put
       keepOpen: true,
       attention: phase === "downloaded" || phase === "error",
       attentionTone: phase === "error" ? "danger" : "accent",
@@ -214,8 +173,6 @@ export function useUpdateItem(): UpdateEntry | null {
   };
 }
 
-/** Connect your phone for this window, once it is known whether this
- * session may pair one. This computer's own phone flow needs no asking. */
 function useConnectPhoneEntry(cloudHome: boolean): ConnectPhoneEntry | null {
   const target = currentPhonePairingTarget(cloudHome);
   const [access, setAccess] = useState<PhonePairingAccess | null>(null);
@@ -232,8 +189,6 @@ function useConnectPhoneEntry(cloudHome: boolean): ConnectPhoneEntry | null {
   return connectPhoneEntry(target, access);
 }
 
-/** On this computer only: the person's Cloud as a phone destination, from
- * the verified native snapshot (null elsewhere, signed out, or no plan). */
 export function useCloudPhoneDestination(enabled: boolean): { cloud: CloudPhoneDestination; bridge?: CloudAccountBridge } {
   const bridge = enabled && !window.ogb?.remoteClient?.active ? window.ogb?.cloudAccount : undefined;
   const [account, setAccount] = useState<CloudAccountState | null>(null);
@@ -241,17 +196,12 @@ export function useCloudPhoneDestination(enabled: boolean): { cloud: CloudPhoneD
     if (!bridge) return;
     let active = true, updated = false;
     const unsubscribe = bridge.onState((next) => { updated = true; if (active) setAccount(next); });
-    // Reads the native snapshot only; never signs in, refreshes or connects.
     void bridge.state().then((next) => { if (active && !updated) setAccount(next); }).catch(() => {});
     return () => { active = false; unsubscribe(); };
   }, [bridge]);
   return bridge ? { cloud: cloudPhoneDestination(account), bridge } : { cloud: null };
 }
 
-/** What choosing a destination does. Here: Settings → Remote access on this
- * window's pairing. Cloud: open the Cloud in this window on its phone
- * pairing, as Settings → OMB Cloud's Use your Cloud on your phone does; if
- * that fails, Settings → OMB Cloud, which says what to do. */
 export function selectPhoneDestination(destination: PhoneDestination, { bridge, dispatch }: { bridge?: Pick<CloudAccountBridge, "connectHomeForPhone">; dispatch: (action: Action) => void }): void {
   if (destination.id !== "cloud" || !bridge) {
     dispatch(phonePairingSettingsAction());
@@ -260,10 +210,6 @@ export function selectPhoneDestination(destination: PhoneDestination, { bridge, 
   void bridge.connectHomeForPhone().catch(() => dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" }));
 }
 
-/** The phone entries at the top of the menu: a Connect your phone line per
- * destination, then Get the phone app. Connect your phone is absent where
- * this window cannot pair one (a chat-only session, a server whose people
- * sign in through their organization). */
 export function phoneMenuItems({
   destinations,
   connected,
@@ -271,7 +217,6 @@ export function phoneMenuItems({
   onGetApp,
 }: {
   destinations: PhoneDestination[];
-  /** a phone is connected to this computer right now */
   connected: boolean;
   onConnect: (destination: PhoneDestination) => void;
   onGetApp: () => void;
@@ -298,9 +243,6 @@ export function phoneMenuItems({
   ];
 }
 
-/** The profile menu's rows, in its three groups: where you stand (usage,
- * the phone), help and settings, then the account. Built here, apart from
- * the component, so the order is tested without a store. */
 export function profileMenuItems({
   phone,
   usage,
@@ -315,10 +257,8 @@ export function profileMenuItems({
   onAccount,
 }: {
   phone: SidebarMenuItem[];
-  /** Settings has a Usage page here (not on a remote server's window) */
   usage: boolean;
   update: SidebarMenuItem | null;
-  /** the account this app signs in to (OpenMausBot Cloud), when it has one here */
   account: string | null;
   onUsage: () => void;
   onSettings: () => void;
@@ -367,7 +307,6 @@ export function SidebarProfileMenu({ iconOnly = false }: { iconOnly?: boolean } 
   const name = profileLabel(profile);
   const connectTo = (destination: PhoneDestination) => selectPhoneDestination(destination, { bridge: cloudPhone.bridge, dispatch });
   const remote = window.ogb?.remoteClient?.active === true;
-  // the same rule Settings uses to show its OpenMausBot Cloud page
   const cloudAccount = !remote && Boolean(window.ogb?.cloudAccount || (window.ogb?.cloudPlan && state.config?.cloudHome === true));
 
   const items = profileMenuItems({
@@ -383,7 +322,6 @@ export function SidebarProfileMenu({ iconOnly = false }: { iconOnly?: boolean } 
     onUsage: () => dispatch({ type: "toggleAppSettings", open: true, section: "usage" }),
     onSettings: () => dispatch({ type: "toggleAppSettings" }),
     onShortcuts: () => {
-      // The menu item unmounts; let the dialog restore the profile button.
       triggerRef.current?.closest("button")?.focus();
       dispatch({ type: "toggleShortcuts", open: true });
     },
@@ -430,8 +368,6 @@ export function SidebarProfileMenu({ iconOnly = false }: { iconOnly?: boolean } 
           >
             <InitialsAvatar initials={profileInitials(profile)} size={28} />
             <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-ink">{name}</span>
-            {/* an update is the one thing worth interrupting the name for, so
-              * it sits on the row rather than waiting to be found in the menu */}
             {noteworthy && (
               <span
                 title={update.label}

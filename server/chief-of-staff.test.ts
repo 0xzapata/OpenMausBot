@@ -17,8 +17,6 @@ describe("chiefOfStaffSystemPrompt roster caps", () => {
       ],
       true,
     );
-    // an imported 10KB description must not ride into the Chief's system
-    // prompt — the roster line stays bounded
     const rosterLine = prompt.split("\n").find((line) => line.startsWith("- N"))!;
     expect(rosterLine.length).toBeLessThan(500);
     expect(rosterLine).toContain("…");
@@ -48,7 +46,6 @@ describe("chiefOfStaffSystemPrompt", () => {
     expect(prompt).toContain("Chief of Staff for the Work section");
     expect(prompt).toContain("Quill — Writer: Drafts concise copy [id: writer]");
     expect(prompt).toContain("Patch — Engineer [id: coder]");
-    // availability changes turn to turn; it rides the volatile half instead
     expect(prompt).not.toContain("working right now");
     expect(prompt).not.toContain("(available)");
     expect(prompt).not.toContain("Secret");
@@ -60,7 +57,6 @@ describe("chiefOfStaffSystemPrompt", () => {
     expect(prompt).toContain("Do not poll or wait");
     expect(prompt).toContain("with consult: true to ask them for advice");
     expect(prompt).toContain("Consultations are advice, not proof that work or tests ran");
-    // one surface: the legacy tool names are not what a Chief is taught
     expect(prompt).not.toMatch(/\b(delegate_bot|ask_bot|send_to_bot|check_delegation|wait_delegation)\b/);
     expect(prompt).toContain("propose_team_setup once");
     expect(prompt).toContain("structured result");
@@ -103,8 +99,6 @@ describe("chiefOfStaffSystemPrompt", () => {
   });
 
   it("narrows the Chief's own roster when the Chief carries an allow-list", () => {
-    // The roster and the comms endpoints read the same rule, so a Chief is
-    // never told about a teammate its own coordinate_bots would then be refused.
     const prompt = chiefOfStaffSystemPrompt(
       "chief",
       bots.map((bot) => (bot.id === "chief" ? { ...bot, peers: ["coder"] } : bot)),

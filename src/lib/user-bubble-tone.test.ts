@@ -30,7 +30,6 @@ describe("user bubble tone", () => {
     const tone = userBubbleTone(color);
     expect(tone.ink).toBe("#ffffff");
     expect(contrastRatio(tone.ink, tone.background)).toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
-    // A swatch that already carries white is used as-is. One that does not is deepened, never swapped for black text.
     if (contrastRatio("#ffffff", MAUS_COLORS[color]) >= BUBBLE_TEXT_MIN) {
       expect(tone.background).toBe(MAUS_COLORS[color]);
     }
@@ -42,8 +41,6 @@ describe("user bubble tone", () => {
       const tone = userBubbleTone(color);
       const page = skin(id)["--color-app"];
       expect(page, id).toMatch(/^#[0-9a-f]{6}$/i);
-      // The fill is opaque, so the page behind it does not change these ratios. The loop still
-      // pins every skin: a future skin-tinted fill has to keep the same bar.
       expect(contrastRatio("#ffffff", tone.background), "body").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
       expect(contrastRatio(tone.secondary, tone.background), "secondary").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
       expect(contrastRatio(tone.tertiary, tone.background), "tertiary").toBeGreaterThanOrEqual(BUBBLE_TEXT_MIN);
