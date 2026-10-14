@@ -14,6 +14,7 @@ vi.mock("react", async (original) => ({
     return [fixture.values[index], (next: unknown) => { fixture.values[index] = next; }];
   },
   useEffect: (effect: () => (() => void) | undefined) => { fixture.effects.push(effect); },
+  useRef: (current: unknown) => ({ current }),
 }));
 vi.mock("@/state/store", async (original) => ({
   ...await original<typeof import("@/state/store")>(), api: fixture.api,
@@ -60,7 +61,7 @@ it("starts only on request on Grok's own route, and never opens a page on the pe
   expect(fixture.openExternal).not.toHaveBeenCalled();
   expect(fixture.values[0]).toMatchObject({ phase: "waiting", userCode: "WDJB-MJHT" });
   render();
-  const cleanup = fixture.effects.at(-1)!();
+  const cleanup = fixture.effects[0]!();
   await vi.advanceTimersByTimeAsync(2_000);
   expect(fixture.api).toHaveBeenCalledWith("/api/instances/grok/auth/status?flowId=grok-flow", expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(fixture.refreshInstances).toHaveBeenCalledOnce();
