@@ -1,6 +1,3 @@
-// The sign-in card: the site is the headline, the reason is the bot's own
-// words, Open goes to the place the bot works, and Done or Cancel resume it.
-// It never offers a field for the password: the page takes that.
 import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +20,8 @@ vi.mock("@/state/store", async (original) => ({
 const answerSignIn = vi.fn();
 const here = { value: true };
 vi.mock("@/lib/sign-in", () => ({ answerSignIn: (...args: unknown[]) => answerSignIn(...args), signInHostIsHere: () => here.value }));
+const saveLoginFromCard = vi.fn();
+vi.mock("@/lib/logins", () => ({ saveLoginFromCard: (...args: unknown[]) => saveLoginFromCard(...args) }));
 
 import { SignInBanner, SignInRequestCard } from "./SignInRequestCard";
 
@@ -43,7 +42,6 @@ const elements = (node: ReactNode): Node[] => {
   const element = node as Node;
   return [element, ...Children.toArray(element.props.children).flatMap(elements)];
 };
-/** Every element the card renders, its AskCard footer included. */
 const tree = (signIn?: Record<string, unknown>) => {
   let root!: ReactNode;
   function Capture() { root = SignInRequestCard(props(signIn)); return root; }
@@ -70,7 +68,6 @@ describe("SignInRequestCard while it waits", () => {
     expect(html).toContain("Pepper’s built-in browser");
     for (const label of ["Open", "Done", "Cancel"]) expect(html).toContain(label);
     expect(html).toContain("OpenMausBot never sees it.");
-    // No field takes a password here: the page does.
     expect(html).not.toContain("<input");
   });
 
@@ -103,6 +100,29 @@ describe("SignInRequestCard while it waits", () => {
     expect(view({ place: "local" })).toContain("Not the Browser tab: it keeps its own sign-ins");
   });
 
+  it("offers to save a login in the built-in browser, which opens a masked form in place of the buttons", () => {
+    button(tree(), "Save a login").props.onClick!();
+    // saving (the third useState) turns on
+    expect(fixture.setters[2]).toHaveBeenCalledWith(true);
+    fixture.setters = []; fixture.states = { 2: true };
+    const html = view();
+    expect(html).toContain("Save the username and password for example.com.");
+    expect(html).toContain('type="password"');
+    expect(html).toMatch(/type="password" autocomplete="new-password"/iu);
+    expect(html).toContain("Save and continue");
+    expect(html).not.toMatch(/>Done<|>Open</);
+    expect(saveLoginFromCard).not.toHaveBeenCalled();
+  });
+
+  it.each(["vm", "cloud", "local"])("does not offer to save a login on %s, where fill_login cannot reach yet", (place) => {
+    expect(view({ place })).not.toContain("Save a login");
+  });
+
+  it("does not offer to save a login from a desktop paired to another computer", () => {
+    vi.stubGlobal("window", { ogb: { remoteClient: { active: true } } });
+    expect(view()).not.toContain("Save a login");
+  });
+
   it.each(["done", "cancel"] as const)("%s settles this card", async (choice) => {
     button(tree(), choice === "done" ? "Done" : "Cancel").props.onClick!();
     await settle();
@@ -117,6 +137,12 @@ describe("SignInRequestCard once settled", () => {
     expect(html).toContain("Signed in to example.com");
     expect(html).toContain("Pepper is continuing");
     expect(html).not.toMatch(/>Done<|>Open</);
+  });
+
+  it("says a login was saved, for the host it was saved for", () => {
+    const html = view({ done: true, resumed: true, savedLogin: "accounts.example.com" });
+    expect(html).toContain("Login saved for accounts.example.com");
+    expect(html).toContain("Pepper is continuing");
   });
 
   it("says a declined sign-in was declined", () => {

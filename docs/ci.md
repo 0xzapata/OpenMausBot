@@ -114,7 +114,7 @@ are bounded per file: once a listed test fails all three attempts, that is a
 real failure, and the file's later listed tests get no retry. Otherwise a
 regression that breaks a whole fixture (six listed tests share
 `server/delta-context.e2e.test.ts`) would triple their wall time and push the
-shard past its job cap, and a timed-out job loses the failing
+Linux shard past its 20-minute cap, and a timed-out job loses the failing
 tests' annotations and this summary. The cost: a real flake listed after a
 broken test in the same file is not retried in that run. A listed
 test that needed a retry is written to the vitest job's summary and raised as
@@ -122,9 +122,6 @@ a warning annotation (`scripts/testing/ci-retry-summary.mjs`), so a flake
 that passed is still seen. Fix the test, then delete its entry;
 `scripts/testing/ci-retry-list.test.ts` fails on an entry whose test no longer
 exists.
-
-Vitest jobs have the same 35-minute cap on every platform, leaving room for
-setup and normal suite growth. Individual test and request deadlines are unchanged.
 
 Windows runners run the suite about 1.45x slower than Linux. Every test and
 hook timeout doubles there (`server/testing/host-timeout.ts`): the defaults in

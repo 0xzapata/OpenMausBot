@@ -69,6 +69,7 @@ Regression checks (all use disposable fixtures):
 pnpm exec vitest run server/runtime/ server/runtime-coordinator.test.ts server/direct-coordination.e2e.test.ts server/room-coordination.e2e.test.ts
 pnpm exec vitest run server/delta-context.e2e.test.ts -t "restart"
 pnpm exec vitest run server/full-access-workflows.e2e.test.ts server/room-recovery.e2e.test.ts
+pnpm exec vitest run server/room-roots.e2e.test.ts
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/direct-coordination-ui.e2e.test.ts
 ```
 
@@ -111,6 +112,27 @@ the sender resumes in the original conversation. A lead can consult its own
 specialists; it never inherits the parent Chief's cross-team access or permissions.
 Advice is not a verification
 receipt: the lead must ask the reviewer to run the requested checks.
+
+Every room member's turn is a root of the runtime, as a person's turn in a
+direct chat is (docs/runtime-contract.md §1, §10 PR 5): a chat-round
+responder, a chained @mention, a goal step and a card continuation alike. Its
+hand-offs (`coordinate_bots` from the member) are that root's children; a room
+turn with no hand-offs leaves one row and nothing under it. A member's card (a
+credential, a connection, a team-setup decision, a sign-in) parks that
+member's root and no other member's; the room keeps accepting messages while
+it waits; the person's act on the card runs the member again with the lane's
+line, as in a direct chat. Stop in the room settles a parked member's cards as
+stopped: a card completed afterwards saves its facts and starts nothing. The
+computer wait ceiling queues the member's root to continue when the seat
+frees, as it does a direct root ([computer-wait](computer-wait.md)); a goal
+step parked that way is routed around by its run and never run a second time.
+A restart reruns a member's cut turn once in place (the room shows "Resuming
+after a restart" from the member and no interrupted line), never one that
+already acted outward, and never a goal step whose run ended with the restart.
+`server/room-roots.e2e.test.ts` proves each of these on the real server with
+the scripted engine; `server/room-coordination.e2e.test.ts` reads the same
+rows for every hand-off it checks (a refused call leaves no hand-off row; a
+restart leaves the sender's root resumed once, never rerun).
 
 Outside a room, a conversation has one thread with each recipient, titled
 “@Clive · work”. The first request opens it; every later request from that
@@ -190,6 +212,22 @@ revocation. They cover both named-section and sectionless Chiefs; the posting
 suite independently checks room listing and transcript writes. These are
 server workflow checks, not UI or live-model verification.
 
+### Parallel threads in one room
+
+A room's threads run side by side; turns stay serial within a thread, and a
+member works one thread at a time (`server/room-member-lock.ts`): a member
+asked in several threads finishes one, then takes the next, and no waiting
+thread is skipped because they all woke on the same release. Stop reaches only
+its own thread.
+
+```sh
+pnpm exec vitest run server/room-member-lock.test.ts server/room-parallel-threads.e2e.test.ts src/lib/room-threads.test.ts
+```
+
+The e2e holds every fake-Claude reply behind a gate file and asserts each
+thread's own `working` and `busyBotId` on the wire. It is a server workflow
+check with the fake engine, not a UI or live-model check.
+
 ### Broader coordination checks
 
 ```sh
@@ -223,8 +261,8 @@ revocation. The UI test sends from the real
 composer and clicks the existing handoff receipt into the exact recipient task,
 with ordinary tool chips hidden. Screenshots and JSON are retained beside the
 fixture's printed server log; all fixture processes and temporary data are closed.
-A consultation (`coordinate_bots` with `consult: true`, or its `ask_bot`
-alias) is covered by `server/comms.test.ts` and `server/runtime-paths.e2e.test.ts`:
+A consultation (`coordinate_bots` with `consult: true`) is covered by
+`server/comms.test.ts` and `server/runtime-paths.e2e.test.ts`:
 there is no inline wait; the asker finishes its turn with a receipt and the
 teammate's answer resumes it, in a work thread of the asker's conversation
 (docs/runtime-contract.md §9).
@@ -235,8 +273,7 @@ an id; a name that means exactly one reachable teammate resolves to it and the
 work runs as if the id had been sent; a name nobody has is refused with the
 argument echoed and `list_bots` named (`No bot with id or name "…"`); a hidden
 teammate's id is refused as no longer available; a name two reachable teammates
-share is refused with the count and the way to the ids, never guessed. The same
-resolution serves the deprecated aliases (`ask_bot`, `delegate_bot`), and every
+share is refused with the count and the way to the ids, never guessed. Every
 roster line the Chief and its peers read carries the teammate's `[id: …]`, so
 the tools can be called straight from the prompt.
 Unit checks cover bounded depth/fan-out, idempotent retry, original request
@@ -257,9 +294,8 @@ routine and verifies its source-room card and error-free recovery broadcasts.
 The subprocess fixture checks malformed output, unexpected exit and bounded
 cleanup so an agent-process failure cannot silently pass or hang these tests.
 Routine checks enter through real routine execution, where `coordinate_bots`
-and, for one release, the `delegate_bot` / `ask_bot` aliases hand work on; the
-run's root names the run as its requester (docs/runtime-contract.md §9). The
-aliases answer with a deprecation line, never an error or an empty reply.
+hands work on; the run's root names the run as its requester
+(docs/runtime-contract.md §9).
 Thread checks also cover self-owned jobs, queued provenance and the transition
 from a completed routine back to a normal user conversation.
 
@@ -290,8 +326,8 @@ Every turn — a chat, a room, a routine run, a webhook run, a goal run, a Cloud
 guest's turn, a standing external runtime — hands teammate work on with the
 one `coordinate_bots` tool (work, a question with `consult`, a one-way notice
 with `reply: "none"`, a fresh thread with `thread: "new"`) and reads it with
-`assignment_status`; the deprecated aliases map onto it for one release
-(docs/runtime-contract.md §9). Any turn can still use `start_thread` to open
+`assignment_status` (docs/runtime-contract.md §9). Any turn can still use
+`start_thread` to open
 separate work on itself, without moving the person's selected conversation;
 the runtime's depth limit bounds the tree. A teammate's hand-off to a bot
 runs in that bot's work thread for the sender, never in a conversation a

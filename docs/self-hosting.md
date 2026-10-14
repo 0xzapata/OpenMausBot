@@ -984,15 +984,12 @@ Scope is deliberately narrow: the token is an *agents* capability for that
 bot's pinned thread only, and the server accepts just three kinds of route
 with it — list peers (`GET /api/internal/agents`), hand work on
 (`POST /api/internal/coordinate-bots`) and read how it went
-(`GET /api/internal/assignment-status`), plus the deprecated alias routes
-(`ask-bot`, `delegate-bot`, `delegations/:id`) for one release. Opening
-threads, creating bots or rooms, skills, memory and every other internal route
-answer 403. The bridge offers the one tool surface every turn gets
-(docs/runtime-contract.md §9): `coordinate_bots` (work; a question with
-`consult: true`; a one-way notice with `reply: "none"`), the read-only
-`assignment_status`, and the aliases `delegate_bot`, `ask_bot`,
-`check_delegation` and `wait_delegation`, each answering with a deprecation
-line. Every call from the standing capability is its own root on the job
+(`GET /api/internal/assignment-status`). Opening threads, creating bots or
+rooms, skills, memory and every other internal route answer 403. The bridge
+offers the one tool surface every turn gets (docs/runtime-contract.md §9):
+`coordinate_bots` (work; a question with `consult: true`; a one-way notice
+with `reply: "none"`) and the read-only `assignment_status`. Every call from
+the standing capability is its own root on the job
 runtime with `reply: poll`: it completes without a turn once the teammates'
 work settles, and the runtime reads the results with `assignment_status`,
 long-polling `wait_ms` (at most 240 s) on the root's `rootId` or a receipt's

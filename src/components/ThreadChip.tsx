@@ -1,8 +1,3 @@
-// The receipt a bot leaves when it opens a thread — "Opened thread #QA PR
-// 245 on Scout" — as the same clickable pill a bot⇄bot comm chip uses.
-// Clicking shows that thread; it never redirects work (openThread). Like a
-// comm chip it stays visible with Tool calls hidden: it is the only trace,
-// where the person is reading, that a new thread now exists.
 import { ChevronRight, MessagesSquare } from "lucide-react";
 import { openThread, useStore, type Message } from "@/state/store";
 import { useShowThreads } from "@/lib/thread-preferences";

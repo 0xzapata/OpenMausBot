@@ -1,20 +1,12 @@
-// The seam between the server and the coordinator that runs teammate work:
-// the job runtime (server/runtime/, docs/runtime-contract.md), reached
-// through RuntimeCoordinator. index.ts talks to this interface only; the
-// room-handoff tree it replaced is gone, and its node shape survives here
-// as the read model (HandoffView) the server's call sites were written
-// against. The view goes once those sites read Assignment rows directly.
 import { RuntimeCoordinator } from "./runtime-coordinator.ts";
 import type { WorkOrigin } from "./peer-provenance.ts";
 import type { LegacyThreadResolver } from "./runtime/import-legacy.ts";
-import type { EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView } from "./runtime/types.ts";
+import type { Assignment, EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView, TurnEvidence } from "./runtime/types.ts";
 
 export type { LegacyThreadResolver };
 
 export type HandoffStatus = "source" | "queued" | "running" | "waiting" | "resume" | "completed" | "failed" | "cancelled";
 
-/** A coordinated turn as the server reads it: who runs it where, what it
- * was asked, how far it got. Projected from an Assignment row. */
 export interface HandoffView {
   id: string;
   rootId: string;
@@ -34,11 +26,8 @@ export interface HandoffView {
   lastProgressAt?: number;
   approvalGranted: boolean;
   kind: "work" | "assignment";
-  /** On a root: where the tree's work started (peer-provenance.ts); absent is outside. */
   origin?: WorkOrigin;
-  /** Turns of this node a restart cut and ran again in place. */
   restarts: number;
-  /** Its next turn, or the one running now, follows a restart (runtime types.ts). */
   restart?: "rerun" | "cut" | "teammates";
   /** work: do it; consult: answer, act on nothing; notify: one-way. */
   mode: Mode;
@@ -46,13 +35,31 @@ export interface HandoffView {
   reply: Reply;
   outcome?: Outcome;
   outcomeDetail?: string;
-  /** While parked: the exact question for the person. */
   question?: string;
+  cards?: string[];
+  continuation?: { note: string; handoffPath?: string; count: number };
+  goalRunId?: string;
 }
 
-/** Who hands the work on, as the host knows it from the turn's capability:
- * a person's chat, a routine run, a webhook, an external runtime, a Cloud
- * guest. Written on a fresh root and copied down its tree. */
+export interface BeginTurnRequest {
+  id: string;
+  address: RoomAddress;
+  brief: string;
+  level: Level;
+  opener?: HandoffOpener;
+  origin?: WorkOrigin;
+  goalRunId?: string;
+}
+
+/** `cap` continues the same node in place (a step cap, a seat it could not get); `cards` parks it on the person. */
+export interface HostTurnResult {
+  ok: boolean;
+  text: string;
+  evidence?: TurnEvidence;
+  cap?: { note: string; handoffPath?: string };
+  cards?: { question: string; ids: string[] };
+}
+
 export interface HandoffOpener {
   requester: Requester;
   origin: Origin;
@@ -61,35 +68,21 @@ export interface HandoffOpener {
 export interface HandoffOptions {
   mode?: Mode;
   reply?: Reply;
-  /** Where the host put the work: the teammate's standing thread, or a
-   * (new) work thread, which is the default. The host picks the thread;
-   * this is recorded as the row's destination kind. */
   thread?: "standing" | "new";
-  /** A peer-review card allowed this before it was sent. */
   approvalGranted?: boolean;
-  /** Run a finished teammate again with new work. */
   rework?: boolean;
-  /** The requesting conversation's own request, for a fresh root's brief. */
-  sourceText?: string;
-  /** A room brief shown once per call. */
   requestBatchKey?: string;
   doneWhen?: string;
-  /** For a fresh root; absent means a person's chat turn (peer-provenance origin). */
-  opener?: HandoffOpener;
-  /** The legacy origin of the requesting turn, used when no opener is given. */
-  origin?: WorkOrigin;
 }
 
 export type RoomAddress = Pick<HandoffView, "groupId" | "threadId" | "botId">;
 
-/** The turn text the runtime composed (one envelope, one report), run by
- * the host as it is. `note` is the same without the brief, for a room
- * whose transcript already carries the words; `restartNote` is what a
- * restart did to this turn ("" when nothing), already at the front of `text`. */
+/** `note` is `text` without the brief, for a room whose transcript already has the words; `restartNote` already leads `text`. */
 export interface ComposedTurn {
   text: string;
   note: string;
   restartNote: string;
+  turn: "first" | "resume" | "rerun" | "answered" | "continued";
 }
 
 export interface LiveHandoffEdge {
@@ -100,48 +93,49 @@ export interface LiveHandoffEdge {
   groupId?: string;
 }
 
-/** What the server gives the coordinator. Every method may throw; the
- * runtime logs and reads a throw as "not now". */
+/** Every method may throw; the runtime logs a throw and reads it as "not now". */
 export interface CoordinatorHost {
   /** Recheck addresses and route permission immediately before every dispatch. */
   validate(node: HandoffView, parent?: HandoffView): string | undefined;
-  /** The assignee cannot take a turn now (slot-aware admission). */
   busy(node: HandoffView): boolean;
-  /** Run one turn of the assignee with the composed text; resolves when the engine settles. */
-  run(node: HandoffView, resumed: boolean, signal: AbortSignal, composed: ComposedTurn): Promise<{ ok: boolean; text: string }>;
-  /** A settled child, to its requester; a root the runtime ended, alone. */
+  /** For a root this is the person's own conversation continuing: person-visible, never internal. */
+  run(node: HandoffView, resumed: boolean, signal: AbortSignal, composed: ComposedTurn): Promise<HostTurnResult>;
   report(child: HandoffView, parent?: HandoffView): void;
   changed(groupIds: ReadonlySet<string>, directThreadIds: ReadonlySet<string>): void;
-  /** Display names for the envelope of a turn. */
   names(node: HandoffView, parent?: HandoffView): EnvelopeNames;
-  /** A teammate ended its turn on a question for the person: show it where
-   * the work was asked for. `restored` is the restart's re-park, which shows
-   * it again only if the first showing never happened. */
+  /** `restored` shows the question again only if the first showing never happened; a root parked on its own cards shows nothing more. */
   park(node: HandoffView, question: string, restored?: boolean): void;
-  /** The permission level the target thread will actually run with, after
-   * the host applied any delegated level, and its engine kind. Recorded on
-   * the assignment so the envelope states the truth (invariant I6). */
-  levelOf(target: RoomAddress): { level: Level; driverKind?: string };
-  /** The conversation is a Chief of Staff's. */
+  /** The level the target thread will really run with, so the envelope states the truth. A Chief's level flows into a room
+   * with the hand-off, never onto the shared thread, so it resolves from `source`. */
+  levelOf(target: RoomAddress, source?: RoomAddress): { level: Level; driverKind?: string };
   chiefOf(address: RoomAddress): boolean;
+  /** What the cut turn already did outward (sent, posted, paid): a turn that acted outward is not run again. */
+  outward?(node: HandoffView): string[];
 }
 
 export interface Coordinator {
   node(id: string): HandoffView | undefined;
   has(id: string): boolean;
   all(): HandoffView[];
+  active(): HandoffView[];
   children(id: string): HandoffView[];
-  /** Throws an Error whose message is the typed refusal the caller shows the model. */
+  /** A generation with no root is refused; throws an Error whose message is the typed refusal shown to the model. */
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined, target: RoomAddress, text: string,
     options?: HandoffOptions): { node: HandoffView; duplicate: boolean };
-  /** One assignment with its children and inbox (assignment_status). */
   status(id: string): StatusView | undefined;
+  /** Every assignment this conversation was given that was open at `since` or began after, with all handed out under it; rows oldest first. */
+  job(threadId: string, since: number, botId?: string): { scopes: string[]; rows: Assignment[] };
   /** Undelivered inbox items for a polling requester, marked delivered. */
   poll(owner: Owner): { items: StatusView["inbox"]; assignments: HandoffView[] };
   /** Non-terminal work the conversation in this thread is waiting on, rooms included. */
   outstandingFor(threadId: string): HandoffView[];
+  beginTurn(req: BeginTurnRequest): HandoffView;
+  endTurn(id: string, result: HostTurnResult): void;
+  answerNode(id: string, text: string): boolean;
+  answerRoot(id: string, text: string): boolean;
+  parkedDirect(threadId: string): HandoffView | undefined;
+  prune(before: number): number;
   sharedRequest(node: HandoffView): { id: string; botIds: string[] };
-  sourceSettled(generation: string, ok: boolean): void;
   cancelRoom(groupId: string, threadId?: string, reason?: string, status?: "failed" | "cancelled"): void;
   cancelDirect(threadId: string, reason?: string): void;
   activeDirect(threadId: string): boolean;
@@ -149,19 +143,14 @@ export interface Coordinator {
   outstandingDirect(threadId: string): HandoffView[];
   liveEdges(): LiveHandoffEdge[];
   stopAwaitingDirect(threadId: string, reason?: string): HandoffView[];
+  /** The next start goes on with this thread's turn, so a shutdown's "cut" line would be false. */
   continuesAfterRestart(threadId: string): boolean;
-  /** The note a request arrived under (its envelope without the brief), for
-   * a replay of that request line; undefined when the row is gone. */
   note(id: string): string | undefined;
   tick(): void;
   close(): void;
-  /** The host saw activity on a coordinated turn in this thread (an engine event). */
   progress(threadId: string): void;
-  /** The person wrote in a thread whose assignment is parked on a question:
-   * true when the assignment took the text as its answer and the host must
-   * not start an ordinary turn. */
+  /** True when a parked assignment took the text as its answer: the host must not start an ordinary turn. */
   answer(threadId: string, text: string): boolean;
-  /** Whether this thread's assignment is parked on a question for the person. */
   awaitingAnswer(threadId: string): boolean;
 }
 
@@ -171,9 +160,6 @@ export interface CoordinatorOptions {
   now?: () => number;
   runtimeLimits?: Partial<Limits>;
   log?: (line: string) => void;
-  /** Names the threads the one-time delegation-ledger import cannot (a
-   * target's standing thread, a source thread's bot); without it those
-   * rows carry an empty thread id the host's validate refuses. */
   legacyThreads?: LegacyThreadResolver;
 }
 

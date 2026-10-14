@@ -161,13 +161,18 @@ app.whenReady().then(async () => {
   const revoked = await coordinator.request(child, whole.id, "ask", { allThreads: true });
   assert.equal(revoked.approvalMode, "ask");
   assert.ok(revoked.tasks.every(task => task.approvalMode === "ask"));
+  // Auto and Edits reach every thread the same way, in one write.
+  const autoEverywhere = await coordinator.request(child, whole.id, "auto", { allThreads: true });
+  assert.equal(autoEverywhere.approvalMode, "auto");
+  assert.ok(autoEverywhere.tasks.every(task => task.approvalMode === "auto"));
+  assert.ok((await coordinator.request(child, whole.id, "ask", { allThreads: true })).tasks.every(task => task.approvalMode === "ask"));
   console.log(JSON.stringify({ allThreads: true, mixedProviders: true, archivedIncluded: true, futureInherits: true, unrelatedBotUnchanged: true, persisted: true }));
   if (process.argv.includes("--all-threads-only")) { await verifyUi(); return; }
   const created = await api("/api/bots", "POST", { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
   assert.equal(created.status, 201);
   const id = created.body.bot.id;
-  // Full needs no private channel: the API applies it at once (owner
-  // decision, Oct 12). Custom keeps the private channel (checked below).
+  // Full needs no private channel: the API applies it at once. Custom keeps
+  // the private channel (checked below).
   assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvalMode: "full" })).status, 200);
   assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvalMode: "ask" })).status, 200);
   for (const [mode, native] of [["full", "bypassPermissions"], ["auto", "auto"], ["edits", "acceptEdits"], ["ask", "default"]]) {
@@ -278,11 +283,8 @@ app.whenReady().then(async () => {
           return !state.busy && state;
         });
         const text = settled.messages.slice(before).map((message) => message.text ?? "").join("\n");
-        // The fixture emits one `<tool>: <result>` chunk per read, each at the
-        // start of a line. Anchor on that: session_search now recalls the
-        // previous turn's memory log, so its own result text quotes an earlier
-        // "list_bots: Reachable teammates: …" mid-line and an unanchored count
-        // sees three reads where the agent only performed two.
+        // Anchored to line starts: session_search's result quotes earlier
+        // reads mid-line.
         assert.match(text, /^list_bots:/m);
         assert.match(text, /^session_search:/m);
         assert.equal((text.match(/^list_bots:/gm) ?? []).length, 2, "Repeated reads complete without another prompt");
@@ -371,7 +373,7 @@ app.whenReady().then(async () => {
   assert.equal((await api(`/api/bots/${id}`, "PATCH", { approvePeerComms: false })).status, 200);
   const capability = await api("/api/testing/internal-capability", "POST", { botId: id, threadId: created.body.bot.threadId }, { "x-openmausbot-test-capability": testCapabilityKey });
   assert.equal(capability.status, 201);
-  const peerResponse = await api("/api/internal/ask-bot", "POST", { toBotId: peerTarget.id, message: "Peer-initiated permission fixture" }, { authorization: `Bearer ${capability.body.token}` });
+  const peerResponse = await api("/api/internal/coordinate-bots", "POST", { botIds: [peerTarget.id], message: "Peer-initiated permission fixture", consult: true }, { authorization: `Bearer ${capability.body.token}` });
   assert.equal(peerResponse.status, 200);
   // Coordination opens its own work thread without selecting it in the UI.
   const peerWorkThreadId = peerResponse.body.receipts[0].threadId;
@@ -396,7 +398,7 @@ app.whenReady().then(async () => {
   const revokedPeer = (await api("/api/bots?messages=0")).body.bots.find((bot) => bot.id === peerTarget.id);
   assert.equal(revokedPeer.tasks.find((task) => task.threadId === peerWorkThreadId).approvalMode, "ask");
   assert.equal(revokedPeer.tasks.find((task) => task.threadId === peerThread.threadId).approvalMode, "full");
-  const askPeerResponse = await api("/api/internal/ask-bot", "POST", { toBotId: peerTarget.id, message: "Ask target must not inherit sender Full" }, { authorization: `Bearer ${capability.body.token}` });
+  const askPeerResponse = await api("/api/internal/coordinate-bots", "POST", { botIds: [peerTarget.id], message: "Ask target must not inherit sender Full", consult: true }, { authorization: `Bearer ${capability.body.token}` });
   assert.equal(askPeerResponse.status, 200);
   assert.equal(askPeerResponse.body.receipts[0].threadId, peerWorkThreadId);
   const peerCard = await until(async () => pendingCard((await api(`/api/threads/${peerWorkThreadId}/messages`)).body));
@@ -413,7 +415,7 @@ app.whenReady().then(async () => {
   // the residual approval fold must use that same effective Auto mode.
   const customTarget = (await api("/api/bots", "POST", { modelSelection: { instanceId: "codex", model: "gpt-fake-default" } })).body.bot;
   await coordinator.request(child, customTarget.id, "custom");
-  const customResponse = await api("/api/internal/ask-bot", "POST", { toBotId: customTarget.id, message: "Delegated Custom uses the native Auto reviewer" }, { authorization: `Bearer ${capability.body.token}` });
+  const customResponse = await api("/api/internal/coordinate-bots", "POST", { botIds: [customTarget.id], message: "Delegated Custom uses the native Auto reviewer", consult: true }, { authorization: `Bearer ${capability.body.token}` });
   assert.equal(customResponse.status, 200);
   const customThreadId = customResponse.body.receipts[0].threadId;
   assert.ok(customThreadId);

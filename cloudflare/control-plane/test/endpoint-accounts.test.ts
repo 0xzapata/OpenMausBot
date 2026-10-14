@@ -49,6 +49,25 @@ describe("endpoint account configuration", () => {
     }
   });
 
+  it("parses the production account list once its token is saved, and only then", () => {
+    const production = JSON.parse(env.TEST_PRODUCTION_ENDPOINT_ACCOUNTS) as unknown[];
+    const configured = readConfig(withAccounts(production));
+    expect(configured.endpointAccountIssues).toEqual([]);
+    expect(configured.endpointAccounts.slice(1).map(({ apiToken: _token, ...account }) => account)).toEqual([{
+      accountId: "bbb5305f06e28a6f2abaac299f3b09dc",
+      companionHostSuffix: "mausbot.si",
+      dnsRecordLimit: 200,
+      minAppVersion: "0.1.104",
+      newEndpoints: true,
+      tunnelLimit: 1000,
+      zoneId: "4ded3da43e7b2c3a5f27b0fb33e5bd7a",
+    }]);
+    // Deployed before its token: the entry is dropped and reported, nothing breaks.
+    const unsaved = readConfig(withAccounts(production, {}));
+    expect(unsaved.endpointAccounts).toEqual([unsaved.cloudflare]);
+    expect(unsaved.endpointAccountIssues).toEqual(["entry_1_token"]);
+  });
+
   it("reads extra accounts from a JSON var, or the same JSON as a string or secret", () => {
     const entry = { ...SECOND_ENTRY, tunnelLimit: 1000, dnsRecordLimit: 200, minAppVersion: "0.1.103" };
     for (const value of [[entry], JSON.stringify([entry])]) {
