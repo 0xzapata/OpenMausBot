@@ -1,6 +1,3 @@
-// Which credential a Boat, ElevenLabs or Jev request uses, and where it may
-// go. The relays know only the Admin's accounts: an own key must never reach
-// them, and the included token must never reach the providers.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { jevEndpoint } from "./decider/jev.ts";
@@ -26,15 +23,14 @@ describe("Boat credential", () => {
   });
 
   it("uses the person's own key, sent only to Boat, whenever there is one", () => {
-    expect(boatCredential("box_own", cloud)).toEqual({ token: "box_own", api: "https://ascii.dev/api/box/v1", included: false });
-    // OMB_BOX_API keeps pointing own keys at a stub for dev and tests.
-    expect(boatCredential("box_own", { ...cloud, OMB_BOX_API: "http://127.0.0.1:9/api/box/v1" }))
-      .toEqual({ token: "box_own", api: "http://127.0.0.1:9/api/box/v1", included: false });
+    expect(boatCredential("box_own", cloud)).toEqual({ token: "box_own", api: "https://boat.dev/api/v1", included: false });
+    // OMB_BOAT_API points own keys at a stub for dev and tests.
+    expect(boatCredential("box_own", { ...cloud, OMB_BOAT_API: "http://127.0.0.1:9/api/v1" }))
+      .toEqual({ token: "box_own", api: "http://127.0.0.1:9/api/v1", included: false });
   });
 
   it("sends the included token only to the relay even when it comes back as a plain token", () => {
-    // A leased computer descriptor carries the token in use back to boat.ts.
-    expect(boatCredential("box_omb_included", { ...cloud, OMB_BOX_API: "http://127.0.0.1:9/api/box/v1" }))
+    expect(boatCredential("box_omb_included", { ...cloud, OMB_BOAT_API: "http://127.0.0.1:9/api/v1" }))
       .toEqual({ token: "box_omb_included", api: RELAY_BOAT, included: true });
   });
 
@@ -89,7 +85,6 @@ describe("Jev credential", () => {
   it("sends the included token only to the relay, whatever base URL is set for own keys", () => {
     expect(deciderCredential(undefined, "http://127.0.0.1:9", cloud)).toMatchObject({ token: "omb_decide_included", included: true });
     expect(endpoint(deciderCredential(undefined, "http://127.0.0.1:9", cloud))).toBe(`${RELAY_DECIDER}/v1/systemone`);
-    // Pasted back as if it were an own key, it still goes only to the relay.
     expect(endpoint(deciderCredential("omb_decide_included", undefined, cloud))).toBe(`${RELAY_DECIDER}/v1/systemone`);
   });
 
@@ -151,13 +146,11 @@ describe("holdIncludedServices", () => {
     expect(process.env.OMB_CLOUD_BOAT_TOKEN).toBeUndefined();
     expect(process.env.OMB_CLOUD_VOICE_TOKEN).toBeUndefined();
     expect(process.env.OMB_CLOUD_DECIDER_TOKEN).toBeUndefined();
-    // The URLs are not secrets and stay.
     expect(process.env.OMB_CLOUD_BOAT_URL).toBe(RELAY_BOAT);
     expect(process.env.OMB_CLOUD_DECIDER_URL).toBe(RELAY_DECIDER);
     expect(services.boatCredential(undefined)).toEqual({ token: "box_omb_included", api: RELAY_BOAT, included: true });
     expect(services.voiceCredential(undefined)).toEqual({ token: "omb_voice_included", api: RELAY_VOICE, included: true });
     expect(services.deciderCredential(undefined, undefined)).toEqual({ token: "omb_decide_included", api: RELAY_DECIDER, included: true });
-    // The person's own key still wins, and still goes only to the provider.
     expect(services.boatCredential("box_own")).toMatchObject({ token: "box_own", included: false });
     expect(services.voiceCredential("sk-own")).toMatchObject({ token: "sk-own", included: false });
     expect(services.deciderCredential("tsk_own", undefined)).toEqual({ token: "tsk_own", api: "https://api.typesafe.ai", included: false });

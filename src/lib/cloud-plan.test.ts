@@ -7,7 +7,6 @@ import { buyOfferAllowed, CLOUD_SOURCES, cloudAddView, cloudCreditLine, cloudInt
 import { setLocale } from "./i18n";
 
 const DAY = 86_400_000;
-// 15 Oct 2026, noon local time: the example dates of the design (trial started 8 Oct, 3 days' hold).
 const ENDS = new Date(2026, 9, 15, 12).getTime();
 const trial = (state: CloudTrial["state"], extra: Partial<CloudTrial> = {}): CloudTrial =>
   ({ state, tier: "pro", endsAt: ENDS, amount: 4900, chargeAt: null, holdUntil: null, deleteAt: null, keep: "none", ...extra });
@@ -23,14 +22,11 @@ describe("a free trial, in one message and at most one next step per state", () 
     expect(view.body).toBe("Then Pro is $49/month plus tax, charged on Oct 15. My Cloud keeps running, so there's nothing to do. To cancel, choose Manage subscription before then.");
     expect(view.credit).toBe("Includes $5 of Claude credit: $3.20 left.");
     expect(view.action).toEqual({ kind: "manage", label: "Manage subscription" });
-    // The body names the button the notice shows.
     expect(view.body).toContain(view.action!.label);
-    // Without the Admin's amount it never guesses a price; without credit it says nothing about one.
     const unpriced = cloudTrialView(trial("active", { amount: null, tier: "max" }));
     expect(unpriced.body).toBe("Then Max is charged monthly, plus tax, from Oct 15. My Cloud keeps running, so there's nothing to do. To cancel, choose Manage subscription before then.");
     expect(unpriced.credit).toBeUndefined();
     expect(cloudTrialView(trial("active"), { ...credit, remainingUsd: 0, state: "used_up" }).credit).toBeUndefined();
-    // A plan newer than this app reads "Cloud"; none named reads "your plan".
     expect(cloudTrialView(trial("active", { tier: "team-2027" })).body).toContain("Then Cloud is $49/month");
     expect(cloudTrialView(trial("active", { tier: undefined })).body).toContain("Then your plan is $49/month");
     expect(cloudTrialView(trial("active", { amount: 5831 })).body).toContain("$58.31/month");
@@ -44,7 +40,6 @@ describe("a free trial, in one message and at most one next step per state", () 
   });
 
   it("cancelled outright before it ends: nothing to buy until it has stopped (a checkout now would stop the running Cloud)", () => {
-    // The Admin says so with `keep: "none"` (nothing to do until then); any `keep` but the portal's reads the same.
     for (const keep of ["none", "checkout"] as const) {
       const view = cloudTrialView(trial("ending", { deleteAt: ENDS + 3 * DAY, keep }));
       expect(view.body, keep).toBe("Your subscription was cancelled, so My Cloud stops then and its files are deleted on Oct 18. To keep it, subscribe again once it has stopped.");
@@ -85,7 +80,6 @@ describe("the plan line and the credit", () => {
       expect(cloudPlanLine(cloudPlanView(connected({ trial: trial(state) })))).toBe("Pro free trial · verified by MausBot Cloud");
     }
     expect(cloudPlanLine(cloudPlanView(connected({})))).toBe("Pro active · verified by MausBot Cloud");
-    // An ended trial with no plan is never "Free account", and never an offer to buy.
     expect(cloudPlanView(connected({ entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 2 }, machine: { status: "stopped" }, trial: trial("ended") })).kind).toBe("attention");
   });
 
@@ -100,8 +94,6 @@ describe("the plan line and the credit", () => {
     const active = trial("active", { chargeAt: ENDS });
     expect(cloudTrialView(active, undefined, { personal: 2900 }).switchPlan).toBe("Prefer Personal at $29? Tell us from your Plan page before Oct 15, and we'll switch your plan.");
     expect(cloudTrialView(active).switchPlan).toBe("Prefer Personal? Tell us from your Plan page before Oct 15, and we'll switch your plan.");
-    // Personal's price comes with the trial itself (the Admin's `personalAmount`), so My Cloud's page, which reads no
-    // offer, says the same as This computer's.
     expect(cloudTrialView({ ...active, personalAmount: 2900 }).switchPlan).toBe("Prefer Personal at $29? Tell us from your Plan page before Oct 15, and we'll switch your plan.");
     for (const quiet of [trial("active", { tier: "personal" }), trial("active", { tier: undefined }), trial("active", { tier: "team-2027" }), trial("ending", { keep: "portal" })]) {
       expect(cloudTrialView(quiet, undefined, { personal: 2900 }).switchPlan, JSON.stringify(quiet)).toBeUndefined();
@@ -110,7 +102,6 @@ describe("the plan line and the credit", () => {
 
 });
 
-// ── Add a Cloud ────────────────────────────────────────────────────────
 
 const allowances = (computers: number, diskGb: number, maxDiskGb = diskGb) => ({ cpus: computers, memoryMb: computers * 1024, diskGb, maxDiskGb, computers, computerHours: computers * 50, voiceCharacters: 100_000 });
 const PLANS: CloudOfferPlan[] = [
@@ -133,7 +124,6 @@ describe("what is for sale, as the Admin says", () => {
       { tier: "pro", name: "Pro", price: "$49/month + tax", popular: true, details: { main: "Up to 4 cloud computers at once · 40 GB storage, grows to 50 GB", machine: "4 vCPU · 4 GB memory · 200 cloud computer hours a month" } },
       { tier: "max", name: "Max", price: "$99/month + tax", popular: false, details: { main: "Up to 8 cloud computers at once · 80 GB storage, grows to 100 GB", machine: "8 vCPU · 8 GB memory · 400 cloud computer hours a month" } },
     ]);
-    // A plan newer than this app keeps the Admin's name; without allowances, no detail is made up.
     expect(planRow({ tier: "team", label: "Team", amount: 19900 })).toEqual({ tier: "team", name: "Team", price: "$199/month + tax", popular: false, details: null });
     expect(planRow({ tier: "pro", amount: 5831 }).price).toBe("$58.31/month + tax");
   });
@@ -170,7 +160,6 @@ describe("what is for sale, as the Admin says", () => {
     expect(bare.points[2]).toBe("Cloud computers and voice included"); expect(bare.moneyBack).toBeNull();
     expect(cloudIntroView(noTrial(OFFER))).toBeNull(); expect(cloudIntroView(null)).toBeNull(); expect(cloudIntroView(undefined)).toBeNull();
     expect(JSON.stringify(cloudIntroView(OFFER))).not.toMatch(/launch|\$89|first 100/i);
-    // A trial on some plans only: "Then from" names the cheapest plan that starts with it, never one charged today.
     const partial: CloudOffer = { ...OFFER, plans: OFFER.plans.map(plan => plan.tier === "personal" ? { ...plan, trialDays: undefined } : plan) };
     expect(cloudIntroView(partial)!.price).toBe("Then from $49/month + tax. Cancel any time.");
   });
@@ -193,27 +182,20 @@ describe("the Add a Cloud dialog, one view per state", () => {
   });
 
   it("follows the sign-in and the checkout in the browser by its own session, never by the return", () => {
-    // A sign-in on the way to a checkout says so in its last step; a plain one ("Sign in to your Cloud plan") doesn't.
     expect(cloudAddView({ status: "connecting", enrollment: { userCode: "ABCDE-FGHJK", expiresAt: NOW + 600_000 }, checkout: { plan: "pro", startedAt: NOW, signIn: true } }, OFFER, at))
       .toEqual({ kind: "signing-in", code: "ABCDE-FGHJK", checkout: true });
     expect(cloudAddView({ status: "connecting" }, OFFER, at)).toEqual({ kind: "signing-in", code: null, checkout: false });
-    // This app's checkout, for 30 minutes.
     const opened = connected({ checkout: { plan: "max", startedAt: NOW - 29 * 60_000 } });
     expect(cloudAddView(opened, OFFER, at)).toEqual({ kind: "waiting", plan: "max", browser: "checkout" });
     expect(cloudAddView(opened, OFFER, { ...at, choosing: true })).toEqual({ kind: "offer", offer: OFFER, signedOut: false, waited: false, notice: null });
-    // Then the offer, saying no trial or payment was seen yet, as what was opened sold it.
     expect(cloudAddView(opened, OFFER, { now: NOW + 2 * 60_000 })).toEqual({ kind: "offer", offer: OFFER, signedOut: false, waited: "trial", notice: null });
     expect(cloudAddView(opened, noTrial(OFFER), { now: NOW + 2 * 60_000 })).toMatchObject({ kind: "offer", waited: "paid" });
-    // Signed in on the way to a checkout: the browser's page after approval leads there, nothing is open yet; once the
-    // Admin says one is, it is the checkout.
     const signedIn = connected({ checkout: { plan: "pro", startedAt: NOW - 60_000, signIn: true } });
     expect(cloudAddView(signedIn, OFFER, at)).toEqual({ kind: "waiting", plan: "pro", browser: "signin" });
     expect(cloudAddView(signedIn, { ...OFFER, checkout: { plan: "pro", openUntil: NOW + 3600_000 } }, at)).toEqual({ kind: "waiting", plan: "pro", browser: "checkout" });
-    // A checkout the Admin says is open (from the web, another computer, before a restart).
     const open = { ...OFFER, checkout: { plan: "personal", openUntil: NOW + 3600_000 } };
     expect(cloudAddView(connected(), open, at)).toEqual({ kind: "waiting", plan: "personal", browser: "checkout" });
     expect(cloudAddView(connected(), { ...open, checkout: { plan: "personal", openUntil: NOW - 1 } }, at).kind).toBe("offer");
-    // Signed out, nothing is waited on: the sign-in comes first.
     expect(cloudAddView({ status: "signed-out", checkout: { plan: "pro", startedAt: NOW } }, OFFER, at).kind).toBe("offer");
   });
 

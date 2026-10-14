@@ -30,17 +30,21 @@
     // is listed in secrets.required below (as is this JSON when it is a
     // secret) so every deploy keeps it. To stop new endpoints going to an
     // account and keep its own, set its "newEndpoints": false.
-    // "CLOUDFLARE_ENDPOINT_ACCOUNTS": [
-    //   {
-    //     "accountId": "<32-hex account ID>",
-    //     "zoneId": "<32-hex zone ID of mausbot.si>",
-    //     "companionHostSuffix": "mausbot.si",
-    //     "apiTokenSecret": "CLOUDFLARE_API_TOKEN_MAUSBOT_SI",
-    //     "tunnelLimit": 1000,
-    //     "dnsRecordLimit": 200,
-    //     "minAppVersion": "<first release that accepts mausbot.si>"
-    //   }
-    // ],
+    // Supamaus account, zone mausbot.si. dnsRecordLimit 200 is the Free
+    // plan's record quota for a zone added after Sep 2024; on Pro it is 3,500,
+    // and the tunnel quota (1,000) binds first. Desktop apps accept mausbot.si
+    // hostnames from 0.1.104 (#2582).
+    "CLOUDFLARE_ENDPOINT_ACCOUNTS": [
+      {
+        "accountId": "bbb5305f06e28a6f2abaac299f3b09dc",
+        "zoneId": "4ded3da43e7b2c3a5f27b0fb33e5bd7a",
+        "companionHostSuffix": "mausbot.si",
+        "apiTokenSecret": "CLOUDFLARE_API_TOKEN_MAUSBOT_SI",
+        "tunnelLimit": 1000,
+        "dnsRecordLimit": 200,
+        "minAppVersion": "0.1.104"
+      }
+    ],
     // Managed endpoint capacity of the account above (see README "Tunnel
     // capacity and idle reclaim"): its tunnel quota and its zone's DNS record
     // quota. They drive the 90% usage alert and /healthz, rank accounts for
@@ -59,7 +63,7 @@
     "OMB_CLEANUP_SWEEP_LIMIT": "20"
   },
   "secrets": {
-    "required": ["BETTER_AUTH_SECRET", "CLOUDFLARE_API_TOKEN"]
+    "required": ["BETTER_AUTH_SECRET", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN_MAUSBOT_SI"]
   },
   "d1_databases": [
     {

@@ -25,7 +25,7 @@ describe("buildTurnContext", () => {
     const out = buildTurnContext({ text: "hi", transcript, rewound: false, fresh: true, externallyUpdated: false, replaysNatively: false });
     expect(out.resume).toBe(false);
     expect(out.turnText).toContain("joining this conversation");
-    expect(out.turnText).not.toContain("rewound"); // distinct marker, distinct preamble
+    expect(out.turnText).not.toContain("rewound");
     expect(out.turnText).toContain("Assistant: Noted — Biscuit.");
     expect(out.turnText.endsWith("hi")).toBe(true);
   });
@@ -80,8 +80,6 @@ describe("engineIsFresh", () => {
   });
 
   it("is true when another instance ran the last turn — even if this one has an older cursor", () => {
-    // the user's bug: claude had a session from days ago, antigravity took the
-    // latest turn, switching back to claude must NOT resume the stale session
     expect(
       engineIsFresh({ instanceId: "claude", lastInstanceId: "antigravity", resumeCursors: { claude: "old", antigravity: "s2" }, transcript: withUser }),
     ).toBe(true);
@@ -97,11 +95,8 @@ describe("engineIsFresh", () => {
   });
 
   it("legacy task without lastInstanceId: trusts a lone cursor for this instance, replays otherwise", () => {
-    // one cursor, ours — pre-upgrade single-engine thread, keep resuming
     expect(engineIsFresh({ instanceId: "claude", lastInstanceId: undefined, resumeCursors: { claude: "s1" }, transcript: withUser })).toBe(false);
-    // one cursor, someone else's — we never ran here
     expect(engineIsFresh({ instanceId: "codex", lastInstanceId: undefined, resumeCursors: { claude: "s1" }, transcript: withUser })).toBe(true);
-    // two cursors — can't tell who ran last; replaying is the safe side
     expect(
       engineIsFresh({ instanceId: "claude", lastInstanceId: undefined, resumeCursors: { claude: "s1", antigravity: "s2" }, transcript: withUser }),
     ).toBe(true);
