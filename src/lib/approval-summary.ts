@@ -61,12 +61,22 @@ export function collapseOutboundCalls(calls: OutboundCall[], namingApps: boolean
 export interface OutboundSummary {
   headline: string;
   summary: string;
+  opaque?: true;
 }
+
+const OPAQUE_TOOL = "COMPOSIO_PROXY_EXECUTE";
 
 export function outboundSummary(card: Pick<OptionCardData, "outboundRequest" | "subtitle">): OutboundSummary | undefined {
   if (!card.outboundRequest) return undefined;
   const calls = outboundCalls(card);
   const app = outboundApp(calls);
+  if (card.outboundRequest.tool === OPAQUE_TOOL) {
+    return {
+      headline: t("approval.outbound.runCode", { app: app ?? card.outboundRequest.app ?? "Composio" }),
+      summary: "",
+      opaque: true,
+    };
+  }
   return {
     headline: app ? t("approval.outbound.sendTo", { app }) : t("approval.outbound.sendOnBehalf"),
     summary: collapseOutboundCalls(calls, app === null),

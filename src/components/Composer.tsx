@@ -843,18 +843,16 @@ export function Composer({
           </div>
         )}
         {approval && (
-          <div className="mb-2 overflow-hidden rounded-2xl border border-accent/40 bg-card">
+          <div className="mb-2 overflow-hidden rounded-3xl bg-composer ring-1 ring-composer-ring">
             <PendingApprovalPanel
+              key={approval.requestId}
               pending={approval}
+              botName={approvalBot?.name}
               count={approvals.length}
               index={0}
               locale={activeLocale()}
-            />
-            <PendingApprovalActions
-              pending={approval}
-              threadId={threadId}
-              bot={approvalBot}
-              onCancelTurn={interruptTurn}
+              actions={<PendingApprovalActions part="primary" pending={approval} threadId={threadId} bot={approvalBot} onCancelTurn={interruptTurn} />}
+              more={<PendingApprovalActions part="more" pending={approval} threadId={threadId} bot={approvalBot} onCancelTurn={interruptTurn} />}
             />
           </div>
         )}
