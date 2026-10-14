@@ -23,8 +23,6 @@ import { t } from "@/lib/i18n";
 import { CanvasComputers } from "./CanvasComputers";
 import type { TeamComputer } from "../../shared/team-computer";
 
-/** One hand-off between two bots. It opens the thread doing the work, the
- * room it ran in, or else the bot it went to, as its own row would. */
 export function EdgeRow({ edge, bots }: { edge: TeamMapEdge; bots: Bot[] }) {
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
@@ -350,7 +348,6 @@ export function TeamMapPage() {
             }}>
               <button className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[12px] hover:bg-control" onClick={() => setTeamEditor({})}><Users size={14} />{t("team.create")}</button>
               <button className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[12px] hover:bg-control" onClick={() => { setComputersOpen(true); setCreateComputerRequest((value) => value + 1); }}><Box size={14} />Cloud computer</button>
-              {/* An OMB Cloud home has no Local VM (shared/cloud-home.ts). */}
               {placeOffered("vm", state.config) && <button className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[12px] hover:bg-control" onClick={() => dispatch({ type: "toggleAppSettings", section: "computer", open: true })}><Monitor size={14} />Local VM…</button>}
             </div>
           </details>

@@ -581,7 +581,6 @@ describe("ApprovalCard for a change that applied on its own", () => {
     expect(markup).toMatch(/Scout scheduled a routine: Check before dentist, today 2:30/);
     expect(markup).toContain(">Undo<");
     expect(markup).toContain(">Details<");
-    // The cron expression and the approval box stay out of the line.
     expect(markup).not.toContain("30 14 * * 3");
     expect(markup).not.toContain("Waiting for your confirmation");
     expect(markup).not.toContain("schedule_routine");

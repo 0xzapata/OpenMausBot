@@ -4,9 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo } from "@/state/store";
 import { api } from "@/state/store";
 
-// PluginsPanel's own state, seeded by call order: effects never run under
-// server rendering, so the catalog is put in place the way a finished fetch
-// would leave it. Indexes outside the map keep their initial values.
+// PluginsPanel's own state, seeded by call order: effects never run under server rendering, so the catalog is placed as
+// a finished fetch would leave it.
 const fixture = vi.hoisted(() => ({
   surface: "apps" as "apps" | "mcp",
   dispatch: vi.fn(),
@@ -255,7 +254,6 @@ describe("Apps pop-up", () => {
     expect(tab(true).preventDefault).toHaveBeenCalledOnce();
     expect(active).toBe(last);
 
-    // A resize can hide whichever search previously held focus.
     active = hiddenDesktopSearch;
     expect(tab().preventDefault).toHaveBeenCalledOnce();
     expect(active).toBe(first);
@@ -270,14 +268,11 @@ describe("Apps pop-up", () => {
     expect(html).toContain("Connect an app or your own MCP server once. Then choose which bots may use it.");
     expect(html).toContain("glass-surface");
     expect(html).toContain("@container");
-    // rows in two columns, one when the pop-up is narrow
     expect(html).toContain("grid grid-cols-1 items-start gap-x-6 gap-y-1 @xl:grid-cols-2");
     for (const slug of ["gmail", "slack", "notion"]) expect(html).toContain(`data-app-tile="${slug}"`);
-    // the connected app leads the grid
     expect(html.indexOf('data-app-tile="slack"')).toBeLessThan(html.indexOf('data-app-tile="gmail"'));
     expect(html).toContain("MCP inventory");
     expect(html).toContain('data-embedded="true"');
-    // no separate MCP tab any more
     expect(html).not.toContain('role="tab"');
   });
 
@@ -326,20 +321,16 @@ describe("Apps pop-up", () => {
     const { html, nodes: tree } = render();
     const headings = [...html.matchAll(/<h3 id="[^"]*"[^>]*>([^<]*)/g)].map((match) => match[1]);
     expect(headings).toEqual(["Connected", "Productivity", "Communication", "Analytics", "All apps"]);
-    // the five most used categories as pills, the rest under More
     expect(tree.filter((node) => node.props["data-apps-category"]).map((node) => node.props["data-apps-category"])).toEqual(["Productivity", "Communication", "Analytics", "Design", "Files"]);
     expect(html).toContain('aria-label="More categories"');
-    // a category pill narrows the list to it and drops the sections
     tree.find((node) => node.props["data-apps-category"] === "Design")!.props.onClick!();
     const design = render();
     expect(design.html.match(/data-app-tile="(?!whop)[^"]*"/g)).toEqual(['data-app-tile="figma"']);
     expect([...design.html.matchAll(/<h3 id="[^"]*"[^>]*>([^<]*)/g)].map((match) => match[1])).toEqual(["Design"]);
     expect(chip(design.nodes, "all").props["aria-pressed"]).toBe(false);
     expect(design.nodes.find((node) => node.props["data-apps-category"] === "Design")!.props["aria-pressed"]).toBe(true);
-    // View all on a category preview opens that category
     fixture.overrides.set(20, null);
     const again = render();
-    // only a section with more than it previews offers View all
     expect(again.html.match(/>View all</g)).toHaveLength(1);
     const sections = again.nodes.filter((node) => node.props.viewAll);
     expect(sections.map((node) => node.props.title)).toEqual(["Productivity"]);
@@ -367,7 +358,7 @@ describe("Apps pop-up", () => {
   it("keeps the per-bot banner, stale notice and self-host key link reachable", () => {
     fixture.instances = [claude];
     fixture.bots = [bot("scout", { composio: false })];
-    fixture.overrides.set(7, true); // stale
+    fixture.overrides.set(7, true);
     let { html } = render();
     expect(html).toContain("Showing what was connected last time");
     fixture.overrides.set(7, false);
@@ -395,7 +386,6 @@ describe("Apps pop-up", () => {
     const rings = tree.filter((node) => node.props["data-used-by-avatar"] !== undefined);
     expect(rings.map((ring) => ring.props["data-used-by-avatar"])).toEqual(["scout", "arrow", "photo"]);
     for (const ring of rings) {
-      // a fixed disc that clips, with the avatar centred in it
       expect(String(ring.props.className).split(" ")).toEqual(expect.arrayContaining([
         "flex", "size-5", "shrink-0", "items-center", "justify-center", "overflow-hidden", "rounded-full", "bg-menu", "ring-2", "ring-menu",
       ]));
@@ -410,17 +400,15 @@ describe("Apps pop-up", () => {
     const centre = FACE_BOX / 2;
     for (const body of Object.values(MASCOT_BODIES)) {
       const d = body.body.match(/ d="([^"]+)"/)![1]!;
-      // Absolute moves and cubics only, so the numbers pair up as points.
       expect(d.replace(/[-\d.\s]/g, ""), body.id).toMatch(/^[MCZ]+$/);
       const [x, y, scale] = body.fit.match(/-?\d*\.?\d+/g)!.map(Number) as [number, number, number];
       const numbers = d.match(/-?\d*\.?\d+/g)!.map(Number);
-      // A cubic stays inside its control points' hull, and distance from the
-      // centre is convex, so the farthest control point bounds the outline.
+      // A cubic stays inside its control points' hull and distance from the centre is convex, so the farthest control
+      // point bounds the outline.
       let reach = 0;
       for (let i = 0; i + 1 < numbers.length; i += 2) {
         reach = Math.max(reach, Math.hypot(x + numbers[i]! * scale - centre, y + numbers[i + 1]! * scale - centre));
       }
-      // inside a size-5 ring: a 10px radius
       expect((reach / box) * USED_BY_AVATAR_SIZE, body.id).toBeLessThan(10);
     }
   });

@@ -71,7 +71,6 @@ describe("paired thread targets through an isolated HTTP fixture", () => {
       expect(result.status, `${method} ${suffix}`).toBe(409);
       expect(result.body.error).toMatch(/Update the OpenMausBot app on this device.*choose a thread/);
     }
-    // The native sidecar's existing marker only narrows local behavior.
     const legacyPhone = await api("POST", `/api/bots/${bot.id}/read`, undefined, { "x-openmausbot-companion": "1", "x-openmausbot-companion-device": "fixture-phone" });
     expect(legacyPhone.status).toBe(409);
     expect((await page(threadA)).messages).toEqual(beforeA.messages);
@@ -102,7 +101,6 @@ describe("paired thread targets through an isolated HTTP fixture", () => {
     expect(missingGrant.status).toBe(409);
     expect(missingGrant.body.error).toMatch(/not on a pending approval/);
     expect((await paired("DELETE", `/api/bots/${bot.id}/queue/not-a-queued-message`, { threadId: threadA })).status).toBe(404);
-    // Local desktop/API compatibility remains intentionally selected-thread based.
     expect((await api("POST", `/api/bots/${bot.id}/read`)).status).toBe(200);
     expect((await api("PATCH", `/api/bots/${bot.id}/model`, selection(models[0]))).status).toBe(200);
   }, 60_000);

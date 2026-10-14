@@ -36,10 +36,8 @@ describe("provider key rows", () => {
     expect(anthropic).toContain("Anthropic API key");
     expect(anthropic).toContain('type="password"');
     expect(anthropic).toContain("sk-ant-…");
-    // The console link and the description live in the help popover.
     expect(anthropic).toContain('aria-label="About Anthropic API key"');
     expect(anthropic).not.toContain("Connected");
-    // Nothing to test until a key is typed or saved.
     expect(anthropic).not.toContain(">Test<");
 
     const compat = render(createElement(ApiKeyRow, { section: "openaiCompat", testProvider: "openaiCompat" }));
@@ -80,7 +78,6 @@ describe("provider key rows", () => {
     const included = render(createElement(ApiKeyRow, { section: "box" }));
     expect(included).toContain("Included with your Cloud plan");
     expect(included).not.toContain("Configured");
-    // an own key can still be added, and there is nothing to remove
     expect(included).toContain('placeholder="Paste your Boat API key"');
     expect(included).not.toContain("Remove the saved key");
 
@@ -129,12 +126,10 @@ describe("provider key rows", () => {
       expect(saved).toContain(`data-opencode-provider-key="${name}"`);
       expect(saved).toContain(`aria-label="Remove ${name}"`);
     }
-    // A new one: a name and a write-only key.
     expect(saved).toContain('placeholder="VENICE_API_KEY"');
     expect(saved).toContain('aria-label="Key name"');
     expect(saved).toMatch(/<input type="password"[^>]*aria-label="Key"/);
 
-    // From a server that predates the list, or with nothing saved yet: closed and empty.
     withKeys(undefined);
     const none = render(createElement(OpenCodeProviderKeys));
     expect(none).not.toMatch(/<details[^>]*open=""/);

@@ -59,7 +59,6 @@ describe("signed-in sites", () => {
     expect(host.querySelector("details")).toBeNull();
     expect(host.textContent).not.toContain("Signed-in sites");
     expect(listed()).toEqual(["example.com", "google.com"]);
-    // Signing out works the same, and does not load the list a second time.
     await click("Sign out of example.com");
     expect(fixture.api).toHaveBeenCalledTimes(2);
     expect(listed()).toEqual(["google.com"]);

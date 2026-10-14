@@ -9,11 +9,9 @@ import { t } from "@/lib/i18n";
 
 type SavedWorkspaces = Awaited<ReturnType<NonNullable<NonNullable<Window["ogb"]>["environments"]>["state"]>>;
 
-/** These are this desktop's connections, not a fleet administration API. */
 export function ConnectedWorkspacesSettings() {
   const bridge = window.ogb?.environments;
-  // Computer sharing is off unless this workspace's server turned it on. The
-  // desktop bridge alone is not enough: never offer access the server refuses.
+  // Security: the desktop bridge alone is not enough; never offer access the server refuses.
   const { state } = useStore();
   const sharingOffered = sharedComputersEnabled(state.config) && Boolean(window.ogb?.computerSharing);
   const [saved, setSaved] = useState<SavedWorkspaces | null>(null);
@@ -22,12 +20,8 @@ export function ConnectedWorkspacesSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [computerId, setComputerId] = useState<string | null>(() => new URLSearchParams(window.location?.search ?? "").get("share-computer"));
-  // Copy this computer here (docs/copy-workspace.md): this app's own window only.
   const copyOffered = Boolean(window.ogb?.cloudMove) && !window.ogb?.remoteClient?.active;
-  // A server's own Copy opens this page on its panel (`copy-to`): the person starts the copy here.
   const [copyId, setCopyId] = useState<string | null>(() => new URLSearchParams(window.location?.search ?? "").get("copy-to"));
-  // Local environments (named data dirs, packaged builds only): the create
-  // form's fields, the pending Forget, and its keep-or-delete-files choice.
   const [envName, setEnvName] = useState("");
   const [envDir, setEnvDir] = useState("");
   const [envForget, setEnvForget] = useState<string | null>(null);
@@ -57,8 +51,8 @@ export function ConnectedWorkspacesSettings() {
     pending.current = true; setBusy(true); setError(""); setEnvError("");
     const current = generation.current;
     try {
-      // A successful switch/connect unloads this local renderer. Do not ask
-      // for its privileged saved list again after the active origin changes.
+      // Security: a successful switch unloads this renderer; never ask for its privileged saved list again after the
+      // origin changes.
       if (await action() === true) return;
       const state = await bridge.state();
       if (generation.current === current) setSaved(state);
@@ -92,8 +86,6 @@ export function ConnectedWorkspacesSettings() {
               <button type="button" disabled={busy} aria-label={`Switch to ${entry.name}`}
                 onClick={() => void perform(async () => {
                   if (!await confirmAction(`Switch to ${entry.name}? The app restarts on that environment. Running turns stop.`)) return;
-                  // Main's error strings are an open set ("dev", "busy", …):
-                  // one generic sentence for all of them.
                   const result = await bridge.switch(entry.id);
                   if (result && result.ok === false) throw new Error("Couldn't switch.");
                   return true;
@@ -112,8 +104,6 @@ export function ConnectedWorkspacesSettings() {
         </label>
         <div className="mt-2 flex gap-2">
           <button type="button" disabled={busy} onClick={() => void perform(async () => {
-            // Main answers {ok:false} when it refuses or the folder delete fails;
-            // the entry stays, so say so generically and leave the panel open.
             const result = envPurge ? await bridge.forget(forgetEntry.id, true) : await bridge.forget(forgetEntry.id);
             if (result && result.ok === false) throw new Error("Couldn't forget the environment.");
             setEnvForget(null);
@@ -126,8 +116,6 @@ export function ConnectedWorkspacesSettings() {
         event.preventDefault();
         if (!envName.trim()) return;
         void perform(async () => {
-          // A failure carries main's reason; none of them is a sentence the
-          // person can act on, so the form says one generic thing.
           const created = await bridge.create(envName.trim(), envDir.trim() || undefined);
           if (!created?.ok) throw new Error("Couldn't create the environment.");
           setEnvName(""); setEnvDir("");

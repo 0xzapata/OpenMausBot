@@ -30,7 +30,7 @@ let loadConfig: typeof import("./config.ts").loadConfig;
 const underBoat = () => requests.filter((request) => request.path.startsWith("/boat/"));
 const underRelay = () => requests.filter((request) => request.path.startsWith("/relay/"));
 
-// The legacy deterministic name findBoat still recognises (boat-lifecycle.test.ts).
+// The legacy deterministic name findBoat still recognises.
 const machineName = `ogb-${botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "")}-${createHash("sha256").update(botId).digest("hex").slice(0, 6)}`;
 
 beforeAll(async () => {
@@ -44,8 +44,7 @@ beforeAll(async () => {
         res.end(JSON.stringify(body));
       };
       if (rejectCredentials) return send(401, { ok: false, code: "unauthorized", message: "This cloud computer key is not valid." });
-      // Boat speaks its public API v1; the Admin relay wired at /api/box/v1
-      // still speaks the old box dialect (boat-relay.ts), and at /api/v1, v1.
+      // Boat speaks its public API v1; the Admin relay at /api/box/v1 still speaks the old box dialect, and at /api/v1, v1.
       const [, base = "", rest = ""] = /^(\/boat\/api\/v1|\/relay\/api\/box\/v1|\/relay\/api\/v1)(\/.*)$/.exec(url.pathname) ?? [];
       const legacy = base === "/relay/api/box/v1";
       const [root, one, many] = legacy ? ["/boxes", "box", "boxes"] : ["/sandboxes", "sandbox", "sandboxes"];
@@ -127,7 +126,6 @@ describe("included Boat computers", () => {
   });
 
   it("a cloud computer tool call with the included token still reaches only the relay", async () => {
-    // What cloud-computer-tools.ts runs for /api/internal/computer/mcp.
     await boat.runCommand({ box: { token: boat.boatAccount({})!.token } }, boxId, "true");
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ path: `/relay/api/box/v1/boxes/${boxId}/commands`, auth: `Bearer ${INCLUDED}` });
@@ -248,7 +246,6 @@ describe("waking a sleeping computer", () => {
     state = "archived";
     resumeReplies = [{ status: 401, body: { ok: false, code: "unauthorized", message: "This cloud computer key is not valid." } }];
     await expect(boat.readyBoat({}, botId)).rejects.toThrow("The cloud computers included with your Cloud plan aren't available right now. Try again later.");
-    // The same refusal on the person's own key still points them at Settings.
     await expect(boat.readyBoat({ box: { token: "box_own" } }, botId)).rejects.toThrow("boat.dev rejected your Boat API key — paste a current one in Settings → API keys");
   });
 });

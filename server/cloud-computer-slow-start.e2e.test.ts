@@ -1,11 +1,5 @@
-// A cloud computer's first start takes about a minute, longer than one
-// computer call may wait. The call that runs out is told the computer is
-// still starting (not that someone else has it), a later call works, and the
-// computer is created once. A start that stalls ends at the start budget with
-// one "didn't start" row instead of "still starting" until the watchdog.
-// The real server, the fake Claude CLI and a stub of the Admin's Boat relay,
-// with the call wait and the start budget shortened; disposable home, no
-// network.
+// The real server, the fake Claude CLI and a stub of the Admin's Boat relay, with the call wait and the start budget
+// shortened; disposable home, no network.
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server, type ServerResponse } from "node:http";
@@ -181,7 +175,6 @@ describe("a slow cloud computer start", () => {
     hold.provisioning = true;
     const bot = await cloudBot("Slow starter");
     const sent = await startTurn(bot.id, "Open the cloud desktop");
-    // Still starting is what it is doing, and nobody else has it.
     expect(await screenshot(sent)).toEqual({ isError: true, content: [{ type: "text", text: STILL_STARTING }] });
     expect(creates()).toBe(1);
 
@@ -221,7 +214,6 @@ describe("a slow cloud computer start", () => {
       expect(Date.now() - started).toBeGreaterThanOrEqual(START_BUDGET_MS - CALL_WAIT_MS - 1_000);
       expect(row.tool.name).toBe("error: Stuck starter's cloud computer didn't start. Try again.");
       expect(row.tool.place).toEqual({ state: "cc-no-start", params: { bot: "Stuck starter" }, source: "works-on" });
-      // The failure ended the turn, with that one row.
       await until(() => task(bot.id), current => current?.busy === false, 20_000);
       expect(await failedRows(bot.id)).toHaveLength(1);
       await api("DELETE", `/api/bots/${bot.id}`);

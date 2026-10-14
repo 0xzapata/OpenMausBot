@@ -58,8 +58,7 @@ describe("activityStepLabel", () => {
     expect(activityStepLabel({ name: "make_invoice: read the file" })).toBe("Working");
   });
 
-  // "Edit" and "editing a file" give the same words, so the first test cannot
-  // tell narration from a label made of the name. These two can.
+  // "Edit" and "editing a file" read the same, so only these cases tell narration from a name-derived label.
   it("prefers the narration to the label the tool's name would give", () => {
     expect(activityStepLabel({ name: "Bash", spoken: "checking the build." })).toBe("Checking the build");
   });
