@@ -1886,6 +1886,107 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
     expect(recorder.events.filter((e) => e.type === "runtime.notice")).toEqual([expect.objectContaining({ message: rebuiltSessionNotice("Codex") })]);
   });
 
+  it("unarchives an archived native thread and resumes it instead of failing every retry", async () => {
+    await create();
+    const dump = join(scratch, "archived-thread.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    vi.stubEnv("FAKE_CODEX_ARCHIVED", "1");
+    await instance.adapter.sendTurn({ threadId: "t-archived", text: "go on", resumeCursor: "archived-thread", recoveryText: "History\nUser: go on" });
+    await expect(recorder.until((e) => e.type === "turn.completed")).resolves.toMatchObject({ ok: true });
+    const calls = JSON.parse(readFileSync(dump, "utf8")).calls;
+    expect(calls.map((call: { method: string }) => call.method)).toEqual(["initialize", "initialized", "config/read", "thread/resume", "thread/unarchive", "thread/resume", "thread/inject_items", "turn/start"]);
+    expect(calls.find((call: { method: string }) => call.method === "thread/unarchive").params).toEqual({ threadId: "archived-thread" });
+    expect(calls.find((call: { method: string }) => call.method === "turn/start").params.input).toEqual([{ type: "text", text: "go on" }]);
+    expect(recorder.events.filter((e) => e.type === "session.started")).toMatchObject([{ sessionId: "archived-thread" }]);
+  });
+
+  it("rebuilds an archived thread Codex will not unarchive, so the stale cursor is replaced", async () => {
+    await create();
+    const dump = join(scratch, "archived-refused.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    vi.stubEnv("FAKE_CODEX_ARCHIVED", "unarchive-fails");
+    const recoveryText = "History\nUser: go on";
+    await instance.adapter.sendTurn({ threadId: "t-archived-refused", text: "go on", resumeCursor: "archived-thread", recoveryText });
+    await expect(recorder.until((e) => e.type === "turn.completed")).resolves.toMatchObject({ ok: true });
+    const calls = JSON.parse(readFileSync(dump, "utf8")).calls;
+    expect(calls.map((call: { method: string }) => call.method)).toEqual(["initialize", "initialized", "config/read", "thread/resume", "thread/unarchive", "thread/start", "turn/start"]);
+    expect(calls.find((call: { method: string }) => call.method === "turn/start").params.input).toEqual([{ type: "text", text: recoveryText }]);
+    expect(recorder.events.filter((e) => e.type === "session.started")).toMatchObject([{ sessionId: "codex-thread-1", rebuilt: true }]);
+  });
+
+  it("completes a turn whose process exit could not be confirmed without waiting for the stall watchdog", async () => {
+    await create();
+    vi.stubEnv("FAKE_CODEX_STOP_RETRY_MS", "50");
+    const stopping = vi.spyOn(procs, "killCliTree").mockResolvedValueOnce(false);
+    await instance.adapter.sendTurn({ threadId: "t-stop-unconfirmed", text: "hi" });
+    await expect(recorder.until((e) => e.type === "turn.completed", 10_000)).resolves.toMatchObject({ ok: true, stopReason: null });
+    expect(recorder.events.some((e) => e.type === "runtime.error" && e.message.includes("did not shut down"))).toBe(true);
+    expect(stopping.mock.calls.length).toBeGreaterThan(1);
+    expect(instance.adapter.hasSession("t-stop-unconfirmed")).toBe(false);
+
+    recorder.events.length = 0;
+    stopping.mockResolvedValue(false);
+    await instance.adapter.sendTurn({ threadId: "t-stop-never", text: "hi" });
+    await expect(recorder.until((e) => e.type === "turn.completed", 10_000)).resolves.toMatchObject({ ok: true });
+    expect(instance.adapter.hasSession("t-stop-never")).toBe(false);
+  });
+
+  it("relaunches after a transient startup failure even when the old process's stop is unconfirmed", async () => {
+    process.env.FAKE_CODEX_TRANSIENTS = "1";
+    process.env.FAKE_CODEX_STATE = join(scratch, "relaunch-unconfirmed");
+    process.env.FAKE_CODEX_RETRY_SCALE = "0.001";
+    await create();
+    const stopping = vi.spyOn(procs, "killCliTree").mockImplementationOnce(async (child) => {
+      child.kill("SIGKILL");
+      return false;
+    });
+    await instance.adapter.sendTurn({ threadId: "t-relaunch-unconfirmed", text: "hi" });
+    await expect(recorder.until((e) => e.type === "turn.completed", 15_000)).resolves.toMatchObject({ ok: true });
+    expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(1);
+    expect(readFileSync(join(scratch, "relaunch-unconfirmed"), "utf8")).toBe("2");
+    expect(stopping).toHaveBeenCalled();
+    expect(recorder.events.some((e) => e.type === "turn.completed" && e.stopReason === "shutdown_timeout")).toBe(false);
+  }, 20_000);
+
+  it("starts at most the host's launch slots at once and runs the rest as slots free", async () => {
+    await create();
+    const log = join(scratch, "startups.ndjson");
+    vi.stubEnv("OMB_CODEX_LAUNCH_SLOTS", "2");
+    vi.stubEnv("FAKE_CODEX_STARTUP_DELAY_MS", "150");
+    vi.stubEnv("FAKE_CODEX_STARTUP_LOG", log);
+    const threads = Array.from({ length: 10 }, (_, index) => `t-slot-${index}`);
+    const turns = await Promise.all(threads.map((threadId) => instance.adapter.sendTurn({ threadId, text: "hi" })));
+    await expect.poll(() => recorder.events.filter((e) => e.type === "turn.completed").length, { timeout: 30_000 }).toBe(10);
+    for (const { turnId } of turns) expect(recorder.events.find((e) => e.type === "turn.completed" && e.turnId === turnId)).toMatchObject({ ok: true });
+    expect(recorder.events.filter((e) => e.type === "turn.started")).toHaveLength(10);
+    expect(recorder.events.filter((e) => e.type === "runtime.notice" && e.message.startsWith("Waiting for a free Codex slot")).length).toBeGreaterThanOrEqual(8);
+    const entries = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { pid: number; at: number; event: string });
+    const spans = [...new Set(entries.map((entry) => entry.pid))].flatMap((pid) => {
+      const start = entries.find((entry) => entry.pid === pid && entry.event === "initialize");
+      const ready = entries.find((entry) => entry.pid === pid && entry.event === "turn/start");
+      return start && ready ? [[start.at, ready.at] as const] : [];
+    });
+    expect(spans).toHaveLength(10);
+    const overlap = Math.max(...spans.map(([at]) => spans.filter(([start, end]) => start <= at && at < end).length));
+    expect(overlap).toBeLessThanOrEqual(2);
+  }, 40_000);
+
+  it("frees a launch slot once the turn is running, and a stop while waiting ends the waiting turn", async () => {
+    await create({ mode: "approval" });
+    vi.stubEnv("OMB_CODEX_LAUNCH_SLOTS", "1");
+    vi.stubEnv("FAKE_CODEX_STARTUP_DELAY_MS", "300");
+    await Promise.all(["t-slot-held-1", "t-slot-held-2"].map((threadId) => instance.adapter.sendTurn({ threadId, text: "one" })));
+    await expect.poll(() => recorder.events.filter((e) => e.type === "request.opened").length, { timeout: 15_000 }).toBe(2);
+    await instance.adapter.sendTurn({ threadId: "t-slot-held-3", text: "one" });
+    await instance.adapter.sendTurn({ threadId: "t-slot-held-4", text: "one" });
+    await recorder.until((e) => e.type === "runtime.notice" && e.threadId === "t-slot-held-4");
+    expect(instance.adapter.hasSession("t-slot-held-4")).toBe(true);
+    await instance.adapter.interruptTurn("t-slot-held-4");
+    await expect(recorder.until((e) => e.type === "turn.completed" && e.threadId === "t-slot-held-4")).resolves.toMatchObject({ ok: false, stopReason: "interrupted" });
+    await Promise.all(["t-slot-held-1", "t-slot-held-2", "t-slot-held-3"].map((threadId) => instance.adapter.interruptTurn(threadId)));
+    await expect.poll(() => recorder.events.filter((e) => e.type === "turn.completed").length, { timeout: 15_000 }).toBe(4);
+  }, 40_000);
+
   it("names the missing Company model prerequisites instead of one blanket refusal", async () => {
     await create({ managed: true });
     await expect(instance.adapter.sendTurn({ threadId: "company-no-model", text: "hi" }))

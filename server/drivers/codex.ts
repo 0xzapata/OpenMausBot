@@ -15,7 +15,8 @@ import { hostedWorkspaceConfigured } from "../enterprise.ts";
 import { cloudHomeConfigured } from "../cloud-home.ts";
 import { serverVersion } from "../environment.ts";
 import { ChatGptPlanAuthController } from "./chatgpt-plan-auth.ts";
-import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { describeSpawnFailure, execCli, killCliTree, spawnCli, waitForExit } from "../procs.ts";
+import { codexLaunchesStarting, codexLaunchSlot, codexRpcTimeoutMs, keepStopping, RELAUNCH_EXIT_WAIT_MS, spawnHoldingSlot, tryCodexLaunchSlot } from "./codex-process.ts";
 import { isReservedMcpEnvEntry } from "../mcp-registry.ts";
 
 import type {
@@ -105,6 +106,10 @@ function missingNativeCodexThread(error: unknown, cursor: string): boolean {
   return error instanceof CodexRpcError && error.code === -32600 &&
     error.message === `no rollout found for thread id ${cursor}`;
 }
+
+/** Codex refuses to resume an archived session: "session <id> is archived. Run `codex unarchive <id>` to unarchive it first." */
+const archivedNativeCodexThread = (error: unknown, cursor: string): boolean =>
+  error instanceof CodexRpcError && error.message.includes(cursor) && /\bis archived\b/.test(error.message);
 
 /** Ask the configured executable to update itself, so a non-PATH Codex is the one updated. */
 export function codexUpdateCommand(cli: string, platform: NodeJS.Platform = process.platform): string {
@@ -751,6 +756,22 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
       const chatgptTurn = ownLogin &&
         decodeCodexSelection(turn.model || models.default).modelProvider === OFFICIAL_CODEX_PROVIDER;
+      let announced = false;
+      const waitForLaunchSlot = async (attempt: number) => {
+        const waiting: Turn = { stop: async () => { stopRequested = true; stopSignal.abort(); return true; }, turnId, asks: new Map() };
+        active.set(threadId, waiting);
+        if (attempt === 0) emit({ ...base(threadId, turnId), type: "turn.started" });
+        announced = true;
+        emit({ ...base(threadId, turnId), type: "runtime.notice", message: `Waiting for a free Codex slot: ${codexLaunchesStarting()} Codex runs are starting on this computer. This one starts on its own.` });
+        const slot = await codexLaunchSlot(stopSignal.signal);
+        if (slot && !stopRequested) return slot;
+        slot?.();
+        if (active.get(threadId) === waiting) {
+          active.delete(threadId);
+          emit({ ...base(threadId, turnId), type: "turn.completed", ok: false, stopReason: "interrupted", cost: null });
+        }
+        return null;
+      };
       const launchAttempt = async (attempt: number): Promise<void> => {
         const env = childEnv();
         if (planToken) env.OPENMAUSBOT_CHATGPT_TOKEN = planToken;
@@ -862,11 +883,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         ) } };
 
         const commandCwd = permissionLaunchCwd(turn.cwd ?? homedir());
-        const child = spawnCli(config.cli, appServerArgs, {
+        const releaseSlot = tryCodexLaunchSlot() ?? await waitForLaunchSlot(attempt);
+        if (!releaseSlot) return;
+        const child = spawnHoldingSlot(releaseSlot, () => spawnCli(config.cli, appServerArgs, {
           cwd: turn.cwd ?? homedir(),
           env,
           stdio: ["pipe", "pipe", "pipe"],
-        });
+        }));
 
       let abandoned = false;
       let codexThreadId: string | null = null;
@@ -904,7 +927,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           msg: codexNativeLogMessage(obj),
         });
       };
-      const request = (method: string, params: unknown, timeoutMs = 60_000) =>
+      const request = (method: string, params: unknown, timeoutMs = codexRpcTimeoutMs(method)) =>
         new Promise<any>((resolve, reject) => {
           const id = nextId++;
           if (method === "config/read") sensitiveResponseIds.add(id);
@@ -990,9 +1013,27 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null, ...(state.usage ? { usage: state.usage } : {}) });
         };
         completeStoppedTurn = complete;
-        if (!(await stop())) {
-          emit({ ...base(threadId, turnId), type: "runtime.error", message: "codex did not shut down after termination was requested" });
+        if (await stop()) return;
+        emit({ ...base(threadId, turnId), type: "runtime.error", message: "codex did not shut down after termination was requested" });
+        await keepStopping(terminate, () => active.get(threadId)?.stop === stop);
+        complete();
+      };
+
+      // Retires this process before anything async, so a late rpc timer rejection cannot relaunch again.
+      const relaunch = async (reason: string, failure: string, failedStop: string) => {
+        const delayMs = computeBackoff(attempt);
+        attempt++;
+        emit({ ...base(threadId, turnId), type: "turn.retrying", attempt, delayMs, reason });
+        abandoned = true;
+        releaseSlot();
+        const exited = child.exitCode !== null || child.signalCode !== null;
+        if (!exited && !(await terminate()) && !(await waitForExit(child, RELAUNCH_EXIT_WAIT_MS))) {
+          emit({ ...base(threadId, turnId), type: "runtime.error", message: failure });
+          return settle(false, failedStop);
         }
+        await interruptibleDelay(Math.max(1, Math.round(delayMs * retryScale)), stopSignal.signal).promise;
+        if (!stopRequested) void launchAttempt(attempt).catch(() => {});
+        else await settle(false, "interrupted");
       };
 
       const steerActiveTurn = async (text: string): Promise<SteerOutcome> => {
@@ -1463,49 +1504,20 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           signal !== null
             ? { transient: false, reason: "interrupted" }
             : classifyError({ exitCode: code, stderr: recentStderr });
+        const exitMessage = `codex exited ${code}${signal ? ` (signal ${signal})` : ""} before turn/completed${
+          recentStderr ? `: ${recentStderr.slice(-300)}` : hadStreamedOutput && stderr.trim() ? "; no stderr after the last app-server output" : ""
+        }`;
         // Relaunch only when turn/start was never acknowledged: a replay could re-run tools the user saw.
-        if (
-          !stopRequested && codexTurnId === null && earlyNotifications.length === 0 &&
-          verdict.transient && attempt < RETRY_MAX_ATTEMPTS - 1
-        ) {
-          const delayMs = computeBackoff(attempt);
-          attempt++;
-          emit({
-            ...base(threadId, turnId),
-            type: "turn.retrying",
-            attempt,
-            delayMs,
-            reason: verdict.reason,
-          });
-          // Retire before anything async, so a late rpc timer rejection cannot relaunch again.
-          abandoned = true;
-          void (async () => {
-            const alreadyDead = child.exitCode !== null || child.signalCode !== null;
-            if (!alreadyDead && !(await terminate())) {
-              void settle(false, "shutdown_timeout");
-              return;
-            }
-            await interruptibleDelay(Math.max(1, Math.round(delayMs * retryScale)), stopSignal.signal).promise;
-            if (!stopRequested) {
-              void launchAttempt(attempt).catch(() => {});
-            } else {
-              await settle(false, "interrupted");
-            }
-          })().catch(() => {});
+        if (!stopRequested && codexTurnId === null && earlyNotifications.length === 0 && verdict.transient && attempt < RETRY_MAX_ATTEMPTS - 1) {
+          void relaunch(verdict.reason, exitMessage, "exit_before_result").catch(() => {});
           return;
         }
-        emit({
-          ...base(threadId, turnId),
-          type: "runtime.error",
-          message: `codex exited ${code}${signal ? ` (signal ${signal})` : ""} before turn/completed${
-            recentStderr ? `: ${recentStderr.slice(-300)}` : hadStreamedOutput && stderr.trim() ? "; no stderr after the last app-server output" : ""
-          }`,
-        });
+        emit({ ...base(threadId, turnId), type: "runtime.error", message: exitMessage });
         void settle(false, "exit_before_result");
       });
 
       active.set(threadId, { stop, turnId, asks, steer: steerActiveTurn });
-      if (attempt === 0) emit({ ...base(threadId, turnId), type: "turn.started" });
+      if (attempt === 0 && !announced) emit({ ...base(threadId, turnId), type: "turn.started" });
 
       try {
         await request("initialize", {
@@ -1603,14 +1615,17 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             ...(selection.modelProvider ? { modelProvider: selection.modelProvider } : {}),
             ...approvalParams.thread,
           });
+          // An archived session is unarchived and resumed; if that fails it is rebuilt like a missing one.
+          const resumeUnarchived = () => resumeThread().catch((error) => !archivedNativeCodexThread(error, cursor) ? Promise.reject(error)
+            : request("thread/unarchive", { threadId: cursor }).then(resumeThread, () => Promise.reject(error)));
           try {
             let resumed;
             try {
-              resumed = await resumeThread();
+              resumed = await resumeUnarchived();
             } catch (error) {
               if (!approvalParams.fallback || !permissionProfileUnsupported(error)) throw error;
               approvalParams = approvalParams.fallback;
-              resumed = await resumeThread();
+              resumed = await resumeUnarchived();
             }
             approvalParams = withResolvedSandbox(approvalParams, resumed);
             codexThreadId = resumed?.thread?.id ?? cursor;
@@ -1623,7 +1638,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               producedOutput: state.sawStreamDelta,
             });
             if (recoveredMissingSession || stopRequested || state.settled ||
-                !turn.recoveryText?.trim() || !missingNativeCodexThread(error, cursor) || !mayReplay(failure)) throw error;
+                !turn.recoveryText?.trim() || !(missingNativeCodexThread(error, cursor) || archivedNativeCodexThread(error, cursor)) || !mayReplay(failure)) throw error;
             // Codex no longer has the thread: rebuild once, or every later turn fails the same way.
             recoveredMissingSession = true;
             const rebuild = recoveryPromptFor({ recoveryText: turn.recoveryText, currentText: turn.text, failure });
@@ -1700,6 +1715,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         }
         // Only after turn/start accepted the input may the receipt claim delivery.
         if (commitVolatile) commitVolatile();
+        releaseSlot();
       } catch (e) {
         const failure = e instanceof Error ? e : { text: String(e) };
         const raw = e instanceof Error ? e.message : String(e);
@@ -1708,28 +1724,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const needsAuth = refused || /(?:\b401\b|unauthorized|missing bearer|authentication required)/i.test(message);
         const verdict = classifyError(failure);
         if (!state.settled && !abandoned && !recoveredMissingSession && !stopRequested && !needsAuth && verdict.transient && attempt < RETRY_MAX_ATTEMPTS - 1 && state.sawStreamDelta === false) {
-          const delayMs = computeBackoff(attempt);
-          attempt++;
-          emit({
-            ...base(threadId, turnId),
-            type: "turn.retrying",
-            attempt,
-            delayMs,
-            reason: verdict.reason,
-          });
-            // This app-server never exits by itself.
-          abandoned = true;
-          if (!await terminate()) {
-            void settle(false, "shutdown_timeout");
-            return;
-          }
-          await interruptibleDelay(Math.max(1, Math.round(delayMs * retryScale)), stopSignal.signal).promise;
-          if (!stopRequested) {
-            void launchAttempt(attempt).catch(() => {});
-          } else {
-            await settle(false, "interrupted");
-          }
-          return;
+          return relaunch(verdict.reason, message, "rpc_error");
         }
         if (!state.settled && !abandoned) {
           if (refused) loginRefused();

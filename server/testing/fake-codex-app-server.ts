@@ -20,6 +20,9 @@
 //   FAKE_CODEX_ACCOUNT_EMAIL  synthetic ChatGPT identity (default ada@example.test)
 //   FAKE_CODEX_ACCOUNT_MODE  chatgpt (default) | api-key | none | unsupported | error | hang
 //   FAKE_CODEX_RESUME_ERROR  JSON-RPC error rejecting thread/resume
+//   FAKE_CODEX_ARCHIVED  "1": thread/resume says the session is archived until thread/unarchive; "unarchive-fails": unarchive is refused too
+//   FAKE_CODEX_STARTUP_DELAY_MS  hold the initialize reply this long, like a loaded host
+//   FAKE_CODEX_STARTUP_LOG  append {pid, at, event: "initialize" | "turn/start"} per launch
 //   FAKE_CODEX_START_ERROR  JSON-RPC error rejecting thread/start
 //   FAKE_CODEX_MCP_FAILED  MCP server whose startup fails (`mcpServer/startupStatus/updated`) as thread/start begins
 //   FAKE_CODEX_RESTORED_USAGE  report 100/50/10 tokens used before turn/start, as a resumed thread can
@@ -151,6 +154,10 @@ const shellEnvironmentPolicy = (): unknown => {
 };
 let developerInstructions = "";
 let resumedThread: string | null = null;
+let unarchived = false;
+const logStartup = (event: string) => {
+  if (process.env.FAKE_CODEX_STARTUP_LOG) appendFileSync(process.env.FAKE_CODEX_STARTUP_LOG, `${JSON.stringify({ pid: process.pid, at: Date.now(), event })}\n`);
+};
 let decision: unknown = null;
 let experimentalApi = false;
 
@@ -380,9 +387,22 @@ process.stdin.on("data", (chunk) => {
     if (msg.method) calls.push({ method: msg.method, params: msg.params ?? null });
 
     switch (msg.method) {
-      case "initialize":
+      case "initialize": {
         experimentalApi = msg.params?.capabilities?.experimentalApi === true;
-        out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
+        logStartup("initialize");
+        const reply = () => out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
+        if (process.env.FAKE_CODEX_STARTUP_DELAY_MS) setTimeout(reply, Number(process.env.FAKE_CODEX_STARTUP_DELAY_MS));
+        else reply();
+        break;
+      }
+      case "thread/unarchive":
+        dump();
+        if (process.env.FAKE_CODEX_ARCHIVED === "unarchive-fails") {
+          out({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: `cannot unarchive session ${msg.params?.threadId}` } });
+          break;
+        }
+        unarchived = true;
+        out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
         break;
       case "account/read": {
         dump();
@@ -481,6 +501,11 @@ process.stdin.on("data", (chunk) => {
         resumedThread = msg.params?.threadId ?? null;
         if (process.env.FAKE_CODEX_RESUME_ERROR) {
           out({ jsonrpc: "2.0", id: msg.id, error: JSON.parse(process.env.FAKE_CODEX_RESUME_ERROR) });
+        } else if (process.env.FAKE_CODEX_ARCHIVED && !unarchived) {
+          const id = msg.params?.threadId;
+          out({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: `session ${id} is archived. Run \`codex unarchive ${id}\` to unarchive it first.` } });
+        } else if (process.env.FAKE_CODEX_ARCHIVED) {
+          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId }, sandbox: resolvedSandbox(msg.params ?? {}) } });
         } else if (msg.params?.permissions && (!experimentalApi || mode === "config-profile-unsupported")) {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "experimental API required for permissions" } });
         } else if (mode === "resume" || mode === "review-events" || mode === "helper-events" || mode === "instructions-unsupported" || mode === "config-profile" || mode === "config-profile-unsupported" ||
@@ -545,6 +570,7 @@ process.stdin.on("data", (chunk) => {
         break;
       case "turn/start": {
         dump();
+        logStartup("turn/start");
         nativeThreadId = msg.params?.threadId ?? nativeThreadId;
         // Counts turn launches only, not the catalog spawn during create().
         if (process.env.FAKE_CODEX_LAUNCH_CRASHES && process.env.FAKE_CODEX_STATE) {
