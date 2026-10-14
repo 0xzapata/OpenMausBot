@@ -12,6 +12,7 @@ import {
   provisionManagedEndpoint,
   sweepManagedEndpointCleanup,
 } from "./endpoints";
+import { registerPushDevice, sendPush, unregisterPushDevice } from "./push";
 import { capacityHealth, reportEndpointAccountProblems, scanTunnelCapacity } from "./tunnel-capacity";
 import {
   createInstallation,
@@ -69,6 +70,7 @@ async function route(
   config: ControlPlaneConfig,
   requestId: string,
   cloudflareFetch: CloudflareFetch,
+  apnsFetch: typeof fetch,
 ) {
   const url = new URL(request.url);
   if (request.method === "OPTIONS") return preflight(request, config);
@@ -78,12 +80,9 @@ async function route(
     if (limited) return limited;
     const auth = createAuth(env, ctx, config, requestId);
     const response = await auth.handler(request);
-    // Better Auth's inline expired-code cleanup is off (see auth.ts), so
-    // sign-in sweeps after responding. It skips 429 and 5xx responses. Other
-    // 4xx responses still sweep, including validation errors that never
-    // reached Better Auth's cleanup; its per-IP sign-in limit bounds them. The
-    // other email-otp routes that check a code no longer sweep; sign-in runs
-    // often enough to keep the table bounded.
+    // Better Auth's inline expired-code cleanup is off, so sign-in sweeps after
+    // responding, except on 429 and 5xx; its per-IP sign-in limit bounds the
+    // other 4xx sweeps.
     if (
       request.method === "POST"
       && url.pathname === SIGN_IN_OTP_PATH
@@ -133,6 +132,16 @@ async function route(
     }
   }
 
+  if (request.method === "POST" && url.pathname === "/v1/installations/self/push/register") {
+    return registerPushDevice(request, env);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/installations/self/push/unregister") {
+    return unregisterPushDevice(request, env);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/installations/self/push/send") {
+    return sendPush(request, env, apnsFetch, requestId);
+  }
+
   const rotate = url.pathname.match(ROTATE_ROUTE);
   if (request.method === "POST" && rotate) {
     return rotateInstallationCredential(request, rotate[1], env, auth);
@@ -158,7 +167,7 @@ async function route(
   return errorResponse(404, "not_found");
 }
 
-export function createWorker(cloudflareFetch: CloudflareFetch = fetch) {
+export function createWorker(cloudflareFetch: CloudflareFetch = fetch, apnsFetch: typeof fetch = fetch) {
   return {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
       const requestId = crypto.randomUUID();
@@ -190,7 +199,7 @@ export function createWorker(cloudflareFetch: CloudflareFetch = fetch) {
         }
         const boundedRequest = await withBoundedRequestBody(request);
         return secureResponse(
-          await route(boundedRequest, env, ctx, config, requestId, cloudflareFetch),
+          await route(boundedRequest, env, ctx, config, requestId, cloudflareFetch, apnsFetch),
           request,
           config,
           requestId,

@@ -1,31 +1,16 @@
-// What the built-in browser shows a model, and what its results put into the
-// conversation. Pure: the runtime applies it on every MCP frame.
-//
-// Measured on agent-browser 0.37.0 (2026-09-15, main): the core profile
-// advertises 29 tools at ~12.5k tokens of schema, of which ~440 tokens are the
-// tool descriptions. The rest is fifteen launch/session parameters repeated on
-// every tool. Every result also arrives twice — `content[].text` and a
-// `structuredContent` object 3-5x larger — and Codex keeps the structured form
-// in history: a product-page snapshot cost 10-17k tokens instead of 2-4k, and
-// every later model call in the thread re-read it. This module fixes both at
-// the boundary so the saving applies to every engine.
+// agent-browser 0.37.0's core profile advertises 29 tools at ~12.5k tokens, mostly fifteen launch/session parameters
+// repeated on every tool, and every result arrives twice (text plus a 3-5x larger structuredContent that Codex keeps in history).
 import { trimResultText } from "./mcp-trim.ts";
 
-/** Launch, session and network settings OpenMausBot owns through the
- * environment (see browser-engine.ts). A model has no business setting them
- * per call — `session` would reach another bot's browser, `extraArgs`,
- * `caCert` and `headed` change the launch — and each one cost more schema
- * than the tool's own description. `headed` in particular overrides
- * AGENT_BROWSER_HEADED and the managed config, so a single call can pin a
- * daemon to a launch mode this host cannot satisfy (#1383). */
+/** A model must never set these: `session` reaches another bot's browser, `extraArgs`/`caCert`/`headed`/`webgpu`/`webmcp`
+ * change the launch (`headed` overrides AGENT_BROWSER_HEADED), `all` on close closes every bot's browser, and a
+ * screenshot's `path`/`screenshotDir` writes anywhere the server can. */
 export const HARNESS_OWNED_BROWSER_PARAMS: ReadonlySet<string> = new Set([
-  "allowedDomains", "caCert", "clearCaCert", "extraArgs", "headed", "idleTimeout", "namespace",
-  "restore", "restoreCheckFn", "restoreCheckText", "restoreCheckUrl", "restoreSave", "session", "timeoutMs",
+  "all", "allowedDomains", "caCert", "clearCaCert", "extraArgs", "headed", "idleTimeout", "namespace", "path",
+  "restore", "restoreCheckFn", "restoreCheckText", "restoreCheckUrl", "restoreSave", "screenshotDir", "session", "timeoutMs", "webgpu", "webmcp",
 ]);
 
-/** Characters of one browser result that may enter the model's context.
- * ~8k tokens: the interactive snapshot of a heavy encyclopedia article
- * (21k chars) fits; a whole product page read as markdown (79k) does not. */
+/** ~8k tokens: a heavy encyclopedia article's interactive snapshot (21k chars) fits; a whole product page as markdown (79k) does not. */
 export const DEFAULT_BROWSER_RESULT_BUDGET = 32_000;
 
 const BROWSER_NARROWING_HINT =
@@ -37,7 +22,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Remove harness-owned parameters from every advertised tool schema. */
 export function slimBrowserToolList(result: unknown): unknown {
   if (!isRecord(result) || !Array.isArray(result.tools)) return result;
   const tools = (result.tools as unknown[]).map((tool) => {
@@ -54,17 +38,13 @@ export function slimBrowserToolList(result: unknown): unknown {
   return { ...result, tools };
 }
 
-/** Drop harness-owned arguments a model sent anyway. */
 export function stripHarnessOwnedArguments(params: unknown): unknown {
   if (!isRecord(params) || !isRecord(params.arguments)) return params;
   const kept = Object.entries(params.arguments).filter(([name]) => !HARNESS_OWNED_BROWSER_PARAMS.has(name));
   return kept.length === Object.keys(params.arguments).length ? params : { ...params, arguments: Object.fromEntries(kept) };
 }
 
-/** agent-browser's action results carry a `lifecycle` block about the
- * daemon (launch hash, restore status...): about 330 of a click's 420
- * characters. Keep only the fact a model can act on, a relaunched browser,
- * whose pages and refs are gone. Text that is not such a result is unchanged. */
+/** agent-browser's `lifecycle` block is ~330 of a click's 420 characters; only a relaunch (pages and refs gone) is kept. */
 export function withoutLifecycle(text: string): string {
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return text; }
@@ -74,17 +54,12 @@ export function withoutLifecycle(text: string): string {
   return JSON.stringify({ ...parsed, data });
 }
 
-/** The URL, title and visible text the runtime reads around an action. */
 export interface PageState { url: string; title: string; text: string }
 
-/** In-page script for PageState. agent-browser renumbers every @eN ref on
- * each snapshot, so the runtime reads the page with eval, never a snapshot:
- * the refs a model holds keep pointing at the same elements. */
+/** agent-browser renumbers every @eN ref on each snapshot, so the page is read with eval and a model's refs stay valid. */
 export const OBSERVE_PAGE_SCRIPT =
   "JSON.stringify({ url: location.href, title: document.title, text: (document.body ? document.body.innerText : '').slice(0, 200000) })";
 
-/** Parse an eval result of OBSERVE_PAGE_SCRIPT: a JSON string inside the
- * result text. Null when the result is anything else. */
 export function parsePageState(result: unknown): PageState | null {
   if (!isRecord(result) || result.isError === true || !Array.isArray(result.content)) return null;
   const text = (result.content as unknown[]).find((part) => isRecord(part) && part.type === "text" && typeof part.text === "string") as { text: string } | undefined;
@@ -94,7 +69,7 @@ export function parsePageState(result: unknown): PageState | null {
     if (isRecord(value) && typeof value.url === "string" && typeof value.title === "string" && typeof value.text === "string") {
       return { url: value.url, title: value.title, text: value.text };
     }
-  } catch { /* not a page state */ }
+  } catch {}
   return null;
 }
 
@@ -105,7 +80,6 @@ function visibleLines(text: string): string[] {
   return text.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
-/** Lines of `next` that `previous` does not have, counting repeats. */
 function linesOnlyIn(next: string[], previous: string[]): string[] {
   const left = new Map<string, number>();
   for (const line of previous) left.set(line, (left.get(line) ?? 0) + 1);
@@ -127,12 +101,27 @@ function listLines(lines: string[]): string {
   return shown.join(", ") + (shown.length < lines.length ? ` and ${lines.length - shown.length} more lines` : "");
 }
 
-/** What a model needs after an action so it does not read the page back:
- * where the page is now, or which lines of visible text the action added or
- * removed. Text only: it does not prove the action did what was meant. */
+const SENSITIVE_PARAM = /token|code|key|secret|pass|pwd|auth|session|sig|otp|state|nonce|credential|ticket|email/iu;
+/** A hash route names a page; any other fragment may carry a token, as OAuth's `#access_token=…` does. */
+const HASH_ROUTE = /^#!?\/[\w\-./~%]*$/u;
+
+/** Origin, path and query with sensitive values (and any email) replaced by `…`; no credentials, no fragment beyond a hash route. */
+export function sanitizeUrl(href: string): string {
+  let url: URL;
+  try { url = new URL(href); } catch {
+    try { url = new URL(`https://${href}`); } catch { return ""; }
+    if (!url.hostname.includes(".")) return "";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return url.protocol === "about:" ? "about:blank" : `${url.protocol}…`;
+  const query = [...url.searchParams].map(([key, value]) =>
+    `${encodeURIComponent(key)}=${SENSITIVE_PARAM.test(key) || value.includes("@") ? "…" : encodeURIComponent(value)}`).join("&");
+  const text = `${url.origin}${url.pathname}${query ? `?${query}` : ""}${HASH_ROUTE.test(url.hash) ? url.hash : ""}`;
+  return text.length > 500 ? `${text.slice(0, 499)}…` : text;
+}
+
 export function describePageChange(before: PageState, after: PageState): string {
   if (after.url !== before.url) {
-    return `The page is now ${after.url}${after.title ? ` (${JSON.stringify(after.title)})` : ""}. Refs from earlier snapshots do not apply to it; take a snapshot before acting on refs.`;
+    return `The page is now ${sanitizeUrl(after.url) || "a new address"}${after.title ? ` (${JSON.stringify(after.title)})` : ""}. Refs from earlier snapshots do not apply to it; take a snapshot before acting on refs.`;
   }
   const previous = visibleLines(before.text);
   const next = visibleLines(after.text);
@@ -146,8 +135,6 @@ export function describePageChange(before: PageState, after: PageState): string 
   ].filter(Boolean).join(" ") + title;
 }
 
-/** Keep the text form of a result, drop its structured duplicate, and cut
- * oversized text with a marker that says how to ask for less next time. */
 export function shapeBrowserToolResult(result: unknown, options: { toolName?: string; budget?: number } = {}): unknown {
   if (!isRecord(result) || !Array.isArray(result.content)) return result;
   const budget = options.budget ?? DEFAULT_BROWSER_RESULT_BUDGET;
@@ -162,12 +149,7 @@ export function shapeBrowserToolResult(result: unknown, options: { toolName?: st
   return { ...Object.fromEntries(Object.entries(result).filter(([key]) => key !== "structuredContent")), content };
 }
 
-/** Replace held secrets (shared/redact.ts scrubHeldSecrets: saved login
- * passwords, recent one-time codes) in every string of a tool result — its
- * text, a structured copy, an error — so a snapshot, an eval, page text,
- * console or network output never hands a filled password back to the
- * model. Images and binary data are passed through: a screenshot cannot be
- * scrubbed (docs: security/permissions-and-secrets). */
+/** Images and binary data pass through: a screenshot cannot be scrubbed. */
 export function scrubBrowserResult(result: unknown, scrub: (text: string) => string, depth = 0): unknown {
   if (typeof result === "string") return scrub(result);
   if (depth > 32 || result === null || typeof result !== "object") return result;

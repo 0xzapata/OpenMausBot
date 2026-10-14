@@ -1,6 +1,3 @@
-// A bot's call button lives in the composer, beside dictation: a filled
-// Send-sized button with a waveform in it. It keeps the header button's
-// behaviour exactly — start, hang up, and the help when a call can't start.
 import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +6,6 @@ import type { Bot } from "@/state/store";
 const fixture = vi.hoisted(() => ({
   onCall: null as string | null,
   dictation: true,
-  /** the desktop this page runs in, and whether the page is a server's */
   host: "darwin" as "darwin" | "win32",
   serverPage: false,
   config: { tts: { configured: true, ready: true } } as Record<string, unknown> | null,
@@ -48,7 +44,7 @@ vi.mock("@/lib/local-voice", async (importOriginal) => ({
   localSystemVoiceActive: () => false,
 }));
 vi.mock("@/lib/analytics", () => ({ track: fixture.track }));
-// Stand in for the open state a click would set; SSR cannot click.
+// Stands in for the open state a click would set; SSR cannot click.
 vi.mock("./MenuMotion", async (importOriginal) => ({
   ...await importOriginal<typeof import("./MenuMotion")>(),
   useMenuMotion: (open: boolean) => ({ shown: open || fixture.helpShown, closing: false, className: "", exitProps: {} }),
@@ -137,8 +133,6 @@ describe("composer call button", () => {
     expect(button.props["aria-label"]).toBe("Set up a voice in an agent profile to make calls");
     expect(button.props["aria-controls"]).toBeTruthy();
     expect(html).toContain("Call unavailable");
-    // Voice set-up is a pop-up now, not a trip to the bot's full settings
-    // (CallView.voiceSetup.test.ts covers it).
     expect(html).toContain("Set up voice");
     expect(html).not.toContain("Open agent settings");
     expect(html).toMatch(/role="group" aria-label="Call unavailable" class="[^"]*\bbottom-full\b/);
@@ -146,8 +140,6 @@ describe("composer call button", () => {
     expect(fixture.startCall).not.toHaveBeenCalled();
   });
 
-  // A device that can't take turns makes Live calls: the button is the Live
-  // call, never a take-turns call that can't start.
   it("is a Live call on a device that can't take turns", () => {
     fixture.dictation = false;
     const getUserMedia = vi.fn(() => new Promise<MediaStream>(() => {}));
@@ -156,14 +148,11 @@ describe("composer call button", () => {
     expect(button.props["aria-label"]).toBe("Live call with Pepper");
     expect(html).not.toContain("bg-warning");
     button.props.onClick!();
-    // a Live call: the microphone first, then the call bar; no overlay
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(liveMedia()).toMatchObject({ phase: "starting", botId: "pepper" });
     expect(fixture.track).toHaveBeenCalledWith("call_started", { driver: "codex", mode: "live" });
   });
 
-  // A server's page (My Cloud) in either app: the call is Live, with no help
-  // card and no trip to This computer, which would leave the bot.
   it("is a Live call on a server's page in the Windows app and the Mac app alike", () => {
     fixture.dictation = false;
     fixture.serverPage = true;

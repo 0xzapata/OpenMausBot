@@ -1,13 +1,3 @@
-// An ACP agent reports how full its own context is (`usage_update`). Those
-// figures are for the context meter only. Against a real server and the
-// scripted fake ACP agent, this proves both halves: a conversation shows the
-// engine's numbers, and they do not move when OpenMausBot's own compaction
-// fires, in a 1:1 conversation or in a room. Every scenario is run twice,
-// with the agent silent about its context and with it reporting, and the two
-// runs must compact at the same turns.
-//
-// The same fixture proves an agent's plan reaches the chat as activity, and
-// only once plan lines are switched on.
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,7 +7,6 @@ import { launchVerificationServer, runControlOmb, verificationServerEnvironment 
 import { waitForExit } from "./testing/cleanup.ts";
 
 const MODEL = "fixture/context";
-/** The window the fake names in every report (server/testing/fake-acp-cli.ts). */
 const REPORTED_WINDOW = 200_000;
 // Long enough that three exchanges are a few hundred tokens of transcript.
 const LINE = "Keep the quarterly report in the shared folder, name each chart after its source table, and say which figures changed since the last draft. ";
@@ -60,7 +49,6 @@ async function conversation(name: string, ...used: number[]) {
   return { compactions, context: (await taskOf(bot)).usage?.context };
 }
 
-/** The isolated server with the fake ACP agent as one of its engines. */
 async function withAcpServer(run: () => Promise<void>): Promise<void> {
   const fixture = await launchVerificationServer();
   const { dataDir, logPath } = fixture.info;
@@ -71,8 +59,7 @@ async function withAcpServer(run: () => Promise<void>): Promise<void> {
     updatesFile = join(dataDir, "acp-updates.json");
     reports();
     writeFileSync(updatesFile, "[]");
-    // Add only the repository-owned fake ACP agent to the launcher's temporary
-    // config while stopped. Never discover the person's CLI or home.
+    // Never discover the person's own CLI or home.
     await waitForExit(fixture.child, { signal: "SIGTERM" });
     const configPath = join(dataDir, "config.json");
     const config = JSON.parse(readFileSync(configPath, "utf8"));
@@ -99,8 +86,7 @@ async function withAcpServer(run: () => Promise<void>): Promise<void> {
 }
 
 it("shows the engine's context and still folds a 1:1 conversation at the same turn", () => withAcpServer(async () => {
-  // Default threshold (80% of the window). The transcript is a few hundred
-  // tokens, so nothing folds; an agent saying it is 95% full changes nothing.
+  // Default 80% threshold; a few hundred tokens of transcript never folds, whatever the agent reports.
   const quiet = await conversation("Quiet agent");
   const full = await conversation("Nearly full agent", 190_000);
   expect(quiet.compactions).toEqual([0, 0, 0, 0]);
@@ -108,8 +94,7 @@ it("shows the engine's context and still folds a 1:1 conversation at the same tu
   expect(quiet.context).toBeUndefined();
   expect(full.context).toEqual({ tokens: 190_000, window: REPORTED_WINDOW });
 
-  // A threshold the transcript crosses: the fourth ask folds the first
-  // exchange. An agent saying it holds almost nothing does not postpone that.
+  // The fourth ask folds the first exchange even when the agent reports almost nothing.
   expect((await api("PATCH", "/api/config", { context: { compactAt: 100 } })).status).toBe(200);
   const folded = await conversation("Quiet agent, low threshold");
   const empty = await conversation("Nearly empty agent, low threshold", 10);
@@ -119,8 +104,7 @@ it("shows the engine's context and still folds a 1:1 conversation at the same tu
 }), 180_000);
 
 it("does not start a room member on a fresh session because its engine reports a nearly full context", () => withAcpServer(async () => {
-  // 95% of the reported window: above the 90% at which a room compacts a
-  // member whose reading it trusts (server/room-context.ts).
+  // 95%: above the 90% at which a room resets a member whose reading it trusts.
   reports(190_000);
   const bot = await acpBot("Editor");
   const room = (await control("new-channel", "--name", "Edit bay", "--members", bot.id)).channel as { id: string; activeTaskId: string };
@@ -134,8 +118,6 @@ it("does not start a room member on a fresh session because its engine reports a
   const messages = (await api("GET", `/api/threads/${room.activeTaskId}/messages?limit=100`)).body.messages as any[];
   expect(messages.filter((message) => message.role === "bot" && message.kind === "text")).toHaveLength(2);
   expect(messages.filter((message) => message.kind === "activity" && /compacted/.test(message.tool?.name ?? ""))).toEqual([]);
-  // As before the engine's figures were read: nothing measured, so nothing
-  // to compact on request either.
   expect((await group()).memberContext ?? null).toBeNull();
   expect((await api("POST", `/api/groups/${room.id}/members/${bot.id}/compact`, {})).status).toBe(409);
 }), 120_000);

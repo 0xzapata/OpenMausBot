@@ -38,9 +38,7 @@ it("times compaction from a driver's reading unless the driver reports it for th
   // Claude and Codex: the reading is what compaction acts on.
   expect(compactionReading({}, reading)).toBe(reading);
   expect(compactionReading(undefined, reading)).toBe(reading);
-  // ACP agents: shown on the meter, and compaction is timed as if the engine
-  // had said nothing, so the transcript estimate and the model's own window
-  // decide as they did before.
+  // ACP agents: shown on the meter only.
   expect(compactionReading({ contextReading: "meter" }, reading)).toBeUndefined();
   expect(compactionReading({ contextReading: "meter" }, undefined)).toBeUndefined();
   const window = contextWindowFor("unknown-model", undefined, compactionReading({ contextReading: "meter" }, reading)?.window);

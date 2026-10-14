@@ -1,5 +1,3 @@
-// "Switch them too" beside a bot's model: one line and one button, only
-// while some of the bot's threads run on a model of their own.
 import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";

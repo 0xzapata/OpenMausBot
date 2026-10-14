@@ -12,20 +12,12 @@ export function contextWindowFor(model: string | undefined, catalog?: ModelCatal
   return positive(inferred) ? inferred : DEFAULT_CONTEXT_WINDOW;
 }
 
-/** The context reading OpenMausBot's own compaction may act on: the fold
- * before a 1:1 turn, and a room member's fresh session. A driver that marks
- * its reading `contextReading: "meter"` (the ACP family: an agent's own
- * `usage_update`) has it shown and nothing else, so for those engines both
- * are timed exactly as they were before the engine's figures were read: the
- * fold from the transcript estimate and the model's window, a room member
- * never from a threshold. Letting such a reading time compaction is a
- * separate decision; it is made by dropping the mark, in one place. */
+/** A "meter" reading (an ACP agent's own usage_update) is shown only; it never times OpenMausBot's compaction. */
 export function compactionReading<T>(capabilities: { contextReading?: "meter" } | undefined, reading: T | undefined): T | undefined {
   return capabilities?.contextReading === "meter" ? undefined : reading;
 }
 
-/** Leave headroom even for a small local model. An 8k lower bound would
- * make compaction unreachable on models whose entire window is 8k. */
+/** Leave headroom even for a small local model: an 8k floor would make compaction unreachable on an 8k window. */
 export function compactBudget(window: number, compactAt?: number, nativeCompactAt?: number): number {
   if (!positive(window)) throw new Error("invalid model context window");
   const configured = positive(compactAt) ? (compactAt < 1 ? window * compactAt : compactAt) : window * 0.8;
@@ -35,8 +27,7 @@ export function compactBudget(window: number, compactAt?: number, nativeCompactA
 export function shouldCompact(input: { contextTokens?: number; estimatedBytes: number; budget: number; floor?: number; window: number; nativeCompactAt?: number }): boolean {
   // Summed input across tool rounds is NOT a context-window measurement.
   const size = positive(input.contextTokens) ? input.contextTokens : Math.ceil(input.estimatedBytes / 4);
-  // Regrowth avoids repeatedly folding an irreducible prompt, but cannot
-  // delay the harness beyond a known provider-native compaction boundary.
+  // Regrowth avoids refolding an irreducible prompt but never passes a known provider-native compaction boundary.
   const ceiling = compactBudget(input.window, input.window, input.nativeCompactAt);
   const threshold = Math.min(ceiling, positive(input.floor) ? Math.max(input.budget, input.floor * 1.25) : input.budget);
   return size >= threshold;
