@@ -1,27 +1,16 @@
-// `openmausbot service install`: keep the server running across reboots.
-// Renders a systemd unit (Linux) or a launchd agent (macOS) that runs the
-// same `openmausbot serve …` the operator just used, and either installs it
-// (when allowed to) or writes it next to the data and prints the two
-// commands that install it. Pure rendering lives here so it is testable;
-// the CLI decides where the file goes.
 import { homedir, userInfo } from "node:os";
 import { posix } from "node:path";
 
-// Unit files describe a Linux or macOS machine, so their paths are POSIX
-// whatever host renders them (the Windows CI runner included).
+// Unit files describe a Linux or macOS machine: POSIX paths whatever host renders them (Windows CI included).
 const { basename, dirname, join } = posix;
 
 export interface ServiceSpec {
-  /** How to start this same CLI: absolute node, then its script. */
   node: string;
   script: string;
-  /** `serve …` arguments, already validated by the CLI. */
   serveArgs: string[];
   dataDir: string;
-  /** Unix user the service runs as (systemd only). */
   user: string;
   home: string;
-  /** Needs ports 80 and 443 (serve --domain): grant the capability to the unit. */
   bindsLowPorts: boolean;
   label?: string;
 }
@@ -122,7 +111,6 @@ export function unstableInstallWarning(script: string): string | null {
   return null;
 }
 
-/** Where the rendered file goes and how to activate it, per platform. */
 export function servicePlan(platform: NodeJS.Platform, dataDir: string, home = homedir()): { file: string; installed: string; activate: string[]; deactivate: string[] } | null {
   if (platform === "linux") {
     const installed = `/etc/systemd/system/${SYSTEMD_UNIT_NAME}`;

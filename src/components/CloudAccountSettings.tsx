@@ -27,8 +27,6 @@ const SETUP_STEPS = [
 const time = (value: number) => new Intl.DateTimeFormat(activeLocale(), { timeStyle: "short" }).format(new Date(value));
 const day = (value: number) => new Intl.DateTimeFormat(activeLocale(), { dateStyle: "medium" }).format(new Date(value));
 
-/** Setting up: the same four steps the Cloud page shows, when the Admin says
- * which one it is at. */
 function setupSteps(machine: CloudMachine) {
   if (!machine.setup) return null;
   const at = SETUP_STEPS.findIndex(([step]) => step === machine.setup!.step);
@@ -38,8 +36,6 @@ function setupSteps(machine: CloudMachine) {
   </ol>;
 }
 
-/** A free trial and its Claude credit, in the same words as the trial's popup and
- * the Cloud page (lib/cloud-plan). A render helper (no hooks). */
 function trialLines(trial: CloudTrial | undefined, credit: CloudCredit | undefined) {
   if (!trial && !credit) return null;
   const view = trial ? cloudTrialView(trial) : null;
@@ -50,11 +46,9 @@ function trialLines(trial: CloudTrial | undefined, credit: CloudCredit | undefin
   </div>;
 }
 
-/** The person's Cloud machine: where it stands, and one way in. Status and
- * address come only from the verified native snapshot; the pairing code
- * never reaches this page. A render helper (no hooks), part of the card.
- * `trial`: a free trial says what happens to a stopped Cloud above, so here
- * it is only stopped. */
+/**
+ * Security: status and address come only from the verified native snapshot; the pairing code never reaches this page.
+ */
 function cloudHomeCard({ machine, busy, failed, onConnect, lending, trial = false }: { machine: CloudMachine; busy: boolean; failed: boolean; onConnect: () => void; lending?: CloudAccountBridge["lending"]; trial?: boolean }) {
   const connectable = machine.status === "ready";
   const text = trial && (machine.status === "stopped" || machine.status === "payment-problem") ? t("cloudHome.stoppedTrial")
@@ -69,17 +63,11 @@ function cloudHomeCard({ machine, busy, failed, onConnect, lending, trial = fals
         <p className="text-[12px] text-ink-secondary">{t("cloudHome.connectHelp")}</p>
       </>}
       {failed && <p role="alert" className="text-[13px] text-danger">{t("cloudHome.connectFailed")}</p>}
-      {/* Part of connecting: lend this Mac to the Cloud, or not. A switch, never a dialog. */}
       {lending && <CloudLending bridge={lending} />}
     </div>
   </Card>;
 }
 
-/** A paid plan's Cloud on the phone: the phone app paired with the Cloud
- * rather than this computer keeps working when this computer is off. One
- * click opens the Cloud in this window on its phone pairing; when the Cloud
- * cannot be opened (not Ready yet, or opening failed), the two steps
- * instead. A render helper (no hooks), part of the view. */
 function cloudPhoneCard({ ready, busy, failed, onUse }: { ready: boolean; busy: boolean; failed: boolean; onUse: () => void }) {
   return <Card title={t("cloudPhone.title")} subtitle={t("cloudPhone.subtitle")}>
     <div data-cloud-phone={ready ? "open" : "steps"} className="flex flex-col items-start gap-3">
@@ -99,37 +87,29 @@ function cloudPhoneCard({ ready, busy, failed, onUse }: { ready: boolean; busy: 
   </Card>;
 }
 
-/** What this view does by itself when the Cloud page's "Open in the app"
- * (openmausbot://cloud) opened it. `arrived`: the first snapshot since that
- * link. Only then does signed out mean "sign me in"; a later sign-out is the
- * person's own choice. A Ready Cloud is connected to once per link. A saved
- * sign-in still being read is not "signed out". */
 export function cloudLinkAction(account: CloudAccountState, link: { arrived: boolean; connected: boolean }): "sign-in" | "connect" | null {
   if (link.arrived && account.status === "signed-out" && account.message !== "restoring") return "sign-in";
   if (!link.connected && account.status === "connected" && account.machine?.status === "ready") return "connect";
   return null;
 }
 
-/** A saved sign-in that may only be locked is kept and read again by itself.
- * Where a keychain can be locked, unlocking it is the one step; Windows has
- * nothing to unlock. Never Sign out: that would delete the sign-in the app is
- * about to read, with nothing revoked on the Cloud. */
+/**
+ * Never Sign out here: it deletes the sign-in the app is about to read and revokes nothing on the Cloud. Windows has no
+ * keychain to unlock.
+ */
 const RESTORE_RETRY: Partial<Record<DesktopCapabilities["host"]["platform"], LocaleKey>> = {
   darwin: "cloudAccount.restoreRetryKeychain",
   linux: "cloudAccount.restoreRetryKeyring",
 };
 
-/** The one message for a state, or none. */
 function accountMessage(account: CloudAccountState | null, view: CloudPlanView, platform: DesktopCapabilities["host"]["platform"]): string | null {
   if (!account) return null;
   if (account.message === "signout-local-only") return t("cloudAccount.signoutLocalOnly");
-  // Clearing it failed: Sign out again is the retry.
   if (account.message === "signout-storage-failed") return t("cloudAccount.storageFailed");
   if (account.message === "restore-failed") return t(RESTORE_RETRY[platform] ?? "cloudAccount.restoreRetry");
   if (view.kind === "reauth") return t(view.reason === "expired" ? "cloudAccount.reauthExpired" : "cloudAccount.reauthEnded");
   if (view.kind === "unverified") return t("cloudAccount.unavailable");
   if (view.kind === "purchase") return view.paidAt ? t("cloudAccount.purchaseNote", { date: day(view.paidAt) }) : t("cloudAccount.purchaseNoteNoDate");
-  // A Cloud still there explains itself in its own card below; a free trial, in its own lines.
   if (view.kind === "attention" && !account.machine && !account.trial) return t("cloudAccount.attention");
   if (account.status === "signed-out" && account.message === "enrollment-expired") return t("cloudAccount.codeExpired");
   if (account.status === "signed-out" && account.message === "restore-removed") return t("cloudAccount.restoreRemoved");
@@ -137,9 +117,6 @@ function accountMessage(account: CloudAccountState | null, view: CloudPlanView, 
   return null;
 }
 
-/** The browser button: what fits the state, never "choose a plan" to someone
- * who has one. A free trial's next step, when it has one, names it. Someone
- * with no plan gets the Add a Cloud dialog instead (addCloudButton). */
 function dashboardLabel(account: CloudAccountState, view: CloudPlanView): string {
   const trial = account.trial ? cloudTrialView(account.trial).action : null;
   if (trial) return trial.label;
@@ -148,11 +125,6 @@ function dashboardLabel(account: CloudAccountState, view: CloudPlanView): string
   return t("cloudAccount.dashboard");
 }
 
-/** On the person's own Cloud, open in this app's window: the plan, read only,
- * Manage in the browser, and back to this computer. When this app cannot
- * vouch for this Cloud (its state is refused), it says where the plan is
- * managed and offers nothing that would fail. `onConnectPhone`: Use your
- * Cloud on your phone, already here, opens this Cloud's phone pairing. */
 export function CloudPlanOnCloud({ bridge, onConnectPhone }: { bridge: CloudPlanBridge; onConnectPhone?: () => void }) {
   const [plan, setPlan] = useState<CloudPlanSnapshot | null>(null), [failed, setFailed] = useState(false), [refused, setRefused] = useState(false);
   useEffect(() => {
@@ -185,11 +157,7 @@ export function CloudPlanOnCloud({ bridge, onConnectPhone }: { bridge: CloudPlan
   </Card>;
 }
 
-/** The public native snapshot carries no credential and cannot activate a plan.
- * `linkRequest` is non-zero only while openmausbot://cloud has this open.
- * `onConnectPhone` opens Settings on this window's phone pairing (on the
- * Cloud itself). `onAddCloud` opens the Add a Cloud dialog: someone signed
- * out or with no plan starts there. */
+/** Security: the public native snapshot carries no credential and cannot activate a plan. */
 export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, onConnectPhone, onAddCloud }: { linkRequest?: number; cloudHome?: boolean; onConnectPhone?: () => void; onAddCloud?: () => void } = {}) {
   const bridge = window.ogb?.remoteClient?.active ? undefined : window.ogb?.cloudAccount;
   const { platform } = useDesktopCapabilities().capabilities.host;
@@ -226,7 +194,6 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, onCon
       try { return await bridge.connectHome(); } catch { setHomeFailed(true); return bridge.state(); }
     });
   };
-  // The same switch, landing on the Cloud's phone pairing; what failed says the steps.
   const openOnPhone = () => {
     if (!bridge) return;
     setPhoneFailed(false);
@@ -234,35 +201,27 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, onCon
       try { return await bridge.connectHomeForPhone(); } catch { setPhoneFailed(true); return bridge.state(); }
     });
   };
-  // A normal visit (linkRequest 0) never signs in or connects by itself.
   useEffect(() => {
     if (!linkRequest) link.current.request = 0;
     if (!bridge || !linkRequest || !account || pending.current) return;
     if (link.current.request !== linkRequest) link.current = { request: linkRequest, arrived: true, connected: false };
-    // A saved sign-in still being read decides nothing yet.
     if (account.status === "signed-out" && account.message === "restoring") return;
     const action = cloudLinkAction(account, link.current);
     link.current.arrived = false;
     if (action === "sign-in") void perform(() => bridge.begin());
     if (action === "connect") { link.current.connected = true; connectHome(); }
   }, [bridge, linkRequest, account, busy]);
-  // Signed out or with no plan: what OpenMausBot Cloud offers, for the button's words and money-back.
   const offer = useCloudOffer(Boolean(account) && buyOfferAllowed(cloudPlanView(account)), account?.offer);
   if (!bridge) {
-    // Only on an OMB Cloud home: any other server open in this window (a VPS,
-    // a hosted workspace, someone else's) has no plan of this person's to show.
     const plan = window.ogb?.remoteClient?.active || !cloudHome ? undefined : window.ogb?.cloudPlan;
     return plan ? <CloudPlanOnCloud bridge={plan} onConnectPhone={onConnectPhone} /> : <p className="text-[13px] text-ink-secondary">{t("cloudAccount.desktopOnly")}</p>;
   }
   const view = cloudPlanView(account);
   const signed = account && ["connected", "unavailable", "reauth-required"].includes(account.status);
-  // Status comes only from the server-verified native snapshot; checkout never sets it.
   const message = accountMessage(account, view, platform);
   const line = cloudPlanLine(view);
-  // A paid plan's Cloud before the Admin lists it is being set up.
   const machine: CloudMachine | undefined = account?.status === "connected" ? account.machine ?? (view.kind === "paid" ? { status: "provisioning" } : undefined) : undefined;
   const enrollment = account?.status === "connecting" ? account.enrollment : undefined;
-  // Someone who may buy: Start free trial (or Add a Cloud) opens the dialog, with money-back beside it.
   const moneyBack = moneyBackLine(offer);
   const addCloudButton = onAddCloud && buyOfferAllowed(view) && <div className="flex flex-col items-start gap-1">
     <button type="button" disabled={busy} className="ui-button" onClick={onAddCloud}>{t(offerTrialDays(offer) !== null ? "cloudIntro.start" : "cloudAccount.upgrade")}</button>
@@ -280,7 +239,6 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, onCon
       </div>}
       {account?.status === "connecting" && <div className="flex flex-col items-start gap-3">
         <p role="status" className="text-[13px] text-ink-secondary">{t("cloudAccount.browser")}</p>
-        {/* The browser asks to check this code: it is shown, not tucked away. */}
         {enrollment && <div data-cloud-code className="flex flex-col gap-1">
           <p className="text-[13px] text-ink-secondary">{t("cloudAccount.codeCheck")}</p>
           <code dir="ltr" className="select-all text-[18px] font-semibold tracking-widest text-ink">{enrollment.userCode}</code>
@@ -304,7 +262,6 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, onCon
             </>}
           {!confirm && <button type="button" disabled={busy} className="ui-button" onClick={() => setConfirm(true)}>{t("cloudAccount.signOut")}</button>}
         </div>
-        {/* A plan bought with another email sits on that account. */}
         {view.kind === "free" && !confirm && <p className="text-[12px] text-ink-secondary">{t("cloudAccount.otherEmail")}{" "}
           <button type="button" disabled={busy} className="underline hover:text-ink" onClick={() => setConfirm(true)}>{t("cloudAccount.useOtherEmail")}</button></p>}
         {confirm && <div role="group" aria-label={t("cloudAccount.signoutTitle")} className="rounded-lg border border-hairline/40 p-3">

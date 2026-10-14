@@ -1,6 +1,3 @@
-// Left-edge tail: mascot looks around while it works, with a live activity
-// sheen beside it. The moment there is an answer, the label is gone while
-// the canonical transcript row performs the settle-in animation above it.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { WorkingTimer } from "@/components/WorkingIndicator";
@@ -8,11 +5,6 @@ import { phraseAt, phraseHoldMs } from "@/lib/live-activity";
 
 const FADE_MS = 320;
 
-/**
- * Walks a phase's phrases on a gentle 4 to 6 second hold. A new phase starts
- * over at its plain label. The outgoing phrase lingers for one fade so the two
- * can crossfade in place.
- */
 export function useRotatingPhrase(
   phrases: readonly string[],
   phase: string,
@@ -20,9 +12,6 @@ export function useRotatingPhrase(
   active: boolean,
 ): { current: string; previous: string | null } {
   const phaseSeed = `${seed}|${phase}`;
-  // the step belongs to its phase. A new phase resets it during render, so
-  // its first frame reads step 0 and a phase that comes back later starts
-  // over too, even when the phase between them ended before its first swap
   const [clock, setClock] = useState({ phaseSeed, step: 0 });
   if (clock.phaseSeed !== phaseSeed) setClock({ phaseSeed, step: 0 });
   const step = clock.phaseSeed === phaseSeed ? clock.step : 0;
@@ -47,16 +36,13 @@ export function useRotatingPhrase(
   return { current, previous };
 }
 
-// The sheen keeps its place across phrase swaps instead of restarting at the
-// left edge on every new word. 2s matches --animate-shimmer. The delay is
-// fixed when a phrase mounts, so a re-render never nudges a running sheen.
+// 2s matches --animate-shimmer.
 function ShimmerPhrase({ text, className, hidden }: { text: string; className?: string; hidden?: boolean }) {
   const [delay] = useState(() => `-${Date.now() % 2000}ms`);
   return (
     <span
       aria-hidden={hidden || undefined}
       className={cn("thinking-shimmer animate-shimmer [grid-area:1/1]", className)}
-      // the second value is the crossfade's, which must start now
       style={{ animationDelay: `${delay}, 0ms` }}
     >
       {text}
@@ -77,14 +63,10 @@ export function TurnPresence({
   avatar: ReactNode;
   visible: boolean;
   label?: string;
-  /** rotating phrases for the current step, plain label first. Wins over `label`. */
   phrases?: readonly string[];
-  /** stable key for the current step. A new phase starts over at its first phrase. */
   phase?: string;
-  /** turn identity, so one turn always reads the same and two turns differ */
   seed?: string;
   answering?: boolean;
-  /** Turn start (epoch ms) — shows a self-ticking elapsed readout while working. */
   since?: number | null;
 }) {
   const [mounted, setMounted] = useState(visible);
@@ -126,8 +108,6 @@ export function TurnPresence({
         {avatar}
         {showWorking ? (
           <span className="flex items-baseline gap-2 leading-none">
-            {/* the outgoing phrase floats over the incoming one, so the width
-                follows the shown phrase and the timer moves once per swap */}
             <span className="turn-phrase relative grid text-[13px]">
               {previous !== null && previous !== current && (
                 <ShimmerPhrase

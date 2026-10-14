@@ -1,10 +1,3 @@
-// Runs the guided tour on the live interface. One spotlight at a time,
-// pointing at a real control, with Next on every step; the tour presses the
-// controls itself (the Tools menu, its items, the Computer button), so it
-// never waits on the user and the app reacts exactly as it would for them.
-// Clicking the pointed-at control counts as Next too. Every advance is
-// written to the server's hint list first, so a reload lands on the same
-// step.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readAdvancedMode } from "@/lib/interface-mode";
 import { ANCHOR_EFFECTS, currentStep, stepNumber, TOUR_STEPS, withTourFinished, type TourEffect, type TourStep } from "@/lib/guided-tour";
@@ -29,7 +22,6 @@ const MASCOT: Record<TourStep["id"], MausState> = {
   "tour.done": "celebrate",
 };
 
-// {key}: the composer step names the send key chosen in Settings.
 const copy = (id: TourStep["id"], key: string) => t(`onboarding.tour.${id.slice(5)}` as LocaleKey, { key });
 
 function visible(anchor: string): HTMLElement | null {
@@ -41,7 +33,6 @@ function anchorPresent(anchor: string | null): boolean {
   return !anchor || visible(anchor) !== null;
 }
 
-/** Press a control the way the user would; false when it is not on screen. */
 function press(anchor: string): boolean {
   const el = visible(anchor);
   if (!el) return false;
@@ -81,7 +72,6 @@ export function GuidedTour() {
           dispatch({ type: "toggleComputer", open: false });
           return;
         case "openTools": {
-          // the menu is a toggle: only press it when it is closed
           const trigger = visible("tools");
           if (trigger && trigger.getAttribute("aria-expanded") !== "true") trigger.click();
           return;
@@ -93,8 +83,6 @@ export function GuidedTour() {
           dispatch({ type: "togglePlugins", open: false });
           return;
         case "openAutomations":
-          // Simple mode offers no Routines entry, so the tour does not open
-          // the page either; its step then skips itself.
           if (!press("nav-automations") && readAdvancedMode()) dispatch({ type: "showRoutines" });
           return;
         case "backToChat":
@@ -131,8 +119,8 @@ export function GuidedTour() {
       saving.current = true;
       setFailed(false);
       void save(false, step.id).then(() => {
-        // Only move the interface after progress was saved. A queued skip
-        // owns cleanup and must not have its panels reopened by this request.
+        // Move the interface only after progress is saved; a queued skip owns cleanup and must not have its panels
+        // reopened.
         if (!closed.current && !(fromAnchor && step.onExit && ANCHOR_EFFECTS.has(step.onExit))) run(step.onExit);
       }).catch(() => setFailed(true)).finally(() => { saving.current = false; });
     },
@@ -143,7 +131,6 @@ export function GuidedTour() {
     if (closed.current) return;
     closed.current = true;
     setDismissed(true);
-    // leave nothing open behind: the panel, the menu, the Automations page
     if (state.computerOpen) run("closeComputer");
     if (state.pluginsOpen) run("closeApps");
     run("backToChat");
@@ -153,17 +140,12 @@ export function GuidedTour() {
 
   const active = !dismissed && Boolean(record?.completedAt) && !state.welcomeOpen && step !== null;
 
-  // entering a step runs its effect once per step
   useEffect(() => {
     if (!active || !step || entered.current === step.id) return;
     entered.current = step.id;
     run(step.onEnter);
   }, [active, step, run]);
 
-  // a step whose control is not on screen points at its fallback, or skips
-  // itself, after the layout has a moment to settle (a menu closing, a
-  // page changing, a panel mounting). Its enter effect is pressed once
-  // more first: on a cold load the sidebar may not have been there yet.
   useEffect(() => {
     if (!active || !step?.skipIfMissing) return;
     let second: ReturnType<typeof setTimeout> | undefined;
@@ -183,7 +165,6 @@ export function GuidedTour() {
     };
   }, [active, step, advance, run]);
 
-  // clicking the pointed-at control is as good as Next
   useEffect(() => {
     if (!active || !step?.anchor || step.id === "tour.apps-panel" || step.id === "tour.automations-page" || step.id === "tour.done") return;
     const onClick = (event: MouseEvent) => {

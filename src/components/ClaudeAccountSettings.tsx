@@ -17,8 +17,8 @@ export function ClaudeAccountForm({ instance, onSaved, onCancel }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dirty = !instance || displayName.trim() !== instance.displayName || configDir.trim() !== instance.claudeAccount?.configDir;
-  // A blank default means Claude's normal configuration, including its
-  // keychain namespace. Do not turn a name-only save into an explicit path.
+  // A blank default is Claude's normal configuration, keychain namespace included: never turn a name-only save into an
+  // explicit path.
   const missingDirectory = Boolean(instance?.claudeAccount?.configDir && !configDir.trim());
 
   const save = async () => {
@@ -30,7 +30,6 @@ export function ClaudeAccountForm({ instance, onSaved, onCancel }: {
         method: instance ? "PATCH" : "POST",
         body: JSON.stringify({ displayName: displayName.trim(), ...(configDir.trim() ? { configDir: configDir.trim() } : {}) }),
       });
-      // The save has succeeded even if the subsequent catalog refresh fails.
       await refreshInstances().catch(() => {});
       onSaved();
     } catch (cause) {
@@ -109,10 +108,6 @@ export function ClaudeAccountSettings({ instance }: { instance: InstanceInfo }) 
   const assignedCount = state.bots.filter((bot) => bot.modelSelection.instanceId === instance.instanceId).length;
   const assigned = assignedCount > 0;
   const authenticated = instance.snapshot.authenticated === true;
-  // Only a hosted server that can run `claude auth logout` for this account
-  // offers it; the desktop app keeps the CLI's own sign-out.
-  // On the workspace API key there is no personal login to sign out of;
-  // removing the key in Settings → API keys is the way back.
   const onApiKey = instance.snapshot.account?.method === "api-key";
   const canSignOut = authenticated && instance.authentication?.signOut === true && !onApiKey;
   const identity = authenticated
@@ -150,8 +145,8 @@ export function ClaudeAccountSettings({ instance }: { instance: InstanceInfo }) 
     setError(null);
     try {
       const { instances } = await api(`/api/instances/${encodeURIComponent(instance.instanceId)}/auth/sign-out`, { method: "POST" });
-      // The response already contains the confirmed account state. A second
-      // request could fail and leave a signed-out account showing connected.
+      // The response holds the confirmed account state; a second request could fail and leave a signed-out account
+      // showing connected.
       dispatch({ type: "instances", instances });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
