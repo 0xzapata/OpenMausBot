@@ -151,7 +151,8 @@ it("shows, replaces and answers a widget on a bot's own conversation, once per p
 
     const after = await transcript();
     expect(after.filter((message) => message.role === "user").map((message) => [message.text, message.replyToId, message.sendId]))
-      .toEqual([["What is open?", undefined, undefined], ["Create routine", draft.messageId, undefined], [text, draft.messageId, sendId]]);
+      // the control tool's own send carries a cli- send id
+      .toEqual([["What is open?", undefined, expect.stringMatching(/^cli-/)], ["Create routine", draft.messageId, undefined], [text, draft.messageId, sendId]]);
     expect(after.find((message) => message.id === draft.messageId).widget.settled).toEqual(settled);
     expect(after.find((message) => message.id === next.messageId)).toMatchObject({ kind: "widget", text: "Build 25 is uploading." });
 
