@@ -1491,8 +1491,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         active.delete(threadId);
         session.turn = null;
         retryState.delete(threadId);
-        // `claude update` cannot change code this child already loaded: retire it before completing.
-        if (stopReason === "update_required") closeSession(threadId, "update required");
+        // `claude update` cannot change code this child already loaded, and a signed-out child can keep holding the shared OAuth refresh lock: retire both before completing.
+        if (stopReason === "update_required" || stopReason === "auth_required") closeSession(threadId, stopReason === "auth_required" ? "authentication required" : "update required");
         else if (session.teamToolsFailed) closeSession(threadId, "team tools did not connect");
         const cost = turnCostFromRunningTotal(total, session.costTotal ?? null);
         if (total !== null) session.costTotal = total;

@@ -572,6 +572,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("turns a signed-out CLI into a setup error, not a bot reply", async () => {
+    const dump = join(scratch, "signed-out-session.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
     await create("not-logged-in");
     await instance.adapter.sendTurn({ threadId: "t-auth", text: "hi" });
     await recorder.until((e) => e.type === "turn.completed");
@@ -581,6 +583,10 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.some((e: any) => e.type === "item.completed" && e.itemType === "assistant_text")).toBe(false);
     expect(recorder.events.some((e: any) => e.type === "content.delta")).toBe(false);
     expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "auth_required" });
+    const pid = dumpedPid(dump);
+    await expect.poll(() => {
+      try { process.kill(pid, 0); return false; } catch { return true; }
+    }, { timeout: 7_000 }).toBe(true);
   });
 
   it("settles an outdated CLI as update_required without emitting an assistant reply", async () => {
