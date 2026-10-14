@@ -1,9 +1,3 @@
-// A finished Live call's record in its chat: what the call was (its title,
-// or "Call with <bot>"), how long it lasted, and one line per thing the bot
-// did on it: its steps by name (never their arguments) and its approvals
-// with their outcomes. The call's spoken requests and the bot's answers stay
-// inline where they were; this row only sums the call up, and opens the
-// call's sheet, which shows the whole call in one place.
 import { useMemo, useState } from "react";
 import { AudioLines, ChevronRight } from "lucide-react";
 
@@ -15,33 +9,22 @@ import { CallLineItem, CallSheet } from "./CallSheet";
 
 export function CallRecordRow({ message, transcript, botName, threadId, busy, hasMore }: {
   message: Message;
-  /** The chat's active branch. The call's lines come from all of it, also
-   * from steps that landed after this row (a turn still running at hang-up). */
   transcript: readonly Message[];
   botName: string;
-  /** The chat the row is in: the sheet's answers resolve their files in it. */
   threadId?: string;
-  /** The chat is working on something now: only then does a step that never
-   * reported how it went read as running. */
   busy: boolean;
-  /** Older messages remain on the server, beyond what the transcript holds. */
   hasMore: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const call = message.call;
   const callId = call?.callId;
-  // Each call's lines are worked out again only when the transcript changes
-  // (a message or a patch, not a streamed delta), not on every render: the
-  // chat holds a row per call, and each walks the whole transcript.
   const lines = useMemo(() => (callId === undefined ? [] : callRecordLines(transcript, callId)), [transcript, callId]);
   if (!call) return null;
   const title = call.title?.trim() || t("chat.callRecord.title", { name: botName });
   const duration = formatCallDuration(call.seconds);
   const partial = callRecordIsPartial(transcript, call, hasMore);
-  // A labelled group, not a <section>: a section with a name is a landmark,
-  // and every call in a chat would add one to the page's landmark list.
-  // A click anywhere on it opens the sheet; the title line is the button a
-  // keyboard reaches, since a list cannot sit inside a button.
+  // A labelled group, not a <section>: a named section is a landmark, and every call would add one.
+  // The title line is the button a keyboard reaches, since a list cannot sit inside a button.
   return (
     <>
       <div

@@ -1,9 +1,3 @@
-// A finished Live call, opened from its record row: the title, the length
-// and the time; then, in the order they happened, the spoken requests as the
-// person's bubbles, the bot's answers as its bubbles, and its steps and
-// approvals with how they went. Built only from what the chat stores, as the
-// phones' call sheet is: the voice's own words are not in it, as they are
-// nowhere.
 import { useMemo, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AudioLines, Check, Minus, X } from "lucide-react";
@@ -21,10 +15,6 @@ import { WorkingDots } from "./WorkingIndicator";
 
 type LineState = "done" | "stopped" | "open" | "neutral";
 
-/** Done, refused or failed, still waiting, or unknown: the glyph before a
- * line. A step with no outcome is running only while its chat works. The
- * harness never settles one whose turn was stopped, killed or lost, so in a
- * chat that has stopped it says nothing, rather than spin for good. */
 function lineState(line: CallRecordLine, busy: boolean): LineState {
   if (line.kind === "step") {
     if (line.tool.ok === undefined) return busy ? "open" : "neutral";
@@ -35,10 +25,6 @@ function lineState(line: CallRecordLine, busy: boolean): LineState {
   return line.card.answered === "allow" ? "done" : "stopped";
 }
 
-/** What a step's glyph shows, in words for a reader who cannot see it: the
- * words the tool chip's own details use, which are translated. A step nobody
- * knows the outcome of says nothing. An approval says its outcome in its own
- * text ("Allowed: run a command"), so only a step needs this. */
 function stepStatus(state: LineState): string | null {
   if (state === "done") return t("toolDetail.completed");
   if (state === "stopped") return t("toolDetail.failed");
@@ -48,8 +34,6 @@ function stepStatus(state: LineState): string | null {
 
 function lineText(line: CallRecordLine): string {
   if (line.kind === "step") return activityStepLabel(line.tool);
-  // The card says an expired proposal needs asking for again. A record sums
-  // up what happened, it gives no instruction, so it says only that it expired.
   const outcome = line.card.expired === true
     ? t("chat.callRecord.expired")
     : approvalCardOutcome(line.card) ?? t("chat.callRecord.waiting");
@@ -57,8 +41,6 @@ function lineText(line: CallRecordLine): string {
   return line.card.answeredBy?.via === "call" ? `${text} · ${t("approval.status.byVoice")}` : text;
 }
 
-/** One thing the bot did on a call: a glyph for how it went, and its name.
- * The record row and the call sheet draw the same lines. */
 export function CallLineItem({ line, busy }: { line: CallRecordLine; busy: boolean }) {
   const state = lineState(line, busy);
   const status = line.kind === "step" ? stepStatus(state) : null;
@@ -83,7 +65,6 @@ export function CallLineItem({ line, busy }: { line: CallRecordLine; busy: boole
   );
 }
 
-/** Consecutive record lines share one list; a request or an answer stands alone. */
 type Block =
   | Extract<CallConversationEntry, { kind: "said" | "answer" }>
   | { kind: "lines"; id: string; lines: CallRecordLine[] };
@@ -103,14 +84,11 @@ function blocksOf(entries: readonly CallConversationEntry[]): Block[] {
 }
 
 export function CallSheet({ message, transcript, botName, threadId, busy, partial, onClose }: {
-  /** The call's record row; the sheet draws nothing without its record. */
   message: Message;
-  /** The chat's active branch, as the record row reads it. */
   transcript: readonly Message[];
   botName: string;
   threadId?: string;
   busy: boolean;
-  /** Some of the call may sit in messages that are not loaded yet. */
   partial: boolean;
   onClose: () => void;
 }) {
@@ -135,9 +113,6 @@ export function CallSheet({ message, transcript, botName, threadId, busy, partia
         aria-labelledby="call-sheet-title"
         data-testid="call-sheet"
         className="animate-pop-in flex max-h-[min(720px,calc(100dvh-2rem))] w-full max-w-[640px] flex-col overflow-hidden rounded-2xl border border-hairline/50 bg-panel text-ink shadow-2xl"
-        // The dialog only holds focus until Tab reaches a control, which
-        // keeps its own ring; the global :focus-visible rule outranks a
-        // utility class, so the box's ring is turned off here.
         style={{ outline: "none" }}
       >
         <header className="flex items-start justify-between gap-4 border-b border-hairline/40 px-5 pb-3.5 pt-4">

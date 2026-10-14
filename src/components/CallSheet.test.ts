@@ -1,6 +1,4 @@
 // @vitest-environment happy-dom
-// A call's record row opens the call's sheet: what was asked on the call, the
-// bot's answers and what it did, in order, from what the chat stores.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";

@@ -1,6 +1,3 @@
-// Team memory: the people, places, decisions and terms every bot in a
-// section shares. Every bot proposal waits for admin review; the person
-// can edit or delete any of it.
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,7 +166,7 @@ describe("systemPrompt", () => {
     const term = memory.propose("", { kind: "term", name: "MCHQ", detail: "MissionControlHQ" }, source);
     const place = memory.propose("", { kind: "place", name: "Launch plan", detail: "Notion, Marketing space" }, source);
     const { entry } = memory.propose("", { kind: "person", name: "Ayush", detail: "Founder", aliases: ["Ayu"] }, source);
-    memory.propose("", { kind: "decision", name: "Ship Android first", detail: "Monday sync" }, source); // still proposed
+    memory.propose("", { kind: "decision", name: "Ship Android first", detail: "Monday sync" }, source);
     const beforeAccept = memory.systemPrompt("");
     expect(beforeAccept).not.toContain("Ayush");
     expect(beforeAccept).toBe("");
@@ -185,11 +182,7 @@ describe("systemPrompt", () => {
   });
 
   it("stays under its byte budget, newest first when it has to cut", () => {
-    // 400 accepted terms, ~75 bytes a line, well past the 6 000-byte budget.
-    // They are written as one saved file, not proposed and accepted one at a
-    // time: that was 800 fsync+rename saves of a growing JSON file (70 MB in
-    // all), 4 s here and past the 20 s test timeout on the Windows runners.
-    // The budget is systemPrompt's to keep, and it reads the loaded file.
+    // 400 accepted terms written as one saved file: accepting each in turn was 800 saves, past the Windows runners' timeout.
     const entries = Array.from({ length: 400 }, (_, i) => ({
       id: `term-${i}`, kind: "term", name: `Term ${i}`, detail: "d".repeat(60), aliases: [], status: "accepted",
       source: { ...source, at: source.at + i }, updatedAt: source.at + i,

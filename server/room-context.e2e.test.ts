@@ -4,8 +4,7 @@ import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 import type { WireBot, WireGroup } from "../shared/wire.ts";
 
-// The scripted fake engine reports this latest-prompt size on every turn, so
-// each room turn measures the bot as nearly full.
+// The scripted fake engine reports this prompt size on every turn, so each room turn measures the bot as nearly full.
 const CONTEXT_TOKENS = 990_000;
 
 it("shows a bot's room context, compacts on request, and compacts before a turn above the threshold", async () => {
@@ -29,7 +28,6 @@ it("shows a bot's room context, compacts on request, and compacts before a turn 
       expect(await control("wait", "--channel", room.id, "--timeout", "30")).toMatchObject({ status: "settled" });
     };
 
-    // Nothing measured yet, and only members can be compacted.
     expect((await post(`/api/groups/${room.id}/members/${bot.id}/compact`)).status).toBe(409);
     expect((await post(`/api/groups/${room.id}/members/${other.id}/compact`)).status).toBe(404);
 
@@ -38,7 +36,6 @@ it("shows a bot's room context, compacts on request, and compacts before a turn 
     const config = async (context: Record<string, unknown>) => expect((await fetch(url + "/api/config", {
       method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ context }) })).ok).toBe(true);
 
-    // With automatic compaction off, a nearly full bot keeps its warm session.
     await config({ autoCompact: false });
     await send("Cut the intro.");
     await expect.poll(async () => (await read()).memberContext?.[bot.id]?.tokens, { timeout: 5_000 }).toBe(CONTEXT_TOKENS);
@@ -48,8 +45,6 @@ it("shows a bot's room context, compacts on request, and compacts before a turn 
     expect(await chips()).toEqual([]);
     expect(turns()[1]!.pid).toBe(turns()[0]!.pid);
 
-    // Compact now: nothing runs until the bot's next turn here, which starts
-    // on a fresh provider process with the room's transcript.
     const requested = await post(`/api/groups/${room.id}/members/${bot.id}/compact`);
     expect(requested.status).toBe(202);
     expect(((await requested.json()) as { group: WireGroup }).group.memberContext?.[bot.id]?.compactRequested).toBe(true);
@@ -57,7 +52,6 @@ it("shows a bot's room context, compacts on request, and compacts before a turn 
     expect(await chips()).toEqual([expect.stringMatching(/^compacted Editor's context \(\d+% full\)/)]);
     expect(turns()[2]!.pid).not.toBe(turns()[1]!.pid);
 
-    // Back on (the default): still above 90%, so the next turn compacts first by itself.
     await config({ autoCompact: true });
     await expect.poll(async () => (await read()).memberContext?.[bot.id]?.compactRequested, { timeout: 5_000 }).toBeUndefined();
     await send("Export it.");

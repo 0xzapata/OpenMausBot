@@ -1,7 +1,3 @@
-// propose_model unit contract: same card/confirm split as profile requests,
-// engine-switch capability warnings from the injected resolver, staleness
-// fail-closed against the shown "before" snapshot, and applyModelDefault as
-// the only commit path.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
@@ -140,7 +136,6 @@ describe("ModelRequestService", () => {
     expect(result).toMatchObject({ claimed: true, state: "invalid", status: 404 });
     if (result.state === "invalid") expect(result.error).toContain("not in a team");
     expect(store.applied).toHaveLength(0);
-    // A Chief proposing for itself never consults the cross-bot rule.
     refuse = "self proposals never consult the cross-bot rule";
     const self = new ModelRequestService({ store, validateTarget });
     self.propose({ botId: chief.id, threadId: chief.threadId, selection: { instanceId: "codex", model: "gpt-fixture" }, reason: "asked" });
@@ -229,7 +224,6 @@ describe("ModelRequestService", () => {
 });
 
 describe("a bot's own model changes", () => {
-  // The server's rule (server/direct-apply.ts) at Ask.
   const rule: DirectApplyCheck = (botId, _threadId, targetBotId) => directApply({ fullAccess: false, botId, targetBotId, blocked: false });
 
   it("applies its own switch at Ask, keeps the card for a peer's, and undoes once", () => {

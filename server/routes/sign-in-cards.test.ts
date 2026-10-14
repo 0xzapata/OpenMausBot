@@ -1,6 +1,3 @@
-// The sign-in card's Done and Cancel through the route table: each names the
-// card's bot, thread and message, and passes the server's answer through.
-// Settling itself is covered by server/index.test.ts and the e2e.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";

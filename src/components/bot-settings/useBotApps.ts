@@ -1,7 +1,3 @@
-// The connected apps as one bot sees them, for the Simple bot panel: the
-// account inventory the Access section already reads (which apps are
-// connected), each app's name and mark from the catalog, and whether this bot
-// may use it. Read-only here; switches write through the bot patch.
 import { useEffect, useState } from "react";
 
 import { botAppScope } from "@/lib/bot-app-access";
@@ -13,23 +9,16 @@ export interface BotApp {
   slug: string;
   label: string;
   blurb: string;
-  /** What ServiceIcon draws from: logo, else the domain's favicon, else a monogram. */
   card: Pick<ToolkitCard, "logo" | "domain" | "label">;
-  /** null: off for this bot */
   scope: ConnectorScope | null;
 }
 
 export interface BotApps {
-  /** unknown: the server could not read the account store, so the list is
-   * "we do not know" rather than "nothing is connected" */
   phase: "loading" | "ready" | "unknown";
   apps: BotApp[];
   connectedSlugs: string[];
 }
 
-// The catalog is the same for every bot and only names things here, so one
-// request serves every panel opened in this window. A failed read is retried
-// by the next panel; until then apps show under their slug.
 let cardsRequest: Promise<Map<string, ToolkitCard>> | null = null;
 function loadAppCards(): Promise<Map<string, ToolkitCard>> {
   cardsRequest ??= api("/api/connectors/catalog")
@@ -41,7 +30,6 @@ function loadAppCards(): Promise<Map<string, ToolkitCard>> {
   return cardsRequest;
 }
 
-/** "googlecalendar" is all a slug gives us; the catalog's label wins when it loads. */
 function slugLabel(slug: string): string {
   return slug.charAt(0).toUpperCase() + slug.slice(1).replace(/[_-]+/g, " ");
 }
