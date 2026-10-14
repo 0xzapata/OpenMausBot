@@ -238,9 +238,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   const eligible = (server: string) => scope === undefined || canUseMcpServer(scope, server);
   if (computerUse && integrations?.localComputer && eligible("computer")) servers.push(["computer", integrations.localComputer]);
   if (computerUse && integrations?.browser && eligible("browser")) servers.push(["browser", integrations.browser]);
-  // A selection is matched against the name in the call (include and
-  // validate below), and a call made through the agents tool bridge is named
-  // use_tool: with a selection the agents server lists its whole catalog.
+  // Security: a selection matches the name in the call, so with one the agents server is never bridged.
   const agentsServer = integrations?.agents && scope !== undefined ? unbridgedServer(integrations.agents) : integrations?.agents;
   if (agentsServer && eligible("agents")) servers.push(["agents", agentsServer]);
   if (integrations?.composio && eligible("composio")) servers.push(["composio", integrations.composio]);
@@ -353,7 +351,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
       && !allowsTool(scope, { kind: "mcp", server: tool.server, name: runs });
       // A directory mistake ran nothing and must not end the turn as a failed call.
     const directory = tool.searched && isDirectoryTool(tool.name);
-    // (and, should a bridged agents server answer here all the same, the tool a use_tool call names)
+    // Security: should a bridged agents server answer here, use_tool is also judged by the tool it names.
     if (!directory && (excluded(tool.name) || (tool.agents && excluded(bridgedCallTarget(tool.name, args))))) throw new Error("Tool selection excludes this tool");
     omitBlankDefaults(tool.builtInBrowser, tool.name, args);
     if (!object(args) || (!directory && !tool.schema(args))) throw new Error("Tool arguments do not match the advertised input schema; use its required fields and types");

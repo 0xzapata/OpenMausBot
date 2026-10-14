@@ -21,36 +21,13 @@ export function teamAvailabilityPart(team: readonly RosterMember[]): PromptPart 
   return { id: "availability", label: "Team availability", text: teammateAvailabilityPrompt(team) };
 }
 
-/** A turn whose agents proxy lists its tools through the tool bridge
- * (drivers/agents-bridge.ts) is told so once, here. The sections below, the
- * descriptions of the listed tools and the results a bot reads all go on
- * naming tools the way they always have ("use list_routines and
- * propose_routine", "call list_bots and copy the exact id"); with the bridge
- * on most of those names are no longer in the bot's tool list, and a prompt
- * that sent it to call them would be sending it to tools it cannot see. One
- * standing rule covers every such name, wherever it is written, instead of a
- * reworded copy of each sentence that would drift from the original.
- *
- * It names no tools of its own. Which ones are hidden depends on the turn's
- * role and features, and find_tool's description already lists exactly
- * those, from the same profile the proxy serves; a second list here could
- * disagree with it. So the text is the same for every bot and every turn,
- * which also keeps it in the stable half of the prompt.
- *
- * Everything it says about the two bridge tools is said on the condition
- * that they are in the bot's tool list. The prompt is built before the turn
- * is dispatched, and a tool selection saved in between is given an unbridged
- * proxy where it is mounted (agents-bridge.ts unbridgedServer): the turn
- * then has the whole catalog and no bridge tools, and this text is still
- * true of it. */
+/** One standing rule for a bridged turn, so every tool name the prompt, a description or a result gives
+ * stays reachable. It names no tools, so it is the same for every turn, and it holds only if the bridge
+ * tools are listed: a selection saved after the prompt is built mounts the agents server unbridged. */
 export const AGENTS_TOOL_BRIDGE_PROMPT =
   " If find_tool and use_tool are in your tool list, your other OpenMausBot tools are reached through them: for a tool named in these instructions, a tool's description or a tool's result that is not itself in your tool list, call find_tool with a few words about what you need or with the tool's name, which returns its description and exact input schema, then run it with use_tool, giving its name and its arguments; find_tool's own description lists the tools reached this way, and they do exactly what they would if called directly. A tool that is in your tool list is always called directly.";
 
-/** `agents` is the agents integration this turn mounts, if any (a real
- * turn's integrations.agents, or just its bridge switch for the preview).
- * The builder reads the bridge switch off the very environment the proxy
- * was built to start with (agentsToolBridged), so a turn that was not
- * asked to bridge is never told about the bridge. */
+/** `agents` is the turn's agents integration, if any; only a turn asked to bridge is told about the bridge. */
 export function buildSystemPrompt(
   persona: string,
   soul: string,
@@ -60,9 +37,7 @@ export function buildSystemPrompt(
   const ordered: PromptPart[] = [
     { id: "persona", label: "Identity", text: persona },
     { id: "soul", label: "Standing instructions (SOUL.md)", text: soulSystemPrompt(soul) },
-    // Right after the soul. On a direct turn that is ahead of every section
-    // that names a tool; a room turn's persona has named some already, and
-    // the rule covers a name wherever it stands.
+    // Right after the soul: on a direct turn, ahead of every section that names a tool.
     { id: "tool-bridge", label: "Tool search", text: agentsToolBridged(agents) ? AGENTS_TOOL_BRIDGE_PROMPT : "" },
     ...parts,
   ];

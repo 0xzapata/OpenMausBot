@@ -15,7 +15,6 @@ import { availableTools, catalogProfileFromEnv } from "./agents-catalog.ts";
 import { callTool, capResult, toolCallContextFromEnv } from "./agents-call.ts";
 import type { Json } from "./agents-client.ts";
 
-/** Everything this turn may call, however it is listed. */
 const AVAILABLE_TOOLS = availableTools(catalogProfileFromEnv(process.env));
 const BRIDGE = process.env[TOOL_BRIDGE_ENV] === "1" ? createToolBridge(AVAILABLE_TOOLS) : undefined;
 const CONTEXT = toolCallContextFromEnv(process.env);
@@ -50,19 +49,12 @@ async function handle(msg: Json) {
       return;
     case "tools/call": {
       const called = { name: params.name as string, arguments: (params.arguments ?? {}) as Json };
-      // find_tool is answered by the bridge, and use_tool becomes the tool it
-      // names. From here a bridged call is a direct one: the same
-      // unknown-tool check, the same callTool, the same bounds on its result.
+      // Security: past the bridge a use_tool call is a direct call: same unknown-tool check, callTool and result bounds.
       const bridged = BRIDGE ? await BRIDGE.route(called.name, called.arguments) : undefined;
       if (bridged && "answer" in bridged) return textResult(id, bridged.answer.text, bridged.answer.isError);
       const { name, arguments: args } = bridged ?? called;
       if (!AVAILABLE_TOOLS.some((t) => t.name === name)) {
-        // One check and one sentence, whichever way the name came. A name
-        // the engine sent is a protocol error, as it always was. One a model
-        // wrote into use_tool is that call failing: every engine hands a
-        // failed call back to the model, while the chat runtime ends the
-        // turn on a protocol error (chat-mcp-tools.ts), which a wrong guess
-        // at a name must not do.
+        // A name written into use_tool fails the call, not the protocol: the chat runtime ends a turn on a protocol error.
         const unknown = `Unknown tool: ${name}`;
         return bridged ? textResult(id, unknown, true) : rpcErr(id, -32602, unknown);
       }

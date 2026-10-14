@@ -144,9 +144,7 @@ function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
           at: event.createdAt,
           threadId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
-          // A call made through the agents tool bridge is logged as use_tool;
-          // it reads as the tool it ran. This is built from the event alone,
-          // so only where the title itself says whose tool it is.
+          // A bridged call reads as the tool it ran, only where the title itself names the agents server.
           tool: bridgedCallName(event.title ?? "unknown", event.input, { serverNamed: true }),
           outcome: "running",
         }),

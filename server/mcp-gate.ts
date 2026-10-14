@@ -218,9 +218,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       || (params.arguments !== undefined && !isRecord(params.arguments))) {
       return rejectRequest(message.id, -32602, "Invalid tool call");
     }
-    // The agents server behind a selection is started without its tool
-    // bridge (mcp-gate-config.ts). Should one answer here all the same, a
-    // use_tool call is judged by the tool it names as well as by its own name.
+    // Security: should a bridged agents server answer here, use_tool is also judged by the tool it names.
     const targets = [callTarget(params.name, params.arguments), ...(NAME === "agents" ? [bridgedCallTarget(params.name, params.arguments)] : [])];
     if (targets.some((target) => target !== undefined && !allowsTool(scope, { kind: "mcp", server: NAME, name: target }))) {
       return rejectRequest(message.id, -32602, "Tool selection excludes this tool. Check the bot's Access settings.");

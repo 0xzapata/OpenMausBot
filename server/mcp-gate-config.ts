@@ -118,12 +118,8 @@ export function gateServer(input: {
     if (scoped) throw new Error("Tool selection requires a supported MCP server.");
     return null;
   }
-  // A selection is matched against the name in the call, and a call made
-  // through the agents tool bridge is named use_tool. So behind a selection
-  // the agents server lists its whole catalog, whatever the turn decided
-  // for its integration: the selection in force is the one this mount was
-  // handed, which a room turn reads after that decision and a direct turn
-  // before it. Either way the mount does not rely on the two agreeing.
+  // Security: a selection matches the name in the call, so behind one the agents server is never bridged,
+  // whatever the turn decided earlier.
   const upstream = scoped && name === "agents" ? unbridgedServer(spec) : spec;
   const env = {
     OMB_GATE_NAME: name,
