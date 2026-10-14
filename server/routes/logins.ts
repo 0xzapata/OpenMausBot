@@ -1,14 +1,4 @@
-// Settings → Logins: the workspace's saved website logins.
-// GET /api/logins lists them (host, username, 2FA or not, source, who may use
-// it, last used) with 1Password's, and says whether 1Password is connected;
-// POST adds one, PATCH /api/logins/:id replaces its password or 2FA key or
-// changes who may use it, DELETE removes it. POST /api/logins/1password
-// {token} connects 1Password (checked before it is kept), POST
-// /api/logins/1password/refresh reads it again, DELETE /api/logins/1password
-// disconnects it; its logins are read-only here. No answer ever carries a
-// password, a 2FA key or the token: a saved secret is only ever replaced.
-// Admin-scoped by default in server/request-auth.ts, like every route that
-// is not listed for clients.
+// No answer ever carries a password, a 2FA key or the token: a saved secret is only ever replaced.
 import { LOGIN_FIELD_MAX, normalizeLoginHost, type LoginBots, type LoginSummary, type OnePasswordStatus } from "../../shared/logins.ts";
 import type { LoginPatch, NewLogin } from "../login-store.ts";
 import { parseTotpKey, type TotpKey } from "../totp.ts";
@@ -22,9 +12,7 @@ export interface LoginRouteDeps {
   botExists(id: string): boolean;
   onePassword: {
     status(): OnePasswordStatus;
-    /** Its logins, read-only; reads 1Password again in the background when stale. */
     list(): LoginSummary[];
-    /** Check the token reaches 1Password, then keep it. Throws the reason in words. */
     connect(token: string): Promise<OnePasswordStatus>;
     refresh(): Promise<OnePasswordStatus>;
     disconnect(): OnePasswordStatus;
@@ -47,7 +35,7 @@ export const LOGIN_ERRORS = {
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
-/** A 2FA key field: absent leaves it, "" or null clears it. */
+/** Absent leaves it; "" or null clears it. */
 export function parseTotpField(value: unknown): Parsed<TotpKey | null | undefined> {
   if (value === undefined) return { ok: true, value: undefined };
   if (value === null || (typeof value === "string" && !value.trim())) return { ok: true, value: null };
@@ -55,7 +43,6 @@ export function parseTotpField(value: unknown): Parsed<TotpKey | null | undefine
   return key ? { ok: true, value: key } : { ok: false, error: LOGIN_ERRORS.totp };
 }
 
-/** The username and password of a login form. */
 export function parseLoginFields(body: Record<string, unknown>, options: { passwordRequired: boolean }): Parsed<{ username?: string; password?: string }> {
   const username = body.username;
   const password = body.password;

@@ -53,7 +53,6 @@ describe("usage ledger files", () => {
     const rows = readUsage(dataDir, { from: new Date("2026-09-01T00:00:00Z"), to: new Date("2026-10-31T23:59:59Z") });
     expect(rows.map((r) => r.botId)).toEqual(["b1", "b2", "b3"]);
     expect(rows[1]!.costUsd).toBeNull();
-    // a cost is labelled with where it came from; an unpriced row has no label
     expect(rows[0]!.costSource).toBe("reported");
     expect(rows[1]).not.toHaveProperty("costSource");
   });
@@ -201,7 +200,6 @@ describe("usage summaries", () => {
     const clerk = summary.groups.find((g) => g.label === "Clerk")!;
     expect(clerk).toMatchObject({ costUsd: 0.2, estimatedUsd: 0.2 });
     expect(summary.groups.find((g) => g.label === "Scout")!.estimatedUsd).toBeNull();
-    // an unpriced row is still counted as unpriced, never as a $0 estimate
     expect(summarizeUsage([rows[1]!], "bot").total).toMatchObject({ costUsd: null, estimatedUsd: null, unpriced: 1 });
   });
 });

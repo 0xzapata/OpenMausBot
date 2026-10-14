@@ -1,10 +1,3 @@
-// Skills: durable behavior the bot learned or imported, so the user needs a
-// normal way to inspect, disable, and remove it after the one-time approval
-// card is gone. Moved from SettingsPanel.tsx's LearnedSkillsCard (79-295),
-// its nested review dialog raised from z-[80] to z-[90] to float above this
-// dialog's own z-50, plus: an Import from GitHub row, a static "when it's
-// used" line on every row (learned skills have no triggers to show), and a
-// read-only click-through view of a skill's full text.
 import { BookOpen, Trash2 } from "lucide-react";
 import { t } from "@/lib/i18n";
 import { useEffect, useRef, useState } from "react";
@@ -23,12 +16,9 @@ export interface ManagedSkill {
   enabled: boolean;
   source: string;
   warnings: string[];
-  /** Present only under features.skillsLibrary: where the bot reads this
-   * skill from. Private shadows library on name collision. */
   origin?: "private" | "library";
 }
 
-/** Library entries this bot has not been assigned yet (flag on only). */
 interface LibraryPoolSkill {
   name: string;
   description: string;
@@ -40,10 +30,6 @@ interface StagedSkillSummary {
   gist: string;
 }
 
-/** The bot's installed skills and the on/off switch the Skills section and
- * the Simple bot panel share: switching a skill off writes at once; switching
- * one on fetches its integrity-checked text and waits for an explicit review
- * (`reviewing` + `enableReviewed`) before it can reach the bot's prompt. */
 export function useManagedSkills(bot: Bot) {
   const { request: api } = useBotEditor();
   const [skills, setSkills] = useState<ManagedSkill[]>([]);
@@ -55,7 +41,6 @@ export function useManagedSkills(bot: Bot) {
   const [working, setWorking] = useState("");
   const [error, setError] = useState("");
   const [reviewing, setReviewing] = useState<{ skill: ManagedSkill; text: string } | null>(null);
-  // One assignment change at a time: each one reads the server's list first.
   const assignmentBusy = useRef(false);
 
   const refresh = async (cancelled?: () => boolean) => {
@@ -122,8 +107,6 @@ export function useManagedSkills(bot: Bot) {
     setError("");
     try {
       if (skill.origin === "library" && skill.enabled) {
-        // Library skills share one review state across every bot assigned
-        // to them; disabling is immediate, enabling still requires review below.
         await api(`/api/skills-library/${encodeURIComponent(skill.name)}`, {
           method: "PATCH",
           body: JSON.stringify({ enabled: !skill.enabled }),
@@ -132,9 +115,8 @@ export function useManagedSkills(bot: Bot) {
         return;
       }
       if (!skill.enabled) {
-        // A disabled import has not necessarily been reviewed. Fetch the
-        // integrity-checked bytes and require one explicit review step before
-        // they can reach the bot's prompt or native skill discovery.
+        // Security: a disabled import has not necessarily been reviewed; its integrity-checked bytes need one explicit
+        // review before they reach the prompt.
         const result = (await api(skill.origin === "library" ? `/api/skills-library/${encodeURIComponent(skill.name)}` : `/api/bots/${bot.id}/skills/${encodeURIComponent(skill.name)}`)) as { text?: string };
         if (!result.text) throw new Error("The skill contents are unavailable; remove and import or learn it again.");
         setReviewing({ skill, text: result.text });
@@ -173,13 +155,10 @@ export function useManagedSkills(bot: Bot) {
 
   return {
     skills, staged, loading, working, setWorking, error, setError, reviewing, setReviewing, refresh, toggle, enableReviewed,
-    // the shared skills library (features.skillsLibrary): what this bot can still add, and assignment changes
     libraryPool, addFromLibrary, setAddFromLibrary, assignmentBusy, putAssignments, addToBot,
   };
 }
 
-/** The review step before a skill is switched on: its full SKILL.md, with
- * Escape and a focus trap, layered above the settings panel. */
 export function SkillReviewDialog({
   skill,
   text,

@@ -149,9 +149,6 @@ describe("addDisabledMcpServer", () => {
 });
 
 describe("parseMcpServersImport", () => {
-  // The block every other agent tool shares: Claude Code, Cursor and Claude
-  // Desktop all write {"mcpServers": {name: {command, args, env}}}. Pasting
-  // it here should just work, with the same rules as the form.
   it("reads the standard mcpServers block, disabled until explicitly enabled", () => {
     const result = parseMcpServersImport(JSON.stringify({
       mcpServers: {
@@ -191,7 +188,6 @@ describe("parseMcpServersImport", () => {
   it("accepts remote servers in their own shape, refuses reserved names and junk", () => {
     expect(parseMcpServersImport('{"mcpServers": {"web": {"type": "http", "url": "https://x.example/mcp", "headers": {"Authorization": "Bearer t"}, "enabled": true}}}')).toEqual({
       ok: true,
-      // enabled from the paste is dropped: nothing is reached before it was tested
       servers: { web: { type: "http", url: "https://x.example/mcp", headers: { Authorization: "Bearer t" }, enabled: false } },
     });
     expect(parseMcpServersImport('{"name": "docs", "url": "https://x.example/sse", "type": "sse"}')).toEqual({
@@ -241,7 +237,6 @@ describe("remote (url) MCP servers", () => {
       ok: true,
       server: { type: "http", url: "https://docs.example/mcp", headers: { Authorization: "Bearer old", "X-Org": "acme" }, enabled: true },
     });
-    // a placeholder cannot borrow from a server of the other shape
     expect(parseMcpServerMutation(
       "docs",
       { url: "https://docs.example/mcp", headers: { Authorization: true } },
@@ -279,9 +274,7 @@ describe("a url server's sign-in app", () => {
       ok: false, error: "No client secret is saved for this client ID. Enter it again, or leave it out for an app without one.",
     });
     expect(parseMcpServerMutation("docs", { url, oauth: { clientId: "corp-app", clientSecret: true } })).toMatchObject({ ok: false });
-    // a stored entry never takes the placeholder
     expect(parseStoredMcpServer("docs", { url, oauth: { clientId: "corp-app", clientSecret: true } })).toMatchObject({ ok: false });
-    // leaving the app out removes it, secret and all
     expect(parseMcpServerMutation("docs", { url }, saved)).toEqual({ ok: true, server: { type: "http", url, headers: {}, enabled: true } });
   });
 

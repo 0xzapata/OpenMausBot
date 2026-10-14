@@ -4,13 +4,8 @@ import { popoverClosesOnKey, usePopoverDismiss } from "@/hooks/use-popover-dismi
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 
-/** One size and stroke for every icon beside a message and in its menu:
- * thin rounded outlines, like the rest of the chat chrome. */
 export const ACTION_ICON = { size: 17, strokeWidth: 1.5 } as const;
 
-/** Class shared by every control that lives in the row: the row decides
- * when it is visible, so the buttons themselves never fade. One muted
- * colour that brightens on hover. */
 export const messageActionClass =
   "inline-flex size-7 items-center justify-center rounded-full text-ink-tertiary transition-colors hover:bg-ink/10 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
 
@@ -23,8 +18,6 @@ export type MessageMenuItem = {
   disabled?: boolean;
 };
 
-/** Where a message row starts: the element that hovering, focusing or
- * tapping reveals the actions for. */
 export const MESSAGE_ROW = "data-message-row";
 
 const INTERACTIVE = "a, button, input, textarea, select, summary, label, [role=button], [contenteditable=true]";
@@ -38,14 +31,6 @@ function focusVisible(target: EventTarget | null): boolean {
   }
 }
 
-/** Reply, copy and a "more" menu beside a bubble. They show only while the
- * pointer is over the message, or keyboard focus is inside it, and on a
- * touch screen after a tap or a long press on the message. The menu holds
- * the rest (read aloud, raw markdown, pin, regenerate, copy id) and closes
- * on Escape or a press outside. `forceOpen` keeps the row out while a
- * control in it has to stay reachable, like the stop button of a message
- * being read aloud. Children render in reading order; the row mirrors on
- * the user side so the first control stays nearest the bubble. */
 export function MessageActions({
   side,
   forceOpen = false,
@@ -69,12 +54,10 @@ export function MessageActions({
   const [tapped, setTapped] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAbove, setMenuAbove] = useState(false);
-  // the menu hangs from the row's start edge unless that runs off the window
   const [menuFlipped, setMenuFlipped] = useState(false);
   const mirrored = side === "user";
   const shown = forceOpen || menuOpen || hovered || keyboardFocus || tapped;
 
-  // The message row, not just this strip, reveals the actions.
   useEffect(() => {
     const row = rootRef.current?.closest<HTMLElement>(`[${MESSAGE_ROW}]`) ?? rootRef.current;
     rowRef.current = row;
@@ -109,8 +92,6 @@ export function MessageActions({
       clearTimeout(press.timer);
       const quick = Date.now() - press.at < LONG_PRESS_MS;
       press = null;
-      // a tap on a link or a button does its own thing, and a tap that
-      // ends a text selection is not asking for the actions
       if (!quick || (event.target instanceof Element && event.target.closest(INTERACTIVE))) return;
       if (window.getSelection()?.toString()) return;
       setTapped((value) => !value);
@@ -136,7 +117,6 @@ export function MessageActions({
     };
   }, []);
 
-  // a tap elsewhere puts a tap-revealed row away again
   usePopoverDismiss(tapped && !menuOpen, rowRef, () => setTapped(false));
   usePopoverDismiss(menuOpen, rootRef, () => {
     setMenuOpen(false);
@@ -147,7 +127,6 @@ export function MessageActions({
     if (!menuOpen) return;
     const menuBox = menuRef.current?.getBoundingClientRect();
     const more = moreRef.current?.getBoundingClientRect();
-    // below the button unless that runs off the window
     if (menuBox && more) setMenuAbove(more.bottom + 4 + menuBox.height > window.innerHeight - 8 && more.top - 4 - menuBox.height > 8);
     const rowBox = rootRef.current?.getBoundingClientRect();
     if (menuBox && rowBox) {
@@ -186,7 +165,6 @@ export function MessageActions({
       data-shown={shown ? "true" : undefined}
       onKeyDown={(event) => {
         if (menuOpen || forceOpen || !popoverClosesOnKey(event.nativeEvent) || !keyboardFocus) return;
-        // Escape from a focused control hands focus back to the message
         event.preventDefault();
         (document.activeElement as HTMLElement | null)?.blur();
       }}
