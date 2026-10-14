@@ -159,10 +159,12 @@ export function buildRecall(input: RecallInput): RecallResult | null {
   const query = recallQuery(input.message);
   if (!query) return null;
   const topics = topicPassages(input.botId, query);
-  // A matching passage beats a topic's opening: otherwise a name match hides
-  // the actual answer later in that same file.
-  const matches = memoryPassages(input.botId, query);
-  const matchedFiles = new Set(matches.map((passage) => passage.label));
-  const notes = [...matches, ...topics.filter((passage) => !matchedFiles.has(passage.label))].slice(0, MEMORY_HITS);
+  const notes = selectMemoryPassages(memoryPassages(input.botId, query), topics);
   return renderRecall([...notes, ...conversationPassages(input, query)]);
+}
+
+export function selectMemoryPassages(matches: readonly RecallPassage[], topics: readonly RecallPassage[]): RecallPassage[] {
+  const named = topics.map(topic => matches.find(match => match.label === topic.label) ?? topic);
+  const namedFiles = new Set(named.map(passage => passage.label));
+  return [...named, ...matches.filter(passage => !namedFiles.has(passage.label))].slice(0, MEMORY_HITS);
 }
