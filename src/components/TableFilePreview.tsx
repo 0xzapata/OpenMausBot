@@ -5,7 +5,7 @@ import { RichTable, TableDialog } from "./RichTable";
 import { TABLE_FILE_MAX_BYTES, tableDelimiter, type TextTable } from "@/lib/table-data";
 import { t } from "@/lib/i18n";
 
-/** Bound chunked responses too; this is a preview limit, not a download limit. */
+/** A preview limit, not a download limit: chunked responses are bounded too. */
 export async function readTableResponse(response: Response, signal: AbortSignal): Promise<string> {
   if (Number(response.headers.get("content-length")) > TABLE_FILE_MAX_BYTES) {
     await response.body?.cancel(); throw new Error("size");

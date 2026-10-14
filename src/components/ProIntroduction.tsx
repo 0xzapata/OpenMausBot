@@ -1,8 +1,3 @@
-// The Cloud card in Settings → General: OpenMausBot Cloud for someone who may
-// buy (what it does, the Admin's lowest price and money-back, Start free
-// trial or Add a Cloud, which open the Add a Cloud dialog), or, for someone
-// with a plan, that plan and the way to it. The card after the update is the
-// notice queue's (AppNotices, CloudTrialIntro).
 import { useEffect, useId, useState } from "react";
 import { Cloud, Crown } from "lucide-react";
 import type { CloudAccountState } from "../../electron/cloud-account.mjs";
@@ -12,13 +7,10 @@ import { buyOfferAllowed, cloudPlanLine, cloudPlanView, moneyBackLine, offerTria
 import { useCloudOffer } from "@/lib/use-cloud-offer";
 import { t } from "@/lib/i18n";
 
-/** Only someone signed out, or verified as signed in with no plan, no Cloud
- * and no payment being linked, is ever offered a plan (src/lib/cloud-plan.ts). */
 export function proOfferAvailable(account: CloudAccountState | null): boolean {
   return buyOfferAllowed(cloudPlanView(account));
 }
 
-/** The plan as the native snapshot says; null without a bridge (a browser, a remote page). */
 export function useCloudPlan(): { view: CloudPlanView; account: CloudAccountState | null } | null {
   const bridge = window.ogb?.remoteClient?.active ? undefined : window.ogb?.cloudAccount;
   const [account, setAccount] = useState<CloudAccountState | null>(null);
@@ -26,16 +18,12 @@ export function useCloudPlan(): { view: CloudPlanView; account: CloudAccountStat
     if (!bridge) return;
     let active = true, updated = false;
     const unsubscribe = bridge.onState(next => { updated = true; if (active) setAccount(next); });
-    // Reads the native snapshot only; never initiates sign-in or a refresh.
     void bridge.state().then(next => { if (active && !updated) setAccount(next); }).catch(() => {});
     return () => { active = false; unsubscribe(); };
   }, [bridge]);
   return bridge ? { view: cloudPlanView(account), account } : null;
 }
 
-/** Always available in Settings. Someone with a plan (or one being linked,
- * or one this app cannot check right now) sees that plan here instead, and
- * the way to it. */
 export function ProSettingsCard() {
   const { dispatch } = useStore();
   const plan = useCloudPlan();
@@ -78,13 +66,6 @@ export function ProSettingsCard() {
   </section>;
 }
 
-/** A phone's Live call needs a Pro plan (the harness's 402 `needsPro`; the desktop app's own calls are free): the Pro card,
- * in the call button's pop-up where the key form would be. The same rule as
- * the card in Settings: an offer only where buyOfferAllowed says (signed
- * out, signing in first); anyone who pays, may pay, or whose plan is not
- * known yet sees that plan, when there is one to name, and the way to it. A
- * window that cannot read the plan (a browser, a server's page) says only
- * what Live calls need. */
 export function LiveProPrompt() {
   const { dispatch } = useStore();
   const plan = useCloudPlan();

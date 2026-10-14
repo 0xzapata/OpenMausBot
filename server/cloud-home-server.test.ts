@@ -1,13 +1,5 @@
-// The full server as an OMB Cloud home machine, over its real HTTP boundary,
-// with the settings an Admin from before Cloud Pro dropped included AI still
-// sent (OMB_HOSTED_*). Cloud Pro includes no AI: the machine boots, says once
-// that it ignores them, serves no gateway models, never hands them (or its
-// signing secret) to an engine, and tells the app it pairs that its first run
-// is the engine sign-in. It also carries Pro's included Boat computers, voice
-// and decision model: offered with no key, their relay tokens never shown,
-// saved or passed on. Its bots get the built-in browser and cloud computers,
-// never "this computer" or a Local VM. Disposable home; no network; a synthetic
-// Claude CLI.
+// The full server as a Cloud home over its real HTTP boundary, still sent the OMB_HOSTED_* settings an Admin from before
+// Cloud Pro dropped included AI. Disposable home; no network; a synthetic Claude CLI.
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -29,7 +21,7 @@ const gateway = {
   OMB_HOSTED_MODEL_TOKEN: token,
   OMB_HOSTED_MODELS: JSON.stringify({ anthropic: [], openai: ["gpt-fixture"], openrouter: ["anthropic/claude-fixture"] }),
 };
-// Cloud Pro's included Boat computers, voice and decisions (included-services.ts).
+// Cloud Pro's included Boat computers, voice and decisions.
 const included = {
   OMB_CLOUD_BOAT_URL: "https://cloud.example.test/api/cloud/services/boat/api/box/v1",
   OMB_CLOUD_BOAT_TOKEN: `box_omb_${randomBytes(24).toString("base64url")}`,
@@ -117,14 +109,13 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
   const deadline = Date.now() + 20_000;
   for (;;) {
     if (child.exitCode !== null) throw new Error(`the Cloud home exited:\n${log}`);
-    try { if ((await api("GET", "/api/health")).body?.pid === child.pid) break; } catch { /* starting */ }
+    try { if ((await api("GET", "/api/health")).body?.pid === child.pid) break; } catch {}
     if (Date.now() > deadline) throw new Error(`the Cloud home did not start:\n${log}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   ownerToken = await ownerPairing();
 }, 30_000);
 
-/** One of the owner's devices, paired the way the Admin pairs the app. */
 async function ownerPairing(): Promise<string> {
   const body = JSON.stringify({ label: "OpenMausBot app (Cloud)", ttlSeconds: 300 });
   const timestamp = String(Math.floor(Date.now() / 1000)), nonce = randomBytes(16).toString("base64url");
@@ -174,7 +165,6 @@ it("pairs the app on a signed request and tells it its first run is the engine s
   const session = await api("GET", "/api/auth/session", { remote: true, headers: auth });
   expect(session.body).toMatchObject({ kind: "session", scopes: ["admin", "client"], cloudHome: true });
   expect(session.body).not.toHaveProperty("hosted");
-  // No bot has finished a turn here yet: the setup checklist's step is open.
   expect((await api("GET", "/api/config", { remote: true, headers: auth })).body.onboarding).not.toHaveProperty("firstTurnAt");
   const { instances } = (await api("GET", "/api/instances", { remote: true, headers: auth })).body;
   expect(instances.map((instance: any) => instance.instanceId)).toContain("claude");
@@ -182,7 +172,6 @@ it("pairs the app on a signed request and tells it its first run is the engine s
   expect(JSON.stringify(instances)).not.toContain("cloud.example.test");
 });
 
-/** The Admin's signed request for a browser sign-in on this machine, for `owner`'s Cloud. */
 async function mintBrowserSignIn(owner = "ada@example.test"): Promise<string> {
   const body = JSON.stringify({ label: "Web browser (Cloud page)", ttlSeconds: 120, purpose: "browser", owner });
   const timestamp = String(Math.floor(Date.now() / 1000)), nonce = randomBytes(16).toString("base64url");
@@ -195,17 +184,14 @@ async function mintBrowserSignIn(owner = "ada@example.test"): Promise<string> {
   expect(granted.body).not.toHaveProperty("code");
   return granted.body.credential as string;
 }
-/** The web page's own requests (src/lib/session.ts): what it shows first, then Continue. */
 const browserRequest = (body: Record<string, unknown>, cookie?: string) => fetch(`${base}/api/auth/pair`, { method: "POST", headers: {
   host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https", "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
 
 it("signs a browser in from the Cloud page's \"Use in your browser\" into an owner's session, once, and never logs it", async () => {
   const credential = await mintBrowserSignIn();
-  // An app's exchange, or one asking for a bearer token instead of this browser's cookie, gets nothing and leaves it open.
   expect((await api("POST", "/api/auth/pair", { remote: true, body: { code: credential } })).status).toBe(401);
   expect((await api("POST", "/api/pair", { remote: true, body: { credential } })).status).toBe(401);
   expect((await api("POST", "/api/auth/pair", { remote: true, body: { code: credential, browser: true } })).status).toBe(400);
-  // Before anything is redeemed the page shows whose Cloud this is; looking redeems nothing.
   for (let i = 0; i < 2; i++) {
     const preview = await browserRequest({ code: credential, browser: true, preview: true });
     expect(preview.status).toBe(200);
@@ -221,12 +207,9 @@ it("signs a browser in from the Cloud page's \"Use in your browser\" into an own
   expect(cookie).toMatch(/Secure/);
   expect(cookie).toMatch(/SameSite=Lax/);
   const session = await api("GET", "/api/auth/session", { remote: true, headers: { cookie: cookie.split(";")[0] } });
-  // The owner's admin scope, exactly what the app gets from its own Cloud pairing, and whose Cloud it is.
   expect(session.body).toMatchObject({ kind: "session", label: "Safari on iPad", scopes: ["admin", "client"], cloudHome: true, owner: "ada@example.test" });
-  // Its cookie's value is not a bearer token.
   const token = cookie.split(";")[0].split("=").slice(1).join("=");
   expect((await api("GET", "/api/auth/session", { remote: true, headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
-  // Its changes need the browser's word that they come from this Cloud's own page: the cookie alone is refused.
   const change = (headers: Record<string, string>) => api("POST", "/api/auth/stream-ticket", { remote: true, headers: { cookie: cookie.split(";")[0], ...headers } });
   expect((await change({})).status).toBe(403);
   expect((await change({ "sec-fetch-site": "cross-site" })).status).toBe(403);
@@ -234,7 +217,6 @@ it("signs a browser in from the Cloud page's \"Use in your browser\" into an own
   expect((await change({ origin: base.replace("http:", "https:") })).status).toBe(200);
   expect((await change({ origin: `https://evil.example`, "sec-fetch-site": "same-origin" })).status).toBe(403);
   expect((await change({ "sec-fetch-site": "same-origin" })).status).toBe(200);
-  // A replay, or looking at a spent one, gets nothing.
   expect((await signIn()).status).toBe(401);
   expect((await browserRequest({ code: credential, browser: true, preview: true })).status).toBe(401);
   expect(log).not.toContain(credential);
@@ -245,7 +227,6 @@ it("replaces a browser's own session when it signs in again, and a lost answer l
   const first = await browserRequest({ code: await mintBrowserSignIn(), label: "Chrome on Mac", cookie: true, browser: true, attemptId: randomBytes(12).toString("base64url") });
   expect(first.status).toBe(200);
   const firstCookie = cookieOf(first), firstId = ((await first.json()) as any).session.id as string;
-  // Signing in again from the same browser, already connected: the new session replaces the old one.
   const second = await browserRequest({ code: await mintBrowserSignIn(), label: "Chrome on Mac", cookie: true, browser: true, attemptId: randomBytes(12).toString("base64url") }, firstCookie);
   expect(second.status).toBe(200);
   const secondCookie = cookieOf(second), secondId = ((await second.json()) as any).session.id as string;
@@ -253,12 +234,10 @@ it("replaces a browser's own session when it signs in again, and a lost answer l
   const listed = await api("GET", "/api/auth/sessions", { remote: true, headers: { cookie: secondCookie } });
   expect(listed.body.sessions.map((s: any) => s.id)).toContain(secondId);
   expect(listed.body.sessions.map((s: any) => s.id)).not.toContain(firstId);
-  // An answer that never arrives leaves a session named for its browser in Paired devices, which the owner can revoke.
   const lost = await browserRequest({ code: await mintBrowserSignIn(), label: "Firefox on Chromebook", cookie: true, browser: true, attemptId: randomBytes(12).toString("base64url") });
   const lostId = ((await lost.json()) as any).session.id as string;
   const orphan = (await api("GET", "/api/auth/sessions", { remote: true, headers: { cookie: secondCookie } })).body.sessions.find((s: any) => s.id === lostId);
   expect(orphan).toMatchObject({ label: "Firefox on Chromebook", scopes: ["admin", "client"], owner: "ada@example.test" });
-  // (as the Cloud's own page sends it: a browser marks the change same-origin)
   const revoke = await fetch(`${base}/api/auth/sessions/${lostId}`, { method: "DELETE", headers: { host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https",
     "sec-fetch-site": "same-origin", cookie: secondCookie } });
   expect(revoke.status).toBe(200);
@@ -277,10 +256,7 @@ it("serves its pages to no frame and with no Referer", async () => {
 });
 
 it("never hands the included tokens or the signing secret to a CLI it probes", async () => {
-  // POST /api/cli-test runs `<cli> --version` with a copy of the server's own
-  // environment, less every credential on the shared lists (config.ts). That
-  // the server drops the included tokens from its own environment at startup
-  // is holdIncludedServices (included-services.test.ts).
+  // POST /api/cli-test runs `<cli> --version` with a copy of the server's own env, less every shared-list credential.
   const dump = join(home, "cli-env.json");
   const cli = join(home, "dump-env.mjs");
   writeFileSync(cli, `#!/usr/bin/env node
@@ -339,12 +315,10 @@ it("never hands a gateway's settings or the signing secret to an engine", async 
 });
 
 it("records when a bot's turn first finished here, once, in the Cloud's own settings", async () => {
-  // The turn above ("hello") finished on this machine.
   const first = async () => (await api("GET", "/api/config")).body.onboarding?.firstTurnAt as string | undefined;
   await expect.poll(first, { timeout: 15_000 }).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   const recorded = await first();
   expect(JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8")).onboarding.firstTurnAt).toBe(recorded);
-  // A later turn leaves it as it was.
   const created = await api("POST", "/api/bots", { body: {
     name: "Second fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, requireAvailableModel: true,
   } });
@@ -361,8 +335,6 @@ it("records when a bot's turn first finished here, once, in the Cloud's own sett
 });
 
 it("offers its bots the browser and cloud computers only, and tells them they cannot see the person's computer", async () => {
-  // The browser is on with no welcome to turn it on; the app is told this is
-  // a Cloud home, so it lists no this computer and no Local VM either.
   const status = await api("GET", "/api/config");
   expect(status.body).toMatchObject({ cloudHome: true, features: { browser: true } });
   writeFileSync(join(home, "hang"), "");
@@ -376,8 +348,6 @@ it("offers its bots the browser and cloud computers only, and tells them they ca
     const dump = join(home, "spawn-hang.json");
     await expect.poll(() => existsSync(dump), { timeout: 15_000 }).toBe(true);
     const { systemPrompt, mcpConfig } = JSON.parse(readFileSync(dump, "utf8"));
-    // Its engine mounts the team tools, and a Cloud home always offers lending,
-    // so the bot is told how to reach a lent Mac, and what to say without one.
     expect(systemPrompt).toContain(cloudHomePrompt(true));
     expect(systemPrompt).toContain("check list_shared_computers");
     expect(systemPrompt).not.toMatch(/Local VM is an isolated desktop|user's host|host desktop|select an available Local VM/);

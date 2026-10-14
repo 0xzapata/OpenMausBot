@@ -15,21 +15,14 @@ export interface McpProbeTool {
 }
 
 export type McpProbeResult =
-  /** `total` is set when the server advertised more tools than `tools` shows. */
   | { ok: true; tools: McpProbeTool[]; total?: number }
   | { ok: false; error: string; auth?: "required" };
 
 export const SIGN_IN_REQUIRED = "This server needs you to sign in.";
 
-/** A command that bridges to a big URL server (`npx mcp-remote …`) prints
- * the same 1.2 MB tools list the URL test reads, so it gets the same cap. */
 const MAX_STDOUT_BYTES = MAX_REMOTE_MCP_BYTES;
 const MAX_TOOLS = 100;
-/** A command starts on this computer and answers fast. */
 export const STDIO_PROBE_TIMEOUT_MS = 8_000;
-/** A URL server answers over the internet, so it gets more room than a
- * command. Whop's 425-tool list measured 1 to 2 s with a real sign-in; what
- * failed it was the old 1 MiB response cap, never the clock. */
 export const REMOTE_PROBE_TIMEOUT_MS = REMOTE_MCP_STARTUP_MS;
 
 function probeEnvironment(server: StoredStdioMcpServer): NodeJS.ProcessEnv {
@@ -56,10 +49,7 @@ function redactConfiguredValues(value: string, secrets: Record<string, string>):
   return redacted;
 }
 
-/** The bounded, redacted tool list the renderer may see, and how many tools
- * the server really advertised when that is more than the list shows.
- * `secrets` are the configured values (env or header values) a careless
- * server might echo. */
+/** Bounded and redacted: `secrets` are configured values a careless server might echo. */
 function publicTools(raw: unknown[], secrets: Record<string, string>): { tools: McpProbeTool[]; total?: number } {
   const named = raw.filter((entry): entry is Record<string, unknown> =>
     !!entry && typeof entry === "object" && typeof (entry as { name?: unknown }).name === "string" && !!(entry as { name: string }).name.trim());
@@ -72,9 +62,7 @@ function publicTools(raw: unknown[], secrets: Record<string, string>): { tools: 
   return named.length > tools.length ? { tools, total: named.length } : { tools };
 }
 
-/** Prove the MCP handshake and list the tools of one configured server,
- * whichever way it is reached. Neither path returns anything the renderer
- * must not see: child stderr, environment values, header values. */
+/** Never returns what the renderer must not see: child stderr, environment values, header values. */
 export function probeMcpServer(
   server: StoredMcpServer,
   timeoutMs?: number,
@@ -85,9 +73,6 @@ export function probeMcpServer(
     : probeStdioMcpServer(server, timeoutMs ?? STDIO_PROBE_TIMEOUT_MS, signal);
 }
 
-/** Connect to a remote server over its transport, bounded by one timeout
- * for initialize + tools/list together. HTTP status codes are safe to show
- * and are the one detail that tells a wrong token from a wrong address. */
 async function probeRemoteMcpServer(
   server: StoredRemoteMcpServer,
   timeoutMs: number,
@@ -108,8 +93,6 @@ async function probeRemoteMcpServer(
   } catch (error) {
     if (signal?.aborted) return { ok: false, error: publicProbeError("cancelled") };
     if (timeout.signal.aborted) return { ok: false, error: publicProbeError("timeout") };
-    // A 401 that names an OAuth sign-in is not a wrong address or header:
-    // the person has to sign in. Anything else keeps the plain status.
     if (error instanceof McpHttpError && error.status === 401) {
       const discovery = AbortSignal.timeout(5_000);
       const meta = await discoverMcpAuth(server.url, error.wwwAuthenticate ?? null, {
@@ -130,9 +113,7 @@ async function probeRemoteMcpServer(
   }
 }
 
-/** Start one stdio server long enough to prove the MCP handshake and list its
- * tools. It is always reaped, never inherits OpenMaus credentials, and never
- * returns child stderr or environment values to the renderer. */
+/** Always reaped, never inherits OpenMaus credentials. */
 function probeStdioMcpServer(
   server: StoredStdioMcpServer,
   timeoutMs: number,
@@ -213,8 +194,7 @@ function probeStdioMcpServer(
       }
       splitter.push(chunk);
     });
-    // Drain without retaining it. Child stderr often contains secrets or
-    // arbitrary native logs and is not part of the MCP protocol.
+    // Drain without retaining: child stderr often contains secrets.
     child.stderr.resume();
     child.once("error", () => finish({ ok: false, error: publicProbeError("spawn") }));
     child.once("close", () => finish({ ok: false, error: publicProbeError("closed") }));

@@ -63,8 +63,11 @@ same rules hold on the desktop, a server and Cloud:
   read from `/proc`, so an image without `ps` works the same.
 - **Unused browsers close.** A browser nothing has used for
   `browserEngine.idleTimeoutMinutes` in `config.json` (1 to 60; 10 when
-  unset) is closed: no bot call (a tool listing counts), no turn that has
-  used it and is still running, no person holding it, no open Browser panel.
+  unset) is closed: no bot call (a tool listing counts, and so do a call
+  waiting behind another, its page-health reads and recorded step, and
+  fill_login's typing; a preview frame only holds off a close while it is
+  taken), no turn that has used it and is still running, no person holding
+  it, no open Browser panel.
   Saved sign-ins stay, and the bot's next browser call opens it again and is
   told its pages are gone. A temporary browser saves nothing, so it starts
   fresh, and the bot is told its sign-ins went too. A profile set to My
@@ -140,8 +143,10 @@ node scripts/smoke-browser-bundle.mjs --resources /absolute/app/resources
 On macOS, use `/absolute/OpenMausBot.app/Contents/Resources`. On Linux, run as
 an unprivileged user against the installed `.deb` at
 `/opt/OpenMausBot/resources`. This check creates its own empty home and local
-web page, checks automatic discovery, navigation, typing/clicking, screenshot
-delivery and two-bot cookie/storage isolation, then removes only its fixture.
+web page, checks automatic discovery, navigation, typing/clicking, the
+loopback command relay the server reads, pictures and types through
+(`server/browser-relay.ts`), screenshot delivery and two-bot cookie/storage
+isolation, then removes only its fixture.
 No model account or user browser profile is used. Cross-target `--check-only`
 checks layout only and is not evidence of successful browser execution.
 

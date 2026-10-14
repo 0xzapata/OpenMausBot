@@ -1,8 +1,3 @@
-/** Lazy exclusive claims for auto-resolved Local VM attaches (issue #1361).
- * The table is keyed by thread and owned by the dispatch generation; the
- * claim closure itself lives in index.ts next to the turn state it needs.
- * Kept free of index.ts imports so the fire-once semantics stay unit-testable. */
-
 export interface AutoVmClaimOwner {
   threadId: string;
   generation: string;
@@ -10,60 +5,29 @@ export interface AutoVmClaimOwner {
 
 export interface AutoVmClaimSlot {
   owner: AutoVmClaimOwner;
-  /** Runs the exclusive claim sequence: bind, lease, boot. At most once. */
+  /** Bind, lease, boot; at most once. */
   claim: () => Promise<void>;
   /** Set by startAutoVmClaim; presence means the claim already fired. */
   begin?: Promise<void>;
-  /** Set when the fired claim rejected. The slot stays so the gate keeps
-   * refusing screen calls for this generation instead of forwarding them
-   * onto a VM the turn never claimed (gate finding F1). */
+  /** The fired claim rejected; the slot stays so the gate keeps refusing screen calls instead of forwarding them to an unclaimed VM. */
   failed?: boolean;
-  /** The rejection's message, so the gate can refuse honestly instead of
-   * blaming another thread. */
   failure?: string;
-  /** Set when the fired claim resolved: this turn now holds the desktop. */
   claimed?: boolean;
-  /** True when dispatch mounted the computer tools without claiming, so
-   * the gate must fire the claim on the first screen call. Eager attaches
-   * register the same slot shape but never need the gate. */
+  /** Dispatch mounted the computer tools without claiming, so the gate fires the claim on the first screen call. */
   lazy?: boolean;
-  /** What the gate calls this computer when a fired claim has failed
-   * ("the Local VM", "the VPS computer"). The table serves every lazily
-   * claimed desktop, not only the Local VM it was written for. */
   label?: string;
-  /** This claim mounts a local workspace, not a remote Boat/VPS desktop. */
   localVm?: boolean;
-  /** What the gate answers when a call's wait ran out with this claim still
-   * running, instead of the contention text a queued claim earns. Every
-   * call waits on a running claim (the gate's call wait), not only the call
-   * that fired it. */
   pendingReason?: string;
-  /** The Boat a cloud computer's claim created or woke (mountBotBoat):
-   * its tools reach that Boat once the claim has landed. */
   boxId?: string;
-  /** The claim itself creates or wakes the computer (mountBotBoat), so that
-   * computer is this turn's even before it is up: select_computer counts it
-   * as selected. The other lazy claims only lease a desktop that is up. */
   startsComputer?: true;
-  /** Called once, after the slot is marked failed, when the fired claim
-   * rejected (issue #1369): the turn surfaces a terminal error and ends
-   * instead of staying busy behind a gate that can only refuse. The
-   * fail-closed refusal below does not depend on it firing. `error` is what
-   * the claim threw, so a failure already read as a place keeps its row. */
+  /** Called once after the slot is marked failed; the fail-closed refusal does not depend on it firing. */
   onRejected?: (failure: string, error?: unknown) => void;
 }
 
 export type AutoVmClaimTable = Map<string, AutoVmClaimSlot>;
 
-/** Fire a thread's lazy claim exactly once, fenced by the dispatch
- * generation. A rejected claim KEEPS the slot and marks it failed: the
- * computer-control gate then keeps answering held for that generation, so
- * the bridge refuses every later screen call instead of forwarding it onto
- * a VM this turn never claimed. `begin` staying set means the claim never
- * re-fires; turn settle (releaseTurnResources / releaseLocalVmThread in
- * index.ts) clears the slot, fenced by owner generation. A rejection
- * mutates only the slot it fired from, so a stale claim can never remove
- * or mark a newer generation's slot on the same thread. */
+/** Exactly once per dispatch generation. A rejected claim keeps its slot marked failed, and a rejection mutates only the
+ * slot it fired from, so a stale claim never touches a newer generation's. */
 export function startAutoVmClaim(table: AutoVmClaimTable, threadId: string, generation: string): void {
   const slot = table.get(threadId);
   if (!slot || slot.owner.threadId !== threadId || slot.owner.generation !== generation || slot.begin) return;

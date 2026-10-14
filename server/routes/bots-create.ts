@@ -1,11 +1,3 @@
-// POST /api/bots: creating a bot, moved out of server/index.ts's inline
-// routes into the route table (server/routes/README.md). The table runs
-// after the auth gate; the admin-scope rule stays keyed by path in
-// server/request-auth.ts, and the member case (a paired session without
-// admin) is refused here when the saved New bot defaults carry anything a
-// member may not set. The saved defaults (server/new-bot-defaults.ts) and a
-// preset (server/presets.ts) are applied around the store's own creation;
-// anything that fails before creation is complete deletes the bot again.
 import type { WireBot } from "../../shared/wire.ts";
 import { validateBotCwd } from "../bot-cwd.ts";
 import { parseBotProfilePatch } from "../bot-profile.ts";
@@ -13,7 +5,6 @@ import { parseVisibility } from "../bot-visibility.ts";
 import type { createCloudRoutineAuthors } from "../cloud-lending.ts";
 import type { AppConfig } from "../config.ts";
 import type { ModelSelection } from "../contracts.ts";
-import type { createApprovalModeSupport } from "../harness-capabilities.ts";
 import type { hostedModelPolicy } from "../hosted-models.ts";
 import { MAX_MCP_SERVERS, mcpServerNameError } from "../mcp-registry.ts";
 import { journalMemoryWrite } from "../memory-journal.ts";
@@ -26,36 +17,26 @@ import type { BotRecord, Store } from "../store.ts";
 import { writeMemoryFile, writeMemoryTopic } from "../workspace.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
-/** What index.ts's checkedModelSelection answers: a normalized selection,
- * or the status and message to refuse the request with. */
 export type ModelSelectionCheck = { ok: true; selection: ModelSelection } | { ok: false; status: number; error: string };
 
 export interface BotCreateRouteDeps {
   store: Store;
   cfg: AppConfig;
   presetStore: Pick<PresetStore, "resolve">;
-  /** The organization library's install statuses, so a withdrawn preset is not offered. */
   orgInstallStatuses(): ReadonlyMap<string, OrgInstallStatus>;
   /** A hosted (company) workspace: Full access comes only from its policy. */
   hostedWorkspace: boolean;
   hostedFullAccessRefusal: string;
-  /** The packaged desktop is the parent process. */
   desktopManaged: boolean;
   maxWorkspaceBots: number;
-  /** On a Cloud home, the owner's person key; null elsewhere. */
   cloudOwnerKey: string | null;
   hostedModels: ReturnType<typeof hostedModelPolicy>;
-  supportsApprovalMode: ReturnType<typeof createApprovalModeSupport>;
   cloudRoutineAuthors: ReturnType<typeof createCloudRoutineAuthors> | null;
-  /** The routine manager, assigned at boot after the routes are built. */
   routines(): RoutineManager | null;
   storedAvatarExists(avatarUrl: string): boolean;
-  /** The workspace's default model, from provider discovery or the hosted policy. */
   defaultSelection(): Promise<ModelSelection>;
   checkedModelSelection(raw: unknown, current?: { selection: ModelSelection; busy: boolean }, requireAvailableModel?: boolean): ModelSelectionCheck;
-  /** Whether a request comes from one of the Cloud owner's own devices. */
   cloudOwnerSession(auth: RequestAuth): boolean;
-  /** The bot as HTTP replies carry it. */
   wireBot(bot: BotRecord): WireBot;
 }
 
@@ -64,7 +45,7 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
     store, cfg, presetStore, orgInstallStatuses,
     hostedWorkspace: HOSTED_WORKSPACE, hostedFullAccessRefusal: HOSTED_FULL_ACCESS_REFUSAL, desktopManaged: DESKTOP_MANAGED,
     maxWorkspaceBots: MAX_WORKSPACE_BOTS, cloudOwnerKey: CLOUD_OWNER_KEY,
-    hostedModels, supportsApprovalMode, cloudRoutineAuthors,
+    hostedModels, cloudRoutineAuthors,
     storedAvatarExists, defaultSelection, checkedModelSelection, cloudOwnerSession, wireBot,
   } = deps;
   return async ({ req, res, path, method, auth, json, readBody }) => {
@@ -82,8 +63,6 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
           return json(res, 403, { error: "Creating a bot with these defaults needs the admin scope" });
         }
       }
-      // A preset (presets.ts) supplies content: playbooks, skills and
-      // starter notes. Name, look and instructions stay the request's own.
       if (body.preset !== undefined && (typeof body.preset !== "string" || !/^[\w-]{1,64}$/.test(body.preset))) {
         return json(res, 400, { error: "preset must be a preset id from New bot" });
       }
@@ -91,8 +70,7 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
       const preset = resolvedPreset && presetOffered(resolvedPreset.row, orgInstallStatuses()) ? resolvedPreset : null;
       if (body.preset !== undefined && !preset) return json(res, 404, { error: PRESET_UNAVAILABLE_MESSAGE });
       body = { ...body, ...settings, name: settings.name };
-      // Full is applied like any other level; its first conversation follows
-      // the bot. Custom still comes only through the desktop's private channel.
+      // Custom comes only through the desktop's private channel.
       if (settings.approvalMode === "custom") {
         return json(res, 403, { error: "Custom approval requires the desktop permission flow. Use the bot creation dialog or choose another level for API creation." });
       }
@@ -150,11 +128,7 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
         selection = checked.selection;
       }
       if (hostedModels && !hostedModels.allows(selection)) return json(res, 400, { error: hostedModels.error() });
-      if (settings.approvalMode === "full" && !supportsApprovalMode(selection, "full")) {
-        return json(res, 400, { error: "This provider does not support Full access" });
-      }
-      // Keep the capacity check immediately beside the synchronous write.
-      // Awaiting provider discovery before this point cannot race the cap.
+      // The capacity check sits beside the synchronous write, after every await.
       if (store.bots.length >= MAX_WORKSPACE_BOTS) {
         return json(res, 409, { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` });
       }
@@ -168,8 +142,7 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
       try {
         const { chiefOfStaff: _chief, managedSections: _managed, toolScope: _toolScope, ...ordinary } = settings;
         store.patchBot(bot.id, {
-          // Store creation completes workspace defaults (including effort).
-          // Applying the rest of the template must not undo that selection.
+          // Store creation completed the workspace defaults (effort included): the rest of the template must not undo them.
           ...ordinary, name: bot.name, section, modelSelection: bot.modelSelection,
           mascotExpression: ordinary.mascotExpression ?? undefined,
           avatarUrl: ordinary.avatarUrl || undefined,
@@ -178,8 +151,6 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
           browserProfile: ordinary.browserProfile || undefined,
           autoApprove: ordinary.approvalMode === "auto",
         });
-        // What the preset brings wins over the saved defaults for the same
-        // skill name or note file.
         const presetSkills = new Set(preset?.preset.skills ?? []);
         const presetNotes = new Set(Object.keys(preset?.preset.seed?.memory ?? {}));
         for (const [file, text] of Object.entries(template.memory)) {
@@ -204,8 +175,7 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
             if ("error" in enabled) throw Object.assign(new Error(enabled.error), { status: 422 });
           }
         }
-        // On a Cloud home only the owner's devices create bots: its routines
-        // (and the conversations they report into) are theirs.
+        // On a Cloud home only the owner's devices create bots: its routines are theirs.
         const ownersRoutines = CLOUD_OWNER_KEY && auth.kind === "session" && cloudOwnerSession(auth) ? CLOUD_OWNER_KEY : null;
         for (const routine of template.routines) {
           const created = routines!.create({ ...routine, botId: bot.id, enabled: false });
@@ -217,8 +187,7 @@ export function createBotCreateRoutes(deps: BotCreateRouteDeps): RouteHandler {
         store.deleteBot(bot.id);
         throw error;
       }
-      // Creation is complete. Activation errors must not invite a duplicate
-      // creation retry or delete a bot whose routine may already have run.
+      // Creation is complete: activation errors must not invite a duplicate retry or delete a bot whose routine may have run.
       const warnings: string[] = [];
       if (settings.chiefOfStaff) {
         try {

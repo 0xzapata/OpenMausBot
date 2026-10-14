@@ -10,8 +10,6 @@ const PRESET_TURN_LIMITS = [30, 60, 120] as const;
 const isPresetTurnLimit = (minutes: number): minutes is (typeof PRESET_TURN_LIMITS)[number] =>
   (PRESET_TURN_LIMITS as readonly number[]).includes(minutes);
 
-/** Per-conversation ceiling for a group turn. Direct one-to-one chats keep
- * the inactivity watchdog and do not show this. */
 export function ConversationTurnLimit({ group }: { group: Group }) {
   const { state, dispatch } = useStore();
   const globalMinutes = state.config?.rooms.turnTimeoutMinutes ?? 5;

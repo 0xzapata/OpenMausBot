@@ -66,7 +66,6 @@ describe("notification sounds preference", () => {
     preference.setNotificationSounds(false);
     expect(local.getItem(preference.NOTIFICATION_SOUNDS_KEY)).toBe("0");
     expect(preference.useNotificationSounds()).toBe(false);
-    // the non-hook read is what the notification path uses
     expect(preference.notificationSoundsEnabled()).toBe(false);
 
     vi.resetModules();
