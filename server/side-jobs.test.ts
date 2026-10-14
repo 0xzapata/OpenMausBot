@@ -1,11 +1,3 @@
-// The helper model (server/side-jobs.ts): one resolver hands the compaction
-// summary, memory upkeep and the skill review their one-off text call. A
-// bot's own engine answers whenever it can, exactly as before; the optional
-// helper instance covers an engine that cannot (Pi and Muse Code; Codex and
-// the ACP engines for the compaction summary). Covered here: the setting,
-// the order, what is booked and to whom, every reason the helper is refused
-// (a bot's own "never the helper" switch among them), and memory upkeep run
-// through the resolver (its own test file is left as it was).
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

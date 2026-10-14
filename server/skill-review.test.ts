@@ -356,9 +356,6 @@ describe("the scheduler", () => {
     expect(review.status(BOT.id, "thread-a").steps).toBe(0);
   });
 
-  // The reviewer as server/index.ts hands it over (server/side-jobs.ts): a
-  // bot on an engine with no one-off text call (Pi here), with and without
-  // a helper model.
   function helperReviewer(write: NonNullable<SideJobInstance["generateText"]>, helper: { instanceId: string } | null = { instanceId: "helper" }) {
     const booked: Array<Parameters<SideJobsDeps["book"]>[0]> = [];
     const engines: Record<string, SideJobInstance> = {

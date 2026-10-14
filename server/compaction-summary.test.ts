@@ -71,10 +71,7 @@ it("bounds model output without losing the latest source correction", async () =
   expect(result).toContain("Cancel deployment");
 });
 
-// The summary's writer as server/index.ts hands it over (server/side-jobs.ts):
-// a bot on an engine with no one-off text call for the summary (Codex here,
-// whose own background call is never used while a turn waits), with and
-// without a helper model.
+// Codex: its own background call is never used while a turn waits.
 function helperWriter(write: NonNullable<SideJobInstance["generateText"]>, helper: { instanceId: string } | null = { instanceId: "helper" }) {
   const booked: Array<Parameters<SideJobsDeps["book"]>[0]> = [];
   const engines: Record<string, SideJobInstance> = {

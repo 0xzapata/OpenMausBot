@@ -1,16 +1,4 @@
-// The helper model through the real server (server/side-jobs.ts). A bot on
-// an engine with no one-off text call, the fake Pi, gets memory capture, the
-// skill review and a written compaction summary from the helper instance
-// (the fake Claude's one-shot mode, with the model the setting names), each
-// booked as a helper call for that bot. A Codex bot keeps its own background
-// call for memory upkeep and gets only the summary from the helper; a Claude
-// bot keeps writing everything with its own engine and quick model. A bot
-// switched to never use the helper (PATCH helperModel: false) gets none of
-// the three from it. A second server without the setting shows the Pi bot
-// keeping today's fallbacks, and the setting followed from config.json as
-// the file changes.
-//
-// POSIX-gated like the other CLI e2es (the fakes are shebang scripts).
+// POSIX-gated like the other CLI e2es: the fakes are shebang scripts.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
