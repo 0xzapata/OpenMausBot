@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingHttpHeaders } from "node:http";
 import { connect, createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -9,13 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA_DIR, ensureDirs, instanceConfigs, NATIVE_DIR } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
+import { BACKGROUND_CALL_TIMEOUT_MS, backgroundCallArgs } from "./claude-background.ts";
 import {
   autoCompactWindow,
   brokerSocketCandidates,
   claudeCliSupports,
   claudeCliUpdate,
   claudeHookSettings,
-  claudeLimitMessage,
   ClaudeDriver,
   createPermissionBroker,
   hookTokenFile,
@@ -29,8 +29,11 @@ import {
   turnCostFromRunningTotal,
   type ClaudeConfig,
 } from "./claude.ts";
+import { TEAM_TOOLS_FAILED } from "./team-tools.ts";
+import { claudeLimitMessage } from "./claude-limits.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
+import { BASH_MAX_TIMEOUT_MS } from "../system-prompt.ts";
 import { ephemeralWorkspaceTokenPath } from "../workspace-backup-policy.ts";
 import * as procs from "../procs.ts";
 import * as localInject from "./local-inject.ts";
@@ -96,6 +99,10 @@ describe("ClaudeDriver.decodeConfig", () => {
     } else {
       expect(command).toContain("'/tmp/it'\\''s $OMB_HOOK_TEST `literal`/helper.ts'");
     }
+  });
+
+  it("hooks failed tool calls too, so a timed-out command can be given a hint", () => {
+    expect(Object.keys(claudeHookSettings("/tmp/helper.ts"))).toContain("PostToolUseFailure");
   });
 
   it("keeps the per-turn hook token where workspace backups never look", () => {
@@ -565,6 +572,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
   });
 
   it("turns a signed-out CLI into a setup error, not a bot reply", async () => {
+    const dump = join(scratch, "signed-out-session.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
     await create("not-logged-in");
     await instance.adapter.sendTurn({ threadId: "t-auth", text: "hi" });
     await recorder.until((e) => e.type === "turn.completed");
@@ -574,6 +583,10 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.some((e: any) => e.type === "item.completed" && e.itemType === "assistant_text")).toBe(false);
     expect(recorder.events.some((e: any) => e.type === "content.delta")).toBe(false);
     expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "auth_required" });
+    const pid = dumpedPid(dump);
+    await expect.poll(() => {
+      try { process.kill(pid, 0); return false; } catch { return true; }
+    }, { timeout: 7_000 }).toBe(true);
   });
 
   it("settles an outdated CLI as update_required without emitting an assistant reply", async () => {
@@ -1587,6 +1600,15 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(readFileSync(probes, "utf8").match(/^help /gm)).toHaveLength(1);
   });
 
+  it("keeps the last known sign-in when auth status times out, as it does behind an open Keychain prompt", async () => {
+    const release = join(scratch, "release-auth");
+    writeFileSync(release, "");
+    await create(undefined, { FAKE_CLAUDE_HOLD_AUTH: release });
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: true });
+    unlinkSync(release);
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: true });
+  }, 20_000);
+
   it("maps a CLI version onto the flags it accepts", () => {
     expect(parseClaudeCliVersion("2.1.232 (Claude Code)")).toEqual([2, 1, 232]);
     expect(parseClaudeCliVersion("banner\n1.0.60 (Claude Code)")).toEqual([1, 0, 60]);
@@ -1728,6 +1750,22 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1");
     expect(seen.argv[seen.argv.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
     expect(seen.argv).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("lets a Bash call ask for up to ten minutes, unless the person set their own cap", async () => {
+    const dump = join(scratch, "bash-timeout.json");
+    await create(undefined, { FAKE_CLAUDE_DUMP: dump });
+    await instance.adapter.sendTurn({ threadId: "t-bash-timeout", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).env.BASH_MAX_TIMEOUT_MS).toBe(String(BASH_MAX_TIMEOUT_MS));
+
+    recorder.stop();
+    await instance.dispose();
+    const own = join(scratch, "bash-timeout-own.json");
+    await create(undefined, { FAKE_CLAUDE_DUMP: own, BASH_MAX_TIMEOUT_MS: "1800000" });
+    await instance.adapter.sendTurn({ threadId: "t-bash-timeout-own", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(own, "utf8")).env.BASH_MAX_TIMEOUT_MS).toBe("1800000");
   });
 
   it("does not end the current turn or its approvals on a background-task result", async () => {
@@ -2544,6 +2582,19 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(2);
   });
 
+  it("says when its team tools did not start, and starts the next turn in a new process that reconnects them", async () => {
+    await create(undefined, { FAKE_CLAUDE_MCP_FAILED: "agents" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const first = await instance.adapter.sendTurn({ threadId: "t-team-tools", text: "one" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    expect(recorder.events.filter((e) => e.type === "runtime.notice").map((e) => (e as { message: string }).message)).toEqual([TEAM_TOOLS_FAILED]);
+    const failedLaunch = dumpedPid(dump);
+    const second = await instance.adapter.sendTurn({ threadId: "t-team-tools", text: "two" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    expect(dumpedPid(dump)).not.toBe(failedLaunch);
+  });
+
   it("books each turn of a retained process at its own cost, not the process's running total", async () => {
     await create();
     const dump = join(scratch, "dump.json");
@@ -3350,6 +3401,51 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await expect(instance.reviewPermission?.("review this request")).resolves.toBe("fake generated text");
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.argv[seen.argv.indexOf("--output-format") + 1]).toBe("text");
+  });
+
+  it("runs helper calls tool-free and isolated, in an empty folder it then removes", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.296" });
+    const dump = join(scratch, "isolated-helper.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
+    expect(seen.argv).toContain("--strict-mcp-config");
+    expect(seen.argv[seen.argv.indexOf("--setting-sources") + 1]).toBe("project");
+    expect(seen.argv).toContain("--no-session-persistence");
+    expect(seen.cwd).toContain("omb-claude-background-");
+    expect(existsSync(seen.cwd)).toBe(false);
+  });
+
+  it("reads the CLI version before a helper call, so an older CLI gets no --tools", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.250" });
+    const dump = join(scratch, "older-helper.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv).not.toContain("--tools");
+    expect(seen.argv).toContain("--strict-mcp-config");
+  });
+
+  it("waits as long as the caller says for a helper call, and no longer", async () => {
+    await create(undefined, { FAKE_CLAUDE_TEXT_HANG: "1" });
+    const started = Date.now();
+    await expect(instance.generateText!("summarize", { timeoutMs: 300 })).rejects.toThrow("Claude review timed out");
+    expect(Date.now() - started).toBeLessThan(BACKGROUND_CALL_TIMEOUT_MS);
+  });
+
+  it("passes only the background flags the installed CLI accepts", () => {
+    const base = { model: "claude-haiku-4-5", outputFormat: "text" as const };
+    const cli = (version: [number, number, number]) => (flag: Parameters<typeof claudeCliSupports>[1]) => claudeCliSupports(version, flag);
+    expect(backgroundCallArgs({ ...base, supports: cli([2, 1, 296]), isolated: true })).toEqual([
+      "-p", "--model", "claude-haiku-4-5", "--output-format", "text",
+      "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "project",
+    ]);
+    // OMB_CLAUDE_INHERIT_USER_CONFIG keeps the person's own setup, still without tools
+    expect(backgroundCallArgs({ ...base, supports: cli([2, 1, 296]), isolated: false })).not.toContain("--strict-mcp-config");
+    expect(backgroundCallArgs({ ...base, supports: cli([1, 0, 100]), isolated: true })).toEqual([
+      "-p", "--model", "claude-haiku-4-5", "--output-format", "text", "--strict-mcp-config",
+    ]);
   });
 
   it("never falls back to personal authentication for API-key-only helper calls", async () => {

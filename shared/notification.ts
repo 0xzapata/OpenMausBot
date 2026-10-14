@@ -17,6 +17,8 @@ export type NotifyKind =
    * the results; both are internal, so without this the parent conversation
    * sits silent until the resume's first token. */
   | "delegation-settled"
+  /** A bot's settled room reply tagged the person (`@you` or their profile name). Rooms only. */
+  | "mention"
   /** The workspace crossed its monthly spend warning or reached its cap.
    * Sent to admins only, at most once per month for each. */
   | "spend";

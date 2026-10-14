@@ -19,6 +19,7 @@ const ROOT = join(SERVER_DIR, "..");
 const FAKE_CLAUDE = join(SERVER_DIR, "testing", "fake-claude-cli.ts");
 const FAKE_ACP = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
 const TEST_CAPABILITY_KEY = "notification-routing-fixture-capability";
+const TAGGED_REPLY = "Draft is up.\n\n@you three open questions are blocking Section 2 & 3.";
 
 let child: ChildProcess;
 let home = "";
@@ -98,6 +99,15 @@ beforeAll(async () => {
         driver: "claudeAgent",
         displayName: "Quick fixture",
         environment: { FAKE_CLAUDE_MODE: "happy", FAKE_CLAUDE_DUMP: dumpFile },
+        config: { cli: FAKE_CLAUDE },
+      },
+      tagger: {
+        driver: "claudeAgent",
+        displayName: "Tagger fixture",
+        environment: {
+          FAKE_CLAUDE_MODE: "happy",
+          FAKE_CLAUDE_REPLIES: JSON.stringify(Array.from({ length: 8 }, () => TAGGED_REPLY)),
+        },
         config: { cli: FAKE_CLAUDE },
       },
       // never finishes, so a bot is held mid-room long enough to ask for hands
@@ -257,6 +267,69 @@ describe("a room turn belongs to the room", () => {
     } finally {
       await api("PATCH", "/api/config", { features: { browser: false } }).catch(() => undefined);
       await cleanup([roomId], [bot.id]);
+    }
+  }, 45_000);
+});
+
+describe("a reply that tags the person", () => {
+  it("buzzes once from a room, as a mention that names the room", async () => {
+    const bot = await createBot("Tagger", "tagger");
+    let roomId: string | undefined;
+    const stream = await openSse(`${base}/api/events`);
+    try {
+      const room = (await api("POST", "/api/groups", {
+        name: "Spec Review",
+        memberIds: [bot.id],
+        setup: { bulletin: "", defaultResponder: { kind: "everyone" } },
+      })).body.group;
+      roomId = room.id;
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "where are we?" })).status).toBe(202);
+
+      const frame = await stream.until(
+        (candidate) => candidate.kind === "notify" && candidate.notification?.botId === bot.id,
+        20_000,
+      );
+      expect(frame.notification).toEqual({
+        kind: "mention",
+        botId: bot.id,
+        botName: "Tagger",
+        threadId: room.threadId,
+        groupId: room.id,
+        title: "Tagger in Spec Review mentioned you",
+        body: "@you three open questions are blocking Section 2 & 3.",
+      });
+      await expect.poll(async () => (await groupState(room.id))?.working, { timeout: 20_000 }).toBe(false);
+      const frames = stream.frames.filter(
+        (candidate) => candidate.kind === "notify" && candidate.notification?.botId === bot.id,
+      );
+      expect(frames.map((candidate) => candidate.notification.kind)).toEqual(["mention"]);
+    } finally {
+      stream.close();
+      await cleanup([roomId], [bot.id]);
+    }
+  }, 45_000);
+
+  it("stays an ordinary finished notice in a 1:1 thread", async () => {
+    const bot = await createBot("Solo Tagger", "tagger");
+    const stream = await openSse(`${base}/api/events`);
+    try {
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "where are we?" })).status).toBe(202);
+      const frame = await stream.until(
+        (candidate) =>
+          candidate.kind === "notify" &&
+          candidate.notification?.kind === "done" &&
+          candidate.notification?.botId === bot.id,
+        20_000,
+      );
+      expect(frame.notification.body).toContain("@you three open questions");
+      await expect.poll(async () => (await botState(bot.id))?.busy, { timeout: 20_000 }).toBeFalsy();
+      const kinds = stream.frames
+        .filter((candidate) => candidate.kind === "notify" && candidate.notification?.botId === bot.id)
+        .map((candidate) => candidate.notification.kind);
+      expect(kinds).toEqual(["done"]);
+    } finally {
+      stream.close();
+      await cleanup([], [bot.id]);
     }
   }, 45_000);
 });

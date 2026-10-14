@@ -54,10 +54,18 @@ export function isHarnessOwnedMcpEnvName(name: string): boolean {
   return name === "ELECTRON_RUN_AS_NODE" || name.startsWith("OMB_") || name.startsWith("OGB_");
 }
 
-function environmentNameError(name: string): string | null {
+/** Codex shares one environment across MCP children: OMB_/OGB_ carry bearers, and ELECTRON_RUN_AS_NODE may only repeat the "1" the harness proxies need. */
+export function isReservedMcpEnvEntry(name: string, value: string): boolean {
+  if (name === "ELECTRON_RUN_AS_NODE") return value !== "1";
+  return isHarnessOwnedMcpEnvName(name);
+}
+
+function environmentEntryError(name: string, value: string): string | null {
   if (!ENV_NAME.test(name)) return `Environment variable “${name}” is not valid.`;
-  if (isHarnessOwnedMcpEnvName(name)) {
-    return `Environment variable “${name}” is reserved by OpenMausBot.`;
+  if (isReservedMcpEnvEntry(name, value)) {
+    return name === "ELECTRON_RUN_AS_NODE"
+      ? `Environment variable “${name}” is reserved by OpenMausBot; a custom server may set it to “1” only.`
+      : `Environment variable “${name}” is reserved by OpenMausBot.`;
   }
   return null;
 }
@@ -194,13 +202,14 @@ function parseStdio(raw: unknown, mutation: boolean, existing?: StoredMcpServer)
     return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid MCP server." };
   }
   const incoming = parsed.data.env ?? {};
-  const invalidEnv = Object.keys(incoming).map(environmentNameError).find((error) => error !== null);
-  if (invalidEnv) return { ok: false, error: invalidEnv };
   if (Object.keys(incoming).length > MAX_ENV) {
     return { ok: false, error: `Use at most ${MAX_ENV} environment variables.` };
   }
   const env = resolveSecrets(incoming, existing && !isRemoteMcpServer(existing) ? existing.env : undefined);
   if (!env.ok) return env;
+  // Checked after resolving, so a kept write-only value is judged by what would run.
+  const invalidEnv = Object.entries(env.values).map(([name, value]) => environmentEntryError(name, value)).find((error) => error !== null);
+  if (invalidEnv) return { ok: false, error: invalidEnv };
   return {
     ok: true,
     server: {

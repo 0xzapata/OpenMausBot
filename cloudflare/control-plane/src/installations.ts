@@ -308,6 +308,7 @@ export async function revokeInstallation(
       env.DB.prepare(
         "UPDATE installation_credentials SET revoked_at = ? WHERE installation_id = ? AND revoked_at IS NULL",
       ).bind(now, installationId),
+      env.DB.prepare("DELETE FROM installation_push_devices WHERE installation_id = ?").bind(installationId),
     ]);
   }
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Message } from "@/state/store";
-import { callRecordIsPartial, callRecordLines } from "./call-record";
+import { callConversation, callRecordIsPartial, callRecordLines } from "./call-record";
 
 let at = 0;
 const msg = (id: string, fields: Partial<Message>): Message => ({ id, role: "bot", kind: "text", at: ++at, ...fields }) as Message;
@@ -215,6 +215,50 @@ describe("callRecordLines", () => {
     ];
     expect(ids(intoAnEarlierCallsTurn, "c1")).toEqual(["step:s1", "step:s2"]);
     expect(ids(intoAnEarlierCallsTurn, "c2")).toEqual([]);
+  });
+});
+
+describe("callConversation", () => {
+  const entries = (transcript: Message[], callId: string) => callConversation(transcript, callId).map((entry) => `${entry.kind}:${entry.id}`);
+
+  it("lists each spoken request, then what its turn did and answered, in order", () => {
+    const transcript = [
+      spoken("m1", "check the build", "c1"),
+      step("s1", "m1", "Bash", { spoken: "running a command" }),
+      approval("o1", "m1", { answered: "allow" }),
+      msg("b1", { text: "The build is green.", requestMessageId: "m1" }),
+      spoken("m2", "and the tests?", "c1"),
+      msg("b2", { text: "All passing.", requestMessageId: "m2" }),
+      callRow("r1", "c1"),
+    ];
+    expect(entries(transcript, "c1")).toEqual(["said:m1", "step:s1", "approval:o1", "answer:b1", "said:m2", "answer:b2"]);
+  });
+
+  it("leaves out a typed message and its turn, another call, and the turn's receipts", () => {
+    const transcript = [
+      msg("t1", { role: "user", text: "typed while on the call" }),
+      msg("tb", { text: "Typed answer.", requestMessageId: "t1" }),
+      spoken("m1", "what's the weather", "c1"),
+      chip("h1", "m1", "auto-approved"),
+      msg("d1", { kind: "digest", text: "1 step", requestMessageId: "m1" }),
+      msg("b1", { text: "Sunny.", requestMessageId: "m1" }),
+      spoken("x1", "another call's request", "c2"),
+      msg("xb", { text: "Another answer.", requestMessageId: "x1" }),
+    ];
+    expect(entries(transcript, "c1")).toEqual(["said:m1", "answer:b1"]);
+  });
+
+  it("is empty for a call where nothing was asked", () => {
+    expect(callConversation([callRow("r1", "c1")], "c1")).toEqual([]);
+  });
+
+  it("skips a request or an answer with no words", () => {
+    const transcript = [
+      spoken("m1", "  ", "c1"),
+      msg("b1", { text: "", requestMessageId: "m1" }),
+      step("s1", "m1", "Read"),
+    ];
+    expect(entries(transcript, "c1")).toEqual(["step:s1"]);
   });
 });
 

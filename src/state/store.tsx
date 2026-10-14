@@ -1836,7 +1836,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const {
         acknowledgeLocalAuto: _localAck,
         applyToAllThreads: _allThreads,
-        keepThreadModels: _keepThreadModels,
+        keepThreadModels: _keepThreadModels, threadId: _threadId,
         computer,
         connectorTools,
         connectorScopes,
@@ -3117,7 +3117,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (botBeforeUpdate) {
             botPatchQueue.enqueue(
               action.botId,
-              { modelSelection: action.selection },
+              { modelSelection: action.selection, threadId: botBeforeUpdate.switchingTo ?? botBeforeUpdate.threadId },
               botBeforeUpdate,
             );
           }
@@ -3668,7 +3668,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onFocus = () => {
       const now = Date.now();
-      if (now - lastFocusProbe.current < 3000) return;
+      if (now - lastFocusProbe.current < 30_000) return; // every engine's CLI runs; a Keychain prompt refocuses the window
       lastFocusProbe.current = now;
       void refreshInstances();
     };

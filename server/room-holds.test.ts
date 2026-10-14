@@ -19,6 +19,17 @@ describe("room member holds", () => {
     expect(classifyHoldDirective("STOP @Scout and @Pixel", ["scout", "pixel"]).hold).toEqual(["scout", "pixel"]);
   });
 
+  it("reads a stop word with an object as a task, not a hold", () => {
+    expect(classifyHoldDirective("@Engineer stop this bridge and uninstall it", ["engineer"])).toEqual({ hold: [], holdAll: false, release: ["engineer"], releaseAll: false });
+    expect(classifyHoldDirective("@Scout pause the render at 10s", ["scout"]).hold).toEqual([]);
+    expect(classifyHoldDirective("@Scout stop that", ["scout"]).hold).toEqual(["scout"]);
+    expect(classifyHoldDirective("@Scout stop it now", ["scout"]).hold).toEqual(["scout"]);
+    expect(classifyHoldDirective("stop the @Scout", ["scout"]).hold).toEqual(["scout"]);
+    expect(classifyHoldDirective("@Scout stop that now", ["scout"]).hold).toEqual(["scout"]);
+    expect(classifyHoldDirective("@Scout stop this right now", ["scout"]).hold).toEqual(["scout"]);
+    expect(classifyHoldDirective("@Scout pause your work", ["scout"]).hold).toEqual(["scout"]);
+  });
+
   it("releases a member addressed directly without a stop word", () => {
     expect(classifyHoldDirective("@Scout resume", ["scout"])).toEqual({ hold: [], holdAll: false, release: ["scout"], releaseAll: false });
     expect(classifyHoldDirective("@Scout what did you find?", ["scout"]).release).toEqual(["scout"]);
