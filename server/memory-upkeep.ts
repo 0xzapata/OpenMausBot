@@ -497,16 +497,31 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       });
       recordMemoryChange(botId, { path: "MEMORY.md", actor: "upkeep", via: "tidy", before, after: readRaw(botId, "MEMORY.md") });
     }
-    // Topic files get the two steps that need no model: expired lines to the
-    // archive (written first, as above) and exact duplicates merged.
+    // Project topics also reconcile contradictory decisions; re-read after every model call.
     let topicExpired = 0;
     let topicDuplicates = 0;
+    let topicSuperseded = 0;
+    let topicDeferred = 0;
     for (const topic of listMemoryTopics(botId)) {
       if (topic.name === ARCHIVE_TOPIC) continue;
       const path = `memory/${topic.name}`;
       const topicBefore = readRaw(botId, path);
       if (topicBefore === null) continue;
-      const topicPlan = planTidy(topicBefore, today);
+      const topicCandidates = contradictionCandidates(topicBefore, today);
+      let topicContradictions: Contradiction[] = [];
+      if (engine?.generateText && topicCandidates.length >= 2) {
+        const answer = await askModel(engine, contradictionPrompt(topicCandidates));
+        if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
+        if (readRaw(botId, path) !== topicBefore) continue;
+        if (answer !== null) {
+          topicContradictions = parseContradictions(answer, topicCandidates.length);
+          contradictionsChecked = true;
+        }
+      }
+      // Project notes often contain only an old decision and its correction.
+      const topicPlan = planTidy(topicBefore, today, topicContradictions, 1);
+      topicSuperseded += topicPlan.superseded.length;
+      topicDeferred += topicPlan.deferred;
       if (!planChanges(topicPlan)) continue;
       const tidied = applyTidy(topicBefore, topicPlan, today);
       writing(botId, () => {
@@ -521,8 +536,8 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       at,
       expired: plan.expired.length + topicExpired,
       duplicates: plan.duplicates.length + topicDuplicates,
-      superseded: plan.superseded.length,
-      deferred: plan.deferred,
+      superseded: plan.superseded.length + topicSuperseded,
+      deferred: plan.deferred + topicDeferred,
       ...(organized ? { organized } : {}),
       contradictionsChecked,
       ...(note ? { note } : {}),
