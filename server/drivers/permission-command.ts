@@ -35,16 +35,23 @@ export function permissionLaunchCwd(cwd: string): string | undefined {
   try { return realpathSync(cwd); } catch { return undefined; }
 }
 
+// Antigravity's ACP shell input uses CommandLine/Cwd instead of command/cwd.
+const COMMAND_KEYS = ["command", "CommandLine"] as const;
+const DIRECTORY_KEYS = ["cwd", "Cwd", "workdir", "working_directory", "directory", "dir"] as const;
+
 /** ACP's rawInput is provider-specific: only a complete command string and unambiguous absolute directories count. */
 export function acpPermissionCommand(rawInput: unknown, launchCwd: string | undefined): ReturnType<typeof permissionCommand> {
   if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return undefined;
   const input = rawInput as Record<string, unknown>;
-  const directories = ["cwd", "workdir", "working_directory", "directory", "dir"]
+  const directories = DIRECTORY_KEYS
     .filter((key) => input[key] !== undefined)
     .map((key) => input[key]);
   if (directories.some((value) => typeof value !== "string" || !isAbsolute(value) || value.includes("\0"))) return undefined;
   if (new Set(directories).size > 1) return undefined;
-  return permissionCommand(input.command, directories[0] ?? launchCwd);
+  // Two different spellings of the command are a contradiction, not a choice.
+  const commands = COMMAND_KEYS.filter((key) => input[key] !== undefined).map((key) => input[key]);
+  if (new Set(commands).size > 1) return undefined;
+  return permissionCommand(commands[0], directories[0] ?? launchCwd);
 }
 
 /** shellRequest for an ACP tool call: only a shell-typed call gets the descriptor, but any call naming a command
