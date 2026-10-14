@@ -22,6 +22,7 @@ import {
   classifyQuiet, describeQuiet, lastSeenPhrase, LogTail, quietKey, sampleProcessTree,
   type LogSignal, type ProcessSample, type QuietState,
 } from "./quiet-status.ts";
+import { readSessionReport } from "./session-reports.ts";
 
 export function skipSubscriptionAuthForLocalInject(model: string | undefined): boolean {
   return Boolean(decodeInjectId(model));
@@ -330,9 +331,6 @@ const LOAD_SESSION_TIMEOUT = 120_000;
 const ACP_STUCK_AFTER_MS = 180_000;
 /** ACP agents may compact their history silently; re-send the full prompt after this many bare turns. */
 const ACP_PROMPT_RE_ANCHOR_TURNS = 8;
-/** A context report below this share of the peak marks a compaction: OpenCode compactions measured
- * 30-52% of the peak; ordinary dips stay above 83%. */
-const ACP_COMPACTION_COLLAPSE_RATIO = 0.6;
 // Prompt silence guard (0 disables). Healthy agents go quiet for minutes: Qwen Code 0.24 sends
 // nothing while it compresses history, backs off a rate limit (60 s up to 5 min per wait) or runs
 // one model request (its SDK waits up to 600 s); a wedged OpenCode turn goes silent forever.
@@ -1171,15 +1169,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               }
               break;
             }
-            case "usage_update": {
-              // opencode 1.18 sends `used` flat; ignore non-positive reports
-              const used = u.used ?? u.usage?.used;
-              if (typeof used !== "number" || !(used > 0)) break;
-              if (current.state.usagePeak !== null && used < current.state.usagePeak * ACP_COMPACTION_COLLAPSE_RATIO) {
-                current.state.usageCompacted = true;
-              }
-              if (current.state.usagePeak === null || used > current.state.usagePeak) current.state.usagePeak = used;
-              current.state.usageLast = used;
+            case "usage_update":
+            case "session_info_update":
+            case "plan": {
+              const report = readSessionReport(u, p._meta, current.state, session);
+              if (report.context) emit({ ...base(threadId, current.turnId), type: "thread.token-usage.updated", input: 0, output: 0, ...report.context });
+              if (!report.step) break;
+              current.flushAssistantText();
+              const itemId = `plan-${newId()}`;
+              emit({ ...base(threadId, current.turnId), type: "item.started", itemType: "tool", itemId, ...report.step });
+              emit({ ...base(threadId, current.turnId), type: "item.completed", itemType: "tool", itemId, ok: true });
               break;
             }
           }
@@ -1992,6 +1991,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             effortLevels: support.effortLevels,
             modelVariants: support.modelVariants === true,
             localComputerMcp: true,
+            contextReading: "meter",
           },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),

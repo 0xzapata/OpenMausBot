@@ -213,6 +213,8 @@ export interface ProviderAdapter {
     hooks?: boolean;
     /** "confined": sendTurn honours `guestConfined`; absent, a guest turn is refused. */
     guestTurns?: "confined";
+    /** "meter": `contextTokens` / `contextWindow` are the engine's own report, shown on the context meter but never used to time compaction. */
+    contextReading?: "meter";
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;

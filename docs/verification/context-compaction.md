@@ -172,6 +172,25 @@ CLI compacts the session (its hooks reach the harness with the room's thread
 and the member) the next turn is the whole window again. No real engine
 runs: what a live Claude Code session costs across a resume is not measured
 here.
+## ACP agents' own readings
+
+An ACP agent reports how full its context is (`usage_update`: `used`, and the
+window as `size` when it sends one). A 1:1 conversation shows those figures,
+and they are for the meter only: the ACP driver marks its reading
+`contextReading: "meter"`, so the fold before a 1:1 turn is still timed from
+the transcript estimate and the model's window, and a room keeps no reading
+for an ACP member (no mark, no automatic fresh session, 409 from the room's
+Compact now). The 1:1 header's warning and its button follow the shown figure.
+
+```sh
+pnpm exec vitest run server/acp-context-reports.e2e.test.ts server/context-budget.test.ts
+```
+
+The fixture runs each 1:1 scenario twice, with the fake agent silent and with
+it reporting, and requires the same compaction at the same turns: a 95% report
+folds nothing at the default threshold, a near-empty report does not postpone
+a fold the transcript has reached, and a room member reporting 95% keeps its
+session.
 
 Evidence covers:
 
@@ -239,7 +258,8 @@ those at the top level. A URL inside a command is left as the command ran.
 automatic folding, `compactAt` is a fraction below 1 or a token count, and
 `rebuildBytes` controls replay size (default 24,000 bytes). Context-only settings
 do not reload provider processes. The default threshold is 80% of the known
-model window; a real latest-prompt measurement wins over a transcript estimate.
+model window; a real latest-prompt measurement wins over a transcript estimate,
+except an ACP agent's own reading, which is shown and does not time compaction.
 Summed input tokens across tool rounds are never treated as context size.
 For Claude, the threshold and post-compaction regrowth floor also leave 10%
 headroom below the selected account's numeric native-compaction setting.
