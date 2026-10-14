@@ -7,7 +7,7 @@
 // Saving a model does not check it against this list: an id OpenRouter
 // added since still works, and so does a chat model saved by hand
 // (`decider.openrouterApi: "chat"`), which this list never offers.
-import { OPENROUTER_MODEL_ID, OPENROUTER_MODEL_ID_MAX } from "../config.ts";
+import { OPENROUTER_MODEL_ID, OPENROUTER_MODEL_ID_MAX } from "./config.ts";
 import { OPENROUTER_DEFAULT_MODEL, openrouterEndpoint } from "./openrouter.ts";
 
 export interface OpenRouterModel {

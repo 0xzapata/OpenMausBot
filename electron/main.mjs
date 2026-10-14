@@ -597,6 +597,7 @@ import {
   stopCompanion,
 } from "./companion.mjs";
 import { createRoutineWakeHold, rememberRoutineWake, routineWakeSettings } from "./routine-wake.mjs";
+import { CREDENTIAL_PATCH } from "./credential-patch.mjs";
 
 /** IPC that controls this computer, its files, its logins or its updater is
  * answered only for the local server's UI (electron/local-origin.cjs). A
@@ -3712,20 +3713,6 @@ ipcMain.handle("desktop:capabilities", async (event) =>
     localConnection: await cuaReady,
   }),
 );
-
-const CREDENTIAL_PATCH = {
-  composioApiKey: (value) => ({ composio: { apiKey: value } }),
-  xaiApiKey: (value) => ({ xai: { key: value } }),
-  boxToken: (value) => ({ box: { token: value } }),
-  opencodeGoApiKey: (value) => ({ opencodeGo: { apiKey: value } }),
-  ttsKey: (value) => ({ tts: { key: value } }),
-  fishAudioKey: (value) => ({ tts: { fishKey: value } }),
-  jevApiKey: (value) => ({ decider: { key: value } }),
-  openrouterDeciderKey: (value) => ({ decider: { openrouterKey: value } }),
-  openaiImageApiKey: (value) => ({ imageGen: { key: value } }),
-  customImageApiKey: (value) => ({ imageGen: { customApiKey: value } }),
-  openaiLiveKey: (value) => ({ live: { key: value } }),
-};
 
 async function saveWorkspaceCredential(name, value) {
   const patchFor = CREDENTIAL_PATCH[name];
