@@ -515,8 +515,6 @@ describe("ApprovalCard outbound holds", () => {
     expect(html).toContain("Create linear comment ×2");
     expect(html).not.toContain("LINEAR CREATE LINEAR COMMENT");
     expect(html).not.toContain("LINEAR_CREATE_LINEAR_COMMENT");
-    // the composer answers it, so the transcript keeps a line for screen
-    // readers only and never prints the payload a second time
     expect(html).not.toContain("issueId");
     expect(html).toContain('class="sr-only"');
     expect(html).toContain("Waiting for your answer below");
@@ -588,7 +586,6 @@ describe("ApprovalCard for a change that applied on its own", () => {
     expect(markup).toMatch(/Scout scheduled a routine: Check before dentist, today 2:30/);
     expect(markup).toContain(">Undo<");
     expect(markup).toContain(">Details<");
-    // The cron expression and the approval box stay out of the line.
     expect(markup).not.toContain("30 14 * * 3");
     expect(markup).not.toContain("Waiting for your confirmation");
     expect(markup).not.toContain("schedule_routine");
@@ -652,7 +649,6 @@ describe("ApprovalCard for a change that applied on its own", () => {
 });
 
 describe("one approval, one card", () => {
-  // what shows before the chevron is opened
   const visibleRow = (html: string) => html.slice(0, html.indexOf('id="approval-details-'));
   const command = (answered?: string): Message => ({
     id: "shell-card",
@@ -693,7 +689,6 @@ describe("one approval, one card", () => {
     expect(line).toContain("git status");
     expect(line).not.toContain("<pre");
     expect(line).not.toContain("rounded-2xl");
-    // the composer row is the visible one, this line is for screen readers
     expect(line).toContain('class="sr-only"');
     expect(line).not.toContain("<button");
 
@@ -704,7 +699,6 @@ describe("one approval, one card", () => {
     expect(row).toMatch(/<code[^>]*><span class="truncate">git status<\/span><\/code>/);
     expect(panel).toContain('aria-label="Pending approval"');
     expect(panel).not.toContain("Command approval requested");
-    // no command box or warning in the default view, they sit behind the chevron
     expect(row).not.toContain("<pre");
     expect(row).toContain('aria-expanded="false"');
     expect(panel).toMatch(/id="approval-details-r-shell" hidden=""/);
@@ -737,7 +731,6 @@ describe("one approval, one card", () => {
     expect(row).toContain("Run code on Composio?");
     expect(row).not.toContain("code_to_execute");
     expect(row).toContain('aria-label="Details"');
-    // the reason it asks is a small chip, the sentence is its tooltip
     expect(row).toContain(">May send</span>");
     expect(row).toContain('title="This runs code that could send or change things in your apps, so it always asks first."');
     expect(panel).not.toContain("This sends something");

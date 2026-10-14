@@ -54,7 +54,6 @@ describe("German approval cards", () => {
     }));
 
     expect(markup).toContain("Mochi möchte einen Befehl ausführen");
-    // the composer shows it, so the transcript keeps it for screen readers only
     expect(markup).toContain('class="sr-only"');
     expect(markup).toContain("Wartet unten auf deine Antwort");
   });
@@ -117,9 +116,10 @@ describe("German approval cards", () => {
   });
 });
 
-/** Skill approvals are the one place pt-BR needs a different shape than the
- * other packs: "Should I {action} it?" becomes an enclitic pronoun, so the
- * action strings carry it ("atualizá-la") instead of a bare infinitive. */
+/**
+ * pt-BR needs another shape for skill approvals: "Should I {action} it?" takes an enclitic pronoun, so the action
+ * strings carry it ("atualizá-la").
+ */
 function skillUpdateApproval(): Pending {
   const message: Message = {
     id: "skill-update-card",

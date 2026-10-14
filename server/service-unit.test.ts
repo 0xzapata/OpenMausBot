@@ -30,7 +30,6 @@ describe("service units", () => {
     expect(unit).toContain("WantedBy=multi-user.target");
     const local = systemdUnit({ ...spec, bindsLowPorts: false, serveArgs: ["--port", "8799", "--data-dir", "/home/maus/.openmausbot"] });
     expect(local).not.toContain("CAP_NET_BIND_SERVICE");
-    // a path with a space is quoted for systemd
     expect(systemdUnit({ ...spec, dataDir: "/home/maus/My Data", serveArgs: ["--data-dir", "/home/maus/My Data"] })).toContain('ExecStart=/usr/bin/node /usr/lib/node_modules/openmausbot/cli.js serve --data-dir "/home/maus/My Data"');
   });
 

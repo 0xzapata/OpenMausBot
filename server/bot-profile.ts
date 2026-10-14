@@ -12,8 +12,6 @@ import { MASCOT_BODY_IDS, mascotBodySchema } from "../shared/mascot-bodies.ts";
 
 import type { BotRecord } from "./store.ts";
 
-// Shared with the package format, which checks the same rule on names it
-// carries; re-exported under its historical path.
 export { fitsOnOneLine } from "../shared/bot-profile.ts";
 
 export const BOT_PROFILE_PATCH_FIELDS = [
@@ -97,15 +95,8 @@ export type BotProfilePatchResult =
   | { ok: true; patch: BotProfilePatch }
   | { ok: false; error: string };
 
-/**
- * The shared validation boundary for profile fields. The desktop's broad bot
- * PATCH passes strict=false; paired clients use strict=true so a future bot
- * field cannot silently become remotely writable.
- *
- * avatarUrl deliberately uses `undefined` as the normalized clear value.
- * Store persistence already omits undefined fields, while wireBot sends null
- * back to clients so Codable and object-spread clients both clear stale data.
- */
+/** Paired clients use strict=true, so a future bot field never silently becomes remotely writable. A cleared avatarUrl is
+ * `undefined` here (persistence omits it) and goes to clients as null, so Codable and object-spread clients both clear it. */
 export function parseBotProfilePatch(input: BotProfilePatchInput, strict = false): BotProfilePatchResult {
   const parsed = (strict ? profilePatchSchema.strict() : profilePatchSchema).safeParse(input);
   if (!parsed.success) {

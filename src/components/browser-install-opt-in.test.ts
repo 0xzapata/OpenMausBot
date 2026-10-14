@@ -76,8 +76,6 @@ describe("browser installation opt-in", () => {
     const toggle = switchTag(markup, "Give this bot a built-in browser");
     expect(toggle).toContain('aria-checked="false"');
     expect(toggle).not.toContain("disabled=");
-    // Where the bot works is chosen in the Computer panel only: the Access
-    // section names it in one line and has no destination buttons of its own.
     expect(markup.match(/<button[^>]*>Browser<\/button>/)).toBeNull();
     expect(panel(false)).not.toContain("Install the browser engine");
     expect(panel(true)).toContain("Install the browser engine");

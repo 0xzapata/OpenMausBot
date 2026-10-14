@@ -10,8 +10,7 @@ import {
 } from "./approval-summary";
 import type { OptionCardData } from "@/state/store";
 
-// The subtitle the computer writes for two held Linear comments
-// (server/index.ts, outbound hold): heading, then raw arguments.
+// The subtitle the computer writes for two held Linear comments: heading, then raw arguments.
 const linearSubtitle = [
   "Linear · Create linear comment",
   '{"issueId":"2f04bc73","body":"**In flight** — open PR"}… [arguments truncated]',

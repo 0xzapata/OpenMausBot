@@ -1,5 +1,3 @@
-// Helpers and server rendering cover translated copy and identity preservation.
-// Mounted locale changes also need to preserve each panel's in-progress state.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";

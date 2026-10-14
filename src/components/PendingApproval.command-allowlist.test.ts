@@ -122,7 +122,6 @@ describe("remembering exact command approvals", () => {
     const row = html.slice(0, details);
     expect(row).toContain(">Deny</button>");
     expect(row).toContain(">Allow once</button>");
-    // one short label, the scope is in its name and tooltip
     expect(row).toContain('aria-label="Always allow this command"');
     expect(row).toContain(">Always allow</button>");
     expect(row).not.toContain("Cancel turn");
@@ -147,7 +146,6 @@ describe("remembering exact command approvals", () => {
       expect(name).toContain("focus-visible:ring-2");
       expect(name).toContain("h-7");
       expect(name).toContain("text-[13px] font-medium");
-      // equal visual mass: every answer has a fill, Deny keeps red text
       expect(name).toMatch(/(^|\s)bg-/);
     }
     expect(classes[0]).toContain("text-danger");
@@ -159,7 +157,6 @@ describe("remembering exact command approvals", () => {
     const row = html.slice(0, html.indexOf('id="approval-details-'));
     expect(row).toContain("flex flex-wrap items-baseline gap-x-2");
     expect(row).toMatch(/<code class="[^"]*font-mono text-\[12\.5px\] leading-5[^"]*pb-\[3px\] pt-\[5px\][^"]*"[^>]*><span class="truncate">git status --short<\/span><\/code>/);
-    // icons sit on the row's center, not on a text baseline
     expect(row).toMatch(/<svg[^>]*class="[^"]*self-center[^"]*"/);
   });
 });
