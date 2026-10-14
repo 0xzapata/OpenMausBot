@@ -27,13 +27,10 @@ it("says My Cloud · always on while a Cloud home is showing, in a browser too, 
   expect(visibleText(browser)).toBe("My Cloud · always on");
   expect(browser).toContain("data-cloud-home-indicator");
   expect(browser).not.toContain("<button");
-  // Icons-only sidebar: the words stay for screen readers and the tooltip.
   const compact = renderToStaticMarkup(createElement(DesktopWorkspaceSwitcher, { cloudHome: true, compact: true }));
   expect(compact).toContain('title="My Cloud · always on"');
   expect(compact).toContain('<span class="sr-only">My Cloud · always on</span>');
 
-  // The desktop app's switcher names the server (main says "My Cloud"; until
-  // it answers, so does the switcher) and adds the same words.
   vi.stubGlobal("window", { ogb: { workspaces: { state: () => new Promise(() => {}), menu: () => Promise.resolve() } } });
   const desktop = renderToStaticMarkup(createElement(DesktopWorkspaceSwitcher, { cloudHome: true }));
   expect(visibleText(desktop)).toBe("My Cloud · always on");
@@ -52,7 +49,6 @@ it("names whose Cloud a browser signed in to under My Cloud · always on, quietl
   expect(browser).toContain('<span class="block truncate text-[11.5px] font-normal text-ink-secondary">ada@example.test’s Cloud</span>');
   const compact = renderToStaticMarkup(createElement(DesktopWorkspaceSwitcher, { cloudHome: true, owner: "ada@example.test", compact: true }));
   expect(compact).toContain('<span class="sr-only">My Cloud · always on · ada@example.test’s Cloud</span>');
-  // Not on a server that is not a Cloud home.
   expect(renderToStaticMarkup(createElement(DesktopWorkspaceSwitcher, { owner: "ada@example.test" }))).toBe("");
 });
 
@@ -62,11 +58,9 @@ it("is the Show me how tip's anchor, and opens the menu as reached from the tip 
   const menu = vi.fn(() => Promise.resolve()), onClosed = vi.fn();
   await openServerMenu({ menu }, { howTo: true, onClosed });
   expect(menu).toHaveBeenLastCalledWith({ from: "howto" }); expect(onClosed).toHaveBeenCalledOnce();
-  // Closed with an error too, the tip ends.
   menu.mockRejectedValueOnce(new Error("no menu"));
   await expect(openServerMenu({ menu }, { howTo: true, onClosed })).rejects.toThrow("no menu");
   expect(onClosed).toHaveBeenCalledTimes(2);
-  // Without the tip: today's menu, and nothing ends.
   await openServerMenu({ menu }, { onClosed });
   expect(menu).toHaveBeenLastCalledWith(undefined); expect(onClosed).toHaveBeenCalledTimes(2);
 });

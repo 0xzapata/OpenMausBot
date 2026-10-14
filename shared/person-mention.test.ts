@@ -25,7 +25,6 @@ describe("the person's tag", () => {
     expect(tags("@you", { botNames: ["You"] })).toEqual([]);
     expect(tags("@Sam look", { profileName: "Sam", botNames: ["sam"] })).toEqual([]);
     expect(tags("@Sam Bot, ask @Sam", { profileName: "Sam", botNames: ["Sam Bot"] })).toEqual(["@Sam"]);
-    // a shorter bot name does not swallow the person's longer one
     expect(tags("@Sam Smith", { profileName: "Sam Smith", botNames: ["Sam"] })).toEqual(["@Sam Smith"]);
   });
 

@@ -1,11 +1,3 @@
-// The provider instances (the model picker's engines and accounts), moved
-// out of server/index.ts's inline routes into the route table
-// (server/routes/README.md): list and describe them, add a ChatGPT or Claude
-// account, sign in and out of an instance, change an instance's icon, CLI
-// path, account name or tools setting, remove an added Claude account, find
-// and probe CLI binaries, and update a Claude Code install. Provider-settings
-// writes share index.ts's single-flight lock (`providerConfigBusy`) with the
-// config and account routes; it reaches here as a get/set view.
 import { randomUUID } from "node:crypto";
 import { providerIconError } from "../../shared/provider-icon.ts";
 import {
@@ -36,21 +28,14 @@ export interface InstanceRouteDeps {
   registry: Pick<ProviderRegistry, "get" | "refreshModels" | "installRuntime" | "cliTarget">;
   sessions: Pick<SessionRegistry, "isLive">;
   providerAuthSessions: Pick<ProviderAuthSessions, "status" | "start" | "revokeOwner" | "signOut" | "complete" | "cancel">;
-  /** Whether a hosted model policy applies here (index.ts `hostedModels`); the routes only test it. */
   hostedModels: boolean;
-  /** The provider-settings lock, shared with the config and account routes. */
   providerConfigBusy: BusyFlag;
-  /** The instances being replaced right now; a turn on one of them waits. */
   providerInstancesChanging: Pick<Set<string>, "add" | "delete">;
-  /** Every provider instance, as GET /api/instances describes them. */
   describeInstances(): Promise<unknown>;
-  /** Saves the map with this instance changed and applies it. */
   persistProviderInstance(instanceId: string, instances: InstanceConfigMap): Promise<void>;
   configStatus(): ConfigStatus;
   broadcast(payload: Record<string, unknown>): void;
-  /** Spawns `<cli> --version` the way a turn would. */
   testCliBinary(cli: string, driver: (typeof BUILT_IN_DRIVERS)[number] | undefined): Promise<unknown>;
-  /** The environment a CLI probe or update runs with. */
   cliProbeEnvironment(): NodeJS.ProcessEnv;
   threadBusy(botId: string, threadId: string): boolean;
   botForThread(botId: string, threadId: string): Pick<{ modelSelection: ModelSelection }, "modelSelection"> | null;
@@ -63,16 +48,11 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
     describeInstances, persistProviderInstance, configStatus, broadcast, testCliBinary, cliProbeEnvironment, threadBusy,
     botForThread, activeGroupTurnForBot,
   } = deps;
-  // One updater per executable: multiple Claude instances can point at the same
-  // install, and running two self-updates against it would race its files.
+  // One updater per executable: Claude instances can share an install, and two self-updates would race its files.
   const claudeUpdatesInFlight = new Set<string>();
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
-    // ── provider instances (model picker) ──
     if (method === "GET" && path === "/api/instances") {
-      // Rescan PATH first: this endpoint is how the app answers "what can I
-      // run?", and the interesting case is a CLI installed since launch.
-      // Windows never pushes PATH changes into a live process, so without
-      // this the answer is frozen at boot and "check again" is a no-op.
+      // Rescan PATH: Windows never pushes PATH changes into a live process, so a CLI installed since launch stays invisible.
       resetPathCache();
       return json(res, 200, { instances: await describeInstances() });
     }
@@ -167,8 +147,7 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
         if (action === "auth/start") {
           const instance = registry.get(instanceId);
           if (!instance) return json(res, 404, { error: "unknown instance" });
-          // The official local OAuth callback terminates on this machine,
-          // not a phone or the browser visiting a remotely hosted workspace.
+          // The official local OAuth callback terminates on this machine, not a phone or a remote browser.
           if (instance.authenticationMethod === "browser-pkce" && (isProxied(req) || !isLoopbackHost(req.socket.remoteAddress))) {
             return json(res, 403, { error: "Continue with ChatGPT on the computer running OpenMausBot. Hosted Pro sign-in requires OpenAI's hosted-app approval." });
           }
@@ -205,25 +184,16 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
       }
     }
 
-    // ── CLI binary discovery for the Engines "detected" dropdown ──
-    // ?name=claude → absolute paths of every `claude` on the augmented PATH,
-    // in PATH order (first = what a bare name runs). Polled when the user
-    // opens the Custom picker so a just-installed CLI appears without a restart.
+    // ?name=claude → every `claude` on the augmented PATH, in PATH order (first = what a bare name runs).
     if (method === "GET" && path === "/api/cli-candidates") {
       const name = url.searchParams.get("name") ?? "";
       resetPathCache();
       return json(res, 200, { candidates: findCliCandidates(name) });
     }
 
-    // ── pre-save CLI probe: does this path actually run? ──
-    // POST {cli, driver} → spawn `<cli> --version` with the same PATH the
-    // turn itself would use. A miss here (typo, missing exec bit, a binary
-    // the GUI app can't see) means every turn would fail, so the UI asks
-    // before saving rather than registering a dead engine.
+    // POST {cli, driver} → spawn `<cli> --version` with the PATH a turn would use.
     if (method === "POST" && path === "/api/cli-test") {
-      // same gate as the local-VM lifecycle routes: this executes a local
-      // binary, so a hostile page must not be able to submit it as a simple
-      // text/plain cross-origin request
+      // JSON-only: this executes a local binary, so a hostile page must not send it as a simple cross-origin request.
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
@@ -231,22 +201,15 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
       const cli = typeof body?.cli === "string" ? body.cli.trim() : "";
       if (!cli || /[\n\r]/.test(cli)) return json(res, 400, { error: "cli must be a non-empty path" });
       const driver = typeof body?.driver === "string" ? BUILT_IN_DRIVERS.find((d) => d.driverKind === body.driver) : undefined;
-      // Probe the exact configured wrapper plus --version. testCliBinary uses
-      // a credential-redacted environment, so fixed wrapper arguments cannot
-      // turn this endpoint into an inherited-secret reader.
+      // testCliBinary uses a credential-redacted environment, so wrapper arguments cannot read inherited secrets.
       const probe = await testCliBinary(cli, driver);
       return json(res, 200, probe);
     }
 
-    // ── instance-scoped Claude Code update ──
-    // No command or path comes from the request: the registry supplies the
-    // executable already configured for this Claude instance. The JSON gate
-    // keeps a hostile page from triggering a local process with a simple
-    // cross-origin form request.
+    // No command or path comes from the request: the registry supplies this instance's executable. JSON-only.
     const busyProviderSelections = () => store.bots.flatMap((bot) => {
       const busyTasks = store.tasks(bot.id).filter((task) => threadBusy(bot.id, task.threadId));
       const selections = busyTasks.map((task) => botForThread(bot.id, task.threadId)!.modelSelection);
-      // Rooms still run from the profile default; a direct thread does not.
       if (activeGroupTurnForBot(bot.id) || (bot.busy && busyTasks.length === 0)) selections.push(bot.modelSelection);
       return selections;
     });
@@ -282,12 +245,10 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
       }
     }
 
-    // ── per-instance settings (CLI/account or API tool support) ──
-    // PATCH /api/instances/:id {cli: "/path/to/cli" | ""} — "" reverts to the
-    // driver default. Only this idle instance is replaced; siblings keep running.
+    // PATCH /api/instances/:id {cli: "/path/to/cli" | ""}: "" reverts to the driver default.
     const instancePatch = /^\/api\/instances\/([\w.-]+)$/.exec(path);
     if (method === "PATCH" && instancePatch) {
-      // same non-simple-request gate as the local-VM lifecycle routes
+      // JSON-only, so a hostile page cannot send it as a simple request.
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
@@ -306,8 +267,8 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
         const instances = persistableInstanceConfigs(result.config);
         if (!result.ok || !Object.hasOwn(instances, instanceId)) return json(res, 404, { error: `unknown instance "${instanceId}"` });
         const entry = instances[instanceId];
-        if ((body.displayName !== undefined || body.configDir !== undefined) && entry.driver !== "claudeAgent") {
-          return json(res, 400, { error: "Account settings are currently available for Claude only." });
+        if ((body.configDir !== undefined && entry.driver !== "claudeAgent") || (body.displayName !== undefined && !["claudeAgent", "codex"].includes(entry.driver))) {
+          return json(res, 400, { error: "Account settings are available for Claude and ChatGPT accounts only." });
         }
         if (body.tools !== undefined) {
           if (!["openai-compat", "grok", "minimax", "mistral", "cerebras", "groq", "meta"].includes(entry.driver)) {
@@ -318,7 +279,7 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
         if (body.displayName !== undefined) entry.displayName = body.displayName;
         if (body.configDir !== undefined) {
           let previousDir: string | undefined;
-          try { previousDir = configuredAccountDirectory(entry); } catch { /* Allow repairing an unused malformed account. */ }
+          try { previousDir = configuredAccountDirectory(entry); } catch { }
           entry.config = { ...entry.config as Record<string, unknown>, configDir: body.configDir };
           if (previousDir !== configuredAccountDirectory(entry)) {
             const used = store.bots.some((bot) => bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) =>
@@ -340,13 +301,24 @@ export function createInstanceRoutes(deps: InstanceRouteDeps): RouteHandler {
       if (providerConfigBusy.get()) return json(res, 409, { error: "provider settings are already being updated" });
       const instances = persistableInstanceConfigs(cfg);
       if (!Object.hasOwn(instances, instanceId)) return json(res, 404, { error: "unknown instance" });
-      if (instances[instanceId].driver !== "claudeAgent" || instanceId === "claude") {
-        return json(res, 400, { error: "Only added Claude accounts can be removed here." });
+      const addedChatgpt = instances[instanceId].driver === "codex" && instanceId.startsWith("chatgpt-");
+      if (!addedChatgpt && (instances[instanceId].driver !== "claudeAgent" || instanceId === "claude")) {
+        return json(res, 400, { error: "Only added Claude and ChatGPT accounts can be removed here." });
       }
       if (cfg.defaultModelSelection?.instanceId === instanceId || store.bots.some((bot) =>
         bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) => task.modelSelection?.instanceId === instanceId)) ||
         busyProviderSelections().some((selection) => selection.instanceId === instanceId)) {
         return json(res, 409, { error: "Choose another account for the bots and default model using this account before removing it." });
+      }
+      // OpenMausBot keeps a ChatGPT account's sign-in in its own data folder: removing the account clears it.
+      const live = addedChatgpt ? registry.get(instanceId) : undefined;
+      if (live?.signOut) {
+        try { await providerAuthSessions.signOut(live, auth.kind === "session" ? auth.session.id : "loopback"); }
+        catch (error) {
+          if ((error as { code?: unknown }).code !== "chatgpt_revocation_unconfirmed") {
+            return json(res, 409, { error: error instanceof Error ? error.message : String(error) });
+          }
+        }
       }
       providerConfigBusy.set(true);
       providerInstancesChanging.add(instanceId);

@@ -1,14 +1,4 @@
-// Team memory: what every bot in a section knows in common.
-//
-// Four kinds of entry — people (with the names they go by), places (where a
-// document or a thing lives), decisions (dated, with where they were made),
-// and terms (what an abbreviation or a nickname means). A bot proposes an
-// entry from its conversation; every kind waits for admin review before
-// entering shared prompts. The person can edit or delete any of it.
-//
-// Distinct from section-context.ts, which is the user's brief and is never
-// written by a bot, and from a bot's private MEMORY.md. This is the layer
-// in between: bot-fed, person-reviewed, read by all.
+// Bot-proposed, admin-reviewed facts a section shares; nothing enters shared prompts unreviewed.
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 
@@ -22,7 +12,6 @@ export type TeamMemoryKind = (typeof TEAM_MEMORY_KINDS)[number];
 export const TEAM_MEMORY_NAME_MAX = 120;
 export const TEAM_MEMORY_DETAIL_MAX = 600;
 export const TEAM_MEMORY_ALIASES_MAX = 8;
-/** How much of the team's memory rides into a prompt. */
 export const TEAM_MEMORY_PROMPT_MAX_BYTES = 6_000;
 
 export interface TeamMemorySource {
@@ -92,8 +81,7 @@ export class TeamMemory {
       const input = JSON.parse(readFileSync(this.file, "utf8"));
       if (!fileSchema.safeParse(input).success) throw new Error("invalid team memory");
       const data = emptyFile();
-      // Like section context, team names are own keys, not inherited
-      // properties; record parsers can omit ordinary names like __proto__.
+      // Own keys only, never inherited properties like __proto__.
       for (const [key, value] of Object.entries(input.sections)) {
         data.sections[sectionContextKey(key)] = z.array(entrySchema).parse(value);
       }
@@ -120,12 +108,10 @@ export class TeamMemory {
     return (this.data.sections[key] ??= []);
   }
 
-  /** Every entry in the section, proposals included, oldest first. */
   list(section: string | null | undefined): TeamMemoryEntry[] {
     return this.entries(section).map((entry) => ({ ...entry, aliases: [...entry.aliases], source: { ...entry.source } }));
   }
 
-  /** Validate a proposal's fields. Throws with a message naming the field. */
   static normalize(input: TeamMemoryInput): Required<TeamMemoryInput> {
     if (!TEAM_MEMORY_KINDS.includes(input.kind)) throw new Error(`kind must be one of ${TEAM_MEMORY_KINDS.join(", ")}`);
     const name = clean(input.name, TEAM_MEMORY_NAME_MAX);
@@ -137,8 +123,7 @@ export class TeamMemory {
     return { kind: input.kind, name, detail, aliases };
   }
 
-  /** Every autonomous addition or replacement waits for admin review without
-   * changing accepted facts, including terms and places from untrusted input. */
+  /** Every autonomous addition or replacement waits for admin review, including terms and places from untrusted input. */
   propose(
     section: string | null | undefined,
     input: TeamMemoryInput,
@@ -159,7 +144,6 @@ export class TeamMemory {
     return { entry: { ...entry }, status };
   }
 
-  /** The person's answer to a proposal. Rejecting removes it. */
   resolve(section: string | null | undefined, id: string, answer: "accept" | "reject"): TeamMemoryResolution {
     const entries = this.entries(section);
     const index = entries.findIndex((entry) => entry.id === id);
@@ -180,7 +164,6 @@ export class TeamMemory {
     return { claimed: true, state: "rejected" };
   }
 
-  /** The person edits an entry. Editing a proposal accepts it. */
   update(
     section: string | null | undefined,
     id: string,
@@ -211,8 +194,6 @@ export class TeamMemory {
     return true;
   }
 
-  /** The accepted entries as a prompt block, under the byte budget; when it
-   * has to cut, the newest stay. Empty when there is nothing accepted. */
   systemPrompt(section: string | null | undefined): string {
     const accepted = this.entries(section).filter((entry) => entry.status === "accepted");
     if (accepted.length === 0) return "";
@@ -229,7 +210,6 @@ export class TeamMemory {
     };
     const frame = "\n\n--- BEGIN TEAM MEMORY ---\n\n--- END TEAM MEMORY ---" + "\n\nPeople:\n\n\nPlaces:\n\n\nDecisions:\n\n\nTerms:\n";
     let budget = TEAM_MEMORY_PROMPT_MAX_BYTES - Buffer.byteLength(header + frame, "utf8");
-    // newest first when cutting, then restored to a stable order per kind
     const kept: TeamMemoryEntry[] = [];
     for (const entry of [...accepted].sort((a, b) => b.updatedAt - a.updatedAt)) {
       const cost = Buffer.byteLength(line(entry), "utf8") + 1;

@@ -9,9 +9,6 @@ import { LiveKeySetup } from "./LiveKeySetup";
 
 const IDLE_CHOICES = [1, 2, 3, 5, 10, 15, 30, 60];
 
-/** The gear in the call bar. Voice, typed replies, idle minutes and the key.
- * It takes focus when it opens, so Escape closes it; `onClose` (Escape) puts
- * focus back on the gear. */
 export function LiveCallSettings({ onClose }: { onClose: () => void }) {
   const { state, dispatch } = useStore();
   const live: LiveSettings = state.config?.live ?? { configured: false, voice: "", readTypedReplies: true, idleMinutes: 5 };
@@ -19,7 +16,7 @@ export function LiveCallSettings({ onClose }: { onClose: () => void }) {
   const [changingKey, setChangingKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const typedHintId = useId();
-  // Stable, so it runs once when the popover mounts, not on every save.
+  // Stable, so this callback ref runs once when the popover mounts, not on every save.
   const focusOnOpen = useCallback((dialog: HTMLDivElement | null) => {
     dialog?.querySelector<HTMLElement>("select, input, button")?.focus();
   }, []);
@@ -39,8 +36,6 @@ export function LiveCallSettings({ onClose }: { onClose: () => void }) {
     }
   };
 
-  // An empty value removes the key: Electron deletes it from the encrypted
-  // store and the harness clears it (the same call the API key settings use).
   const removeKey = async () => {
     setSaving(true);
     setError(null);

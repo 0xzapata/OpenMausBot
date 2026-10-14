@@ -1,15 +1,3 @@
-// The setup checklist on an OMB Cloud home (docs/cloud-pro.md, "Setup
-// checklist"): one quiet card from the Cloud's first open until an engine is
-// signed in and a bot has finished a turn there, or until the person hides
-// it. Each step's state is read from the Cloud or this app (lib/cloud-setup),
-// never ticked by hand, and each action opens what already exists: the
-// first-job question (CloudIntent), the engine sign-in, Copy this computer
-// here. No dialogs. Desktop and self-hosted installs never see it; they keep the welcome
-// flow, and an empty one gets the same Copy this computer here card.
-//
-// The step to do now leads, under a segment per step that fills as the Cloud
-// reports each one done; every other step sits below it on one line, and any
-// not done is one click from leading. The guide mascot says when it is over.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, Check, ChevronDown, Cloud, Minus } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
@@ -33,21 +21,17 @@ const TITLE: Record<CloudSetupStep, LocaleKey> = {
   cloud: "cloudSetup.cloud.title", job: "cloudSetup.job.title", engine: "cloudSetup.engine.title", plan: "cloudSetup.plan.title", move: "cloudSetup.move.title",
 };
 
-/** Minimized is this device's convenience; hiding is the Cloud's record. */
 const COLLAPSED_KEY = "omb.cloudSetup.collapsed";
 function storedCollapsed(): boolean {
   try { return globalThis.localStorage?.getItem(COLLAPSED_KEY) === "1"; } catch { return false; }
 }
 function storeCollapsed(collapsed: boolean) {
-  try { globalThis.localStorage?.setItem(COLLAPSED_KEY, collapsed ? "1" : "0"); } catch { /* private window */ }
+  try { globalThis.localStorage?.setItem(COLLAPSED_KEY, collapsed ? "1" : "0"); } catch {}
 }
 
-// The app's floating surface (menus, popovers), lifted off the sidebar it sits over.
 const CARD = "fixed bottom-4 left-4 z-40 max-h-[calc(100dvh-32px)] w-[300px] max-w-[calc(100vw-32px)] origin-bottom-left overflow-y-auto rounded-2xl border border-hairline/50 bg-menu text-ink shadow-[0_18px_48px_-16px_rgba(0,0,0,0.55),0_4px_12px_-6px_rgba(0,0,0,0.3)]";
 const PRIMARY = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 text-[12.5px] font-medium text-white transition-transform duration-150 ease-out active:scale-[0.97]";
 
-/** When a routine runs next, in the person's words: "today at 8:00",
- * "tomorrow at 8:00", or a weekday and time within the week. */
 function nextRunLabel(at: number | null, now = Date.now()): string | null {
   if (!at) return null;
   const when = new Date(at), today = new Date(now);
@@ -58,24 +42,18 @@ function nextRunLabel(at: number | null, now = Date.now()): string | null {
   return t("cloudSetup.ready.on", { day: when.toLocaleDateString([], { weekday: "long" }), time });
 }
 
-/** The last beat: the Cloud has done what setup was for. With a first job,
- * that is its routine, named with its next run and one click to run it now,
- * so the first result need not wait for the schedule. Seen once, in the
- * session that finished it; it leaves by itself after a while. */
 function CloudReady({ routine, onDone }: { routine?: Routine; onDone: () => void }) {
   const { dispatch } = useStore();
   const [motion, setMotion] = useState<{ kind: MausMotion; key: number }>({ kind: "none", key: 0 });
   const [leaving, setLeaving] = useState(false);
   const [run, setRun] = useState<"idle" | "starting" | "started" | "failed">("idle");
   useEffect(() => {
-    // One frame late, as in WelcomeFlow: a motion issued in the mounting commit is lost.
+    // One frame late: a motion issued in the avatar's mounting commit is lost.
     const frame = requestAnimationFrame(() => setMotion({ kind: "celebrate", key: 1 }));
-    // Longer with something to do on it.
     const timer = setTimeout(() => setLeaving(true), routine ? 20_000 : 9000);
     return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // Out on the pop-out's 200ms, then gone.
   useEffect(() => {
     if (!leaving) return;
     const timer = setTimeout(onDone, 200);
@@ -128,17 +106,13 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
   const [collapsed, setCollapsed] = useState(storedCollapsed);
   const [finale, setFinale] = useState(false);
   const wasShown = useRef(false);
-  // One step open at a time: the first one not done, or the one chosen.
   const [chosen, setChosen] = useState<CloudSetupStep | null>(null);
   const intent = useCloudIntent();
   const record = state.config?.onboarding;
-  // Not now on the move, and a first job given (waiting or sent), show at
-  // once, before the Cloud's record answers.
   const early: string[] = [];
   if (moveSkipped) early.push(CLOUD_SETUP_MOVE_SKIPPED);
   if (intent.pending || intent.sent) early.push(CLOUD_INTENT_GIVEN);
   const onboarding = early.length && record ? { ...record, hintsSeen: [...record.hintsSeen, ...early] } : record;
-  // The first job is set up once its bot has a routine; the finale names it.
   const routine = jobRoutine(state.routines, intent.sent);
   const facts = {
     viewer, connected: state.connected, enginesKnown: state.instances.length > 0,
@@ -148,16 +122,11 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
   const shown = stage === "shown";
   const moveBridge = shown ? window.ogb?.cloudMove : undefined;
   const move = useCloudMove(moveBridge);
-  // Finished here, in this session: say so once. A Cloud that opens already
-  // done, or a checklist that was hidden, goes quietly.
   useEffect(() => {
     if (stage === "shown") wasShown.current = true;
     else if (stage === "done" && wasShown.current) { wasShown.current = false; setFinale(true); }
   }, [stage]);
   if (finale) return <CloudReady routine={routine} onDone={() => setFinale(false)} />;
-  // Anywhere but the checklist (any other server, or the checklist hidden or
-  // finished): the one-time Copy this computer here card, which shows only
-  // when main suggests it. Not while this page is still finding out what it is.
   if (!shown) return stage === "waiting" || !viewer ? null : <CloudMoveSuggestion />;
 
   const items = cloudSetupItems({
@@ -174,16 +143,11 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
   };
   const hide = () => {
     setHidden(true);
-    // Bringing bots over is one of these steps, so hiding setup is its Not now too.
     if (moveBridge && moveItem?.status === "todo") void moveBridge.dismiss().catch(() => {});
     remember(CLOUD_SETUP_HIDDEN);
   };
-  // The question already fills the chat pane: the step need not offer it.
   const asking = state.activeView === "chat" && cloudIntentShown(cloudIntentDue({ ...facts, reopened: false }), intent);
   const askAgain = () => withViewTransition(() => { reopenCloudIntent(true); dispatch({ type: "showChat" }); });
-  // The chat where the bot is setting itself up, opened as its row would
-  // (openBot): with threads hidden its main thread, where the person sent the
-  // job, never a thread an activity row left it on.
   const jobBot = intent.sent?.botId;
   const openJobChat = () => {
     dispatch({ type: "showChat" });
@@ -193,13 +157,10 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
   const hint = (key: LocaleKey) => <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">{t(key)}</p>;
   const action = (label: LocaleKey, onClick: () => void) => <button type="button" className={PRIMARY} onClick={onClick}>{t(label)}<ArrowRight size={13} aria-hidden="true" /></button>;
 
-  /** What the current step says, and the one thing it asks for. */
   const details = (id: CloudSetupStep): { body: ReactNode; act?: ReactNode } => {
-    // In the chat view the sign-in is already what the window shows.
     if (id === "engine") return { body: hint("cloudSetup.engine.hint"), act: state.activeView !== "chat" && action("cloudSetup.engine.action", () => dispatch({ type: "showChat" })) };
     if (id === "move") {
       if (!moveBridge) return { body: null };
-      // Open once asked for, and while a move is under way or has stopped.
       if (moveOpen || (moveItem?.status === "todo" && move.state.phase !== "idle")) {
         return { body: cloudMoveOffer(move, { notNow: () => { setMoveSkipped(true); remember(CLOUD_SETUP_MOVE_SKIPPED); } }) };
       }
@@ -219,7 +180,6 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
     </span>;
     return <span className="mt-px size-4 shrink-0 rounded-full border-[1.5px] border-ink-secondary/45" />;
   };
-  // Every other step, one line each: a step not done is one click from being the current one.
   const row = (item: CloudSetupItem, index: number) => {
     const pending = item.status === "todo";
     const title = <span className="min-w-0 flex-1 text-[12.5px] leading-[18px]">
@@ -232,16 +192,12 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
       {pending
         ? <button type="button" onClick={() => setChosen(item.id)} className="-mx-2 flex w-[calc(100%+16px)] items-start gap-2.5 rounded-lg px-2 py-1.5 text-left text-ink transition-colors hover:bg-raised/70">{mark(item)}{title}</button>
         : <div className="-mx-2 flex items-start gap-2.5 px-2 py-1.5 text-ink-secondary">{mark(item)}{title}</div>}
-      {/* Moved: what does not run yet on the Cloud, and the phone. */}
       {item.id === "move" && item.status === "done" && moveNextSteps(move.state).map(line => <p key={line} className="ml-[26px] text-[12px] leading-relaxed text-ink-secondary">{line}</p>)}
     </li>;
   };
-  // The main pane already shows this step: the question, or the sign-in in
-  // the chat view. The card points there instead of saying it all again.
   const inChat = state.activeView === "chat" && !asking;
   const onScreen = (id: CloudSetupStep) => (id === "job" && asking) || (id === "engine" && inChat)
     || (id === "plan" && inChat && (!jobBot || state.selectedId === jobBot));
-  // The one step to do now, with what it asks for.
   const focus = (id: CloudSetupStep) => {
     const here = onScreen(id);
     const { body, act } = here ? { body: null, act: null } : details(id);
@@ -264,14 +220,11 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
       <Cloud size={14} aria-hidden="true" className="shrink-0 text-ink-secondary" />
       <h2 id="cloud-setup-title" className="min-w-0 flex-1 truncate text-[13px] font-semibold">{t("cloudSetup.title")}</h2>
       <span aria-hidden="true" className="shrink-0 text-[12px] tabular-nums text-ink-secondary">{progress}</span>
-      {/* Minimized, the whole card opens it again. */}
       <button type="button" aria-label={t(collapsed ? "cloudSetup.expand" : "cloudSetup.collapse")} aria-expanded={!collapsed} aria-controls="cloud-setup-body" onClick={toggle}
         className={cn("ui-icon-button -mr-1.5 size-6 min-h-0 shrink-0 p-0", collapsed && "after:absolute after:inset-0 after:content-['']")}>
         <ChevronDown size={14} aria-hidden="true" className={cn("transition-transform duration-200 ease-out", collapsed && "rotate-180")} />
       </button>
     </div>
-    {/* How far along, filled from the left whatever order the steps were done
-        in: done in green, then skipped in grey. Which step leads does not move it. */}
     <div role="progressbar" aria-labelledby="cloud-setup-title" aria-valuemin={0} aria-valuemax={items.length} aria-valuenow={done} aria-valuetext={progress} className="mt-3 flex gap-1">
       {items.map((_, index) => {
         const filled = index < done, skipped = index >= finished;

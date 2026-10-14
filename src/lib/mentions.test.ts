@@ -51,7 +51,6 @@ describe("the person's tag in display ranges", () => {
   });
   it("lets a bot with the same name keep its mentions", () => {
     expect(ranges("@you @Sam", [{ name: "You" }, { name: "Sam" }])).toEqual([["@you", false], ["@Sam", false]]);
-    // a hidden bot is not on the roster, so it does not claim the tag
     expect(ranges("@you", [{ name: "You", hidden: true }])).toEqual([["@you", true]]);
   });
   it("leaves @everyone as it was", () => {
