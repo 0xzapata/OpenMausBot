@@ -2,6 +2,7 @@
 // The plan and evidence are confined to the isolated launcher's temporary home.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { waitForExit } from "./cleanup.ts";
 
@@ -64,6 +65,32 @@ async function askPermission(server: AgentsIntegration, ask: { tool_name: string
   }
 }
 
+/** One call on the turn's built-in browser tools (the harness browser proxy
+ * Claude mounted, server/harness-mcp-proxy.ts), for a plan step that names
+ * `server: "browser"`: the same path a model's browser call takes. */
+async function browserToolCall(server: AgentsIntegration, name: string, args: unknown): Promise<any> {
+  const child = spawn(server.command, server.args, { env: { ...process.env, ...server.env }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stderr.resume();
+  try {
+    return await new Promise((resolve, reject) => {
+      createInterface({ input: child.stdout }).on("line", line => {
+        try {
+          const data = JSON.parse(line);
+          if (data.id === 2) resolve(data);
+        } catch { reject(new Error("Fixture browser MCP returned malformed JSON")); }
+      });
+      child.on("error", reject);
+      child.on("exit", (code, signal) => reject(new Error(`Fixture browser MCP exited before answering: ${signal ?? code}`)));
+      const send = (id: number, method: string, params: unknown) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      send(1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "claude-code", version: "fixture" } });
+      send(2, "tools/call", { name, arguments: args });
+    });
+  } finally {
+    child.stdin.destroy();
+    await waitForExit(child, { signal: "SIGTERM", graceMs: 500 });
+  }
+}
+
 /** Screen calls as the bridge of a mounted computer makes them: each one
  * first asks the harness whether this turn may act (control-client.ts), and
  * the harness may hold that check open while the computer is busy. Each
@@ -92,7 +119,15 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
   // The agents server, by the token only it carries: a connected-apps bridge
   // mounted beside it names the same bot (OMB_BOT_ID) and relays to Composio.
   const mounted = launch ? [] : Object.values(JSON.parse(readAtLaunch(arg("--mcp-config"))).mcpServers as Record<string, AgentsIntegration>);
-  const integration = launch?.integration ?? mounted.find(s => s.env?.OMB_COMMS_TOKEN) ?? mounted.find(s => s.env?.OMB_BOT_ID);
+  // A turn with a tool selection mounts every server behind the gate
+  // (server/mcp-gate.ts), which names the server it starts in
+  // OMB_GATE_UPSTREAM: the agents server is found through it, and the
+  // fixture talks to the gate, as the engine does.
+  const agentEnv = (server: AgentsIntegration): Record<string, string> => {
+    if (server.env?.OMB_COMMS_TOKEN || server.env?.OMB_BOT_ID) return server.env;
+    try { return (JSON.parse(server.env?.OMB_GATE_UPSTREAM ?? "") as AgentsIntegration).env ?? {}; } catch { return {}; }
+  };
+  const integration = launch?.integration ?? mounted.find(s => agentEnv(s).OMB_COMMS_TOKEN) ?? mounted.find(s => agentEnv(s).OMB_BOT_ID);
   // A depth-capped delegated turn mounts no agents server: answer from the prompt alone.
   if (!integration) {
     // Nothing in such a launch's argv says which bot it is — only the task
@@ -115,7 +150,8 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
     }
     return `Handled without teammate tools: ${taskText}`;
   }
-  const botId = integration.env.OMB_BOT_ID;
+  const agent = agentEnv(integration);
+  const botId = agent.OMB_BOT_ID;
   const system = launch?.system ?? readAtLaunch(arg("--append-system-prompt-file"));
   // Claude snapshots the launch-time system prompt for a session. A retained
   // process or --resume launch receives changed turn-scoped instructions in
@@ -141,7 +177,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
   const matches = (entry: ScriptEntry) => entry.match.every(text => own.includes(text));
   const entry = script && (script.find(e => !e.repeat && !used.has(e.key) && matches(e)) ?? script.find(e => e.repeat && matches(e)));
   if (script && !entry) {
-    appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: integration.env.OMB_THREAD_ID, unplanned: true, resumed, system, prompt }) + "\n");
+    appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: agent.OMB_THREAD_ID, unplanned: true, resumed, system, prompt }) + "\n");
     throw new Error(`Unplanned fixture turn for ${botId}: ${own.slice(0, 300)}`);
   }
   const plan: any = entry ?? (basePlan.turns ? basePlan.turns[turnIndex] : basePlan);
@@ -181,7 +217,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
     const id = ++serial; pending.set(id, { resolve, reject });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
-  const timer = setTimeout(() => fail(new Error("Fixture MCP run timed out")), 20_000);
+  const timer = setTimeout(() => fail(new Error("Fixture MCP run timed out")), typeof plan.timeoutMs === "number" ? plan.timeoutMs : 20_000);
   let delayTimer: ReturnType<typeof setTimeout> | undefined;
   let gateTimer: ReturnType<typeof setInterval> | undefined;
   const evidence: unknown[] = [];
@@ -193,7 +229,9 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
       evidence.push(await call("tools/list"));
       evidence.push(await call("tools/call", { name: "list_room_targets", arguments: {} }));
       for (const step of steps) {
-        const response = await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: step.arguments });
+        const browser = step.server === "browser" ? (launch ? undefined : JSON.parse(readAtLaunch(arg("--mcp-config"))).mcpServers?.browser as AgentsIntegration | undefined) : undefined;
+        if (step.server === "browser" && !browser) throw new Error("A scripted browser step needs the turn's browser tools");
+        const response = browser ? await browserToolCall(browser, step.tool, step.arguments) : await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: step.arguments });
         evidence.push({ step, response });
         if (Boolean(response.error || response.result?.isError) !== Boolean(step.expectError)) throw new Error(`Unexpected tool outcome: ${JSON.stringify(response)}`);
       }
@@ -212,6 +250,9 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
         screen = await screenCalls(mounted.computer, plan.screenCalls);
       }
       if (typeof plan.progress === "string") progress?.(plan.progress);
+      // `writeFiles`: files the turn writes in its working folder, as a bot
+      // saves its report or screenshots ({ name: content }, names relative).
+      for (const [name, content] of Object.entries((plan.writeFiles ?? {}) as Record<string, string>)) writeFileSync(join(process.cwd(), name), content);
       if (plan.readyFile) writeFileSync(plan.readyFile, "ready");
       if (plan.gateFile && !existsSync(plan.gateFile)) await new Promise<void>(resolve => {
         gateTimer = setInterval(() => {
@@ -234,7 +275,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
     await waitForExit(child, { signal: "SIGTERM", graceMs: 500 });
     // pid: which provider process ran the turn, so a fixture can tell a
     // retained session from a fresh one.
-    appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: integration.env.OMB_THREAD_ID, pid: process.pid,
+    appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: agent.OMB_THREAD_ID, pid: process.pid,
       model: argv.includes("--model") ? arg("--model") : undefined,
       permissionMode: argv.includes("--permission-mode") ? arg("--permission-mode") : undefined,
       snapshotMode: argv.includes("--system-prompt-snapshot") ? arg("--system-prompt-snapshot") : undefined,

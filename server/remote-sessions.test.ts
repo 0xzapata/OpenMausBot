@@ -201,6 +201,7 @@ describe("before pairing", () => {
       remoteSessions: true,
       selfUpdate: "operator",
       emailSignIn: false,
+      jobs: true,
     });
     const refused = await call("/api/bots", { headers: remote("10.0.0.1") });
     expect(refused.status).toBe(403);

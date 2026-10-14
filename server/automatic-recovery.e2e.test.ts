@@ -190,7 +190,8 @@ it("recovers a coordinated specialist and returns its result to the Chief exactl
     expect(turns.filter((turn) => turn.botId === chief.id)).toHaveLength(2);
     expect(turns.filter((turn) => turn.botId === specialist.id)).toHaveLength(1);
     expect(turns.find((turn) => turn.botId === specialist.id)).toMatchObject({
-      threadId: child.threadId, model: backup.model, permissionMode: "default",
+      // The work thread starts at Full access, the default, and keeps it on the backup engine.
+      threadId: child.threadId, model: backup.model, permissionMode: "bypassPermissions",
     });
     expect(calls().filter((call) => call.method === "initialize.error")).toHaveLength(1);
     expect(calls().some((call) => call.method === "session/prompt")).toBe(false);
@@ -207,7 +208,7 @@ it("recovers a coordinated specialist and returns its result to the Chief exactl
     expect(fleet.groups).toEqual([]);
     const after = fleet.bots.find((bot: any) => bot.id === specialist.id);
     expect(after.modelSelection).toEqual(primary);
-    expect(after.tasks.find((task: any) => task.threadId === child.threadId)).toMatchObject({ modelSelection: backup, approvalMode: "ask", busy: false });
+    expect(after.tasks.find((task: any) => task.threadId === child.threadId)).toMatchObject({ modelSelection: backup, approvalMode: "full", busy: false });
     expect(after.tasks.find((task: any) => task.threadId === specialist.activeTaskId).modelSelection).toEqual(primary);
     expect(fleet.bots.find((bot: any) => bot.id === chief.id)).toMatchObject({ busy: false, waitingForTeammates: false });
     await control("messages", "--bot", chief.id, "--task", chief.activeTaskId, "--limit", "20");

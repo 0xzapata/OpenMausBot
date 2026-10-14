@@ -1124,7 +1124,7 @@
   "onboarding.spot.gotIt": "知道了",
   "onboarding.spot.composer": "这里是你与机器人对话的地方。⌘K 可以找到任何机器人、群组或消息。",
   "onboarding.spot.model": "这个机器人使用这里显示的模型运作。你随时可以变更它，即使在对话途中也一样。",
-  "onboarding.spot.approval": "Shell 指令与文件编辑会以这样的卡片送达。你可以允许或拒绝。未经你同意，不会运行任何有风险的操作。",
+  "onboarding.spot.approval": "当机器人需要你的同意时，会用这样的卡片来询问。你可以允许或拒绝。",
   "onboarding.spot.connector": "当机器人需要你尚未连接的应用程序时，会在这里询问。在浏览器登录一次即可连接应用程序；每个机器人都可以单独启用“已连接的应用程序”访问权。",
   "onboarding.reel.title": "你的机器人能做什么",
   "onboarding.phone.title": "你的手机",

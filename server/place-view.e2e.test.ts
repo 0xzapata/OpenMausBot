@@ -91,7 +91,7 @@ describe("a cloud computer that can't start, against the real server", () => {
         APPDATA: join(home, "appdata"), LOCALAPPDATA: join(home, "localappdata"),
         TEMP: home, TMP: home, TMPDIR: home, OMB_TEST_SEALED_PATH: "1",
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: ui,
-        OMB_BOX_API: boatApi, OMB_USER_DATA: join(home, "user-data"),
+        OMB_BOAT_API: boatApi, OMB_USER_DATA: join(home, "user-data"),
         ...(included ? { OMB_CLOUD_BOAT_URL: boatApi, OMB_CLOUD_BOAT_TOKEN: "relay_place_view_fixture" } : {}),
       }, stdio: ["ignore", "pipe", "pipe"],
     });
@@ -123,20 +123,20 @@ describe("a cloud computer that can't start, against the real server", () => {
       const path = new URL(req.url ?? "/", "http://box.fixture").pathname;
       let raw = ""; for await (const part of req) raw += part;
       const body = raw ? JSON.parse(raw) : {};
-      if (path === "/boxes" && req.method === "POST") {
+      if (path === "/sandboxes" && req.method === "POST") {
         creates++;
         if (createAnswer) { res.statusCode = createAnswer.status; return res.end(JSON.stringify(createAnswer.body)); }
         const row = { id: `bx_${String(23456789 + boxes.length)}`, name: String(body.name ?? ""), state: "idle" };
         boxes.push(row);
-        return res.end(JSON.stringify({ box: row }));
+        return res.end(JSON.stringify({ sandbox: row }));
       }
-      if (path === "/boxes") return res.end(JSON.stringify({ boxes }));
+      if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: boxes }));
       if (path.endsWith("/desktop")) return res.end(JSON.stringify({ desktopUrl: "https://desktop.fixture.invalid" }));
       if (path.endsWith("/commands")) return res.end(JSON.stringify({ exitCode: 0, stdout: "", stderr: "" }));
-      const row = boxes.find(entry => path === `/boxes/${entry.id}`);
+      const row = boxes.find(entry => path === `/sandboxes/${entry.id}`);
       if (row) {
         if (req.method === "PATCH" && typeof body.name === "string") row.name = body.name;
-        return res.end(JSON.stringify({ box: row }));
+        return res.end(JSON.stringify({ sandbox: row }));
       }
       res.end("{}");
     });

@@ -560,6 +560,7 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
         name: "Atlas",
         section: "Launch",
         chiefOfStaff: true,
+        approvalMode: "ask",
         modelSelection: { instanceId: "chiefCreator", model: "fake-model" },
       });
 
@@ -605,6 +606,8 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
         composio: false,
         autoApprove: false,
         approvePeerComms: false,
+        // A new teammate starts at the default level, not its Chief's Ask.
+        approvalMode: "full",
         modelSelection: defaultSelection,
       });
       expect(operator.chiefOfStaff).toBeFalsy();
@@ -820,7 +823,8 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
       // the card until it settles; the status read says the turn is running.
       await hideAll();
       const helper = await named("Gatekeeper", { section: "Approvals", approvalMode: "ask", modelSelection: { instanceId: "helperPermission", model: "fake-model" } });
-      const chief = await named("Warden", { section: "Approvals", chiefOfStaff: true, modelSelection: { instanceId: "chiefAsync", model: "fake-model" } });
+      // A Chief on Ask passes no level down, so the teammate's own Ask holds.
+      const chief = await named("Warden", { section: "Approvals", chiefOfStaff: true, approvalMode: "ask", modelSelection: { instanceId: "chiefAsync", model: "fake-model" } });
       // every Chief conversation, read through the thread switch
       const chiefThreads = async () => {
         const tasks = (await bot(chief.id)).tasks as any[];
@@ -966,7 +970,7 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
       await hideAll();
       compatAnswer = "hang";
       const helper = await named("ReloadHelper", { modelSelection: { instanceId: "helperCompat", model: "fake-model" } });
-      const asker = await named("ReloadAsker", { modelSelection: ASKER, approvePeerComms: true });
+      const asker = await named("ReloadAsker", { modelSelection: ASKER, approvePeerComms: true, approvalMode: "ask" });
 
       // Start the ask while B is idle so the normal approval card is the
       // first and only human decision for this exact peer message.
@@ -1213,7 +1217,8 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
       const helper = await named("Helper", { modelSelection: HELPER });
       // approvePeerComms on the SOURCE bot — the test's whole point
       const asker = (await api("POST", "/api/bots")).body.bot;
-      const approval = await api("PATCH", `/api/bots/${asker.id}`, { name: "Asker", modelSelection: ASKER, approvePeerComms: true });
+      // Peer review applies below Full access, so the asker is on Ask.
+      const approval = await api("PATCH", `/api/bots/${asker.id}`, { name: "Asker", modelSelection: ASKER, approvePeerComms: true, approvalMode: "ask" });
       expect(approval.status).toBe(200);
       expect(approval.body.bot.approvePeerComms).toBe(true);
 
@@ -1260,7 +1265,7 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
   it("refuses the consultation and never starts B when the user denies", async () => {
     await hideAll();
     const helper = await named("Helper", { modelSelection: HELPER });
-    const asker = await named("Asker", { modelSelection: ASKER, approvePeerComms: true });
+    const asker = await named("Asker", { modelSelection: ASKER, approvePeerComms: true, approvalMode: "ask" });
 
     const send = await startRoutine(asker.id, "hey @Helper do not allow");
     expect(send.status).toBe(201);

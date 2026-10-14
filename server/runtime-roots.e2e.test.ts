@@ -399,7 +399,8 @@ it("T3 parks the root on connector cards and runs it again once when both connec
 // Stop before a decision cancels the root; the decision later starts
 // nothing.
 it("T4 parks the root on a team-setup card, runs it again with the decision, and a Stop cancels the park", () => scenario(async (f) => {
-  expect((await f.api("PATCH", `/api/bots/${f.clive.id}`, { chiefOfStaff: true })).status).toBe(200);
+  // On Ask, so the setup waits on its review card.
+  expect((await f.api("PATCH", `/api/bots/${f.clive.id}`, { chiefOfStaff: true, approvalMode: "ask" })).status).toBe(200);
   const catalog = (await f.api("GET", "/api/instances")).body.instances as any[];
   const claude = catalog.find((item) => item.instanceId === "claude");
   const plan = (name: string) => ({ reason: `Set up ${name}`, newTeams: ["Research"], operations: [{ action: "create", key: name, fields: {

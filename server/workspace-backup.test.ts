@@ -70,6 +70,8 @@ function fixture(root: string): DatabaseSync {
   writeFileSync(join(root, "tools", "downloaded"), "reinstallable");
   mkdirSync(join(root, "decider-log"));
   writeFileSync(join(root, "decider-log", "2026-09.ndjson"), '{"seam":"roomRouting"}\n');
+  mkdirSync(join(root, "evidence", "thread", "turn-0001"), { recursive: true });
+  writeFileSync(join(root, "evidence", "thread", "turn-0001", "step-000001.jpg"), "a page screenshot");
   const db = new DatabaseSync(join(root, "messages.db"));
   db.exec("PRAGMA journal_mode=WAL; CREATE TABLE messages(thread_id TEXT, id TEXT, text TEXT, json TEXT, PRIMARY KEY(thread_id,id)); CREATE TABLE thread_state(thread_id TEXT PRIMARY KEY, active_leaf_id TEXT);");
   const message = {
@@ -172,6 +174,8 @@ describe("encrypted full workspace backups", () => {
       expect(existsSync(join(target, "tools"))).toBe(false);
       // this machine's decision-model log stays on this machine
       expect(existsSync(join(target, "decider-log"))).toBe(false);
+      // recorded browser steps are exported from their conversation, never carried in a backup
+      expect(existsSync(join(target, "evidence"))).toBe(false);
       expect(readJson(join(result.safetyCopyPath!, "data", "bots.json"))).toEqual([{ id: "old" }]);
       const restoredDb = new DatabaseSync(join(target, "messages.db"), { readOnly: true });
       try {

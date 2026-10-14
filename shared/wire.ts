@@ -237,7 +237,7 @@ export interface InstalledPackageMetadata {
   agentKey?: string;
   /** Set when the bot was created from a package preset. */
   presetKey?: string;
-  /** What the package suggested. Never applied: imported bots start on Ask. */
+  /** What the package suggested. Never applied: imported bots start at the default level. */
   suggestedApproval?: "ask" | "auto";
   /** org only */
   publisher?: { organizationId: string; slug: string; name: string };
@@ -359,6 +359,10 @@ export interface WireBot {
   fallback?: Array<{ instanceId: string; model: string }>;
   /** Whether this bot gets the app's built-in browser. */
   browser?: boolean;
+  /** Record browser steps: a screenshot and a short note of each browser
+   * action, kept with the conversation (server/browser-steps.ts). Off
+   * unless true; an admin setting, and a team file may turn it on. */
+  recordBrowserSteps?: boolean;
   /** Memory upkeep: the harness captures facts from finished chats into
    * MEMORY.md and topic files, adds facts about the person to About me and
    * tidies nightly. On unless explicitly false; every change is journaled

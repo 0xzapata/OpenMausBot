@@ -41,6 +41,12 @@ const NEEDS_INPUT = /^needs input:/i;
  * window is set out of the way, not off. */
 const TURN_STALL_MS = 24 * 60 * 60_000;
 
+/** What one root may hand out, and run, before anything settles: enough for
+ * a Chief to brief a room of 25 visitors (Launch Room) and have each take a
+ * turn, with room for their own hand-offs. Any settlement renews both. */
+const REQUESTS_PER_ROOT = 64;
+const EXECUTIONS_PER_ROOT = 96;
+
 /** Terminal trees older than this are pruned from runtime.db, once a day
  * (first at the first tick after the store opens). */
 const PRUNE_AFTER_MS = 30 * 24 * 60 * 60_000;
@@ -147,7 +153,7 @@ export class RuntimeCoordinator implements Coordinator {
     this.store = openRuntimeStore(options.dataDir === ":memory:" ? ":memory:" : join(options.dataDir, "runtime.db"));
     this.runtime = new Runtime(this.store, this.runner(), {
       clock: { now: () => this.now(), monotonic: () => performance.now() },
-      limits: { depth: 4, requests: 24, executions: 48, turnStallMs: TURN_STALL_MS, ...options.runtimeLimits },
+      limits: { depth: 4, requests: REQUESTS_PER_ROOT, executions: EXECUTIONS_PER_ROOT, turnStallMs: TURN_STALL_MS, ...options.runtimeLimits },
       ...(options.log ? { log: options.log } : {}),
     });
   }
@@ -201,6 +207,11 @@ export class RuntimeCoordinator implements Coordinator {
     const rows = this.store.all();
     const byId = new Map(rows.map(row => [row.id, row]));
     return rows.map(row => view(row, row.parentId ? byId.get(row.parentId) : undefined));
+  }
+
+  active(): HandoffView[] {
+    this.ready();
+    return this.live().map(row => this.project(row));
   }
 
   children(id: string): HandoffView[] {
@@ -269,6 +280,37 @@ export class RuntimeCoordinator implements Coordinator {
   status(id: string): StatusView | undefined {
     this.ready();
     return this.runtime.status(id);
+  }
+
+  job(threadId: string, since: number, botId?: string): { scopes: string[]; rows: Assignment[] } {
+    this.ready();
+    // Its own turns are roots requested from here; a teammate's assignment
+    // running here is read by its bot and thread. Both are indexed reads of
+    // only the rows still open at `since`.
+    const given = new Map<string, Assignment>();
+    for (const a of this.store.all({ ownerThreadId: threadId, roots: true, openSince: since })) {
+      if (a.assignee.destination.threadId === threadId) given.set(a.id, a);
+    }
+    if (botId) for (const a of this.store.all({ assignee: { botId, threadId }, openSince: since })) given.set(a.id, a);
+    const rows = new Map<string, Assignment>();
+    const scopes: string[] = [];
+    for (const start of [...given.values()].sort((a, b) => a.createdAt - b.createdAt)) {
+      if (rows.has(start.id)) continue;
+      scopes.push(start.id);
+      const subtree = start.parentId ? this.subtree(start) : this.store.all({ rootId: start.id });
+      for (const a of subtree) rows.set(a.id, a);
+    }
+    return { scopes, rows: [...rows.values()].sort((a, b) => a.createdAt - b.createdAt) };
+  }
+
+  /** A node and everything handed out under it, parents first. */
+  private subtree(start: Assignment): Assignment[] {
+    const out = [start];
+    const seen = new Set([start.id]);
+    for (let i = 0; i < out.length; i++) {
+      for (const child of this.store.children(out[i]!.id)) if (!seen.has(child.id)) { seen.add(child.id); out.push(child); }
+    }
+    return out;
   }
 
   poll(owner: Owner): { items: StatusView["inbox"]; assignments: HandoffView[] } {

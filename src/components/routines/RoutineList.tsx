@@ -3,10 +3,11 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { Routine, RoutineRun } from "@/lib/routines";
 import { scheduleLabel } from "@/lib/schedule-label";
-import { latestRoutineRun, routineDateTime, routineNextLabel, routineRunLabel, routineRunTone, routineScheduleState } from "@/lib/routine-display";
+import { latestRoutineRun, routineDateTime, routineFinished, routineNextLabel, routineRunLabel, routineRunTone, routineScheduleState } from "@/lib/routine-display";
 import type { Bot } from "@/state/store";
+import { Switch } from "../SettingsPrimitives";
 
-export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLogs }: {
+export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLogs, onToggle }: {
   routines: Routine[];
   runs: RoutineRun[];
   bots?: Bot[];
@@ -14,6 +15,9 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
   error?: boolean;
   onOpen: (routine: Routine) => void;
   onLogs: (routine: Routine) => void;
+  /** Pause or resume from the card: its state badge becomes an on/off
+   * switch. A finished one-shot keeps the badge; there is nothing to resume. */
+  onToggle?: (routine: Routine) => void;
 }) {
   const sorted = [...routines].sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) || a.name.localeCompare(b.name));
   return <div className="space-y-3" aria-label={t("routines.list")}>
@@ -23,15 +27,19 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
     {sorted.map((routine) => {
       const latest = latestRoutineRun(routine.id, runs);
       const bot = bots?.find((candidate) => candidate.id === routine.botId);
+      const switched = onToggle !== undefined && !routineFinished(routine);
       return <article key={routine.id} className="rounded-xl border border-hairline/40 bg-card p-3.5" aria-label={routine.name}>
         <div className="flex items-start gap-2">
           <button type="button" onClick={() => onOpen(routine)} className="min-w-0 flex-1 text-left hover:text-accent">
             <span className="block truncate text-[13px] font-semibold text-ink">{routine.name}</span>
             <span className="mt-1 block text-[11.5px] leading-relaxed text-ink-secondary">{bot && `${bot.name} · `}{scheduleLabel(routine.schedule)}</span>
           </button>
-          <span className={cn("shrink-0 rounded-full bg-inset px-2 py-0.5 text-[10px]", routine.enabled && routine.nextRunAt != null ? "text-accent" : "text-ink-secondary")}>{routineScheduleState(routine)}</span>
+          {switched
+            ? <Switch checked={routine.enabled} aria-label={t("routines.toggle", { name: routine.name })} onClick={() => onToggle(routine)} />
+            : <span className={cn("shrink-0 rounded-full bg-inset px-2 py-0.5 text-[10px]", routine.enabled && routine.nextRunAt != null ? "text-accent" : "text-ink-secondary")}>{routineScheduleState(routine)}</span>}
         </div>
-        {routineNextLabel(routine) !== routineScheduleState(routine) && <div className="mt-2 text-[11.5px] text-ink-secondary">{routineNextLabel(routine)}</div>}
+        {/* The badge said Paused; with a switch in its place the line says it. */}
+        {(switched || routineNextLabel(routine) !== routineScheduleState(routine)) && <div className="mt-2 text-[11.5px] text-ink-secondary">{routineNextLabel(routine)}</div>}
         <div className="mt-1 flex items-start justify-between gap-2">
           <div className="min-w-0 text-[11.5px]">
             {latest ? <><span className={routineRunTone(latest)}>{t("routines.latestRun", { status: routineRunLabel(latest) })}</span><span className="block text-[10.5px] text-ink-secondary">{routineDateTime(latest.finishedAt ?? latest.startedAt ?? latest.scheduledFor)}</span></> : <span className="text-ink-secondary">{t("routines.neverRun")}</span>}

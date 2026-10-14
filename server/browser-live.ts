@@ -4,6 +4,7 @@ import type { ServerResponse } from "node:http";
 import { promisify } from "node:util";
 import { BROWSER_VIEWPORT_ARGS, browserRuntimeEnv, ownsBrowserViewport, type BrowserRuntime } from "./browser-runtime.ts";
 import { closeBrowserSession } from "./browser-engine.ts";
+import { relay } from "./browser-relay.ts";
 
 const execute = promisify(execFile);
 const MAX_FRAME = 3 * 1024 * 1024;
@@ -220,6 +221,8 @@ interface Viewer extends OpenOptions {
   /** Headers are out, but the browser has not answered yet: only waiting and error events. */
   waiting: boolean;
   abort: AbortController;
+  /** Ends this view's watch: the browser is not idle while it is open. */
+  unwatch: () => void;
 }
 
 export class BrowserLive {
@@ -302,6 +305,7 @@ export class BrowserLive {
     if (viewer.closed) return;
     viewer.closed = true;
     viewer.abort.abort();
+    viewer.unwatch();
     this.viewers.delete(viewer.id);
     clearTimeout(viewer.heartbeat); clearTimeout(viewer.drainTimer);
     viewer.socket?.close();
@@ -374,9 +378,11 @@ export class BrowserLive {
   private async connect(viewer: Viewer): Promise<number> {
     // A failed launch already started this session's daemon teardown; wait
     // for it so the status probe meets a fresh daemon, not the stuck one.
-    // Checked on every attempt: a reset can start while the view waits.
+    // Checked on every attempt: a reset can start while the view waits. An
+    // idle close in progress is waited out the same way.
     const resetting = this.sessionResets.get(viewer.session);
     if (resetting) await resetting;
+    await this.runtime.settled(viewer.session);
     let status = await this.command(viewer, ["stream", "status"], STATUS_PROBE_MS);
     if (status.enabled !== true) {
       try { status = await this.command(viewer, ["stream", "enable"]); }
@@ -454,21 +460,11 @@ export class BrowserLive {
       viewer.pressedKeys.add(key);
     }
     if (type === "input_mouse" && eventType === "mousePressed") viewer.pressedButtons.add(String(fields.button));
-    const origin = `http://127.0.0.1:${viewer.port}`;
     try {
-      // The native command relay awaits the daemon's CDP reply. A WS send is
-      // only an enqueue, so it cannot serve as the human hand-back barrier.
-      const response = await fetch(`${origin}/api/command`, { method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json", Origin: origin }, body: JSON.stringify(command), signal: AbortSignal.timeout(30_000) });
-      if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error("input rejected"); }
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      for await (const chunk of response.body) {
-        size += chunk.length;
-        if (size > 65536) throw new Error("input response too large");
-        chunks.push(chunk);
-      }
-      if (object(JSON.parse(Buffer.concat(chunks).toString("utf8")))?.success !== true) throw new Error("input failed");
+      // The native command relay (browser-relay.ts) awaits the daemon's CDP
+      // reply. A WS send is only an enqueue, so it cannot serve as the human
+      // hand-back barrier.
+      if (!(await relay(viewer.port, command, { timeoutMs: 30_000, maxBytes: 65_536 })).success) throw new Error("input failed");
       if (command.action === "press" || (command.action === "input_keyboard" && eventType === "keyUp")) viewer.pressedKeys.delete(key);
       if (type === "input_mouse" && eventType === "mouseReleased") viewer.pressedButtons.delete(String(fields.button));
     } catch { throw new BrowserLiveError("The browser could not confirm this input. Restart the browser before continuing.", 503); }
@@ -478,8 +474,9 @@ export class BrowserLive {
     if (this.viewers.size >= 8 || [...this.viewers.values()].filter((v) => v.session === options.session).length >= 2) {
       throw new BrowserLiveError("Too many browser views are open. Close another browser panel first.", 429);
     }
-    const viewer: Viewer = { ...options, id: randomUUID(), closed: false, blocked: false, pendingActions: 0, restarting: false, pressedKeys: new Set(), pressedButtons: new Set(), waiting: false, abort: new AbortController() };
+    const viewer: Viewer = { ...options, id: randomUUID(), closed: false, blocked: false, pendingActions: 0, restarting: false, pressedKeys: new Set(), pressedButtons: new Set(), waiting: false, abort: new AbortController(), unwatch: () => {} };
     if (!this.current(viewer)) throw new BrowserLiveError("This browser view is no longer available.", 409);
+    viewer.unwatch = this.runtime.watch(viewer.session, viewer.spec);
     this.viewers.set(viewer.id, viewer);
     options.res.once("close", () => this.close(viewer));
     options.res.once("error", () => this.close(viewer));

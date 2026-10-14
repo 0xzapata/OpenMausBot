@@ -4,7 +4,7 @@
 // The Admin relays each on its own accounts, so its provider keys never reach
 // this machine; each Cloud home gets its own relay tokens:
 //
-//   OMB_CLOUD_BOAT_URL    + OMB_CLOUD_BOAT_TOKEN     the Boat relay, ending in /api/box/v1
+//   OMB_CLOUD_BOAT_URL    + OMB_CLOUD_BOAT_TOKEN     the Boat relay, ending in /api/box/v1 (boat-relay.ts)
 //   OMB_CLOUD_VOICE_URL   + OMB_CLOUD_VOICE_TOKEN    the ElevenLabs relay, ending in /v1
 //   OMB_CLOUD_DECIDER_URL + OMB_CLOUD_DECIDER_TOKEN  the Jev relay, a Jev base URL
 //   OMB_CLOUD_AI_URL      + OMB_CLOUD_AI_TOKEN       the trial's Claude credit, an OpenAI-compatible base URL
@@ -13,13 +13,14 @@
 // BOX_TOKEN / OMB_TTS_KEY / OMB_JEV_API_KEY) always wins, and removing it
 // falls back again, so the credential is resolved on every request, never
 // cached. The relay knows only our account, so each credential goes to one
-// place: an own key to the provider (OMB_BOX_API / OMB_ELEVENLABS_API /
+// place: an own key to the provider (OMB_BOAT_API / OMB_ELEVENLABS_API /
 // decider.baseUrl when set, for dev and tests), an included token to its
 // relay. An included token is never written to config.json, never reported
 // to a client, and never the saved key Settings verifies, rotates or clears.
 import { JEV_DEFAULT_BASE_URL } from "./decider/jev.ts";
 
-export const BOAT_API_DEFAULT = "https://ascii.dev/api/box/v1";
+/** Boat's public API v1 (https://docs.boat.dev/api/v1). */
+export const BOAT_API_DEFAULT = "https://boat.dev/api/v1";
 export const ELEVENLABS_API_DEFAULT = "https://api.elevenlabs.io/v1";
 /** Also on WORKSPACE_CREDENTIAL_ENV (config.ts). */
 export const INCLUDED_TOKEN_ENV = ["OMB_CLOUD_BOAT_TOKEN", "OMB_CLOUD_VOICE_TOKEN", "OMB_CLOUD_DECIDER_TOKEN", "OMB_CLOUD_AI_TOKEN"] as const;
@@ -91,7 +92,7 @@ function resolve(own: string | undefined, providerApi: string, included: Service
   return included;
 }
 
-export const boatProviderApi = (env: NodeJS.ProcessEnv = process.env): string => env.OMB_BOX_API || BOAT_API_DEFAULT;
+export const boatProviderApi = (env: NodeJS.ProcessEnv = process.env): string => env.OMB_BOAT_API || BOAT_API_DEFAULT;
 export const elevenLabsProviderApi = (env: NodeJS.ProcessEnv = process.env): string =>
   env.OMB_ELEVENLABS_API || ELEVENLABS_API_DEFAULT;
 

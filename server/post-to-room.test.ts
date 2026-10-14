@@ -769,7 +769,8 @@ describe("post_to_room", () => {
     const gated = await makeBot("Gated Poster", "Gated");
     const mate = await makeBot("Gate Mate", "Gated");
     const room = await makeRoom("Gated room", [gated.id, mate.id], "Gated");
-    expect((await api("PATCH", `/api/bots/${gated.id}`, { approvePeerComms: true })).status).toBe(200);
+    // Peer review applies below Full access.
+    expect((await api("PATCH", `/api/bots/${gated.id}`, { approvePeerComms: true, approvalMode: "ask" })).status).toBe(200);
 
     const pending = post(gated.id, gated.threadId, room.id, "needs a human first");
     const card = await waitForPeerCard(gated.threadId);
@@ -790,7 +791,8 @@ describe("post_to_room", () => {
     const gated = await makeBot("Denied Poster", "Denied");
     const mate = await makeBot("Deny Mate", "Denied");
     const room = await makeRoom("Denied room", [gated.id, mate.id], "Denied");
-    expect((await api("PATCH", `/api/bots/${gated.id}`, { approvePeerComms: true })).status).toBe(200);
+    // Peer review applies below Full access.
+    expect((await api("PATCH", `/api/bots/${gated.id}`, { approvePeerComms: true, approvalMode: "ask" })).status).toBe(200);
 
     const pending = post(gated.id, gated.threadId, room.id, "deploy is green");
     const card = await waitForPeerCard(gated.threadId);
