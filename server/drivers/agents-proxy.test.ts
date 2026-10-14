@@ -1436,6 +1436,7 @@ describe("agents-proxy MCP surface", () => {
     const miss = await callTool("session_read", { thread_id: "thread-old", message_id: "m-nope" });
     expect(miss.result.isError).toBe(true);
     expect(miss.result.content[0].text).toContain("no such message in your conversations");
+    expect(miss.result.content[0].text).toContain('Couldn\'t read message "m-nope" in thread "thread-old"');
 
     const missing = await callTool("session_read", { thread_id: "thread-old" });
     expect(missing.result.isError).toBe(true);
