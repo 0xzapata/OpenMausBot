@@ -1055,9 +1055,8 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       ? skills.map((skill) => {
         const row = skill as Json;
         // Unreviewed imports: a hostile description is still prompt content, so only names and status.
-        const editable = row.editable === true;
-        const status = row.enabled ? "enabled" : "disabled";
-        return `- ${row.name} (${status}, ${editable ? "learned/editable" : "imported"})`;
+        const revision = typeof row.revision === "string" ? `, shared with your team, revision ${row.revision}` : "";
+        return `- ${row.name} (${row.enabled ? "enabled" : "disabled"}, ${row.editable === true ? "learned/editable" : "imported"}${revision})`;
       }).join("\n")
       : "(none)";
     const pending = staged.length
@@ -1094,6 +1093,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
         skill_name: skillName || undefined,
         skill_md: skillMd,
         gist: typeof args.gist === "string" ? args.gist : undefined,
+        base_revision: typeof args.base_revision === "string" ? args.base_revision : undefined,
         source,
       }),
     });

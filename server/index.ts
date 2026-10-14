@@ -15647,7 +15647,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (action === "update" && !targetName) {
           return json(res, 400, { error: "skill_name is required when action is update" });
         }
-        if (action === "update" && skillsHost.editable(from.id, targetName)) return json(res, ...skillsHost.harnessUpdate(from, fromThreadId, targetName, skillMd, body.gist, direct));
+        if (action === "update" && skillsHost.editable(from.id, targetName)) return json(res, ...skillsHost.harnessUpdate(from, fromThreadId, targetName, skillMd, body.gist, body.base_revision, direct));
         const staged = stageSkillWrite(from.id, {
           action,
           targetName: targetName || undefined,

@@ -114,6 +114,14 @@ let skillsResponse: unknown = {
       source: "learn:conversation",
       editable: true,
     },
+    {
+      name: "team-cut",
+      description: "SHARED LEARNED INSTRUCTIONS",
+      enabled: true,
+      source: "learn:conversation",
+      editable: true,
+      revision: "0123456789ab",
+    },
   ],
   staged: [{ name: "pending-skill", action: "create", gist: "UNREVIEWED GIST", source: "UNREVIEWED SOURCE" }],
 };
@@ -1911,6 +1919,7 @@ describe("agents-proxy MCP surface", () => {
     expect(listed.result.content[0].text).toContain("file-expense");
     expect(listed.result.content[0].text).toContain("file-expense (disabled, imported)");
     expect(listed.result.content[0].text).toContain("learned-expense (enabled, learned/editable)");
+    expect(listed.result.content[0].text).toContain("team-cut (enabled, learned/editable, shared with your team, revision 0123456789ab)");
     expect(listed.result.content[0].text).toContain("pending-skill");
     expect(listed.result.content[0].text).not.toContain("UNREVIEWED");
     expect(listed.result.content[0].text).not.toContain("PRIVATE LEARNED");
@@ -1942,6 +1951,15 @@ describe("agents-proxy MCP surface", () => {
       skill_name: "file-expense",
     });
     expect(updated.result.content[0].text).toContain("current version remains unchanged");
+
+    await callTool("skill_manage", {
+      action: "update",
+      skill_name: "team-cut",
+      skill_md: "---\nname: team-cut\ndescription: Cuts a rough edit.\n---\n\n# Team cut\n",
+      base_revision: "0123456789ab",
+      source: "conversation",
+    });
+    expect(lastSkillStageBody).toMatchObject({ action: "update", skill_name: "team-cut", base_revision: "0123456789ab" });
 
     lastSkillStageBody = null;
     const missingTarget = await callTool("skill_manage", {

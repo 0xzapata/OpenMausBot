@@ -122,6 +122,25 @@ describe("sharing learned skills with the team", () => {
     expect(author.assignedSkills).toEqual(["rough-cut"]);
   });
 
+  it("refuses the second of two writers that read the same version, so neither update is lost", () => {
+    learn(author.id, "rough-cut");
+    const first = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root });
+    if ("error" in first) throw new Error(first.error);
+    // both bots read v1 and see the same revision in skills_list
+    const read = first.sha256.slice(0, share.SHARED_REVISION_CHARS);
+    const fromAuthor = share.updateSharedLearnedSkill({ bot: author, bots, name: "rough-cut", skillMd: SKILL("rough-cut", "author's v2"), expectSha256: read, patchAssigned, root });
+    if ("error" in fromAuthor) throw new Error(fromAuthor.error);
+    const fromMate = share.updateSharedLearnedSkill({ bot: mate, bots, name: "rough-cut", skillMd: SKILL("rough-cut", "mate's v2 from v1"), expectSha256: read, patchAssigned, root });
+    expect(fromMate).toEqual({ error: 'skill "rough-cut" changed since it was read — read it again first' });
+    expect(library.readLibrarySkillFile("rough-cut", root)).toBe(SKILL("rough-cut", "author's v2"));
+    // a revision too short to name one version is refused, not matched loosely
+    const loose = share.updateSharedLearnedSkill({ bot: mate, bots, name: "rough-cut", skillMd: SKILL("rough-cut", "v3"), expectSha256: fromAuthor.sha256.slice(0, 4), patchAssigned, root });
+    expect(loose).toEqual({ error: 'skill "rough-cut" changed since it was read — read it again first' });
+    const reread = share.updateSharedLearnedSkill({ bot: mate, bots, name: "rough-cut", skillMd: SKILL("rough-cut", "mate's v3"), expectSha256: fromAuthor.sha256.slice(0, share.SHARED_REVISION_CHARS), patchAssigned, root });
+    if ("error" in reread) throw new Error(reread.error);
+    expect(library.readLibrarySkillFile("rough-cut", root)).toBe(SKILL("rough-cut", "mate's v3"));
+  });
+
   it("asks by default and is off while the skills library is off", () => {
     expect(share.shareLearnedSkillsMode({})).toBe("off");
     expect(share.shareLearnedSkillsMode({ features: { shareLearnedSkills: "auto" } })).toBe("off");
@@ -155,7 +174,7 @@ describe("sharing learned skills with the team", () => {
     const first = share.shareLearnedSkill({ author, bots, name: "rough-cut", patchAssigned, root });
     if ("error" in first) throw new Error(first.error);
     const restricted = { ...mate, visibility: "admins" };
-    const refused = share.updateSharedLearnedSkill({ bot: restricted, bots: bots.map((bot) => bot.id === mate.id ? restricted : bot), name: "rough-cut", skillMd: SKILL("rough-cut", "secret way"), patchAssigned, root });
+    const refused = share.updateSharedLearnedSkill({ bot: restricted, bots: bots.map((bot) => bot.id === mate.id ? restricted : bot), name: "rough-cut", skillMd: SKILL("rough-cut", "secret way"), expectSha256: first.sha256, patchAssigned, root });
     expect(refused).toEqual({ error: expect.stringContaining("Cutter") });
     expect(library.readLibrarySkillFile("rough-cut", root)).toBe(SKILL("rough-cut"));
   });

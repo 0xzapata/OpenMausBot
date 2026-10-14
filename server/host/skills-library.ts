@@ -23,6 +23,7 @@ import {
   prepareShareNote,
   shareLearnedSkill,
   shareLearnedSkillsMode,
+  SHARED_REVISION_CHARS,
   sharedSkillEditable,
   undoSharedLearnedSkill,
   updateSharedLearnedSkill,
@@ -161,12 +162,15 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
   function applySharedUpdate(
     from: BotRecord,
     threadId: string,
-    change: { name: string; skillMd: string; gist?: string; expectSha256?: string },
+    change: { name: string; skillMd: string; gist?: string; expectSha256: string | undefined },
     direct: DirectApply,
   ): { name: string; summary: string; shared: string } | { error: string } {
     const bots = shareBotsNow();
     const self = bots.find((bot) => bot.id === from.id);
     if (!self) return { error: "unknown bot" };
+    if (!change.expectSha256) {
+      return { error: `skill "${change.name}" is shared with your team: call skills_list, read the skill, and pass the revision it lists as base_revision` };
+    }
     const updated = updateSharedLearnedSkill({
       bot: self,
       bots,
@@ -271,18 +275,23 @@ export function createSkillsLibraryHost(deps: SkillsLibraryHostDeps) {
 
     /** skill_manage's update of a shared skill (`editable`): the response's
      * status and body. */
-    harnessUpdate(from: BotRecord, threadId: string, name: string, skillMd: string, gist: unknown, direct: DirectApply | null):
+    harnessUpdate(from: BotRecord, threadId: string, name: string, skillMd: string, gist: unknown, baseRevision: unknown, direct: DirectApply | null):
       [status: number, body: Record<string, unknown>] {
       if (!direct) return [422, { state: "failed", error: "this conversation cannot update a shared team skill" }];
-      const updated = applySharedUpdate(from, threadId, { name, skillMd, gist: typeof gist === "string" ? gist : undefined }, direct);
+      const updated = applySharedUpdate(from, threadId, {
+        name, skillMd, gist: typeof gist === "string" ? gist : undefined, expectSha256: typeof baseRevision === "string" ? baseRevision : undefined,
+      }, direct);
       if ("error" in updated) return [422, { state: "failed", error: updated.error }];
       return [201, { state: "applied", name: updated.name, action: "update", summary: updated.summary, shared: updated.shared }];
     },
 
-    /** skill_manage's list: shared team skills this bot may update are editable. */
-    harnessListing(botId: string, skills: SkillListing[]): SkillListing[] {
+    /** skill_manage's list: shared team skills this bot may update are
+     * editable, with the revision an update must name (base_revision). */
+    harnessListing(botId: string, skills: SkillListing[]): Array<SkillListing & { revision?: string }> {
       if (mode() === "off") return skills;
-      return skills.map((skill) => !skill.editable && editable(botId, skill.name) ? { ...skill, editable: true } : skill);
+      return skills.map((skill) => !skill.editable && editable(botId, skill.name)
+        ? { ...skill, editable: true, revision: skill.sha256.slice(0, SHARED_REVISION_CHARS) }
+        : skill);
     },
 
     /** After a bot's own learned skill applied: features.shareLearnedSkills

@@ -370,17 +370,21 @@ export function shareLearnedSkill(args: {
   return { library, sha256, sharedAt: at, ...team };
 }
 
+/** How much of a library hash skills_list shows as a shared skill's revision. */
+export const SHARED_REVISION_CHARS = 12;
+
 /** Update a shared learned skill through the library copy. The bot must
  * have it assigned (and no private skill of that name); the write applies
- * only while the library still holds the version this bot's skills list
- * showed (`expectSha256`, else the current one). Teammates that joined since
- * are assigned too. */
+ * only while the library still holds the version the writer read
+ * (`expectSha256`: the full hash, or the 12-character revision skills_list
+ * shows), so a rewrite of an older read never replaces a teammate's newer
+ * update. Teammates that joined since are assigned too. */
 export function updateSharedLearnedSkill(args: {
   bot: ShareBot;
   bots: readonly ShareBot[];
   name: string;
   skillMd: string;
-  expectSha256?: string;
+  expectSha256: string;
   patchAssigned: PatchAssigned;
   /** features.shareLearnedSkills "auto": teammates that joined since get it. */
   assignOnward?: boolean;
@@ -407,8 +411,9 @@ export function updateSharedLearnedSkill(args: {
   if (prepared.name !== args.name) return { error: `updated SKILL.md name must remain "${args.name}"` };
   const previous = readLibrarySkillFile(args.name, root);
   if (previous === null) return { error: "stored SKILL.md changed after review — restore or remove it before proposing an update" };
-  const base = args.expectSha256 ?? entry.sha256;
-  if (base !== entry.sha256) return { error: `skill "${args.name}" changed since it was read — read it again first` };
+  const read = args.expectSha256.trim().toLowerCase();
+  if (read.length < SHARED_REVISION_CHARS || !entry.sha256.startsWith(read)) return { error: `skill "${args.name}" changed since it was read — read it again first` };
+  const base = entry.sha256;
   if (prepared.sha256 === entry.sha256) return { error: `skill "${args.name}" already matches the proposed SKILL.md` };
   const updated = updateLibrarySkill({ name: args.name, instructions: prepared.content, expectSha256: base, root });
   if ("stale" in updated) return { error: `skill "${args.name}" changed since it was read — read it again first` };

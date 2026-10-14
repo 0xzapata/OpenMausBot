@@ -769,6 +769,10 @@ const TOOL_DEFINITIONS = [
           type: "string",
           description: "Optional one-line summary of the skill change, included in its applied result or pending review.",
         },
+        base_revision: {
+          type: "string",
+          description: "Required to update a skill shared with your team: the revision skills_list shows for it, listed before you read the skill. A teammate's newer change makes the update fail; list and read it again.",
+        },
         source: {
           type: "string",
           description: "Required provenance label: the URL, folder, or 'conversation' used to author the skill.",
