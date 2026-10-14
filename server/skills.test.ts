@@ -34,11 +34,12 @@ import {
   skillsSystemPrompt,
   stageSkillWrite,
   syncSkillLinks,
+  syncTaskSkillLinks,
   undoSkillWrite,
 } from "./skills.ts";
 import { parseSkillSource } from "./skill-fetch.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
-import { workspaceDir } from "./workspace.ts";
+import { ensureTaskWorkspace, TASK_WORKSPACES_DIR, workspaceDir } from "./workspace.ts";
 
 // skills.ts resolves storage through workspaceDir(botId) → DATA_DIR, which
 // reads OMB_DATA_DIR at import time — so point the suite at a scratch dir
@@ -257,6 +258,57 @@ describe("install → review → enable lifecycle", () => {
     setSkillEnabled(bot, "steady-links", false);
     expect(statSync(record).ino).not.toBe(saved);
     expect(JSON.parse(readFileSync(record, "utf8"))).toEqual([]);
+  });
+
+  // #2806: a thread's default cwd is task-workspaces/<bot>/<thread>, not a
+  // child of the bot workspace, so engines there never saw the links above.
+  it("links enabled skills into the thread's own task folder and revokes them on disable", () => {
+    installSkill(bot, "src", [{ path: "SKILL.md", content: SKILL("task-skill") }]);
+    setSkillEnabled(bot, "task-skill", true);
+    const thread = "thread-a";
+    const taskDir = ensureTaskWorkspace(bot, thread);
+    try {
+      syncTaskSkillLinks(bot, thread);
+      for (const dir of [".claude/skills", ".agents/skills", ".grok/skills"]) {
+        const path = join(taskDir, dir, "task-skill");
+        expect(lstatSync(path).isSymbolicLink(), `${dir} link should exist`).toBe(true);
+        expect(realpathSync(join(path, "SKILL.md"))).toBe(realpathSync(join(workspaceDir(bot), "skills", "task-skill", "SKILL.md")));
+      }
+      const record = join(DATA_DIR, "skill-state", bot, "task-links", `${thread}.json`);
+      expect(JSON.parse(readFileSync(record, "utf8"))).toEqual(["task-skill"]);
+
+      setSkillEnabled(bot, "task-skill", false);
+      syncTaskSkillLinks(bot, thread);
+      for (const dir of [".claude/skills", ".agents/skills", ".grok/skills"]) {
+        expect(existsSync(join(taskDir, dir, "task-skill"))).toBe(false);
+      }
+      expect(JSON.parse(readFileSync(record, "utf8"))).toEqual([]);
+    } finally {
+      rmSync(join(TASK_WORKSPACES_DIR, bot), { recursive: true, force: true });
+    }
+  });
+
+  it("never replaces a same-name folder the bot made in its task folder", () => {
+    installSkill(bot, "src", [{ path: "SKILL.md", content: SKILL("own-skill") }]);
+    setSkillEnabled(bot, "own-skill", true);
+    const thread = "thread-b";
+    const taskDir = ensureTaskWorkspace(bot, thread);
+    try {
+      const own = join(taskDir, ".claude", "skills", "own-skill");
+      mkdirSync(own, { recursive: true });
+      writeFileSync(join(own, "SKILL.md"), "mine");
+      syncTaskSkillLinks(bot, thread);
+      expect(lstatSync(own).isSymbolicLink()).toBe(false);
+      expect(readFileSync(join(own, "SKILL.md"), "utf8")).toBe("mine");
+      expect(lstatSync(join(taskDir, ".agents", "skills", "own-skill")).isSymbolicLink()).toBe(true);
+
+      setSkillEnabled(bot, "own-skill", false);
+      syncTaskSkillLinks(bot, thread);
+      expect(readFileSync(join(own, "SKILL.md"), "utf8")).toBe("mine");
+      expect(existsSync(join(taskDir, ".agents", "skills", "own-skill"))).toBe(false);
+    } finally {
+      rmSync(join(TASK_WORKSPACES_DIR, bot), { recursive: true, force: true });
+    }
   });
 
   it("stores only the reviewed SKILL.md and reports every supporting file", () => {

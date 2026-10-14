@@ -375,6 +375,7 @@ import {
   setSkillEnabled,
   skillPackageStamps,
   skillsSystemPrompt,
+  syncTaskSkillLinks,
   expandSkillCommandTurnText,
   stageSkillWrite,
   undoSkillWrite,
@@ -11371,6 +11372,9 @@ async function startTurn(
       // on nearly every ordinary chat; snapshotting it would add hidden disk
       // and process overhead without a user project to list changes for.
       const checkpointCwd = cwd && cwd !== privateWorkspace ? cwd : undefined;
+      // Engines discover native skills from their cwd. The private task folder
+      // is not under the workspace that holds the bot-level links (#2806).
+      if (cwd && cwd === privateWorkspace) syncTaskSkillLinks(bot.id, threadId);
       // dweb is opt-in: without an explicit daemon URL, do not advertise
       // tools that would fail on every call or spawn an unnecessary proxy.
       const dwebUrl = process.env.DWEB_URL?.trim();

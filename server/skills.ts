@@ -52,7 +52,7 @@ import { DATA_DIR } from "./config.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
 import { librarySkillFilePath, listLibrarySkills, type LibrarySkillListing } from "./skill-library.ts";
-import { workspaceDir } from "./workspace.ts";
+import { ensureTaskWorkspace, workspaceDir } from "./workspace.ts";
 import { isSkillName, parseSkillMd, scanSkillText, SKILL_FILE_MAX_BYTES, type ParsedSkill } from "../shared/skill-md.ts";
 import { parseSkillCommand } from "../shared/skill-command.ts";
 
@@ -249,13 +249,16 @@ function manifestPath(botId: string): string {
   return join(skillStateDir(botId), "skills.json");
 }
 
-function managedLinksPath(botId: string): string {
-  return join(skillStateDir(botId), "managed-links.json");
+/** One registry per link root: the bot workspace, or one task workspace. */
+function managedLinksPath(botId: string, threadId?: string): string {
+  return threadId
+    ? join(skillStateDir(botId), "task-links", `${threadId}.json`)
+    : join(skillStateDir(botId), "managed-links.json");
 }
 
-function readManagedLinks(botId: string): string[] {
+function readManagedLinks(botId: string, threadId?: string): string[] {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(managedLinksPath(botId), "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(managedLinksPath(botId, threadId), "utf8"));
     const result = managedLinksSchema.safeParse(parsed);
     return result.success ? result.data.filter(isSkillName) : [];
   } catch {
@@ -264,9 +267,10 @@ function readManagedLinks(botId: string): string[] {
 }
 
 // Rebuilt on every turn and almost always the same list.
-function writeManagedLinks(botId: string, names: string[]): void {
-  mkdirSync(skillStateDir(botId), { recursive: true, mode: 0o700 });
-  writeFileAtomicIfChanged(managedLinksPath(botId), `${JSON.stringify([...new Set(names)].sort(), null, 2)}\n`, { mode: 0o600 });
+function writeManagedLinks(botId: string, names: string[], threadId?: string): void {
+  const path = managedLinksPath(botId, threadId);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileAtomicIfChanged(path, `${JSON.stringify([...new Set(names)].sort(), null, 2)}\n`, { mode: 0o600 });
 }
 
 function manifestFromFile(path: string): SkillManifest | null {
@@ -428,12 +432,14 @@ const NATIVE_SKILL_DIRS = [".claude/skills", ".agents/skills", ".grok/skills"];
 function removeNativeLinksForUnsafeSkillsRoot(
   botId: string,
   root: string,
+  linkRoot: string,
+  threadId: string | undefined,
   previouslyManaged: string[],
   beforeRemove?: (link: string) => void,
 ): void {
   const retry = new Set<string>();
   for (const dir of NATIVE_SKILL_DIRS) {
-    const linkDir = nativeLinkDirectory(root, dir, false);
+    const linkDir = nativeLinkDirectory(linkRoot, dir, false);
     if (!linkDir) {
       // The directory may become safe again later, so retain the registry as
       // a cleanup hint without following its current replacement.
@@ -462,7 +468,7 @@ function removeNativeLinksForUnsafeSkillsRoot(
     }
   }
   try {
-    writeManagedLinks(botId, [...retry]);
+    writeManagedLinks(botId, [...retry], threadId);
   } catch {
     // The protected manifest remains authoritative. A later turn retries link
     // reconciliation; failure here must not roll back or misreport a skill.
@@ -476,13 +482,34 @@ export function syncSkillLinks(
   botId: string,
   options: { beforeRemove?: (link: string) => void } = {},
 ): void {
+  reconcileNativeLinks(botId, workspaceDir(botId), undefined, options);
+}
+
+/** A thread's default folder is outside the bot workspace (#981), so engines
+ * started there never walked up to the workspace links. Give that folder its
+ * own projection of the same manifest. Only the app-owned task folder: a
+ * user-chosen project folder is never written to. */
+export function syncTaskSkillLinks(
+  botId: string,
+  threadId: string,
+  options: { beforeRemove?: (link: string) => void } = {},
+): void {
+  reconcileNativeLinks(botId, ensureTaskWorkspace(botId, threadId), threadId, options);
+}
+
+function reconcileNativeLinks(
+  botId: string,
+  linkRoot: string,
+  threadId: string | undefined,
+  options: { beforeRemove?: (link: string) => void },
+): void {
   const root = workspaceDir(botId);
-  const previouslyManaged = readManagedLinks(botId);
+  const previouslyManaged = readManagedLinks(botId, threadId);
   // A bot can edit its workspace. Never follow a replaced skills root while
   // deciding which native links are safe to publish. Existing app links must
   // still be revoked, or they start resolving into the replacement.
   if (directoryEntryState(skillsDir(botId)) === "unsafe") {
-    removeNativeLinksForUnsafeSkillsRoot(botId, root, previouslyManaged, options.beforeRemove);
+    removeNativeLinksForUnsafeSkillsRoot(botId, root, linkRoot, threadId, previouslyManaged, options.beforeRemove);
     return;
   }
   const manifest = readManifest(botId);
@@ -492,7 +519,7 @@ export function syncSkillLinks(
   const desired = new Map(enabled.map(([name, entry]) => [name, skillTarget(root, name, entry)]));
   const managed = new Set<string>();
   for (const dir of NATIVE_SKILL_DIRS) {
-    const linkDir = nativeLinkDirectory(root, dir, enabled.length > 0);
+    const linkDir = nativeLinkDirectory(linkRoot, dir, enabled.length > 0);
     if (!linkDir) continue;
     let existing: string[] = [];
     try {
@@ -540,7 +567,7 @@ export function syncSkillLinks(
     }
   }
   try {
-    writeManagedLinks(botId, [...managed]);
+    writeManagedLinks(botId, [...managed], threadId);
   } catch {
     // Native discovery is a repairable projection of the protected manifest.
   }
