@@ -1,10 +1,4 @@
-// A cloud computer that can't start, end to end: what a failed turn's row
-// says and stores (shared/place-view.ts). Each refusal is the one the Admin's
-// relay sends today (server/cloud-services.ts in openmaus-cloud), read into
-// one plain line and one next action, with where the place came from deciding
-// the way on. The words are what phones read; `place` is what the app words
-// again. Real server, fake Claude CLI, and a loopback Boat whose answers each
-// journey sets; a restartable home so a test can seed an automatic pin.
+// Real server, fake Claude CLI and a loopback Boat whose answers each journey sets; a restartable home lets a test seed an automatic pin.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -33,9 +27,7 @@ describe("a cloud computer that can't start, against the real server", () => {
   let base = "";
   let boatServer: Server;
   let boatApi = "";
-  /** What a create answers: a refusal, or a new computer. */
   let createAnswer: { status: number; body: unknown } | null = null;
-  /** Start the next server with the plan's cloud computers (the Admin's relay), not an own key. */
   let included = false;
   let creates = 0;
   const boxes: Array<{ id: string; name: string; state: string }> = [];
@@ -62,7 +54,6 @@ describe("a cloud computer that can't start, against the real server", () => {
     }
   }
   const messages = async (threadId: string) => (await apiOk("GET", `/api/threads/${threadId}/messages?limit=50`)).messages as any[];
-  /** The failed-turn row a turn on this thread settles with. */
   const failedRow = (threadId: string, after = 0): Promise<any> => until(
     async () => (await messages(threadId)).slice(after).find((message) => String(message.tool?.name ?? "").startsWith("error:")),
     Boolean, "failed row");
@@ -146,9 +137,7 @@ describe("a cloud computer that can't start, against the real server", () => {
   });
   const writeConfig = (ownKey: boolean) => writeFileSync(join(data, "config.json"), JSON.stringify({
     ...(ownKey ? { box: { token: "box_place_view_fixture" } } : {}),
-    // Every turn first takes one screenshot through the cloud computer's
-    // tools, as a model's first computer call does: that call, not the
-    // message, starts the bot's cloud computer.
+    // Every turn first takes one screenshot through the cloud computer's tools: that call, not the message, starts the cloud computer.
     instances: { claude: {
       driver: "claudeAgent", config: { cli: join(ROOT, "server/testing/fake-claude-cli.ts") },
       environment: { FAKE_CLAUDE_USES_CLOUD_COMPUTER: "1" },
@@ -175,7 +164,6 @@ describe("a cloud computer that can't start, against the real server", () => {
     expect(row.tool.name).toBe("error: This month's 50 cloud computer hours are used up. They come back on 1 November. See your plan on the Plan page.");
     expect(row.tool.place).toEqual({ state: "cc-no-hours", params: { bot: "Hours Bot", plan: "Pro", hours: 50, month: "November" }, source: "works-on" });
     await idle(bot.id);
-    // The one refused create, and nothing started after it.
     expect(creates).toBe(1);
     expect(boxes).toEqual([]);
   }, 90_000);
@@ -227,8 +215,6 @@ describe("a cloud computer that can't start, against the real server", () => {
     await start();
     const { bot } = await apiOk("POST", "/api/bots", { name: "Pinned Bot" });
     await stop();
-    // Where an earlier Auto turn landed (select_computer, or a claimed
-    // computer): the machine's memory, not a person's choice.
     editSavedBot(bot.id, saved => {
       Object.assign(saved.tasks.find((task: any) => task.threadId === bot.threadId), { surface: "cloud", surfaceSource: "auto" });
     });
@@ -240,7 +226,6 @@ describe("a cloud computer that can't start, against the real server", () => {
     expect(row.tool.place).toEqual({ state: "cc-unavailable", params: { bot: "Pinned Bot" }, source: "auto-pin" });
     await idle(bot.id);
     expect(savedTask(bot.id, bot.threadId)?.surface).toBeUndefined();
-    // And so it is: the next message runs on Auto, which never asks Boat.
     const createsBefore = creates;
     const after = (await messages(bot.threadId)).length;
     await send(bot.id, bot.threadId, "What is 2+2?");

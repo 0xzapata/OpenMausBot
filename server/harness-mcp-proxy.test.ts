@@ -65,7 +65,6 @@ describe("harness MCP capability proxy", () => {
     const initialized = await harnessMcpRequest(frame("initialize"), connection("data")) as { result: { serverInfo: { name: string }; instructions?: string } };
     expect(initialized.result.serverInfo.name).toBe("openmausbot-data");
     expect(initialized.result.instructions).toContain("GROUP BY ALL");
-    // the browser and the computer carry no instructions
     expect(((await harnessMcpRequest(frame("initialize"), connection("browser"))) as { result: Record<string, unknown> }).result.instructions).toBeUndefined();
     await expect(harnessMcpRequest(frame("tools/list"), connection("data"))).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "data_sql" }], instructions: "DuckDB" } });
     expect(requests.at(-1)).toEqual({ path: "/api/internal/data/mcp", auth: "Bearer scoped-capability", body: { method: "tools/list", params: {} } });

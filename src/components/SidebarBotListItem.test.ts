@@ -7,8 +7,7 @@ import { formatTime, initialState, type Bot } from "@/state/store";
 vi.mock("./DesktopCapabilities", () => ({
   useDesktopCapabilities: () => ({}),
 }));
-// These rows are Advanced mode's: Simple mode keeps one conversation per bot,
-// so its rows have no thread controls (useShowThreads).
+// Advanced mode's rows: Simple mode keeps one conversation per bot, so its rows have no thread controls.
 vi.mock("@/lib/interface-mode", async (original) => ({
   ...await original<typeof import("@/lib/interface-mode")>(),
   useAdvancedMode: () => true,
@@ -56,11 +55,9 @@ describe("BotListItem", () => {
   });
 
   it("shows the thread toggle only once there is a list to open", () => {
-    // one thread is the bot itself: no disclosure, no duplicate row
     expect(renderRow(bot())).not.toContain("Expand Atlas threads");
     expect(renderRow(bot())).not.toContain('data-sidebar-thread-row=');
     expect(renderRow(bot(twoThreads()))).toContain("Expand Atlas threads");
-    // a folder is a list too, even with one thread in it
     expect(renderRow(bot({ projects: [{ id: "p1", name: "Research" }] }))).toContain("Expand Atlas threads");
   });
 
@@ -73,8 +70,6 @@ describe("BotListItem", () => {
     expect(toggle).not.toContain("hover:bg-");
   });
 
-  // Phase 0 writes a digest row after every turn, so the last row of an idle
-  // chat is now a receipt; the preview must still be the reply a person reads.
   it("previews the last reply, not the digest receipt that follows it", () => {
     const markup = renderRow(bot({
       messages: [
@@ -87,8 +82,6 @@ describe("BotListItem", () => {
     expect(markup).not.toContain("[digest]");
   });
 
-  // Hanging up appends the call's record as the chat's last row. Like the
-  // digest receipt, it is not what the row says about the chat.
   describe("the record of a live call that ended last", () => {
     const at = (minute: number) => new Date(2026, 9, 6, 10, minute).getTime();
     const record = {
@@ -126,7 +119,6 @@ describe("BotListItem", () => {
     });
 
     it("names the step the bot is on while it works, when the call ended under it", () => {
-      // hung up mid-turn: the record landed after the step that is still running
       const markup = draw(bot({
         busy: true,
         tasks: [{ threadId: "thread-atlas", title: "Current", createdAt: 2, busy: true, activity: "working" }, { threadId: "thread-earlier", title: "Earlier", createdAt: 1 }],
@@ -135,15 +127,11 @@ describe("BotListItem", () => {
           { id: "a1", role: "bot", kind: "activity", at: at(1), requestMessageId: "u1", tool: { name: "Bash", spoken: "running the tests" } },
           record,
         ] as Bot["messages"],
-        // a search opens the thread list only when it matches a thread
-        // (MOCA-293), which puts the open thread's row, and its step, on screen
       }), { query: "current" });
       expect(markup).toContain("Running the tests");
     });
   });
 
-  // A failed turn's row is stored as "error: …"; the preview reads like the
-  // chat row (src/lib/failed-turn.ts), not like a log line.
   it("previews a failed turn without its error marker", () => {
     const markup = renderRow(bot({
       messages: [
@@ -155,9 +143,6 @@ describe("BotListItem", () => {
     expect(markup).not.toContain("error:");
   });
 
-  // A turn can end on the approval card itself: Stop while it is open, or a
-  // provider that settles the ask without writing more. The card then reads
-  // Allowed or Denied, and the row must say the same, not "Approval needed".
   describe("an approval card that ends the chat", () => {
     const approval = (card: Partial<NonNullable<Bot["messages"][number]["card"]>>): Bot => bot({
       messages: [
@@ -206,9 +191,7 @@ describe("BotListItem", () => {
     expect(markup).toContain('data-testid="chief-crown"');
     expect(markup).toContain('aria-label="Chief of Staff"');
     expect(markup.indexOf('data-testid="chief-crown"')).toBeGreaterThan(markup.indexOf(">Atlas<"));
-    // no "Chief of Staff" label line under the name
     expect(markup).not.toContain("Chief of Staff</span>");
-    // the words stay in the portrait's tooltip
     expect(markup).toContain('title="Atlas · Developer · Chief of Staff"');
 
     expect(renderRow(bot())).not.toContain("Chief of Staff");
@@ -223,7 +206,6 @@ describe("BotListItem", () => {
     expect(untitled).toContain('title="Atlas"');
   });
 
-  // the title line the row used to draw above the name
   const titleLine = /<div class="truncate text-\[11px\][^"]*">([^<]*)<\/div>/;
 
   it("keeps the bot's title out of the row and reads it out with the name", () => {
@@ -232,7 +214,6 @@ describe("BotListItem", () => {
     expect(markup).not.toContain(">Developer<");
     expect(markup).toContain('<span class="sr-only">, Developer</span>');
     expect(markup).toContain('title="Atlas · Developer"');
-    // the rename hint is unrelated to the bot's title
     expect(markup).toContain('title="Double-click to rename"');
 
     expect(renderRow(bot())).not.toContain('class="sr-only">, ');
@@ -280,20 +261,16 @@ describe("BotListItem", () => {
     expect(renderRow(bot())).not.toContain('data-testid="live-call-badge"');
 
     vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
-    // the microphone prompt never answers: the call stays "starting"
     configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
     void startLiveCall({ botId: "atlas", threadId: "thread-atlas" });
 
     const markup = renderRow(bot());
     expect(markup).toContain('data-testid="live-call-badge"');
     expect(markup).toContain('aria-label="On a Live call"');
-    // in the name line, after the name
     expect(markup.indexOf('data-testid="live-call-badge"')).toBeGreaterThan(markup.indexOf(">Atlas<"));
     expect(renderRow(bot({ id: "other" }))).not.toContain('data-testid="live-call-badge"');
     expect(renderRow(bot(), true)).toContain('data-testid="live-call-badge"');
 
-    // icons-only rows have no name line: the badge sits on the avatar and
-    // the row's accessible name says it
     const icons = renderRow(bot(), false, "icons");
     expect(icons).toContain('data-testid="live-call-badge"');
     expect(icons).toContain('aria-label="Atlas · On a Live call"');
@@ -405,7 +382,6 @@ describe("bot deletion feedback", () => {
       expect(markup).not.toContain("Chief of Staff</span>");
       expect(markup).not.toContain("Created notes.txt with three lines.");
       expect(markup).toContain(">Atlas<");
-      // the crown stays, beside the name, with its label for assistive tech
       expect(markup).toContain('data-testid="chief-crown"');
       expect(markup).toContain('aria-label="Chief of Staff"');
     });

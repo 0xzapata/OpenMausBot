@@ -5,18 +5,12 @@ import { isMentionBoundary, isMentionNameContinuation } from "../../shared/menti
 export type MentionPeer = { name: string; hidden?: boolean; color?: MausColor };
 export type MentionRange = { start: number; end: number; color?: string };
 
-/** Filter the composer's mention roster without silently truncating it.
- * Large rooms stay fully reachable; the picker itself owns scrolling. */
 export function mentionChoicesForQuery<T extends { name: string }>(pool: readonly T[], query: string): T[] {
   const normalized = query.trim().toLowerCase();
-  // "@Scout " is a completed tag, not a new search. Closing here lets Enter
-  // send instead of selecting the same bot again.
   if (query.endsWith(" ") && pool.some((choice) => choice.name.toLowerCase() === normalized)) return [];
   return pool.filter((choice) => !normalized || choice.name.toLowerCase().includes(normalized));
 }
 
-/** Second line of a mention row. A bot shows its title. @everyone shows how
- * many bots that tag reaches. Filtering stays on the name alone. */
 export type MentionRowDetail =
   | { kind: "bot"; title: string }
   | { kind: "everyone"; count: number };
@@ -36,8 +30,6 @@ export function mentionRowDescription(detail: MentionRowDetail): string {
   }
 }
 
-/** Display word-start, longest-name matches without coloring Unicode prefixes.
- * Keep offsets in the original string so casing and Unicode remain intact. */
 export function mentionRanges(text: string, peers: readonly MentionPeer[], everyone = false): MentionRange[] {
   const candidates = peers.filter((p) => !p.hidden && p.name.trim())
     .sort((a, b) => b.name.length - a.name.length);
@@ -52,7 +44,7 @@ export function mentionRanges(text: string, peers: readonly MentionPeer[], every
       && !isMentionNameContinuation(rest.slice(8));
     const length = all ? 8 : peer?.name.length;
     if (length === undefined) continue;
-    // Only palette values enter CSS. @everyone has no individual bot identity.
+    // Only palette values enter CSS.
     const color = !all && peer?.color && Object.hasOwn(MAUS_COLORS, peer.color) ? MAUS_COLORS[peer.color] : undefined;
     ranges.push({ start: at, end: at + length + 1, ...(color ? { color } : {}) });
     at += length;
@@ -67,7 +59,6 @@ type MarkdownNode = {
   data?: { hName: string; hProperties: { className: string; style?: string } };
 };
 
-/** Transform text nodes only: links, code and image metadata stay untouched. */
 export function remarkMentions({ peers, everyone = false }: { peers: readonly MentionPeer[]; everyone?: boolean }) {
   return (tree: MarkdownNode) => {
     const visit = (node: MarkdownNode) => {

@@ -1,6 +1,3 @@
-// The signed-in sites routes through the route table: they name one profile
-// or bot, pass the server's reasons through, and sign out of one listed site
-// or of all. The work itself is faked; server/browser-sites.test.ts covers it.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";

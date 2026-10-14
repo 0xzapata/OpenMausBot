@@ -1,9 +1,3 @@
-// The envelope is the only thing standing between "another bot wrote this"
-// and "my user asked for this", and between "my task" and "outside
-// content", so each shape and each guard is pinned on its own: the opening
-// marker, the lineage wording, the level, the NEEDS INPUT path, the data
-// rule, the consent rule, the quote gates, the escaping and the report's
-// closing instruction. Drop one and a test here goes red.
 import { describe, expect, it } from "vitest";
 
 import { CONSENT_RULE } from "../peer-provenance.ts";
@@ -21,7 +15,6 @@ const base: Assignment = {
 };
 const names: EnvelopeNames = { requester: "Chief", assignee: "Scout", person: "Milind" };
 const assignment = (over: Partial<Assignment>): Assignment => ({ ...base, ...over });
-/** The harness-written part: everything before the brief. */
 const opening = (envelope: string): string => envelope.split("\n\nBrief from")[0]!;
 const marks = (text: string): number => text.split(ENVELOPE_MARK).length - 1;
 
@@ -441,7 +434,6 @@ describe("composeRootTurn", () => {
     const text = composeRootTurn(root, { turn: "rerun", restartNote: NOTE });
     expect(paragraphs(text)).toEqual([NOTE.trim(), 'Continue the request you were working on: "Ship the CSV export and push it".']);
     expect(marks(text)).toBe(0);
-    // a rerun of a root whose request is empty says nothing beyond the note
     expect(composeRootTurn(assignment({ ...root, brief: "" }), { turn: "rerun", restartNote: NOTE })).toBe(NOTE.trim());
   });
 

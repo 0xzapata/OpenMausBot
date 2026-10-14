@@ -41,8 +41,6 @@ describe("VoiceNoteBubble", () => {
     expect(markup).toBe("");
   });
 
-  // A note played over a Live call is heard by the call's microphone (and on
-  // Android it ended the call): the play button waits, and says why.
   it("cannot be played while this window is on a Live call, and says why", () => {
     configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
     void startLiveCall({ botId: "b1", threadId: "t1" });

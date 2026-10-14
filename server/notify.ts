@@ -1,31 +1,7 @@
-// Notifications — what is worth interrupting someone for.
-//
-// `BotRecord.notifications` has been a switch in the settings panel that
-// nothing read. This is the thing that reads it. The rule it encodes is
-// small and deliberate: a bot that is *blocked on you* is worth a buzz, and
-// a bot that *finished* is worth one if you asked for it; everything else a
-// bot does while it works is not.
-//
-// A turn that dies before it starts is the first case, not the last: the
-// bot is not working, and the fix is usually a setting only a person can
-// change, so a retry cannot clear it. A routine failure already buzzed;
-// this makes an interactive turn behave the same way.
-// A routine parked behind a busy target earns one notice after half an
-// hour: from outside the schedule looks broken, and only a person can
-// decide whether the busy work or the routine matters more.
-//
-// Delivery is a separate concern. The harness emits a frame; whoever is
-// listening decides what to do with it — desktop and paired-phone local
-// notifications today, and closed-app APNs delivery once a relay exists.
-
 import type { Notification, NotifyKind } from "../shared/notification.ts";
 
-// The notification wire shape lives in shared/notification.ts now (part of
-// the wire model); re-exported here so existing importers keep working.
 export type { Notification, NotifyKind } from "../shared/notification.ts";
 
-/** One line, short enough for a lock screen, with the newlines and code
- * fences of a model's answer flattened out of it. */
 export function summarize(text: string, max = 140): string {
   const line = text.replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
   return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
@@ -38,10 +14,6 @@ export interface NotifyBot {
   notifications?: boolean;
 }
 
-/** A workspace spend notice (server/spend.ts decides when). It opens the
- * thread whose turn crossed the line, so clicking it lands somewhere real,
- * but it is the workspace's news, not that bot's: the bot's notification
- * toggle does not silence it. */
 export function buildSpendNotification(
   bot: Pick<NotifyBot, "id" | "name">,
   threadId: string,
@@ -50,10 +22,6 @@ export function buildSpendNotification(
   return { kind: "spend", botId: bot.id, botName: bot.name, threadId, title: text.title, body: summarize(text.body, 200) };
 }
 
-/** Build the frame for one event, or null when it should stay quiet.
- *
- * Kept pure and separate from the event fold so the policy — which is the
- * part people will argue about — can be read and tested on its own. */
 export function buildNotification(
   kind: NotifyKind,
   bot: NotifyBot,
@@ -61,15 +29,9 @@ export function buildNotification(
   detail: string,
   extra?: { avatarUrl?: string; group?: { id: string; name: string }; site?: string },
 ): Notification | null {
-  // The toggle means what it says: off is off, including for approvals.
-  // A bot whose notifications you turned off can still block waiting for
-  // you — that is the choice you made, and the chat still shows the card.
   if (bot.notifications === false) return null;
 
   const body = summarize(detail);
-  // A bot working in a room is not "Scout" to whoever reads the banner — it
-  // is Scout, in that room. Name the room or the notification reads as if it
-  // came from the 1:1 thread it will not open.
   const who = extra?.group ? `${bot.name} in ${extra.group.name}` : bot.name;
   const title =
     kind === "approval"
@@ -90,8 +52,6 @@ export function buildNotification(
                   ? `${who} resumed with results`
                   : `${who} finished`;
 
-  // A "finished" with nothing to say is not worth a notification — the
-  // badge in the sidebar already carries that much.
   if (kind === "done" && !body) return null;
 
   const notification: Notification = { kind, botId: bot.id, botName: bot.name, threadId, title, body };
