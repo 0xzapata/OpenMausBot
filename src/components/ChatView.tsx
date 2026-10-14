@@ -900,7 +900,7 @@ const MessagesList = memo(function MessagesList({
             case "routine.run":
               return <RoutineRunRow message={m} botId={botId} />;
             case "call":
-              return m.call ? <CallRecordRow message={m} transcript={transcript} botName={botName} busy={busy} hasMore={hasMore} /> : null;
+              return m.call ? <CallRecordRow message={m} transcript={transcript} botName={botName} threadId={threadId} busy={busy} hasMore={hasMore} /> : null;
             case "activity": {
               if (m.dataResult) return <DataResultChip message={m} />;
               if (isStatusActivity(m)) return <StatusActivityRow message={m} />;
