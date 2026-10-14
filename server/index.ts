@@ -175,7 +175,6 @@ import {
   vpsSshAlias,
   browserEngineAttachCdpUrl,
   DATA_DIR,
-  skillsLibraryEnabled,
   customMcpServers,
   onConfigSaved,
   CLAUDE_API_INSTANCE,
@@ -356,7 +355,6 @@ import {
   getStagedSkillWrite,
   installOrgSkill,
   installSkill,
-  resolveBotSkills,
   parseSkillMd,
   scanSkillText,
   listSkills,
@@ -375,6 +373,7 @@ import { fetchSkillFromSource } from "./skill-fetch.ts";
 import { ensureTaskWorkspaceWithSkills } from "./skill-task-links.ts";
 import { parseSkillManageReferences, previousSkillVersion, skillCardCopy, skillRequestReferences } from "./skill-request-card.ts";
 import { skillReferencesSha256 } from "./skill-storage.ts";
+import { createSkillsLibraryHost } from "./host/skills-library.ts";
 import { pickBotName } from "./names.ts";
 import { botSkillTemplateSchema, newBotDefaultsSchema } from "./new-bot-defaults.ts";
 import { expandLearnTurnText, learnSource } from "./skill-learn.ts";
@@ -473,9 +472,9 @@ import {
   loadBundledSkills,
   loadUserSkills,
   mergeSkills,
-  readLibrarySkillFile,
   renderSkillInstructions,
   selectBundledSkills,
+  skillsLibraryEnabled,
 } from "./skill-library.ts";
 import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
@@ -580,6 +579,7 @@ import { createBotSettingsRoutes } from "./routes/bot-settings.ts";
 import { createBotPatchRoutes } from "./routes/bot-patch.ts";
 import { createBotLifecycleRoutes } from "./routes/bot-lifecycle.ts";
 import { createBotSkillsRoutes } from "./routes/bot-skills.ts";
+import { createSkillShareRoutes } from "./routes/skill-share.ts";
 import { createTeamContextRoutes } from "./routes/team-context.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
@@ -1578,18 +1578,6 @@ function resyncOpenCodeProviderKeys(): void {
 await registry.load(providerConfigs(), decorateHostedProvider);
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
-
-const listBotSkills = (bot: BotRecord) =>
-  skillsLibraryEnabled(cfg) ? resolveBotSkills(bot.id, bot.assignedSkills) : listSkills(bot.id);
-const readBotSkillFile = (bot: BotRecord, name: string): string | null => {
-  const own = readSkillFile(bot.id, name);
-  if (own !== null || !skillsLibraryEnabled(cfg)) return own;
-  // Private wins collisions: a private skill that no longer verifies must not fall through to a same-named library skill.
-  if (listSkills(bot.id).some((skill) => skill.name === name)) return null;
-  // The library fallback is by assignment only, never by name alone.
-  if (!bot.assignedSkills?.includes(name)) return null;
-  return readLibrarySkillFile(name);
-};
 
 type UtilityParentPort = {
   on(event: "message", listener: (event: { data?: object }) => void): void;
@@ -3342,6 +3330,8 @@ const store = new Store(
   (selection) => withNewBotEffort(selection, cfg.newBots?.effort, registry.get(selection.instanceId)?.adapter.capabilities.effortLevels),
   (instanceId) => registry.cliTarget(instanceId)?.driverKind,
 );
+const skillsHost = createSkillsLibraryHost({ store, cfg, appendSkillRequestCard });
+const { listBotSkills, readBotSkillFile } = skillsHost;
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
 const sendSequencer = new SendSequencer();
@@ -6144,20 +6134,21 @@ const skillReview = createSkillReview({
     if (!owned || selfApplyBlocked(threadId)) return null;
     return { messages: store.activePath(threadId), room: Boolean(owned.group) };
   },
-  skills: (botId) => listSkills(botId).map((skill) => ({
+  skills: (botId) => skillsHost.reviewSkills(botId, listSkills(botId).map((skill) => ({
     name: skill.name,
     description: skill.description,
     editable: skill.editable,
     enabled: skill.enabled,
     sha256: skill.sha256,
     ...(skill.editable ? { body: readSkillFile(botId, skill.name) } : {}),
-  })),
-  currentSha: (botId, name) => listSkills(botId).find((skill) => skill.name === name)?.sha256 ?? null,
+  }))),
+  currentSha: (botId, name) => listSkills(botId).find((skill) => skill.name === name)?.sha256 ?? skillsHost.sharedSha(botId, name),
   apply: (botId, threadId, change) => {
     const bot = store.bot(botId);
     if (!bot) return { ok: false, error: "unknown bot" };
     const direct = appliesDirectly(botId, threadId, botId);
     if (!direct) return { ok: false, error: "this conversation cannot apply skill changes without review" };
+    if (change.action === "update" && skillsHost.editable(botId, change.name)) return skillsHost.applyReviewUpdate(bot, threadId, change, direct);
     const staged = stageSkillWrite(botId, {
       action: change.action,
       targetName: change.action === "update" ? change.name : undefined,
@@ -9440,8 +9431,7 @@ async function startTurn(
         teamAvailabilityPart(coordinationPrompt ? sectionPeers : []),
         { id: "recent", label: "Recent work", text: recentWorkPrompt(recentWork(recentWorkSources(bot), bot, { userName: cfg.profile?.name?.trim() || "User", currentThreadId: threadId, ...recentWorkFilter() })) },
         { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace, enabled: bot.memoryEnabled !== false }) },
-        // liveBot predates awaited setup work; an assignment PUT in that window must still reach this prompt.
-        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined) : "" },
+        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsHost.conversationSkills(bot, threadId), skillsHost.conversationStartedAt(threadId)) : "" },
         { id: "skill-instructions", label: "Skill instructions", text: skillInstructions },
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
         { id: "webhook", label: "Webhook provenance", text: opts?.automationSource === "webhook" ? WEBHOOK_PROMPT : "" },
@@ -9461,12 +9451,13 @@ async function startTurn(
       // Before sendTurn: an adapter may emit the whole turn before it resolves.
       handoffs.dispatching(threadId, dispatchClaimId, dispatchContext.handoff);
       const clock = takesTurnClock(userTurnText) ? turnClockLine(Date.now(), hostTimeZone()) : "";
-      const dispatch = await guardTurnDispatch(instance.adapter.sendTurn({
+      const shareNote = skillsHost.shareNote(bot, threadId, Boolean(privateWorkspace));
+      const dispatch = await guardTurnDispatch(shareNote.after(instance.adapter.sendTurn({
         threadId,
         botId: bot.id,
         startupRecovery: cfg.automaticRecovery?.enabled === true &&
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
-        text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText)),
+        text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
         images: turnImages,
         approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
@@ -9477,7 +9468,7 @@ async function startTurn(
         variant,
         resumeCursor: dispatchContext.resumeCursor,
         sessionReset: dispatchContext.sessionReset,
-        ...(dispatchContext.recoveryText !== undefined ? { recoveryText: withTurnClock(clock, dispatchContext.recoveryText) } : {}),
+        ...(dispatchContext.recoveryText !== undefined ? { recoveryText: withTurnClock(clock, dispatchContext.recoveryText + shareNote.text) } : {}),
         transcript,
         system: prompt.text,
         systemStable: prompt.stable,
@@ -9488,7 +9479,7 @@ async function startTurn(
         mcpFromUserConfig: claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp(),
         mcpCallTimeoutMs: mcpCallTimeoutMinutes(cfg) * 60_000,
         cwd,
-      }), () => !directTurnClaimExists(bot.id, dispatchClaimId, threadId), async () => {
+      })), () => !directTurnClaimExists(bot.id, dispatchClaimId, threadId), async () => {
         await instance.adapter.interruptTurn(threadId).catch(() => {});
       });
       if (dispatch.cancelled) {
@@ -10650,6 +10641,7 @@ function undoSkillCard(botId: string, threadId: string, messageId: string): Undo
   if (request.botId !== botId || request.threadId !== threadId) {
     return { claimed: true, state: "invalid", error: "this skill request belongs to a different bot", status: 403 };
   }
+  if (request.shared) return skillsHost.undoReceipt(botId, threadId, message, { ...request, shared: request.shared });
   const undone = undoSkillWrite(botId, {
     stagedId: request.stagedId,
     name: request.name,
@@ -11480,8 +11472,7 @@ async function runClaimedGroupMemberTurn(
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
     { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (integrations.agents ? TEAM_MEMORY_PROMPT : "") },
     { id: "memory", label: "Memory", text: roomMemory ? `\n${roomMemory.trim()}` : "" },
-    // readyBot predates awaited setup work; an assignment PUT in that window must still reach this prompt.
-    { id: "skills", label: "Skills index", text: workspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined) : "" },
+    { id: "skills", label: "Skills index", text: workspace ? skillsSystemPrompt(bot.id, skillsHost.conversationSkills(bot, threadId), skillsHost.conversationStartedAt(threadId)) : "" },
     { id: "skill-instructions", label: "Skill instructions", text: renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) },
     { id: "playbooks", label: "Playbooks", text: installedPlaybookInstructions(text, bot.playbooks) },
   ]);
@@ -11608,11 +11599,12 @@ async function runClaimedGroupMemberTurn(
       });
     }
     if (roomReset || displaced) broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
-    guardTurnDispatch(instance.adapter.sendTurn({
+    const roomShareNote = skillsHost.shareNote(bot, threadId, Boolean(workspace));
+    guardTurnDispatch(roomShareNote.after(instance.adapter.sendTurn({
         ...(roomReset ? { sessionReset: true } : {}),
         threadId,
         botId: readyBot.id,
-        text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text)),
+        text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text + roomShareNote.text)),
         ...(roomRecalled ? { recalled: roomRecalled } : {}),
         images: turnImages,
         approvalMode: turnApprovalMode,
@@ -11629,7 +11621,7 @@ async function runClaimedGroupMemberTurn(
         ...(instance.instanceId === readyBot.modelSelection.instanceId
           ? memberTurnSelection(readyBot.modelSelection)
           : { model: instance.models.default }),
-      }), () => abandoned || Boolean(isCancelled?.()), async () => {
+      })), () => abandoned || Boolean(isCancelled?.()), async () => {
         // Stop may have landed before the adapter had a process to interrupt: interrupt again now.
         await instance.adapter.interruptTurn(threadId).catch(() => {});
       })
@@ -12757,7 +12749,7 @@ function applyOwnStagedSkill(
   threadId: string,
   staged: Exclude<ReturnType<typeof stageSkillWrite>, { error: string }>,
   direct: DirectApply,
-): ReturnType<typeof applySkillWriteWithReceipt> {
+): ReturnType<typeof applySkillWriteWithReceipt> & { shared?: string; shareError?: string } {
   const previous = previousSkillVersion(from.id, staged);
   const applied = applySkillWriteWithReceipt(from.id, staged, () => {
     const receipt = appendSkillRequestCard({ botId: from.id, threadId, staged, applied: true, previous });
@@ -12765,7 +12757,7 @@ function applyOwnStagedSkill(
       tool: "stage_skill", summary: receipt.summary, decision: "auto-approved", source: direct });
   });
   if ("error" in applied) rejectStagedSkillWrite(from.id, staged.id);
-  return applied;
+  return "error" in applied ? applied : skillsHost.afterOwnApply(from.id, threadId, staged, applied);
 }
 
 function appendSkillRequestCard(args: {
@@ -12784,7 +12776,7 @@ function appendSkillRequestCard(args: {
     referencesSha256?: string;
     warnings: string[];
   };
-}): { requestId: string; summary: string } {
+} & Pick<SkillRequestCardData, "shared">): { requestId: string; summary: string } {
   const requestId = randomUUID();
   const copy = skillCardCopy(args.staged);
   const payload: SkillRequestCardData = {
@@ -12802,7 +12794,7 @@ function appendSkillRequestCard(args: {
     ...skillRequestReferences(args.staged),
     warnings: args.staged.warnings,
     createdAt: Date.now(),
-    ...(args.applied && args.previous ? { previous: args.previous } : {}),
+    ...(args.applied ? { ...(args.previous ? { previous: args.previous } : {}), ...(args.shared ? { shared: args.shared } : {}) } : {}),
   };
   const from = store.bot(args.botId);
   skillReview.noteSkillChange(args.botId, args.threadId);
@@ -13548,6 +13540,7 @@ function configStatus() {
       skillReview: cfg.features?.skillReview === true,
       skillReviewSteps: skillReviewSteps(cfg),
       skillsLibrary: skillsLibraryEnabled(cfg),
+      shareLearnedSkills: skillsHost.mode(),
       showToolCalls: showToolCallsEnabled(cfg),
       routinesInConversation: routinesInConversationEnabled(cfg),
       browser: builtInBrowserEnabled(cfg),
@@ -13962,6 +13955,8 @@ ROUTES.push(createBotLifecycleRoutes({
   activeGroupTurnForBot, cancelGroupTurnOperations, runningTurnInstance, closeOpenApprovals, deleteBotWithLifecycle,
 }));
 ROUTES.push(createBotSkillsRoutes({ store, cfg, listBotSkills, readBotSkillFile, stagedSkillListing }));
+ROUTES.push(createSkillShareRoutes({ enabled: () => skillsHost.mode() !== "off", botExists: (id) => Boolean(store.bot(id)),
+  cardRefusal: (auth, threadId, requestId) => cardAnswerRefusal(auth, threadId, requestId, "allow"), shareFromReceipt: skillsHost.shareFromReceipt, shareFromBot: skillsHost.shareFromBot }));
 ROUTES.push(createTeamContextRoutes({ store, teamMemory }));
 ROUTES.push(createBotMemoryRoutes({
   bot: (id) => store.bot(id),
@@ -15591,7 +15586,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 403, { error: "source conversation does not belong to sender" });
         }
         return json(res, 200, {
-          skills: listBotSkills(from),
+          skills: skillsHost.harnessListing(from.id, listBotSkills(from)),
           staged: listStagedSkillWrites(from.id).map(stagedSkillListing),
         });
       }
@@ -15623,6 +15618,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         const references = parseSkillManageReferences(body.references);
         if ("error" in references) return json(res, 400, references);
+        if (action === "update" && skillsHost.editable(from.id, targetName)) return references.length ? json(res, 400, { error: "A skill shared through the team library cannot keep reference files yet; put that guidance in SKILL.md." }) : json(res, ...skillsHost.harnessUpdate(from, fromThreadId, targetName, skillMd, body.gist, body.base_revision, direct));
         const staged = stageSkillWrite(from.id, {
           action,
           targetName: targetName || undefined,

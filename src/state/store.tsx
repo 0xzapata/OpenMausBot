@@ -2437,7 +2437,7 @@ export function runtimeFrameAction(event: RuntimeEvent): Action | null {
     : null;
 }
 
-const StoreContext = createContext<{
+export const StoreContext = createContext<{
   state: AppState;
   dispatch: React.Dispatch<Action>;
   flushBotPatches: (botId: string) => Promise<BotAnnouncement | null>;

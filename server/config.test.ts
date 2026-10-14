@@ -588,6 +588,11 @@ describe("configuration boundaries", () => {
     );
   });
 
+  it("accepts only off, ask and auto for sharing learned skills", () => {
+    expect(parseConfigPatch({ features: { shareLearnedSkills: "off" } })).toEqual({ features: { shareLearnedSkills: "off" } });
+    expect(() => parseConfigPatch({ features: { shareLearnedSkills: "always" } })).toThrow("features.shareLearnedSkills");
+  });
+
   it("keeps computer sharing off unless config.json explicitly turns it on", () => {
     expect(sharedComputersEnabled({})).toBe(false);
     expect(sharedComputersEnabled({ features: {} })).toBe(false);
