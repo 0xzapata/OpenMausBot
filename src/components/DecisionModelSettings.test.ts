@@ -56,7 +56,6 @@ const type = (node: Node, value: string) => (node.props.onChange as (event: { ta
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 const status = (decider: NonNullable<ConfigStatus["decider"]>) => ({ decider } as ConfigStatus);
 const change = (node: Node, value: string) => (node.props.onChange as (event: { target: { value: string } }) => void)({ target: { value } });
-/** What the renderer does after paint: run the effects of the last render. */
 const runEffects = () => { for (const effect of fixture.effects) effect(); };
 const openrouter = (extra: Partial<NonNullable<ConfigStatus["decider"]>> = {}) =>
   status({ provider: "openrouter", model: "openai/gpt-4.1-nano", configured: false, enabled: false, jobs: { roomRouting: true }, ...extra });
@@ -89,7 +88,6 @@ describe("DecisionModelSettings", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(view.html).toContain("Not connected");
     expect(view.html).toContain('href="https://typesafe.ai"');
-    // the switch stays off, and cannot be turned on, while no key is saved
     expect(view.master.props.checked).toBe(false);
     expect(view.master.props.disabled).toBe(true);
     expect(view.html).toContain("Save a key below to turn this on.");
@@ -110,7 +108,6 @@ describe("DecisionModelSettings", () => {
     const view = render();
     for (const label of ["Browser clicks", "Tool selection", "Where work runs"]) expect(view.html).toContain(label);
     expect(view.html.match(/Coming soon/g)).toHaveLength(3);
-    // only the master switch and the room job have switches
     expect(view.switches).toHaveLength(2);
   });
 
@@ -170,7 +167,6 @@ describe("DecisionModelSettings", () => {
     expect(view.master.props.checked).toBe(true);
     expect(view.master.props.disabled).toBe(false);
     expect(view.job.props.checked).toBe(true);
-    // no saved key: nothing to clear or replace, and Save waits for a pasted key
     expect(view.html).not.toContain("Clear");
     expect(view.html).not.toContain("Remove the saved key");
     expect(view.save.props.disabled).toBe(true);
@@ -194,7 +190,6 @@ describe("DecisionModelSettings", () => {
     await flush();
     expect(fixture.api).toHaveBeenLastCalledWith("/api/config", { method: "PUT", body: JSON.stringify({ decider: { enabled: false } }) });
     expect(render().master.props.checked).toBe(false);
-    // an empty Save never clears the included decisions
     click(render().save);
     await flush();
     expect(fixture.api).toHaveBeenCalledTimes(1);
@@ -224,7 +219,6 @@ describe("DecisionModelSettings", () => {
       expect(render().html).toContain(text);
       expect(render().html).not.toContain("typesafe.ai.");
     }
-    // a pasted draft is the person's own key, tested at Jev
     fixture.api.mockResolvedValueOnce({ ok: false, reason: "rejected", status: 401 });
     type(render().input, "tsk_draft");
     click(render().test);
@@ -282,7 +276,6 @@ describe("DecisionModelSettings", () => {
       expect(view.html).toContain("More models");
       expect(view.html).toContain("Meta: Llama 3.3 70B Instruct");
       expect(view.html).not.toContain("built-in list");
-      // loaded already: no second request
       runEffects();
       expect(fixture.api).toHaveBeenCalledTimes(1);
       fixture.config = openrouter({ model: "newvendor/brand-new" });
@@ -373,7 +366,6 @@ describe("DecisionModelSettings", () => {
       expect(text({ reason: "timeout" })).toBe("OpenRouter did not answer in time. Try again.");
       expect(text({ reason: "no_key" })).toBe("Paste a key or save one first.");
       expect(text({ reason: "something-new" })).toBe("The test did not finish. Try again.");
-      // Jev's 402 is not about credits
       expect(deciderFailureText({ reason: "http_error", status: 402 })).toBe("Jev returned an unexpected error (HTTP 402).");
     });
   });

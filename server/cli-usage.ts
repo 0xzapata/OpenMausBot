@@ -1,6 +1,3 @@
-// What `openmausbot help` prints, kept out of cli.ts so the command list
-// can grow without the command growing. The headless verbs (headless/main.ts)
-// add their own section; `openmausbot help VERB` prints one verb's details.
 export { HEADLESS_VERBS as HEADLESS_VERB_NAMES } from "./headless/args.ts";
 
 export const HEADLESS_USAGE = `Drive a running workspace (scripts, CI, other agents):

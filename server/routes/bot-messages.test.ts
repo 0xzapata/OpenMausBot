@@ -1,16 +1,5 @@
-// A press on a chat widget through the route table, over a real store:
-// POST /api/bots/:id/messages with `widgetAction` becomes one user message
-// that replies to the widget, and the widget is settled once.
-//
-// What is real here: the route module, the store, createAgentCard and
-// prepareWidgetPress, and the send-idempotency pieces (SendSequencer,
-// sendFingerprint, acceptedSendMatch). What is not: acceptDirectSend and
-// resolveReplyTarget live in server/index.ts, which a route module never
-// imports, so `accept` and `replyTarget` below stand in for them. `accept`
-// keeps only acceptDirectSend's receipt contract (sequence by sendId, answer
-// a retry with the stored message or the waiting queue slot, else append or,
-// when told the bot is busy, queue in the real steer queue); it starts no
-// turn. The steer queue itself (queue, cancel, drain) is the real module.
+// accept and replyTarget stand in for acceptDirectSend and resolveReplyTarget, which live in server/index.ts (a route
+// module never imports it); accept keeps only the receipt contract and starts no turn.
 import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -59,9 +48,7 @@ async function fixture() {
   type StartOpts = NonNullable<Parameters<BotMessageRouteDeps["startTurn"]>[2]>;
   const state: {
     accepted: AcceptInput[]; hold: Promise<void> | null; refuse: DirectSendRefused | null; busy: boolean;
-    /** What the model would be sent for each send, composed as server/index.ts does: from the words and the reply target it was handed. */
     prompts: string[];
-    /** Turns started directly: the guarded send and the edit start theirs without acceptDirectSend's steer or queue. */
     started: Array<{ text: string; opts: StartOpts }>;
   } = { accepted: [], hold: null, refuse: null, busy: false, prompts: [], started: [] };
   const startTurn: BotMessageRouteDeps["startTurn"] = async (botId, text, opts = {}) => {
@@ -84,7 +71,6 @@ async function fixture() {
         const waiting = queuedSteeredMessage(input.botId, input.threadId, input.sendId);
         if (waiting) return { ok: true as const, queued: true as const, queueId: waiting.id, threadId: input.threadId };
       }
-      // A busy bot whose engine cannot be steered: the words wait in the queue.
       if (state.busy) {
         const queued = queueSteeredMessage(input.botId, input.threadId, input.text, { replyToId: input.replyTo?.id, sendId: input.sendId });
         return { ok: true as const, queued: true as const, queueId: queued.id, threadId: input.threadId };
@@ -93,7 +79,6 @@ async function fixture() {
       return { ok: true as const, threadId: input.threadId, message };
     });
   };
-  // server/index.ts resolveReplyTarget, as it stands with widget rows admitted.
   const replyTarget: BotMessageRouteDeps["resolveReplyTarget"] = (thread, value) => {
     if (value === undefined || value === null || value === "") return undefined;
     const target = store.messagesFor(thread).find((message) => message.id === value);
@@ -116,9 +101,7 @@ async function fixture() {
     messageSender: () => undefined,
     cloudGuestSendRefusal: () => null,
     resolveReplyTarget: replyTarget,
-    // The queue routes name the task they act on.
     requestedTaskBot: (botId: string, rawThreadId: unknown) => store.projectBotForTask(botId, String(rawThreadId))!,
-    // What a guarded send and an edit read before they start a turn of their own.
     startTurn,
     threadBusy: () => false,
     botAtThreadCapacity: () => false,
@@ -138,7 +121,6 @@ async function fixture() {
       const handled = await dispatchRoutes(routes, { req, res, url, path: url.pathname, method: req.method ?? "GET", auth, json, readBody });
       if (!handled) json(res, 404, { from: "inline routes" });
     } catch (error) {
-      // server/index.ts answers a thrown { status } the same way.
       json(res, (error as { status?: number }).status ?? 500, { error: error instanceof Error ? error.message : String(error) });
     }
   });
@@ -150,12 +132,10 @@ async function fixture() {
     const response = await fetch(`${base}/api/bots/${bot.id}/messages${suffix}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() as Record<string, any> };
   };
-  /** Edit a sent message into a new branch, as the composer's edit does. */
   const edit = async (messageId: string, body: unknown) => {
     const response = await fetch(`${base}/api/bots/${bot.id}/messages/${messageId}/edit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() as Record<string, any> };
   };
-  /** DELETE the queued send, as the pending chip's cancel does. */
   const cancelQueued = async (queueId: string) => {
     const response = await fetch(`${base}/api/bots/${bot.id}/queue/${queueId}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
     return { status: response.status, body: await response.json() as Record<string, any> };
@@ -174,7 +154,7 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
   it("sends one message that replies to the widget, and settles it once across a retry with the same sendId", async () => {
     const { threadId, state, post, show, row, sent, patches } = await fixture();
     const widgetId = show("routineForm");
-    // The press is the whole message: words, a reply target or a Data context sent beside it are not the client's to choose.
+    // Words, a reply target or a Data context sent beside a press are not the client's to choose.
     const body = {
       threadId, sendId: SEND, text: "words the client must not get to choose", replyToId: "some-other-message", dataContext: { nonsense: true },
       widgetAction: { messageId: widgetId, ref: "confirm", values: { days: "mon,tue,wed,thu,fri,sat,sun", report: "discord:releases" } },
@@ -184,11 +164,9 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     expect(first.status, JSON.stringify(first.body)).toBe(202);
     const text = "Create routine\nRuns on: Every day\nStarts: 2026-10-14\nAt: 09:00\nReport to: Discord · #releases\nStop if any check is red: yes";
     expect(first.body).toMatchObject({ ok: true, threadId, message: { role: "user", kind: "text", text, replyToId: widgetId, sendId: SEND } });
-    // What the send path was handed: the server's words, as a reply to the widget row.
     expect(state.accepted).toHaveLength(1);
     expect(state.accepted[0]).toMatchObject({ text, sendId: SEND, replyTo: { id: widgetId, kind: "widget" } });
     expect(state.accepted[0].dataContext).toBeUndefined();
-    // The reply target is a copy of the widget row that says it was pressed, and with what: the stored row is not marked.
     expect(state.accepted[0].replyTo).toMatchObject({ widgetPress: { label: "Create routine", action: { type: "routine.create", payload: { name: "release-check" } } } });
     expect(row(widgetId)).not.toHaveProperty("widgetPress");
     expect(state.prompts[0].split("\n").slice(4)).toEqual([
@@ -215,7 +193,6 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     expect(row(widgetId).widget!.settled).toEqual(settled);
     expect(patches).toHaveBeenCalledTimes(1);
 
-    // The same sendId for a different answer is not that retry.
     const changed = await post({ ...body, widgetAction: { ...body.widgetAction, values: { days: "mon" } } });
     expect(changed.status).toBe(409);
     expect(sent()).toHaveLength(1);
@@ -243,11 +220,9 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     const widgetAction = { messageId: widgetId, ref: "confirm" };
     const first = post({ threadId, sendId: SEND, widgetAction });
     await vi.waitFor(() => expect(state.accepted).toHaveLength(1));
-    // A double tap that minted a new sendId, one that minted none, and the other button.
     expect(await post({ threadId, sendId: OTHER_SEND, widgetAction })).toEqual({ status: 409, body: { error: "That answer is already on its way." } });
     expect(await post({ threadId, widgetAction })).toEqual({ status: 409, body: { error: "That answer is already on its way." } });
     expect(await post({ threadId, sendId: OTHER_SEND, widgetAction: { messageId: widgetId, ref: "cancel" } })).toMatchObject({ status: 409 });
-    // The same press again (a client retry before the answer came back) waits for the first.
     const same = post({ threadId, sendId: SEND, widgetAction });
     await vi.waitFor(() => expect(state.accepted).toHaveLength(2));
     expect(row(widgetId).widget!.settled).toBeUndefined();
@@ -296,12 +271,10 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     expect(await press({ messageId: widgetId, ref: "confirm", values: { nope: "x" } })).toEqual({ status: 400, body: { error: 'There is no field named "nope" here.' } });
     expect(await press({ messageId: widgetId, ref: "n999" })).toEqual({ status: 404, body: { error: "That button is no longer on this widget." } });
     expect(await press({ messageId: "m-missing", ref: "confirm" })).toEqual({ status: 404, body: { error: "That widget is not in this conversation." } });
-    // A widget of the bot's other thread, pressed from this one.
     expect(await press({ messageId: elsewhere, ref: "confirm" })).toEqual({ status: 404, body: { error: "That widget is not in this conversation." } });
     for (const malformed of ["confirm", {}, { messageId: widgetId }, { messageId: widgetId, ref: "confirm", values: [1] }]) {
       expect((await press(malformed)).status, JSON.stringify(malformed)).toBe(400);
     }
-    // The checks that came first still come first.
     expect((await press({ messageId: widgetId, ref: "confirm" }, { sendId: "short" })).status).toBe(400);
     expect((await press({ messageId: widgetId, ref: "confirm" }, { threadId: "thread-of-nobody" })).status).toBe(409);
     expect(await post({ threadId, sendId: SEND, text: "Hi", expectedActiveLeafId: null, widgetAction: { messageId: widgetId, ref: "confirm" } }, "/guarded"))
@@ -314,7 +287,6 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
   it("refuses a press made before the bot replaced the widget, and takes one that names the new revision", async () => {
     const { store, bot, threadId, state, post, show, row, sent } = await fixture();
     const widgetId = show("pullRequests");
-    // The person is looking at the list; the bot swaps in a draft whose confirm is "Send email".
     expect(createAgentCard({ store, bot, threadId, input: { tool: "update_widget", widget_id: widgetId, widget: WIDGET_SAMPLES.emailDraft } }).ok).toBe(true);
     const stale = { status: 409, body: { error: "This widget changed. Check it and press again." } };
     expect(await post({ threadId, sendId: SEND, widgetAction: { messageId: widgetId, ref: "confirm" } })).toEqual(stale);
@@ -328,7 +300,6 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     const first = await post(press);
     expect(first.status, JSON.stringify(first.body)).toBe(202);
     expect(sent().map((message) => message.text)).toEqual(["Send email"]);
-    // Its retry still gets the same receipt.
     const retry = await post(press);
     expect([retry.status, retry.body.message?.id]).toEqual([202, first.body.message.id]);
     expect(sent()).toHaveLength(1);
@@ -342,27 +313,22 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     const queued = await post(press);
     expect(queued.status, JSON.stringify(queued.body)).toBe(202);
     expect(queued.body).toMatchObject({ ok: true, queued: true, threadId, queueId: expect.any(String) });
-    // Answered as far as the card goes, and nothing is in the transcript yet.
     expect(row(widgetId).widget!.settled).toMatchObject({ ref: "confirm", label: "Create routine", sendId: SEND, queueId: queued.body.queueId });
     expect(sent()).toHaveLength(0);
-    // The same press again is the same waiting slot.
     expect((await post(press)).body).toMatchObject({ queued: true, queueId: queued.body.queueId });
     expect(_queuedCount(threadId)).toBe(1);
 
-    // The person cancels the pending chip: the answer never reached the bot.
     expect(await cancelQueued(queued.body.queueId)).toEqual({ status: 200, body: { ok: true } });
     expect(_queuedCount(threadId)).toBe(0);
     expect(row(widgetId).widget).toEqual({ v: 1, root: row(widgetId).widget!.root });
     expect(await cancelQueued(queued.body.queueId)).toEqual({ status: 404, body: { error: "no such queued message" } });
 
-    // Live again: pressed once more, queued once more, and this time the queue drains.
     const again = await post({ ...press, sendId: OTHER_SEND });
     expect(again.body).toMatchObject({ queued: true, queueId: expect.any(String) });
     expect(again.body.queueId).not.toBe(queued.body.queueId);
     expect(row(widgetId).widget!.settled).toMatchObject({ sendId: OTHER_SEND, queueId: again.body.queueId });
     drainSteeredMessages(store, () => {});
     expect(sent().map((message) => [message.text!.split("\n")[0], message.replyToId, message.sendId])).toEqual([["Create routine", widgetId, OTHER_SEND]]);
-    // Delivered: there is no slot left to cancel, and the widget stays answered.
     expect(await cancelQueued(again.body.queueId)).toEqual({ status: 404, body: { error: "no such queued message" } });
     expect(row(widgetId).widget!.settled).toMatchObject({ ref: "confirm", label: "Create routine", sendId: OTHER_SEND });
   });
@@ -396,13 +362,11 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
       expect(row(widgetId).widget!.settled).toBeUndefined();
     };
 
-    // Plain: the words of the confirm button, sent as a reply to the widget row.
     expect((await post({ threadId, sendId: SEND, text: "Merge the two ready", replyToId: widgetId })).status).toBe(202);
     expect(state.accepted.at(-1)!.replyTo).not.toHaveProperty("widgetPress");
     expect(state.prompts.at(-1)).toBe(typedForm("Merge the two ready"));
     noPress();
 
-    // Guarded: a relay sends the same words.
     store.patchBot(bot.id, { approvalMode: "ask", autoApprove: false });
     const guarded = await post({ threadId, sendId: OTHER_SEND, text: "Merge the two ready", replyToId: widgetId, expectedActiveLeafId: store.activeLeaf(threadId), expectedApprovalMode: "ask" }, "/guarded");
     expect(guarded.status, JSON.stringify(guarded.body)).toBe(202);
@@ -411,7 +375,6 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     expect(state.prompts.at(-1)).toBe(typedForm("Merge the two ready"));
     noPress();
 
-    // A real press, then an edit of the message it sent: the rerun re-resolves the target by id, so it is typed words again.
     const pressed = await post({ threadId, sendId: "send-press-0123456789ab", widgetAction: { messageId: widgetId, ref: "confirm" } });
     expect(pressed.status, JSON.stringify(pressed.body)).toBe(202);
     expect(state.prompts.at(-1)).toContain('\npressed: "Merge the two ready"\naction: pr.merge\npayload: {"prs":[750,739]}\n--- end widget ---\n');
@@ -429,7 +392,6 @@ describe("POST /api/bots/:id/messages with widgetAction", () => {
     expect(await post({ threadId })).toEqual({ status: 400, body: { error: "text required" } });
     expect(await post({ threadId, widgetAction: null })).toEqual({ status: 400, body: { error: "text required" } });
     expect((await post({ threadId, text: "  Hello  ", widgetAction: null })).status).toBe(202);
-    // Typing a reply to a widget is an ordinary reply.
     expect((await post({ threadId, text: "Hold off until Monday", replyToId: widgetId })).status).toBe(202);
     expect(sent().map((message) => [message.text, message.replyToId])).toEqual([["Hello", undefined], ["Hold off until Monday", widgetId]]);
     expect(state.accepted.map((input) => input.replyTo?.id)).toEqual([undefined, widgetId]);

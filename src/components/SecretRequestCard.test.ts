@@ -1,6 +1,3 @@
-// The superseded state is the credential card's equivalent of an expired
-// proposal: the request that created it is dead, so the card must stop
-// offering entry (form, dismiss, retry) and say what replaced it.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";

@@ -1,8 +1,4 @@
-// Contract test for the agent-to-agent comms MCP proxy (agents-proxy.ts):
-// spawn it exactly the way a driver's mcpServers entry does (process.execPath
-// + entry file + env) against a scripted stub of the harness's /api/internal
-// endpoints, and drive the MCP stdio surface end to end. No shebang, no
-// shell — plain node child, so this runs on every OS like index.test.ts.
+// Spawns the agents proxy exactly as a driver's mcpServers entry does, against a stub of /api/internal.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
@@ -15,7 +11,6 @@ import { waitForExit } from "../testing/cleanup.ts";
 const PROXY = join(dirname(fileURLToPath(import.meta.url)), "agents-proxy.ts");
 const TOKEN = "test-comms-token";
 
-// scripted harness stub
 let stub: Server;
 let stubPort = 0;
 let lastAuth: string | undefined;
@@ -42,8 +37,6 @@ let roomsResponse: unknown = {
     { id: "room-launch", name: "Launch", members: ["Asker", "Helper"] },
   ],
 };
-/** What GET /api/internal/assignment-status answers: the assignment-status
- * shape, as the harness serves it from the runtime. */
 const DONE_ASSIGNMENT = {
   assignment: { id: "task-earlier123", botId: "bot-helper", botName: "Helper", status: "completed", outcome: "done", result: "All done.", mode: "work", reply: "resume" },
   children: [], inbox: [],
@@ -449,10 +442,7 @@ beforeAll(async () => {
   child = spawn(process.execPath, [PROXY], {
     env: {
       ...childEnv(),
-      // Recalled lines are dated on the machine's own clock, so the proxy runs
-      // in a fixed zone here — otherwise every expectation below would depend
-      // on where the test happens to run. +05:30 also keeps the half-hour
-      // offset visible in the times.
+      // Recalled lines are dated on the machine's clock, so the proxy runs in a fixed zone (+05:30).
       TZ: "Asia/Kolkata",
       OMB_HARNESS_URL: `http://127.0.0.1:${stubPort}`,
       OMB_BOT_ID: "bot-asker",
@@ -491,8 +481,7 @@ describe("agents-proxy MCP surface", () => {
     const list = await rpc("tools/list");
     for (const tool of new Set(proposalCases.map(entry => entry.tool))) {
       const description = list.result.tools.find((entry: { name: string }) => entry.name === tool).description;
-      // Team setup applies only at Full access; a bot's own routines,
-      // skills and profile apply at any level.
+        // Team setup applies only at Full access; a bot's own routines, skills and profile at any level.
       if (tool === "propose_team_setup" || tool === "propose_bot_deletion") {
         expect(description).toContain("granted Full Access may apply the change immediately");
         expect(description).toContain("Never claim success from the permission mode alone");
@@ -677,9 +666,7 @@ describe("agents-proxy MCP surface", () => {
     expect(status.description).toContain("never needs this to wait");
     expect(status.inputSchema.properties.wait_ms).toMatchObject({ type: "integer", minimum: 0, maximum: 240_000 });
     expect(status.inputSchema.required ?? []).toEqual([]);
-    // no tool teaches the legacy wait, and the one-release aliases are gone
     expect(JSON.stringify(list.result.tools)).not.toMatch(/Brief synchronous consultation|DEFAULT FOR ASSIGNING WORK|BLOCKING status tool|Never call it in the same turn as delegate_bot|Deprecated alias/);
-    // the other tools name coordinate_bots, not an alias
     for (const name of ["post_to_room", "create_bot", "retry_thread", "list_bots"]) {
       expect(tool(name).description, name).toContain("coordinate_bots");
       expect(tool(name).description, name).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
@@ -754,8 +741,6 @@ describe("agents-proxy MCP surface", () => {
           openWorldHint: false,
         });
       } else {
-        // Proposals and credential requests create durable cards; they are
-        // writes even though a later confirmation applies the requested change.
         expect(tool.annotations).toBeUndefined();
       }
     }
@@ -766,10 +751,6 @@ describe("agents-proxy MCP surface", () => {
     const create = list.result.tools.find((t: { name: string }) => t.name === "propose_routine");
     expect(create.inputSchema.required).toEqual(["name", "instructions", "schedule"]);
     const schedule = create.inputSchema.properties.schedule;
-    // No composition keywords anywhere in the tool surface: several agent
-    // CLIs flatten or drop oneOf/anyOf/const when converting MCP tools for
-    // their model API, and a model that never saw the branches guesses
-    // shapes forever (the 0.1.38 field failure).
     expect(JSON.stringify(create.inputSchema)).not.toMatch(/"oneOf"|"anyOf"|"allOf"|"const"/);
     expect(schedule.type).toBe("object");
     expect(schedule.required).toEqual(["type"]);
@@ -824,7 +805,6 @@ describe("agents-proxy MCP surface", () => {
       const text = (await callTool("list_bots", {})).result.content[0].text;
       expect(text).toContain("[id: bot-helper, model: fake-model, waiting on the user]");
       expect(text).toContain("[id: bot-quill, model: fake-model]");
-      // an older server that only sends busy still reads as before
       expect(text).toContain("[id: bot-old, model: fake-model, busy]");
     } finally {
       agentsResponse = DEFAULT_AGENTS;
@@ -844,9 +824,7 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("Launch");
     expect(text).toContain("members: Asker, Helper");
     expect(text).toContain("room-ops");
-    // the id is useless without the tool that consumes it
     expect(text).toContain("post_to_room");
-    // and the model must not expect a reply it will never get
     expect(text).toContain("does not start anyone's turn");
     expect(lastRoomsQuery).toContain("fromBotId=bot-asker");
     expect(lastRoomsQuery).toContain("fromThreadId=thread-asker-routine");
@@ -860,8 +838,6 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("names a room the bot is in but cannot post into, with the reason and no id", async () => {
-    // the person can see the bot in that room, so "no room" would be a lie;
-    // the reason travels to the model, an id it could retry against does not
     roomsResponse = {
       rooms: [],
       unpostable: [{ name: "Planning", reason: "that room includes @Scout, who is outside your section — tell the user what you wanted to post there instead" }],
@@ -880,8 +856,6 @@ describe("agents-proxy MCP surface", () => {
     expect(res.result.isError).toBeFalsy();
     expect(res.result.content[0].text).toContain("Posted in Launch");
     expect(res.result.content[0].text).toContain("expect no reply");
-    // the room id is the only thing the model chooses; who is posting comes
-    // from the env the harness injected, never from the tool arguments
     expect(lastPostBody).toEqual({
       fromBotId: "bot-asker",
       fromThreadId: "thread-asker-routine",
@@ -923,7 +897,6 @@ describe("agents-proxy MCP surface", () => {
     expect(res.result.isError).toBeFalsy();
     expect(res.result.content[0].text).toContain("Attached report.pdf");
     expect(res.result.content[0].text).toContain("48639 bytes");
-    // who is attaching comes from the harness capability, never from arguments
     expect(lastAttachBody).toEqual({ path: "/home/cua/workspace/report.pdf", name: "Q3 report.pdf" });
     await callTool("attach_file", { path: "clip.mp4" });
     expect(lastAttachBody).toEqual({ path: "clip.mp4" });
@@ -940,8 +913,6 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("hands a harness refusal to the model verbatim", async () => {
-    // the budget's wording is the whole point of it — it must not be
-    // reworded into something that reads like "try again"
     postResponse = { error: "This room has already taken 2 bot posts. Do not retry this call." };
     const res = await callTool("post_to_room", { group_id: "room-launch", message: "after the cap" });
     expect(res.result.isError).toBe(true);
@@ -1160,7 +1131,6 @@ describe("agents-proxy MCP surface", () => {
     expect(lastCredentialBody).toBeNull();
   });
 
-  // ── assignment_status: the one read ──────────────────────────────────────
   it("assignment_status keeps a flat schema", async () => {
     const list = await rpc("tools/list");
     const tool = list.result.tools.find((t: { name: string }) => t.name === "assignment_status");
@@ -1215,7 +1185,6 @@ describe("agents-proxy MCP surface", () => {
       "- asg-3 → bot-old: waiting on its own hand-offs",
       "Each resumes you when it settles; do not wait on them in this turn.",
     ].join("\n"));
-    // the caller is the capability's: nothing about it rides the query
     expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status");
     expect(lastAuth).toBe(`Bearer ${TOKEN}`);
 
@@ -1289,7 +1258,6 @@ describe("agents-proxy MCP surface", () => {
       fromBotId: "bot-asker", fromThreadId: "thread-asker-routine",
       action: "replace", text: "- New preference", oldText: "- Old preference",
     });
-    // the harness echoes the entry it wrote, so the model can replace it later by exact text
     memoryResponse = { ok: true, truncated: false, entry: '- 2026-09-10 · from chat "Setup" · New preference' };
     const echoed = await callTool("memory_update", { action: "supersede", text: "New preference", old_text: "- Old preference" });
     expect(echoed.result.isError).toBe(false);
@@ -1312,12 +1280,7 @@ describe("agents-proxy MCP surface", () => {
     }
     const tools = await rpc("tools/list");
     const schema = tools.result.tools.find((tool: { name: string }) => tool.name === "memory_update").inputSchema;
-    // No pattern on free-text params: servings that constrain-decode
-    // function-call arguments collapse a patterned free-text field to a
-    // minimal satisfier instead of the intended text — the same class of
-    // failure as the schema-conversion issues behind the flat-schema rule.
-    // Blank text is still rejected by the handler (asserted above).
-    // one fact per call, the same cap updateMemory holds (MEMORY_ENTRY_MAX_CHARS)
+    // No pattern on free-text params: constrained decoding collapses a patterned field to a minimal satisfier.
     expect(schema.properties.text).toMatchObject({ minLength: 1, maxLength: 1000 });
     expect(schema.properties.text).not.toHaveProperty("pattern");
     memoryStatus = 409;
@@ -1368,7 +1331,6 @@ describe("agents-proxy MCP surface", () => {
   it("session_search recalls the bot's own past threads through the harness, scoped to the sender", async () => {
     const list = await rpc("tools/list");
     const tool = list.result.tools.find((t: { name: string }) => t.name === "session_search");
-    // words or a time window: neither alone is required
     expect(tool.inputSchema.required).toBeUndefined();
     expect(Object.keys(tool.inputSchema.properties)).toEqual(["query", "since", "until", "limit", "scope"]);
     expect(tool.description).toContain("OWN earlier conversations");
@@ -1382,7 +1344,6 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("3 matching messages");
     expect(text).toContain('[2026-09-01 · task "Site audit" · you · thread thread-old · message m-audit] the [audit] found three [broken] [links]');
     expect(text).toContain("[2026-09-04 · this conversation · user · thread thread-asker-routine · message m-now]");
-    // a line another bot sent in is that bot's, never the user's
     expect(text).toContain('[2026-09-02 · task "Vendor follow-up" · @Scout (another bot — not your user) · thread thread-asker · message m-peer]');
     expect(text).not.toContain("· user · thread thread-asker ·");
     expect(text).toContain("call session_read with its thread and message ids");
@@ -1480,10 +1441,7 @@ describe("agents-proxy MCP surface", () => {
     expect(missing.result.isError).toBe(true);
   });
 
-  // A bare `since`/`until` date is read as local midnight (recent-work.ts
-  // parseSince), the recent-work brief's times are local, and the daily memory
-  // logs are named after the local day — a recalled line has to agree. This
-  // child runs in Asia/Kolkata, where 20:30Z is already 02:00 the next day.
+  // This child runs in Asia/Kolkata, where 20:30Z is already 02:00 the next day.
   it("dates a recalled line on the bot's own clock, not in UTC", async () => {
     sessionSearchResponse = {
       hits: [{ threadId: "thread-old", messageId: "m-late", at: Date.UTC(2026, 8, 16, 20, 30), role: "bot", snippet: "filed the report", task: "Site audit", current: false }],
@@ -1556,7 +1514,6 @@ describe("agents-proxy MCP surface", () => {
       for_bot_id: "bot-helper",
     });
     expect(lastRoutineRequestBody.forBotId).toBe("bot-helper");
-    // the target rides beside the routine definition, never inside it
     expect(lastRoutineRequestBody.routine).not.toHaveProperty("forBotId");
     expect(lastRoutineRequestBody.routine).not.toHaveProperty("for_bot_id");
     expect(res.result.isError).toBeFalsy();
@@ -1766,8 +1723,6 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("coerces the schedule shapes models actually send", async () => {
-    // "daily" is the natural word for every-day; it becomes weekly on all
-    // seven days on the wire, so the harness dialect stays unchanged.
     await callTool("propose_routine", {
       name: "Daily check",
       instructions: "Check things.",
@@ -1779,7 +1734,6 @@ describe("agents-proxy MCP surface", () => {
       weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
     });
 
-    // Capitalized and short weekday names have one obvious meaning.
     await callTool("propose_routine", {
       name: "Caps",
       instructions: "x.",
@@ -1787,7 +1741,6 @@ describe("agents-proxy MCP surface", () => {
     });
     expect(lastRoutineRequestBody.routine.schedule.weekdays).toEqual(["monday", "friday"]);
 
-    // Models routinely deliver nested objects as JSON strings.
     await callTool("propose_routine", {
       name: "Str",
       instructions: "x.",
@@ -2046,8 +1999,6 @@ describe("standing external runtime", () => {
   afterAll(async () => { if (external) await waitForExit(external, { signal: "SIGTERM" }); });
 
   it("sees the same one tool surface as every turn: the switches it sets change nothing", async () => {
-    // The server's allow-list, not the catalog, decides what a standing
-    // capability may call (docs/runtime-contract.md §9).
     const list = await externalRpc("tools/list");
     // the main child is a Chief's turn; this one is not, so only the role differs
     const chiefOnly = ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"];
@@ -2100,9 +2051,7 @@ describe("standing external runtime", () => {
   });
 });
 
-// Opt-in computer sharing is off unless the harness turns it on, and so are
-// the Chief-only tools. A separate child is the only honest check: the tool
-// list is frozen at module load.
+// A separate child is the only honest check: the tool list is frozen at module load.
 describe("with computer sharing off and no Chief of Staff (the defaults)", () => {
   let gated: ChildProcess;
   const gatedPending = new Map<number, (msg: any) => void>();
@@ -2156,7 +2105,6 @@ describe("with computer sharing off and no Chief of Staff (the defaults)", () =>
     const names = list.result.tools.map((tool: { name: string }) => tool.name);
     expect(names).not.toContain("list_shared_computers");
     expect(names).not.toContain("shared_computer");
-    // the rest of the surface is untouched — this is a gate, not a removal
     expect(names).toContain("list_bots");
     expect(names).toContain("skills_list");
   });
@@ -2178,7 +2126,6 @@ describe("with computer sharing off and no Chief of Staff (the defaults)", () =>
       expect(tools.get(name)!.inputSchema.properties).not.toHaveProperty("for_bot_id");
       expect(tools.get(name)!.description).not.toContain("for_bot_id");
     }
-    // A routine change may still target a reachable section peer.
     expect(tools.get("propose_routine_action")!.inputSchema.properties).toHaveProperty("for_bot_id");
   });
 
@@ -2194,8 +2141,6 @@ describe("with computer sharing off and no Chief of Staff (the defaults)", () =>
   });
 });
 
-// coordinate_bots is in every turn's catalog (docs/runtime-contract.md §9);
-// the stub harness records the wire body.
 describe("coordinate_bots arguments", () => {
   it("maps camelCase aliases onto the canonical snake_case fields", async () => {
     const res = await callTool("coordinate_bots", {
@@ -2217,7 +2162,6 @@ describe("coordinate_bots arguments", () => {
       botIds: ["bot-helper"], message: "Is the export idempotent?", reason: "need to know before shipping",
       thread: "new", reply: "resume", consult: true, done_when: "a yes or no with the line that proves it",
     });
-    // the camelCase spelling of done_when resolves too; blanks are dropped
     await callTool("coordinate_bots", { bot_ids: ["bot-helper"], message: "notice", reply: "none", doneWhen: "  ", reason: " " });
     expect(lastCoordinateBody).toEqual({ botIds: ["bot-helper"], message: "notice", reply: "none" });
   });
@@ -2247,7 +2191,6 @@ describe("coordinate_bots arguments", () => {
       botIds: ["bot-helper"], groupId: "room-right",
     });
     expect(lastCoordinateBody.botIds).not.toContain("bot-other");
-    // Fields from an older tool list are dropped.
     expect(lastCoordinateBody).not.toHaveProperty("requestKey");
     expect(lastCoordinateBody).not.toHaveProperty("label");
   });

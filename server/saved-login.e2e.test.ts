@@ -1,12 +1,4 @@
-// A saved login on the fake engine, end to end through the real agents MCP
-// proxy: a bot working in its built-in browser asks the person to sign in,
-// the person saves a login from the card instead, the bot resumes and calls
-// fill_login, and the server types the username and password into the login
-// page itself. The bot hears only what was filled; the password reaches the
-// page, never a tool result, an engine command line, the bot's prompt or
-// the transcript. The browser here is a happy-dom page behind a stand-in
-// agent-browser (server/testing/fake-login-page.ts); nothing reaches a real
-// browser, the user's data or port 8799.
+// A happy-dom page behind a stand-in agent-browser: nothing reaches a real browser, the user's data or port 8799.
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -24,8 +16,7 @@ const USERNAME = "alice@example.com";
 
 it.skipIf(process.platform === "win32")("saves a login from the sign-in card, and fill_login signs the bot in without it ever seeing the password", async () => {
   const page = new FakeLoginPage("https://accounts.example.com/login", LOGIN_FORM);
-  // The bridge plays the running browser: the stand-in engine forwards each
-  // command here, and the engine's input relay (`/api/command`) is here too.
+  // The bridge plays the running browser: the stand-in engine forwards each command here, and the input relay is here too.
   const port = await freePortBlock([0], 19_960, 40);
   const engineArgs: string[][] = [];
   const bridge = createServer(async (req, res) => {
@@ -42,7 +33,6 @@ it.skipIf(process.platform === "win32")("saves a login from the sign-in card, an
       const { args } = JSON.parse(raw) as { args: string[] };
       engineArgs.push(args);
       const data = await page.engine(args);
-      // The relay answers on this bridge's own port.
       return reply({ success: true, data: data && "port" in data ? { ...data, port } : data });
     } catch (error) {
       return reply({ success: false, error: error instanceof Error ? error.message : String(error) });
@@ -52,8 +42,7 @@ it.skipIf(process.platform === "win32")("saves a login from the sign-in card, an
 
   const tools = mkdtempSync(join(tmpdir(), "omb-saved-login-e2e-"));
   const binaryPath = join(tools, "agent-browser");
-  // The stand-in agent-browser: its browser is always running, `mcp` and
-  // `close` do nothing, and every other command goes to the bridge.
+  // The stand-in agent-browser: always running, `mcp` and `close` do nothing, every other command goes to the bridge.
   writeFileSync(binaryPath, `#!${process.execPath}
 const args = process.argv.slice(2).filter((arg) => arg !== "--json" && arg !== "--no-webmcp");
 const say = (value) => { process.stdout.write(JSON.stringify(value)); process.exit(0); };
@@ -94,12 +83,10 @@ else fetch("http://127.0.0.1:${port}/engine", { method: "POST", body: JSON.strin
     await expect.poll(async () => (await messages()).some((message) => message.kind === "signin"), { timeout: 15_000 }).toBe(true);
     const card = (await messages()).find((message) => message.kind === "signin");
 
-    // The person saves a login on the card.
     const saved = await api("POST", `/api/bots/${bot.id}/sign-in-cards/${card.id}/save-login`, { threadId: bot.threadId, username: USERNAME, password: PASSWORD });
     expect(saved).toMatchObject({ status: 200, body: { done: true, resumed: true, saved: true, host: "accounts.example.com" } });
     expect(saved.text).not.toContain(PASSWORD);
 
-    // The bot resumes, is told its saved logins, and calls fill_login.
     await expect.poll(() => evidence().length, { timeout: 20_000 }).toBe(2);
     const resumed = evidence()[1];
     expect(JSON.stringify(resumed.prompt)).toContain("the person saved a login for accounts.example.com");
@@ -108,12 +95,10 @@ else fetch("http://127.0.0.1:${port}/engine", { method: "POST", body: JSON.strin
     expect(call.response.result.isError).toBeFalsy();
     expect(call.response.result.content[0].text).toContain(`Filled the username and the password for ${USERNAME} on accounts.example.com. Submit the form now`);
 
-    // The page holds the login, typed as real input.
     expect(page.field("#email").value).toBe(USERNAME);
     expect(page.field("#password").value).toBe(PASSWORD);
     expect(page.state).toMatchObject({ email: USERNAME, password: PASSWORD });
 
-    // And nothing else does.
     await expect.poll(async () => (await messages()).some((message) => message.role === "bot" && String(message.text).startsWith("Signed in.")), { timeout: 15_000 }).toBe(true);
     const reply = (await messages()).find((message) => message.role === "bot" && String(message.text).startsWith("Signed in."));
     expect(reply.text).toBe("Signed in. The password was ••••••.");

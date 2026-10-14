@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 // The published images: the self-hosted server (the default target) and the
-// Cloud home (docs/cloud-pro.md). A pull downloads every layer whose digest
-// changed, and a layer's digest changes when anything beneath it does.
+// Cloud home. A pull downloads every layer whose digest changed, and a layer's
+// digest changes when anything beneath it does.
 const dockerfile = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
 const workflow = parse(readFileSync(new URL("../.github/workflows/docker.yml", import.meta.url), "utf8"));
 
@@ -247,9 +247,8 @@ describe("container images", () => {
     expect(resolve(false)).toEqual({ chrome: today, engines: "@anthropic-ai/claude-code @openai/codex", engines_tag: today });
   });
 
-  // The bots' browsers (docs/browser-packaging.md, "Process hygiene"): an
-  // init collects the browser processes whose parents exit, and Chrome gets
-  // the shared memory OpenMausBot's desktop containers give it.
+  // An init collects browser processes whose parents exit, and Chrome gets the
+  // shared memory OpenMausBot's desktop containers give it.
   it("runs every compose service of the server image with an init and Chrome's shared memory", () => {
     for (const file of ["../compose.yaml", "../deploy/docker-compose.yml", "../deploy/podman/compose.yaml"]) {
       const service = parse(readFileSync(new URL(file, import.meta.url), "utf8")).services.omb;

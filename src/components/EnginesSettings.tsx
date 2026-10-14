@@ -1,9 +1,3 @@
-// Engines settings — per-instance CLI path override. One "Set CLI…" button
-// per engine reveals a picker: a "detected" dropdown of every binary the
-// server found on PATH, plus a manual path input. Saving first probes the
-// binary (`<cli> --version`, same PATH a real turn uses); a failed probe
-// asks before registering — the classic miss is a path the terminal sees
-// but this GUI app can't.
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 
@@ -32,14 +26,9 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
   onSaved: () => Promise<void>;
 }) {
   const [candidates, setCandidates] = useState<string[] | null>(instance.cliCandidates ?? null);
-  // `selected` starts EMPTY, never at instance.cli: a wrapper override
-  // ("/ag claude agp") has no matching <option>, and a select whose value
-  // points at a missing option renders the placeholder while still holding
-  // the ghost value — the form would look empty yet refuse to save.
+  // Starts empty: a select whose value names a missing option shows the placeholder yet still holds that value.
   const [selected, setSelected] = useState<string>("");
   const [manual, setManual] = useState<string>(
-    // the current override rides the manual input unless it is exactly a
-    // detected path (then the dropdown preselects it below)
     instance.cli && !(instance.cliCandidates ?? []).includes(instance.cli) ? instance.cli : "",
   );
   const [probing, setProbing] = useState(false);
@@ -48,8 +37,6 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
   const [error, setError] = useState<string | null>(null);
   const fetchedRef = useRef(false);
 
-  // The describe() snapshot can be stale (CLI installed since last refresh);
-  // re-fetch candidates once when the picker mounts so the dropdown is current.
   useEffect(() => {
     if (fetchedRef.current) return;
     fetchedRef.current = true;
@@ -57,8 +44,6 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
       .then(({ candidates: found }: { candidates: string[] }) => {
         setCandidates(found);
         if (!instance.cli) return;
-        // preselect a detected override in the dropdown; a non-detected one
-        // (wrapper string, moved binary) rides the manual input instead
         if (found.includes(instance.cli)) setSelected(instance.cli);
         else setManual(instance.cli);
       })
@@ -69,7 +54,6 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
   const dirty = value !== (instance.cli ?? "");
   const busy = probing || saving;
 
-  // Editing the path invalidates a previous probe result.
   useEffect(() => {
     setProbe(null);
   }, [value]);
@@ -78,15 +62,11 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
     if (busy || !value || !dirty) return;
     setSaving(true);
     setError(null);
-    const committed = value; // freeze: inputs disable during save, but the
-    // closure must not see a later keystroke either
+    const committed = value;
     api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
       method: "PATCH",
       body: JSON.stringify({ cli: committed }),
     })
-      // onSaved (refreshInstances) failing must NOT read as "not saved" —
-      // the PATCH already returned 200. Close regardless; the global banner
-      // from refreshInstances already reports the refresh failure.
       .then(() => Promise.resolve(onSaved()).catch(() => {}))
       .then(onClose)
       .catch((e) => setError(e.message))
@@ -103,7 +83,6 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
     })
       .then((result: ProbeResult) => {
         setProbe(result);
-        // ok → save immediately; failed → hold for explicit confirmation
         if (result.ok) persist();
       })
       .catch((e) => setError(e.message))
@@ -139,7 +118,7 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
         onKeyDown={(e) => {
           if (e.key !== "Enter") return;
           e.preventDefault();
-          if (!value || !dirty) return; // nothing to save — same hint the disabled button gives
+          if (!value || !dirty) return;
           save();
         }}
         placeholder={candidates?.length ? t("engines.manualPath") : "/absolute/path/to/cli"}
@@ -211,10 +190,6 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
   const [error, setError] = useState<string | null>(null);
   const wasOpenFor = useRef<string | null>(null);
 
-  // Close the picker when this instance's override changes to anything else
-  // — a save from this row, another tab, or the 5-min refresh. The picker
-  // initialized its fields from the OLD value and never re-syncs, so staying
-  // open would show stale state.
   useEffect(() => {
     if (wasOpenFor.current !== null && wasOpenFor.current !== instance.cli) {
       setOpen(false);
@@ -230,8 +205,6 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
       method: "PATCH",
       body: JSON.stringify({ cli: "" }),
     })
-      // The reset already succeeded once PATCH returns 200. A follow-up list
-      // refresh failure should not tell the user the reset itself failed.
       .then(() => Promise.resolve(refreshInstances()).catch(() => {}))
       .catch((e) => setError(e.message))
       .finally(() => setSwitching(false));
@@ -257,7 +230,6 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
   const policyNote = instance.policy && <p className="mb-2 text-[12px] leading-relaxed text-ink-secondary">
     <span className="font-medium text-ink">{t("policy.managedBy", { organization: instance.policy.organizationName })}</span> · {instance.policy.reason}
   </p>;
-  // The trial's AI credit on My Cloud: what it is, and why it is not running when it is not.
   if (instance.trialCredit) return <EngineCard instance={instance}>
     <p data-trial-credit={instance.trialCredit} className="text-[13px] leading-relaxed text-ink-secondary">{t(instance.trialCredit === "used_up" ? "engines.trialCreditUsedUp"
       : instance.trialCredit === "ended" ? "engines.trialCreditEnded" : engineReady(instance) ? "engines.trialCredit" : "engines.trialCreditOwn")}</p>
@@ -370,11 +342,6 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
 
 export function EnginesSettings() {
   const { state } = useStore();
-  // every KNOWN-driver instance has cliDefault; unknown-driver shadows have
-  // neither unless an override was set. Including them keeps a Reset-able row
-  // (and a Set CLI… path) for engines the running build doesn't recognize.
-  // Key engines have no CLI; keep them once their key is saved, or the card
-  // (and the only way back to a mistyped key) vanishes (MOCA-292).
   const rows = state.instances.filter((i) => i.readOnly || i.cli !== undefined || i.cliDefault !== undefined || i.snapshot.state === "unavailable" || isApiKeyEngine(i));
 
   return (

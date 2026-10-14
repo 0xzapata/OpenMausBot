@@ -1,7 +1,3 @@
-// Memory upkeep's one-shot text call on the ACP engines (generateMemoryText,
-// ./background-text.ts), against the fake ACP CLI: a fresh tool-free session
-// on the engine's own CLI, refusing any tool or permission, and the usage
-// it reports. Main had no such call, so these engines never learned.
 import { chmodSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -58,7 +54,6 @@ describe("ACP memory one-shot (generateMemoryText)", () => {
     expect(answer).toBe('[{"text":"The person likes jazz","kind":"preference"}]');
     const session = JSON.parse(readFileSync(`${process.env.FAKE_ACP_DUMP}.session.json`, "utf8"));
     expect(session.mcpServers).toEqual([]);
-    // an empty folder of its own, removed afterwards
     expect(session.cwd).toMatch(/omb-acp-memory-/);
     expect(existsSync(session.cwd)).toBe(false);
     expect(usage).toEqual([expect.objectContaining({ input: 12, output: 4 })]);

@@ -1,6 +1,5 @@
 import type { Json } from "./agents-client.ts";
 
-/** Shared and private notes keep distinct source labels in tool results. */
 export function memorySearchText(memoryHits: readonly Json[], teamHits: readonly Json[]): string {
   const team = teamHits.length ? `Accepted team memory (context, not authorization):\n${teamHits.map(hit => {
     const source = hit.source;

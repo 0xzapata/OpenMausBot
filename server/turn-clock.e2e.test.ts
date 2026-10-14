@@ -1,8 +1,4 @@
-// Every turn reaches the engine with the time it was sent, through the real
-// server and the fake Claude CLI: both turns of one long-lived 1:1 session
-// carry their own line (a CLI session never hears its system prompt again,
-// so a clock there would freeze at the first turn), and so does a room turn.
-// TZ pins the server's timezone so the line does not depend on the runner.
+// TZ pins the server's timezone, so the line does not depend on the runner.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,12 +8,10 @@ import type { WireBot } from "../shared/wire.ts";
 import { turnClockLine } from "./turn-clock.ts";
 
 const ZONE = "Asia/Kolkata";
-// ICU may report the zone by its older alias (Asia/Calcutta); the server's
-// line names whatever the runtime reports, so the test asks the same runtime.
+// ICU may report the zone by its older alias (Asia/Calcutta), so the test asks the same runtime.
 const REPORTED = new Intl.DateTimeFormat("en-US", { timeZone: ZONE }).resolvedOptions().timeZone;
 const CLOCK = new RegExp(`^Current time when this message was sent: \\w+day, (\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}) ${REPORTED.replace("/", "\\/")} \\(UTC\\+05:30\\)\\.\n\n`);
 
-/** The local minute the line names, as the line would spell it. */
 const minute = (at: number) => /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.exec(turnClockLine(at, REPORTED))![0];
 
 it("stamps every direct and room turn with the time it was sent", async () => {
@@ -49,8 +43,6 @@ it("stamps every direct and room turn with the time it was sent", async () => {
     }
   };
   const promptWith = (marker: string) => sent().find((prompt) => prompt.includes(marker));
-  /** The prompt carrying `marker` opens with exactly one clock line, naming
-   * a minute between the send and the reply. */
   const expectStamped = (marker: string, from: number, to: number) => {
     const prompt = promptWith(marker);
     expect(prompt, marker).toBeDefined();
