@@ -23,26 +23,73 @@ export type CallRecordLine =
  * (the receipt of an automatic approval, a notice, a rejected action, a retry)
  * and question cards are not work the bot did, so they are left out. */
 export function callRecordLines(transcript: readonly Message[], callId: string): CallRecordLine[] {
-  const requests = new Set<string>();
-  for (const message of transcript) {
-    if (message.role === "user" && message.callId === callId) requests.add(message.id);
-  }
+  const requests = callRequests(transcript, callId);
   if (requests.size === 0) return [];
   const lines: CallRecordLine[] = [];
   for (const message of transcript) {
     if (!message.requestMessageId || !requests.has(message.requestMessageId)) continue;
-    const { card } = message;
-    if (isToolStep(message)) {
-      // The harness writes chips of its own inside a turn. Each looks like a
-      // step to the chat's fold, but none has a provider item behind it:
-      // listing them would show an auto-approved action twice, or a note as
-      // work.
-      if (message.tool.itemId !== undefined) lines.push({ kind: "step", id: message.id, tool: message.tool });
-    } else if (message.kind === "options" && card?.requestId && card.tool && !card.questionRequest) {
-      lines.push({ kind: "approval", id: message.id, card });
-    }
+    const line = callRecordLine(message);
+    if (line) lines.push(line);
   }
   return lines;
+}
+
+/** One entry of a call's sheet: a request spoken on the call, the bot's
+ * answer to one, or a line of its record. */
+export type CallConversationEntry =
+  | { kind: "said"; id: string; message: Message }
+  | { kind: "answer"; id: string; message: Message }
+  | CallRecordLine;
+
+/** The whole call, in transcript order, for its sheet: each spoken request,
+ * then what its turn did and answered. Built only from what the chat stores:
+ * the voice's own words are not here, as they are nowhere. A turn's receipts
+ * (its digest, a compaction) are about the turn, not the call, so they are
+ * left out, and so is anything a record leaves out. */
+export function callConversation(transcript: readonly Message[], callId: string): CallConversationEntry[] {
+  const requests = callRequests(transcript, callId);
+  if (requests.size === 0) return [];
+  const entries: CallConversationEntry[] = [];
+  for (const message of transcript) {
+    if (requests.has(message.id)) {
+      if (message.text?.trim()) entries.push({ kind: "said", id: message.id, message });
+      continue;
+    }
+    if (!message.requestMessageId || !requests.has(message.requestMessageId)) continue;
+    if (message.role === "bot" && message.kind === "text") {
+      if (message.text?.trim()) entries.push({ kind: "answer", id: message.id, message });
+      continue;
+    }
+    const line = callRecordLine(message);
+    if (line) entries.push(line);
+  }
+  return entries;
+}
+
+/** The ids of the requests spoken on `callId`. */
+function callRequests(transcript: readonly Message[], callId: string): Set<string> {
+  const requests = new Set<string>();
+  for (const message of transcript) {
+    if (message.role === "user" && message.callId === callId) requests.add(message.id);
+  }
+  return requests;
+}
+
+/** A message of a call's turn as a line of its record, or null when it is
+ * not work the bot did. */
+function callRecordLine(message: Message): CallRecordLine | null {
+  const { card } = message;
+  if (isToolStep(message)) {
+    // The harness writes chips of its own inside a turn. Each looks like a
+    // step to the chat's fold, but none has a provider item behind it:
+    // listing them would show an auto-approved action twice, or a note as
+    // work.
+    return message.tool.itemId !== undefined ? { kind: "step", id: message.id, tool: message.tool } : null;
+  }
+  if (message.kind === "options" && card?.requestId && card.tool && !card.questionRequest) {
+    return { kind: "approval", id: message.id, card };
+  }
+  return null;
 }
 
 /** Whether a call's record may be missing lines because older messages are

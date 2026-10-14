@@ -1039,7 +1039,7 @@ const MessagesList = memo(function MessagesList({
               return <RoutineRunRow message={m} botId={botId} />;
             case "call":
               // a finished Live call's record; its spoken lines stay inline
-              return m.call ? <CallRecordRow message={m} transcript={transcript} botName={botName} busy={busy} hasMore={hasMore} /> : null;
+              return m.call ? <CallRecordRow message={m} transcript={transcript} botName={botName} threadId={threadId} busy={busy} hasMore={hasMore} /> : null;
             case "activity": {
               // a Data receipt first: its title is a person's words, never a status or error marker
               if (m.dataResult) return <DataResultChip message={m} />;
