@@ -6,6 +6,7 @@
 //     | not-logged-in (2.1.263's frames) | api-error | usage-limit (2.1.295's usage_limit_reached frames)
 //   FAKE_CLAUDE_API_ERROR  text for the api-error frame (default: overloaded)
 //   FAKE_CLAUDE_RATE_LIMIT  JSON rate_limit_info reported in a `rate_limit_event` after init
+//   FAKE_CLAUDE_MCP_FAILED  comma list of MCP servers init reports as failed (`mcp_servers`)
 //   FAKE_CLAUDE_RELEASE  with hang: the turn ends normally once this file exists
 //   FAKE_CLAUDE_DUMP  path for the latest turn's {argv, env, cwd, prompt, systemPrompt, mcpConfig}
 //   FAKE_CLAUDE_EXIT_AFTER_TURN  1: exit once the turn is answered, so later turns relaunch with --resume
@@ -312,6 +313,9 @@ const autoUnavailableFor = (process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS ?? "
 const permissionMode =
   requestedPermissionMode === "auto" && autoUnavailableFor.includes(model) ? "default" : requestedPermissionMode;
 // FAKE_CLAUDE_KEEP_BASH=1 plays a CLI that keeps Bash whatever --tools said.
+const mcpStatus = () => process.env.FAKE_CLAUDE_MCP_FAILED
+  ? { mcp_servers: process.env.FAKE_CLAUDE_MCP_FAILED.split(",").map((name) => ({ name, status: "failed" })) }
+  : {};
 const toolsFlag = argAfter("--tools");
 const tools = [...new Set([...(toolsFlag ? toolsFlag.split(",") : ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"]),
   ...(process.env.FAKE_CLAUDE_KEEP_BASH === "1" ? ["Bash"] : [])])];
@@ -548,7 +552,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
     } catch {}
     const quota = Number(process.env.FAKE_CLAUDE_TRANSIENTS) || 0;
     writeFileSync(process.env.FAKE_CLAUDE_STATE, String(launched + 1));
-    out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode, tools });
+    out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode, tools, ...mcpStatus() });
     if (launched < quota) {
       if (process.env.FAKE_CLAUDE_PARTIAL_FAILS) {
         out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "half an answer" } } });
@@ -559,7 +563,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
   }
 
   // the real CLI re-announces init on every turn of a live process
-  out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode, tools });
+  out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode, tools, ...mcpStatus() });
   const rateLimit = process.env.FAKE_CLAUDE_RATE_LIMIT ? JSON.parse(process.env.FAKE_CLAUDE_RATE_LIMIT) : null;
   if (rateLimit) out({ type: "rate_limit_event", rate_limit_info: rateLimit, session_id: sessionId });
 

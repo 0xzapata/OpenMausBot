@@ -15,7 +15,6 @@ import {
   claudeCliSupports,
   claudeCliUpdate,
   claudeHookSettings,
-  claudeLimitMessage,
   ClaudeDriver,
   createPermissionBroker,
   hookTokenFile,
@@ -29,6 +28,8 @@ import {
   turnCostFromRunningTotal,
   type ClaudeConfig,
 } from "./claude.ts";
+import { TEAM_TOOLS_FAILED } from "./team-tools.ts";
+import { claudeLimitMessage } from "./claude-limits.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
 import { ephemeralWorkspaceTokenPath } from "../workspace-backup-policy.ts";
@@ -2542,6 +2543,19 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(dumpedPid(dump)).toBe(dumpBefore);
     expect(recorder.events.filter((e) => e.type === "turn.started")).toHaveLength(2);
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(2);
+  });
+
+  it("says when its team tools did not start, and starts the next turn in a new process that reconnects them", async () => {
+    await create(undefined, { FAKE_CLAUDE_MCP_FAILED: "agents" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const first = await instance.adapter.sendTurn({ threadId: "t-team-tools", text: "one" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    expect(recorder.events.filter((e) => e.type === "runtime.notice").map((e) => (e as { message: string }).message)).toEqual([TEAM_TOOLS_FAILED]);
+    const failedLaunch = dumpedPid(dump);
+    const second = await instance.adapter.sendTurn({ threadId: "t-team-tools", text: "two" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    expect(dumpedPid(dump)).not.toBe(failedLaunch);
   });
 
   it("books each turn of a retained process at its own cost, not the process's running total", async () => {

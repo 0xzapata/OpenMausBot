@@ -21,6 +21,7 @@ import {
   codexUserError,
 } from "./codex.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
+import { TEAM_TOOLS_FAILED } from "./team-tools.ts";
 import { rebuiltSessionNotice } from "../resume-recovery.ts";
 import { startFakeHttpMcp, type FakeHttpMcp } from "../testing/fake-http-mcp-server.ts";
 import * as procs from "../procs.ts";
@@ -155,6 +156,13 @@ describe("CodexDriver turns (fake app-server)", () => {
   beforeEach(() => {
     chmodSync(FAKE_CLI, 0o755);
     scratch = mkdtempSync(join(tmpdir(), "omb-codex-test-"));
+  });
+
+  it("says once when its team tools did not start", async () => {
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_MCP_FAILED: "agents" } });
+    await instance.adapter.sendTurn({ threadId: "team-tools", text: "Fixture" });
+    await recorder.until((event) => event.type === "turn.completed");
+    expect(recorder.events.filter((e) => e.type === "runtime.notice").map((e) => (e as { message: string }).message)).toEqual([TEAM_TOOLS_FAILED]);
   });
 
   it("refuses native selection before a Codex prompt, including resumed Full-access turns", async () => {
