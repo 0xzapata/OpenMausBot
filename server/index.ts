@@ -7374,8 +7374,7 @@ bus.subscribe((event: RuntimeEvent) => {
           (sourceGeneration !== undefined && directTurnGenerationByThread.get(event.threadId) === sourceGeneration) ||
           (sourceSpeaker !== undefined && groupSpeakers.get(event.threadId) === sourceSpeaker)
         );
-        // One more necessary condition before any automatic allow: a shell
-        // command on the safety floor's never-list is denied here instead.
+        // Security: a never-list command is denied in place of any automatic allow.
         if (denyAtSafetyFloor({ event, requestId, bot: asker, adapter: instance?.adapter, isCurrent, say: pushMessage,
           release: () => watchdog.setWaitingOnHuman(event.threadId, false) })) break;
         // The chip is written only AFTER the provider takes the answer.

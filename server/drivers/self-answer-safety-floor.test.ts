@@ -86,9 +86,9 @@ const foldAtFullAccess = (request: Request): "denied" | "card" | "allowed" => {
 
 describe("Codex at Full access", () => {
   /** One Full-access turn in which the fake app-server asks to run `command`. */
-  const ask = async (threadId: string, command: string, where: Record<string, string> = { cwd: scratch }) => {
+  const ask = async (threadId: string, command: string | string[], where: Record<string, string> = { cwd: scratch }, method = "item/commandExecution/requestApproval") => {
     process.env.FAKE_CODEX_MODE = "approval";
-    process.env.FAKE_CODEX_APPROVAL_REQUEST = JSON.stringify({ method: "item/commandExecution/requestApproval", params: { command, ...where } });
+    process.env.FAKE_CODEX_APPROVAL_REQUEST = JSON.stringify({ method, params: { command, ...where } });
     const dump = join(scratch, `${threadId}.json`);
     process.env.FAKE_CODEX_DUMP = dump;
     instance = await CodexDriver.create({
@@ -129,6 +129,24 @@ describe("Codex at Full access", () => {
     expect(foldAtFullAccess(request)).toBe("denied");
     await recorder!.until((event) => event.type === "turn.completed");
     expect(turn.decision()).toEqual({ decision: "decline" });
+  });
+
+  it("reads a legacy argv request as the command line it runs, and the harness denies it", async () => {
+    floorOn();
+    const turn = await ask("t-codex-argv", ["bash", "-lc", WIPE], { cwd: scratch }, "execCommandApproval");
+    const request = await nextRequest();
+    expect(request.commandLine).toBe("bash -lc 'rm -rf /'");
+    expect(foldAtFullAccess(request)).toBe("denied");
+    await recorder!.until((event) => event.type === "turn.completed");
+    expect(turn.decision()).toEqual({ decision: "denied" });
+  });
+
+  it("still answers an ordinary legacy argv request by itself", async () => {
+    floorOn();
+    const turn = await ask("t-codex-argv-ok", ["bash", "-lc", "echo 'it''s fine'"], { cwd: scratch }, "execCommandApproval");
+    await recorder!.until((event) => event.type === "turn.completed");
+    expect(opened()).toEqual([]);
+    expect(turn.decision()).toEqual({ decision: "approved" });
   });
 
   it("raises a command the floor cannot read, and the harness leaves it for a card", async () => {

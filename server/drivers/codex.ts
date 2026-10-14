@@ -1089,7 +1089,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               ? { permissions: allow ? grantedPermissions(params.permissions) : {}, scope: "turn" }
               : { decision: allow ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" };
         const shell = method === "execCommandApproval" || method === "item/commandExecution/requestApproval" ? params.command : undefined;
-        if (autoAcceptPermissions && isPermission && answersAlone(shell)) { // not for a safety-floor command: permission-command.ts
+        if (autoAcceptPermissions && isPermission && answersAlone(shell)) {
           return send({
             jsonrpc: "2.0",
             id: msg.id,

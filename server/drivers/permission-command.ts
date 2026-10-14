@@ -11,15 +11,24 @@ export function permissionCommand(command: unknown, cwd: unknown): { command: st
   return { command, cwd };
 }
 
+const BARE_WORD = /^[\w@%+=:,./-]+$/;
+
+/** Codex's legacy execCommandApproval sends argv, not a line: it is quoted for POSIX sh so the floor reads what runs. */
+function floorCommandLine(command: unknown): string | undefined {
+  if (typeof command === "string") return command.trim() ? command : undefined;
+  if (!Array.isArray(command) || !command.length || !command.every((word) => typeof word === "string")) return undefined;
+  return command.map((word: string) => BARE_WORD.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`).join(" ");
+}
+
 /** A shell request's event fields: the exact-command descriptor, which needs a known cwd, and the raw command line
  * the safety floor reads, which does not. */
 export function shellRequest(command: unknown, cwd: unknown): { command: ReturnType<typeof permissionCommand>; commandLine: string | undefined } {
-  return { command: permissionCommand(command, cwd), commandLine: typeof command === "string" && command.trim() ? command : undefined };
+  return { command: permissionCommand(command, cwd), commandLine: floorCommandLine(command) };
 }
 
 /** Whether a driver may answer a request itself with nobody looking; when false it must raise the request instead. */
 export function answersAlone(command: unknown): boolean {
-  return safetyFloorClears(typeof command === "string" ? command : undefined);
+  return safetyFloorClears(floorCommandLine(command));
 }
 
 export function permissionLaunchCwd(cwd: string): string | undefined {
