@@ -14,7 +14,6 @@ let dir: string;
 let oauth: FakeOAuth;
 let mcp: FakeHttpMcp;
 let manager: McpOAuthManager;
-/** the sign-in app config.json would hold for "docs" */
 let registered: McpOAuthClientConfig | undefined;
 
 async function setup(options: FakeOAuthOptions = {}, lifetimeMs?: number) {
@@ -29,8 +28,6 @@ async function setup(options: FakeOAuthOptions = {}, lifetimeMs?: number) {
   });
 }
 
-/** What the person's browser does: open the link, follow the approval
- * redirect back to the loopback callback. */
 async function approve(status: McpSignInStatus) {
   return fetch(status.authorizationUrl!, { redirect: "follow" });
 }
@@ -217,6 +214,25 @@ describe("turn servers", () => {
     const out = await withMcpSignIn({ docs: { type: "http" as const, url: mcp.url, headers: {} } }, manager);
     expect(out).toEqual({});
   });
+  it("refreshes every signed-in server's token at once, keeping server order", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const fake = {
+      authState: () => "signed-in" as const,
+      accessToken: async (name: string) => {
+        inFlight += 1;
+        most = Math.max(most, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, name === "first" ? 30 : 5));
+        inFlight -= 1;
+        return name === "gone" ? null : `token-${name}`;
+      },
+    } as unknown as McpOAuthManager;
+    const url = (name: string) => ({ type: "http" as const, url: `https://${name}.example.com/mcp`, headers: {} });
+    const out = await withMcpSignIn({ first: url("first"), gone: url("gone"), notes: stdio, last: url("last") }, fake);
+    expect(most).toBe(3);
+    expect(Object.keys(out)).toEqual(["first", "notes", "last"]);
+    expect(out.last).toEqual({ ...url("last"), headers: { Authorization: "Bearer token-last" } });
+  });
 });
 
 describe("review fixes", () => {
@@ -270,6 +286,15 @@ describe("review fixes", () => {
     expect(oauth.counts.register).toBe(2);
   });
 
+  it("accepts a returned iss when the resource lists its issuer with a trailing slash", async () => {
+    await setup({ listIssuerWithSlash: true, returnIss: true });
+    const started = await manager.start("docs", mcp.url);
+    const callback = (await fetch(started.authorizationUrl!, { redirect: "manual" })).headers.get("location")!;
+    expect(new URL(callback).searchParams.get("iss")).toBe(oauth.issuer);
+    expect((await manager.completeCallback("docs", started.flowId, callback)).phase).toBe("succeeded");
+    expect(oauth.counts.token).toBe(1);
+  });
+
   it("refuses metadata that claims another issuer", async () => {
     await setup({ claimIssuer: "https://someone-else.example.com" });
     await expect(manager.start("docs", mcp.url)).rejects.toMatchObject({ code: "not-oauth" });
@@ -303,7 +328,6 @@ describe("a sign-in app registered in advance", () => {
     registered = { clientId: "mine" };
     expect((await signIn()).phase).toBe("succeeded");
     expect(oauth.counts.register).toBe(0);
-    // no scopes of its own: the server's advertised ones
     expect(oauth.lastAuthorize?.get("scope")).toBe("mcp");
   });
 
@@ -349,7 +373,6 @@ describe("a sign-in app registered in advance", () => {
     registered = { clientId: "corp", clientSecret: "pw" };
     await signIn();
     registered = { clientId: "another-app", clientSecret: "pw" };
-    // still valid for a minute: kept, but nothing is sent on another app's behalf
     expect(oauth.isValid(`Bearer ${await manager.accessToken("docs", mcp.url)}`)).toBe(true);
     expect(oauth.counts.refresh).toBe(0);
   });
@@ -546,7 +569,6 @@ describe("MCP sign-in from another computer", () => {
 describe("McpOAuthManager sign-in from a browser on another computer", () => {
   const elsewhere = { remote: true, origin: "https://cloud.example" };
 
-  /** Where the approval sends the browser, without following it. */
   async function returnAddress(status: McpSignInStatus): Promise<URL> {
     return new URL((await fetch(status.authorizationUrl!, { redirect: "manual" })).headers.get("location")!);
   }
@@ -573,7 +595,6 @@ describe("McpOAuthManager sign-in from a browser on another computer", () => {
     expect(manager.status("docs", started.flowId, "alice")?.phase).toBe("succeeded");
     expect(oauth.isValid(`Bearer ${await manager.accessToken("docs", mcp.url)}`)).toBe(true);
 
-    // the same address again: the code is spent, and never echoed
     const replay = await manager.publicCallback("cloud.example", callback.search);
     expect(replay.status).toBe(409);
     expect(replay.text).not.toContain(callback.searchParams.get("code"));

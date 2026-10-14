@@ -169,13 +169,11 @@ describe("requests with a wrong secret", () => {
     try {
       expect((await deliver("real-1")).status).toBe(202);
       const written = statSync(file);
-      // More bad requests than the shared history holds (2,000).
       for (let i = 0; i < 2_100; i += 1) {
         const response = await fetch(url, { method: "POST", headers: { authorization: "Bearer wrong" }, body: "" });
         expect(response.status).toBe(401);
         await response.arrayBuffer();
       }
-      // The file was not written again.
       const after = statSync(file);
       expect([after.ino, after.mtimeMs]).toEqual([written.ino, written.mtimeMs]);
 
@@ -184,10 +182,8 @@ describe("requests with a wrong secret", () => {
       const rejected = attempts.filter((attempt) => attempt.outcome === "rejected");
       expect(rejected).toHaveLength(1);
       expect(rejected[0]).toMatchObject({ statusCode: 401, reason: "Invalid webhook URL or secret (2100 requests)" });
-      // Clients get one record, updated in place, not 2,100 new ones.
       expect(emitted.size).toBe(2);
 
-      // The rolling record is saved with the next real change.
       expect((await deliver("real-2")).status).toBe(202);
       const reloaded = new WebhookManager({ file, botState: () => "ready", enqueue: () => ({ id: "unused" }) });
       expect(reloaded.listAttempts().map((attempt) => [attempt.outcome, attempt.statusCode])).toEqual([
@@ -210,7 +206,6 @@ describe("advertised base URL", () => {
       expect(proxied.host).toBe("127.0.0.1");
       const credential = webhookCredential(proxied.baseUrl, endpointId, secret);
       expect(credential.endpointUrl).toBe(`https://bots.example.com/hooks/${endpointId}`);
-      // the listener itself is still local: the public base only changes what is advertised
       const health = await fetch(`http://127.0.0.1:${proxied.port}/health`);
       expect(health.status).toBe(200);
     } finally {

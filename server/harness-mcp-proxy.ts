@@ -1,25 +1,25 @@
-// Per-turn MCP entry point for the tools the harness serves itself: the
-// built-in browser and the cloud computer. argv[2] names which one. Only a
-// turn-scoped capability crosses into the agent process; engine commands,
-// session names, and provider credentials (the Boat token) stay in OMB.
+// Only a turn-scoped capability crosses into the agent process; engine commands, session names and provider credentials stay in OMB.
 import { pathToFileURL } from "node:url";
+
+import { DATA_INSTRUCTIONS } from "./data/instructions.ts";
+import { harnessMcpTokenEnv } from "./harness-mcp-token.ts";
 
 const MAX_INPUT_BYTES = 1_048_576;
 const MAX_OUTPUT_BYTES = 16_777_216;
 const MAX_PENDING = 16;
 type RpcId = string | number | null;
-export type HarnessMcpKind = "browser" | "computer";
+export type HarnessMcpKind = "browser" | "computer" | "data";
 
-const NAMES: Record<HarnessMcpKind, string> = { browser: "Browser", computer: "Cloud computer" };
-/** What a model needs after a failed call, per tool family: the failure is
- * about this one connection, and an uncertain action must be checked first. */
+const NAMES: Record<HarnessMcpKind, string> = { browser: "Browser", computer: "Cloud computer", data: "Data" };
+const INSTRUCTIONS: Partial<Record<HarnessMcpKind, string>> = { data: DATA_INSTRUCTIONS };
 const RECOVERY: Record<HarnessMcpKind, string> = {
   browser: " This failure does not establish that all browsers are unavailable. Inspect available connections with select_computer if that tool is present. Keep the requested computer and account; do not bypass a permission refusal or human takeover, and do not repeat an uncertain action without checking its result.",
   computer: " Keep working on the assigned cloud computer only; do not bypass a person's control of it, and take a fresh screenshot before repeating an action whose result is uncertain.",
+  data: " The tables already loaded are unchanged; check with data_describe or SHOW TABLES before repeating a load, and do not repeat a statement whose result is uncertain.",
 };
 
 function parseHarnessMcpKind(value: unknown): HarnessMcpKind | null {
-  return value === "browser" || value === "computer" ? value : null;
+  return value === "browser" || value === "computer" || value === "data" ? value : null;
 }
 
 function failure(id: RpcId, method: unknown, message: string, code = -32603): unknown {
@@ -57,7 +57,10 @@ export async function harnessMcpRequest(
   const name = NAMES[connection.kind];
   if (message.method === "initialize") return {
     jsonrpc: "2.0", id,
-    result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: `openmausbot-${connection.kind}`, version: "1" } },
+    result: {
+      protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: `openmausbot-${connection.kind}`, version: "1" },
+      ...(INSTRUCTIONS[connection.kind] ? { instructions: INSTRUCTIONS[connection.kind] } : {}),
+    },
   };
   if (message.method === "ping") return { jsonrpc: "2.0", id, result: {} };
   if (message.method !== "tools/list" && message.method !== "tools/call") return failure(id, message.method, "Method not found.", -32601);
@@ -86,7 +89,7 @@ export async function harnessMcpRequest(
 }
 
 function run(kind: HarnessMcpKind): void {
-  const connection = { url: process.env.OMB_HARNESS_URL ?? "", token: process.env.OMB_MCP_TOKEN ?? "", kind };
+  const connection = { url: process.env.OMB_HARNESS_URL ?? "", token: process.env[harnessMcpTokenEnv(kind)] ?? "", kind };
   let input = Buffer.alloc(0);
   let pending = 0;
   const output = (message: unknown) => {
@@ -126,7 +129,7 @@ function run(kind: HarnessMcpKind): void {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const kind = parseHarnessMcpKind(process.argv[2]);
   if (!kind) {
-    process.stderr.write("usage: harness-mcp-proxy browser|computer\n");
+    process.stderr.write("usage: harness-mcp-proxy browser|computer|data\n");
     process.exitCode = 2;
   } else run(kind);
 }

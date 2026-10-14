@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { gzipSync } from "node:zlib";
 import { Header } from "tar";
+import { openRuntimeStore } from "./runtime/store.ts";
+import type { Assignment } from "./runtime/types.ts";
 import { SessionRegistry } from "./sessions.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -15,6 +17,21 @@ import {
 
 const PASSWORD = "correct horse battery staple";
 const AVATAR_BYTES = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+const RUNTIME_ROW: Assignment = {
+  id: "handoff", rootId: "handoff", depth: 0,
+  origin: { kind: "person", source: "chat", quote: "Ship it" },
+  requester: { kind: "person", threadId: "thread" },
+  assignee: { botId: "bot", destination: { kind: "standing_thread", threadId: "thread" } },
+  mode: "work", reply: "resume", brief: "Ship it", status: "completed", outcome: "done", level: "ask", levelSource: "own",
+  executions: 1, restarts: 0, createdAt: 1_000, lastActivityAt: 2_000, finishedAt: 2_000, result: "Built", rework: false, version: 1,
+};
+const RUNTIME_LIVE_ROW: Assignment = {
+  ...RUNTIME_ROW, id: "live", rootId: "live", status: "running", executions: 1, restarts: 0, restart: "rerun", result: "",
+  question: undefined, createdAt: 3_000, lastActivityAt: 3_000, startedAt: 3_000,
+};
+delete (RUNTIME_LIVE_ROW as { outcome?: unknown }).outcome;
+delete (RUNTIME_LIVE_ROW as { finishedAt?: unknown }).finishedAt;
+delete (RUNTIME_LIVE_ROW as { question?: unknown }).question;
 const scratch: string[] = [];
 function directory(): string {
   const path = mkdtempSync(join(tmpdir(), "omb-workspace-backup-"));
@@ -36,6 +53,11 @@ function fixture(root: string): DatabaseSync {
   json(join(root, "webhooks.json"), { version: 1, webhooks: [{ id: "hook", endpointId: "endpoint", enabled: true, secretHash: "a".repeat(64) }], deliveries: [{ id: "delivery" }] });
   json(join(root, "calendar-calls.json"), { version: 1, calls: [{ id: "call", nextRunAt: 100 }] });
   json(join(root, "delegations.json"), { thread: [{ id: "pending" }] });
+  const runtime = openRuntimeStore(join(root, "runtime.db"));
+  try {
+    runtime.insert(RUNTIME_ROW, { kind: "enqueued", at: RUNTIME_ROW.createdAt });
+    runtime.insert(RUNTIME_LIVE_ROW, { kind: "started", at: RUNTIME_LIVE_ROW.createdAt });
+  } finally { runtime.close(); }
   json(join(root, "delegation-receipts.json"), [{ id: "receipt" }]);
   json(join(root, "sessions.json"), { identity: "source-session" });
   json(join(root, "cloud-owner.json"), { identity: "source-owner-record" });
@@ -44,6 +66,8 @@ function fixture(root: string): DatabaseSync {
   writeFileSync(join(root, "tools", "downloaded"), "reinstallable");
   mkdirSync(join(root, "decider-log"));
   writeFileSync(join(root, "decider-log", "2026-09.ndjson"), '{"seam":"roomRouting"}\n');
+  mkdirSync(join(root, "evidence", "thread", "turn-0001"), { recursive: true });
+  writeFileSync(join(root, "evidence", "thread", "turn-0001", "step-000001.jpg"), "a page screenshot");
   const db = new DatabaseSync(join(root, "messages.db"));
   db.exec("PRAGMA journal_mode=WAL; CREATE TABLE messages(thread_id TEXT, id TEXT, text TEXT, json TEXT, PRIMARY KEY(thread_id,id)); CREATE TABLE thread_state(thread_id TEXT PRIMARY KEY, active_leaf_id TEXT);");
   const message = {
@@ -83,12 +107,12 @@ describe("encrypted full workspace backups", () => {
   it("round-trips WAL conversations, binary files, drafts and IDs; preserves destination identity and connections", async () => {
     const source = directory();
     const db = fixture(source);
-    // Production closes its sole live message handle after draining writes,
-    // while the maintenance gate is held. No server mutation can reopen it.
+    // Production closes its sole message handle after draining writes, while the maintenance gate is held.
     db.close();
     try {
       json(join(source, "team-computers.json"), { version: 1, environmentId: "source-environment", computers: [{ id: "source-computer", name: "Source desktop", section: "Design" }] });
       const originalDb = readFileSync(join(source, "messages.db"));
+      const originalRuntimeDb = readFileSync(join(source, "runtime.db"));
       const exported = await createWorkspaceBackup(source, {
         password: PASSWORD, appVersion: "test",
         clientState: { "omb-drafts": '{"thread":"unsent"}', "omb-draft-attachments": JSON.stringify({ thread: [{ kind: "file", path: join(source, "attachments", "image.png") }] }) },
@@ -99,6 +123,7 @@ describe("encrypted full workspace backups", () => {
       expect(encrypted.includes(Buffer.from("private-secret"))).toBe(false);
       expect(encrypted.includes(Buffer.from("private-key-in-config"))).toBe(false);
       expect(readFileSync(join(source, "messages.db"))).toEqual(originalDb);
+      expect(readFileSync(join(source, "runtime.db"))).toEqual(originalRuntimeDb);
       const target = directory();
       const connections = { xai: { key: "destination-key", url: "https://destination.example" }, instances: { local: { driver: "claudeAgent", config: { configDir: join(target, "providers", "local") } } } };
       json(join(target, "config.json"), { ...connections, language: "en" });
@@ -118,6 +143,7 @@ describe("encrypted full workspace backups", () => {
       const data = join(target, ".backups", staged.id, "staged", "data");
       expect(existsSync(join(data, "team-computers.json"))).toBe(false);
       expect(existsSync(join(data, "bots.json"))).toBe(true);
+      expect(existsSync(join(data, "runtime.db"))).toBe(true);
       expect(existsSync(join(data, "cloud-owner.json"))).toBe(false);
       expect(readJson(join(data, "config.json"))).toEqual({ language: "ja" });
       expect(readJson(join(data, "webhooks.json")).webhooks[0]).not.toHaveProperty("secretHash");
@@ -133,7 +159,6 @@ describe("encrypted full workspace backups", () => {
       expect(readJson(join(target, "config.json"))).toEqual({ ...connections, language: "ja" });
       expect(readFileSync(join(target, "task-workspaces", "bot", "thread", "binary.bin"))).toEqual(Buffer.alloc(2 * 1024 * 1024, 0xa5));
       expect(readJson(join(target, "sessions.json"))).toEqual({ identity: "target-session" });
-      // A Cloud home's record of its owner is this machine's: never carried, kept in place.
       expect(readJson(join(target, "cloud-owner.json"))).toEqual({ identity: "target-owner-record" });
       expect(readJson(join(target, "team-computers.json"))).toEqual(targetComputers);
       expect(readFileSync(join(target, "environment-id"), "utf8")).toBe("target-environment");
@@ -141,8 +166,8 @@ describe("encrypted full workspace backups", () => {
       expect(existsSync(join(target, "messages.db-wal"))).toBe(false);
       expect(readFileSync(join(result.safetyCopyPath!, "data", "messages.db-wal"), "utf8")).toBe("old database WAL must not enter the new DB");
       expect(existsSync(join(target, "tools"))).toBe(false);
-      // this machine's decision-model log stays on this machine
       expect(existsSync(join(target, "decider-log"))).toBe(false);
+      expect(existsSync(join(target, "evidence"))).toBe(false);
       expect(readJson(join(result.safetyCopyPath!, "data", "bots.json"))).toEqual([{ id: "old" }]);
       const restoredDb = new DatabaseSync(join(target, "messages.db"), { readOnly: true });
       try {
@@ -167,6 +192,16 @@ describe("encrypted full workspace backups", () => {
       expect(readJson(join(target, "webhooks.json")).webhooks[0].secretHash).not.toBe("a".repeat(64));
       expect(readJson(join(target, "calendar-calls.json")).calls[0].nextRunAt).toBeNull();
       expect(readJson(join(target, "delegations.json"))).toEqual({});
+      expect(existsSync(join(target, "runtime.db-wal"))).toBe(false);
+      const restoredRuntime = new DatabaseSync(join(target, "runtime.db"), { readOnly: true });
+      try {
+        const rows = restoredRuntime.prepare("SELECT json FROM assignments ORDER BY created_at").all().map((row) => JSON.parse(String(row.json)));
+        expect(rows[0]).toEqual(RUNTIME_ROW);
+        expect(rows[1]).toMatchObject({ id: "live", status: "failed", outcome: "interrupted", result: "Not resumed after workspace restore." });
+        expect(rows[1]).not.toHaveProperty("restart");
+        expect(restoredRuntime.prepare("SELECT status FROM assignments WHERE id = 'live'").get()).toEqual({ status: "failed" });
+        expect(restoredRuntime.prepare("SELECT kind FROM assignment_events ORDER BY id").all().map((row) => row.kind)).toEqual(["enqueued", "started", "settled"]);
+      } finally { restoredRuntime.close(); }
       expect(readJson(join(target, "delegation-receipts.json"))).toEqual([{ id: "receipt" }]);
       const receipt = readLastWorkspaceRestore(target)!;
       expect(receipt.id).toBe(staged.id);
@@ -222,6 +257,7 @@ describe("encrypted full workspace backups", () => {
       "caddy/data/private.key", "chrome-profile/Cookies", ".agent-browser/auth.json",
       "vm-home/.browser-profiles/chrome/Cookies", "vm-homes/abc/.browser-profiles/chromium/Cookies",
       "tmp/omb-mcp-123/mcp.json", ".tmp/secret",
+      "logins.json.enc", "logins-key", "logins.json.enc.123.05a7b3e0-1234.tmp",
     ];
     for (const root of [source, target]) {
       for (const path of authPaths) {
@@ -251,7 +287,6 @@ describe("encrypted full workspace backups", () => {
     expect(readFileSync(join(target, "attachments", "user-note.txt"), "utf8")).toBe("A user-pasted secret is not silently redacted.");
     expect(readJson(join(target, "config.json"))).toEqual({ xai: { key: "DESTINATION_SAVED_SECRET", url: "https://destination.example" }, language: "ja" });
     expect(readJson(join(target, "webhooks.json")).webhooks[0]).toMatchObject({ secretHash: "b".repeat(64), enabled: false, verificationPending: false });
-    // Export is read-only: the original login stores and webhook hash remain.
     for (const path of authPaths) expect(readFileSync(join(source, path), "utf8")).toBe("SOURCE_SAVED_SECRET");
     expect(readJson(join(source, "webhooks.json")).webhooks[0].secretHash).toBe("a".repeat(64));
   });
@@ -296,10 +331,8 @@ describe("encrypted full workspace backups", () => {
   it("leaves the destination's session open-marker in place, so a crash before a restore still ends account sign-ins", async () => {
     const source = directory(), target = directory();
     json(join(source, "bots.json"), [{ id: "bot" }]);
-    // The source is running: its marker exists, and is never exported.
     writeFileSync(join(source, "sessions.json.open"), "Session registry is open.\n");
     const exported = await createWorkspaceBackup(source, { password: PASSWORD });
-    // The destination crashed with an account session saved.
     const sessions = new SessionRegistry({ file: join(target, "sessions.json") });
     sessions.issue({ label: "Member", scopes: ["client"], userId: "user-1" });
     expect(existsSync(join(target, "sessions.json.open"))).toBe(true);
@@ -467,8 +500,6 @@ describe("encrypted full workspace backups", () => {
     expect(exported.summary.warnings.some((warning) => warning.includes("1 managed skill"))).toBe(true);
   });
 
-  // A client's export failed on task-workspaces/<bot>/<thread>/node_modules, a
-  // link an agent made to another checkout's install.
   it("leaves out node_modules and links in conversation work folders, and says so", async () => {
     const root = directory();
     const outside = directory();
@@ -491,7 +522,6 @@ describe("encrypted full workspace backups", () => {
     expect(existsSync(join(data, "task-workspaces", "bot", "thread", "node_modules"))).toBe(false);
     expect(existsSync(join(data, "task-workspaces", "bot", "thread", "linked-secret"))).toBe(false);
     expect(existsSync(join(data, "workspaces", "bot", "project", "node_modules"))).toBe(false);
-    // Outside a work folder, a link out of the workspace still stops the export.
     symlinkSync(join(outside, "secret"), join(root, "workspaces", "bot", "external"));
     await expect(createWorkspaceBackup(root, { password: PASSWORD })).rejects.toThrow(/outside the workspace/);
   });
