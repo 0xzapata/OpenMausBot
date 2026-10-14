@@ -43,6 +43,7 @@ export {
   SKILL_NAME_MAX,
   type ParsedSkill,
 } from "../shared/skill-md.ts";
+export { STAGED_SKILL_FILE_MAX_BYTES } from "./skill-storage.ts";
 
 export const INDEX_MAX_SKILLS = 30;
 export const INDEX_MAX_BYTES = 4_000;
