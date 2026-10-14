@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { handleToolCall, request } from "../scripts/mcp-server.ts";
 import { waitForExit } from "./testing/cleanup.ts";
+import { readHandoffs } from "./testing/handoff-rows.ts";
 
 it("boots and reports an interrupted routine back to its source room", async () => {
   const fixture = await launchVerificationServer();
@@ -16,8 +17,7 @@ it("boots and reports an interrupted routine back to its source room", async () 
     const { channel } = await handleToolCall("create_channel", { name: "Recovery room", member_ids: [bot.id] },
       (path, options) => request(path, options, url)) as any;
     await waitForExit(fixture.child, { signal: "SIGTERM" });
-    // Reproduce the persisted state of an interrupted process, not a second
-    // live writer. Recovery must emit its group/card changes during startup.
+    // Reproduce the persisted state of an interrupted process, not a second live writer.
     writeFileSync(join(dataDir, "routines.json"), JSON.stringify({ version: 1, routines: [], runs: [{
       id: "interrupted-room-run", routineId: "interrupted-routine", routineName: "Room report",
       botId: bot.id, target: "bot", runOn: "maus", sourceThreadId: channel.activeTaskId,
@@ -52,8 +52,7 @@ it("boots and reports an interrupted routine back to its source room", async () 
       .toMatchObject([{ routineRun: { status: "failed" } }]);
     const { groups } = await request("/api/bots", {}, url) as any;
     expect(groups.find((g: any) => g.id === channel.id).working).toBe(false);
-    // Store deliberately catches subscriber exceptions, so a healthy server
-    // alone does not prove that recovery broadcasts were safe.
+    // Store catches subscriber exceptions, so a healthy server alone does not prove recovery broadcasts were safe.
     expect(readFileSync(logPath, "utf8")).not.toMatch(/ReferenceError|store: change listener threw/);
   } finally {
     await waitForExit(restarted, { signal: "SIGTERM" });
@@ -61,10 +60,7 @@ it("boots and reports an interrupted routine back to its source room", async () 
   }
 }, 30_000);
 
-// A routine still running at a restart fails, and takes its teammates' work
-// with it before any of that runs again: a resume would answer in the run's
-// hidden thread after the person was already told the routine failed.
-it("ends the teammate work of a routine a restart failed instead of running it again", async () => {
+it("keeps a routine waiting through a restart, reruns its cut teammate once, and completes it", async () => {
   const fixture = await launchVerificationServer();
   const { url, dataDir, logPath } = fixture.info;
   let restarted: ChildProcess | undefined;
@@ -95,20 +91,25 @@ it("ends the teammate work of a routine a restart failed instead of running it a
       if (restarted?.exitCode !== null) throw new Error(readFileSync(logPath, "utf8"));
       return fetch(url + "/api/health").then(r => r.ok).catch(() => false);
     }, { timeout: 10_000, interval: 150 }).toBe(true);
-    const { runs } = await request("/api/routines", {}, url) as any;
-    expect(runs[0]).toMatchObject({ status: "failed", error: "OpenMausBot restarted while this routine was running" });
-    const nodes = () => JSON.parse(readFileSync(join(dataDir, "room-handoffs.json"), "utf8"));
-    // Reported to the run's thread like any ended work; never run again.
-    await expect.poll(() => nodes().find((n: any) => n.id === "cut-work")?.reported, { timeout: 10_000 }).toBe(true);
-    expect(nodes().map((n: any) => [n.id, n.status, n.result])).toEqual([
-      ["cut-root", "cancelled", "OpenMausBot restarted while this routine was running"],
-      ["cut-work", "cancelled", "OpenMausBot restarted while this routine was running"],
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 750));
-    const { messages } = await request(`/api/threads/${mate.activeTaskId}/messages`, {}, url) as any;
-    expect(messages.filter((m: any) => m.tool?.name === "Resuming after a restart")).toEqual([]);
+    const run = async () => ((await request("/api/routines", {}, url) as any).runs as any[]).find((r) => r.id === "cut-run");
+    const nodes = () => readHandoffs(dataDir);
+    expect(existsSync(join(dataDir, "room-handoffs.json.migrated"))).toBe(true);
+    expect(await run()).toMatchObject({ status: "waiting" });
+    expect((await run()).error).toBeUndefined();
+    await expect.poll(() => nodes().find((n: any) => n.id === "cut-work")?.status, { timeout: 20_000 }).toBe("completed");
+    expect(nodes().find((n: any) => n.id === "cut-work")).toMatchObject({ restarts: 1, executions: 1, result: expect.stringContaining("hello from fake claude") });
+    const mates = (await request(`/api/threads/${mate.activeTaskId}/messages`, {}, url) as any).messages as any[];
+    expect(mates.filter((m) => m.tool?.name === "Resuming after a restart")).toHaveLength(1);
+    await expect.poll(async () => (await run())?.status, { timeout: 30_000 }).toBe("completed");
+    expect((await run()).output).toContain("hello from fake claude");
+    await expect.poll(() => nodes().find((n: any) => n.id === "cut-root")?.status, { timeout: 15_000 }).toBe("completed");
+    const chiefs = (await request(`/api/threads/${chief.activeTaskId}/messages`, {}, url) as any).messages as any[];
+    expect(chiefs.some((m) => m.tool?.name === "Mira was cut off by a restart; resuming")).toBe(true);
+    expect(chiefs.some((m) => m.tool?.name === "Mira replied")).toBe(true);
+    expect(chiefs.some((m) => String(m.tool?.name ?? "").startsWith("Resumed with Mira results after a restart"))).toBe(true);
+    expect(nodes().map((n: any) => [n.id, n.status, n.executions])).toEqual([["cut-root", "completed", 2], ["cut-work", "completed", 1]]);
   } finally {
     await waitForExit(restarted, { signal: "SIGTERM" });
     await fixture.close();
   }
-}, 30_000);
+}, 45_000);

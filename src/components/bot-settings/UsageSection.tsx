@@ -1,12 +1,3 @@
-// Usage: what this bot has spent across its tasks. Moved verbatim from
-// SettingsPanel.tsx's BotUsageCard (~40-77); its "All bots →" button keeps
-// dispatching toggleAppSettings, which closes this dialog — intended, since
-// the destination is the app-wide Usage settings, not a per-bot view.
-//
-// BotUsageCard used to render nothing at all for a bot with no turns yet,
-// which was fine buried among a dozen other cards in the old aside; as this
-// section's entire content it would otherwise leave the panel blank, so a
-// short placeholder line is added for that case.
 import { useStore, type Bot } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost, headlineTokens, tokensColumnLabel, usageDetail } from "@/lib/usage";
