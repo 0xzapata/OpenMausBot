@@ -1,10 +1,8 @@
-// Per-turn ask gate, adapted from the approval lifecycle in #780.
-// Register before publishing: a harness listener may answer synchronously.
+// Per-turn ask gate. Register before publishing: a harness listener may answer synchronously.
 import { newId, type RequestOutcome } from "../contracts.ts";
 import type { AskQuestion } from "../../shared/ask-question.ts";
 
-/** `grant`: what "Always allow this session" on this card would keep allowed
- * (ChatToolCallView.grant). Absent when the card can only allow once. */
+/** `grant`: what "Always allow this session" would keep allowed; absent when the card can only allow once. */
 interface Ask { id: string; tool: string; summary: string; grant?: string }
 type Source = "user" | "timeout" | "system";
 
@@ -21,9 +19,7 @@ export function createChatToolApproval(options: {
   resolved(ask: Ask, allowed: boolean, source: Source): void;
   openQuestion(ask: Ask, questions: AskQuestion[]): void;
   resolvedQuestion(ask: Ask, answered: boolean, source: Source): void;
-  /** The conversation's "Always allow this session" grants. The driver keeps
-   * the set across the conversation's turns; an ask it covers is allowed
-   * without a card, as Claude and ACP agents do with their own. */
+  /** The conversation's session grants: an ask they cover is allowed without a card. */
   granted?: Set<string>;
   timeoutMs?: number;
 }) {
@@ -69,9 +65,7 @@ export function createChatToolApproval(options: {
             if (!pending.delete(ask.id)) return;
             clearTimeout(timer);
             options.signal.removeEventListener("abort", abort);
-            // Only the person's reply resolves a question; a timeout or
-            // abort resolves null so no system note can occupy the answer
-            // slot the model reads as the person's words.
+            // A timeout or abort resolves null: no system note may occupy the slot the model reads as the person's words.
             const reply = typeof decision?.message === "string" && decision.message.length > 0 ? decision.message : null;
             options.resolvedQuestion(ask, reply !== null, source);
             resolve(reply);
@@ -98,8 +92,7 @@ export function createChatToolApproval(options: {
         card.finish("user", { allowed: true, always: always === true });
         return "allowed-once";
       }
-      // And an allow is not an answer: a question settles only on a real
-      // reply, never a blank the model would have to interpret.
+      // A question settles only on a real reply, never a blank.
       if (behavior === "answer" && typeof message === "string" && message.trim()) {
         card.finish("user", { message });
         return "answered";
