@@ -3512,6 +3512,23 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(onUsage.mock.calls).toEqual([[{ model: "claude-haiku-4-5", input: undefined, output: undefined, cachedInput: undefined, costUsd: 0.01 }]]);
   });
 
+  it("writes a one-shot with the model a caller names, while permission review keeps its own", async () => {
+    await create();
+    const dump = join(scratch, "named-model.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const model = () => {
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      return seen.argv[seen.argv.indexOf("--model") + 1];
+    };
+    await expect(instance.generateText!("summarize", { model: "claude-haiku-5-5" })).resolves.toBe("fake generated text");
+    expect(model()).toBe("claude-haiku-5-5");
+    await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
+    expect(model()).toBe("claude-haiku-4-5");
+    // the contract gives permission review no way to name a model
+    await expect(instance.reviewPermission!("review this request")).resolves.toBe("fake generated text");
+    expect(model()).toBe("claude-haiku-4-5");
+  });
+
   it.each(["not JSON", '{"type":"assistant"}'])("rejects malformed one-shot output without invented usage (%s)", async result => {
     await create(undefined, { FAKE_CLAUDE_TEXT_RESULT: result });
     const onUsage = vi.fn();

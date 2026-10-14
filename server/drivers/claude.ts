@@ -2013,14 +2013,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     /** One-shot call, prompt on stdin (approval summaries can hold secrets), no tools or MCP servers. */
-    const generateReview = async (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"], timeoutMs?: number): Promise<string> => {
+    const generateReview = async (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"], timeoutMs?: number, named?: string): Promise<string> => {
       await ensureCliVersion(environment());
       return new Promise((resolve, reject) => {
         if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) {
           reject(new Error(NO_ANTHROPIC_KEY));
           return;
         }
-        const model = config.managedModels?.[0] ?? "claude-haiku-4-5";
+        const model = named ?? config.managedModels?.[0] ?? "claude-haiku-4-5";
         const env = environment(model);
         const args = backgroundCallArgs({ model, outputFormat: onUsage ? "json" : "text", supports: (flag) => cliVersion !== null && claudeCliSupports(cliVersion, flag), isolated: !inheritsUserConfig(env) });
         const { child, removeCwd } = spawnBackgroundCall(config.cli, args, env);
@@ -2179,7 +2179,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return () => listeners.delete(listener);
         },
       },
-      generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage, options?.timeoutMs),
+      generateText: (prompt, options) => generateReview(prompt, options?.signal, options?.onUsage, options?.timeoutMs, options?.model),
       reviewPermission: generateReview,
       dispose: async () => {
         try {

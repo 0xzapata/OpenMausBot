@@ -233,6 +233,9 @@ export const CONNECTOR_SLUG_PATTERN = /^[a-z0-9][a-z0-9_-]{0,80}$/;
 /** Composio tool names are upper-snake, e.g. `GMAIL_SEND_EMAIL`. */
 export const CONNECTOR_TOOL_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
 
+/** Fails closed: only an absent switch or a strict true allows the helper model; a hand-edited "false" or 0 reads as never. */
+export const helperModelAllowed = (bot: { helperModel?: unknown }): boolean => bot.helperModel === undefined || bot.helperModel === true;
+
 /** A bot as a client may see it. avatarUrl is always present (null when the
  * bot has none). */
 export interface WireBot {
@@ -338,6 +341,8 @@ export interface WireBot {
   /** Prompt-cache keep-warm for this bot's Claude threads: true or false
    * overrides the workspace setting; absent follows it. */
   cacheKeepWarm?: boolean;
+  /** false: the workspace's helper model never writes this bot's background texts. Absent or true: allowed. */
+  helperModel?: boolean;
   /** Which of the app-wide MCP servers this bot mounts, by name. */
   mcpServers?: string[];
   /** Owner-selected original tool identities. An empty allowlist permits none. */
