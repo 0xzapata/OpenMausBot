@@ -5,6 +5,7 @@ import {
   BOOT_PROBE_FAST_INTERVAL_MS,
   BOOT_PROBE_FAST_WINDOW_MS,
   BOOT_PROBE_INTERVAL_MS,
+  bootFailureMessage,
   listeningSignal,
   pollServerIdentity,
 } from "./server-boot-probe.mjs";
@@ -263,7 +264,7 @@ test("each probe's abort timer is the remaining boot budget, not the poll interv
   );
 });
 
-test("a child that says it is listening gets the grace before it times out (#2825)", async () => {
+test("a child that says it is listening gets the grace before it times out", async () => {
   const startedAt = Date.now();
   // Answers only after the plain budget, like a listening server too loaded to reply.
   const lateFetch = async (...args) => {
@@ -274,15 +275,27 @@ test("a child that says it is listening gets the grace before it times out (#282
     port: 8799, pid: () => 4242, bootTimeoutMs: 200, listeningGraceMs: 2_000,
     isListening: () => listening, fetchImpl: lateFetch,
   });
-  assert.equal((await probe(false)).outcome, "timeout");
+  const plain = await probe(false);
+  assert.equal(plain.outcome, "timeout");
+  assert.ok(plain.waitedMs >= 200);
+  assert.equal(
+    bootFailureMessage(8799, { outcome: "timeout", waitedMs: 240_000 }),
+    "child on port 8799 did not answer /api/health within 240s",
+  );
   assert.equal((await probe(true)).outcome, "ready");
 });
 
 test("the listening line is heard when stdout splits it across chunks", () => {
-  const heard = listeningSignal();
-  assert.equal(heard("boot… openmausbot ser"), false);
-  assert.equal(heard("ver on http://127.0.0.1:8799\n"), true);
-  assert.equal(listeningSignal()("nothing to see"), false);
+  const listening = listeningSignal();
+  listening.hear("boot… openmausbot ser");
+  assert.equal(listening.heard(), false);
+  listening.hear("ver on http://127.0.0.1:8799\n");
+  assert.equal(listening.heard(), true);
+  listening.hear("later output");
+  assert.equal(listening.heard(), true);
+  const quiet = listeningSignal();
+  quiet.hear("nothing to see");
+  assert.equal(quiet.heard(), false);
 });
 
 test("an answer in flight when the child starts listening gets the grace", async () => {

@@ -2,17 +2,30 @@ export const BOOT_PROBE_FAST_INTERVAL_MS = 25;
 export const BOOT_PROBE_FAST_WINDOW_MS = 5_000;
 export const BOOT_PROBE_INTERVAL_MS = 500;
 
+export const SERVER_BOOT_TIMEOUT_MS = 60_000;
+export const SERVER_LISTENING_GRACE_MS = 180_000;
 const LISTENING_LINE = "openmausbot server on ";
 
-/** A stdout reader that turns true once the child has said it is listening,
- * even when that line arrives split across two chunks. */
 export function listeningSignal() {
   let tail = "";
-  return (chunk) => {
-    const text = tail + chunk;
-    tail = text.slice(-LISTENING_LINE.length);
-    return text.includes(LISTENING_LINE);
+  let heard = false;
+  return {
+    hear(chunk) {
+      if (heard) return;
+      const text = tail + chunk;
+      tail = text.slice(-LISTENING_LINE.length);
+      heard = text.includes(LISTENING_LINE);
+    },
+    heard: () => heard,
   };
+}
+
+/** @param {number} port @param {{ outcome: string, waitedMs?: number }} identity */
+export function bootFailureMessage(port, identity) {
+  if (identity.outcome === "exited") return `child on port ${port} exited before answering /api/health`;
+  if (identity.outcome === "foreign-owner") return `port ${port} answered health checks from another process`;
+  if (identity.outcome === "ready") return `child on port ${port} answered after it stopped being the current server`;
+  return `child on port ${port} did not answer /api/health within ${Math.round((identity.waitedMs ?? 0) / 1000)}s`;
 }
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -29,7 +42,7 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *   sleep?: (ms: number) => Promise<void>,
  *   fetchImpl?: typeof fetch,
  * }} options
- * @returns {Promise<{ outcome: "ready" | "foreign-owner" | "timeout" | "exited" }>}
+ * @returns {Promise<{ outcome: "ready" | "foreign-owner" | "timeout" | "exited", latencyMs?: number, waitedMs?: number }>}
 */
 export async function pollServerIdentity({
   port,
@@ -43,13 +56,11 @@ export async function pollServerIdentity({
   fetchImpl = globalThis.fetch,
 }) {
   const startedAt = now();
-  // Read fresh at every check: the child can say it is listening while a
-  // probe is in flight, and the answer it then gives must get the grace.
   const deadline = () => startedAt + bootTimeoutMs + (isListening() ? listeningGraceMs : 0);
   for (;;) {
     if (isExited()) return { outcome: "exited" };
     const remainingMs = Math.max(0, deadline() - now());
-    if (remainingMs <= 0) return { outcome: "timeout" };
+    if (remainingMs <= 0) return { outcome: "timeout", waitedMs: now() - startedAt };
 
     let res;
     try {
@@ -64,7 +75,7 @@ export async function pollServerIdentity({
     }
     const body = await res.json().catch(() => null);
     // Past the deadline a null body is a timeout, not another process answering.
-    if (now() >= deadline()) return { outcome: "timeout" };
+    if (now() >= deadline()) return { outcome: "timeout", waitedMs: now() - startedAt };
     // Read now: Electron's utilityProcess sets proc.pid only on the async `spawn` event, so undefined is not our child.
     const expectedPid = pid();
     const identified =
@@ -74,7 +85,7 @@ export async function pollServerIdentity({
       body.pid === expectedPid &&
       body.static;
     if (!identified) return { outcome: "foreign-owner" };
-    if (now() >= deadline()) return { outcome: "timeout" };
+    if (now() >= deadline()) return { outcome: "timeout", waitedMs: now() - startedAt };
     return { outcome: "ready", latencyMs: now() - startedAt };
   }
 }
