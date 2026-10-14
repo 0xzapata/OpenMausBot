@@ -10,19 +10,12 @@ const modifiers = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shi
   Number(e.altKey) + Number(e.ctrlKey) * 2 + Number(e.metaKey) * 4 + Number(e.shiftKey) * 8;
 const MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "Shift"]);
 
-/** The CSS size a frame's pixels depict. Frame metadata can describe the
- * browser window rather than the page: headless Chrome reports 1280×720 for a
- * page of 1280×577, the size of the frames it sends. The pixels are what the
- * person aims at, so trust the reported width and take the height from the
- * image's own aspect whenever the two disagree by more than one image pixel.
- * Scaled frames (HiDPI, capped encodes) keep the reported size. */
+/** Frame metadata can describe the window, not the page: headless Chrome reports 1280×720 for a 1280×577 page. */
 export function browserFrameSize(imageWidth: number, imageHeight: number, width: number, height: number) {
   const depicted = imageHeight * width / imageWidth;
   return Math.abs(depicted - height) <= Math.max(1, width / imageWidth) ? { width, height } : { width, height: Math.round(depicted) };
 }
 
-/** Map only the contained image, not its letterboxing, into the frame's CSS
- * coordinate space. Status events can describe a newer viewport than these pixels. */
 export function browserViewportPoint(rect: { left: number; top: number; width: number; height: number },
   imageWidth: number, imageHeight: number, reportedWidth: number, reportedHeight: number,
   clientX: number, clientY: number, captured = false) {
@@ -37,8 +30,10 @@ export function browserViewportPoint(rect: { left: number; top: number; width: n
   return { x: Math.max(0, Math.min(width - 1, x * width / visibleWidth)), y: Math.max(0, Math.min(height - 1, y * height / visibleHeight)) };
 }
 
-/** Focus can move to the toolbar before the matching key/pointer-up arrives.
- * Flush releases only; never replay typed text or a click on hand-back. */
+/**
+ * Focus can move to the toolbar before the matching key or pointer-up arrives. Flush releases only; never replay typed
+ * text or a click on hand-back.
+ */
 export function createBrowserPressedInputs(input: BrowserInput) {
   const held = new Map<string, Record<string, unknown>>();
   return {
@@ -74,9 +69,6 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
   const src = `data:image/${frame.format === "png" ? "png" : "jpeg"};base64,${frame.data}`;
   const pressed = useMemo(() => createBrowserPressedInputs(sendInput), [sendInput]);
   const input = pressed.send;
-  // Tabbing through the app passes over the page: until the person clicks or
-  // types in it, Tab moves focus on instead of reaching the page (and taking
-  // the browser from the bot). Focus leaving resets it.
   const engaged = useRef(false);
   useLayoutEffect(() => {
     if (!driving) pressed.release();
@@ -88,22 +80,18 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
   }, [pressed]);
   const rendered = () => {
     if (screen.current?.complete && screen.current.naturalWidth > 0 && screen.current.currentSrc === src) {
-      // onLoad and the rAF effect can both fire for one frame; ACK once per
-      // (src, seq). The seq half still ACKs identical-pixel re-encodes, which
-      // reuse the src and so fire no load event of their own.
+      // onLoad and the rAF effect can both fire for one frame, so ACK once per (src, seq); an identical-pixel re-encode
+      // reuses the src and fires no load event.
       if (screen.current.currentSrc === lastAckedSrc.current && frame.seq === lastAckedSeq.current) return;
       lastAckedSrc.current = screen.current.currentSrc;
       lastAckedSeq.current = frame.seq;
       acknowledge(frame.seq);
     }
   };
-  // The engine can emit a new sequence with identical pixels. React then
-  // keeps the same src, so there is no load event to ACK that next frame.
   useEffect(() => { const tick = requestAnimationFrame(rendered); return () => cancelAnimationFrame(tick); }, [frame]);
   const point = (clientX: number, clientY: number, captured = false) => {
     const image = screen.current;
-    // While a new src is decoding the old picture can still be painted. Do
-    // not aim input using new metadata until that exact image is available.
+    // While a new src decodes, the old picture can still be painted.
     if (!image?.complete || image.currentSrc !== src) return null;
     return browserViewportPoint(image.getBoundingClientRect(), image.naturalWidth, image.naturalHeight,
       frameWidth, frameHeight, clientX, clientY, captured);
@@ -160,7 +148,6 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
         }
         if (e.key === "Tab" && !engaged.current) return;
         if (!MODIFIER_KEYS.has(e.key)) engaged.current = true;
-        // Native paste supplies actual clipboard text via onPaste below.
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") return;
         e.preventDefault();
         input({ type: "input_keyboard", eventType: "keyDown", key: e.key, code: e.code, windowsVirtualKeyCode: e.keyCode, modifiers: modifiers(e), ...(e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey ? { text: e.key } : {}) });

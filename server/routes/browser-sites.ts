@@ -1,18 +1,10 @@
-// Signed-in sites of a bot's browser (server/browser-sites.ts does the work).
-// GET /api/browser-sites?profile=<id> lists a shared browser profile's sites;
-// ?bot=<id> lists the browser that bot uses now (its own, or its profile's).
-// POST /api/browser-sites/sign-out {profile | bot, site?} signs out of that
-// site, or of every site when `site` is absent; the person's own click, no
-// confirm step. Both are admin-scoped by default in server/request-auth.ts,
-// like the browser profiles themselves.
+// GET ?profile=<id> or ?bot=<id>; POST /api/browser-sites/sign-out {profile | bot, site?} signs out of one site, or every site without `site`.
 import type { BrowserSitesTarget, SignedInSites } from "../browser-sites.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
 export type BrowserSitesRef = { profile: string } | { bot: string };
 
 export interface BrowserSitesRouteDeps {
-  /** The browser session behind a profile or a bot, or why it has no sites
-   * to show (no engine, a temporary or My Chrome browser, unknown id). */
   target(ref: BrowserSitesRef): BrowserSitesTarget | { status: number; error: string };
   list(target: BrowserSitesTarget): Promise<SignedInSites>;
   signOut(target: BrowserSitesTarget, site: string | null): Promise<SignedInSites>;
