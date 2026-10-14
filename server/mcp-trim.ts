@@ -6,9 +6,7 @@ export interface TrimOutcome {
   text: string;
   trimmed: boolean;
   originalChars: number;
-  /** the parsed payload as kept, when the cut was structural (whole records):
-   * the gate hands it to a `structuredContent` that carried the same data,
-   * so both copies show the same records */
+  /** The payload as kept by a structural cut, so a matching `structuredContent` keeps the same records. */
   value?: unknown;
 }
 
@@ -60,12 +58,7 @@ function cutAt(text: string, chars: number): string {
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
-/** The warning a trimmed result carries, at the START and again at the END.
- *
- * Measured: a quiet trailing note ("layers 5 of 110") let two bots read a
- * 110-layer composition as five layers, decide the tool was hard-capped, and
- * report they had checked every layer. So it says, first thing, that the
- * result is incomplete, how much of it was kept, and what to do about it. */
+/** At both ends: models read a quiet trailing note ("layers 5 of 110") as the whole result. */
 export function truncationBanner(input: {
   originalChars: number;
   keptChars: number;
@@ -73,7 +66,6 @@ export function truncationBanner(input: {
   spillPath?: string;
   spillHint?: boolean;
   structural: boolean;
-  /** the short form, for a budget too small to carry the full one twice */
   short?: boolean;
 }): string {
   const size = `${fmt(input.keptChars)} of ${fmt(input.originalChars)} chars`;
@@ -95,7 +87,6 @@ export function truncationBanner(input: {
   return `⚠️ TRUNCATED by OpenMausBot: ${what} The rest was NOT shown. ${next}${where}`;
 }
 
-/** The trimmed body with the banner in front and behind it. */
 function wrap(body: string, banner: string): string {
   return `${banner}\n\n${body}\n\n${banner}`;
 }
@@ -144,10 +135,7 @@ export function trimResultText(input: TrimInput): TrimOutcome {
   }
 
   const fields = parsed === undefined ? [] : arrayFields(parsed);
-  // Room for the banner at both ends, sized for the longest it can be here
-  // (every count at its widest), so the whole result lands under the budget.
-  // A small budget that the full banners would eat more than half of gets
-  // the short form instead; either way the body has only what is left.
+  // Banners sized at their widest, so the whole result lands under the budget; the short form when full ones would eat half.
   const widestOf = (short: boolean) => Math.max(
     truncationBanner({ originalChars: text.length, keptChars: text.length, dropped: fields.map((f) => ({ key: f.key, kept: Math.max(0, f.items.length - 1), total: f.items.length })), spillPath: input.spillPath, spillHint: input.spillHint, structural: true, short }).length,
     truncationBanner({ originalChars: text.length, keptChars: text.length, dropped: [], spillPath: input.spillPath, spillHint: input.spillHint, structural: false, short }).length,

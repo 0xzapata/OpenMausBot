@@ -156,7 +156,6 @@ function trimCallResult(result: Json, tool: string): boolean {
 
   const share = Math.floor(BUDGET / textBlocks.length);
   const path = spill(tool, textBlocks.map((block) => block.text).join("\n"));
-  // The usual shape: one text block that is structuredContent serialized.
   const structuredIsText = textBlocks.length === 1 && Boolean(result.structuredContent) && typeof result.structuredContent === "object"
     && sameJson(textBlocks[0]!.text, result.structuredContent);
   let trimmed = false;

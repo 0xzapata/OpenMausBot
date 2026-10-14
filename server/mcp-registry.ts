@@ -5,8 +5,7 @@ import type { McpServerSpec, RemoteMcpSpec, StdioMcpSpec } from "./contracts.ts"
 /** One config.json `mcpServers` entry: the block Claude Code, Cursor and Claude Desktop write. */
 export interface StoredStdioMcpServer extends StdioMcpSpec {
   enabled: boolean;
-  /** Characters of one tool result allowed into a model's context; 0 = never
-   * trim. Absent = the app default (OMB_MCP_RESULT_BUDGET, else 8,000). */
+  /** Characters of one tool result allowed into context; 0 = never trim, absent = OMB_MCP_RESULT_BUDGET, else 8,000. */
   resultBudget?: number;
 }
 /** An app pre-registered with the server's authorization server; its secret is a credential, never listed. */
@@ -18,7 +17,6 @@ export interface McpOAuthClientConfig {
 export interface StoredRemoteMcpServer extends RemoteMcpSpec {
   enabled: boolean;
   oauth?: McpOAuthClientConfig;
-  /** as on StoredStdioMcpServer */
   resultBudget?: number;
 }
 export type StoredMcpServer = StoredStdioMcpServer | StoredRemoteMcpServer;
@@ -51,8 +49,7 @@ export const MAX_MCP_SERVERS = 20;
 const MAX_ARGS = 64;
 const MAX_ENV = 64;
 const MAX_HEADERS = 32;
-/** The largest per-server result budget: 2,000,000 characters is ~500k
- * tokens, more than any model's context, so anything above it means "never". */
+/** ~500k tokens, more than any model's context. */
 export const MAX_RESULT_BUDGET = 2_000_000;
 
 const resultBudgetSchema = z.number({ message: "The result size limit must be a whole number of characters." })

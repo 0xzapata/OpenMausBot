@@ -128,8 +128,6 @@ export function gateServer(input: {
   configEnvName?: string;
   directory?: boolean;
   sourceEnv?: NodeJS.ProcessEnv | Record<string, string | undefined>;
-  /** Gate a URL server even without a selection: the person set a result
-   * limit for this server (hasOwnResultBudget), so it must hold. */
   gateRemote?: boolean;
 }): { command: string; args: string[]; env: Record<string, string> } | null {
   const { name, server, budget } = input;
