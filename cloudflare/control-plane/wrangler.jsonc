@@ -56,8 +56,9 @@
     // "on" marks idle tunnels for cleanup; "observe" only logs candidates.
     "OMB_TUNNEL_RECLAIM": "on",
     // Days a tunnel must have been offline (and its installation quiet)
-    // before reclaim. Never-connected tunnels use a fixed seven days.
-    "OMB_TUNNEL_OFFLINE_RECLAIM_DAYS": "7",
+    // before reclaim (minimum 3). Never-connected tunnels use a fixed two days.
+    // A reclaimed installation gets its same hostname back when it returns.
+    "OMB_TUNNEL_OFFLINE_RECLAIM_DAYS": "3",
     // Cleanup rows per five-minute cron run. 20 needs Workers Paid; use 4 on
     // Workers Free (50 subrequests per invocation).
     "OMB_CLEANUP_SWEEP_LIMIT": "20"
