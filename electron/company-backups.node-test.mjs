@@ -425,7 +425,7 @@ for (const operation of ["backup", "restore"]) {
     const record = error => uncaught.push(error);
     process.on("uncaughtException", record);
     try {
-      await assert.rejects(f[operation]());
+      await assert.rejects(f[operation](), { code: operation === "backup" ? "upload_failed" : "local_backup_failed" });
       await new Promise(resolve => setTimeout(resolve, 50));
     } finally { process.off("uncaughtException", record); }
     assert.deepEqual(uncaught, []);
