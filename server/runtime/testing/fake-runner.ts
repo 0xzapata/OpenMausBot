@@ -1,16 +1,3 @@
-// A scriptable TurnRunner for the scenario suite (docs/runtime-contract.md §8).
-//
-// It records every call the runtime makes (validate, canStart, run, park,
-// report, changed, names) with its arguments, and answers run() from a
-// script queued per assignee bot or per assignment id: complete, fail,
-// needsInput, handOut (enqueue children from inside the turn, then settle),
-// hang (a turn that stays running until release()), or custom. canStart and
-// validate answer from settable maps. `running` and `parked` mirror what a
-// real host would own (an engine process, a card on screen), so a scenario
-// can hand them to checkInvariants() after every step.
-//
-// Nothing here imports the runtime: the handOut script reaches it through
-// the small EnqueuePort attached by the test.
 import type {
   Assignment,
   EnqueueRequest,
@@ -25,13 +12,10 @@ import type {
 
 export type FailOutcome = Exclude<Outcome, "done" | "needs_input">;
 
-/** What the runner needs from the runtime to hand work out mid-turn. */
 export interface EnqueuePort {
   enqueue(req: EnqueueRequest): EnqueueResult;
 }
 
-/** An EnqueueRequest with the lineage fields optional: the runner fills
- * parentId, origin, requester and levels from the running assignment. */
 export type ChildSpec = Omit<EnqueueRequest, "parentId" | "origin" | "requester" | "levels"> &
   Partial<Pick<EnqueueRequest, "origin" | "requester" | "levels">>;
 
@@ -39,55 +23,46 @@ export interface TurnContext {
   a: Assignment;
   input: RunInput;
   signal: AbortSignal;
-  /** Hand work out from this turn (parentId is this assignment). */
   handOut(child: ChildSpec): EnqueueResult;
 }
 
 export type Script =
   | { kind: "complete"; text: string; evidence?: TurnEvidence }
   | { kind: "fail"; outcome: FailOutcome; text: string; evidence?: TurnEvidence }
-  | { kind: "needsInput"; question: string }
+  | { kind: "needsInput"; question: string; cards?: string[] }
+  | { kind: "continue"; text: string; note: string; handoffPath?: string; evidence?: TurnEvidence }
   | { kind: "handOut"; children: ChildSpec[]; after: Script }
   | { kind: "hang" }
   | { kind: "custom"; fn: (ctx: TurnContext) => RunResult | Promise<RunResult> };
 
 export const complete = (text: string, evidence?: TurnEvidence): Script => ({ kind: "complete", text, evidence });
 export const fail = (outcome: FailOutcome, text: string, evidence?: TurnEvidence): Script => ({ kind: "fail", outcome, text, evidence });
-export const needsInput = (question: string): Script => ({ kind: "needsInput", question });
+export const needsInput = (question: string, cards?: string[]): Script => ({ kind: "needsInput", question, ...(cards ? { cards } : {}) });
+export const continueTurn = (text: string, note: string, handoffPath?: string, evidence?: TurnEvidence): Script =>
+  ({ kind: "continue", text, note, ...(handoffPath !== undefined ? { handoffPath } : {}), ...(evidence ? { evidence } : {}) });
 export const handOut = (children: ChildSpec[], after: Script): Script => ({ kind: "handOut", children, after });
 export const hang = (): Script => ({ kind: "hang" });
 export const custom = (fn: (ctx: TurnContext) => RunResult | Promise<RunResult>): Script => ({ kind: "custom", fn });
 
-export type RunnerMethod = "validate" | "canStart" | "run" | "park" | "report" | "changed" | "names";
+export type RunnerMethod = "validate" | "canStart" | "run" | "park" | "report" | "changed" | "names" | "outward";
 
 export interface RunnerCall {
   method: RunnerMethod;
-  /** The assignment the call was about (absent for changed). */
   id?: string;
-  /** Snapshot of the row as the runtime passed it. */
   a?: Assignment;
   parent?: Assignment;
-  /** run: the input and the signal the turn got. */
   input?: RunInput;
   signal?: AbortSignal;
-  /** run: the row as the store held it when run() was invoked (write-before-act). */
   storedStatus?: string;
-  /** park: the question. */
   question?: string;
-  /** changed: the rows. */
   rows?: Assignment[];
-  /** What the runner answered (validate, canStart). */
   answer?: unknown;
-  /** run: the turn ended because its signal was aborted. */
   aborted?: boolean;
-  /** run: the signal was already aborted when the turn settled. */
   settledAborted?: boolean;
-  /** run: the RunResult the turn resolved with. */
   result?: RunResult;
 }
 
 export interface RecordedEnqueue {
-  /** The running assignment that handed the work out. */
   from: string;
   req: EnqueueRequest;
   result: EnqueueResult;
@@ -95,7 +70,6 @@ export interface RecordedEnqueue {
 
 export interface BotInfo {
   name: string;
-  /** The bot's standing conversation is a Chief of Staff conversation. */
   chief?: boolean;
 }
 
@@ -109,18 +83,15 @@ const clone = <T>(value: T): T => structuredClone(value);
 export class FakeRunner implements TurnRunner {
   readonly calls: RunnerCall[] = [];
   readonly enqueues: RecordedEnqueue[] = [];
-  /** Turns whose run() promise has not settled (an engine process alive). */
   readonly running = new Set<string>();
-  /** Assignments the host currently shows a question card for. */
   readonly parked = new Set<string>();
-  /** Answers for canStart, keyed by assignment id (first) or bot id. */
   readonly canStartAnswers = new Map<string, true | false | string>();
-  /** Reasons validate refuses with, keyed by assignment id or bot id. */
   readonly validateReasons = new Map<string, string>();
+  readonly outwardAnswers = new Map<string, string[]>();
   readonly bots: Record<string, BotInfo>;
   personName = "Milind";
-  /** Lets a scenario see the stored row at the moment run() is invoked. */
   lookup?: (id: string) => Assignment | undefined;
+  outward?: (a: Assignment) => string[];
 
   #port?: EnqueuePort;
   #scripts = new Map<string, Script[]>();
@@ -128,19 +99,15 @@ export class FakeRunner implements TurnRunner {
   #throwOnce = new Set<RunnerMethod>();
   #rejectRunOnce = false;
 
-  constructor(bots: Record<string, BotInfo> = {}) {
+  constructor(bots: Record<string, BotInfo> = {}, options: { outward?: boolean } = {}) {
     this.bots = bots;
+    if (options.outward !== false) this.outward = (a) => this.#outward(a);
   }
 
-  // ── scripting ──────────────────────────────────────────────────────────
-
-  /** The runtime the handOut script enqueues into. */
   attach(port: EnqueuePort): void {
     this.#port = port;
   }
 
-  /** Queue scripts for a bot id or an assignment id; run() consumes one per
-   * turn, assignment-id scripts first. Without a script a turn completes. */
   script(key: string, ...scripts: Script[]): void {
     const queue = this.#scripts.get(key) ?? [];
     queue.push(...scripts);
@@ -151,17 +118,18 @@ export class FakeRunner implements TurnRunner {
     this.canStartAnswers.set(key, answer);
   }
 
-  /** The next call of this method throws (a host bug the runtime must absorb). */
+  setOutward(key: string, labels: string[]): void {
+    this.outwardAnswers.set(key, labels);
+  }
+
   throwOnce(method: RunnerMethod): void {
     this.#throwOnce.add(method);
   }
 
-  /** The next run() returns a rejected promise instead of a RunResult. */
   rejectRunOnce(): void {
     this.#rejectRunOnce = true;
   }
 
-  /** Settle a hung turn. Default: completed. */
   release(id: string, script: Script = complete("released")): void {
     const hung = this.#hung.get(id);
     if (!hung) throw new Error(`fake runner: ${id} is not hung`);
@@ -173,8 +141,6 @@ export class FakeRunner implements TurnRunner {
     return [...this.#hung.keys()];
   }
 
-  /** The host process died: engines, cards and hung promises are gone. The
-   * call log survives so a scenario can count across boots. */
   reboot(): void {
     this.running.clear();
     this.parked.clear();
@@ -183,12 +149,9 @@ export class FakeRunner implements TurnRunner {
     this.#rejectRunOnce = false;
   }
 
-  /** What checkInvariants() needs to know about live ownership. */
   live(): { running: Set<string>; parked: Set<string> } {
     return { running: this.running, parked: this.parked };
   }
-
-  // ── reading the log ────────────────────────────────────────────────────
 
   callsOf(method: RunnerMethod, id?: string): RunnerCall[] {
     return this.calls.filter((c) => c.method === method && (id === undefined || c.id === id));
@@ -205,8 +168,6 @@ export class FakeRunner implements TurnRunner {
   parks(id?: string): RunnerCall[] {
     return this.callsOf("park", id);
   }
-
-  // ── TurnRunner ─────────────────────────────────────────────────────────
 
   validate(a: Assignment, parent?: Assignment): string | undefined {
     this.#maybeThrow("validate");
@@ -288,7 +249,12 @@ export class FakeRunner implements TurnRunner {
     };
   }
 
-  // ── internals ──────────────────────────────────────────────────────────
+  #outward(a: Assignment): string[] {
+    this.#maybeThrow("outward");
+    const answer = this.outwardAnswers.get(a.id) ?? this.outwardAnswers.get(a.assignee.botId) ?? [];
+    this.calls.push({ method: "outward", id: a.id, a: clone(a), answer });
+    return answer;
+  }
 
   #maybeThrow(method: RunnerMethod): void {
     if (!this.#throwOnce.has(method)) return;
@@ -311,13 +277,15 @@ export class FakeRunner implements TurnRunner {
       case "fail":
         return { kind: "failed", outcome: script.outcome, text: script.text, evidence: script.evidence };
       case "needsInput":
-        return { kind: "needs_input", question: script.question };
+        return { kind: "needs_input", question: script.question, ...(script.cards ? { cards: script.cards } : {}) };
+      case "continue":
+        return { kind: "continue", text: script.text, note: script.note, ...(script.handoffPath !== undefined ? { handoffPath: script.handoffPath } : {}),
+          ...(script.evidence ? { evidence: script.evidence } : {}) };
       default:
         throw new Error(`fake runner: ${script.kind} cannot settle a released turn`);
     }
   }
 
-  /** The full EnqueueRequest for work handed out by a running assignment. */
   childRequest(a: Assignment, spec: ChildSpec): EnqueueRequest {
     const { origin, requester, levels, ...rest } = spec;
     return {
@@ -335,8 +303,7 @@ export class FakeRunner implements TurnRunner {
   }
 
   async #execute(a: Assignment, input: RunInput, signal: AbortSignal, script: Script, call: RunnerCall): Promise<RunResult> {
-    // An engine answers asynchronously; nothing settles inside the caller's
-    // own stack frame.
+    // An engine answers asynchronously: nothing settles inside the caller's stack frame.
     await Promise.resolve();
     const ctx: TurnContext = {
       a,
@@ -354,6 +321,7 @@ export class FakeRunner implements TurnRunner {
       case "complete":
       case "fail":
       case "needsInput":
+      case "continue":
         return this.#settle(script);
       case "handOut":
         for (const child of script.children) ctx.handOut(child);

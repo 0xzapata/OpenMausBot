@@ -1,6 +1,3 @@
-// Where a turn's hands land. The policy is small but every branch was a
-// real confusion: a browser-only bot that still got a computer, an Auto
-// task that hopped surfaces between turns, a plea that named no place.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -18,9 +15,7 @@ import {
 describe("browserIsThePlace", () => {
   it("is true only where the conversation works on the built-in browser", () => {
     expect(browserIsThePlace(resolveSurface({ destination: "browser", browserOn: true }))).toBe(true);
-    // An Auto conversation whose first turn landed on the browser.
     expect(browserIsThePlace(resolveSurface({ destination: undefined, pinnedSurface: "browser", browserOn: true }))).toBe(true);
-    // Auto only falls back to the browser when no computer is reached.
     expect(browserIsThePlace(resolveSurface({ destination: undefined, browserOn: true }))).toBe(false);
     expect(browserIsThePlace(resolveSurface({ destination: "browser", browserOn: false }))).toBe(false);
     expect(browserIsThePlace(resolveSurface({ destination: "local", browserOn: true }))).toBe(false);
@@ -48,7 +43,6 @@ describe("resolveSurface", () => {
 
   it("a computer destination mounts only that computer: one place per turn", () => {
     for (const destination of ["cloud", "vm", "local"] as const) {
-      // the bot's browser switch no longer adds a second place next to a computer
       expect(resolveSurface({ destination, browserOn: true })).toEqual({ computer: destination, browser: false, pinned: null, note: "" });
       expect(resolveSurface({ destination, browserOn: false })).toMatchObject({ computer: destination, browser: false });
     }
@@ -59,10 +53,7 @@ describe("resolveSurface", () => {
     expect(plan).toMatchObject({ computer: "off", browser: false, pinned: null });
     expect(plan.note).toMatch(/"Works on" setting is Off/);
     expect(plan.note).toMatch(/no computer and no built-in browser/);
-    // the same whether or not a browser could have been mounted
     expect(resolveSurface({ destination: "off", browserOn: false })).toEqual(plan);
-    // nothing mounted, so the surface paragraph stays silent and only the
-    // note tells the model why it has no screen
     expect(surfacePrompt({ computer: null, browser: false }, { note: plan.note })).toBe(plan.note);
   });
 
@@ -70,9 +61,7 @@ describe("resolveSurface", () => {
     const note = computerSkippedNote("The team's cloud computer is missing; explicitly create or retry it from the Team map.");
     expect(note).toMatch(/^ This turn answers a Team incidents report and your computer could not be prepared for it \(The team's cloud computer is missing; explicitly create or retry it from the Team map\), so no computer is mounted/);
     expect(note).toMatch(/never claim to have checked that computer yourself\.$/);
-    // nothing mounted: the note alone is the surface paragraph
     expect(surfacePrompt({ computer: null, browser: false }, { note })).toBe(note);
-    // a browser the plan allowed still mounts beside it, and is described
     const withBrowser = surfacePrompt({ computer: null, browser: true }, { note });
     expect(withBrowser).toMatch(/^ Everything you do on screen happens in the built-in browser tab/);
     expect(withBrowser.endsWith(note)).toBe(true);
@@ -86,10 +75,8 @@ describe("resolveSurface", () => {
   });
 
   it("a conversation pin wins over the bot's default, whatever that default is", () => {
-    // pinned to the browser from the composer while the bot defaults to a computer
     expect(resolveSurface({ destination: "cloud", pinnedSurface: "browser", browserOn: true }))
       .toEqual({ computer: "off", browser: true, pinned: "browser", note: "" });
-    // pinned to a computer while the bot is browser-only or on Auto
     for (const destination of ["browser", undefined] as const) {
       for (const pin of ["cloud", "vm", "local"] as const) {
         expect(resolveSurface({ destination, pinnedSurface: pin, browserOn: true }))
@@ -183,12 +170,9 @@ describe("surfacePrompt", () => {
     const text = surfacePrompt({ computer: "cloud", browser: false }, { pinned: "cloud" });
     expect(text).toContain("explain the mismatch and ask the user to change where this conversation works in the Computer panel");
     expect(text).toContain("changing places requires the user's choice in the Computer panel, not a different tool name");
-    // Simple mode has no composer chip, so no selector the person cannot see.
     expect(text).not.toContain("computer selector");
   });
 
-  // Every shape of the paragraph a turn can get: each mount, pinned or not,
-  // with and without select_computer.
   const mounts: Array<{ computer: "cloud" | null; browser: boolean }> = [
     { computer: "cloud", browser: false }, { computer: null, browser: true }, { computer: "cloud", browser: true }, { computer: null, browser: false },
   ];
@@ -234,7 +218,6 @@ describe("surface parsing", () => {
   });
 });
 
-
 it("does not instruct use of a selected browser when no surface is mounted", () => {
   expect(surfacePrompt({ computer: null, browser: false }, { canSelect: true })).not.toContain("For online research");
   expect(surfacePrompt({ computer: null, browser: true })).toContain("For online research");
@@ -264,12 +247,9 @@ describe("computerToolsRefusal", () => {
     expect(refused).toMatchObject({ name: "PlaceUnavailableError", place: "cloud", row: { state: "cc-tools-off", params: { bot: "Scout" }, source: "works-on" } });
     const line = "What Scout can use doesn't include a computer. Change what Scout can use in its settings.";
     expect(refused.message).toBe(line);
-    // The same one action whatever chose the place: never a second one, and
-    // never "Set Works on to Auto".
     for (const source of ["pin", "routine", "room"] as const) {
       expect(computerToolsRefusal({ allow: ["native:*"] }, source, "Scout")?.message).toBe(line);
     }
-    // An Auto-recorded pin is cleared by the dispatch, and the line says so.
     expect(computerToolsRefusal({ allow: ["native:*"] }, "auto-pin", "Scout")?.message)
       .toBe("What Scout can use doesn't include a computer. This conversation is back on Auto. Change what Scout can use in its settings.");
   });

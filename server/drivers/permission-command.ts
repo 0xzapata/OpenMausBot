@@ -13,19 +13,11 @@ export function permissionLaunchCwd(cwd: string): string | undefined {
   try { return realpathSync(cwd); } catch { return undefined; }
 }
 
-/** The keys an ACP agent may use for the command itself. Antigravity's shell
- * tool sends `CommandLine`/`Cwd`; every other agent seen so far sends
- * `command`. Without `CommandLine` here, an Antigravity bot reports no
- * command at all, which silently disables everything keyed on exact command
- * identity — the saved-command allowlist most of all, whose rules could never
- * match. Observed 2026-10-10 in a request.opened event whose rawInput was
- * `{"CommandLine":"ls -la …","Cwd":"…","WaitMsBeforeAsync":5000}`. */
+// Antigravity's ACP shell input uses CommandLine/Cwd instead of command/cwd.
 const COMMAND_KEYS = ["command", "CommandLine"] as const;
 const DIRECTORY_KEYS = ["cwd", "Cwd", "workdir", "working_directory", "directory", "dir"] as const;
 
-/** ACP's rawInput is provider-specific. Accept a complete command string and
- * unambiguous absolute directory fields. A relative/invalid/conflicting
- * directory is not evidence of where the agent will execute it. */
+/** ACP's rawInput is provider-specific: only a complete command string and unambiguous absolute directories count. */
 export function acpPermissionCommand(rawInput: unknown, launchCwd: string | undefined): ReturnType<typeof permissionCommand> {
   if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return undefined;
   const input = rawInput as Record<string, unknown>;

@@ -1,8 +1,4 @@
-// The application menu. It exists for two reasons: the Server submenu,
-// where the user switches between the local server and paired remote ones,
-// and the macOS Preferences… item (Electron has no role for it, so it is
-// built explicitly). Everything else is Electron's standard roles so macOS
-// keeps Edit/Window and Windows/Linux get the same items under a visible bar.
+// Electron has no role for the macOS Preferences… item, so it is built explicitly.
 import { Menu, app } from "electron";
 
 /**
@@ -16,9 +12,6 @@ import { Menu, app } from "electron";
  * @param {() => void} input.onOpenSettings
  * @param {() => void} input.onOrganizationSignIn
  */
-/** `onAddCloud` and `sublabels` as in the sidebar's server menu
- * (environments.cjs workspaceMenuTemplate): "Add a Cloud…" under the saved
- * servers, and My Cloud's line in place of its host. */
 export function buildApplicationMenu({ environments, activeId, onSwitch, onAddFromClipboard, onConnect, onForget, onOpenSettings, onOrganizationSignIn, onAddCloud, sublabels = {} }) {
   const isMac = process.platform === "darwin";
   const active = environments.find((e) => e.id === activeId) ?? null;

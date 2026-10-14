@@ -1,6 +1,3 @@
-// Deleting a bot removes its conversations and its memory. The journal
-// lives outside the workspace and the search index lives in the message
-// database, so both have to go too. Checked against the fixture server.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";

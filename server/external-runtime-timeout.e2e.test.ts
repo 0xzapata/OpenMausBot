@@ -8,13 +8,6 @@ import { readHandoffs } from "./testing/handoff-rows.ts";
 
 const TOKEN = "external-runtime-timeout-fixture-0123456789abcdef";
 
-// An external caller's ask of a slow peer never waits inline any more
-// (docs/runtime-contract.md §9: ask_bot is coordinate_bots(consult: true);
-// the 15-second wait and its conversion into a delegation are gone). The
-// alias answers at once with the runtime's receipt; the caller polls the
-// assignment through the delegations/:id alias while the peer's turn is
-// still held, reads the answer once it settles, and its own engine never
-// runs a turn on the pinned thread.
 it("answers an external caller's long ask at once and lets it poll the slow peer's answer without waking its engine", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "omb-external-timeout-"));
   const gate = join(scratch, "finish-peer");
@@ -38,19 +31,18 @@ it("answers an external caller's long ask at once and lets it poll the slow peer
     writeFileSync(join(session.info.dataDir, "external-runtimes.json"), JSON.stringify({ [source.id]: { token: TOKEN, threadId: sourceThread } }), { mode: 0o600 });
 
     const started = Date.now();
-    const asked = await api("POST", "/api/internal/ask-bot", { toBotId: peer.id, message: "Only this long question." }, true);
+    const asked = await api("POST", "/api/internal/coordinate-bots", { botIds: [peer.id], message: "Only this long question.", consult: true }, true);
     // Immediate: the peer's turn is held open by the gate the whole time.
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(asked).toMatchObject({ rootId: expect.any(String), receipts: [{ botId: peer.id, outcome: "queued", requestId: expect.any(String) }] });
-    expect(asked.deprecation).toContain("ask_bot is replaced by coordinate_bots(consult: true)");
+    expect(asked.deprecation).toBeUndefined();
     expect(asked.text).toBeUndefined();
     expect(asked.timeout).toBeUndefined();
     const id: string = asked.receipts[0].requestId;
-    const receipt = () => api("GET", `/api/internal/delegations/${id}`, undefined, true);
-    // While the peer works, the status says so and returns without waiting.
+    const receipt = () => api("GET", `/api/internal/assignment-status?id=${id}`, undefined, true);
     await expect.poll(async () => (await receipt()).assignment.status, { timeout: 15_000 }).toBe("running");
     expect((await receipt()).assignment).toMatchObject({ id, botId: peer.id, mode: "consult", reply: "poll" });
-    expect((await receipt()).deprecation).toContain("assignment_status");
+    expect((await receipt()).deprecation).toBeUndefined();
     expect((await api("GET", "/api/bots?messages=0")).bots.find((bot: any) => bot.id === peer.id).busy).toBeTruthy();
     const workThread = readHandoffs(session.info.dataDir).find(node => node.id === id)!.threadId;
     expect(workThread).not.toBe(peer.activeTaskId);
@@ -58,8 +50,6 @@ it("answers an external caller's long ask at once and lets it poll the slow peer
     writeFileSync(gate, "release only the isolated provider");
     await expect.poll(async () => (await receipt()).assignment.status, { timeout: 15_000 }).toBe("completed");
     expect((await receipt()).assignment.result).toContain("Only this long question.");
-    // The root completed without a turn; the answer also reaches the pinned
-    // thread as the peer's report chip, and no engine line of the gateway's.
     await expect.poll(() => readHandoffs(session.info.dataDir).find(node => node.id === asked.rootId)?.status, { timeout: 10_000 }).toBe("completed");
     expect(readHandoffs(session.info.dataDir).find(node => node.id === asked.rootId)).toMatchObject({ reply: "poll", threadId: sourceThread });
     expect((await control("wait", "--bot", source.id, "--task", sourceThread)).status).toBe("settled");

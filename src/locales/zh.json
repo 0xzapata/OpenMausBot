@@ -930,6 +930,7 @@
   "task.switchWithUsage": "全部对话 · {label}（输入 {input} · 输出 {output}）",
   "task.switch": "全部对话",
   "task.otherActivity": "其他活动（{count}）",
+  "task.workingElsewhere": "其他话题进行中：{count}",
   "attention.title": "进行中的对话",
   "attention.empty": "没有进行中的对话",
   "attention.item": "{title} · {name} · {status}",
@@ -1123,7 +1124,7 @@
   "onboarding.spot.gotIt": "知道了",
   "onboarding.spot.composer": "这里是你与机器人对话的地方。⌘K 可以找到任何机器人、群组或消息。",
   "onboarding.spot.model": "这个机器人使用这里显示的模型运作。你随时可以变更它，即使在对话途中也一样。",
-  "onboarding.spot.approval": "Shell 指令与文件编辑会以这样的卡片送达。你可以允许或拒绝。未经你同意，不会运行任何有风险的操作。",
+  "onboarding.spot.approval": "当机器人需要你的同意时，会用这样的卡片来询问。你可以允许或拒绝。",
   "onboarding.spot.connector": "当机器人需要你尚未连接的应用程序时，会在这里询问。在浏览器登录一次即可连接应用程序；每个机器人都可以单独启用“已连接的应用程序”访问权。",
   "onboarding.reel.title": "你的机器人能做什么",
   "onboarding.phone.title": "你的手机",
@@ -1801,6 +1802,7 @@
   "room.pinHint": "把这条消息置顶到群组开头",
   "room.fallbackBot": "机器人",
   "room.aBot": "某个机器人",
+  "room.memberWorkingElsewhere": "{name} 正在另一个话题中工作",
   "room.responder.everyone": "普通消息发给群组所有成员；@提及会覆盖此设置",
   "room.responder.mentions": "只有被明确 @ 提及的机器人才会回复",
   "room.responder.lead": "普通消息发给 {name}；@提及会覆盖此设置",
@@ -2540,5 +2542,10 @@
   "pro.name": "MausBot Cloud",
   "computer.files.homeFolder": "主目录",
   "computer.files.changeDefaultFolder": "更改默认目录",
-  "computer.files.pinnedFolderHint": "此对话会继续使用当前文件夹。可更改新对话使用的默认文件夹。"
+  "computer.files.pinnedFolderHint": "此对话会继续使用当前文件夹。可更改新对话使用的默认文件夹。",
+  "room.holds.banner": "你已停止：{names}。@提及某个机器人或发送 resume 即可让它回来。",
+  "room.holds.resume": "恢复 {name}",
+  "room.holds.stop": "停止 {name}",
+  "room.holds.stopTitle": "只停止 {name}，房间里的其他成员继续工作",
+  "room.holds.avatarHeld": "{name} — 已暂停（由你停止）"
 }
