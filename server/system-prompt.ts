@@ -97,7 +97,9 @@ export const COMPOSIO_PROMPT =
 export function composioSystemPrompt(grants: Record<string, ConnectorToolGrant> | undefined): string {
   if (grants === undefined) return COMPOSIO_PROMPT;
   const services = Object.keys(grants);
-  if (services.length === 0) return "";
+  if (services.length === 0) {
+    return " No connected apps are assigned to this bot. If a task needs one, or an app's sign-in has expired, call COMPOSIO_MANAGE_CONNECTIONS to show the user a card that connects it, and ask them to allow that app for this bot in OpenMausBot.";
+  }
   const named = services.map(connectorServiceLabel).join(", ");
   return ` The user's connected apps assigned to this bot (${named}) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Only the tools this bot was granted will run; when a needed tool is refused, tell the user and ask them to grant it in OpenMausBot. Reach for the granted services before telling the user you have no access.`;
 }

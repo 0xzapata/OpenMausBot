@@ -10,6 +10,18 @@ import { reserveConnectionPage, reusableConnectionUrl, type PendingAuthorization
 import { mcpSignInLink } from "@/lib/mcp-sign-in";
 import { managedConnectorUnavailableReason } from "../../shared/connector-availability";
 import { connectorServiceAccess, isConnectorToolGrantShape } from "@/lib/connector-grants";
+import {
+  accountAliasTaken,
+  accountToReconnect,
+  connectedInventoryCopy,
+  connectorActionLabel,
+  hasActiveConnection,
+  needsReconnect,
+  requiresAccountAlias,
+  type ConnectorAccount,
+  type ConnectorInventoryPhase,
+  type ConnectorStatus,
+} from "@/lib/connector-status";
 import { BotAvatar } from "./Avatar";
 import { SidebarPopoverMenu } from "./SidebarPopoverMenu";
 import { CATEGORY_SECTION_SIZE, catalogSections, inCategory, rankCategories } from "@/lib/app-catalog";
@@ -23,17 +35,6 @@ export interface ToolkitCard {
   noAuth?: boolean;
   domain: string | null;
   categories?: string[];
-}
-
-export interface ConnectorStatus {
-  connected: boolean;
-  pending?: boolean;
-  status?: string;
-  accounts?: Array<{
-    id: string;
-    alias?: string;
-    status: string;
-  }>;
 }
 
 let cachedConnectorStatus: Record<string, ConnectorStatus> | null = null;
@@ -121,42 +122,6 @@ export function connectorSetupNotice(state: {
     return { key: state.remoteClient ? "connectors.setupNeededRemote" : "connectors.setupNeeded", tone: "info" };
   }
   return { key: "connectors.notConfigured", tone: "warning" };
-}
-
-export function requiresAccountAlias(message: string) {
-  return /account alias.*existing connection.*not replaced/i.test(message);
-}
-
-export type ConnectorInventoryPhase = "loading" | "ready" | "error";
-
-export function connectorActionLabel(
-  phase: ConnectorInventoryPhase,
-  state: { busy: boolean; included: boolean; canContinue: boolean; pending?: boolean; hasAccounts: boolean; failed: boolean },
-) {
-  if (state.busy) return null;
-  if (state.included) return t("connectors.action.included");
-  if (phase === "loading") return t("connectors.action.checking");
-  if (phase === "error") return t("connectors.action.unavailable");
-  if (state.canContinue) return t("connectors.action.continue");
-  if (state.pending) return t("connectors.action.checkStatus");
-  if (state.hasAccounts) return t("connectors.action.addAccount");
-  if (state.failed) return t("connectors.action.retry");
-  return t("connectors.action.connect");
-}
-
-export function connectedInventoryCopy(phase: ConnectorInventoryPhase) {
-  if (phase === "loading") return {
-    title: t("connectors.empty.loadingTitle"),
-    description: t("connectors.empty.loadingDesc"),
-  };
-  if (phase === "error") return {
-    title: t("connectors.empty.errorTitle"),
-    description: t("connectors.empty.errorDesc"),
-  };
-  return {
-    title: t("connectors.empty.noneTitle"),
-    description: t("connectors.empty.noneDesc"),
-  };
 }
 
 export function mergeCurrentConnectorStatus(
@@ -486,7 +451,7 @@ export function PluginsPanel() {
     pollTimers.current.set(slug, timer);
   };
 
-  const connect = async (slug: string, alias?: string) => {
+  const connect = async (slug: string, alias?: string, replacing?: ConnectorAccount) => {
     if (busySlug || opening.current) return;
     const launch = reserveConnectionPage();
     opening.current = launch;
@@ -495,6 +460,7 @@ export function PluginsPanel() {
     setError(null);
     try {
       const createdAt = Date.now();
+      if (replacing) await api(`/api/connectors/${slug}/accounts/${encodeURIComponent(replacing.id)}`, { method: "DELETE" });
       const request: RequestInit = { method: "POST" };
       if (alias) request.body = JSON.stringify({ alias });
       const result = await api(`/api/connectors/${slug}/authorize`, request);
@@ -526,7 +492,7 @@ export function PluginsPanel() {
         setError({ key: "connectors.aliasNeeded" });
         void refreshStatus([slug]);
       } else {
-        setError(message);
+        setError(accountAliasTaken(message) ? { key: "connectors.aliasTaken" } : message);
       }
     } finally {
       launch.cancel();
@@ -556,7 +522,7 @@ export function PluginsPanel() {
     .map((card, index) => ({ card, index }))
     .sort((a, b) => Number(isConnected(b.card.slug)) - Number(isConnected(a.card.slug)) || a.index - b.index)
     .map(({ card }) => card);
-  const connectedCount = Object.values(status).filter((service) => service.connected || service.accounts?.length).length + Number(whopConnected === true);
+  const connectedCount = Object.values(status).filter(hasActiveConnection).length + Number(whopConnected === true);
   const connectedEmptyCopy = connectedInventoryCopy(inventoryPhase);
   const close = () => dispatch({ type: "togglePlugins", open: false });
   const setupNotice = connectorSetupNotice({ configured, stale, setup, remoteClient });
@@ -584,7 +550,7 @@ export function PluginsPanel() {
   const allCards = sectioned ? allSection?.cards ?? [] : categoryCards;
   const allCapped = sectioned && !showAllApps && allCards.length > APPS_PREVIEW_COUNT;
   const allShown = allCapped ? allCards.slice(0, APPS_PREVIEW_COUNT) : allCards;
-  const connectedCards = (cards ?? []).filter((card) => isConnected(card.slug));
+  const connectedCards = (cards ?? []).filter((card) => hasActiveConnection(status[card.slug]));
   const pickCategory = (next: string | null) => {
     setCategory(next);
     setTab("marketplace");
@@ -899,7 +865,8 @@ export function PluginsPanel() {
     const accounts = serviceStatus?.accounts ?? [];
     const included = card.noAuth === true
       || (serviceStatus?.connected === true && !accounts.length && !pending && !failed);
-    const connected = Boolean(serviceStatus?.connected || accounts.length);
+    const connected = hasActiveConnection(serviceStatus);
+    const reconnect = pending ? undefined : accountToReconnect(serviceStatus);
     const addingAccount = aliasSlug === card.slug && !included;
     const busy = busySlug === card.slug;
     const unavailableReason = managedConnectorUnavailableReason(mode, card.slug)
@@ -911,9 +878,11 @@ export function PluginsPanel() {
         ? authorizationUrl
           ? t("connectors.finishSetup")
           : t("connectors.finishSetupOrDisconnect")
-        : failed && !accounts.length
-          ? t("connectors.authExpired")
-          : card.blurb
+        : reconnect
+          ? t("connectors.signedOut")
+          : failed && !accounts.length
+            ? t("connectors.authExpired")
+            : card.blurb
     );
     return (
       <div
@@ -965,6 +934,8 @@ export function PluginsPanel() {
                 } else {
                   void connect(card.slug);
                 }
+              } else if (reconnect) {
+                void connect(card.slug, reconnect.alias, reconnect);
               } else {
                 setAliasSlug((current) => current === card.slug ? null : card.slug);
                 setAliasDraft("");
@@ -982,6 +953,7 @@ export function PluginsPanel() {
                 included,
                 canContinue: Boolean(pendingAuthorization),
                 pending,
+                reconnect: Boolean(reconnect),
                 hasAccounts: accounts.length > 0,
                 failed: Boolean(failed),
               })
@@ -1003,6 +975,7 @@ export function PluginsPanel() {
             <div className="mt-1.5 space-y-0.5">
               {accounts.map((account) => {
                 const active = /^active$/i.test(account.status);
+                const reconnectable = needsReconnect(account) && account.id !== reconnect?.id;
                 return (
                   <div key={account.id} className="flex min-w-0 items-center gap-2 text-[12px] leading-5">
                     {active ? <Check size={12} className="shrink-0 text-success" /> : <span className="size-3 shrink-0" />}
@@ -1010,6 +983,17 @@ export function PluginsPanel() {
                       {account.alias || account.id}
                       <span className="text-ink-secondary"> · {account.status.toLowerCase()}</span>
                     </span>
+                    {reconnectable && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void connect(card.slug, account.alias, account)}
+                        className="ms-auto shrink-0 rounded-full px-2 text-[12px] font-medium leading-5 text-accent-text transition-colors hover:bg-raised-hover disabled:opacity-40"
+                        aria-label={t("connectors.reconnectAria", { account: account.alias || account.id, service: card.label })}
+                      >
+                        {t("connectors.action.reconnect")}
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={busy}
@@ -1017,7 +1001,7 @@ export function PluginsPanel() {
                         if (!window.confirm(disconnectAccountConfirmation(card.label, account))) return;
                         disconnectAccount(card.slug, account.id);
                       }}
-                      className="ms-auto shrink-0 rounded-full px-2 text-[12px] font-medium leading-5 text-ink-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+                      className={cn("shrink-0 rounded-full px-2 text-[12px] font-medium leading-5 text-ink-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40", !reconnectable && "ms-auto")}
                       aria-label={t("connectors.disconnectAria", {
                         account: account.alias || account.id,
                         service: card.label,

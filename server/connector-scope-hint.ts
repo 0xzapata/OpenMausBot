@@ -32,22 +32,22 @@ export function scopeHint(slugs: readonly string[]): string {
 
 type ToolResultFrame = { result?: { content?: unknown; isError?: unknown } };
 
-/** Failed objects (`successful: false` or an `error`) whose failure is a scope error; the deepest wins, so a MULTI_EXECUTE batch names the tool. */
-function collectRefusals(node: unknown, slug: string | null, found: Array<string | null>): void {
+/** Failed objects (`successful: false` or an `error`) whose failure matches `pattern`; the deepest wins, so a MULTI_EXECUTE batch names the tool. */
+function collectRefusals(node: unknown, slug: string | null, found: Array<string | null>, pattern: RegExp): void {
   if (Array.isArray(node)) {
-    for (const item of node) collectRefusals(item, slug, found);
+    for (const item of node) collectRefusals(item, slug, found, pattern);
     return;
   }
   if (!node || typeof node !== "object") return;
   const record = node as Record<string, unknown>;
   const own = [record.tool_slug, record.slug].find((value): value is string => typeof value === "string" && value !== "") ?? slug;
   const before = found.length;
-  for (const value of Object.values(record)) collectRefusals(value, own, found);
+  for (const value of Object.values(record)) collectRefusals(value, own, found, pattern);
   if (found.length > before) return;
   const hasError = record.error !== undefined && record.error !== null && record.error !== "";
   const failed = record.successful === false || (hasError && record.successful !== true);
   // A failed result can carry Google's 403 in `data` rather than `error`.
-  if (failed && SCOPE_ERROR.test(JSON.stringify(record.successful === false ? record : record.error))) found.push(own);
+  if (failed && pattern.test(JSON.stringify(record.successful === false ? record : record.error))) found.push(own);
 }
 
 function parseJson(text: string): unknown {
@@ -58,7 +58,13 @@ function parseJson(text: string): unknown {
   }
 }
 
-function annotateFrame(frame: unknown, slugs: readonly string[]): boolean {
+/** Appends `hint` to a tool result that failed with `pattern`, naming the failed tools or else `slugs`. */
+export function annotateFailedCall(
+  frame: unknown,
+  pattern: RegExp,
+  hint: (slugs: readonly string[]) => string,
+  slugs: readonly string[],
+): boolean {
   const result = (frame as ToolResultFrame | null)?.result;
   if (!result || !Array.isArray(result.content)) return false;
   const texts = result.content.flatMap((item) => {
@@ -66,12 +72,12 @@ function annotateFrame(frame: unknown, slugs: readonly string[]): boolean {
     return typeof text === "string" ? [text] : [];
   });
   const refusals: Array<string | null> = [];
-  for (const text of texts) collectRefusals(parseJson(text), null, refusals);
+  for (const text of texts) collectRefusals(parseJson(text), null, refusals, pattern);
   // A result flagged isError fails as a whole, even with the 403 outside an error field.
-  if (!refusals.length && result.isError === true && texts.some((text) => SCOPE_ERROR.test(text))) refusals.push(null);
+  if (!refusals.length && result.isError === true && texts.some((text) => pattern.test(text))) refusals.push(null);
   if (!refusals.length) return false;
   const named = refusals.filter((slug): slug is string => slug !== null);
-  result.content.push({ type: "text", text: scopeHint(named.length ? named : slugs) });
+  result.content.push({ type: "text", text: hint(named.length ? named : slugs) });
   return true;
 }
 
@@ -85,14 +91,14 @@ export function withScopeHint(bytes: Uint8Array, contentType: string, slugs: rea
       const lines = text.split("\n").map((line) => {
         if (!line.startsWith("data:")) return line;
         const frame = JSON.parse(line.slice(5));
-        if (!annotateFrame(frame, slugs)) return line;
+        if (!annotateFailedCall(frame, SCOPE_ERROR, scopeHint, slugs)) return line;
         changed = true;
         return `data: ${JSON.stringify(frame)}`;
       });
       return changed ? new TextEncoder().encode(lines.join("\n")) : bytes;
     }
     const frame = JSON.parse(text);
-    return annotateFrame(frame, slugs) ? new TextEncoder().encode(JSON.stringify(frame)) : bytes;
+    return annotateFailedCall(frame, SCOPE_ERROR, scopeHint, slugs) ? new TextEncoder().encode(JSON.stringify(frame)) : bytes;
   } catch {
     return bytes;
   }
