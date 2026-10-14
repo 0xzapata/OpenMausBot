@@ -174,7 +174,7 @@ import {
   type AppConfig,
   vpsSshAlias,
   browserEngineAttachCdpUrl,
-  DATA_DIR,
+  DATA_DIR, EVENTS_DIR,
   skillsLibraryEnabled,
   customMcpServers,
   onConfigSaved,
@@ -272,10 +272,9 @@ import { ManagedDesktopProviders } from "./managed-desktop.ts";
 import { mainThread, wasOldestThread } from "./main-thread.ts";
 import { computerKindForResource, ManagedDesktopPolicy, type ComputerKind } from "./managed-policy.ts";
 import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER } from "./hosted-models.ts";
-import {
-  CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_PATH, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal,
-  createCloudPairing, firstCloudTurnPatch, readSignedBody,
-} from "./cloud-home.ts";
+import { CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal, firstCloudTurnPatch } from "./cloud-home.ts";
+import { createCloudHealth } from "./cloud-health.ts";
+import { createCloudSignedRoutes } from "./routes/cloud-signed.ts";
 import { CLOUD_PERSONAL_REFUSAL, settleCloudOwnership, type CloudOwnership } from "./cloud-owner.ts";
 import { createCloudMoveRoutes, workspaceShared } from "./cloud-move-http.ts";
 import { RESTART_EXIT_CODE } from "./restart.ts";
@@ -687,7 +686,6 @@ const lendingMemory = CLOUD_HOME ? createLendingMemory({
   log: (line) => console.warn(line),
 }) : null;
 if (CLOUD_HOME) readMemoryOnlyFromRegularFiles();
-const cloudPairing = CLOUD_HOME ? createCloudPairing({ secret: CLOUD_HOME.bootstrapSecret, sessions }) : null;
 if (CLOUD_HOME) {
   // Held in memory from here on: no engine or tool this server starts inherits the signing secret or a gateway's settings.
   delete process.env.OMB_CLOUD_BOOTSTRAP_SECRET;
@@ -3340,6 +3338,11 @@ const store = new Store(
   (selection) => withNewBotEffort(selection, cfg.newBots?.effort, registry.get(selection.instanceId)?.adapter.capabilities.effortLevels),
   (instanceId) => registry.cliTarget(instanceId)?.driverKind,
 );
+const cloudHealth = CLOUD_HOME ? createCloudHealth({ store, bus, dataDir: DATA_DIR, eventsDir: EVENTS_DIR, version: serverVersion(), image: process.env.OMB_CLOUD_IMAGE,
+  engines: () => registry.instances().map((instance) => ({ instanceId: instance.instanceId, driverKind: instance.driverKind, snapshot: registry.lastSnapshot(instance.instanceId) })),
+  connectors: () => composio.configured(cfg) ? composio.connectedServices(cfg) : null,
+  browser: () => ({ available: browserEngineStatus().kind === "ready", installing: Boolean(browserEngineInstall), interrupted: browserRuntime.interruptedCount() }) }) : null;
+const cloudSigned = CLOUD_HOME && cloudHealth ? createCloudSignedRoutes({ secret: CLOUD_HOME.bootstrapSecret, sessions, health: cloudHealth }) : null;
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
 const sendSequencer = new SendSequencer();
@@ -9914,8 +9917,9 @@ routines = new RoutineManager({
     }
   },
   interruptGoal: interruptRoutineGroupGoal,
-  onRunChanged: syncRoutineRunToSource,
+  onRunChanged: (run) => { cloudHealth?.noteRoutineRun(run); syncRoutineRunToSource(run); },
   onRunFailed: (run) => {
+    cloudHealth?.noteRoutineRun(run);
     if (run.threadId) {
       if (run.error === ROUTINE_RESTARTED) {
         if (run.groupId) coordinator.cancelRoom(run.groupId, run.threadId, run.error);
@@ -14423,22 +14427,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       res.setHeader("set-cookie", serializeSessionCookie(SESSION_COOKIE, issued.token, { secure, maxAgeSeconds: cookieMaxAgeSeconds(issued.session) }));
       return json(res, 200, { session: issued.session, environment });
     }
-    // The Admin's signed pairing request: bad signatures count against the lockout; never log its headers, body or code.
-    if (cloudPairing && path === CLOUD_PAIRING_PATH) {
-      res.setHeader("cache-control", "no-store");
-      if (method !== "POST") return json(res, 405, { error: "method_not_allowed" });
-      if (!/^application\/json\b/i.test(String(req.headers["content-type"] ?? ""))) {
-        return json(res, 415, { error: "send the pairing request as JSON (content-type: application/json)" });
-      }
-      const source = requestSource(req);
-      const header = (name: string) => { const value = req.headers[name]; return typeof value === "string" ? value : undefined; };
-      const result = cloudPairing.handle({
-        timestamp: header("x-omb-cloud-timestamp"), nonce: header("x-omb-cloud-nonce"), signature: header("x-omb-cloud-signature"),
-        body: await readSignedBody(req), source,
-      });
-      if (result.status !== 200) console.warn(`cloud pairing refused from ${source}: ${String(result.body.error)}`);
-      return json(res, result.status, result.body);
-    }
+    if (cloudSigned && await cloudSigned({ req, res, url, path, method })) return;
     if (method === "POST" && path === "/api/auth/pair") {
       // JSON only: a cross-site HTML form cannot send this content type without a preflight, so no unused code is planted as a session.
       if (!/^application\/json\b/i.test(String(req.headers["content-type"] ?? ""))) {

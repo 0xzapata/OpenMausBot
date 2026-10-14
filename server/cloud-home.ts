@@ -1,7 +1,8 @@
 // OMB Cloud Pro home machine. The server binds 127.0.0.1 behind an edge proxy and every request carries X-Forwarded-*
 // headers, so no network request is ever the loopback owner. The Admin never holds a session: it signs a request with the
-// bootstrap secret (HMAC-SHA256 over method, path, timestamp, nonce and body hash), and each valid one opens one ordinary
-// pairing window. Nothing on a Cloud home is routed to a platform model gateway, except a free trial's Claude credit.
+// bootstrap secret (HMAC-SHA256 over method, path and query, timestamp, nonce and body hash). A valid pairing request opens
+// one ordinary pairing window; a valid health request reads the content-free health report (server/cloud-health.ts).
+// Nothing on a Cloud home is routed to a platform model gateway, except a free trial's Claude credit.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
@@ -16,6 +17,7 @@ export const CLOUD_HOME_KEYS = ["OMB_CLOUD_ROLE", "OMB_CLOUD_MACHINE_ID", "OMB_C
 /** A platform model gateway's settings: a Cloud home logs one warning, and neither it nor anything it starts sees them. */
 export const CLOUD_IGNORED_KEYS = ["OMB_HOSTED_MODEL_URL", "OMB_HOSTED_MODEL_TOKEN", "OMB_HOSTED_MODELS"] as const;
 export const CLOUD_PAIRING_PATH = "/api/cloud/pairing";
+export const CLOUD_HEALTH_PATH = "/api/cloud/health";
 export const CLOUD_PAIRING_DEFAULT_TTL_S = 300;
 export const CLOUD_PAIRING_MAX_TTL_S = 600;
 /** A browser sign-in's owner: printable ASCII with no space, `<` or `>`, and exactly one `@`. */
@@ -98,10 +100,40 @@ export function firstCloudTurnPatch(turn: { cloudHome: boolean; recorded: string
   return { onboarding: { firstTurnAt: (turn.now ?? new Date()).toISOString() } };
 }
 
-/** Must match openmaus-cloud's cloudPairingSignature. */
-export function cloudPairingSignature(secret: string, timestamp: string, nonce: string, body: Buffer | string): string {
+/** Must match openmaus-cloud's cloudRequestSignature. `target` is the path and query exactly as the Admin sent them. */
+export function cloudRequestSignature(secret: string, timestamp: string, nonce: string, method: string, target: string, body: Buffer | string): string {
   const bodyHash = createHash("sha256").update(body).digest("base64url");
-  return createHmac("sha256", secret).update(`v1\n${timestamp}\n${nonce}\nPOST\n${CLOUD_PAIRING_PATH}\n${bodyHash}`).digest("base64url");
+  return createHmac("sha256", secret).update(`v1\n${timestamp}\n${nonce}\n${method}\n${target}\n${bodyHash}`).digest("base64url");
+}
+
+export function cloudPairingSignature(secret: string, timestamp: string, nonce: string, body: Buffer | string): string {
+  return cloudRequestSignature(secret, timestamp, nonce, "POST", CLOUD_PAIRING_PATH, body);
+}
+
+export type CloudRequestRefusal = "invalid_signature" | "stale_request" | "replayed_request" | "busy";
+export type CloudRequestVerdict = { ok: true } | { ok: false; status: 401 | 503; error: CloudRequestRefusal };
+
+/** One route's verifier, with its own used nonces. Signature first (constant time), then clock and nonce. Nothing is logged. */
+export function createCloudRequestVerifier(options: { secret: string; now?: () => number }) {
+  const now = options.now ?? Date.now;
+  const nonces = new Map<string, number>();
+  return {
+    verify(input: { timestamp: string | undefined; nonce: string | undefined; signature: string | undefined; method: string; target: string; body: Buffer | string }): CloudRequestVerdict {
+      const timestamp = input.timestamp ?? "", nonce = input.nonce ?? "";
+      const presented = /^v1=([A-Za-z0-9_-]{43})$/.exec(input.signature ?? "")?.[1];
+      const expected = Buffer.from(cloudRequestSignature(options.secret, timestamp, nonce, input.method, input.target, input.body), "base64url");
+      const given = presented ? Buffer.from(presented, "base64url") : Buffer.alloc(expected.length);
+      const matches = given.length === expected.length && timingSafeEqual(given, expected);
+      if (!presented || !matches || !/^\d{1,12}$/.test(timestamp) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return { ok: false, status: 401, error: "invalid_signature" };
+      const at = now();
+      if (Math.abs(at / 1000 - Number(timestamp)) > CLOUD_PAIRING_SKEW_S) return { ok: false, status: 401, error: "stale_request" };
+      for (const [seen, until] of nonces) if (until <= at) nonces.delete(seen);
+      if (nonces.has(nonce)) return { ok: false, status: 401, error: "replayed_request" };
+      if (nonces.size >= MAX_NONCES) return { ok: false, status: 503, error: "busy" };
+      nonces.set(nonce, at + CLOUD_PAIRING_NONCE_MS);
+      return { ok: true };
+    },
+  };
 }
 
 export interface CloudPairingResult {
@@ -116,31 +148,17 @@ export function createCloudPairing(options: {
   sessions: PairingSessions;
   now?: () => number;
 }) {
-  const { secret, sessions } = options;
-  const now = options.now ?? Date.now;
-  const nonces = new Map<string, number>();
-  const refused = (error: string): CloudPairingResult => ({ status: 401, body: { error } });
+  const { sessions } = options;
+  const verifier = createCloudRequestVerifier(options);
   return {
-    /** Signature first (constant time; a bad one counts toward the pairing lockout), then clock, nonce and body, before anything opens. Nothing is logged. */
+    /** A bad signature counts toward the pairing lockout; clock, nonce and body are checked before anything opens. Nothing is logged. */
     handle(input: { timestamp: string | undefined; nonce: string | undefined; signature: string | undefined; body: Buffer; source: string }): CloudPairingResult {
       const lock = sessions.attemptAllowed(input.source);
       if (!lock.ok) return { status: 429, body: { error: "rate_limited", retryAfterSeconds: Math.ceil(lock.retryAfterMs / 1000) } };
-      const timestamp = input.timestamp ?? "", nonce = input.nonce ?? "";
-      const presented = /^v1=([A-Za-z0-9_-]{43})$/.exec(input.signature ?? "")?.[1];
-      const expected = Buffer.from(cloudPairingSignature(secret, timestamp, nonce, input.body), "base64url");
-      const given = presented ? Buffer.from(presented, "base64url") : Buffer.alloc(expected.length);
-      const matches = given.length === expected.length && timingSafeEqual(given, expected);
-      if (!presented || !matches || !/^\d{1,12}$/.test(timestamp) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) {
-        sessions.noteFailure(input.source);
-        return refused("invalid_signature");
-      }
-      sessions.clearFailures(input.source);
-      const at = now();
-      if (Math.abs(at / 1000 - Number(timestamp)) > CLOUD_PAIRING_SKEW_S) return refused("stale_request");
-      for (const [seen, until] of nonces) if (until <= at) nonces.delete(seen);
-      if (nonces.has(nonce)) return refused("replayed_request");
-      if (nonces.size >= MAX_NONCES) return { status: 503, body: { error: "busy" } };
-      nonces.set(nonce, at + CLOUD_PAIRING_NONCE_MS);
+      const verdict = verifier.verify({ ...input, method: "POST", target: CLOUD_PAIRING_PATH });
+      if (!verdict.ok && verdict.error === "invalid_signature") sessions.noteFailure(input.source);
+      else sessions.clearFailures(input.source);
+      if (!verdict.ok) return { status: verdict.status, body: { error: verdict.error } };
       let parsed: unknown;
       try { parsed = input.body.length ? JSON.parse(input.body.toString("utf8")) : {}; } catch { return { status: 400, body: { error: "invalid_body" } }; }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { status: 400, body: { error: "invalid_body" } };
