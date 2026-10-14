@@ -25,9 +25,10 @@ record is newer than the last reply).
 
 ## Rooms
 
-A room turn never resumes a stored session: every turn re-sends the room's
-bounded recent transcript. What grows is the warm provider process a driver
-keeps between one bot's consecutive turns in a room (Claude's idle reuse).
+A room turn resumes no stored session: every turn re-sends the room's
+bounded recent transcript (but see Room sessions below). What grows is the
+warm provider process a driver keeps between one bot's consecutive turns in
+a room (Claude's idle reuse).
 Each settled room turn records that bot's last measured prompt for the room's
 thread (in memory, like the warm process itself) and the room wire carries it
 as `memberContext`. From 80% the roster avatar gets a mark and a line under
@@ -50,6 +51,127 @@ pnpm exec vitest run server/room-context.e2e.test.ts server/room-context.test.ts
 The fixture proves a warm process is kept below the threshold or with
 automatic compaction off, and replaced after Compact now and above 90%, and
 that another member's turn replaces a bot's process and clears its warning.
+
+### Room sessions (off by default, Claude Code only)
+
+With `"context": { "roomSessions": true }` in config.json (or
+`PATCH /api/config`; `OMB_ROOM_SESSIONS=1` / `0` wins over the file), a room
+member whose own provider session is known to hold the room is sent only the
+lines that session has not been handed, under one note, instead of the
+bounded transcript again. The room remembers, in memory, which native session
+ran each member's last turn in a thread, which lines it was handed and how
+each read. A line that reads differently now than when it was shown is sent
+again, marked as replacing the earlier copy: a teammate's report, whose row
+is rendered from the request's state at that moment, and a line with an
+attachment, which reads without its tag on the turn that carries the image
+and with it afterwards. (A digest row is only given a file list where a
+turn took a checkpoint, which room turns do not; it would be sent again
+too.) With the setting off nothing is remembered or computed.
+
+Only Claude Code is covered, and only when all of these hold: the CLI is new
+enough to declare strict resume (2.1.267), and the turn mounts the
+engine-hook channel (on unless `OMB_HOOKS=0`), which is how the harness hears
+that the engine compacted a session. Codex, ACP agents, Pi, Muse Code and the
+API models keep the call described above whatever the setting says, and so
+does Claude Code without the hook channel.
+
+Every other turn is the call described above, unchanged:
+
+| When | The member's turn |
+|---|---|
+| Its first turn in the thread, or after a server restart | whole transcript |
+| Another member's turn came between, on the same engine instance (the driver keeps one process per thread) | whole transcript |
+| Its last turn failed, was stopped, held, timed out, or ended in another session than it began in | whole transcript |
+| Compact now, or the automatic 90% threshold | whole transcript, fresh session, the usual line |
+| **Claude Code compacted the session** (`PreCompact`, `SessionStart` with source `compact`) | whole transcript on the same warm session: it holds the CLI's summary now, not the room's lines. Also for a turn that was running when it compacted |
+| Its last measured context here is at 80% or more of where the engine compacts (`OMB_CLAUDE_AUTOCOMPACT`, 200,000 tokens by default; the model's window when that is `auto` or `off`) | whole transcript, so no delta is handed to a session about to compact |
+| **Its measured context here is lower than after its turn before, in the same native session** | whole transcript. A session's context only grows from one turn's end to the next, so it was compacted, trimmed or replaced, whatever the hooks said |
+| Its last turn here ended more than ten minutes ago (the driver's own idle time, counted from when that turn ended, however long it ran) | whole transcript |
+| It missed more lines than the window holds | whole transcript |
+| Its model, folder, instructions, approval level, tools, connections or `claudeUserMcp` changed, or the engine instance was reloaded | whole transcript |
+| A guest's turn | whole transcript, nothing remembered |
+
+A compaction is therefore noticed in two ways: the engine's hook says so
+while the turn runs, and, should the hook never arrive, the member's next
+reading is lower than the last one kept for that session. A member's last
+reading, its record and its place as last speaker are kept for as long as
+its turn runs, up to a day (a turn never seen to end is given up after
+that), whatever is dispatched in other rooms meanwhile; the record and the
+last speaker are kept for the idle time after the member's last turn was
+seen to end, the reading for the longer of a day and keep-warm's longest
+window, plus two idle times, counted from the same moment. With the hook
+delivered, no case is known that leaves a member without a line. What is
+still not caught is a compaction on a turn whose hook was lost and whose
+reading cannot show it, which is one of these:
+
+- the turn reported no reading (the room keeps the one before, which is not
+  lower);
+- no earlier reading of that session is held to fall from: the session
+  began on that very turn (a reset, a new session after another member's
+  turn or a failed one, a refused resume), no turn in it reported a reading
+  before, or the member's earlier turns in it ran while the setting was off
+  or were not managed (the first room turn after the server starts can go
+  out before the CLI's version is confirmed), the member's turn before
+  waited more than a day on a person (an open card holds a room turn past
+  every timeout; the turn is given up after a day, so its end is not seen
+  and it leaves no reading), or the module forgot the thread after a fault
+  of its own (it logs one line with the thread's id). The setting case is by design:
+  switching it off forgets every reading, so when it is switched on again
+  while a session is warm, the first turn back is a start that goes on in
+  that session, and a compaction on it has nothing to fall from;
+- the turn went on to grow the session past its earlier reading (a long
+  turn that began in a small session, or one that compacted early and
+  worked on).
+
+The member's next turn is then sent only the new lines although its session
+holds the engine's summary in place of the earlier ones, and so is every
+turn after it: the session's context grows again from the summary, so no
+later reading falls, until another rule in the table gives a start (another
+member's turn on the instance, ten quiet minutes, a turn that did not
+complete ok, the 80% rule, the room's own reset, or a later compaction
+whose hook arrives or whose reading falls). On main the same warm session
+would be sent the last lines again on every turn.
+
+Prompt-cache keep-warm (`cacheKeepWarm`, off by default) holds a member's
+Claude process past the ten minutes, for its window (three hours by
+default, a day at most), and the end of a hold arms the driver's idle timer
+once more. It changes nothing about when a member is resumed: a turn more
+than ten minutes after the member's last turn ended is a start whatever the
+process did. It changes which session that start goes on in: the kept
+process takes it, so the session holds more than the record says (safe: a
+line sent twice at worst, as on main), and a compaction on that start with
+its hook lost is seen only by a reading that outlived the process, which is
+why a reading is kept for keep-warm's longest window plus two idle times,
+one idle time longer than the process can live after a turn seen to end.
+
+If Claude Code cannot reopen the session, the driver starts a new one from
+the whole turn and says so in the room, as it does in a 1:1 chat. Two things
+the harness cannot see can make the driver reopen the recorded session from
+disk where the turn would otherwise have started a new one: a warm process
+that ended by itself, and a change in something only the driver keys its
+process on (the project's `.mcp.json`, the account's credentials, a base URL,
+a model alias). The session reopened is the recorded one and holds what the
+room says it holds; what that costs has not been measured.
+
+```sh
+pnpm exec vitest run server/room-sessions.e2e.test.ts
+pnpm exec vitest run server/host/room-sessions.test.ts server/host/room-transcript.test.ts server/room-context-settings.test.ts
+```
+
+The fixture wraps the fake Claude so every launch records its `--resume` or
+`--session-id`, and reads the exact text each room turn's engine received.
+It proves: with the setting off a second turn is the whole transcript on the
+warm process, as before; with it on, the second turn holds only the new lines
+in the same process; a turn after another member's is the whole window on a
+new session; so is a turn after a failed one and after a stopped one; Compact
+now starts a fresh session with the usual line, and the next turn is a delta
+against it; a line posted with `post_to_room` while the member worked arrives
+once, in its next turn, under its provenance note; a refused `--resume` ends
+with the whole turn on a new session and the driver's notice; after the fake
+CLI compacts the session (its hooks reach the harness with the room's thread
+and the member) the next turn is the whole window again. No real engine
+runs: what a live Claude Code session costs across a resume is not measured
+here.
 
 Evidence covers:
 

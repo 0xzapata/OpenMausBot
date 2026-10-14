@@ -16,6 +16,8 @@ import { draftSummary, foldPoint } from "./compaction-summary.ts";
 import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker, roomResetNote } from "./room-context.ts";
+import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
+import { createRoomSessions } from "./host/room-sessions.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -241,7 +243,7 @@ const SESSION_READ_MAX_CHARS = 8_000;
 import { promptWithReply, transcriptText } from "./replies.ts";
 import type { DataContext } from "./data-context.ts";
 import { promptWithDataContext } from "../shared/data-context.ts";
-import { admit, DRAIN_COALESCE_MAX_ITEMS } from "./admission.ts";
+import { admit } from "./admission.ts";
 import {
   drainSteeredMessages,
   hasQueuedSteeredMessages,
@@ -6245,6 +6247,7 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
   const payload = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
   const threadId = capability.threadId;
   const chip = (text: string) => store.appendMessage(threadId, { role: "bot", kind: "activity", tool: { name: text, ok: true } });
+  if (name === "PreCompact" || (name === "SessionStart" && payload.source === "compact")) roomSessions.distrust(threadId, capability.botId);
   if (name === "PreCompact") {
     const trigger = payload.trigger === "manual" ? "manual" : "auto";
     chip(`context compaction started (${trigger})`);
@@ -7228,7 +7231,7 @@ bus.subscribe((event: RuntimeEvent) => {
   };
 
   if (coordinatorVisibleText) pushAssistantText(coordinatorVisibleText, completedTurnId);
-  if (bot) handoffs.onEvent(event);
+  if (bot) handoffs.onEvent(event); else roomSessions.onEvent(event);
 
   if (event.turnId) liveTurnByThread.set(event.threadId, event.turnId);
   const requestOwner = bot ? directRequestOwners.get(event.threadId) : undefined;
@@ -8032,8 +8035,7 @@ async function compactConversation(input: {
     floor = measurement.tokens;
     store.patchTask(bot.id, threadId, { contextFloor: floor });
   }
-  const nativeCompactAt = instance.driverKind === "claudeAgent"
-    ? Number(autoCompactWindow({ ...process.env, ...cfg.instances?.[instance.instanceId]?.environment })) : undefined;
+  const nativeCompactAt = nativeCompactTokens(instance);
   if (!manual && !shouldCompact({ contextTokens: measurement?.tokens, estimatedBytes: bytes,
     budget: compactBudget(window, cfg.context?.compactAt, nativeCompactAt), floor, window, nativeCompactAt })) return;
   const fold = manual ? { folded: history, firstKeptId: "" } : foldPoint(history);
@@ -8070,6 +8072,8 @@ const handoffs = new Handoffs({
   replies: (threadId, turnId) => store.activePath(threadId)
     .filter((m) => m.role === "bot" && m.kind === "text" && !m.from && m.turnId === turnId).map((m) => m.id),
 });
+const roomSessions = createRoomSessions({ settings: () => cfg.context, messagesFor: (threadId) => store.messagesFor(threadId) });
+const nativeCompactTokens = (instance: { driverKind: string; instanceId: string }) => instance.driverKind === "claudeAgent" ? Number(autoCompactWindow({ ...process.env, ...cfg.instances?.[instance.instanceId]?.environment })) : undefined;
 
 
 // Keyed on tool + arguments: Claude's item.started carries only a bare tool name, which is never counted.
@@ -10773,7 +10777,6 @@ roomHandoffTimer.unref();
 function reconcileParkedRoots(): void {
   for (const node of coordinator.active()) reconcileParkedNode(node);
 }
-const GROUP_CONTEXT_MESSAGES = DRAIN_COALESCE_MAX_ITEMS;
 const MAX_GROUP_HOPS = 1;
 
 type GroupMemberTurnOutcome =
@@ -10812,39 +10815,7 @@ function teammateReportContext(requestId: string, readerBotId?: string): string 
   return `${reportNote(bot ?? "Teammate")}\n${JSON.stringify({ bot, task: escapeNotes(node.text), status: node.status, result: escapeNotes(node.result) })}`;
 }
 
-function serializeRoomContext(
-  threadId: string,
-  userName: string,
-  textOverrides?: ReadonlyArray<{ messageId: string; text: string }>,
-  readerBotId?: string,
-): string {
-  const messages = store.messagesFor(threadId);
-  const messagesById = new Map(messages.map((message) => [message.id, message]));
-  const overrides = new Map(textOverrides?.map((override) => [override.messageId, override.text]));
-  const narration = roomTurnNarrationIds(messages);
-  return messages
-    .filter((m) => !narration.has(m.id))
-    .filter((m) => (m.kind === "text" && m.text) || (m.kind === "digest" && m.digest) || m.roomRequest?.phase === "result")
-    .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => {
-      if (m.kind === "digest" && m.digest) {
-        return digestPromptLine(m.digest, m.from ? peerName(m.from.name) : "a bot");
-      }
-      if (m.roomRequest?.phase === "result") {
-        return teammateReportContext(m.roomRequest.id, readerBotId);
-      }
-      const overridden = overrides.get(m.id);
-      const rendered = overridden !== undefined ? { ...m, text: overridden } : m;
-      const person = m.sender?.name ?? userName;
-      const speaker = m.role === "user"
-        ? m.via === "api" ? `${person} (sent through the local API, not typed)` : person
-        : m.from ? peerName(m.from.name) : "Bot";
-      const line = `${speaker}: ${escapeNotes(transcriptText(rendered, messagesById, userName))}`;
-      if (!m.peerPost || !m.from || m.from.botId === readerBotId) return line;
-      return `${peerProvenanceNote({ botName: m.from.name, delivery: "post_to_room", unattended: m.peerPost.unattended })}\n${line}`;
-    })
-    .join("\n");
-}
+const roomTranscript = createRoomTranscript({ store, teammateReportContext });
 
 
 /** Scrubbed of secrets and attachment markup before it leaves this machine. */
@@ -11065,7 +11036,7 @@ async function runClaimedGroupMemberTurn(
   const resolvedLatestImages = latestUser?.text && !cardContinuation && !latestInBurst
     ? extractTurnImages(latestUser.text)
     : { text: latestUser?.text ?? "", images: [] };
-  const roomContext = serializeRoomContext(
+  const roomWindow = roomTranscript.window(
     threadId,
     userName,
     usesNativeImageInput && latestUser
@@ -11076,6 +11047,7 @@ async function runClaimedGroupMemberTurn(
       : undefined,
     bot.id,
   );
+  const roomContext = roomWindow.text;
   const turnImages = usesNativeImageInput ? [...burstImages, ...resolvedLatestImages.images] : [];
   const skills = availableSkills();
   const selectedSkills = mergeSkills(
@@ -11426,7 +11398,8 @@ async function runClaimedGroupMemberTurn(
       : "");
   const liveRosterBlock = !orchestration?.liveRoster || orchestration.resumed ? "" : `\n\n${orchestration.liveRoster}`;
   const heldReplay = heldReplayFor(group.id, threadId, bot.id, userName, roomContext);
-  const text = `${roomContext}\n\n(Reply to the conversation above as ${bot.name}.)${learnBlock}${heldReplay.block}${cardContinuation ? `\n\n${cardContinuation}` : ""}${coordinationReminder}${liveRosterBlock}`;
+  const roomTail = `\n\n(Reply to the conversation above as ${bot.name}.)${learnBlock}${heldReplay.block}${cardContinuation ? `\n\n${cardContinuation}` : ""}${coordinationReminder}${liveRosterBlock}`;
+  const text = roomContext + roomTail;
 
   const worksInWorkspace = supportsWorkspaceFiles(instance.driverKind);
   const workspace = worksInWorkspace ? ensureWorkspace(bot.id) : undefined;
@@ -11602,15 +11575,23 @@ async function runClaimedGroupMemberTurn(
     }
     if (roomReset || displaced) broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
     const roomShareNote = skillsHost.shareNote(bot, threadId, Boolean(workspace));
+    const clock = turnClockLine(Date.now(), hostTimeZone());
+    const roomToolScope = toolScopeForTurn(readyBot.id), roomUserMcp = claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp();
+    const roomSession = roomSessions.dispatch({
+      threadId, botId: readyBot.id, claimId: internalGeneration, instance, guestConfined: roomGuestConfined, reset: Boolean(roomReset), hooks: Boolean(integrations.hooks),
+      context: () => ({ ...roomMemberContexts.forThread(threadId)?.[readyBot.id], compactAt: nativeCompactTokens(instance) }),
+      config: [roomSystem.stable, cwd, readyBot.modelSelection, turnApprovalMode, roomToolScope, roomUserMcp, integrations],
+      window: roomWindow, tail: roomTail, wrap: (body) => withTurnClock(clock, withRecalled(roomRecalled, body + roomShareNote.text)),
+    });
     guardTurnDispatch(roomShareNote.after(instance.adapter.sendTurn({
-        ...(roomReset ? { sessionReset: true } : {}),
+        ...roomSession.send,
         threadId,
         botId: readyBot.id,
-        text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text + roomShareNote.text)),
+        text: roomSession.text,
         ...(roomRecalled ? { recalled: roomRecalled } : {}),
         images: turnImages,
         approvalMode: turnApprovalMode,
-        toolScope: toolScopeForTurn(readyBot.id),
+        toolScope: roomToolScope,
         ...(roomGuestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
         system: roomSystem.text,
         systemStable: roomSystem.stable,
@@ -11618,7 +11599,7 @@ async function runClaimedGroupMemberTurn(
         cwd,
         integrations,
         ...(integrations.browser && browserIsThePlace(roomPlan) ? { preloadBrowserTools: true } : {}),
-        mcpFromUserConfig: claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp(),
+        mcpFromUserConfig: roomUserMcp,
         mcpCallTimeoutMs: mcpCallTimeoutMinutes(cfg) * 60_000,
         ...(instance.instanceId === readyBot.modelSelection.instanceId
           ? memberTurnSelection(readyBot.modelSelection)
@@ -11629,6 +11610,7 @@ async function runClaimedGroupMemberTurn(
       })
       .then((dispatch) => {
         providerTurnId = dispatch.value.turnId;
+        roomSessions.bindTurn(threadId, internalGeneration, dispatch.value.turnId);
         bindInternalCapabilityToProviderTurn(threadId, internalGeneration, dispatch.value.turnId);
         orchestration?.onTurnStarted?.(dispatch.value.turnId);
         if (abandoned) {

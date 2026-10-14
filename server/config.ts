@@ -17,6 +17,7 @@ import type { McpServerSpec } from "./contracts.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import { deciderConfigSchema, type DeciderConfig } from "./decider/config.ts";
+import { roomContextSettings } from "./room-context-settings.ts";
 
 const optionalText = z.string().optional();
 const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -440,9 +441,7 @@ const appConfigSchema = z.object({
     rebuildBytes: z.number().int().min(1_024).max(1_000_000).optional(),
     compactAt: z.number().positive().max(10_000_000).optional(),
     autoCompact: z.boolean().optional(),
-    /** Start a fresh session before a room turn once context reaches this (fraction or tokens); default 0.9. */
-    roomCompactAt: z.number().positive().max(10_000_000).optional(),
-  }).optional(),
+  }).extend(roomContextSettings).optional(),
   /** Memory upkeep timing, for bots with Memory upkeep switched on. */
   memory: z.object({
     /** Quiet time after a turn before its facts are captured (ms). */
@@ -521,7 +520,7 @@ export interface AppConfig {
   rooms?: { turnTimeoutMinutes: number };
   mcp?: { callTimeoutMinutes?: number };
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
-  context?: { rebuildBytes?: number; compactAt?: number; autoCompact?: boolean; roomCompactAt?: number };
+  context?: { rebuildBytes?: number; compactAt?: number; autoCompact?: boolean; roomCompactAt?: number; roomSessions?: boolean };
   memory?: { captureQuietMs?: number; tidyHour?: number };
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
   features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; shareLearnedSkills?: "off" | "ask" | "auto"; roomMemoryCapture?: boolean };
