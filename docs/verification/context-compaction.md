@@ -38,13 +38,18 @@ provider session gets the same bounded transcript every turn gets. Before a
 room turn, a bot at or above `context.roomCompactAt` (default `0.9`, read like
 `compactAt`) is compacted the same way without asking; `autoCompact: false`
 turns that off, but not the button. Either way the room shows an activity line.
+A reading lives only as long as the warm process it measures: it is dropped
+when another member's turn dispatches on the same engine in that thread (the
+driver replaces the thread's one warm process), and once it is older than the
+session idle window or the thread's keep-warm hold, whichever ends later.
 
 ```sh
 pnpm exec vitest run server/room-context.e2e.test.ts server/room-context.test.ts src/lib/context-warning.test.ts
 ```
 
 The fixture proves a warm process is kept below the threshold or with
-automatic compaction off, and replaced after Compact now and above 90%.
+automatic compaction off, and replaced after Compact now and above 90%, and
+that another member's turn replaces a bot's process and clears its warning.
 
 Evidence covers:
 

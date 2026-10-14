@@ -22,7 +22,7 @@ function setup(url: string, html: string, saved: Login[]) {
   }));
   const deps: FillLoginDeps = {
     engine: (args) => page!.engine(args),
-    insertText: (port, text) => page!.insertText(port, text),
+    insertText: (text) => page!.insertText(text),
     remember: (value, kind) => { remembered.push([kind, value]); },
     now: () => NOW,
     sleep: async () => undefined,
@@ -33,7 +33,6 @@ function setup(url: string, html: string, saved: Login[]) {
   return { page, fill, remembered };
 }
 
-/** No value of any secret in what the bot hears, nor on any engine command line. */
 function expectNoSecret(outcome: unknown, current: FakeLoginPage, secrets: string[]) {
   const said = JSON.stringify(outcome);
   const commands = JSON.stringify(current.engineCalls);
@@ -51,13 +50,12 @@ describe("fill_login on a saved login's own page", () => {
     expect(outcome.text).toBe("Filled the username and the password for alice@example.com on accounts.example.com. Submit the form now (its sign-in button, or Enter), then check you are signed in. You never see the password; do not read it back from the page.");
     expect(page.field("#email").value).toBe("alice@example.com");
     expect(page.field("#password").value).toBe(PASSWORD);
-    // The page's own scripts saw typing, as a React form needs.
     expect(page.state).toMatchObject({ email: "alice@example.com", password: PASSWORD });
     expect(page.typed).toEqual(["alice@example.com", PASSWORD]);
-    // The search box and the hidden field are left alone, and no mark stays behind.
     expect(page.field("input[name=q]").value).toBe("");
     expect(page.field("input[name=csrf]").value).toBe("token-not-a-secret");
     expect(page.window.document.querySelectorAll("[data-omb-login]")).toHaveLength(0);
+    expect(page.engineCalls.filter((args) => args[0] === "stream")).toEqual([]);
     expect(remembered).toContainEqual(["password", PASSWORD]);
     expectNoSecret(outcome, page, [PASSWORD]);
   });

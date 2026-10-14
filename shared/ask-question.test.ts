@@ -228,9 +228,6 @@ describe("questionAnswersByQuestion", () => {
   })!;
 
   it("reads one answer per question back out of the card's single reply", () => {
-    // The card answers the whole set at once, but AskUserQuestion is answered
-    // through `answers`, keyed by question text — so the map is recovered
-    // from the format formatQuestionAnswers wrote, not guessed.
     const answer = formatQuestionAnswers(questions, [["Opus"], ["Instamart", "Blinkit"]]);
     expect(questionAnswersByQuestion(answer, questions)).toEqual({
       "Which model?": "Opus",

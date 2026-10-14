@@ -69,12 +69,8 @@ export function sidebarGoalRunPreview(run: GroupGoalRunCardData): string {
   return summary ? `${label}: ${summary}` : label;
 }
 
-/** The catalog keys a connection card's preview reads its state from. */
 export type SidebarConnectorPreviewKey = "connectors.card.connected" | "connectors.card.waiting" | "connectors.card.connectSecurely";
 
-/** A connection card previews as the app and where it stands, in the
- * reader's language, never as the English line the computer writes for
- * phones that cannot draw the card yet. */
 export function sidebarConnectorPreview(
   connector: Pick<ConnectorCardData, "label" | "status" | "dismissed">,
   say: (key: SidebarConnectorPreviewKey) => string,
@@ -99,8 +95,6 @@ export function sidebarSectionCollapsed(
   return sidebarLayoutInteractive(density, query) && collapsedIds.includes(id);
 }
 
-/** Thread rows for bots that the circle grid took out of the normal list.
- * Icons and the row layout already show those rows, so this stays off there. */
 export function pinnedCircleThreadListVisible(
   circles: boolean,
   density: SidebarDensityMode,
@@ -109,10 +103,6 @@ export function pinnedCircleThreadListVisible(
   return circles && density !== "icons" && pinnedCount > 0;
 }
 
-/** Pinned bots are a virtual view. Their saved section is left untouched so
- * unpinning returns them to the context they came from.
- * With universal pins, a pin lifts a bot out of every group, including a
- * section's chief. Without it, chiefs stay in the group they run. */
 export function partitionSidebarBots<T extends SidebarBot>(
   bots: T[],
   options?: { universalPins?: boolean },
@@ -132,8 +122,6 @@ export function partitionSidebarBots<T extends SidebarBot>(
   return { unsectionedChief, pinnedBots, sectionChiefs, sectionedBots, unsectionedBots };
 }
 
-/** Bot-to-bot DMs are also a virtual view. We do not rewrite their persisted
- * context, because that context still participates in comms visibility. */
 export function partitionSidebarGroups<T extends SidebarGroup>(groups: T[]) {
   const botChats = groups.filter((group) => Boolean(group.dm));
   const rooms = groups.filter((group) => !group.dm);
@@ -142,8 +130,6 @@ export function partitionSidebarGroups<T extends SidebarGroup>(groups: T[]) {
   return { botChats, sectionedRooms, unsectionedRooms };
 }
 
-/** Restore saved positions while inserting newly visible buckets at their
- * natural position instead of always appending them. */
 export function orderedSidebarSections(
   present: SidebarSectionId[],
   savedOrder: SidebarSectionId[],
@@ -202,8 +188,6 @@ export function placeSection(
   return result;
 }
 
-/** Preserve temporarily empty sections in the saved order so their position
- * returns when a bot or channel is later assigned to them again. */
 export function mergeSectionOrder(
   savedOrder: SidebarSectionId[],
   visibleOrder: SidebarSectionId[],

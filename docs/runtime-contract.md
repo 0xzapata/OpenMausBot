@@ -50,7 +50,7 @@ queued ──admit──> running ──turn ends──> completed | failed | ca
 
 `inherited` is the Chief conversation's level only when the origin is `person` or `routine` **and** the requester is a Chief, or a Chief is an ancestor in the same root. Outside lineage inherits nothing.
 
-The inherited level is capped by what the assignee's engine really does (`shared/approval-mode.ts`): `full` only if `supportsApprovalMode(kind, "full")`; `auto` only if `hasNativeAutoReview(kind)`, otherwise `edits` if supported, otherwise `own`. `levelSource` says which rule won. The permission mode a turn runs with must equal the level on its record (invariant I6).
+The inherited level is capped by what the assignee's engine really does (`shared/approval-mode.ts`): `full` passes on every engine (`supportsApprovalMode(kind, "full")` is always true, Full being the default level); `auto` only if `hasNativeAutoReview(kind)`, otherwise `edits` if supported, otherwise `own`. `levelSource` says which rule won. The permission mode a turn runs with must equal the level on its record (invariant I6).
 
 ## 4. One envelope
 

@@ -5,8 +5,7 @@ import type { Group } from "@/state/store";
 type Room = Pick<Group, "threadId" | "working" | "busyBotId" | "tasks">;
 
 describe("room thread state", () => {
-  // The room's open thread is idle while two others run side by side; the
-  // room-level flag counts every thread, busyBotId only the open one's.
+  // The open thread idles while two others run: the room flag counts every thread, busyBotId only the open one's.
   const room: Room = {
     threadId: "open",
     working: true,
@@ -54,7 +53,6 @@ describe("room thread state", () => {
     expect(roomThreadSpeakerId(legacy, "open")).toBe("scout");
     expect(roomThreadSpeakerId(legacy, "other")).toBeNull();
     expect(roomThreadsWorkingElsewhere(legacy)).toBe(0);
-    // a bot-to-bot channel has no task list at all
     expect(roomThreadWorking({ threadId: "dm", working: true }, "dm")).toBe(true);
   });
 });
