@@ -32,6 +32,19 @@ export const BOOT_PROBE_FAST_INTERVAL_MS = 25;
 export const BOOT_PROBE_FAST_WINDOW_MS = 5_000;
 export const BOOT_PROBE_INTERVAL_MS = 500;
 
+const LISTENING_LINE = "openmausbot server on ";
+
+/** A stdout reader that turns true once the child has said it is listening,
+ * even when that line arrives split across two chunks. */
+export function listeningSignal() {
+  let tail = "";
+  return (chunk) => {
+    const text = tail + chunk;
+    tail = text.slice(-LISTENING_LINE.length);
+    return text.includes(LISTENING_LINE);
+  };
+}
+
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -60,11 +73,12 @@ export async function pollServerIdentity({
   fetchImpl = globalThis.fetch,
 }) {
   const startedAt = now();
-  let deadline = startedAt + bootTimeoutMs;
+  // Read fresh at every check: the child can say it is listening while a
+  // probe is in flight, and the answer it then gives must get the grace.
+  const deadline = () => startedAt + bootTimeoutMs + (isListening() ? listeningGraceMs : 0);
   for (;;) {
     if (isExited()) return { outcome: "exited" };
-    if (isListening()) deadline = startedAt + bootTimeoutMs + listeningGraceMs;
-    const remainingMs = Math.max(0, deadline - now());
+    const remainingMs = Math.max(0, deadline() - now());
     if (remainingMs <= 0) return { outcome: "timeout" };
 
     let res;
@@ -78,14 +92,14 @@ export async function pollServerIdentity({
       // it), then let the loop condition decide.
       const intervalMs =
         now() - startedAt < BOOT_PROBE_FAST_WINDOW_MS ? BOOT_PROBE_FAST_INTERVAL_MS : BOOT_PROBE_INTERVAL_MS;
-      await sleep(Math.min(intervalMs, Math.max(1, deadline - now())));
+      await sleep(Math.min(intervalMs, Math.max(1, deadline() - now())));
       continue;
     }
     const body = await res.json().catch(() => null);
     // Body consumption is covered by the same abort signal as fetch. If it
     // reaches the deadline, a null body means the probe timed out—not that a
     // different process answered on the port.
-    if (now() >= deadline) return { outcome: "timeout" };
+    if (now() >= deadline()) return { outcome: "timeout" };
     // Read the expected pid NOW, after the response landed: until the child's
     // `spawn` event fires the getter yields undefined, and a child that has
     // not spawned cannot be the one answering — so an answer during that
@@ -100,7 +114,7 @@ export async function pollServerIdentity({
     if (!identified) return { outcome: "foreign-owner" };
     // A response that finishes after the budget must not count as a healthy
     // boot — re-check the clock before declaring victory.
-    if (now() >= deadline) return { outcome: "timeout" };
+    if (now() >= deadline()) return { outcome: "timeout" };
     return { outcome: "ready", latencyMs: now() - startedAt };
   }
 }

@@ -5,6 +5,7 @@ import {
   BOOT_PROBE_FAST_INTERVAL_MS,
   BOOT_PROBE_FAST_WINDOW_MS,
   BOOT_PROBE_INTERVAL_MS,
+  listeningSignal,
   pollServerIdentity,
 } from "./server-boot-probe.mjs";
 
@@ -290,4 +291,27 @@ test("a child that says it is listening gets the grace before it times out (#282
   });
   assert.equal((await probe(false)).outcome, "timeout");
   assert.equal((await probe(true)).outcome, "ready");
+});
+
+test("the listening line is heard when stdout splits it across chunks", () => {
+  const heard = listeningSignal();
+  assert.equal(heard("boot… openmausbot ser"), false);
+  assert.equal(heard("ver on http://127.0.0.1:8799\n"), true);
+  assert.equal(listeningSignal()("nothing to see"), false);
+});
+
+test("an answer in flight when the child starts listening gets the grace", async () => {
+  let listening = false;
+  // The answer lands after the plain budget; the child says it is listening meanwhile.
+  const slowAnswer = async (...args) => {
+    setTimeout(() => { listening = true; }, 50);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return okFetch()(...args);
+  };
+  const outcome = await pollServerIdentity({
+    port: 8799, pid: () => 4242, bootTimeoutMs: 1_000, listeningGraceMs: 2_000,
+    isListening: () => listening, fetchImpl: slowAnswer,
+    now: (() => { const t0 = Date.now(); return () => t0 + (Date.now() - t0) * 5; })(),
+  });
+  assert.equal(outcome.outcome, "ready");
 });

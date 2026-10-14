@@ -21,7 +21,7 @@ import {
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
 import { evictStartupCacheOnce } from "./startup-cache-eviction.mjs";
 import { activateExistingWindow, releaseSingleInstanceLock } from "./single-instance.mjs";
-import { pollServerIdentity } from "./server-boot-probe.mjs";
+import { listeningSignal, pollServerIdentity } from "./server-boot-probe.mjs";
 import { createServerSupervisor } from "./server-supervisor.mjs";
 import { serverChildLaunch } from "./server-child-launch.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
@@ -1522,7 +1522,7 @@ async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmen
   utilityServerExits.set(proc, new Promise((resolve) => {
     resolveServerExit = resolve;
   }));
-  proc.stdout?.on("data", (d) => { listening ||= String(d).includes("openmausbot server on "); slog(`[out] ${String(d).trimEnd()}`); });
+  proc.stdout?.on("data", (d) => { listening ||= heardListening(String(d)); slog(`[out] ${String(d).trimEnd()}`); });
   proc.stderr?.on("data", (d) => slog(`[err] ${String(d).trimEnd()}`));
   proc.on("message", (message) => {
     if (!serverSupervisor.isCurrent(proc)) return;
@@ -1541,7 +1541,7 @@ async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmen
     syncDesktopMutationToken(proc);
     syncPhoneSecretKey(proc);
   });
-  let exited = false, listening = false;
+  let exited = false, listening = false; const heardListening = listeningSignal();
   proc.once("exit", (code) => {
     exited = true;
     trustedApprovalMode.rejectProcess(proc);
