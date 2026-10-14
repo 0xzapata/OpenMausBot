@@ -2,6 +2,7 @@
 // through its transcript. stdout is the MCP transport: never log there.
 import readline from "node:readline";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   CONNECTOR_ALLOWED_TOOLS_ENV,
   CONNECTOR_SERVICE_SLUGS_ENV,
@@ -9,6 +10,7 @@ import {
   parseConnectorAllowedToolsEnv,
   parseConnectorServiceSlugsEnv,
 } from "./connector-advertisement.ts";
+import { withSignedOutHint } from "./connector-signed-out-hint.ts";
 
 type Json = Record<string, unknown>;
 
@@ -22,6 +24,7 @@ const SERVICE_SLUGS = parseConnectorServiceSlugsEnv(process.env[CONNECTOR_SERVIC
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const INITIALIZE_RELAY_TIMEOUT_MS = 1_000;
 const RELAY_TIMEOUT_MS = 10 * 60_000;
+const TOOLS_LIST_RETRY_MS = 500;
 
 function parsedHeaders(): Record<string, string> {
   try {
@@ -209,11 +212,14 @@ async function handle(message: Json): Promise<void> {
     }
   }
   try {
-    const response = await relay(message);
+    // The engine lists tools once per session, so one failed listing would leave the whole session without them.
+    const response = method === "tools/list"
+      ? await relay(message).catch(() => delay(TOOLS_LIST_RETRY_MS).then(() => relay(message)))
+      : await relay(message);
     if (response && id !== undefined) {
       send(method === "tools/list" && ALLOWED_TOOLS
         ? filterToolsListFrame(response, ALLOWED_TOOLS, SERVICE_SLUGS)
-        : response);
+        : method === "tools/call" ? withSignedOutHint(message, response, SERVICE_SLUGS) : response);
     }
   } catch (error) {
     if (id === undefined) return;

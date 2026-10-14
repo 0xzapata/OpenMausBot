@@ -5,7 +5,7 @@ import type { IncomingMessage } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import {
   CLOUD_BROWSER_SIGN_IN_MAX_TTL_S, CLOUD_HOME_MARKER, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_MAX_TTL_S, CLOUD_PAIRING_NONCE_MS, CLOUD_PAIRING_SKEW_S, cloudHomeConfiguration, cloudHomeConfigured,
-  cloudHomeHost, cloudHomeOffersPlace, cloudHomePlaceRefusal, cloudPairingSignature, createCloudPairing, firstCloudTurnPatch, prepareCloudHomeVolume,
+  cloudHomeHost, cloudHomeOffersPlace, cloudHomePlaceRefusal, cloudPairingSignature, cloudRequestSignature, createCloudPairing, firstCloudTurnPatch, prepareCloudHomeVolume,
   withoutIgnoredCloudKeys,
 } from "./cloud-home.ts";
 import { cloudHomeChildEnvironments, codeTrustProblem, passwdIds, spawnWithSecrets } from "./cloud-home-start.ts";
@@ -100,7 +100,7 @@ it("offers the built-in browser and cloud computers, never this computer or a Lo
 
 it("refuses the places it never offers with what is true there, not a setup step", () => {
   const local = cloudHomePlaceRefusal("local")!, vm = cloudHomePlaceRefusal("vm")!;
-  expect(local).toBe("This computer isn't a place on My Cloud. Set Works on to Auto, Cloud computer or Browser, or lend your Mac under Settings → MausBot Cloud.");
+  expect(local).toBe("This computer isn't a place on My Cloud. Set Works on to Auto, Cloud computer or Browser, or lend your computer under Settings → MausBot Cloud.");
   expect(vm).toBe("Bots on My Cloud can't use a Local VM. Set Works on to Auto, Cloud computer or Browser.");
   for (const text of [local, vm]) {
     expect(text).not.toMatch(/configure|Computer panel|install|set (?:it|one) up/i);
@@ -141,6 +141,14 @@ it("matches the Admin's signature byte for byte", () => {
   // printf 'v1\\n1800000000\\nnonce-fixture-0001\\nPOST\\n/api/cloud/pairing\\n<b64url sha256 of {}>' | openssl dgst -sha256 -hmac k -binary | base64url
   expect(cloudPairingSignature("k", "1800000000", "nonce-fixture-0001", "{}")).toBe("OlkaKFywjZ3VtoYxwTWpy025Itpl14gCeUrp8JYpX2o");
   expect(cloudPairingSignature("k", "1800000000", "nonce-fixture-0001", Buffer.from("{}"))).toBe("OlkaKFywjZ3VtoYxwTWpy025Itpl14gCeUrp8JYpX2o");
+  expect(cloudRequestSignature("k", "1800000000", "nonce-fixture-0001", "POST", "/api/cloud/pairing", "{}")).toBe("OlkaKFywjZ3VtoYxwTWpy025Itpl14gCeUrp8JYpX2o");
+});
+
+it("signs a health read over its method, path and query, byte for byte as the Admin does", () => {
+  // Same vector in openmaus-cloud tests/cloud-health.test.ts:
+  // printf 'v1\n1800000000\nnonce-fixture-0001\nGET\n/api/cloud/health?after=0\n<b64url sha256 of the empty body>' | openssl dgst -sha256 -hmac k -binary | base64url
+  expect(cloudRequestSignature("k", "1800000000", "nonce-fixture-0001", "GET", "/api/cloud/health?after=0", "")).toBe("qX07j43XUqYYi8T3l9T8WnC-hWLZSYuuvmRguJpbJKc");
+  expect(cloudRequestSignature("k", "1800000000", "nonce-fixture-0001", "GET", "/api/cloud/health?after=1", "")).not.toBe("qX07j43XUqYYi8T3l9T8WnC-hWLZSYuuvmRguJpbJKc");
 });
 
 it("refuses a wrong key, a tampered request or a malformed signature, and counts each", () => {

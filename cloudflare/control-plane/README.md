@@ -268,10 +268,10 @@ A failure in one account is logged and never stops the others:
    `reclaim_requested_at`, at most 20 per run across all accounts. It never
    deletes anything itself; cleanup does, through the same ownership-verified
    path as an owner's DELETE. A tunnel is idle only when Cloudflare reports it
-   - `inactive` (never ran), with no activation time, created at least seven
+   - `inactive` (never ran), with no activation time, created at least two
      days ago; or
    - `down` with its last connection ended at least
-     `OMB_TUNNEL_OFFLINE_RECLAIM_DAYS` (default 21, minimum 7) days ago and no
+     `OMB_TUNNEL_OFFLINE_RECLAIM_DAYS` (default 21, minimum 3) days ago and no
      later activation.
 
    `healthy` and `degraded` tunnels, any reported connection, an unknown

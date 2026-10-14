@@ -179,7 +179,7 @@ import {
   type AppConfig,
   vpsSshAlias,
   browserEngineAttachCdpUrl,
-  DATA_DIR,
+  DATA_DIR, EVENTS_DIR,
   customMcpServers,
   onConfigSaved,
   CLAUDE_API_INSTANCE,
@@ -244,6 +244,7 @@ import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine }
 import { chiefEscalationsEnabled, NEEDS_INPUT_GATE, peerApprovalGate, RAISED_GATE } from "./escalations.ts";
 import { createChiefNotices } from "./host/chief-notices.ts";
 import { needsInputQuestion } from "./runtime-coordinator.ts";
+import { RETRY_BLOCKED } from "./incidents.ts";
 
 const SESSION_READ_MAX_CHARS = 8_000;
 import { promptWithReply, transcriptText } from "./replies.ts";
@@ -279,10 +280,9 @@ import { ManagedDesktopProviders } from "./managed-desktop.ts";
 import { mainThread, wasOldestThread } from "./main-thread.ts";
 import { computerKindForResource, ManagedDesktopPolicy, type ComputerKind } from "./managed-policy.ts";
 import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER } from "./hosted-models.ts";
-import {
-  CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_PATH, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal,
-  createCloudPairing, firstCloudTurnPatch, readSignedBody,
-} from "./cloud-home.ts";
+import { CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal, firstCloudTurnPatch } from "./cloud-home.ts";
+import { createCloudHealth } from "./cloud-health.ts";
+import { createCloudSignedRoutes } from "./routes/cloud-signed.ts";
 import { CLOUD_PERSONAL_REFUSAL, settleCloudOwnership, type CloudOwnership } from "./cloud-owner.ts";
 import { createCloudMoveRoutes, workspaceShared } from "./cloud-move-http.ts";
 import { RESTART_EXIT_CODE } from "./restart.ts";
@@ -439,7 +439,7 @@ import { relayFrame, relayInsertText } from "./browser-relay.ts";
 import { browserEvidence, browserSteps, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
-import { BrowserLive } from "./browser-live.ts";
+import { BrowserLive, browserRestartRefusal } from "./browser-live.ts";
 import {
   agentBrowserIntegration,
   browserEngineEncryptionKey,
@@ -498,8 +498,8 @@ import {
 import { OrgLibrary } from "./org-library.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 import { autoLocalVmAttachable, type ContainerComputerStatus } from "./container-computer.ts";
-import { startAutoVmClaim, type AutoVmClaimSlot, type AutoVmClaimTable } from "./auto-vm-claims.ts";
-import { CONTROL_ACT_WITHIN_MS, CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_WAIT_MS, CONTROL_WAITED, controlRefusal, settledWithin, type ControlState } from "./control-client.ts";
+import { keepTransient, lazyClaimRetryText, settledWithin, startAutoVmClaim, withinBudget, type AutoVmClaimSlot, type AutoVmClaimTable } from "./auto-vm-claims.ts";
+import { CONTROL_ACT_WITHIN_MS, CONTROL_BUSY, CONTROL_HANDED_BACK, CONTROL_WAIT_MS, CONTROL_WAITED, controlRefusal, type ControlState } from "./control-client.ts";
 import { computerFreeAfterText, computerParkedText, computerPersonAwayText, computerStoppedWaitingText, computerWaitingText, type ComputerHolder } from "./computer-wait.ts";
 import { modelContextWindow } from "./model-context-window.ts";
 import { browserIsThePlace, cloudPlaceRefusal, computerSkippedNote, computerToolsRefusal, parseSurface, PlaceUnavailableError, placeUnavailable, resolveSurface, surfaceLabel, surfaceOfComputerKind, surfacePrompt, type ComputerWant, type PlaceSource, type Surface } from "./surface.ts";
@@ -704,7 +704,6 @@ const lendingMemory = CLOUD_HOME ? createLendingMemory({
   log: (line) => console.warn(line),
 }) : null;
 if (CLOUD_HOME) readMemoryOnlyFromRegularFiles();
-const cloudPairing = CLOUD_HOME ? createCloudPairing({ secret: CLOUD_HOME.bootstrapSecret, sessions }) : null;
 if (CLOUD_HOME) {
   // Held in memory from here on: no engine or tool this server starts inherits the signing secret or a gateway's settings.
   delete process.env.OMB_CLOUD_BOOTSTRAP_SECRET;
@@ -877,8 +876,8 @@ function cloudLendingTurn(capability: Pick<InternalCapability, "botId" | "thread
   };
 }
 
-const LENDING_SOMEONE_ELSE = "Someone else wrote in this conversation, so it can't use your Mac. Start a new conversation to use it.";
-const LENDING_MEMORY_CHANGED = "This bot's memory was changed in a conversation you didn't write. Review it in Memory to use your Mac again.";
+const LENDING_SOMEONE_ELSE = "Someone else wrote in this conversation, so it can't use your computer. Start a new conversation to use it.";
+const LENDING_MEMORY_CHANGED = "This bot's memory was changed in a conversation you didn't write. Review it in Memory to use your computer again.";
 
 function cloudLendingRefusal(capability: Pick<InternalCapability, "botId" | "threadId" | "generation">): "unproven" | "not-owner" | "someone-else" | "memory-changed" | null {
   const refusal = cloudHomeLendingRefusal(cloudLendingTurn(capability));
@@ -3346,6 +3345,11 @@ const store = new Store(
 );
 const skillsHost = createSkillsLibraryHost({ store, cfg, appendSkillRequestCard });
 const { listBotSkills, readBotSkillFile } = skillsHost;
+const cloudHealth = CLOUD_HOME ? createCloudHealth({ store, bus, dataDir: DATA_DIR, eventsDir: EVENTS_DIR, version: serverVersion(), image: process.env.OMB_CLOUD_IMAGE,
+  engines: () => registry.instances().map((instance) => ({ instanceId: instance.instanceId, driverKind: instance.driverKind, snapshot: registry.lastSnapshot(instance.instanceId) })),
+  connectors: () => composio.configured(cfg) ? composio.connectedServices(cfg) : null,
+  browser: () => ({ available: browserEngineStatus().kind === "ready", installing: Boolean(browserEngineInstall), interrupted: browserRuntime.interruptedCount() }) }) : null;
+const cloudSigned = CLOUD_HOME && cloudHealth ? createCloudSignedRoutes({ secret: CLOUD_HOME.bootstrapSecret, sessions, health: cloudHealth }) : null;
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
 const sendSequencer = new SendSequencer();
@@ -5681,6 +5685,7 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 
 const lastReply = new Map<string, string>();
 const stoppedTurns = new Map<string, string | undefined>();
+const settlingTurns = new Set<string>();
 const sessionModelByThread = new Map<string, string>();
 const nativeReviewNoticed = new Set<string>();
 const providerLabel = (provider: string): string => {
@@ -6418,6 +6423,7 @@ async function computerCallGate(internalCapability: InternalCapability, signal?:
       if (lazyClaim.begin && Date.now() < deadline && !signal?.aborted) {
         await settledWithin(lazyClaim.begin, deadline - Date.now(), signal);
         if (lazyClaim.claimed || lazyClaim.failed) continue;
+        if (lazyClaim.retryReason) return { held: true, helpOpen: false, blockedReason: lazyClaimRetryText(lazyClaim) };
       }
       held = { held: true, helpOpen: false, blockedReason: lazyClaim.pendingReason ?? CONTROL_BUSY };
     } else {
@@ -6620,7 +6626,7 @@ function mountBotBoat(
         });
         if (!attached) throw new Error("the cloud computer could not be created or reached");
       } catch (error) {
-        throw opts.source ? await asPlaceFailure(error, "cloud", opts.source, bot, "box") : error;
+        throw keepTransient(error, opts.source ? await asPlaceFailure(error, "cloud", opts.source, bot, "box") : error);
       }
       slot.boxId = attached.boxId;
       opts.onClaimed(attached.capture);
@@ -6647,12 +6653,6 @@ async function attachBotBoat(bot: BotRecord, owner: TurnOwner, start: { budgetMs
     boxId: machine.id as string,
     capture: () => boat.screenshotBoat(cfg, bot.id, machine.id),
   };
-}
-
-function withinBudget<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
-  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
 }
 
 async function startBotBoat(bot: BotRecord) {
@@ -7525,11 +7525,14 @@ bus.subscribe((event: RuntimeEvent) => {
       const computerParked = event.stopReason === "exit_before_result" &&
         turnResourceOwners.get(event.threadId)?.computerParkedOn !== undefined;
       const capContinues = !event.ok && turnStops.read(event.threadId, completedTurnId)?.handoffPath !== undefined;
-      if (!event.ok && !stopped && !lazyClaimAlreadyReported && !computerParked && !capContinues && !routines?.runForThread(event.threadId)) {
-        const broken = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
-        if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: turnStops.failureCause(event) ?? "the run ended without a result" });
-        if (bot) void quotaSwitch.turnFailed(bot, event, internal);
-      } else if (bot && event.ok) quotaSwitch.turnSucceeded(bot, event.threadId);
+      // Judged now: an assignment reports its own failure, and has ended by the time the thread settles.
+      const failed = !event.ok && !stopped && !lazyClaimAlreadyReported && !computerParked && !capContinues && !routines?.runForThread(event.threadId);
+      const broken = failed && !coordinator.assignerOf(event.threadId) ? bot ?? (speaker ? store.bot(speaker.botId) : undefined) : undefined;
+      const failureDetail = turnStops.failureCause(event) ?? "the run ended without a result";
+      // Filed once the thread has settled, so the Chief's retry finds it free.
+      const fileIncident = () => { if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: failureDetail }); };
+      if (failed && bot) void quotaSwitch.turnFailed(bot, event, internal);
+      else if (bot && event.ok) quotaSwitch.turnSucceeded(bot, event.threadId);
       const question = bot && event.ok && !stopped && completedTurnId && chiefEscalationsEnabled(cfg) ? needsInputQuestion(store.activePath(event.threadId)
         .findLast((message) => message.role === "bot" && message.kind === "text" && message.turnId === completedTurnId)?.text ?? "") : undefined;
       if (bot && question !== undefined) reportEscalation({ kind: "needs-input", bot, threadId: event.threadId, gate: NEEDS_INPUT_GATE, reason: question, alreadyNotified: false });
@@ -7543,6 +7546,7 @@ bus.subscribe((event: RuntimeEvent) => {
         const isCurrent = () => directTurnGenerationByThread.get(event.threadId) === generation &&
           Boolean(store.taskByThread(bot.id, event.threadId));
         const settleDirectTurn = (resumeQueued = false) => {
+          settlingTurns.delete(event.threadId);
           // A stale capture must never release a replacement generation's VM or busy state.
           const ownsResources = resourceOwner &&
             turnResourceOwners.get(event.threadId)?.generation === resourceOwner.generation;
@@ -7613,6 +7617,7 @@ bus.subscribe((event: RuntimeEvent) => {
             ...(tokens ? { usage: { input: tokens.input ?? 0, output: tokens.output ?? 0, ...(typeof tokens.cachedInput === "number" ? { cachedInput: tokens.cachedInput } : {}), costUsd: event.cost ?? null } } : {}),
           }) : Promise.resolve();
         if (resourceOwner) settlingResourceOwners.set(resourceOwner.threadId, resourceOwner.generation);
+        settlingTurns.add(event.threadId);
         liveTurnByThread.delete(event.threadId);
         const routineReportThread = routineRun ? routineSourceThread(routineRun) : null;
         if (!routineReportThread && (!internal || reviewAnswer)) store.patchTask(bot.id, event.threadId, { unread: true });
@@ -7637,9 +7642,9 @@ bus.subscribe((event: RuntimeEvent) => {
           }).catch(() => {}).finally(() => {
             clearTimeout(timeout);
           });
-          void Promise.all([screenSettled, digestSettled]).finally(() => settleDirectTurn(true));
+          void Promise.all([screenSettled, digestSettled]).finally(() => settleDirectTurn(true)).finally(fileIncident);
         } else {
-          void digestSettled.finally(() => settleDirectTurn(true));
+          void digestSettled.finally(() => settleDirectTurn(true)).finally(fileIncident);
         }
       } else if (group && speaker) {
         const tokens = event.usage ?? lastReported;
@@ -7689,6 +7694,7 @@ bus.subscribe((event: RuntimeEvent) => {
         const speakingBot = store.bot(speaker.botId);
         if (speakingBot?.busy) store.setActivity(speakingBot.id, "idle");
       }
+      if (!bot) fileIncident();
       break;
     }
   }
@@ -8659,7 +8665,8 @@ async function startTurn(
     line: !continuation && requestMessageId === userMessage.id ? userMessage : undefined });
   directRequestOwners.set(threadId, { generation: dispatchClaimId, messageId: requestMessageId,
     generations: requestGenerations, turnId: null, ...(opts?.automationSource ? { automation: opts.automationSource } : {}), origin: requestOrigin });
-  if (CLOUD_HOME && cloudHomeLendingRefusal(cloudLendingTurn({ botId, threadId, generation: dispatchClaimId })) !== null) noteForeignTurn(botId, threadId, dispatchClaimId);
+  const notesRefused = Boolean(CLOUD_HOME) && cloudHomeLendingRefusal(cloudLendingTurn({ botId, threadId, generation: dispatchClaimId })) !== null;
+  if (notesRefused) noteForeignTurn(botId, threadId, dispatchClaimId);
   // An unknown control-plane wake must never acquire authority by guessing the latest user as its origin.
   const pendingSource = requestMessageId ?? store.activePath(threadId).findLast(message => message.role === "user")?.id;
   if (pendingSource) store.patchMessage(threadId, pendingSource, { requestPending: true });
@@ -9292,8 +9299,9 @@ async function startTurn(
         // Volatile, so a teammate starting or finishing never changes the stable half.
         teamAvailabilityPart(coordinationPrompt ? sectionPeers : []),
         { id: "recent", label: "Recent work", text: recentWorkPrompt(recentWork(recentWorkSources(bot), bot, { userName: cfg.profile?.name?.trim() || "User", currentThreadId: threadId, ...recentWorkFilter() })) },
-        { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace, enabled: bot.memoryEnabled !== false }) },
-        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsHost.conversationSkills(bot, threadId), skillsHost.conversationStartedAt(threadId)) : "" },
+        { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace, enabled: bot.memoryEnabled !== false, writesRefused: notesRefused }) },
+        // liveBot predates awaited setup work; an assignment PUT in that window must still reach this prompt.
+        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsHost.conversationSkills(store.bot(bot.id) ?? bot, threadId), skillsHost.conversationStartedAt(threadId)) : "" },
         { id: "skill-instructions", label: "Skill instructions", text: skillInstructions },
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
         { id: "webhook", label: "Webhook provenance", text: opts?.automationSource === "webhook" ? WEBHOOK_PROMPT : "" },
@@ -9784,8 +9792,9 @@ routines = new RoutineManager({
     }
   },
   interruptGoal: interruptRoutineGroupGoal,
-  onRunChanged: syncRoutineRunToSource,
+  onRunChanged: (run) => { cloudHealth?.noteRoutineRun(run); syncRoutineRunToSource(run); },
   onRunFailed: (run) => {
+    cloudHealth?.noteRoutineRun(run);
     if (run.threadId) {
       if (run.error === ROUTINE_RESTARTED) {
         if (run.groupId) coordinator.cancelRoom(run.groupId, run.threadId, run.error);
@@ -14260,22 +14269,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       res.setHeader("set-cookie", serializeSessionCookie(SESSION_COOKIE, issued.token, { secure, maxAgeSeconds: cookieMaxAgeSeconds(issued.session) }));
       return json(res, 200, { session: issued.session, environment });
     }
-    // The Admin's signed pairing request: bad signatures count against the lockout; never log its headers, body or code.
-    if (cloudPairing && path === CLOUD_PAIRING_PATH) {
-      res.setHeader("cache-control", "no-store");
-      if (method !== "POST") return json(res, 405, { error: "method_not_allowed" });
-      if (!/^application\/json\b/i.test(String(req.headers["content-type"] ?? ""))) {
-        return json(res, 415, { error: "send the pairing request as JSON (content-type: application/json)" });
-      }
-      const source = requestSource(req);
-      const header = (name: string) => { const value = req.headers[name]; return typeof value === "string" ? value : undefined; };
-      const result = cloudPairing.handle({
-        timestamp: header("x-omb-cloud-timestamp"), nonce: header("x-omb-cloud-nonce"), signature: header("x-omb-cloud-signature"),
-        body: await readSignedBody(req), source,
-      });
-      if (result.status !== 200) console.warn(`cloud pairing refused from ${source}: ${String(result.body.error)}`);
-      return json(res, result.status, result.body);
-    }
+    if (cloudSigned && await cloudSigned({ req, res, url, path, method })) return;
     if (method === "POST" && path === "/api/auth/pair") {
       // JSON only: a cross-site HTML form cannot send this content type without a preflight, so no unused code is planted as a session.
       if (!/^application\/json\b/i.test(String(req.headers["content-type"] ?? ""))) {
@@ -15686,9 +15680,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (store.groupByThread(threadId)) return json(res, 400, { error: "that is a room thread — use coordinate_bots in the room instead" });
         const task = store.taskByThread(target.id, threadId);
         if (!task) return json(res, 404, { error: "no such thread on that bot" });
-        if (threadBusy(target.id, threadId) || queuedThreadPosition(target.id, threadId) !== null) {
-          return json(res, 409, { error: "that thread is still running — wait for it to settle before retrying" });
-        }
+        const blocked = threadBusy(target.id, threadId) ? (settlingTurns.has(threadId) ? "settling" : "running") : queuedThreadPosition(target.id, threadId) !== null ? "queued" : null;
+        if (blocked) return json(res, 409, { error: RETRY_BLOCKED[blocked] });
         // A thread that finished a run since it was last reported has nothing to resume: resuming would redo finished work.
         const reportedAt = incidentLastAt(threadId);
         if (reportedAt !== undefined && store.activePath(threadId).some(line => line.turnSucceeded === true && line.at > reportedAt)) {
@@ -16734,10 +16727,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const body = await readBody(req, 32_768);
         if (!isCurrent()) return json(res, 409, { error: "This browser session changed. Reopen the browser panel." });
         if (typeof body?.viewerId !== "string") return json(res, 400, { error: "A live browser connection is required." });
-        if (body.type === "restart" && store.bots.some((candidate) => candidate.busy &&
-            currentBrowserSession(candidate.id, candidate.browserProfile) === browser.session)) {
-          return json(res, 409, { error: "Stop every bot using this profile before restarting its browser." });
-        }
+        const refused = body.type === "restart" && browserRestartRefusal(browserRuntime.interrupted(browser.session), store.bots.filter((candidate) => candidate.busy
+          && currentBrowserSession(candidate.id, candidate.browserProfile) === browser.session).map((candidate) => ({ waitingOnBrowser: computerControl.snapshot(candidate.id).help?.place === "browser" })));
+        if (refused) return json(res, 409, { error: refused });
         return json(res, 200, await browserLive.action({ viewerId: body.viewerId, botId: bot.id, owner, body }));
       }
       return json(res, 405, { error: "method not allowed" });
@@ -17280,11 +17272,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!message?.connector) return json(res, 404, { error: "no such connection request" });
       const connector = message.connector;
       if (m[3] === "authorize" && method === "POST") {
-        store.patchMessage(threadId, message.id, {
-          connector: { ...connector, status: "authorizing", error: undefined, dismissed: false },
-        });
+        const alias = composio.normalizeAccountAlias(typeof body.alias === "string" ? body.alias : undefined) ?? connector.alias;
+        store.patchMessage(threadId, message.id, { connector: { ...connector, alias, status: "authorizing", error: undefined, dismissed: false } });
         try {
-          return json(res, 200, await composio.authorizeService(cfg, connector.slug, connector.alias));
+          return json(res, 200, await composio.authorizeService(cfg, connector.slug, alias));
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
           store.patchMessage(threadId, message.id, {

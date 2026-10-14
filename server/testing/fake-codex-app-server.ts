@@ -5,7 +5,8 @@
 //     mcp-app-approval | mcp-form | permissions-approval | question | multi-question | mixed-question |
 //     empty-question | malformed-question | config-profile | config-profile-unsupported | config-read-error |
 //     image | logged-in-stdout | logged-out | unauthorized | late-request | retry-then-complete | signin-refused |
-//     auth-recovery | mcp-401 | legacy-error | key-401 | recovered-403 | recovered-401 | recovering-403
+//     auth-recovery | mcp-401 | legacy-error | key-401 | recovered-403 | recovered-401 | recovering-403 | usage-limit
+//   FAKE_CODEX_MISSING_BEARER  the first N launches fail their turn as codex-cli 0.160.1 holding no login does (count in FAKE_CODEX_STATE)
 //   FAKE_CODEX_LAUNCH_CRASHES  the first N launches die pre-ack at turn/start, transient stderr, exit 1 (count in FAKE_CODEX_STATE)
 //   FAKE_CODEX_LAUNCH_KILLS  the same by SIGKILL (POSIX-shaped; win32 reports exit 1, signal null)
 //   FAKE_CODEX_LAUNCH_SILENT  the same with exit 1 and no stderr
@@ -20,6 +21,9 @@
 //   FAKE_CODEX_ACCOUNT_EMAIL  synthetic ChatGPT identity (default ada@example.test)
 //   FAKE_CODEX_ACCOUNT_MODE  chatgpt (default) | api-key | none | unsupported | error | hang
 //   FAKE_CODEX_RESUME_ERROR  JSON-RPC error rejecting thread/resume
+//   FAKE_CODEX_ARCHIVED  "1": thread/resume says the session is archived until thread/unarchive; "unarchive-fails": unarchive is refused too
+//   FAKE_CODEX_STARTUP_DELAY_MS  hold the initialize reply this long, like a loaded host
+//   FAKE_CODEX_STARTUP_LOG  append {pid, at, event: "initialize" | "turn/start"} per launch
 //   FAKE_CODEX_START_ERROR  JSON-RPC error rejecting thread/start
 //   FAKE_CODEX_MCP_FAILED  MCP server whose startup fails (`mcpServer/startupStatus/updated`) as thread/start begins
 //   FAKE_CODEX_RESTORED_USAGE  report 100/50/10 tokens used before turn/start, as a resumed thread can
@@ -151,6 +155,10 @@ const shellEnvironmentPolicy = (): unknown => {
 };
 let developerInstructions = "";
 let resumedThread: string | null = null;
+let unarchived = false;
+const logStartup = (event: string) => {
+  if (process.env.FAKE_CODEX_STARTUP_LOG) appendFileSync(process.env.FAKE_CODEX_STARTUP_LOG, `${JSON.stringify({ pid: process.pid, at: Date.now(), event })}\n`);
+};
 let decision: unknown = null;
 let experimentalApi = false;
 
@@ -380,9 +388,22 @@ process.stdin.on("data", (chunk) => {
     if (msg.method) calls.push({ method: msg.method, params: msg.params ?? null });
 
     switch (msg.method) {
-      case "initialize":
+      case "initialize": {
         experimentalApi = msg.params?.capabilities?.experimentalApi === true;
-        out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
+        logStartup("initialize");
+        const reply = () => out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
+        if (process.env.FAKE_CODEX_STARTUP_DELAY_MS) setTimeout(reply, Number(process.env.FAKE_CODEX_STARTUP_DELAY_MS));
+        else reply();
+        break;
+      }
+      case "thread/unarchive":
+        dump();
+        if (process.env.FAKE_CODEX_ARCHIVED === "unarchive-fails") {
+          out({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: `cannot unarchive session ${msg.params?.threadId}` } });
+          break;
+        }
+        unarchived = true;
+        out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
         break;
       case "account/read": {
         dump();
@@ -481,6 +502,11 @@ process.stdin.on("data", (chunk) => {
         resumedThread = msg.params?.threadId ?? null;
         if (process.env.FAKE_CODEX_RESUME_ERROR) {
           out({ jsonrpc: "2.0", id: msg.id, error: JSON.parse(process.env.FAKE_CODEX_RESUME_ERROR) });
+        } else if (process.env.FAKE_CODEX_ARCHIVED && !unarchived) {
+          const id = msg.params?.threadId;
+          out({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: `session ${id} is archived. Run \`codex unarchive ${id}\` to unarchive it first.` } });
+        } else if (process.env.FAKE_CODEX_ARCHIVED) {
+          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId }, sandbox: resolvedSandbox(msg.params ?? {}) } });
         } else if (msg.params?.permissions && (!experimentalApi || mode === "config-profile-unsupported")) {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "experimental API required for permissions" } });
         } else if (mode === "resume" || mode === "review-events" || mode === "helper-events" || mode === "instructions-unsupported" || mode === "config-profile" || mode === "config-profile-unsupported" ||
@@ -545,6 +571,7 @@ process.stdin.on("data", (chunk) => {
         break;
       case "turn/start": {
         dump();
+        logStartup("turn/start");
         nativeThreadId = msg.params?.threadId ?? nativeThreadId;
         // Counts turn launches only, not the catalog spawn during create().
         if (process.env.FAKE_CODEX_LAUNCH_CRASHES && process.env.FAKE_CODEX_STATE) {
@@ -643,6 +670,32 @@ process.stdin.on("data", (chunk) => {
           out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
           notify("error", { message: "stream disconnected before completion" });
           notify("turn/completed", { turn: { status: "failed", error: { message: "stream disconnected before completion" } } });
+          break;
+        }
+        if (process.env.FAKE_CODEX_MISSING_BEARER && process.env.FAKE_CODEX_STATE) {
+          let launched = 0;
+          try {
+            launched = Number(readFileSync(process.env.FAKE_CODEX_STATE, "utf8")) || 0;
+          } catch {}
+          writeFileSync(process.env.FAKE_CODEX_STATE, String(launched + 1));
+          if (launched < (Number(process.env.FAKE_CODEX_MISSING_BEARER) || 0)) {
+            out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+            const prompt = { type: "userMessage", id: "u1", content: msg.params?.input ?? [] };
+            notify("item/started", { item: prompt });
+            notify("item/completed", { item: prompt });
+            const said = "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses";
+            notify("error", { willRetry: true, error: { message: "Reconnecting... 1/5", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 401 } }, additionalDetails: said } });
+            const error = { message: said, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } }, additionalDetails: null };
+            notify("error", { willRetry: false, error });
+            notify("turn/completed", { turn: { status: "failed", error } });
+            break;
+          }
+        }
+        if (mode === "usage-limit") {
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          const error = { message: "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 5:23 PM.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
+          notify("error", { willRetry: false, error });
+          notify("turn/completed", { turn: { status: "failed", error } });
           break;
         }
         if (mode === "unauthorized") {

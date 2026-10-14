@@ -47,7 +47,7 @@ function fixture(root: string): DatabaseSync {
   mkdirSync(join(root, "task-workspaces", "bot", "thread"), { recursive: true });
   writeFileSync(join(root, "task-workspaces", "bot", "thread", "binary.bin"), Buffer.alloc(2 * 1024 * 1024, 0xa5));
   json(join(root, "config.json"), { language: "ja", instances: { custom: { driver: "claudeAgent", config: { configDir: join(root, "providers", "account") } } }, apiKey: "private-key-in-config" });
-  json(join(root, "bots.json"), [{ id: "bot", threadId: "thread", cwd: join(root, "task-workspaces", "bot", "thread"), soul: `Do not rewrite this prose mentioning ${root}.`, avatarUrl: "/api/attachments/avatar.png", avatarCrop: "circle", voice: "source-provider-voice", tasks: [{ threadId: "thread", cwd: join(root, "task-workspaces", "bot", "thread") }] }]);
+  json(join(root, "bots.json"), [{ id: "bot", threadId: "thread", cwd: join(root, "task-workspaces", "bot", "thread"), soul: `Each morning read ${root}/notes.md.`, avatarUrl: "/api/attachments/avatar.png", avatarCrop: "circle", voice: "source-provider-voice", tasks: [{ threadId: "thread", cwd: join(root, "task-workspaces", "bot", "thread") }] }]);
   json(join(root, "groups.json"), [{ id: "room", memberIds: ["bot"], cwd: "/external/project" }]);
   json(join(root, "routines.json"), { version: 1, routines: [{ id: "routine", enabled: true }], runs: [{ id: "waiting", status: "queued" }, { id: "historical", status: "completed" }] });
   json(join(root, "webhooks.json"), { version: 1, webhooks: [{ id: "hook", endpointId: "endpoint", enabled: true, secretHash: "a".repeat(64) }], deliveries: [{ id: "delivery" }] });
@@ -152,7 +152,7 @@ describe("encrypted full workspace backups", () => {
       const result = applyPendingWorkspaceRestore(target);
       expect(result).toMatchObject({ restored: true, id: staged.id });
       const restoredBot = readJson(join(target, "bots.json"))[0];
-      expect(restoredBot).toMatchObject({ id: "bot", cwd: join(target, "task-workspaces", "bot", "thread"), soul: `Do not rewrite this prose mentioning ${source}.`, avatarUrl: "/api/attachments/avatar.png", avatarCrop: "circle" });
+      expect(restoredBot).toMatchObject({ id: "bot", cwd: join(target, "task-workspaces", "bot", "thread"), soul: `Each morning read ${join(target, "notes.md")}.`, avatarUrl: "/api/attachments/avatar.png", avatarCrop: "circle" });
       expect(restoredBot).not.toHaveProperty("voice");
       expect(readFileSync(join(target, restoredBot.avatarUrl.slice("/api/".length)))).toEqual(AVATAR_BYTES);
       expect(readJson(join(target, "groups.json"))[0].cwd).toBe("/external/project");
@@ -228,6 +228,65 @@ describe("encrypted full workspace backups", () => {
         { id: "pending", status: "interrupted" }, { id: "dispatching", status: "interrupted" }, { id: "cancelled", status: "cancelled" },
       ]);
     } finally { db.close(); }
+  });
+
+  it("brings a Windows computer's data folder over wherever it is written, and clears and lists the folders and files left on that PC", async () => {
+    const source = directory();
+    const windows = "C:\\Users\\Ada\\.openmausbot", site = "C:\\Users\\Ada\\Projects\\site";
+    const soul = `Read ${windows}\\files\\brief.md before you start.`;
+    json(join(source, "bots.json"), [
+      { id: "bot", threadId: "thread", cwd: site, soul, tasks: [
+        { threadId: "thread", cwd: "c:\\users\\ada\\.openmausbot\\task-workspaces\\bot\\thread", resumeCursors: { claude: "kept" } },
+        { threadId: "other", cwd: site, resumeCursors: { claude: "only-on-that-pc" } },
+      ] },
+      { id: "helper", threadId: "helper-thread", soul: "No paths here.", tasks: [{ threadId: "helper-thread", cwd: null }] },
+    ]);
+    json(join(source, "groups.json"), [{ id: "room", memberIds: ["bot"], cwd: "C:\\Users\\Ada\\Shared", bulletin: `Shared notes live in ${windows}\\files.` }]);
+    const prompt = `Each morning read ${windows}\\files\\brief.md, compare it with C:\\Users\\Ada\\Desktop\\x.docx, and save ${windows}\\files\\out\\report.md.`;
+    json(join(source, "routines.json"), { version: 1, routines: [{ id: "routine", botId: "bot", enabled: true, prompt }], runs: [] });
+    mkdirSync(join(source, "workspaces", "bot", "memory"), { recursive: true });
+    writeFileSync(join(source, "workspaces", "bot", "MEMORY.md"),
+      "- The brief: c:\\users\\ada\\.openmausbot\\files\\brief.md\n- Drafts go to C:/Users/Ada/.openmausbot/files/drafts/\n- C:\\Users\\Ada\\.openmausbot-old\\notes.md is an old copy\n");
+    writeFileSync(join(source, "workspaces", "bot", "memory", "people.md"), "Ada prefers short replies.\n");
+    mkdirSync(join(source, "bots", "bot"), { recursive: true });
+    writeFileSync(join(source, "bots", "bot", "SOUL.md"), soul);
+    const exported = await createWorkspaceBackup(source, { password: PASSWORD });
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    const manifest = join(target, ".backups", staged.id, "staged", "manifest.json");
+    json(manifest, { ...readJson(manifest), sourceDataDir: windows });
+    commitPendingWorkspaceRestore(target, staged.id);
+    const result = applyPendingWorkspaceRestore(target);
+
+    const [bot, helper] = readJson(join(target, "bots.json"));
+    expect(bot).not.toHaveProperty("cwd");
+    expect(bot.soul).toBe(`Read ${target}/files/brief.md before you start.`);
+    expect(bot.tasks).toEqual([
+      { threadId: "thread", cwd: join(target, "task-workspaces", "bot", "thread"), resumeCursors: { claude: "kept" } },
+      { threadId: "other", resumeCursors: {} },
+    ]);
+    expect(helper).toEqual({ id: "helper", threadId: "helper-thread", soul: "No paths here.", tasks: [{ threadId: "helper-thread", cwd: null }] });
+    expect(readJson(join(target, "groups.json"))).toEqual([{ id: "room", memberIds: ["bot"], bulletin: `Shared notes live in ${target}/files.` }]);
+    expect(readJson(join(target, "routines.json")).routines[0].prompt)
+      .toBe(`Each morning read ${target}/files/brief.md, compare it with C:\\Users\\Ada\\Desktop\\x.docx, and save ${target}/files/out/report.md.`);
+    expect(readFileSync(join(target, "workspaces", "bot", "MEMORY.md"), "utf8"))
+      .toBe(`- The brief: ${target}/files/brief.md\n- Drafts go to ${target}/files/drafts/\n- C:\\Users\\Ada\\.openmausbot-old\\notes.md is an old copy\n`);
+    expect(readFileSync(join(target, "workspaces", "bot", "memory", "people.md"), "utf8")).toBe("Ada prefers short replies.\n");
+    expect(readFileSync(join(target, "bots", "bot", "SOUL.md"), "utf8")).toBe(bot.soul);
+    const leftBehind = { bots: 1, paths: [site, "C:\\Users\\Ada\\Shared", "C:\\Users\\Ada\\.openmausbot-old\\notes.md", "C:\\Users\\Ada\\Desktop\\x.docx"] };
+    expect(result.leftBehind).toEqual(leftBehind);
+    expect(readLastWorkspaceRestore(target)!.leftBehind).toEqual(leftBehind);
+  });
+
+  it("lists nothing left behind, and keeps outside folders, when both computers write paths the same way", async () => {
+    const source = directory();
+    fixture(source).close();
+    const exported = await createWorkspaceBackup(source, { password: PASSWORD });
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    commitPendingWorkspaceRestore(target, staged.id);
+    expect(applyPendingWorkspaceRestore(target)).not.toHaveProperty("leftBehind");
+    expect(readJson(join(target, "groups.json"))[0].cwd).toBe("/external/project");
   });
 
   it("authenticates before extraction and leaves the existing workspace unchanged for wrong passwords or damaged ciphertext", async () => {

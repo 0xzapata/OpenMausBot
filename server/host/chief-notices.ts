@@ -1,7 +1,7 @@
 import { failedTurnTool } from "../../shared/failed-turn.ts";
 import { admit } from "../admission.ts";
 import { ESCALATIONS_THREAD_TITLE, EscalationLedger, escalationChip, escalationDeliverable, escalationText, type Escalation, type EscalationKind } from "../escalations.ts";
-import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentRequest, incidentText, type Incident, type IncidentKind } from "../incidents.ts";
+import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentContext, incidentText, type Incident, type IncidentKind } from "../incidents.ts";
 import { buildNotification, type Notification } from "../notify.ts";
 import { redactSecretsInText } from "../redact.ts";
 import { queueSteeredMessage } from "../steer-queue.ts";
@@ -26,14 +26,6 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
   const { store } = deps;
   const incidentLedger = new IncidentLedger();
   const escalationLedger = new EscalationLedger();
-
-  function incidentContext(threadId: string): { lastRequest: string | null; lastReply: string | null } {
-    const messages = store.messagesFor(threadId);
-    return {
-      lastRequest: incidentRequest(messages),
-      lastReply: messages.findLast((message) => message.role === "bot" && message.kind === "text" && message.text)?.text ?? null,
-    };
-  }
 
   function incidentRefused(chief: BotRecord, incidentsThreadId: string, asks: ReadonlyArray<Message["peerAsk"]>, why: string): void {
     const refused = `the incident could not reach ${chief.name} — ${why}`;
@@ -107,7 +99,7 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       title: task?.title ?? null,
       room: group?.name ?? null,
       detail: redactSecretsInText(input.detail),
-      ...incidentContext(threadId),
+      ...incidentContext(deps.store.messagesFor(threadId)),
     };
     const count = incidentLedger.note(threadId);
     if (count.muted) return;
