@@ -69,7 +69,6 @@ describe("chartRenderer", () => {
     expect(svg).toContain(">region</text>");
     expect(svg).toContain(">sum(amount)</text>");
     expect(svg).toContain(">north</text>");
-    // Three bars: the y strings became numbers, so each has a height.
     const bars = svg.match(/<path class="background"|role="graphics-symbol" aria-roledescription="bar"/g) ?? [];
     expect(bars.length).toBeGreaterThanOrEqual(3);
     expect(svg).toContain('font-family="&quot;Inter&quot;, -apple-system');

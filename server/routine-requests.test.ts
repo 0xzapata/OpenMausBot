@@ -102,8 +102,7 @@ function createProposal(overrides: Partial<RoutineToolDefinitionInput> = {}): Ro
 }
 
 function malformedProposal(value: JsonValue): RoutineProposalInput {
-  // SAFETY: These values are deliberately malformed to exercise the runtime
-  // Zod boundary; production callers receive the schema-derived type.
+  // SAFETY: deliberately malformed to exercise the runtime Zod boundary.
   return value as RoutineProposalInput;
 }
 
@@ -136,8 +135,6 @@ describe("RoutineRequestService", () => {
       expect(resolve("thread-a", first.requestId)).toMatchObject({ state: "applied" });
       expect(resolve("thread-b", second.requestId)).toMatchObject({ state: "invalid", status: 409 });
       expect(resolve("thread-a", first.requestId)).toMatchObject({ state: "already_settled" });
-      // The duplicate check expired the second card; it can no longer be
-      // decided at all, not even cancelled. Its replay stays settled too.
       expect(service.resolve({ botId: "bot-a", threadId: "thread-b", requestId: second.requestId, behavior: "deny" }))
         .toMatchObject({ claimed: true, state: "invalid", status: 409 });
       expect(store.messagesFor("thread-b")[0]!.card).toMatchObject({ expired: true, options: [] });
@@ -300,7 +297,6 @@ describe("RoutineRequestService", () => {
     expect(proposed.detail).toContain("Next 3 runs (America/New_York): Sep 1, 2026, 9:00 AM · Oct 1, 2026, 9:00 AM · Nov 1, 2026, 9:00 AM");
     expect(proposed.nextRunAt).toBe(Date.parse("2026-09-01T13:00:00Z"));
     const message = store.messagesFor("thread-a")[0]!;
-    // Persisted JSON cards retain the original version and exact executable rule.
     message.card = JSON.parse(JSON.stringify(message.card)) as RoutineRequestOptionCard;
     expect(message.card.routineRequest).toMatchObject({ version: 1, operation: { routine: { schedule } } });
     expect(service.resolve({ botId: "bot-a", threadId: "thread-a", requestId: proposed.requestId, behavior: "allow" }))
@@ -1079,8 +1075,7 @@ describe("RoutineRequestService", () => {
       proposal: createProposal({ durationMinutes: 5, timeoutMinutes: 15 }),
     });
 
-    // Model a crash after routines.json was atomically written but before the
-    // transcript card was settled.
+    // A crash after routines.json was atomically written but before the transcript card settled.
     const message = store.messagesFor("thread-a")[0]!;
     const card = message.card!;
     const committed = routines.create({
@@ -1127,8 +1122,6 @@ describe("RoutineRequestService", () => {
       routineRequest: { appliedAt: receipt?.appliedAt },
     });
 
-    // Once the durable card is settled, duplicate clicks are claimed by the
-    // card itself and the compact recovery receipt can be removed.
     const second = service.resolve({
       botId: "bot-a",
       threadId: "thread-a",
@@ -1341,8 +1334,7 @@ describe("RoutineRequestService", () => {
       proposal: { action: "update", routineId: routine.id, changes: { name: "After" } },
     });
 
-    // Model a crash after routines.json was atomically written but before the
-    // transcript card was settled. A retry recognizes the exact end state.
+    // A crash after routines.json was atomically written but before the transcript card settled.
     const updateMessage = store.messagesFor("thread-a")[0]!;
     const updateCard = updateMessage.card!;
     const committed = routines.update(routine.id, { name: "After" }, {
@@ -1583,8 +1575,6 @@ describe("RoutineRequestService", () => {
       .toMatchObject({ claimed: true, state: "invalid", status: 409 });
     expect(store.messagesFor("thread-a")[0]!.card).toMatchObject({ expired: true });
 
-    // The schedule is future again, but the card stays dead for both
-    // decisions and the proposal never applies.
     clock.now = scheduledAt - 60_000;
     const expired = "This routine request expired before it was confirmed. Ask for a fresh proposal.";
     expect(service.resolve({ botId: "bot-a", threadId: "thread-a", requestId: proposal.requestId, behavior: "allow" }))
@@ -1750,7 +1740,6 @@ describe("cross-bot routine targeting", () => {
     });
     expect(result).toMatchObject({ claimed: true, state: "invalid", status: 404 });
     expect(routines.listRoutines()).toHaveLength(0);
-    // the refusal is written back onto the card so the user sees why
     expect(store.messagesFor("thread-a")[0]?.card).toMatchObject({ expired: true, held: expect.stringMatching(/no longer exists/) });
   });
 
@@ -1906,8 +1895,6 @@ describe("consequenceLine", () => {
 });
 
 describe("a bot's own routine changes", () => {
-  // The server's rule (server/direct-apply.ts): Full access in "full-thread",
-  // a guest-driven Cloud turn in "guest-thread", Ask everywhere else.
   const rule: DirectApplyCheck = (botId, threadId, targetBotId) => directApply({
     fullAccess: threadId === "full-thread", botId, targetBotId, blocked: threadId === "guest-thread",
   });
@@ -1948,7 +1935,6 @@ describe("a bot's own routine changes", () => {
     expect(routines.listRoutines()).toHaveLength(0);
     expect(openCards(store, "ask-thread")).toHaveLength(1);
     expect(openCards(store, "guest-thread")).toHaveLength(1);
-    // A routine of another bot's is never the proposer's own to change.
     const peers = routines.create({ botId: "bot-b", name: "Peer digest", prompt: "Digest.", schedule: { type: "daily", time: "09:00", weekdays: [1] } });
     expect(await service.submit({ botId: "bot-a", threadId: "ask-thread", proposal: { action: "pause", routineId: peers.id, forBot: { botId: "bot-b", name: "Peer" } } }))
       .toMatchObject({ state: "pending" });
@@ -1964,7 +1950,6 @@ describe("a bot's own routine changes", () => {
     expect(await service.submit({ botId: "bot-a", threadId: "ask-thread", proposal: createProposal() })).toMatchObject({ state: "pending" });
     expect(await service.submit({ botId: "bot-a", threadId: "ask-thread", proposal: { action: "resume", routineId: paused.id } })).toMatchObject({ state: "pending" });
     expect(openCards(store, "ask-thread")).toHaveLength(2);
-    // Changing one it already has still applies.
     expect(await service.submit({ botId: "bot-a", threadId: "ask-thread", proposal: { action: "pause", routineId: routines.listRoutines().find((routine) => routine.enabled)!.id } }))
       .toMatchObject({ state: "applied" });
     expect(await service.submit({ botId: "bot-a", threadId: "full-thread", proposal: createProposal({ instructions: "At Full access." }) }))
@@ -2042,7 +2027,6 @@ describe("a bot's own routine changes", () => {
     const resumed = await submit({ action: "resume", routineId });
     expect(undo(service, resumed.requestId)).toMatchObject({ state: "undone" });
     expect(routines.listRoutines()[0]?.enabled).toBe(false);
-    // The routine moved after that pause, so its Undo is refused.
     expect(undo(service, pausedAgain.requestId)).toMatchObject({ state: "invalid", stale: true, error: "Changed since, so it can't be undone here." });
     await submit({ action: "resume", routineId });
 
@@ -2065,8 +2049,6 @@ describe("a bot's own routine changes", () => {
     expect(restored).toMatchObject({ state: "undone", action: "delete", restoredId: expect.any(String) });
     expect(routines.listRoutines()).toEqual([expect.objectContaining({ name: "Person's name", prompt: "Summarize the overnight support queue.", botId: "bot-a", enabled: true })]);
 
-    // The routine that create made is gone (deleted, then restored under a
-    // new id), so there is nothing left for its Undo to remove.
     expect(undo(service, created.requestId)).toMatchObject({ state: "invalid", stale: true });
     expect(routines.listRoutines()).toHaveLength(1);
     const second = await submit(createProposal({ instructions: "A second routine." }));

@@ -1,8 +1,3 @@
-// A finished Live call's record in its chat: what the call was (its title,
-// or "Call with <bot>"), how long it lasted, and one line per thing the bot
-// did on it: its steps by name (never their arguments) and its approvals
-// with their outcomes. The call's spoken requests and the bot's answers stay
-// inline where they were; this row only sums the call up.
 import { useMemo } from "react";
 import { AudioLines, Check, Minus, X } from "lucide-react";
 
@@ -16,10 +11,6 @@ import { WorkingDots } from "./WorkingIndicator";
 
 type LineState = "done" | "stopped" | "open" | "neutral";
 
-/** Done, refused or failed, still waiting, or unknown: the glyph before a
- * line. A step with no outcome is running only while its chat works. The
- * harness never settles one whose turn was stopped, killed or lost, so in a
- * chat that has stopped it says nothing, rather than spin for good. */
 function lineState(line: CallRecordLine, busy: boolean): LineState {
   if (line.kind === "step") {
     if (line.tool.ok === undefined) return busy ? "open" : "neutral";
@@ -30,10 +21,6 @@ function lineState(line: CallRecordLine, busy: boolean): LineState {
   return line.card.answered === "allow" ? "done" : "stopped";
 }
 
-/** What a step's glyph shows, in words for a reader who cannot see it: the
- * words the tool chip's own details use, which are translated. A step nobody
- * knows the outcome of says nothing. An approval says its outcome in its own
- * text ("Allowed: run a command"), so only a step needs this. */
 function stepStatus(state: LineState): string | null {
   if (state === "done") return t("toolDetail.completed");
   if (state === "stopped") return t("toolDetail.failed");
@@ -43,8 +30,6 @@ function stepStatus(state: LineState): string | null {
 
 function lineText(line: CallRecordLine): string {
   if (line.kind === "step") return activityStepLabel(line.tool);
-  // The card says an expired proposal needs asking for again. A record sums
-  // up what happened, it gives no instruction, so it says only that it expired.
   const outcome = line.card.expired === true
     ? t("chat.callRecord.expired")
     : approvalCardOutcome(line.card) ?? t("chat.callRecord.waiting");
@@ -54,28 +39,19 @@ function lineText(line: CallRecordLine): string {
 
 export function CallRecordRow({ message, transcript, botName, busy, hasMore }: {
   message: Message;
-  /** The chat's active branch. The call's lines come from all of it, also
-   * from steps that landed after this row (a turn still running at hang-up). */
   transcript: readonly Message[];
   botName: string;
-  /** The chat is working on something now: only then does a step that never
-   * reported how it went read as running. */
   busy: boolean;
-  /** Older messages remain on the server, beyond what the transcript holds. */
   hasMore: boolean;
 }) {
   const call = message.call;
   const callId = call?.callId;
-  // Each call's lines are worked out again only when the transcript changes
-  // (a message or a patch, not a streamed delta), not on every render: the
-  // chat holds a row per call, and each walks the whole transcript.
   const lines = useMemo(() => (callId === undefined ? [] : callRecordLines(transcript, callId)), [transcript, callId]);
   if (!call) return null;
   const title = call.title?.trim() || t("chat.callRecord.title", { name: botName });
   const duration = formatCallDuration(call.seconds);
   const partial = callRecordIsPartial(transcript, call, hasMore);
-  // A labelled group, not a <section>: a section with a name is a landmark,
-  // and every call in a chat would add one to the page's landmark list.
+  // A labelled group, not a <section>: a named section is a landmark, and every call would add one.
   return (
     <div
       role="group"

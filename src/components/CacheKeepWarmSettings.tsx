@@ -1,5 +1,3 @@
-// Settings → Engines: prompt-cache keep-warm for idle Claude threads
-// (server/cache-keepwarm.ts). Off by default: it is new, recurring spend.
 import { useRef, useState } from "react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { t } from "@/lib/i18n";
@@ -7,7 +5,7 @@ import { Card, Switch } from "./SettingsPrimitives";
 
 type KeepWarm = NonNullable<ConfigStatus["cacheKeepWarm"]>;
 
-/** Window choices, in minutes. 3h matches Cache Tax's auto-warm window. */
+/** 3h matches Cache Tax's auto-warm window. */
 export const KEEP_WARM_WINDOWS = [60, 120, 180, 360, 720] as const;
 
 export function CacheKeepWarmSettings() {

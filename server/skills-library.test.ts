@@ -5,8 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "./config.ts";
 
-// config.ts resolves DATA_DIR at import time, so point this suite at a
-// scratch dir before any module under test loads.
+// config.ts resolves DATA_DIR at import time, so point this suite at a scratch dir before any module loads.
 process.env.OMB_DATA_DIR = mkdtempSync(join(tmpdir(), "omb-skills-library-"));
 
 const library = await import("./skill-library.ts");
@@ -52,7 +51,7 @@ describe("skills library store", () => {
     const again = library.installLibrarySkill({ name: "deploy", instructions: SKILL("deploy"), source: "b", root });
     expect("error" in again).toBe(false);
     if ("error" in again) return;
-    expect(again.source).toBe("a"); // the existing entry wins
+    expect(again.source).toBe("a");
     const clash = library.installLibrarySkill({ name: "deploy", instructions: SKILL("deploy", "Different body."), source: "c", root });
     expect(clash).toEqual({ error: 'a skill named "deploy" is already in the library — choose a different name' });
     expect(Object.keys(library.readSkillLibraryIndex(root))).toEqual(["deploy"]);
@@ -63,7 +62,6 @@ describe("skills library store", () => {
     writeFileSync(join(root, "index.json"), "{not json");
     const unreadable = library.installLibrarySkill({ name: "deploy", instructions: SKILL("deploy"), source: "a", root });
     expect(unreadable).toEqual({ error: "the skills library index could not be read" });
-    // nothing was written: the broken index and the skill bytes survive
     expect(readFileSync(join(root, "index.json"), "utf8")).toBe("{not json");
     expect(existsSync(join(root, "skills", "deploy"))).toBe(false);
 
@@ -120,7 +118,6 @@ describe("skills library store", () => {
     expect(stored).toEqual({ features: { skillsLibrary: true, browser: true } });
     expect(config.skillsLibraryEnabled(stored)).toBe(true);
     expect(config.skillsLibraryEnabled(config.parseStoredConfig({ features: { browser: true } }))).toBe(false);
-    // an unknown flag still strips as a no-op instead of failing the file
     expect(config.parseStoredConfig({ features: { skillsLibrary: true, teleport: true } })).toEqual({
       features: { skillsLibrary: true },
     });
@@ -137,7 +134,7 @@ describe("assignment resolution", () => {
     const resolved = skills.resolveBotSkills(bot, ["shared-name", "library-only"]);
     expect(resolved.map((skill) => skill.name).sort()).toEqual(["library-only", "shared-name"]);
     const shared = resolved.find((skill) => skill.name === "shared-name")!;
-    expect(shared.source).toBe("private:test"); // bot-private beats the library
+    expect(shared.source).toBe("private:test");
     const only = resolved.find((skill) => skill.name === "library-only")!;
     expect(only.source).toBe("lib");
     expect(only.editable).toBe(false);
@@ -160,7 +157,6 @@ describe("assignment resolution", () => {
     const withLibrary = skills.skillsSystemPrompt(bot, ["library-skill"]);
     expect(withLibrary).toContain("library-skill");
     expect(withLibrary).toContain(JSON.stringify(join(library.skillsLibraryRoot(), "skills", "library-skill", "SKILL.md")));
-    // the private line keeps its workspace path
     expect(withLibrary).toContain("own-skill");
   });
 });

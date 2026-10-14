@@ -1,13 +1,9 @@
 // Fake-engine server + synthetic Local VM + companion sidecar, in disposable
-// homes, for checking the iOS computer view against a Local VM by hand.
+// homes, for checking the iOS computer view against a Local VM by hand:
 //
 //   node --experimental-strip-types scripts/verify-ios-local-vm.ts
 //
-// Prints the sidecar address and a pairing code for the Simulator, then stays
-// up until Ctrl-C. The synthetic `docker` answers only inspection and the two
-// screenshot execs; each capture returns the captured desktop with another
-// character typed at its prompt, so a refresh is visible on the phone. It never reaches a real container runtime,
-// VM, or the user's OpenMausBot data.
+// Prints the sidecar address and a pairing code, then stays up until Ctrl-C.
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";

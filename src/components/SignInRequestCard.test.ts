@@ -1,6 +1,3 @@
-// The sign-in card: the site is the headline, the reason is the bot's own
-// words, Open goes to the place the bot works, and Done or Cancel resume it.
-// It never offers a field for the password: the page takes that.
 import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,7 +42,6 @@ const elements = (node: ReactNode): Node[] => {
   const element = node as Node;
   return [element, ...Children.toArray(element.props.children).flatMap(elements)];
 };
-/** Every element the card renders, its AskCard footer included. */
 const tree = (signIn?: Record<string, unknown>) => {
   let root!: ReactNode;
   function Capture() { root = SignInRequestCard(props(signIn)); return root; }
@@ -72,7 +68,6 @@ describe("SignInRequestCard while it waits", () => {
     expect(html).toContain("Pepper’s built-in browser");
     for (const label of ["Open", "Done", "Cancel"]) expect(html).toContain(label);
     expect(html).toContain("OpenMausBot never sees it.");
-    // No field takes a password here: the page does.
     expect(html).not.toContain("<input");
   });
 
@@ -113,10 +108,8 @@ describe("SignInRequestCard while it waits", () => {
     const html = view();
     expect(html).toContain("Save the username and password for example.com.");
     expect(html).toContain('type="password"');
-    // The browser is asked not to fill or keep it.
     expect(html).toMatch(/type="password" autocomplete="new-password"/iu);
     expect(html).toContain("Save and continue");
-    // The card's own answers wait until the form is closed.
     expect(html).not.toMatch(/>Done<|>Open</);
     expect(saveLoginFromCard).not.toHaveBeenCalled();
   });

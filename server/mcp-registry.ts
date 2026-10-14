@@ -2,15 +2,11 @@ import { z } from "zod";
 
 import type { McpServerSpec, RemoteMcpSpec, StdioMcpSpec } from "./contracts.ts";
 
-/** One server as kept in config.json `mcpServers`. The shape is the block
- * Claude Code, Cursor and Claude Desktop write, so a pasted entry is a
- * stored entry: a command this machine runs, or a URL to connect to. */
+/** One config.json `mcpServers` entry: the block Claude Code, Cursor and Claude Desktop write. */
 export interface StoredStdioMcpServer extends StdioMcpSpec {
   enabled: boolean;
 }
-/** An app registered in advance with the server's authorization server,
- * for servers that do not let apps register themselves. The secret is a
- * credential like a header value: kept in config.json, never listed. */
+/** An app pre-registered with the server's authorization server; its secret is a credential, never listed. */
 export interface McpOAuthClientConfig {
   clientId: string;
   clientSecret?: string;
@@ -36,13 +32,10 @@ export interface RemoteMcpServerListing {
   url: string;
   headerKeys: string[];
   enabled: boolean;
-  /** present when a pre-registered sign-in app is set */
   oauth?: { clientId: string; scopes: string[]; clientSecretConfigured: boolean };
 }
 export type McpServerListing = StdioMcpServerListing | RemoteMcpServerListing;
 
-/** The two kinds tell apart by shape, as they do on disk and in every
- * client's config: a remote server has a `url`, a local one a `command`. */
 export function isRemoteMcpServer(server: McpServerSpec): server is RemoteMcpSpec {
   return "url" in server;
 }
@@ -56,10 +49,7 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** An HTTP header field name: RFC 9110 token characters. */
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
 
-/** Names used to route OpenMausBot's built-in MCP proxies and their ephemeral
- * capabilities. Codex exposes MCP env names through one app-server process;
- * a custom server must never request one of these names or it could redirect
- * a built-in proxy or receive that proxy's bearer. */
+/** Codex exposes MCP env names through one app-server process: a custom server claiming one could take a built-in proxy's bearer. */
 export function isHarnessOwnedMcpEnvName(name: string): boolean {
   return name === "ELECTRON_RUN_AS_NODE" || name.startsWith("OMB_") || name.startsWith("OGB_");
 }
@@ -78,9 +68,7 @@ function headerError(name: string, value: string): string | null {
   return null;
 }
 
-/** A remote server's address: a full http(s) URL. Credentials belong in a
- * header, where the app keeps them write-only, not in the address the
- * listing shows. */
+/** Credentials belong in a write-only header, not in the address the listing shows. */
 function urlError(value: string): string | null {
   let parsed: URL;
   try {
@@ -117,8 +105,7 @@ const stdioMutationSchema = stdioEntrySchema.extend({
   env: z.record(z.string(), z.union([z.string().max(16_384), z.literal(true)])).optional(),
 });
 
-/** RFC 6749 §A: a client id is visible ASCII; a scope is one token without
- * spaces, quotes or backslashes. */
+/** RFC 6749 §A: a client id is visible ASCII; a scope is one token without spaces, quotes or backslashes. */
 const CLIENT_ID = /^[\x20-\x7e]+$/;
 const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
 const CLIENT_SECRET_MAX = 4_096;
@@ -146,8 +133,7 @@ const remoteMutationSchema = remoteEntrySchema.extend({
   }).optional(),
 });
 
-/** The sign-in app for a mutation: a `true` secret keeps the saved one, but
- * only for the same client ID — a secret never moves to another app. */
+/** A `true` secret keeps the saved one only for the same client ID: a secret never moves to another app. */
 function resolveOAuthClient(
   incoming: z.infer<typeof remoteMutationSchema>["oauth"],
   saved: McpOAuthClientConfig | undefined,
@@ -169,9 +155,6 @@ function resolveOAuthClient(
   };
 }
 
-/** Which shape an entry means to be. `url` decides, as it does for every
- * client that reads these blocks; a `type` of http/sse without a url is
- * still a remote entry, so its error talks about the address. */
 function looksRemote(raw: unknown): boolean {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const record = raw as Record<string, unknown>;
@@ -188,9 +171,6 @@ export function mcpServerNameError(name: string): string | null {
 
 type Parsed = { ok: true; server: StoredMcpServer } | { ok: false; error: string };
 
-/** Resolve a `true` placeholder ("keep the saved value") against what is
- * stored, or refuse it: a placeholder for a value that was never saved
- * would silently store the literal `true`. */
 function resolveSecrets(
   incoming: Record<string, string | true>,
   saved: Record<string, string> | undefined,
@@ -261,9 +241,6 @@ function parseRemote(raw: unknown, mutation: boolean, existing?: StoredMcpServer
   };
 }
 
-/** File-authored entries are on unless they say otherwise. A newly added
- * server from the app is inert until explicitly enabled; an edit keeps the
- * current switch unless the mutation moves it. */
 function enabledFor(value: boolean | undefined, mutation: boolean, existing?: StoredMcpServer): boolean {
   if (!mutation) return value !== false;
   return existing ? (value ?? existing.enabled) : false;
@@ -275,8 +252,6 @@ export function parseStoredMcpServer(name: string, raw: unknown): Parsed {
   return looksRemote(raw) ? parseRemote(raw, false) : parseStdio(raw, false);
 }
 
-/** Parse a renderer mutation. `true` is a write-only placeholder meaning
- * “keep this already stored value”; it is never accepted for a new key. */
 export function parseMcpServerMutation(
   name: string,
   raw: unknown,
@@ -287,8 +262,7 @@ export function parseMcpServerMutation(
   return looksRemote(raw) ? parseRemote(raw, true, existing) : parseStdio(raw, true, existing);
 }
 
-/** The fields POST /api/mcp/servers keeps (`mcpServerBody` in server/index.ts),
- * minus `enabled`. A bot is not allowed to send that switch at all. */
+/** Minus `enabled`: a bot may never send that switch. */
 const BOT_MCP_SERVER_KEYS = ["command", "args", "env", "type", "url", "headers", "oauth"] as const;
 
 function pickMcpServerFields(record: Record<string, unknown>): Record<string, unknown> {
@@ -303,9 +277,7 @@ export type DisabledMcpServerAdd =
 
 const BOT_CANNOT_SWITCH = "A bot cannot change the on/off switch. The server is saved off, and only the user can turn it on in MCP server settings.";
 
-/** File one new MCP server as a disabled row. Does not probe, does not
- * launch, and does not touch a server that is already stored. The caller
- * still applies organisation policy before writing the returned map. */
+/** Never probes or launches; the caller still applies organisation policy before writing. */
 export function addDisabledMcpServer(current: Record<string, unknown>, body: unknown): DisabledMcpServerAdd {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, status: 400, error: "Expected an MCP server object with a name." };
@@ -352,22 +324,13 @@ export function listMcpServers(raw: Record<string, unknown> | undefined): McpSer
   });
 }
 
-/** Only the keys a stored entry may carry, and only when the pasted block
- * set them: a strict schema must not see `command: undefined` on a remote
- * entry or `url: undefined` on a local one. */
 function pickEntry(record: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of keys) if (record[key] !== undefined) out[key] = record[key];
   return out;
 }
 
-/**
- * Turn a pasted config block into servers this registry can store. Accepts
- * the {"mcpServers": {...}} shape Claude Code, Cursor and Claude Desktop
- * write, a bare {name: entry} map, or a single {name, command|url, ...} entry.
- * Names are slugged into the registry's format; every entry goes through the
- * same rules as the form and lands disabled until explicitly enabled.
- */
+/** Accepts {"mcpServers": {...}} (Claude Code, Cursor, Claude Desktop), a bare {name: entry} map, or one {name, command|url} entry. */
 export function parseMcpServersImport(
   text: string,
 ): { ok: true; servers: Record<string, StoredMcpServer> } | { ok: false; error: string } {
@@ -406,10 +369,7 @@ export function parseMcpServersImport(
     }
     const record = entry as Record<string, unknown>;
     if (Object.hasOwn(servers, name)) return { ok: false, error: `"${rawName}" appears twice.` };
-    // The command is an executable path, not a shell line; spaces are valid
-    // in paths on every supported platform. The probe reports missing files.
-    // A remote entry keeps its transport and headers; `enabled` from the
-    // paste is deliberately dropped so nothing runs before it was tested.
+    // `enabled` from the paste is dropped so nothing runs before it was tested.
     const result = parseMcpServerMutation(name, looksRemote(record)
       ? pickEntry(record, ["type", "url", "headers"])
       : pickEntry(record, ["command", "args", "env"]));
