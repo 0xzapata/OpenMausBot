@@ -1,6 +1,4 @@
 // @vitest-environment happy-dom
-// The panel's tab follows the conversation and the place it works in. A
-// model change is neither, so it leaves a chosen Data tab alone.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -96,12 +94,10 @@ describe("Computer panel tab", () => {
     expect(pressed()).toBe("Data");
     await vi.waitFor(() => expect(document.querySelector('[data-testid="data-panel"]')).not.toBeNull());
 
-    // A different model for this conversation: same place, same tab.
     await open(makeBot({ modelSelection: { instanceId: "codex", model: "m" } }));
     expect(pressed()).toBe("Data");
     expect(document.querySelector('[data-testid="data-panel"]')).not.toBeNull();
 
-    // Another conversation is a new target: the panel follows it once.
     await open(makeBot({ threadId: "thread-2", tasks: [{ threadId: "thread-2", title: "Second", createdAt: 2, approvalMode: "ask" }] } as Partial<Bot>));
     expect(pressed()).toBe("Computer");
   });

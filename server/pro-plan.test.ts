@@ -1,7 +1,3 @@
-// What a server knows of its person's plan: the desktop app's answer (at
-// spawn, then over its private port), OMB_PRO_PLAN on a server it did not
-// start, and a Cloud home, which always counts. The rule itself is
-// electron/pro-plan.mjs's table (electron/pro-plan.node-test.mjs).
 import { describe, expect, it } from "vitest";
 import { PRO_PLAN_MESSAGE, proPlanEnvironment, proPlanMessage } from "../electron/pro-plan.mjs";
 import { ProPlan } from "./pro-plan.ts";
@@ -19,7 +15,6 @@ describe("ProPlan", () => {
     expect(plan.liveCallsAllowed()).toBe(false);
     expect(plan.receive(proPlanMessage(true))).toBe(true);
     expect(plan.liveCallsAllowed()).toBe(true);
-    // the same answer again is not news
     expect(plan.receive(proPlanMessage(true))).toBe(true);
     expect(plan.receive(proPlanMessage(false))).toBe(true);
     expect(plan.liveCallsAllowed()).toBe(false);

@@ -1,7 +1,5 @@
-/** The notification wire shape — what the harness decides is worth
- * interrupting someone for, emitted as the `notify` live frame. Single home
- * in shared/ so the server emitter and the client banner stack agree;
- * server/notify.ts re-exports under the historical name. */
+/** The notification wire shape: what the harness decides is worth
+ * interrupting someone for, emitted as the `notify` live frame. */
 export type NotifyKind =
   | "approval"
   | "question"
@@ -16,9 +14,8 @@ export type NotifyKind =
    * (request_sign_in): it waits on their hands, at the place it works. */
   | "sign-in"
   /** A delegated room request settled and the coordinator auto-resumed with
-   * the results. The delegated turn and the resume are both internal, so
-   * without this frame the parent conversation can sit in silence for the
-   * minutes a huge context takes to reach its first token. */
+   * the results; both are internal, so without this the parent conversation
+   * sits silent until the resume's first token. */
   | "delegation-settled"
   /** The workspace crossed its monthly spend warning or reached its cap.
    * Sent to admins only, at most once per month for each. */
