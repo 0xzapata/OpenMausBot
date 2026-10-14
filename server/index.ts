@@ -13054,8 +13054,7 @@ async function deleteBotWithLifecycle(botId: string, revalidate: () => void = ()
           // cannot be erased under a stale approval.
           revalidate();
           store.deleteBot(bot.id, setupRequest);
-          skillReview.dropBot(bot.id);
-          memoryUpkeep.forgetBot(bot.id);
+          skillReview.dropBot(bot.id); memoryUpkeep.forgetBot(bot.id);
           // Removing schedules is not a security revocation. Keep them intact
           // if the bot/receipt write fails, so a failed deletion is retryable.
           routines!.disableForBot(bot.id);
