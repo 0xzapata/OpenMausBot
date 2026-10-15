@@ -1146,6 +1146,10 @@ beforeAll(async () => {
       }
       return res.end(JSON.stringify({ ok: true }));
     }
+    if (req.headers.authorization === "Bearer box_unavailable") {
+      res.writeHead(500, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, message: "fixture outage" }));
+    }
     const ok = req.headers.authorization === "Bearer box_good" || req.headers.authorization === "Bearer box_slow";
     const directBoatRead = /^\/sandboxes\/bx_[23456789abcdefghjkmnpqrstuvwxyz]{8}$/.test(req.url ?? "");
     res.writeHead(ok && directBoatRead ? 404 : ok ? 200 : 401, { "content-type": "application/json" });
@@ -7826,6 +7830,10 @@ describe("harness HTTP API", () => {
     const bad = await api("PUT", "/api/config", { box: { token: "box_wrong" } });
     expect(bad.status).toBe(400);
     expect(String(bad.body.error)).toMatch(/rejected/i);
+    expect(bad.body.code).toBe("key_rejected");
+    const unchecked = await api("PUT", "/api/config", { box: { token: "box_unavailable" } });
+    expect(unchecked.status).toBe(400);
+    expect(unchecked.body).toEqual({ error: "boat.dev returned 500 for that token — try again in a moment." });
     const after = await api("GET", "/api/config");
     expect(after.body.box).toEqual({ configured: false });
   });

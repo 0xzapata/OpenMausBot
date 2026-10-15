@@ -2,12 +2,9 @@ import { useState } from "react";
 import { Loader2, Plus, RotateCw, Trash2 } from "lucide-react";
 import { api, useStore, type InstanceInfo } from "@/state/store";
 import { t } from "@/lib/i18n";
+import { keySaved } from "@/lib/product-events";
+import { addedServers } from "@/lib/openai-compat-endpoints";
 import { ApiKeyRow, OpenAiCompatUrl } from "./ApiKeys";
-
-/** Servers added from this panel; matches the server's ADDED_ENDPOINT_PREFIX. */
-export function addedServers(instances: readonly InstanceInfo[]): Array<InstanceInfo & { url?: string }> {
-  return instances.filter((instance) => instance.driverKind === "openai-compat" && instance.instanceId.startsWith("openai-compat-"));
-}
 
 export function modelIds(text: string): string[] {
   return [...new Set(text.split(/[,，、\s]+/).map((id) => id.trim()).filter(Boolean))];
@@ -60,7 +57,10 @@ function AddedServers({ servers }: { servers: Array<InstanceInfo & { url?: strin
     () => api("/api/instances/openai-compat", {
       method: "POST",
       body: JSON.stringify({ displayName: name.trim(), url: url.trim(), key: key.trim(), ...(modelIds(models).length ? { models: modelIds(models) } : {}) }),
-    }),
+    }).then(
+      (added) => { keySaved("custom_endpoint", "settings", "unverified"); return added; },
+      (cause: unknown) => { keySaved("custom_endpoint", "settings", "error"); throw cause; },
+    ),
     () => { setName(""); setUrl(""); setKey(""); setModels(""); },
   );
 
