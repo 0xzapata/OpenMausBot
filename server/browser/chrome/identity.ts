@@ -3,12 +3,14 @@
 // token changes. The user-agent flag alone empties the high-entropy client hints, and a CDP override alone leaves
 // HeadlessChrome in service workers, so the browser gets both (Chrome 153, measured).
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Readable, Writable } from "node:stream";
 
-import { connectCdp, type Cdp } from "../../browser-sites.ts";
+import type { Cdp } from "../../browser-sites.ts";
+import { pipeTransport, type CdpTransport } from "../cdp/transport.ts";
 
 export interface Brand { brand: string; version: string }
 
@@ -78,13 +80,37 @@ export function isChromeIdentity(value: unknown): value is ChromeIdentity {
 
 const READ_IDENTITY = `(async () => ({ href: location.href, secure: isSecureContext, userAgent: navigator.userAgent, hints: navigator.userAgentData ? await navigator.userAgentData.getHighEntropyValues(${JSON.stringify(HIGH_ENTROPY_HINTS)}) : null }))()`;
 
-async function waitFor<T>(read: () => T | null, deadline: number, what: string): Promise<T> {
-  for (;;) {
-    const value = read();
-    if (value !== null) return value;
-    if (Date.now() > deadline) throw new Error(`the browser did not ${what} in time`);
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+/** CDP over Chrome's --remote-debugging-pipe: calibration opens no DevTools port that a page on this machine could reach. */
+function pipeCdp(transport: CdpTransport, deadline: number): Cdp {
+  const pending = new Map<number, { done(result: Record<string, unknown>): void; fail(error: Error): void }>();
+  let closed: string | null = null;
+  let next = 0;
+  transport.onMessage((text) => {
+    let message: { id?: number; result?: Record<string, unknown>; error?: { message?: string } };
+    try { message = JSON.parse(text) as typeof message; } catch { return; }
+    const call = message.id === undefined ? undefined : pending.get(message.id);
+    if (!call) return;
+    pending.delete(message.id!);
+    if (message.error) call.fail(new Error(message.error.message ?? "the browser refused a DevTools command"));
+    else call.done(message.result ?? {});
+  });
+  transport.onClose((reason) => {
+    closed = reason;
+    for (const call of pending.values()) call.fail(new Error(`the browser exited before it answered (${reason})`));
+    pending.clear();
+  });
+  return {
+    send(method, params = {}, sessionId) {
+      if (closed !== null) return Promise.reject(new Error(`the browser exited before it answered (${closed})`));
+      return new Promise((resolve, reject) => {
+        const id = ++next;
+        const timer = setTimeout(() => { pending.delete(id); reject(new Error(`the browser did not answer ${method} in time`)); }, Math.max(1, deadline - Date.now()));
+        pending.set(id, { done: (result) => { clearTimeout(timer); resolve(result); }, fail: (error) => { clearTimeout(timer); reject(error); } });
+        transport.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
+      });
+    },
+    close: () => transport.close(),
+  };
 }
 
 /** agent-browser 0.37 adds --no-sandbox in these same places; a sandboxed Chrome cannot start there. */
@@ -96,7 +122,7 @@ export function needsNoSandbox(env: NodeJS.ProcessEnv = process.env, exists: (pa
 /** Starts the binary headless on a throwaway profile, reads its identity from a loopback page (client hints need a secure
  * context) and stops it again. `env` is the browser's: its HOME must be the person's real one, or macOS shows a "keychain
  * cannot be found" dialog. */
-export async function calibrateIdentity(executable: string, options: { timeoutMs?: number; connect?: typeof connectCdp; env?: NodeJS.ProcessEnv } = {}): Promise<ChromeIdentity> {
+export async function calibrateIdentity(executable: string, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}): Promise<ChromeIdentity> {
   const deadline = Date.now() + (options.timeoutMs ?? 30_000);
   const page = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -106,13 +132,13 @@ export async function calibrateIdentity(executable: string, options: { timeoutMs
   const url = `http://127.0.0.1:${(page.address() as { port: number }).port}/`;
   const profile = mkdtempSync(join(tmpdir(), "omb-chrome-identity-"));
   const args = [
-    "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check",
+    "--headless=new", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-default-apps", "--disable-sync",
     ...(process.platform === "darwin" ? ["--use-mock-keychain"] : process.platform === "linux" ? ["--password-store=basic"] : []),
     ...(needsNoSandbox(options.env) ? ["--no-sandbox", "--disable-dev-shm-usage"] : []),
     url,
   ];
-  const chrome = spawn(executable, args, { stdio: "ignore", windowsHide: true, env: options.env ?? process.env });
+  const chrome = spawn(executable, args, { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], windowsHide: true, env: options.env ?? process.env });
   let exited = false;
   const started = new Promise<void>((resolve, reject) => {
     chrome.once("error", (error) => { exited = true; reject(error); });
@@ -122,12 +148,7 @@ export async function calibrateIdentity(executable: string, options: { timeoutMs
   let cdp: Cdp | null = null;
   try {
     await started;
-    const portFile = join(profile, "DevToolsActivePort");
-    const [port, path] = await waitFor(() => {
-      if (exited) throw new Error("the browser exited before it answered");
-      try { const lines = readFileSync(portFile, "utf8").split("\n"); return lines[1] ? lines : null; } catch { return null; }
-    }, deadline, "start");
-    cdp = await (options.connect ?? connectCdp)(`ws://127.0.0.1:${port!.trim()}${path!.trim()}`, Math.max(1_000, deadline - Date.now()));
+    cdp = pipeCdp(pipeTransport(chrome.stdio[3] as Writable, chrome.stdio[4] as Readable), deadline);
     const target = await waitForPage(cdp, url, deadline);
     const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: target, flatten: true }) as { sessionId: string };
     // A tab reports the URL it is opening before that page replaces its first, blank document, which has no client hints.
