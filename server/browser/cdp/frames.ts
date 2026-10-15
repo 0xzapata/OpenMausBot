@@ -62,8 +62,9 @@ export class FrameTree {
     return [...this.#frames.values()];
   }
 
-  get main(): FrameRecord {
-    return this.#frames.get(this.mainFrameId)!;
+  /** Gone once the page's session detaches, when the tab closes or its browser stops. */
+  get main(): FrameRecord | undefined {
+    return this.#frames.get(this.mainFrameId);
   }
 
   /** The frame an out-of-process iframe's session renders, or null for the page's own session. */

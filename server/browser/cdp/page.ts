@@ -118,10 +118,10 @@ export class CdpPage implements ActionContext, WaitContext {
   }
 
   async #adoptDocument(): Promise<void> {
-    if (this.frames.main.loaderId !== null) return;
+    if (this.frames.main?.loaderId !== null) return;
     try {
       const { frameTree } = await this.session.send<{ frameTree: FrameTreeNode }>("Page.getFrameTree");
-      if (this.frames.main.loaderId !== null) return;
+      if (this.frames.main?.loaderId !== null) return;
       this.frames.adopt(frameTree);
       const loaderId = frameTree.frame.loaderId;
       if (!loaderId || this.lifecycle.loaderId !== null) return;
@@ -139,7 +139,7 @@ export class CdpPage implements ActionContext, WaitContext {
   }
 
   url(): string {
-    return this.frames.main.url || this.#url;
+    return this.frames.main?.url || this.#url;
   }
 
   title(): string {

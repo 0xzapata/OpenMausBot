@@ -590,7 +590,7 @@ export class ViewerHub {
 
   started(): void {
     this.#applied = null;
-    void this.applyViewport().then(() => this.tabsChanged());
+    void this.applyViewport().then(() => this.tabsChanged()).catch(() => undefined);
   }
 
   stopped(reason: string): void {

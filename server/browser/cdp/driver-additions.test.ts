@@ -21,10 +21,12 @@ function eventSession() {
       set.add(listener);
       return () => set.delete(listener);
     },
-    onDetach: () => () => {},
+    onDetach: (listener: () => void) => { detachListeners.add(listener); return () => detachListeners.delete(listener); },
   } as unknown as CdpSession;
+  const detachListeners = new Set<() => void>();
   const emit = (method: string, params: Params) => { for (const listener of listeners.get(method) ?? []) listener(params); };
-  return { session, sent, emit };
+  const detach = () => { for (const listener of detachListeners) listener(); };
+  return { session, sent, emit, detach };
 }
 
 afterEach(() => { vi.useRealTimers(); });
@@ -52,6 +54,16 @@ describe("HTTP authentication challenges", () => {
     await expect(auth.answer(null)).rejects.toThrow(/No sign-in prompt/);
   });
 
+  it("cancels a challenge at once when nobody could answer it", () => {
+    const { session, sent, emit } = eventSession();
+    const auth = new AuthChallenges();
+    auth.answerable = () => false;
+    auth.watch(session);
+    emit("Fetch.authRequired", { requestId: "u1", authChallenge: { source: "Server", origin: "https://intranet.example", scheme: "basic", realm: "Staff" } });
+    expect(auth.pending).toBeNull();
+    expect(sent.at(-1)).toEqual({ method: "Fetch.continueWithAuth", params: { requestId: "u1", authChallengeResponse: { response: "CancelAuth" } } });
+  });
+
   it("never answers a proxy's challenge, and cancels one nobody answers", async () => {
     vi.useFakeTimers();
     const { session, sent, emit } = eventSession();
@@ -64,6 +76,16 @@ describe("HTTP authentication challenges", () => {
     await vi.advanceTimersByTimeAsync(AUTH_WAIT_MS);
     expect(auth.pending).toBeNull();
     expect(sent.at(-1)).toEqual({ method: "Fetch.continueWithAuth", params: { requestId: "s1", authChallengeResponse: { response: "CancelAuth" } } });
+  });
+});
+
+describe("a tab whose session went away", () => {
+  it("has no main frame left, rather than a stale one", () => {
+    const { session, detach } = eventSession();
+    const frames = new FrameTree(session, "main");
+    expect(frames.main).toMatchObject({ id: "main", url: "about:blank" });
+    detach();
+    expect(frames.main).toBeUndefined();
   });
 });
 

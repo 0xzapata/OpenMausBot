@@ -47,7 +47,7 @@ function gone(handle: NodeHandle & { ref?: string }): DriverError {
 }
 
 function refuseErrorPage(context: ActionContext): void {
-  const url = context.frames.main.url;
+  const url = context.frames.main?.url ?? "";
   if (url.startsWith("chrome-error://")) {
     throw new DriverError("refused", "This tab shows the browser's own error or warning page. A person has to decide on it; navigate elsewhere to continue.");
   }
