@@ -18,6 +18,32 @@ const BROWSER_RESTART_TOOL_SPEC = {
   description: "Close and restart your browser. Use this only when a browser tool says the browser must be restarted, or it stays busy after a call that did not answer. Every open tab is closed and page state such as form input and sign-ins is lost; afterwards open the page you need again and check whether the interrupted action already happened before repeating it.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
 };
+export const BROWSER_UPLOAD_TOOL = "agent_browser_upload";
+export const BROWSER_HOVER_TOOL = "agent_browser_hover";
+/** agent-browser 0.37.0 offers upload and hover only in its 156-tool "all" profile, so OMB runs these two through the daemon's relay. */
+const RELAYED_TOOL_SPECS = [
+  {
+    name: BROWSER_UPLOAD_TOOL,
+    description: "Put files into a file input (<input type=\"file\">), then submit its form as usual. files are absolute paths of files the person attached to this conversation or files in your own working folder; any other path is refused.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["selector", "files"],
+      properties: {
+        selector: { type: "string", minLength: 1, description: "The file input: an @eN ref from a snapshot, or a CSS selector." },
+        files: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1 }, description: "Absolute paths of the files to put in the input." },
+      },
+    },
+  },
+  {
+    name: BROWSER_HOVER_TOOL,
+    description: "Move the mouse over an element, for menus and tooltips that open on hover.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["selector"],
+      properties: { selector: { type: "string", minLength: 1, description: "An @eN ref from a snapshot, or a CSS selector." } },
+    },
+  },
+];
+type RelayedToolSpec = (typeof RELAYED_TOOL_SPECS)[number];
+const RELAYED_TOOLS: ReadonlyMap<string, RelayedToolSpec> = new Map(RELAYED_TOOL_SPECS.map((spec) => [spec.name, spec]));
 const BROWSER_INTERRUPTED = `The browser engine is stuck. Press Restart in the Browser panel, or call ${BROWSER_RESTART_TOOL}, before using browser tools again.`;
 const idleClosedNote = (saves: boolean) => `Your browser sat unused and was closed to free memory; this call opened it again. Pages you had open are gone (${saves ? "saved sign-ins are kept" : "it is a temporary browser, so its sign-ins are gone too"}), so open the page you need again before using earlier @eN refs.`;
 const PERSON_RESTARTED = "The person restarted your browser from the Browser panel; this call ran in the fresh browser. Pages you had open are gone, so open the page you need again before using earlier @eN refs, and check whether an interrupted action already happened before repeating it.";
@@ -28,7 +54,7 @@ const RESTART_COST = "a restart closes every tab and loses page state such as fo
 const LATE = Symbol("late");
 const PAGE_ACTIONS: ReadonlySet<string> = new Set([
   "agent_browser_click", "agent_browser_fill", "agent_browser_type", "agent_browser_press",
-  "agent_browser_check", "agent_browser_uncheck", "agent_browser_select",
+  "agent_browser_check", "agent_browser_uncheck", "agent_browser_select", BROWSER_UPLOAD_TOOL, BROWSER_HOVER_TOOL,
 ]);
 const MAX_REQUEST_BYTES = 1_048_576;
 const MAX_RESPONSE_BYTES = 16_777_216;
@@ -290,6 +316,9 @@ type ClientEntry = { key: string; client: BrowserClient; viewport?: Promise<unkn
 
 /** Closes one session's native browser daemon; true only when it is gone. */
 export type CloseBrowser = (session: string, spec: BrowserSpawnSpec) => Promise<boolean>;
+/** Sends one command to the session's running agent-browser daemon. Throws TransportError when it does not answer in time. */
+export type RelayCommand = (spec: BrowserSpawnSpec, session: string, command: Record<string, unknown>, timeoutMs: number) =>
+  Promise<{ success: boolean; data: Record<string, unknown> | null; error?: string }>;
 
 export class BrowserRuntime {
   private gates = new Map<string, Gate>();
@@ -299,16 +328,18 @@ export class BrowserRuntime {
   private options: { requestTimeoutMs: number; takeoverTimeoutMs: number; idleMs: number; maxPending: number; resultBudget: number; recoveryCheckMs: number; laneWaitMs: number; callBudgetMs: number; followUpReserveMs: number };
   private closeBrowser: CloseBrowser;
   private applyViewport?: ApplyViewport;
+  private relayCommand?: RelayCommand;
   private steps?: Pick<BrowserSteps, "before" | "after" | "signIn" | "note" | "forget" | "recentFrame" | "personTook">;
   private lanes = new BrowserLanes();
   /** Strips held secrets (a filled password, a one-time code) from every tool result before the bot reads it. */
   private scrub: (text: string) => string;
   private onTiming?: (timing: BrowserTiming) => void;
 
-  constructor({ closeBrowser, applyViewport, steps, scrub, onTiming, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser; applyViewport?: ApplyViewport; steps?: BrowserRuntime["steps"]; scrub?: (text: string) => string; onTiming?: (timing: BrowserTiming) => void } = {}) {
+  constructor({ closeBrowser, applyViewport, relayCommand, steps, scrub, onTiming, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser; applyViewport?: ApplyViewport; relayCommand?: RelayCommand; steps?: BrowserRuntime["steps"]; scrub?: (text: string) => string; onTiming?: (timing: BrowserTiming) => void } = {}) {
     this.options = { ...BROWSER_CALL_DEFAULTS, takeoverTimeoutMs: 15_000, idleMs: 60_000, maxPending: 16, resultBudget: DEFAULT_BROWSER_RESULT_BUDGET, recoveryCheckMs: 30_000, ...options };
     this.closeBrowser = closeBrowser ?? (async () => false);
     this.applyViewport = applyViewport;
+    this.relayCommand = relayCommand;
     this.steps = steps;
     this.scrub = scrub ?? scrubHeldSecrets;
     this.onTiming = onTiming;
@@ -443,7 +474,7 @@ export class BrowserRuntime {
     const toolName = toolNameOf(params);
     const gate = this.gate(session);
     if (gate.uncertain) {
-      if (method === "tools/list") return withRestartTool(this.toolLists.get(session) ?? { tools: [] });
+      if (method === "tools/list") return withOmbTools(this.toolLists.get(session) ?? { tools: [] });
       if (gate.owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
       const lostCall = gate.lostCall;
       if (lostCall === null) return stuckBrowserToolError();
@@ -505,11 +536,15 @@ export class BrowserRuntime {
         }
         const engineStarted = performance.now();
         if (method === "tools/call") { dispatched = true; gate.dispatched++; }
-        let result = await entry.client.rpc(method, request, Math.max(1, Math.min(this.options.requestTimeoutMs, deadline - Date.now() - this.options.followUpReserveMs)));
+        const engineTimeoutMs = Math.max(1, Math.min(this.options.requestTimeoutMs, deadline - Date.now() - this.options.followUpReserveMs));
+        const relayed = method === "tools/call" && toolName !== undefined ? RELAYED_TOOLS.get(toolName) : undefined;
+        let result = relayed
+          ? await this.relayTool(session, spec, relayed, args, engineTimeoutMs)
+          : await entry.client.rpc(method, request, engineTimeoutMs);
         phases.engineMs = performance.now() - engineStarted;
         beforeDispatch?.();
         if (method === "tools/list") {
-          const tools = withRestartTool(slimBrowserToolList(result));
+          const tools = withOmbTools(slimBrowserToolList(result));
           this.toolLists.set(session, tools);
           return tools;
         }
@@ -583,6 +618,22 @@ export class BrowserRuntime {
       if (error instanceof Error && error.message === BROWSER_INTERRUPTED) return stuckBrowserToolError();
       if (error instanceof TransportError && gate.uncertain && gate.lostCall !== null) return lostCallToolError(toolName ?? gate.lostCall);
       throw error;
+    }
+  }
+
+  private async relayTool(session: string, spec: BrowserSpawnSpec, tool: RelayedToolSpec, args: unknown, timeoutMs: number): Promise<unknown> {
+    const action = tool.name.replace("agent_browser_", "");
+    const given = args && typeof args === "object" ? args as Record<string, unknown> : {};
+    const fields = Object.keys(tool.inputSchema.properties).filter((field) => field in given);
+    const command = Object.fromEntries([["action", action], ...fields.map((field) => [field, given[field]])]);
+    try {
+      if (!this.relayCommand) throw new Error(`This browser cannot ${action} here.`);
+      const answer = await this.relayCommand(spec, session, command, timeoutMs);
+      if (!answer.success) return { isError: true, content: [{ type: "text", text: answer.error ?? `The browser could not ${action} that element.` }] };
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data: answer.data }) }] };
+    } catch (error) {
+      if (error instanceof TransportError) throw error;
+      return { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] };
     }
   }
 
@@ -878,8 +929,9 @@ function firstText(result: unknown): string {
   return part ? (part as { text: string }).text : "";
 }
 
-function withRestartTool(result: unknown): unknown {
+function withOmbTools(result: unknown): unknown {
   if (!result || typeof result !== "object" || !Array.isArray((result as { tools?: unknown }).tools)) return result;
-  const tools = ((result as { tools: unknown[] }).tools).filter((tool) => (tool as { name?: unknown } | null)?.name !== BROWSER_RESTART_TOOL);
-  return { ...result, tools: [...tools, BROWSER_RESTART_TOOL_SPEC] };
+  const own = [...RELAYED_TOOL_SPECS, BROWSER_RESTART_TOOL_SPEC];
+  const tools = ((result as { tools: unknown[] }).tools).filter((tool) => !own.some((spec) => spec.name === (tool as { name?: unknown } | null)?.name));
+  return { ...result, tools: [...tools, ...own] };
 }
