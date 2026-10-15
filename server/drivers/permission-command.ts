@@ -60,3 +60,24 @@ export function acpShellRequest(isShellCommand: boolean, rawInput: unknown, laun
   const command = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? (rawInput as Record<string, unknown>).command : undefined;
   return { command: isShellCommand ? acpPermissionCommand(rawInput, launchCwd) : undefined, commandLine: shellRequest(command, undefined).commandLine };
 }
+
+/** An ACP permission request's exact operation, for the driver's own session allow; null for a generic title with no input. */
+export function acpSessionOperationKey(toolCall: any): string | null {
+  const rawInput = toolCall?.rawInput;
+  const command = typeof rawInput?.command === "string" ? rawInput.command : undefined;
+  const hasInput = rawInput && typeof rawInput === "object" && Object.keys(rawInput).length > 0;
+  if (!command && !hasInput) return null;
+  const stable = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(stable)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, stable((value as Record<string, unknown>)[key])]))
+        : value;
+  return JSON.stringify(stable({
+    kind: toolCall?.kind,
+    title: toolCall?.title,
+    command,
+    input: rawInput,
+    locations: toolCall?.locations,
+  }));
+}

@@ -5,6 +5,7 @@ import { Type, type TObjectOptions, type TSchema, type TSchemaOptions } from "ty
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { allowsTool, canUseMcpServer, parseToolScope, type ToolIdentity } from "../../shared/tool-scope.ts";
+import { ASK_USER_TOOL, formatQuestionAnswers, MAX_OPTIONS, MAX_QUESTIONS, parseAskQuestions } from "../../shared/ask-question.ts";
 import { CALL_TOOL, directoryCallTarget, isDirectoryTool } from "../mcp-directory.ts";
 import { REMOTE_MCP_STARTUP_MS } from "../mcp-http.ts";
 
@@ -22,6 +23,8 @@ interface McpConfig {
   toolScope?: unknown;
   scopeReadyPath?: string;
   approvalMode?: string;
+  /** Register the ask_user tool: the driver sets it when the turn may ask. */
+  askUser?: boolean;
 }
 
 interface McpTool {
@@ -46,6 +49,9 @@ type PiToolContent = { type: "text"; text: string } | { type: "image"; data: str
 interface PiToolContext {
   ui: {
     confirm(title: string, message: string): Promise<boolean>;
+    // Dialogs resolve undefined when dismissed, timed out or aborted.
+    select?(title: string, options: string[], opts?: { signal?: AbortSignal }): Promise<string | undefined>;
+    input?(title: string, placeholder?: string, opts?: { signal?: AbortSignal }): Promise<string | undefined>;
   };
 }
 
@@ -54,6 +60,8 @@ interface PiToolDefinition {
   label: string;
   description: string;
   parameters: TSchema;
+  /** Pi 1.0+: declared to the model and never callable from other tools, as Pi documents for tools that ask the user. */
+  exposure?: "model-only";
   execute(
     toolCallId: string,
     params: unknown,
@@ -509,6 +517,59 @@ function summarizeParams(params: unknown): string {
   }
 }
 
+const ASK_USER_NOT_ANSWERED = "The person did not answer this question. Do not guess an answer; ask again later or proceed without it.";
+
+/** The shared ask_user tool over Pi's own dialogs: in RPC mode each select is one question card, asked in turn.
+ * A select takes one pick, so a multiSelect call is refused rather than answered with one. */
+function askUserTool(allowed: () => boolean): PiToolDefinition {
+  return {
+    name: ASK_USER_TOOL,
+    label: "Ask the person",
+    description:
+      "Ask the person questions when the decision is theirs. Offer concrete options where they exist; they can always answer in their own words. Ask up to six questions in one call rather than one at a time. Each question takes one answer.",
+    parameters: Type.Object({
+      questions: Type.Array(Type.Object({
+        question: Type.String({ description: "The question to show the person." }),
+        options: Type.Optional(Type.Array(
+          Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }),
+          { maxItems: MAX_OPTIONS, description: "Suggested answers; the person picks one or writes their own." },
+        )),
+      }), { minItems: 1, maxItems: MAX_QUESTIONS }),
+    }),
+    exposure: "model-only",
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (!allowed()) throw new Error("Tool selection excludes this tool");
+      const raw = (params as { questions?: unknown } | null)?.questions;
+      if (Array.isArray(raw) && raw.some((entry) => (entry as { multiSelect?: unknown } | null)?.multiSelect === true)) {
+        throw new Error("This engine takes one answer per question. Ask a single-choice question instead; the person can still name several things in their own words.");
+      }
+      const questions = parseAskQuestions(params);
+      if (!questions) {
+        throw new Error("The ask_user arguments are malformed: pass a questions array of one to six questions, each with a question string and at most twelve options carrying a label. Ask again with valid arguments.");
+      }
+      const answers: string[][] = [];
+      for (const question of questions) {
+        const labels = question.options.map((option) => option.label);
+        // pi's select carries bare strings, so option descriptions go under the question and the labels stay exact.
+        const described = question.options.filter((option) => option.description);
+        const title = described.length
+          ? `${question.question}\n\n${described.map((option) => `${option.label}: ${option.description}`).join("\n")}`
+          : question.question;
+        const answer = labels.length
+          ? await ctx.ui.select?.(title, labels, { signal })
+          : await ctx.ui.input?.(question.question, undefined, { signal });
+        if (!answer?.trim()) break;
+        answers.push([answer.trim()]);
+      }
+      if (!answers.length) throw new Error(ASK_USER_NOT_ANSWERED);
+      const unanswered = answers.length < questions.length
+        ? "\n\nThe person did not answer the other questions. Do not guess their answers."
+        : "";
+      return { content: [{ type: "text", text: formatQuestionAnswers(questions, answers) + unanswered }], details: {} };
+    },
+  };
+}
+
 export default async function (pi: PiExtensionApi): Promise<void> {
   const configPath = process.env.OMB_MCP_CONFIG;
   if (!configPath) return;
@@ -580,6 +641,15 @@ export default async function (pi: PiExtensionApi): Promise<void> {
       });
       return payload;
     });
+  }
+
+  if (config.askUser === true) {
+    const identity: ToolIdentity = { kind: "native", name: ASK_USER_TOOL };
+    if (scope === undefined || allowsTool(scope, identity)) {
+      pi.registerTool(askUserTool(() => scope === undefined || (!enforcementFailed && allowsTool(scope, identity))));
+      // MCP tools are named server_tool; keep one from taking this name.
+      used.add(ASK_USER_TOOL);
+    }
   }
 
   const mounts = await Promise.all(
