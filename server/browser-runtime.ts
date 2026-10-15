@@ -2,6 +2,7 @@ import { killCliTree, spawnCli } from "./procs.ts";
 import { scrubHeldSecrets } from "../shared/redact.ts";
 import { DEFAULT_BROWSER_RESULT_BUDGET, describePageChange, OBSERVE_PAGE_SCRIPT, parsePageState, scrubBrowserResult, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments, type PageState } from "./browser-tool-shape.ts";
 import { BrowserLanes } from "./browser-lane.ts";
+import { SECRET_ON_PAGE, SecretHolds, type SecretHold } from "./browser-secret-hold.ts";
 import type { BrowserSteps, StepCall, StepContext } from "./browser-steps.ts";
 import { HARNESS_CALL_BUDGET_MS } from "./harness-budget.ts";
 
@@ -331,6 +332,7 @@ export class BrowserRuntime {
   private relayCommand?: RelayCommand;
   private steps?: Pick<BrowserSteps, "before" | "after" | "signIn" | "note" | "forget" | "recentFrame" | "personTook">;
   private lanes = new BrowserLanes();
+  private holds = new SecretHolds((session, clear) => this.lanes.run(session, () => this.agentAction(session, clear, false), this.options.laneWaitMs).then((ran) => ran !== null));
   /** Strips held secrets (a filled password, a one-time code) from every tool result before the bot reads it. */
   private scrub: (text: string) => string;
   private onTiming?: (timing: BrowserTiming) => void;
@@ -401,9 +403,13 @@ export class BrowserRuntime {
   }
 
   /** Runs in the browser's lane, so no capture or read happens while a secret is typed. */
-  async withSecretInput<T extends { ok: boolean; text: string; host?: string; filled?: string[] }>(session: string, spec: Pick<BrowserSpawnSpec, "command" | "env">, fn: () => Promise<T>, ctx?: StepContext): Promise<T> {
+  async withSecretInput<T extends { ok: boolean; text: string; host?: string; filled?: string[]; held?: SecretHold }>(session: string, spec: Pick<BrowserSpawnSpec, "command" | "env">, fn: () => Promise<T>, ctx?: StepContext): Promise<T> {
     const outcome = await this.lanes.run(session, async () => {
-      const value = await this.withAgentAction(session, fn);
+      const value = await this.withAgentAction(session, async () => {
+        const filled = await fn();
+        if (filled.held) this.holds.hold(session, filled.held);
+        return filled;
+      });
       const step = await this.steps?.signIn({ session, spec, ctx }, value).catch(() => null);
       return step ? { ...value, text: `${value.text} Recorded as step ${step}.` } : value;
     }, this.options.laneWaitMs);
@@ -501,6 +507,9 @@ export class BrowserRuntime {
       }
       phases.launchMs = performance.now() - launchStarted;
       try {
+        const pageUrl = () => entry.client.rpc("tools/call", { name: "agent_browser_get_url", arguments: {} }, Math.max(1, Math.min(followUpMs(), 5_000)))
+          .then((result) => firstText(result).trim(), (error: unknown) => { if (error instanceof TransportError) throw error; return ""; });
+        if (toolName === "agent_browser_eval" && await this.holds.refuses(session, pageUrl)) return { isError: true, content: [{ type: "text", text: SECRET_ON_PAGE }] };
         // Launch and session parameters OMB owns never reach the engine from a call.
         const request = method === "tools/call" ? stripHarnessOwnedArguments(params) : params;
         const args = (request as { arguments?: unknown } | null)?.arguments;
@@ -883,6 +892,7 @@ export class BrowserRuntime {
 
   /** Call after the browser is closed; closes the MCP transport, not saved logins or profile files. */
   async close(session: string): Promise<void> {
+    this.holds.drop(session);
     const gate = this.gate(session);
     gate.closing = true;
     gate.ready = false;
@@ -898,7 +908,7 @@ export class BrowserRuntime {
   }
 
   async closeAll(): Promise<void> {
-    await Promise.all([...new Set([...this.clients.keys(), ...this.gates.keys()])].map((session) => this.close(session)));
+    await Promise.all([...new Set([...this.clients.keys(), ...this.gates.keys(), ...this.holds.sessions()])].map((session) => this.close(session)));
   }
 }
 

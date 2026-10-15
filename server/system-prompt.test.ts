@@ -25,6 +25,7 @@ import {
   savedLoginsPrompt,
   type ComputerPromptKind,
 } from "./system-prompt.ts";
+import { loginPlace } from "../shared/logins.ts";
 
 describe("resolveComputerPromptKind", () => {
   // Rows the mounts already refuse are pinned here because no dispatchable engine in the test fleet lacks the capability.
@@ -179,17 +180,20 @@ describe("computerPrompt", () => {
     }
   });
 
-  it("prefers a saved login through fill_login, before asking the person", () => {
-    expect(SIGN_IN_PROMPT).toContain("When you have a saved login for the site, open its login page in your browser and call fill_login, then submit the form");
+  it("prefers a saved login through fill_login, which submits the form, before asking the person", () => {
+    expect(SIGN_IN_PROMPT).toContain("When you have a saved login for the site, open its login page in your browser and call fill_login: OpenMausBot types the password and any one-time code itself and submits the form");
     expect(SIGN_IN_PROMPT.indexOf("fill_login")).toBeLessThan(SIGN_IN_PROMPT.indexOf("call request_sign_in"));
   });
 
-  it("names a bot's saved logins by host and username only, and nothing when it has none", () => {
+  it("names a bot's saved logins by site and username only, a login kept to its host by that host, and nothing when it has none", () => {
     expect(savedLoginsPrompt([])).toBe("");
-    expect(savedLoginsPrompt([{ host: "accounts.example.com", username: "alice@example.com" }, { host: "localhost", username: "" }]))
-      .toBe(" Your saved logins, for fill_login on exactly these hosts: accounts.example.com (alice@example.com), localhost.");
-    const many = Array.from({ length: 45 }, (_, index) => ({ host: `site${index}.example.com`, username: "a" }));
-    expect(savedLoginsPrompt(many)).toMatch(/site39\.example\.com \(a\) and 5 more\.$/u);
+    expect(savedLoginsPrompt([
+      { ...loginPlace("accounts.example.com"), username: "alice@example.com" },
+      { ...loginPlace("acme.okta.com", [], true), username: "ops" },
+      { ...loginPlace("localhost"), username: "" },
+    ])).toBe(" Your saved logins, for fill_login on these sites and their sign-in pages: example.com (alice@example.com), acme.okta.com (ops), localhost.");
+    const many = Array.from({ length: 45 }, (_, index) => ({ ...loginPlace(`site${index}.com`), username: "a" }));
+    expect(savedLoginsPrompt(many)).toMatch(/site39\.com \(a\) and 5 more\.$/u);
   });
 });
 

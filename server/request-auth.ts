@@ -265,6 +265,8 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["POST"], path: /^\/api\/bots\/[\w-]+\/secret-cards\/[\w-]+\/(?:resume|dismiss)$/ },
   // Save a login: the password goes to the encrypted store, and no client route reads one back.
   { methods: ["POST"], path: /^\/api\/bots\/[\w-]+\/sign-in-cards\/[\w-]+\/(?:done|cancel|save-login)$/ },
+  // Where a login saved from the card would fill: the host of the bot's open page, which its live view shows anyway.
+  { methods: ["GET"], path: /^\/api\/bots\/[\w-]+\/sign-in-cards\/[\w-]+\/save-login$/ },
   // A member reaches only the bots shown to them.
   { methods: ["GET"], path: /^\/api\/bots\/[\w-]+\/browser\/live$/ },
   { methods: ["POST"], path: /^\/api\/bots\/[\w-]+\/browser\/action$/ },

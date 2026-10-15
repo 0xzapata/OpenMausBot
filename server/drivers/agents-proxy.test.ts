@@ -1119,7 +1119,7 @@ describe("agents-proxy MCP surface", () => {
     expect(lastSignInBody).toBeNull();
   });
 
-  it("fills a saved login with at most a username, and hands the harness's status through, a refusal as an error", async () => {
+  it("fills a saved login with at most a username and a submit choice, and hands the harness's status through, a refusal as an error", async () => {
     const filled = await callTool("fill_login", {});
     expect(filled.result.isError).toBeFalsy();
     expect(filled.result.content[0].text).toBe("Filled the username and the password for alice on example.com.");
@@ -1130,6 +1130,10 @@ describe("agents-proxy MCP surface", () => {
     expect(refused.result.content[0].text).toBe("No saved login for accounts.example.com.");
     expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", username: "bob" });
     fillAnswer = { ok: true, text: "Filled the username and the password for alice on example.com." };
+    await callTool("fill_login", { submit: false });
+    expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", submit: false });
+    await callTool("fill_login", { submit: true });
+    expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine" });
   });
 
   it("rejects credential ids outside the fixed allowlist locally", async () => {
