@@ -12,6 +12,7 @@ export const WORKSPACE_BACKUP_CLIENT_KEYS = [
   "omb-color-user-bubbles",
   "omb-chat-width",
   "openmausbot.sidebarDensity",
+  "openmausbot.sidebarToolsLayout",
   "openmausbot.sidebarCollapsedSections.v1",
   "openmausbot.sidebarSectionOrder.v1",
   "omb-analytics-opt-out",

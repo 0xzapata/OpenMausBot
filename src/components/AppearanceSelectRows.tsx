@@ -2,6 +2,7 @@ import { useState } from "react";
 import { t } from "@/lib/i18n";
 import { CHAT_WIDTH_IDS, applyChatWidth, readChatWidth, type ChatWidthId } from "@/lib/chat-width";
 import { FONT_IDS, applyFont, readFont, type FontId } from "@/lib/fonts";
+import { parseSidebarToolsLayout, setSidebarToolsLayout, SIDEBAR_TOOLS_LAYOUTS, useSidebarToolsLayout } from "@/lib/sidebar-preferences";
 import { SettingRow } from "./SettingsPrimitives";
 
 export function FontRow() {
@@ -44,6 +45,24 @@ export function ChatWidthRow() {
       >
         {CHAT_WIDTH_IDS.map((id) => (
           <option key={id} value={id}>{t(`settings.chatWidth.${id}`)}</option>
+        ))}
+      </select>
+    </SettingRow>
+  );
+}
+
+export function SidebarToolsLayoutRow() {
+  const layout = useSidebarToolsLayout();
+  return (
+    <SettingRow title={t("sidebar.toolsLayout.title")} subtitle={t("sidebar.toolsLayout.subtitle")}>
+      <select
+        value={layout}
+        aria-label={t("sidebar.toolsLayout.chooseAria")}
+        onChange={(event) => setSidebarToolsLayout(parseSidebarToolsLayout(event.target.value))}
+        className="cursor-pointer min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus"
+      >
+        {SIDEBAR_TOOLS_LAYOUTS.map((option) => (
+          <option key={option} value={option}>{t(`sidebar.toolsLayout.${option}`)}</option>
         ))}
       </select>
     </SettingRow>
