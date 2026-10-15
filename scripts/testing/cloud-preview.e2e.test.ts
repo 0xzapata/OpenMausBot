@@ -89,16 +89,16 @@ describe("cloud preview recovery in the real renderer", () => {
     await click("Release desktop join");
     expect(await stat("opened")).toBe(0);
     await select("Conversation surface", "browser-pin");
-    await expect.poll(() => evaluate('document.querySelector("[data-tour=computer-browser]")?.getAttribute("aria-pressed")'), { timeout: 5000 }).toBe("true");
+    await expect.poll(() => evaluate('document.querySelector("[data-tour=computer-browser]")?.getAttribute("aria-selected")'), { timeout: 5000 }).toBe("true");
     await click("Browser"); // Save it manually, as a real person can.
     await select("Conversation surface", "vm-pin");
     await expect.poll(currentFrame, { timeout: 6000 }).toBe(await stat("vmScreenshot"));
-    expect(await evaluate('document.querySelector("[data-tour=computer-tabs] button")?.getAttribute("aria-pressed")')).toBe("true");
+    expect(await evaluate('document.querySelector("[data-tour=computer-tabs] button")?.getAttribute("aria-selected")')).toBe("true");
     await select("Conversation surface", "browser-pin");
-    await expect.poll(() => evaluate('document.querySelector("[data-tour=computer-browser]")?.getAttribute("aria-pressed")'), { timeout: 5000 }).toBe("true");
+    await expect.poll(() => evaluate('document.querySelector("[data-tour=computer-browser]")?.getAttribute("aria-selected")'), { timeout: 5000 }).toBe("true");
     await click("Routines");
     await pause(200);
-    expect(await evaluate('document.querySelector("[data-tour=computer-browser]")?.getAttribute("aria-pressed")')).toBe("false");
+    expect(await evaluate('document.querySelector("[data-tour=computer-browser]")?.getAttribute("aria-selected")')).toBe("false");
     await select("Conversation surface", "default");
     await evaluate('document.querySelector("[data-tour=computer-tabs] button")?.click(); true');
     await expect.poll(frameVisible, { timeout: 6000 }).toBe(true);
@@ -111,7 +111,7 @@ describe("cloud preview recovery in the real renderer", () => {
     await click("Routines");
     await click("Busy: true");
     await pause(200);
-    expect(await evaluate('Array.from(document.querySelectorAll("[data-tour=computer-tabs] button")).find(button => button.textContent.includes("Routines"))?.getAttribute("aria-pressed")')).toBe("true");
+    expect(await evaluate('Array.from(document.querySelectorAll("[data-tour=computer-tabs] button")).find(button => button.textContent.includes("Routines"))?.getAttribute("aria-selected")')).toBe("true");
     await evaluate('document.querySelector("[data-tour=computer-tabs] button")?.click(); true');
     await expect.poll(frameVisible, { timeout: 6000 }).toBe(true);
 
