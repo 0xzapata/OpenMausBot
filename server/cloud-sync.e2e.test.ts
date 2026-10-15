@@ -177,3 +177,13 @@ it("brings a bot's conversation folder down to Documents/MausBot", async () => {
     rmSync(pcHome, { recursive: true, force: true });
   }
 }, 60_000);
+
+it("a desktop's open long poll does not block a backup or a restore on My Cloud", async () => {
+  const headers = { host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https", authorization: `Bearer ${ownerToken}` };
+  const { cursor } = await (await fetch(`${base}/api/sync/changes?cursor=0&waitMs=0`, { headers })).json() as { cursor: number };
+  const poll = fetch(`${base}/api/sync/changes?cursor=${cursor}&waitMs=5000`, { headers }).then((response) => response.json());
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const backup = await api("POST", "/api/workspace-backup/export", { body: { password: "correct horse battery staple" } });
+  expect(backup.status, JSON.stringify(backup.body)).not.toBe(409);
+  await poll;
+}, 30_000);

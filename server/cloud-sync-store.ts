@@ -32,21 +32,32 @@ export function sha256File(path: string): Promise<string> {
 }
 
 type FileRow = { path: string; size: number; mtime: number; sha256: string };
-type TrashRow = { id: string; folder: string; path: string; size: number; deleted_at: number };
+type TrashRow = { id: string; folder: string; path: string; size: number; deleted_at: number; cloud_path: string | null };
 const trashEntryOf = (row: TrashRow): TrashEntry => ({ id: row.id, folderId: row.folder, path: row.path, size: row.size, deletedAt: row.deleted_at });
 
 const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const pcKey = (path: string) => WINDOWS_PATH.test(path) ? path.replaceAll("\\", "/").toLowerCase() : path;
 
+/** Every name in `dir`, of any kind: a new folder's name must not take one a file or link already has. */
+function names(dir: string): string[] {
+  try { return readdirSync(dir); } catch { return []; }
+}
+
 function directories(dir: string): string[] {
   try { return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(); } catch { return []; }
 }
 
-/** Regular, singly linked files under `root` as wire paths. Skips links, sync's skip list and names that cannot travel. */
+const gone = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
+
+/** Regular, singly linked files under `root` as wire paths. Skips links, sync's skip list and names that cannot travel.
+ * Only a folder that is not there reads as empty: any other error is thrown, so nothing reads as deleted unproven. */
 export function* walk(root: string, prefix = ""): Generator<{ path: string; size: number; mtimeMs: number }> {
   let entries;
-  try { entries = readdirSync(prefix ? join(root, ...prefix.split("/")) : root, { withFileTypes: true }); } catch { return; }
+  try { entries = readdirSync(prefix ? join(root, ...prefix.split("/")) : root, { withFileTypes: true }); } catch (error) {
+    if (gone(error)) return;
+    throw error;
+  }
   for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : 1)) {
     const path = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (skipped(entry.name, entry.isDirectory()) || !validWirePath(path)) continue;
@@ -85,7 +96,9 @@ export class CloudSyncStore {
     for (const dir of [this.syncDir(), join(this.syncDir(), "uploads"), join(this.syncDir(), "trash"), this.root]) mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(this.syncDir(), "index.db"));
     this.db.exec(`CREATE TABLE IF NOT EXISTS files(folder TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(folder, path));
-      CREATE TABLE IF NOT EXISTS trash(id TEXT PRIMARY KEY, folder TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, deleted_at INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS trash(id TEXT PRIMARY KEY, folder TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, deleted_at INTEGER NOT NULL, cloud_path TEXT);`);
+    const columns = (this.db.prepare("PRAGMA table_info(trash)").all() as Array<{ name: string }>).map((column) => column.name);
+    if (!columns.includes("cloud_path")) this.db.exec("ALTER TABLE trash ADD COLUMN cloud_path TEXT");
   }
 
   syncDir(): string { return join(this.dataDir, "sync"); }
@@ -99,7 +112,10 @@ export class CloudSyncStore {
     for (const botId of directories(base)) {
       for (const threadId of directories(join(base, botId))) {
         const cloudPath = join(base, botId, threadId);
-        if (!ID.test(botId) || !ID.test(threadId) || walk(cloudPath).next().done) continue;
+        if (!ID.test(botId) || !ID.test(threadId)) continue;
+        let holdsFile = true;
+        try { holdsFile = !walk(cloudPath).next().done; } catch {}
+        if (!holdsFile) continue;
         folders.push({ id: `bot-${botId}-${threadId}`, kind: "bot", botId, threadId, cloudPath });
       }
     }
@@ -110,14 +126,19 @@ export class CloudSyncStore {
   folder(id: string): SyncFolder | undefined { return this.folders().find((folder) => folder.id === id); }
 
   register(input: { computerId: string; computerName: string; pcPath: string; name: string }): SyncFolder {
-    const folders = this.pcFolders();
+    let folders = this.pcFolders();
     const existing = folders.find((folder) => folder.computerId === input.computerId && pcKey(folder.pcPath ?? "") === pcKey(input.pcPath));
-    if (existing) { mkdirSync(existing.cloudPath, { recursive: true, mode: 0o700 }); return existing; }
-    const sibling = folders.find((folder) => folder.computerId === input.computerId);
+    if (existing && lstatSync(existing.cloudPath, { throwIfNoEntry: false })?.isDirectory()) return existing;
+    if (existing) {
+      // Its copy is gone (or a link replaced it): a new id, so no record of what the old copy held applies to an empty one.
+      folders = folders.filter((folder) => folder.id !== existing.id);
+      this.db.prepare("DELETE FROM files WHERE folder = ?").run(existing.id);
+    }
+    const sibling = existing ?? folders.find((folder) => folder.computerId === input.computerId);
     const computerDir = sibling
       ? relative(this.root, sibling.cloudPath).split(sep)[0]!
-      : safeFolderName(input.computerName, new Set(directories(this.root).map(foldKey)));
-    const name = safeFolderName(input.name, new Set(directories(join(this.root, computerDir)).map(foldKey)));
+      : safeFolderName(input.computerName, new Set(names(this.root).map(foldKey)));
+    const name = safeFolderName(input.name, new Set(names(join(this.root, computerDir)).map(foldKey)));
     const folder: SyncFolder = {
       id: randomUUID(), kind: "pc", computerId: input.computerId, computerName: input.computerName, pcPath: input.pcPath,
       cloudPath: join(this.root, computerDir, name), createdAt: this.now(),
@@ -152,7 +173,10 @@ export class CloudSyncStore {
       cached.delete(entry.path);
       if (hit && hit.size === entry.size && hit.mtimeMs === entry.mtimeMs) { files.push(hit); continue; }
       let sha256: string;
-      try { sha256 = await sha256File(join(folder.cloudPath, ...entry.path.split("/"))); } catch { continue; }
+      try { sha256 = await sha256File(join(folder.cloudPath, ...entry.path.split("/"))); } catch (error) {
+        if (gone(error)) continue;
+        throw error;
+      }
       const file = { ...entry, sha256 };
       this.remember(folder, file);
       files.push(file);
@@ -192,7 +216,7 @@ export class CloudSyncStore {
   toTrash(folder: SyncFolder, path: string, file: string): TrashEntry {
     const entry: TrashEntry = { id: randomUUID(), folderId: folder.id, path, size: lstatSync(file).size, deletedAt: this.now() };
     renameSync(file, join(this.syncDir(), "trash", entry.id));
-    this.db.prepare("INSERT INTO trash VALUES (?, ?, ?, ?, ?)").run(entry.id, entry.folderId, entry.path, entry.size, entry.deletedAt);
+    this.db.prepare("INSERT INTO trash (id, folder, path, size, deleted_at, cloud_path) VALUES (?, ?, ?, ?, ?, ?)").run(entry.id, entry.folderId, entry.path, entry.size, entry.deletedAt, folder.cloudPath);
     this.forget(folder, path);
     return entry;
   }
@@ -201,9 +225,10 @@ export class CloudSyncStore {
     return (this.db.prepare("SELECT * FROM trash ORDER BY deleted_at DESC LIMIT 200").all() as TrashRow[]).map(trashEntryOf);
   }
 
-  trashEntry(id: string): { entry: TrashEntry; file: string } | null {
+  /** A deleted file, where it is kept, and the folder it came from (which may no longer sync, or be empty). */
+  trashEntry(id: string): { entry: TrashEntry; file: string; cloudPath: string | null } | null {
     const row = this.db.prepare("SELECT * FROM trash WHERE id = ?").get(id) as TrashRow | undefined;
-    return row ? { entry: trashEntryOf(row), file: join(this.syncDir(), "trash", row.id) } : null;
+    return row ? { entry: trashEntryOf(row), file: join(this.syncDir(), "trash", row.id), cloudPath: row.cloud_path } : null;
   }
 
   dropTrash(id: string): void {

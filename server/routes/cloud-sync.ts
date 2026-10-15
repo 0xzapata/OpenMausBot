@@ -57,7 +57,11 @@ export function createCloudSyncRoutes(options: {
           ...(range ? { "content-range": `bytes ${start}-${Math.max(file.size - 1, start)}/${file.size}` } : {}),
         });
         if (file.size === start) { res.end(); return; }
-        createReadStream(file.file, { start }).pipe(res);
+        // A bot may remove or lock the file before it is read: end this response, never the server.
+        const stream = createReadStream(file.file, { start });
+        stream.on("error", () => res.destroy());
+        res.on("close", () => stream.destroy());
+        stream.pipe(res);
         return;
       }
       if (method === "POST" && (m = match(`/api/sync/folders/${FOLDER}/ops`))) { json(res, 200, await s.ops(m[1]!, await readBody(req, 4_000_000))); return; }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -79,4 +79,16 @@ it("answers a stale commit with what is there now", async () => {
   const stale = await upload("v2", null);
   expect(stale.status).toBe(409);
   expect(stale.body.current).toMatchObject({ sha256: sha("v1") });
+});
+
+it("survives a file that cannot be read while it is being served", async () => {
+  const folder = (await call("POST", "/api/sync/folders", { computerId: PC, computerName: "PC", pcPath: "/p", name: "P" })).body.folder;
+  const { uploadId } = (await call("POST", `/api/sync/folders/${folder.id}/uploads`, { path: "a.txt", size: 5, sha256: sha("hello"), baseSha256: null })).body;
+  await call("PUT", `/api/sync/uploads/${uploadId}?offset=0`, new TextEncoder().encode("hello"));
+  await call("POST", `/api/sync/uploads/${uploadId}/commit`);
+  chmodSync(join(folder.cloudPath, "a.txt"), 0o000);
+  try {
+    await fetch(`${base}/api/sync/folders/${folder.id}/file?path=a.txt`).then((response) => response.text()).catch(() => "");
+    expect((await call("GET", "/api/sync")).status).toBe(200);
+  } finally { chmodSync(join(folder.cloudPath, "a.txt"), 0o600); }
 });

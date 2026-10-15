@@ -41,8 +41,13 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
   const folderOf = (id: string): SyncFolder => {
     const folder = store.folder(id);
     if (!folder) throw new SyncError(404, { error: "no such synced folder" });
-    if (!existsSync(folder.cloudPath)) throw new SyncError(410, { error: "this folder is missing on My Cloud" });
+    // A link in its place is as good as missing: following it would sync, or trash, whatever it points at.
+    if (!lstatSync(folder.cloudPath, { throwIfNoEntry: false })?.isDirectory()) throw new SyncError(410, { error: "this folder is missing on My Cloud" });
     return folder;
+  };
+  const unreadable = (error: unknown): never => {
+    if (error instanceof SyncError) throw error;
+    throw new SyncError(503, { error: "Part of this folder can't be read on My Cloud right now.", code: (error as NodeJS.ErrnoException)?.code ?? null });
   };
   const fileOf = (folder: SyncFolder, path: unknown): string => {
     try { return insideFolder(folder.cloudPath, path); } catch (error) {
@@ -123,15 +128,18 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
     unregister(id: string, keepCloudCopy: boolean): void {
       const folder = store.unregister(id);
       if (!folder) throw new SyncError(404, { error: "no such synced folder" });
-      if (!keepCloudCopy && existsSync(folder.cloudPath)) {
-        // Read the whole tree first: moving files out while walking it would skip some.
-        for (const entry of Array.from(walk(folder.cloudPath))) store.toTrash(folder, entry.path, join(folder.cloudPath, ...entry.path.split("/")));
-        rmSync(folder.cloudPath, { recursive: true, force: true });
+      // Never through a link; synced files go to the trash, and what sync never carried (.git, node_modules) stays.
+      if (!keepCloudCopy && lstatSync(folder.cloudPath, { throwIfNoEntry: false })?.isDirectory()) {
+        let files;
+        try { files = Array.from(walk(folder.cloudPath)); } catch (error) { unreadable(error); }
+        for (const entry of files!) store.toTrash(folder, entry.path, join(folder.cloudPath, ...entry.path.split("/")));
+        pruneEmptyDirectories(folder.cloudPath);
       }
       noteChange(id);
     },
     async files(id: string): Promise<SyncFile[]> {
-      return store.list(folderOf(id));
+      const folder = folderOf(id);
+      try { return await store.list(folder); } catch (error) { return unreadable(error); }
     },
     beginUpload(id: string, body: unknown): { uploadId: string; received: number } {
       const folder = folderOf(id);
@@ -143,8 +151,10 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
       const size = input.size as number;
       const open = uploads().find((upload) => upload.folderId === folder.id && upload.path === input.path && upload.sha256 === input.sha256 && upload.size === size);
       if (open) return { uploadId: open.id, received: open.received };
+      // Uploads still open will land too: count what they have left to send against the reserve.
+      const pending = uploads().reduce((sum, upload) => sum + Math.max(0, upload.size - upload.received), 0);
       const { freeBytes } = statfs(store.root);
-      if (freeBytes - size < RESERVE_BYTES) throw new SyncError(507, { error: "My Cloud is full", neededBytes: size + RESERVE_BYTES, freeBytes });
+      if (freeBytes - pending - size < RESERVE_BYTES) throw new SyncError(507, { error: "My Cloud is full", neededBytes: size + pending + RESERVE_BYTES, freeBytes });
       const upload: Upload = { id: randomUUID(), folderId: folder.id, path: input.path, size, sha256: input.sha256, baseSha256: base as string | null, received: 0, updatedAt: now() };
       closeSync(openSync(uploadFile(upload.id, "part"), "w", 0o600));
       saveUpload(upload);
@@ -227,7 +237,13 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
     async restore(entryId: unknown): Promise<{ folderId: string; path: string }> {
       const found = typeof entryId === "string" ? store.trashEntry(entryId) : null;
       if (!found) throw new SyncError(404, { error: "no such deleted file" });
-      const folder = folderOf(found.entry.folderId);
+      // Its folder may no longer sync (turned off) or list (a bot folder emptied): put it back where it came from.
+      const home = found.cloudPath && [store.root, join(options.dataDir, "task-workspaces")].some((root) => found.cloudPath!.startsWith(root + sep)) ? found.cloudPath : null;
+      const known = store.folder(found.entry.folderId);
+      if (!known && !home) throw new SyncError(404, { error: "the folder this file came from is gone" });
+      if (!known) mkdirSync(home!, { recursive: true, mode: 0o700 });
+      const folder = known ?? { id: found.entry.folderId, kind: found.entry.folderId.startsWith("bot-") ? "bot" as const : "pc" as const, cloudPath: home! };
+      if (!lstatSync(folder.cloudPath, { throwIfNoEntry: false })?.isDirectory()) throw new SyncError(410, { error: "this folder is missing on My Cloud" });
       let path = found.entry.path;
       if (existsSync(fileOf(folder, path))) path = clashPath(path, now(), (candidate) => existsSync(fileOf(folder, candidate)), "restored");
       const target = fileOf(folder, path);
@@ -267,3 +283,11 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
 }
 
 export type CloudSync = ReturnType<typeof createCloudSync>;
+
+/** Removes directories left empty under (and including) `dir`, bottom up, never through a link. */
+function pruneEmptyDirectories(dir: string): void {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) if (entry.isDirectory()) pruneEmptyDirectories(join(dir, entry.name));
+  try { rmdirSync(dir); } catch {}
+}

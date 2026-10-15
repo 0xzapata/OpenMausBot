@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -76,7 +76,8 @@ it("answers 507 when a file would leave less than 1 GB free", async () => {
   const { sync, folder } = setup({ freeBytes: GB + 10 });
   expect(sync.beginUpload(folder.id, { path: "small", size: 10, sha256: sha("x"), baseSha256: null }).received).toBe(0);
   try { sync.beginUpload(folder.id, { path: "big", size: 11, sha256: sha("y"), baseSha256: null }); throw new Error("accepted"); }
-  catch (error) { expect((error as SyncError).status).toBe(507); expect((error as SyncError).body).toMatchObject({ neededBytes: 11 + GB, freeBytes: GB + 10 }); }
+  // The open upload of "small" still has its 10 bytes to land, so it counts against the reserve too.
+  catch (error) { expect((error as SyncError).status).toBe(507); expect((error as SyncError).body).toMatchObject({ neededBytes: 11 + 10 + GB, freeBytes: GB + 10 }); }
 });
 
 it("answers 410 when a folder's copy is gone, and can delete a folder's copy to the trash", async () => {
@@ -152,4 +153,75 @@ it("notices a file a bot writes straight into a synced folder", async () => {
   const waiting = sync.changes(cursor, 5_000, signal);
   writeFileSync(join(folder.cloudPath, "from-a-bot.md"), "written by a bot");
   expect((await waiting).folderIds).toContain(folder.id);
+});
+
+it("answers 503 for a folder part or a file it cannot read, rather than leaving it out of the listing", async () => {
+  const { sync, folder } = setup();
+  await put(sync, folder.id, "sub/a.txt", "one", null);
+  await put(sync, folder.id, "b.txt", "two", null);
+  chmodSync(join(folder.cloudPath, "sub"), 0o000);
+  try { expect(await status(() => sync.files(folder.id))).toBe(503); } finally { chmodSync(join(folder.cloudPath, "sub"), 0o700); }
+  writeFileSync(join(folder.cloudPath, "c.txt"), "new");
+  chmodSync(join(folder.cloudPath, "c.txt"), 0o000);
+  try { expect(await status(() => sync.files(folder.id))).toBe(503); } finally { chmodSync(join(folder.cloudPath, "c.txt"), 0o600); }
+});
+
+it("gives a folder whose Cloud copy vanished a new id when it is linked again, so no old record applies", () => {
+  const { sync, folder } = setup();
+  rmSync(folder.cloudPath, { recursive: true });
+  const again = sync.register({ computerId: PC, computerName: "Ash-PC", pcPath: "C:\\Users\\Ash\\PA", name: "PA" });
+  expect(again.id).not.toBe(folder.id);
+  expect(again.cloudPath).toBe(folder.cloudPath);
+  expect(existsSync(again.cloudPath)).toBe(true);
+  expect(sync.summary().folders.map((entry) => entry.id)).toEqual([again.id]);
+});
+
+it("restores into a bot folder that emptied, and into a folder no longer synced", async () => {
+  const { sync, dataDir, folder } = setup();
+  const output = join(dataDir, "task-workspaces", "owl", "t1");
+  mkdirSync(output, { recursive: true });
+  writeFileSync(join(output, "report.md"), "# Q3");
+  await sync.files("bot-owl-t1");
+  await sync.ops("bot-owl-t1", { ops: [{ op: "delete", path: "report.md", baseSha256: sha("# Q3") }] });
+  const [botEntry] = sync.trash().entries;
+  expect(await sync.restore(botEntry!.id)).toEqual({ folderId: "bot-owl-t1", path: "report.md" });
+  expect(readFileSync(join(output, "report.md"), "utf8")).toBe("# Q3");
+  await put(sync, folder.id, "a.txt", "keep", null);
+  sync.unregister(folder.id, false);
+  const entry = sync.trash().entries.find((item) => item.path === "a.txt")!;
+  await sync.restore(entry.id);
+  expect(readFileSync(join(folder.cloudPath, "a.txt"), "utf8")).toBe("keep");
+});
+
+it("turning off with delete trashes synced files, keeps what sync never carried, and never follows a linked root", async () => {
+  const { sync, folder, home } = setup();
+  await put(sync, folder.id, "a.txt", "synced", null);
+  mkdirSync(join(folder.cloudPath, ".git"));
+  writeFileSync(join(folder.cloudPath, ".git", "HEAD"), "ref: main");
+  sync.unregister(folder.id, false);
+  expect(existsSync(join(folder.cloudPath, "a.txt"))).toBe(false);
+  expect(readFileSync(join(folder.cloudPath, ".git", "HEAD"), "utf8")).toBe("ref: main");
+  const other = sync.register({ computerId: PC, computerName: "Ash-PC", pcPath: "C:\\Users\\Ash\\Other", name: "Other" });
+  const outside = join(home, "outside");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "x.txt"), "not synced");
+  rmSync(other.cloudPath, { recursive: true });
+  symlinkSync(outside, other.cloudPath);
+  sync.unregister(other.id, false);
+  expect(readFileSync(join(outside, "x.txt"), "utf8")).toBe("not synced");
+});
+
+it("counts open uploads against the 1 GB reserve", () => {
+  const { sync, folder } = setup({ freeBytes: GB + 100 });
+  sync.beginUpload(folder.id, { path: "a", size: 60, sha256: sha("a"), baseSha256: null });
+  expect(() => sync.beginUpload(folder.id, { path: "b", size: 60, sha256: sha("b"), baseSha256: null })).toThrow(SyncError);
+});
+
+it("treats a folder whose copy was replaced by a link as missing", async () => {
+  const { sync, folder, home } = setup();
+  rmSync(folder.cloudPath, { recursive: true });
+  const elsewhere = join(home, "elsewhere");
+  mkdirSync(elsewhere);
+  symlinkSync(elsewhere, folder.cloudPath);
+  expect(await status(() => sync.files(folder.id))).toBe(410);
 });
