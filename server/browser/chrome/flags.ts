@@ -78,7 +78,7 @@ export function chromeArgs(input: ChromeFlagsInput): string[] {
   else if (input.windowPosition) args.push(`--window-position=${Math.round(input.windowPosition.x)},${Math.round(input.windowPosition.y)}`);
   if (input.locale && LOCALE.test(input.locale)) args.push(`--lang=${input.locale}`);
   if (input.proxyServer) {
-    if (!LOCAL_PROXY.test(input.proxyServer)) throw new Error("The browser only goes through OMB's own local gate.");
+    if (!LOCAL_PROXY.test(input.proxyServer)) throw new Error("The browser only goes through OpenMausBot's own local gate.");
     args.push(`--proxy-server=${input.proxyServer}`, "--proxy-bypass-list=<-loopback>", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
   }
   if (platform === "darwin") args.push("--use-mock-keychain");
