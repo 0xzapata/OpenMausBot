@@ -1,6 +1,6 @@
 import { CdpConnection, sessionKindOf, type Params } from "./connection.ts";
 import { Downloads, type DownloadLimits } from "./downloads.ts";
-import { DriverError } from "./errors.ts";
+import { DriverError, isGone } from "./errors.ts";
 import { identityOverride, type Identity } from "./identity.ts";
 import { CdpPage, type PageHost, type TargetInfo } from "./page.ts";
 import { RefCounter } from "./refs.ts";
@@ -39,6 +39,8 @@ export class CdpBrowser implements PageHost {
   readonly #pages = new Map<string, CdpPage>();
   readonly #pageListeners = new Set<PageListener>();
   readonly #closeListeners = new Set<PageListener>();
+  readonly #failureListeners = new Set<(page: CdpPage, error: unknown) => void>();
+  readonly #failures: Array<{ page: CdpPage; error: unknown }> = [];
   #active: CdpPage | null = null;
 
   private constructor(connection: CdpConnection, options: BrowserOptions) {
@@ -113,7 +115,16 @@ export class CdpBrowser implements PageHost {
           try { listener(page); } catch {}
         }
       },
-      () => this.#gone(info.targetId),
+      (error: unknown) => {
+        if (!isGone(error)) {
+          this.#failures.push({ page, error });
+          if (this.#failures.length > 8) this.#failures.shift();
+          for (const listener of this.#failureListeners) {
+            try { listener(page, error); } catch {}
+          }
+        }
+        this.#gone(info.targetId);
+      },
     );
   }
 
@@ -155,30 +166,35 @@ export class CdpBrowser implements PageHost {
     return () => this.#closeListeners.delete(listener);
   }
 
-  /** The first running tab `match` accepts, now or when it opens. */
+  /** The first running tab `match` accepts, now or when it opens; rejects if that tab cannot be set up. */
   waitForPage(match: (page: CdpPage) => boolean = () => true, timeoutMs = 15_000): Promise<CdpPage> {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = (page: CdpPage) => {
+      const finish = (page: CdpPage | null, error?: unknown) => {
         if (settled) return;
         settled = true;
         off();
+        offFailure();
         clearTimeout(timer);
-        resolve(page);
+        if (page) resolve(page);
+        else reject(error);
       };
       const off = this.onPage((page) => {
         if (match(page)) finish(page);
       });
-      const timer = setTimeout(() => {
-        settled = true;
-        off();
-        reject(new DriverError("timeout", `No matching tab opened within ${timeoutMs} ms.`));
-      }, timeoutMs);
+      const failed = (page: CdpPage, error: unknown) => {
+        if (match(page)) finish(null, error);
+      };
+      this.#failureListeners.add(failed);
+      const offFailure = () => this.#failureListeners.delete(failed);
+      const timer = setTimeout(() => finish(null, new DriverError("timeout", `No matching tab opened within ${timeoutMs} ms.`)), timeoutMs);
       for (const page of this.#pages.values()) {
         void page.ready.then(() => {
           if (!page.closed && match(page)) finish(page);
         }, () => {});
       }
+      const earlier = this.#failures.find(({ page }) => match(page));
+      if (earlier) finish(null, earlier.error);
     });
   }
 
