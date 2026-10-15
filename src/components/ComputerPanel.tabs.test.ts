@@ -2,8 +2,11 @@
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppState, Bot, InstanceInfo } from "@/state/store";
+import { setLocale, t } from "@/lib/i18n";
+
+const fixture = vi.hoisted(() => ({ advanced: true, android: false }));
 
 vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   ...await importOriginal<typeof import("./DesktopCapabilities")>(),
@@ -19,10 +22,10 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
     },
   }),
 }));
-vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true, setAdvancedMode: () => {} }));
+vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: () => {} }));
 vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => true }));
 vi.mock("./CloudScreenPreview", () => ({ CloudScreenPreview: () => null }));
-vi.mock("./AndroidDevicePanel", () => ({ AndroidDevicePanel: () => null, useAndroidUsbDevices: () => ({ devices: [] }) }));
+vi.mock("./AndroidDevicePanel", () => ({ AndroidDevicePanel: () => null, useAndroidUsbDevices: () => ({ devices: fixture.android ? [{ serial: "p1" }] : [] }) }));
 vi.mock("./BrowserPanel", () => ({ BrowserPanel: () => null }));
 vi.mock("./CloudBackendPicker", () => ({ CloudBackendPicker: () => null }));
 vi.mock("./bot-settings/RoutinesSection", () => ({ RoutinesSection: () => null }));
@@ -73,32 +76,160 @@ const open = async (bot: Bot) => {
   flushSync(() => root!.render(createElement(BotEditorStore, { value: value(), children: createElement(ComputerPanel, { bot }) })));
   await settle();
 };
-const tab = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[data-testid="computer-tabs"] button')].find((candidate) => candidate.textContent?.trim() === label)!;
-const pressed = () => [...document.querySelectorAll<HTMLButtonElement>('[data-testid="computer-tabs"] button')].find((candidate) => candidate.getAttribute("aria-pressed") === "true")?.textContent?.trim();
+const tabs = () => [...document.querySelectorAll<HTMLButtonElement>('[data-testid="computer-tabs"] [role="tab"]')];
+const tab = (label: string) => tabs().find((candidate) => candidate.textContent?.trim() === label)!;
+const tabLabels = () => tabs().map((candidate) => candidate.textContent?.trim());
+const selected = () => tabs().find((candidate) => candidate.getAttribute("aria-selected") === "true")?.textContent?.trim();
+const tabStops = () => tabs().filter((candidate) => candidate.getAttribute("tabindex") === "0").map((candidate) => candidate.textContent?.trim());
+const tabListName = () => document.querySelector('[data-testid="computer-tabs"]')?.getAttribute("aria-label");
+const press = (label: string, key: string) => {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+  flushSync(() => tab(label).dispatchEvent(event));
+  return event;
+};
 
 beforeAll(() => {
   vi.stubGlobal("ogb", undefined);
+});
+beforeEach(() => {
+  fixture.advanced = true;
+  fixture.android = false;
 });
 afterEach(() => {
   root?.unmount();
   root = null;
   document.body.innerHTML = "";
+  setLocale("en");
 });
 
 describe("Computer panel tab", () => {
+  it("names the tablist from the active catalog", async () => {
+    setLocale("de");
+    await open(makeBot());
+    expect(document.querySelector('[data-testid="computer-tabs"]')?.getAttribute("role")).toBe("tablist");
+    expect(tabListName()).toBe(t("computer.tabsAria"));
+    expect(tabListName()).not.toBe("Bot panel view");
+  });
+
   it("stays on Data through a model change and follows a conversation change", async () => {
     await open(makeBot());
-    expect(pressed()).toBe("Computer");
+    expect(selected()).toBe("Computer");
     flushSync(() => tab("Data").click());
     await settle();
-    expect(pressed()).toBe("Data");
+    expect(selected()).toBe("Data");
     await vi.waitFor(() => expect(document.querySelector('[data-testid="data-panel"]')).not.toBeNull());
 
     await open(makeBot({ modelSelection: { instanceId: "codex", model: "m" } }));
-    expect(pressed()).toBe("Data");
+    expect(selected()).toBe("Data");
     expect(document.querySelector('[data-testid="data-panel"]')).not.toBeNull();
 
     await open(makeBot({ threadId: "thread-2", tasks: [{ threadId: "thread-2", title: "Second", createdAt: 2, approvalMode: "ask" }] } as Partial<Bot>));
-    expect(pressed()).toBe("Computer");
+    expect(selected()).toBe("Computer");
+  });
+
+  it("marks the selected trigger and only that one", async () => {
+    await open(makeBot());
+    expect(tabs().map((candidate) => candidate.getAttribute("aria-selected"))).toEqual(["true", "false", "false", "false"]);
+
+    flushSync(() => tab("Data").click());
+    await settle();
+    expect(tabs().map((candidate) => candidate.getAttribute("aria-selected"))).toEqual(["false", "false", "false", "true"]);
+  });
+
+  it("keeps one Tab stop and moves it with the arrow, Home and End keys", async () => {
+    await open(makeBot());
+    expect(tabStops()).toEqual(["Computer"]);
+
+    press("Computer", "ArrowRight");
+    await settle();
+    expect(selected()).toBe("Routines");
+    expect(tabStops()).toEqual(["Routines"]);
+    expect(document.activeElement).toBe(tab("Routines"));
+
+    press("Routines", "ArrowLeft");
+    await settle();
+    expect(selected()).toBe("Computer");
+    expect(document.activeElement).toBe(tab("Computer"));
+
+    // Wraps around the row's ends.
+    press("Computer", "ArrowLeft");
+    await settle();
+    expect(selected()).toBe("Data");
+    press("Data", "ArrowRight");
+    await settle();
+    expect(selected()).toBe("Computer");
+
+    press("Computer", "End");
+    await settle();
+    expect(selected()).toBe("Data");
+    expect(document.activeElement).toBe(tab("Data"));
+    press("Data", "Home");
+    await settle();
+    expect(selected()).toBe("Computer");
+    expect(document.activeElement).toBe(tab("Computer"));
+  });
+
+  it("leaves the vertical arrows to the page's scrolling", async () => {
+    await open(makeBot());
+    flushSync(() => tab("Computer").focus());
+    expect(press("Computer", "ArrowDown").defaultPrevented).toBe(false);
+    expect(press("Computer", "ArrowUp").defaultPrevented).toBe(false);
+    await settle();
+    expect(selected()).toBe("Computer");
+    expect(document.activeElement).toBe(tab("Computer"));
+  });
+
+  it("moves over an Android tab that appeared", async () => {
+    fixture.android = true;
+    await open(makeBot());
+    expect(tabLabels()).toEqual(["Computer", "Routines", "Android", "Browser", "Data"]);
+    press("Routines", "ArrowRight");
+    await settle();
+    expect(selected()).toBe("Android");
+  });
+
+  it("keeps one selected tab when Android disconnects", async () => {
+    fixture.android = true;
+    await open(makeBot());
+    flushSync(() => tab("Android").click());
+    await settle();
+    expect(selected()).toBe("Android");
+
+    fixture.android = false;
+    await open(makeBot());
+    expect(tabLabels()).not.toContain("Android");
+    expect(selected()).toBe("Computer");
+  });
+
+  it("stops on the Files tab in Simple mode", async () => {
+    fixture.advanced = false;
+    await open(makeBot());
+    expect(tabLabels()).toEqual(["Computer", "Browser", "Data", "Files"]);
+    press("Computer", "End");
+    await settle();
+    expect(selected()).toBe("Files");
+    expect(document.activeElement).toBe(tab("Files"));
+  });
+
+  it("points every selected trigger at its panel and the panel back", async () => {
+    await open(makeBot());
+    for (const label of ["Computer", "Routines", "Browser", "Data"]) {
+      flushSync(() => tab(label).click());
+      await settle();
+      const trigger = tab(label);
+      const panel = document.getElementById(trigger.getAttribute("aria-controls")!);
+      expect(panel?.getAttribute("role")).toBe("tabpanel");
+      expect(panel?.getAttribute("aria-labelledby")).toBe(trigger.id);
+    }
+  });
+
+  it("puts every selected panel in the tab sequence", async () => {
+    await open(makeBot());
+    for (const label of ["Computer", "Routines", "Browser", "Data"]) {
+      flushSync(() => tab(label).click());
+      await settle();
+      const panel = document.getElementById(tab(label).getAttribute("aria-controls")!);
+      expect(panel?.getAttribute("tabindex"), label).toBe("0");
+    }
   });
 });

@@ -70,7 +70,7 @@ import { NewTaskFolderDialog } from "./NewTaskFolderDialog";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { draggedFolder, FOLDER_DRAG_TYPE, moveFolder, placeFolder } from "@/lib/folder-order";
 import { botUnreadThreadIds, folderUnreadThreadIds, markBotRead, markFolderRead } from "@/lib/folder-read";
-import { orderedThreadList, SidebarThreadRow, stampClock, threadRecency, useRelativeNow, useSnoozeExpiry, visibleSidebarThreads } from "./SidebarThreadRow";
+import { HelperThreadGroup, orderedThreadList, partitionHelperThreads, SidebarThreadRow, stampClock, threadRecency, useRelativeNow, useRevealedThreadRow, useSnoozeExpiry, visibleSidebarThreads } from "./SidebarThreadRow";
 import {
   loadCollapsedSections,
   loadSectionOrder,
@@ -132,9 +132,9 @@ import { ShortcutHint } from "./ShortcutHint";
 import { roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { useAdvancedMode } from "@/lib/interface-mode";
-import { PinnedBotRoster } from "./PinnedCircleThreads";
+import { PinnedBotRoster, PinnedCircleThreadSection } from "./PinnedCircleThreads";
 
-export { PinnedBotCircle, PinnedCircleThreadPanel } from "./PinnedCircleThreads";
+export { PinnedBotCircle, PinnedCircleThreadPanel, PinnedCircleThreadSection } from "./PinnedCircleThreads";
 
 /** Coupled to electron/window-chrome.mjs: trafficLightPosition.y = 16 and 14px-tall buttons. */
 export const MAC_TRAFFIC_LIGHT_CENTER_Y = 23;
@@ -245,14 +245,6 @@ export function GroupListItem({
     {expanded && <GroupThreadList group={group} selected={selected} density={density} query={group.name.toLowerCase().includes(query.toLowerCase()) ? "" : query} />}
     </>
   );
-}
-
-function useRevealedThreadRow(reveal: AppState["revealThread"], currentThreadId: string | null) {
-  useEffect(() => {
-    if (!reveal || reveal.threadId !== currentThreadId) return;
-    const row = document.querySelector<HTMLElement>(`[data-sidebar-thread-row="${CSS.escape(reveal.threadId)}"]`);
-    row?.scrollIntoView({ block: "nearest" });
-  }, [reveal, currentThreadId]);
 }
 
 export function GroupThreadList({ group, selected, density = "comfortable", query = "" }: { group: Group; selected: boolean; density?: SidebarDensity; query?: string }) {
@@ -959,7 +951,8 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
   }, [selected, currentProjectId]);
   useSnoozeExpiry(tasks);
   const bulk = useBulkSelect();
-  const visibleTasks = orderedThreadList(visibleSidebarThreads(tasks, bot.threadId, query, projects, showAll || bulk.active));
+  const { own: ownTasks, helpers } = bulk.active ? { own: tasks, helpers: [] } : partitionHelperThreads(tasks, bot.threadId, query, projects);
+  const visibleTasks = orderedThreadList(visibleSidebarThreads(ownTasks, bot.threadId, query, projects, showAll || bulk.active));
   const visibleProjectIndex = (projectId: string) => visibleTasks.findIndex((task) => task.projectId === projectId);
   const folderRank = (projectId: string) => {
     const index = visibleProjectIndex(projectId);
@@ -1105,7 +1098,8 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
       <span role="status" className="sr-only">{readStatus}</span>
       {projects.length > 0 && ungrouped.length > 0 && <div className="pl-6 pr-3 pb-1 pt-2 text-[10.5px] text-ink-tertiary">{t("task.list")}</div>}
       {ungrouped.map(renderThread)}
-      <ThreadListFooter bulk={bulk} rows={shownRows} selected={selection} total={tasks.length} canShowAll={!query && !showAll && tasks.length > visibleTasks.length} canSelect={tasks.length > 1}
+      <HelperThreadGroup tasks={orderedThreadList(helpers)} busy={helpers.some((task) => currentTaskBot(bot, task.threadId).busy)} renderThread={renderThread} />
+      <ThreadListFooter bulk={bulk} rows={shownRows} selected={selection} total={ownTasks.length} canShowAll={!query && !showAll && ownTasks.length > visibleTasks.length} canSelect={tasks.length > 1}
         onShowAll={() => setShowAll(true)} freshConversation onDelete={(threadIds) => deleteThreadsInBulk({ botId: bot.id }, threadIds, dispatch)} />
       <LocalComputerAutoWarning
         open={permissionRefresh?.kind === "local-auto"}
@@ -1169,33 +1163,6 @@ function useVisibleMessages(bot: Bot): Message[] {
   return useMemo(() => visibleMessages({ messages, activeLeafId }), [messages, activeLeafId]);
 }
 
-export function PinnedCircleThreadSection({
-  bots,
-  collapsed,
-  onToggle,
-  row,
-}: {
-  bots: Bot[];
-  collapsed: boolean;
-  onToggle: () => void;
-  row: (bot: Bot) => BotRowProps;
-}) {
-  const name = t("sidebar.section.pinned");
-  return (
-    <div data-sidebar-pinned-circle-threads="" className="flex flex-col gap-0.5 pt-3">
-      <SidebarSectionHeader
-        name={name}
-        collapsed={collapsed}
-        attention={collapsed ? sidebarSectionAttention(bots, []) : undefined}
-        onToggle={onToggle}
-        reorderable={false}
-        dragging={false}
-      />
-      {!collapsed && bots.map((bot) => <BotListItem key={bot.id} {...row(bot)} />)}
-    </div>
-  );
-}
-
 export const BotListItem = memo(function BotListItem(props: BotRowProps) {
   const advanced = useAdvancedMode();
   const { bot, selected, deleting, mascotMotion, reveal, pendingQueued, instances, liveCall, density, quiet, query, dispatch, onMenu } = props;
@@ -1255,7 +1222,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
           />
         )}
         {waiting && <span data-testid="waiting-dot" role="status" aria-label={t("sidebar.preview.waiting")} title={t("sidebar.preview.waiting")}
-          className={cn("absolute -right-0.5 -bottom-0.5 rounded-full border-2 border-panel bg-warning", iconOnly ? "size-3" : "size-2.5")} />}
+          className={cn("absolute -right-0.5 -bottom-0.5 flex items-center justify-center overflow-hidden rounded-full border-2 border-panel bg-warning font-black text-panel", iconOnly ? "size-5 text-[14px]" : "size-4 text-[12px]")}><span aria-hidden="true">!</span></span>}
         {teammateWait && <span data-testid="teammate-wait-dot" role="status" aria-label={t("sidebar.preview.waitingOnTeammate")} title={t("sidebar.preview.waitingOnTeammate")}
           className={cn("absolute -right-0.5 -bottom-0.5 rounded-full border-2 border-panel bg-accent", iconOnly ? "size-3" : "size-2.5")} />}
         {!teammateWait && !waiting && !working && queued && <span data-testid="queued-dot" role="status" aria-label={t("task.queued")} title={t("task.queued")}
@@ -1321,7 +1288,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
               {t("sidebar.bot.deletingRow")}
             </span>
           ) : (
-            <span className="flex min-w-0 items-center gap-1.5 truncate text-[13px] leading-[18px] text-ink-secondary">
+            <span className={cn("flex min-w-0 items-center gap-1.5 truncate text-[13px] leading-[18px]", waiting ? "font-semibold text-warning" : "text-ink-secondary")}>
               {working ? (
                 <span className="flex h-[1.5em] items-center" role="status">
                   <WorkingDots size={3.5} />

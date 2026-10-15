@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { Children, createElement, isValidElement, type ComponentProps, type MemoExoticComponent, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -22,7 +22,10 @@ vi.mock("./DesktopCapabilities", () => ({
   useDesktopCapabilities: () => ({}),
 }));
 
-import { botRowProps, PinnedBotCircle, PinnedCircleThreadPanel, PinnedCircleThreadSection } from "./Sidebar";
+import { BotListItem, botRowProps, PinnedBotCircle, PinnedCircleThreadPanel, PinnedCircleThreadSection } from "./Sidebar";
+import { PinnedBotRoster } from "./PinnedCircleThreads";
+import { setPinnedCircleOrder } from "@/lib/sidebar-preferences";
+import { PINNED_CIRCLE_DRAG_TYPE } from "@/lib/pinned-circle-order";
 import { forgetSearchDisclosuresForTests } from "@/lib/search-disclosure";
 
 const bot = (overrides: Partial<Bot> = {}): Bot => ({
@@ -149,6 +152,84 @@ describe("pinned circle thread list", () => {
     expect(markup).not.toContain("Expand Atlas threads");
     expect(markup).not.toContain("New thread");
     expect(renderToStaticMarkup(createElement(PinnedCircleThreadPanel, row(atlas)))).not.toContain("New thread");
+  });
+});
+
+describe("pinned circle order", () => {
+  const atlas = bot();
+  const beacon = bot({ id: "beacon", threadId: "thread-beacon", name: "Beacon" });
+  const comet = bot({ id: "comet", threadId: "thread-comet", name: "Comet" });
+  const names = (markup: string) => ["Atlas", "Beacon", "Comet"].sort((a, b) => markup.indexOf(`title="${a}"`) - markup.indexOf(`title="${b}"`));
+  const roster = (circles: boolean) => createElement(PinnedBotRoster, { bots: [atlas, beacon, comet], density: "comfortable", circles, row: (candidate) => row(candidate), listItem: BotListItem });
+  type Props = { children?: ReactNode; [key: string]: unknown };
+  const find = (tree: ReactNode, match: (props: Props) => boolean): ReactElement<Props> | undefined => {
+    for (const child of Children.toArray(tree)) {
+      if (!isValidElement<Props>(child)) continue;
+      if (match(child.props)) return child;
+      const found = find(child.props.children, match);
+      if (found) return found;
+    }
+  };
+  afterEach(() => {
+    setPinnedCircleOrder([]);
+    vi.unstubAllGlobals();
+  });
+
+  it("lists pinned bots in the saved order in the circle grid, the pinned rows and the thread section", () => {
+    expect(names(renderToStaticMarkup(roster(true)))).toEqual(["Atlas", "Beacon", "Comet"]);
+    setPinnedCircleOrder(["comet", "atlas"]);
+    expect(names(renderToStaticMarkup(roster(true)))).toEqual(["Comet", "Atlas", "Beacon"]);
+    expect(names(renderToStaticMarkup(roster(false)))).toEqual(["Comet", "Atlas", "Beacon"]);
+    expect(names(renderThreads(false, [atlas, beacon, comet]))).toEqual(["Comet", "Atlas", "Beacon"]);
+  });
+
+  it("drags a circle onto another, or moves it with Alt+Up and Alt+Down", () => {
+    vi.stubGlobal("document", { documentElement: { dir: "ltr" } });
+    const drag = { reorder: vi.fn(), setDragging: vi.fn(), setDrop: vi.fn() };
+    const circle = (PinnedBotCircle as MemoExoticComponent<(props: ComponentProps<typeof PinnedBotCircle>) => ReactNode>).type;
+    let tree: ReactNode;
+    function Capture() { tree = circle({ ...row(atlas), drag, prevId: "comet", nextId: "beacon" }); return tree; }
+    renderToStaticMarkup(createElement(Capture));
+    const button = find(tree, (props) => props["data-sidebar-pinned-circle"] === "atlas")!;
+    expect(button.props.draggable).toBe(true);
+    expect(button.props["aria-keyshortcuts"]).toBe("Alt+ArrowUp Alt+ArrowDown");
+    type Handler = (event: unknown) => void;
+    const key = (event: Record<string, unknown>) => (button.props.onKeyDown as Handler)({ preventDefault: vi.fn(), ...event });
+    key({ key: "ArrowUp", altKey: true });
+    key({ key: "ArrowDown", altKey: true });
+    key({ key: "ArrowUp", altKey: false });
+    key({ key: "ArrowDown", altKey: true, shiftKey: true });
+    expect(drag.reorder.mock.calls).toEqual([["atlas", "comet", "before"], ["atlas", "beacon", "after"]]);
+    const setData = vi.fn();
+    (button.props.onDragStart as Handler)({ stopPropagation: vi.fn(), dataTransfer: { setData } });
+    expect(setData).toHaveBeenCalledWith(PINNED_CIRCLE_DRAG_TYPE, "atlas");
+    expect(drag.setDragging).toHaveBeenCalledWith("atlas");
+    const rect = { left: 0, top: 0, width: 80, height: 80 };
+    const dropEvent = { preventDefault: vi.fn(), stopPropagation: vi.fn(), clientX: 70, clientY: 40, currentTarget: { getBoundingClientRect: () => rect }, dataTransfer: { types: [PINNED_CIRCLE_DRAG_TYPE], getData: () => "comet" } };
+    (button.props.onDrop as Handler)(dropEvent);
+    expect(drag.reorder).toHaveBeenLastCalledWith("comet", "atlas", "after");
+    (button.props.onDrop as Handler)({ ...dropEvent, dataTransfer: { types: ["application/x-openmausbot-folder"], getData: () => "comet" } });
+    expect(drag.reorder).toHaveBeenCalledTimes(3);
+
+    let still: ReactNode;
+    function Plain() { still = circle(row(atlas)); return still; }
+    renderToStaticMarkup(createElement(Plain));
+    const plain = find(still, (props) => props["data-sidebar-pinned-circle"] === "atlas")!;
+    expect(plain.props.draggable).toBe(false);
+    expect(plain.props.onKeyDown).toBeUndefined();
+  });
+
+  it("saves the new order from a drop and leaves it alone when nothing moves", () => {
+    let tree: ReactNode;
+    function Capture() { tree = (PinnedBotRoster as (props: Parameters<typeof PinnedBotRoster>[0]) => ReactNode)(roster(true).props); return tree; }
+    renderToStaticMarkup(createElement(Capture));
+    const gridRow = find(tree, (props) => typeof props.circleDrag === "function")!;
+    const { drag } = (gridRow.props.circleDrag as (candidate: Bot) => { drag: { reorder: (from: string, to: string, place: "before" | "after") => void } })(atlas);
+    drag.reorder("comet", "atlas", "before");
+    expect(names(renderToStaticMarkup(roster(true)))).toEqual(["Comet", "Atlas", "Beacon"]);
+    drag.reorder("comet", "comet", "after");
+    drag.reorder("gone", "atlas", "before");
+    expect(names(renderToStaticMarkup(roster(true)))).toEqual(["Comet", "Atlas", "Beacon"]);
   });
 });
 

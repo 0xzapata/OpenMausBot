@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { failedTurnCause } from "../../shared/failed-turn.ts";
 import { parseConfigPatch, parseStoredConfig } from "../config.ts";
 import type { RuntimeEvent, SteerOutcome } from "../contracts.ts";
-import { createLoopGuard, loopGuardSettings, type LoopGuardSettings } from "./loop-guard.ts";
+import { correctiveRounds, createLoopGuard, loopGuardSettings, type LoopGuardSettings } from "./loop-guard.ts";
 
 const T = "thread-1";
 
@@ -813,6 +813,16 @@ describe("loop guard setting", () => {
     expect(() => parseConfigPatch({ loopGuard: { steerAt: null } })).toThrow();
     expect(() => parseConfigPatch({ loopGuard: { stopAt: 2.5 } })).toThrow();
     expect(() => parseConfigPatch({ loopGuard: { enabled: true, mode: "steer" } })).toThrow();
+  });
+
+  it("gives API-model turns corrective rounds only with the guard on, from 0 to 5", () => {
+    expect(correctiveRounds({}, {})).toBe(0);
+    expect(correctiveRounds({ loopGuard: { enabled: true } }, {})).toBe(0);
+    expect(correctiveRounds({ loopGuard: { correctiveRounds: 2 } }, {})).toBe(0);
+    expect(correctiveRounds({ loopGuard: { enabled: true, correctiveRounds: 2 } }, {})).toBe(2);
+    expect(correctiveRounds({ loopGuard: { correctiveRounds: 2 } }, { OMB_LOOP_GUARD: "1" })).toBe(2);
+    expect(parseConfigPatch({ loopGuard: { correctiveRounds: 5 } })).toEqual({ loopGuard: { correctiveRounds: 5 } });
+    for (const bad of [-1, 1.5, 6, "2", null]) expect(() => parseConfigPatch({ loopGuard: { correctiveRounds: bad } })).toThrow();
   });
 
   it("is read from the stored config as the server loads it", () => {

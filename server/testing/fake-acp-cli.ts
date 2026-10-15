@@ -7,7 +7,9 @@
 //   FAKE_ACP_TEXT_REPLY  answer every session/prompt with only this text
 //   FAKE_ACP_MODE  happy (default) | image | empty-reply | reasoning-only | exit-early | fail-after-text | hang
 //     | hang-initialize | unkeyed-tool | no-auth | auth-required | permission | question
-//     | ask-question-unsupported (a mid-prompt cursor/ask_question request the driver must answer -32601)
+//     | ask-question (a mid-prompt vendor question: FAKE_ACP_ASK_METHOD, default cursor/ask_question, params
+//       FAKE_ACP_ASK_PARAMS; the client's reply is written to FAKE_ACP_ASK_ANSWER. FAKE_ACP_ASK_TIMING=with-result
+//       settles the turn with the card open; after-result asks between turns)
 //     | interleave (message, tool, message, tool, message) | no-session-config (set_mode/set_model answer -32601)
 //     | ask-peer | delegate-peer | chief-delegate | create-peer (coordinate_bots through the injected agents
 //       MCP; FAKE_ACP_REDELEGATE_FILE, FAKE_ACP_TASKID_FILE; a hand-off result wake gets a fixed line)
@@ -16,6 +18,7 @@
 //     | quiet-then-answer (silent for FAKE_ACP_QUIET_MS; with QWEN_HOME, append FAKE_ACP_QWEN_LOG lines to
 //       Qwen's debug log every FAKE_ACP_LOG_EVERY_MS) | mcp-tools (list each mcpServers entry's tools with
 //       grok 1.0.25's initialize, or FAKE_ACP_MCP_HANDSHAKE) | lend-question (list_shared_computers around a question)
+//     | list-peers (list_bots through the agents MCP; keeps the first agents server it is offered, like Hermes)
 //   FAKE_ACP_MCP_TRANSPORTS  remote MCP transports advertised in initialize, e.g. "http,sse"
 //   FAKE_ACP_PERMISSION_OPTIONS  JSON options override in permission mode
 //   FAKE_ACP_DUMP  path for {argv, env}; with FAKE_ACP_MODES or FAKE_ACP_MODELS also <dump>.prompts.jsonl
@@ -530,6 +533,9 @@ process.stdin.on("data", (c) => {
 function handle(msg: any) {
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && msg.id === pendingAskQuestionId) {
     pendingAskQuestionId = null;
+    if (process.env.FAKE_ACP_ASK_ANSWER) {
+      writeFileSync(process.env.FAKE_ACP_ASK_ANSWER, JSON.stringify(msg.error !== undefined ? { error: msg.error } : { result: msg.result }));
+    }
     onAskQuestionAnswered?.();
     return;
   }
@@ -606,7 +612,8 @@ function handle(msg: any) {
         dumpState.mcpServers = servers;
         writeDumpAtomic(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
       }
-      agentsMcp = servers.find((s: any) => s?.name === "agents") ?? null;
+      const offered = servers.find((s: any) => s?.name === "agents") ?? null;
+      agentsMcp = mode === "list-peers" ? agentsMcp ?? offered : offered;
       sessionMcp = servers as AnyMcpEntry[];
       if (process.env.FAKE_ACP_DUMP) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.mcp.json`, JSON.stringify(servers, null, 2));
@@ -641,6 +648,9 @@ function handle(msg: any) {
       const cachedLiveLoad = process.env.FAKE_ACP_CACHED_LIVE_LOAD === "1" && liveSession === msg.params?.sessionId;
       if ((mode === "safe-agent-reads" || mode === "chief-delegate" || mode === "create-peer") && !cachedLiveLoad) {
         agentsMcp = (msg.params?.mcpServers ?? []).find((server: any) => server.name === "agents") ?? null;
+      }
+      if (mode === "list-peers") {
+        agentsMcp ??= (msg.params?.mcpServers ?? []).find((server: any) => server.name === "agents") ?? null;
       }
       if (process.env.FAKE_ACP_DUMP) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.mcp.json`, JSON.stringify(msg.params?.mcpServers ?? []));
@@ -950,6 +960,18 @@ function handle(msg: any) {
           });
         return;
       }
+      if (mode === "list-peers" && agentsMcp) {
+        void driveMcp(agentsMcp, [{ name: "list_bots", args: () => ({}) }])
+          .then((list) => {
+            out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `peers: ${list}` } } } });
+            complete();
+          })
+          .catch((e) => {
+            out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `peers error: ${(e as Error).message}` } } } });
+            complete();
+          });
+        return;
+      }
       if (mode === "mcp-tools") {
         const handshake = process.env.FAKE_ACP_MCP_HANDSHAKE ? JSON.parse(process.env.FAKE_ACP_MCP_HANDSHAKE) : GROK_MCP_HANDSHAKE;
         void Promise.all(sessionMcp.map((entry) => listMcpTools(entry, handshake).then(
@@ -1156,15 +1178,34 @@ function handle(msg: any) {
         });
         return;
       }
-      if (mode === "ask-question-unsupported") {
-        pendingAskQuestionId = 9300;
-        onAskQuestionAnswered = complete;
-        out({
-          jsonrpc: "2.0",
-          id: pendingAskQuestionId,
-          method: "cursor/ask_question",
-          params: { questions: [{ question: "Which color?", options: ["Blue", "Green"] }] },
-        });
+      if (mode === "ask-question") {
+        const ask = () => {
+          pendingAskQuestionId = 9300;
+          out({
+            jsonrpc: "2.0",
+            id: pendingAskQuestionId,
+            method: process.env.FAKE_ACP_ASK_METHOD ?? "cursor/ask_question",
+            params: process.env.FAKE_ACP_ASK_PARAMS ? JSON.parse(process.env.FAKE_ACP_ASK_PARAMS) : {
+              toolCallId: "ask-1",
+              title: "Pick a color",
+              questions: [{ id: "color", prompt: "Which color?", options: [{ id: "blue-id", label: "Blue" }, { id: "green-id", label: "Green" }], allowMultiple: false }],
+            },
+          });
+        };
+        const timing = process.env.FAKE_ACP_ASK_TIMING;
+        if (timing === "with-result" || timing === "after-result") {
+          onAskQuestionAnswered = null;
+          if (timing === "with-result") ask();
+          complete();
+          // late enough that the driver has settled the turn first
+          if (timing === "after-result") setTimeout(ask, 300);
+          return;
+        }
+        onAskQuestionAnswered = () => {
+          out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "answered the question" } } } });
+          complete();
+        };
+        ask();
         return;
       }
       complete();

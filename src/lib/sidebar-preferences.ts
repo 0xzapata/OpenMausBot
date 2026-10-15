@@ -2,16 +2,20 @@ import { useSyncExternalStore } from "react";
 import { z } from "zod";
 
 export type SidebarDensity = "comfortable" | "compact" | "icons";
+export type SidebarToolsLayout = "rows" | "toolbar";
 
 export const SIDEBAR_DENSITIES: readonly SidebarDensity[] = ["comfortable", "compact", "icons"];
+export const SIDEBAR_TOOLS_LAYOUTS: readonly SidebarToolsLayout[] = ["rows", "toolbar"];
 
 export const SIDEBAR_DENSITY_KEY = "openmausbot.sidebarDensity";
+export const SIDEBAR_TOOLS_LAYOUT_KEY = "openmausbot.sidebarToolsLayout";
 export const SIDEBAR_WIDTH_KEY = "openmausbot.sidebarWidth";
 export const SIDEBAR_ATTENTION_PINNED_KEY = "openmausbot.sidebarAttentionPinned.v1";
 export const SIDEBAR_COLLAPSED_SECTIONS_KEY = "openmausbot.sidebarCollapsedSections.v1";
 export const SIDEBAR_SECTION_ORDER_KEY = "openmausbot.sidebarSectionOrder.v1";
 export const PINNED_CIRCLES_KEY = "openmausbot.pinnedCircles";
 export const UNIVERSAL_PINS_KEY = "openmausbot.universalPins";
+export const PINNED_CIRCLE_ORDER_KEY = "openmausbot.pinnedCircleOrder.v1";
 
 export function parseSidebarDensity(value: string | null): SidebarDensity {
   switch (value) {
@@ -40,6 +44,36 @@ export function saveSidebarDensity(
   try {
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(SIDEBAR_DENSITY_KEY, density);
+  } catch {
+  }
+}
+
+export function parseSidebarToolsLayout(value: string | null): SidebarToolsLayout {
+  switch (value) {
+    case "rows":
+    case "toolbar":
+      return value;
+    default:
+      return "rows";
+  }
+}
+
+export function loadSidebarToolsLayout(storage?: Pick<Storage, "getItem"> | null): SidebarToolsLayout {
+  try {
+    const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
+    return parseSidebarToolsLayout(target?.getItem(SIDEBAR_TOOLS_LAYOUT_KEY) ?? null);
+  } catch {
+    return "rows";
+  }
+}
+
+export function saveSidebarToolsLayout(
+  layout: SidebarToolsLayout,
+  storage?: Pick<Storage, "setItem"> | null,
+): void {
+  try {
+    const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
+    target?.setItem(SIDEBAR_TOOLS_LAYOUT_KEY, layout);
   } catch {
   }
 }
@@ -87,6 +121,51 @@ export function setSidebarDensity(density: SidebarDensity): void {
 
 export function useSidebarDensity(): SidebarDensity {
   return useSyncExternalStore(subscribeDensity, currentSidebarDensity, () => "comfortable");
+}
+
+let toolsLayoutSessionChoice: SidebarToolsLayout | undefined;
+const toolsLayoutListeners = new Set<() => void>();
+
+function currentSidebarToolsLayout(): SidebarToolsLayout {
+  return toolsLayoutSessionChoice ?? loadSidebarToolsLayout();
+}
+
+function notifyToolsLayout() {
+  for (const listener of toolsLayoutListeners) listener();
+}
+
+function onToolsLayoutStorage(event: StorageEvent) {
+  if (event.key !== SIDEBAR_TOOLS_LAYOUT_KEY && event.key !== null) return;
+  try {
+    if (event.storageArea && event.storageArea !== globalThis.localStorage) return;
+  } catch {
+    return;
+  }
+  toolsLayoutSessionChoice = undefined;
+  notifyToolsLayout();
+}
+
+export function subscribeSidebarToolsLayout(listener: () => void): () => void {
+  toolsLayoutListeners.add(listener);
+  if (toolsLayoutListeners.size === 1 && typeof window !== "undefined") {
+    window.addEventListener("storage", onToolsLayoutStorage);
+  }
+  return () => {
+    toolsLayoutListeners.delete(listener);
+    if (toolsLayoutListeners.size === 0 && typeof window !== "undefined") {
+      window.removeEventListener("storage", onToolsLayoutStorage);
+    }
+  };
+}
+
+export function setSidebarToolsLayout(layout: SidebarToolsLayout): void {
+  toolsLayoutSessionChoice = layout;
+  saveSidebarToolsLayout(layout);
+  notifyToolsLayout();
+}
+
+export function useSidebarToolsLayout(): SidebarToolsLayout {
+  return useSyncExternalStore(subscribeSidebarToolsLayout, currentSidebarToolsLayout, () => "rows");
 }
 
 export function clampSidebarWidth(width: number, viewportWidth: number): number {
@@ -206,6 +285,29 @@ export function usePinnedCircles(): boolean {
   return useSyncExternalStore(subscribePinnedCircles, loadPinnedCircles, () => false);
 }
 
+let sessionPinnedCircleOrder: string[] | undefined;
+const pinnedCircleOrderListeners = new Set<() => void>();
+
+function subscribePinnedCircleOrder(listener: () => void): () => void {
+  pinnedCircleOrderListeners.add(listener);
+  return () => { pinnedCircleOrderListeners.delete(listener); };
+}
+
+export function loadPinnedCircleOrder(storage?: Pick<Storage, "getItem"> | null): string[] {
+  return loadStringList(PINNED_CIRCLE_ORDER_KEY, storage);
+}
+
+export function setPinnedCircleOrder(ids: string[], storage?: Pick<Storage, "setItem"> | null): void {
+  sessionPinnedCircleOrder = saveStringList(PINNED_CIRCLE_ORDER_KEY, ids, storage);
+  for (const listener of pinnedCircleOrderListeners) listener();
+}
+
+const currentPinnedCircleOrder = (): string[] => (sessionPinnedCircleOrder ??= loadPinnedCircleOrder());
+
+export function usePinnedCircleOrder(): string[] {
+  return useSyncExternalStore(subscribePinnedCircleOrder, currentPinnedCircleOrder, currentPinnedCircleOrder);
+}
+
 export function parseUniversalPins(value: string | null): boolean {
   return value === "true";
 }
@@ -305,15 +407,16 @@ function saveStringList(
   key: string,
   values: string[],
   storage?: Pick<Storage, "setItem"> | null,
-): void {
+): string[] {
+  const safe = [
+    ...new Set(values.filter((value) => value.length > 0 && value.length <= 240)),
+  ].slice(0, 100);
   try {
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
-    const safe = [
-      ...new Set(values.filter((value) => value.length > 0 && value.length <= 240)),
-    ].slice(0, 100);
     target?.setItem(key, JSON.stringify(safe));
   } catch {
   }
+  return safe;
 }
 
 export function loadCollapsedSections(storage?: Pick<Storage, "getItem"> | null): string[] {

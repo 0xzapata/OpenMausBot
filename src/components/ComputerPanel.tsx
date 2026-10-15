@@ -10,8 +10,6 @@ import {
   Box,
   Check,
   Cloud,
-  Database,
-  FolderOpen,
   Sparkles,
   Globe,
   Hand,
@@ -21,7 +19,6 @@ import {
   Moon,
   Power,
   Settings,
-  Smartphone,
   X,
 } from "lucide-react";
 import { api, ApiError, currentTaskBot, useStore, type Bot, type ConfigStatus } from "@/state/store";
@@ -60,8 +57,11 @@ import {
   resolveBoatPanelAction,
   shouldPollCloudPreview,
 } from "@/lib/local-computer";
+import { moveBetweenTabs, PANEL_TABS, panelTabProps, TAB_PANEL_FOCUS, tabPanelProps, useAndroidTabFallback } from "./computer-panel-tabs";
 import {
+  computerPanelTabs,
   readComputerPanelView,
+  resolveComputerPanelView,
   writeComputerPanelView,
   type ComputerPanelView,
 } from "@/lib/computer-panel-view";
@@ -344,11 +344,10 @@ export function ComputerPanel({
   const [storedPanelView, setPanelView] = useState<ComputerPanelView>(() => readComputerPanelView(bot.id));
   const requestedDataResult = state.dataResultFocus?.botId === bot.id ? state.dataResultFocus : undefined;
   const [dataRequest, setDataRequest] = useState<{ id: string; requestId: number }>();
-  const panelView: ComputerPanelView = advanced
-    ? storedPanelView === "files" ? "computer" : storedPanelView
-    : storedPanelView === "routines" || storedPanelView === "android" ? "computer" : storedPanelView;
   const androidStatus = useAndroidUsbDevices();
   const androidConnected = androidStatus.devices.length > 0;
+  const panelTabs = computerPanelTabs({ advanced, androidConnected });
+  const panelView = resolveComputerPanelView(storedPanelView, { advanced, androidConnected });
   const browserAvailableHere = browserAvailable(state.config);
   const browserEnabled = builtInBrowserEnabled(state.config) && bot.browser !== false
     && (browserAvailableHere || state.config?.browserEngine?.installable === true);
@@ -444,12 +443,7 @@ export function ComputerPanel({
     };
   }, [bot.id]);
 
-  useEffect(() => {
-    if (!androidConnected && panelView === "android") {
-      setPanelView("computer");
-      writeComputerPanelView(bot.id, "computer");
-    }
-  }, [androidConnected, bot.id, panelView]);
+  useAndroidTabFallback(bot.id, androidStatus, setPanelView);
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computer]);
@@ -1262,6 +1256,11 @@ export function ComputerPanel({
     active ? "bg-raised text-ink shadow-sm" : "text-ink-secondary hover:text-ink",
   );
 
+  const chooseTab = (view: ComputerPanelView) => {
+    if (view === "browser") setError(null);
+    selectPanelView(view);
+  };
+
   const emptyState = {
     checking: t("computer.phase.checking"),
     starting: cloudBackend === "vps" ? t("computer.phase.starting") : cloudView.line,
@@ -1324,65 +1323,19 @@ export function ComputerPanel({
               <Settings size={18} />
             </button>
           )}
-          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-0.5 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" aria-label="Bot panel view">
-            <button
-              onClick={() => selectPanelView("computer")}
-              aria-pressed={panelView === "computer"}
-              className={tabClass(panelView === "computer")}
-            >
-              <Monitor size={13} /> {t("computer.tab.computer")}
-              {placeLive && isComputerPlace(livePlace) && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid="computer-tab-live" />}
-            </button>
-            {advanced && (
-            <button
-              type="button"
-              onClick={() => selectPanelView("routines")}
-              aria-pressed={panelView === "routines"}
-              className={tabClass(panelView === "routines")}
-            ><CalendarClock size={13} />{t("computer.tab.routines")}</button>
-            )}
-            {advanced && androidConnected && (
-            <button
-              onClick={() => selectPanelView("android")}
-              aria-pressed={panelView === "android"}
-              className={tabClass(panelView === "android")}
-            >
-              <Smartphone size={13} /> {t("computer.tab.android")}
-            </button>
-            )}
-            {(
-            <button
-              data-tour="computer-browser"
-              onClick={() => {
-                setError(null);
-                selectPanelView("browser");
-              }}
-              aria-pressed={panelView === "browser"}
-              className={tabClass(panelView === "browser")}
-            >
-              <Globe size={13} /> {t("computer.tab.browser")}
-              {placeLive && livePlace === "browser" && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid="browser-tab-live" />}
-            </button>
-            )}
-            <button
-              type="button"
-              data-tour="computer-data"
-              onClick={() => selectPanelView("data")}
-              aria-pressed={panelView === "data"}
-              className={tabClass(panelView === "data")}
-            >
-              <Database size={13} /> {t("computer.tab.data")}
-            </button>
-            {!advanced && (
-            <button
-              type="button"
-              onClick={() => selectPanelView("files")}
-              aria-pressed={panelView === "files"}
-              className={tabClass(panelView === "files")}
-            >
-              <FolderOpen size={13} /> {t("computer.tab.files")}
-            </button>
-            )}
+          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-1 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" role="tablist" aria-label={t("computer.tabsAria")} onKeyDown={(event) => moveBetweenTabs(event, panelTabs, chooseTab)}>
+            {panelTabs.map((view) => {
+              const { Icon, label, tour } = PANEL_TABS[view];
+              const live = !placeLive ? undefined
+                : view === "computer" && isComputerPlace(livePlace) ? "computer-tab-live"
+                : view === "browser" && livePlace === "browser" ? "browser-tab-live" : undefined;
+              return (
+                <button key={view} type="button" data-tour={tour} {...panelTabProps(view, view === panelView)} title={t(label)} onClick={() => chooseTab(view)} className={tabClass(view === panelView)}>
+                  <Icon size={13} /> {t(label)}
+                  {live && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid={live} />}
+                </button>
+              );
+            })}
           </div>
           <button
             onClick={() => dispatch({ type: "toggleComputer", open: false })}
@@ -1396,11 +1349,11 @@ export function ComputerPanel({
       </div>
 
       {panelView === "routines" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+        <div {...tabPanelProps("routines")} className={cn("min-h-0 flex-1 overflow-y-auto px-4 pb-4", TAB_PANEL_FOCUS)}>
           <RoutinesSection key={bot.id} bot={bot} routines={botRoutines} runs={state.routineRuns} defaultRunOn={cloudRoutineReady ? "cloud" : "maus"} />
         </div>
       ) : panelView === "browser" && browserEnabled ? (
-        <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        <div {...tabPanelProps("browser")} className={cn("flex min-h-0 flex-1 flex-col px-4 pb-4", TAB_PANEL_FOCUS)}>
           {browserSwitchRow}
           {signInHelp?.place === "browser" && <div className="-mt-1 mb-3">{signInBanner()}</div>}
           <BrowserPanel bot={bot} signIn={signInRequest} />
@@ -1411,7 +1364,7 @@ export function ComputerPanel({
           )}
         </div>
       ) : panelView === "browser" ? (
-        <div className="flex-1 overflow-y-auto px-5 pb-5" data-testid="browser-off">
+        <div {...tabPanelProps("browser")} className={cn("flex-1 overflow-y-auto px-5 pb-5", TAB_PANEL_FOCUS)} data-testid="browser-off">
           {browserSwitchRow}
           <div className="mt-2 flex flex-col items-center gap-3 rounded-xl bg-card px-6 py-8 text-center">
             <Globe size={22} className="text-ink-secondary" aria-hidden="true" />
@@ -1427,19 +1380,21 @@ export function ComputerPanel({
           </div>
         </div>
       ) : panelView === "data" ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div {...tabPanelProps("data")} className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", TAB_PANEL_FOCUS)}>
           <Suspense fallback={<div className="flex flex-1 items-center justify-center text-[13px] text-ink-secondary" role="status">{t("data.loading")}</div>}>
             <DataPanel key={bot.id} bot={bot} requestedCard={dataRequest} />
           </Suspense>
         </div>
       ) : panelView === "files" ? (
-        <ComputerFilesPane bot={bot} />
+        <div {...tabPanelProps("files")} className={cn("flex min-h-0 flex-1 flex-col", TAB_PANEL_FOCUS)}>
+          <ComputerFilesPane bot={bot} />
+        </div>
       ) : panelView === "android" && androidConnected ? (
-        <div className="flex-1 overflow-y-auto px-4 pt-2">
+        <div {...tabPanelProps("android")} className={cn("flex-1 overflow-y-auto px-4 pt-2", TAB_PANEL_FOCUS)}>
           <AndroidDevicePanel status={androidStatus} />
         </div>
       ) : (
-      <div className="flex-1 overflow-y-auto px-5 pb-5">
+      <div {...tabPanelProps("computer")} className={cn("flex-1 overflow-y-auto px-5 pb-5", TAB_PANEL_FOCUS)}>
           <div className="mb-1.5 mt-2 flex items-center justify-between text-[13px] text-ink-secondary">
             <span>{t("computer.screenOf", { name: bot.name })}</span>
             {currentTeamComputer && <span className="text-[11px]">{autoView.short}</span>}

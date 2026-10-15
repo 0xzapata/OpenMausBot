@@ -35,7 +35,7 @@ import type {
 } from "../contracts.ts";
 import { EFFORT_LEVELS } from "../../shared/wire.ts";
 import { newEventId, newId } from "../contracts.ts";
-import { parseAskQuestions, parseChoices, questionAnswersByQuestion } from "../../shared/ask-question.ts";
+import { ASK_USER_TOOL, MAX_QUESTION_TEXT, parseAskQuestions, parseChoices, questionAnswersByQuestion } from "../../shared/ask-question.ts";
 import {
   decodeInjectId,
   encodeInjectId,
@@ -44,7 +44,7 @@ import {
   mergeLocalInject,
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
-import { canUseMcpServer, parseToolScope } from "../../shared/tool-scope.ts";
+import { allowsTool, canUseMcpServer, parseToolScope } from "../../shared/tool-scope.ts";
 import { customServerGate, gateServer, mcpStdioServer } from "../mcp-gate-config.ts";
 import { remoteMcpSpec } from "../mcp-http.ts";
 
@@ -613,23 +613,21 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       }
 
       // The MCP config carries credentials: a 0600 temp file removed at settle, never argv.
+      // Written on every turn: the extension also carries ask_user.
       const mcpServers = buildMcpServers(turn);
-      let mcpTempDir: string | null = null;
-      let scopeReadyPath: string | undefined;
-      if (mcpServers || toolScope !== undefined) {
-        mcpTempDir = mkdtempSync(join(tmpdir(), "omb-pi-mcp-"));
-        if (toolScope !== undefined) scopeReadyPath = join(mcpTempDir, "scope-ready.json");
+      const askUser = toolScope === undefined || allowsTool(toolScope, { kind: "native", name: ASK_USER_TOOL });
+      const mcpTempDir = mkdtempSync(join(tmpdir(), "omb-pi-mcp-"));
+      const scopeReadyPath = toolScope !== undefined ? join(mcpTempDir, "scope-ready.json") : undefined;
+      try {
+        writeFileSync(join(mcpTempDir, "mcp.json"), JSON.stringify({ mcpServers: mcpServers ?? {}, toolScope, scopeReadyPath, approvalMode: turn.approvalMode, askUser }), { mode: 0o600 });
+      } catch (err) {
+        // A partial file could still hold credentials.
         try {
-          writeFileSync(join(mcpTempDir, "mcp.json"), JSON.stringify({ mcpServers: mcpServers ?? {}, toolScope, scopeReadyPath, approvalMode: turn.approvalMode }), { mode: 0o600 });
-        } catch (err) {
-          // A partial file could still hold credentials.
-          try {
-            rmSync(mcpTempDir, { recursive: true, force: true });
-          } catch {}
-          throw err;
-        }
+          rmSync(mcpTempDir, { recursive: true, force: true });
+        } catch {}
+        throw err;
       }
-      const childArgs = mcpTempDir ? [...PI_ARGS, "-e", SPAWNED_PROXIES.piMcpExtension] : PI_ARGS;
+      const childArgs = [...PI_ARGS, "-e", SPAWNED_PROXIES.piMcpExtension];
 
       // spawnCli can throw synchronously, before settle() could remove the credential file.
       const child = (() => {
@@ -640,15 +638,13 @@ export const PiDriver: ProviderDriver<PiConfig> = {
             env: piEnvironment({
               ...process.env,
               ...input.environment,
-              ...(mcpTempDir ? { OMB_MCP_CONFIG: join(mcpTempDir, "mcp.json") } : {}),
+              OMB_MCP_CONFIG: join(mcpTempDir, "mcp.json"),
             }),
           });
         } catch (err) {
-          if (mcpTempDir) {
-            try {
-              rmSync(mcpTempDir, { recursive: true, force: true });
-            } catch {}
-          }
+          try {
+            rmSync(mcpTempDir, { recursive: true, force: true });
+          } catch {}
           throw err;
         }
       })();
@@ -712,11 +708,9 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         try {
           killCliTree(child);
         } catch {}
-        if (mcpTempDir) {
-          try {
-            rmSync(mcpTempDir, { recursive: true, force: true });
-          } catch {}
-        }
+        try {
+          rmSync(mcpTempDir, { recursive: true, force: true });
+        } catch {}
         active.delete(threadId);
       };
 
@@ -823,7 +817,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
               const isQuestion = isSelect || evt.method === "input";
               const selectOptions: string[] = isSelect && Array.isArray(evt.options)
                 ? evt.options.filter((option): option is string => typeof option === "string") : [];
-              const summary = String(evt.title ?? (isQuestion ? "pi has a question" : "pi wants confirmation")).slice(0, 200);
+              const summary = String(evt.title ?? (isQuestion ? "pi has a question" : "pi wants confirmation")).slice(0, isQuestion ? MAX_QUESTION_TEXT : 200);
               const question = isSelect
                 ? (parseAskQuestions({
                     questions: [{ question: summary, options: selectOptions }],

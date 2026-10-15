@@ -4984,6 +4984,62 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("sends an earlier image as native pixels again when an edit rewinds the chat", async () => {
+    const created = await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      requireAvailableModel: true,
+    });
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    try {
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "base64",
+      );
+      const uploaded = await fetch(`${BASE}/api/attachments`, {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: new Uint8Array(png),
+      });
+      expect(uploaded.status).toBe(201);
+      const { path: imagePath } = await uploaded.json() as { path: string };
+      type Dump = { prompt: { message: { content: string | Array<{ type: string; source?: { data?: string } }> } } };
+      const imageBlocks = (dump: Dump) => {
+        const { content } = dump.prompt.message;
+        return typeof content === "string" ? [] : content.filter((part) => part.type === "image");
+      };
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, {
+        text: `Describe this screenshot\n\n<attached-image path="${imagePath}" name="tiny.png" />`,
+      })).status).toBe(202);
+      expect(imageBlocks(await readJsonFileWhenReady<Dump>(fakeClaudeDump, 20_000))).toHaveLength(1);
+      await releaseTurn(bot.id);
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "what colour is it" })).status).toBe(202);
+      await readJsonFileWhenReady(fakeClaudeDump);
+      await releaseTurn(bot.id);
+      const followUp = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { role: string; text?: string }) => message.role === "user" && message.text === "what colour is it");
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages/${followUp.id}/edit`, { text: "what shape is it" })).status)
+        .toBe(202);
+      const rewound = await readJsonFileWhenReady<Dump>(fakeClaudeDump);
+      expect(JSON.stringify(rewound.prompt)).toContain("Describe this screenshot");
+      expect(imageBlocks(rewound)).toEqual([
+        expect.objectContaining({ source: expect.objectContaining({ data: png.toString("base64") }) }),
+      ]);
+      expect(JSON.stringify(rewound.prompt)).not.toContain("attached-image");
+      expect(JSON.stringify(rewound.prompt)).not.toContain(imagePath);
+      await releaseTurn(bot.id);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("streams shared documents safely into the local attachments directory", async () => {
     const contents = Buffer.from("name,score\nAda,10\n");
     const saved = await fetch(`${BASE}/api/files?name=${encodeURIComponent("scores.exe")}`, {

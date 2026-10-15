@@ -6,6 +6,7 @@ import { liveDisclosure } from "@/lib/call-mode";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import type { LiveSettings } from "../../shared/wire";
 import { LiveKeySetup } from "./LiveKeySetup";
+import { Select } from "./Select";
 
 const IDLE_CHOICES = [1, 2, 3, 5, 10, 15, 30, 60];
 
@@ -66,15 +67,15 @@ export function LiveCallSettings({ onClose }: { onClose: () => void }) {
     >
       <label className="flex items-center justify-between gap-2">
         <span className="text-ink-secondary">{t("call.live.voice")}</span>
-        <select
+        <Select
+          size="sm"
           value={voice}
           disabled={saving}
           onChange={(event) => void save({ voice: event.target.value })}
-          className="min-w-0 rounded-md border border-hairline/60 bg-panel px-2 py-1 text-ink outline-none"
         >
           {!known && <option value={voice}>{voice}</option>}
           {LIVE_VOICE_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-        </select>
+        </Select>
       </label>
       <div className="-mt-2 text-[11.5px] text-ink-tertiary">{t("call.live.voiceNext")}</div>
       <label className="flex items-center justify-between gap-2">
@@ -90,16 +91,16 @@ export function LiveCallSettings({ onClose }: { onClose: () => void }) {
       <div id={typedHintId} className="-mt-2 text-[11.5px] text-ink-tertiary">{t("call.live.readTypedHint")}</div>
       <label className="flex items-center justify-between gap-2">
         <span className="text-ink-secondary">{t("call.live.idle")}</span>
-        <select
+        <Select
+          size="sm"
           value={live.idleMinutes}
           disabled={saving}
           onChange={(event) => void save({ idleMinutes: Number(event.target.value) })}
-          className="rounded-md border border-hairline/60 bg-panel px-2 py-1 text-ink outline-none"
         >
           {[...new Set([...IDLE_CHOICES, live.idleMinutes])].sort((a, b) => a - b).map((minutes) => (
             <option key={minutes} value={minutes}>{minutes}</option>
           ))}
-        </select>
+        </Select>
       </label>
       <div className="flex items-center justify-between gap-2 border-t border-hairline/60 pt-2">
         <span className="text-ink-secondary">{t("call.live.key")}</span>

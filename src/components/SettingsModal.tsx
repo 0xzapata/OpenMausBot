@@ -7,7 +7,8 @@ import { localeChoices, type LocaleKey } from "@/locales";
 import { t } from "@/lib/i18n";
 import { withTourReset } from "@/lib/guided-tour";
 import { completionPatch } from "@/lib/onboarding";
-import { AnthropicEveryClaudeBot, ApiKeyRow, OpenAiCompatUrl, OpenCodeProviderKeys, VpsConnection } from "./ApiKeys";
+import { AnthropicEveryClaudeBot, ApiKeyRow, OpenCodeProviderKeys, VpsConnection } from "./ApiKeys";
+import { OtherOpenAiCompatServers } from "./OpenAiCompatServers";
 import { DecisionModelSettings } from "./DecisionModelSettings";
 import { useUpdaterState } from "@/lib/updater";
 import { brand } from "../lib/brand";
@@ -37,7 +38,7 @@ import { SkillsSection } from "./SkillsSection";
 import { LicenseExpiryBanner } from "./LicenseExpiryBanner";
 import { WorkspacesSection, workspacesAvailable } from "./WorkspacesSection";
 import { SkinPicker } from "./SkinPicker";
-import { ChatWidthRow, FontRow } from "./AppearanceSelectRows";
+import { ChatWidthRow, FontRow, SidebarToolsLayoutRow } from "./AppearanceSelectRows";
 import { setColorUserBubbles, useColorUserBubbles } from "@/lib/user-bubble-preference";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { McpCallTimeoutSettings } from "./McpCallTimeoutSettings";
@@ -50,14 +51,14 @@ import { WorkspaceBackupSettings } from "./WorkspaceBackupSettings";
 import { CompanyBackupSettings } from "./CompanyBackupSettings";
 import { cn } from "@/lib/cn";
 import { glassPopupFrameStyle } from "@/lib/glass-popup";
-import { NotificationFeedRow, NotificationSoundsRow } from "./NotificationSettingsRows";
-import { setPinnedCircles, setUniversalPins, usePinnedCircles, useUniversalPins } from "@/lib/sidebar-preferences";
+import { NotificationRows } from "./NotificationSettingsRows";
 import { setShowThreads, useShowThreadsChoice } from "@/lib/thread-preferences";
 import { setAdvancedMode, useAdvancedMode } from "@/lib/interface-mode";
-import { parseSidebarDensity, setSidebarDensity, SIDEBAR_DENSITIES, useSidebarDensity, type SidebarDensity } from "@/lib/sidebar-preferences";
+import { parseSidebarDensity, setPinnedCircles, setSidebarDensity, setUniversalPins, SIDEBAR_DENSITIES, usePinnedCircles, useSidebarDensity, useUniversalPins, type SidebarDensity } from "@/lib/sidebar-preferences";
 import { setShowRunCard, useShowRunCard } from "@/lib/run-card-preferences";
 import { parseSendKey, SEND_KEYS, sendKeyLabel, setSendKey, useSendKey } from "@/lib/send-key";
 import { effectiveLanguage, setLanguageChoice, useLanguageChoice } from "@/lib/language-preference";
+import { Select } from "./Select";
 
 // labelKey, not a label: t() reads the active pack when called, so a label resolved at module scope would freeze the
 // boot language.
@@ -78,7 +79,7 @@ export const SECTIONS: Array<{
   keywords: string[];
 }> = [
   { id: "general", group: "you", labelKey: "settings.section.general", icon: User, keywords: ["profile", "name", "email", "about me", "about", "suggestions", "suggested", "memory", "analytics", "updates", "effort", "new bots", "reasoning", "threads", "parallel", "concurrency", "cleanup", "retention", "event log", "event-log", "log size", "automatic recovery", "backup model", "fallback", "routines", "conversation", "schedule"] },
-  { id: "appearance", group: "you", labelKey: "settings.section.appearance", icon: Palette, keywords: ["skin", "theme", "appearance", "chat width", "width", "wide", "full width", "bubble", "bubbles", "tools", "tool calls", "threads", "show threads", "hide threads", "sidebar", "density", "compact", "comfortable", "avatars", "display", "run", "this run", "run card", "commands", "notifications", "sound", "sounds", "mute", "silent", "chime", "pinned", "circles", "universal", "groups", "top", "send", "enter", "return", "shift+enter", "ctrl+enter", "cmd+enter", "⌘+enter", "new line", "keyboard", "ime", "japanese", "message color", "my messages"] },
+  { id: "appearance", group: "you", labelKey: "settings.section.appearance", icon: Palette, keywords: ["skin", "theme", "appearance", "chat width", "width", "wide", "full width", "bubble", "bubbles", "tools", "tool calls", "threads", "show threads", "hide threads", "sidebar", "density", "compact", "comfortable", "avatars", "display", "run", "this run", "run card", "commands", "notifications", "sound", "sounds", "mute", "silent", "chime", "pinned", "circles", "universal", "groups", "top", "send", "enter", "return", "shift+enter", "ctrl+enter", "cmd+enter", "⌘+enter", "new line", "keyboard", "ime", "japanese", "message color", "my messages", "toolbar", "tools layout", "footer", "routines", "triggers", "team map"] },
   { id: "companion", group: "you", labelKey: "settings.section.companion", icon: TabletSmartphone, keywords: ["companion", "device", "phone", "desktop", "client", "host", "pair", "pairing", "mobile", "https", "secure", "tailscale", "wifi", "remote", "advanced", "domain", "dns", "self-hosted", "server", "caddy"] },
   { id: "engines", group: "ai", labelKey: "settings.section.engines", icon: Terminal, keywords: ["models", "model providers", "engines", "claude", "codex", "grok", "providers", "cli", "sign in", "subscription"] },
   { id: "connections", group: "ai", labelKey: "settings.section.connections", icon: KeyRound, keywords: ["keys", "api", "api key", "api keys", "connections", "composio", "box", "xai", "mistral", "cerebras", "meta", "muse", "vps", "router", "openrouter", "base url", "openai", "anthropic", "groq", "opencode", "provider"] },
@@ -281,12 +282,11 @@ function NewBotEffortRow() {
       subtitle={t("settings.newBotEffort.subtitle")}
       message={error ? <p role="alert" className="text-danger">{error}</p> : null}
     >
-      <select
+      <Select size="sm" className="w-full max-w-[240px]"
         value={current}
         disabled={saving}
         aria-label={t("settings.newBotEffort.aria")}
         onChange={(event) => void save(event.target.value)}
-        className="cursor-pointer min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus disabled:cursor-wait disabled:opacity-50"
       >
         <option value="">{t("settings.newBotEffort.default")}</option>
         {EFFORT_LEVELS.map((level) => (
@@ -294,7 +294,7 @@ function NewBotEffortRow() {
             {effortLabel(level)}
           </option>
         ))}
-      </select>
+      </Select>
     </SettingRow>
   );
 }
@@ -377,11 +377,10 @@ function LanguageRow() {
       title={t("settings.language.title")}
       subtitle={t("settings.language.subtitle")}
     >
-      <select
+      <Select size="sm" className="w-full max-w-[240px]"
         value={current}
         aria-label={t("settings.language.aria")}
         onChange={(event) => setLanguageChoice(event.target.value)}
-        className="cursor-pointer min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus disabled:cursor-wait disabled:opacity-50"
       >
         <option value="">{t("settings.language.system")}</option>
         {localeChoices.map(({ code, label }) => (
@@ -389,7 +388,7 @@ function LanguageRow() {
             {label}
           </option>
         ))}
-      </select>
+      </Select>
     </SettingRow>
   );
 }
@@ -398,16 +397,15 @@ function SendKeyRow() {
   const sendKey = useSendKey();
   return (
     <SettingRow title={t("settings.sendKey.title")} subtitle={t("settings.sendKey.subtitle", { key: sendKeyLabel("mod-enter") })}>
-      <select
+      <Select size="sm" className="w-full max-w-[240px]"
         value={sendKey}
         aria-label={t("settings.sendKey.title")}
         onChange={(event) => setSendKey(parseSendKey(event.target.value))}
-        className="cursor-pointer min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus"
       >
         {SEND_KEYS.map((mode) => (
           <option key={mode} value={mode}>{sendKeyLabel(mode)}</option>
         ))}
-      </select>
+      </Select>
     </SettingRow>
   );
 }
@@ -474,16 +472,15 @@ function SidebarDensityRow() {
   const density = useSidebarDensity();
   return (
     <SettingRow title={t("sidebar.density.title")} subtitle={t("settings.sidebarDensity.subtitle")}>
-      <select
+      <Select size="sm" className="w-full max-w-[240px]"
         value={density}
         aria-label={t("sidebar.density.chooseAria")}
         onChange={(event) => setSidebarDensity(parseSidebarDensity(event.target.value))}
-        className="cursor-pointer min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus"
       >
         {SIDEBAR_DENSITIES.map((option) => (
           <option key={option} value={option}>{t(SIDEBAR_DENSITY_LABEL_KEYS[option])}</option>
         ))}
-      </select>
+      </Select>
     </SettingRow>
   );
 }
@@ -895,11 +892,11 @@ export function SettingsModal() {
             <ColorUserBubblesRow />
             <SendKeyRow />
             <SidebarDensityRow />
+            {advanced && <SidebarToolsLayoutRow />}
             {advanced && <ShowThreadsRow />}
             <PinnedCirclesRow />
             <UniversalPinsRow />
-            <NotificationSoundsRow />
-            <NotificationFeedRow />
+            <NotificationRows />
             {!remoteActive && <ToolCallsRow />}
             <RunCardRow />
           </>
@@ -929,13 +926,7 @@ export function SettingsModal() {
               <ApiKeyRow section="cerebras" testProvider="cerebras" />
               <ApiKeyRow section="groq" testProvider="groq" />
               <ApiKeyRow section="meta" testProvider="meta" />
-              <details data-api-keys-other className="rounded-lg border border-hairline/40 bg-inset px-3 py-2" open={Boolean(state.config?.openaiCompat?.configured)}>
-                <summary className="cursor-pointer text-[13px] text-ink-secondary">{t("keys.other.title")}</summary>
-                <div className="mt-3 flex flex-col gap-4">
-                  <ApiKeyRow section="openaiCompat" testProvider="openaiCompat" />
-                  <OpenAiCompatUrl />
-                </div>
-              </details>
+              <OtherOpenAiCompatServers />
               <div className="pt-2 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">{t("keys.integrations.title")}</div>
               <ApiKeyRow section="box" />
               <VpsConnection />
@@ -1096,14 +1087,13 @@ export function SettingsModal() {
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex shrink-0 items-center justify-between gap-3 border-b border-hairline/30 px-3 py-3 sm:pl-9">
             {advanced ? (
-              <select
+              <Select className="min-w-0 sm:hidden"
                 aria-label={t("settings.title")}
                 value={section}
                 onChange={(event) => {
                   setQuery("");
                   openSection(event.target.value as AppSettingsSection);
                 }}
-                className="cursor-pointer min-w-0 rounded-lg bg-control px-3 py-2 text-[14px] text-ink sm:hidden"
               >
                 {SETTINGS_GROUPS.map((group) => {
                   const entries = availableSections.filter((entry) => entry.group === group.id);
@@ -1115,9 +1105,9 @@ export function SettingsModal() {
                     </optgroup>
                   );
                 })}
-              </select>
+              </Select>
             ) : (
-              <select
+              <Select className="min-w-0 sm:hidden"
                 aria-label={t("settings.title")}
                 value={currentPage?.id ?? ""}
                 onChange={(event) => {
@@ -1125,12 +1115,11 @@ export function SettingsModal() {
                   const page = simplePages.find((candidate) => candidate.id === event.target.value);
                   if (page) openSection(page.sections[0]!);
                 }}
-                className="cursor-pointer min-w-0 rounded-lg bg-control px-3 py-2 text-[14px] text-ink sm:hidden"
               >
                 {simplePages.map((page) => (
                   <option key={page.id} value={page.id}>{t(page.labelKey)}</option>
                 ))}
-              </select>
+              </Select>
             )}
             <span className="hidden text-[15px] font-semibold text-ink sm:block">
               {sectionLabelKey ? t(sectionLabelKey) : null}

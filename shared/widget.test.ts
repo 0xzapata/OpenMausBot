@@ -386,8 +386,34 @@ describe("times, days, labels and progress", () => {
       { type: "Input", name: "start", label: "Start date" },
       { type: "Input", name: "what", label: "Remind me to" },
     ] });
-    expect(widgetAdvice(form)).toBe('"Which days" asks the person to type what a DayPicker lets them pick. Call update_widget with a DayPicker in its place. "Time" asks the person to type what a TimePicker lets them pick. Call update_widget with a TimePicker in its place. "Start date" asks the person to type what a DatePicker lets them pick. Call update_widget with a DatePicker in its place.');
+    expect(widgetAdvice(form)).toBe('"Time" asks the person to type what a TimePicker lets them pick. Call update_widget with a TimePicker in its place. "Which days" asks the person to type what a DayPicker lets them pick. Call update_widget with a DayPicker in its place. "Start date" asks the person to type what a DatePicker lets them pick. Call update_widget with a DatePicker in its place.');
     expect(widgetAdvice(sample("bookCall"))).toBeUndefined();
     expect(widgetAdvice(sample("routineForm"))).toBeUndefined();
+  });
+
+  it("reads a time of day as a time, and a frequency or 'each time' as neither", () => {
+    const card = (label: string) => parsed({ type: "Card", confirm: { label: "Save", action: { type: "save" } }, children: [{ type: "Input", name: "f", label }] });
+    expect(widgetAdvice(card("Time of day"))).toContain("a TimePicker");
+    expect(widgetAdvice(card("Day of the week"))).toContain("a DayPicker");
+    expect(widgetAdvice(card("What should happen each time it runs?"))).toBeUndefined();
+    expect(widgetAdvice(card("How many times a week?"))).toBeUndefined();
+    expect(widgetAdvice(card("Today's mood"))).toBeUndefined();
+  });
+
+  it("tells the bot when a form has nothing the person can press to send it", () => {
+    const silent = parsed({ type: "Card", children: [{ type: "DayPicker", name: "days", label: "Days" }, { type: "TimePicker", name: "at", label: "Time" }] });
+    expect(widgetAdvice(silent)).toBe("Nothing in this widget sends what the person fills in. Call update_widget with confirm: {label, action} (and cancel if they may decline) so they can send it.");
+    const cancelOnly = parsed({ type: "Card", cancel: { label: "Close", action: { type: "close" } }, children: [{ type: "Input", name: "note", label: "Note" }] });
+    expect(widgetAdvice(cancelOnly)).toContain("Nothing in this widget sends");
+    const form = parsed({ type: "Card", children: [{ type: "Form", onSubmitAction: { type: "send" }, children: [{ type: "Input", name: "note", label: "Note" }, { type: "Button", label: "Send", submit: true }] }] });
+    expect(widgetAdvice(form)).toBeUndefined();
+    expect(widgetAdvice(sample("buildStatus"))).toBeUndefined();
+    const outside = parsed({ type: "Card", children: [{ type: "Input", name: "who", label: "Who" }, { type: "Form", onSubmitAction: { type: "send" }, children: [{ type: "Input", name: "note", label: "Note" }, { type: "Button", label: "Send", submit: true }] }] });
+    expect(widgetAdvice(outside)).toBe('"Who" sits outside the Form whose button is the only way to send, so it is never sent. Call update_widget with it inside that Form, or with confirm on the Card.');
+    const twoForms = parsed({ type: "Card", children: [
+      { type: "Form", onSubmitAction: { type: "a" }, children: [{ type: "Input", name: "one", label: "One" }, { type: "Button", label: "Send one", submit: true }] },
+      { type: "Form", onSubmitAction: { type: "b" }, children: [{ type: "Input", name: "two", label: "Two" }, { type: "Button", label: "Send two", submit: true }] },
+    ] });
+    expect(widgetAdvice(twoForms)).toBeUndefined();
   });
 });

@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Bot, InstanceInfo } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
+import { Select } from "./Select";
 
 // Hook-by-call-order harness: the picker's own state survives between renders, effects never run, and handlers are read
 // off the element tree.
@@ -469,7 +470,7 @@ describe("the model picker in Simple mode", () => {
     const variants = [{ id: "default", label: "Default" }, { id: "high", label: "High" }];
     fixture.instances = [{ ...claude(true, [{ id: "claude-opus-5-5", label: "Opus 5.5", variants }]), capabilities: { modelVariants: true } }];
     const row = pane(open(bot()))!.props.variantsRow as ReactElement<ComponentProps<typeof ModelVariantRow>>;
-    const select = nodes(ModelVariantRow(row.props)).find((node) => node.type === "select")!;
+    const select = nodes(ModelVariantRow(row.props)).find((node) => node.type === Select)!;
     (select.props.onChange as (event: unknown) => void)({ target: { value: "1" } });
     expect(fixture.dispatch).toHaveBeenLastCalledWith({
       type: "setModel", botId: "scout", threadId: "thread-scout",
@@ -738,10 +739,10 @@ describe("the model picker in Simple mode", () => {
     expect(row.type).toBe(ModelVariantRow);
     expect(row.props).toMatchObject({ compact: true, wide: true });
     const bottom = region(menu(opened.html), "data-simple-effort-band");
-    const select = bottom.slice(bottom.indexOf("<select"), bottom.indexOf(">", bottom.indexOf("<select")));
-    expect(select).toContain('aria-label="Reasoning variant"');
-    expect(select).toContain("flex-1");
-    expect(select).not.toContain("max-w-[65%]");
+    const field = bottom.slice(bottom.lastIndexOf("<div", bottom.indexOf("<select")), bottom.indexOf(">", bottom.indexOf("<select")));
+    expect(field).toContain('aria-label="Reasoning variant"');
+    expect(field).toContain("flex-1");
+    expect(field).not.toContain("max-w-[65%]");
     expect(bottom.indexOf(">Reasoning</span>")).toBeGreaterThan(-1);
     expect(bottom.indexOf(">Reasoning</span>")).toBeLessThan(bottom.indexOf("<select"));
     expect(bottom).not.toContain(">Quick</button>");

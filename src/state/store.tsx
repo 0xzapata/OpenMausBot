@@ -10,9 +10,11 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, ServerFrame, GroupThreadUsage, SteerQueueReason, WireGroup, OptionCardData as WireOptionCard } from "../../shared/wire";
+import { movesThreadToTop } from "../../shared/wire";
 import { DATA_ROUTES, type DataSheet, type DataTable } from "../../shared/data-surface";
 import type { NotificationLogEntry } from "../../shared/notification";
 import { reduceNotificationFeed, type NotificationFeedAction } from "./notification-feed";
+import { bumpThreadUpdatedAt, mergeTaskStamps, rewindThreadUpdatedAt } from "./thread-stamps";
 import { botOpensTo, openBot, openNotificationTarget, visibleNotificationThread } from "./thread-navigation";
 export { awayFromMainThread, botOpensTo, openBot, openBotThread, openNotificationTarget, openThread, visibleNotificationThread, type ThreadTarget } from "./thread-navigation";
 import type { TurnDigest } from "../../shared/digest";
@@ -163,6 +165,8 @@ export interface Message extends Pick<import("../../shared/wire").WireMessage, "
   requestMessageId?: string;
   turnId?: string;
   turnTerminal?: boolean;
+  turnCompletedAt?: number;
+  optimisticThreadOrderAt?: number;
   hasImage?: boolean;
   png?: string;
   mime?: string;
@@ -221,6 +225,7 @@ export interface GroupTask {
   pinned?: boolean;
   updatedAt?: number;
   turnTimeoutMinutes?: number;
+  lastThreadOrderAt?: number;
   working?: boolean;
   busyBotId?: string | null;
 }
@@ -242,6 +247,7 @@ export interface Task {
   pinned?: boolean;
   link?: string;
   updatedAt?: number;
+  lastThreadOrderAt?: number;
   usage?: TaskUsage;
   cacheKeepWarm?: import("../../shared/wire").CacheKeepWarmStatus;
   cwd?: string | null;
@@ -411,48 +417,6 @@ function taskPatchFields(patch: TaskUpdatePatch): Partial<Task> {
     ...(surface === undefined ? {} : { surface: surface ?? undefined, surfaceAuto: undefined }),
     ...(pinned === undefined ? {} : { pinned: pinned ? true : undefined }),
     ...(link === undefined ? {} : { link: link ?? undefined }) };
-}
-
-function mergeTaskStamps<T extends { threadId: string; updatedAt?: number }>(previous: T[] | undefined, incoming: T[] | undefined): T[] | undefined {
-  if (!incoming) return previous;
-  const prior = new Map((previous ?? []).map((task) => [task.threadId, task.updatedAt]));
-  return incoming.map((task) => {
-    const local = prior.get(task.threadId);
-    if (typeof local !== "number") return task;
-    const remote = task.updatedAt;
-    const updatedAt = typeof remote === "number" ? Math.max(local, remote) : local;
-    return updatedAt === task.updatedAt ? task : { ...task, updatedAt };
-  });
-}
-
-function bumpThreadUpdatedAt(state: AppState, threadId: string, at: number): AppState {
-  if (!Number.isFinite(at)) return state;
-  const advance = <T extends { threadId: string; updatedAt?: number }>(tasks: T[] | undefined) =>
-    tasks?.some((task) => task.threadId === threadId)
-      ? tasks.map((task) => task.threadId === threadId ? { ...task, updatedAt: Math.max(task.updatedAt ?? 0, at) } : task)
-      : tasks;
-  return {
-    ...state,
-    bots: state.bots.map((bot) => {
-      const tasks = advance(bot.tasks);
-      return tasks === bot.tasks ? bot : { ...bot, tasks };
-    }),
-    groups: state.groups.map((group) => {
-      const tasks = advance(group.tasks);
-      return tasks === group.tasks ? group : { ...group, tasks };
-    }),
-  };
-}
-
-function rewindThreadUpdatedAt(state: AppState, threadId: string, messages: { at: number }[], createdAt: number): AppState {
-  const at = messages.reduce((max, message) => Math.max(max, message.at || 0), createdAt);
-  const apply = <T extends { threadId: string; updatedAt?: number }>(tasks: T[] | undefined) =>
-    tasks?.map((task) => task.threadId === threadId ? { ...task, updatedAt: at } : task);
-  return {
-    ...state,
-    bots: state.bots.map((bot) => bot.tasks?.some((task) => task.threadId === threadId) ? { ...bot, tasks: apply(bot.tasks) } : bot),
-    groups: state.groups.map((group) => group.tasks?.some((task) => task.threadId === threadId) ? { ...group, tasks: apply(group.tasks) } : group),
-  };
 }
 
 function openedUnreadDivider(state: AppState, threadId: string, unread: boolean, messages: readonly Message[], lastReadMessageId?: string): AppState["unreadDivider"] {
@@ -1048,9 +1012,9 @@ export function reducer(state: AppState, action: Action): AppState {
     if (owner) {
       const frames = [...(state.backgroundThreadEvents[action.threadId] ?? []), action].slice(-256);
       const buffered = { ...state, backgroundThreadEvents: { ...state.backgroundThreadEvents, [action.threadId]: frames } };
-      return action.type === "messageAdded"
-        ? bumpThreadUpdatedAt(buffered, action.threadId, action.message.at)
-        : buffered;
+      return (action.type === "messageAdded" || action.type === "messagePatched") && movesThreadToTop(action.message)
+        ? bumpThreadUpdatedAt(buffered, action.threadId, action.message.at, true, action.message.turnCompletedAt ?? action.message.at)
+        : action.type === "messageAdded" ? bumpThreadUpdatedAt(buffered, action.threadId, action.message.at) : buffered;
     }
   }
   switch (action.type) {
@@ -1371,7 +1335,7 @@ export function reducer(state: AppState, action: Action): AppState {
         const group = state.groups.find((g) => g.threadId === action.threadId || g.tasks?.some((task) => task.threadId === action.threadId));
         if (!group) return state;
         if (group.threadId === action.threadId && group.messages.some((m) => m.id === action.message.id)) return state;
-        const stamped = bumpThreadUpdatedAt(state, action.threadId, action.message.at);
+        const stamped = bumpThreadUpdatedAt(state, action.threadId, action.message.at, movesThreadToTop(action.message), action.message.turnCompletedAt ?? action.message.at);
         if (group.threadId !== action.threadId) return stamped;
         const optimisticIndex = action.message.sendId
           ? group.messages.findIndex(
@@ -1396,7 +1360,7 @@ export function reducer(state: AppState, action: Action): AppState {
       }
       // The POST response and its SSE frame race; moving the leaf back to a repeat can hide a newer reply.
       if (bot.messages.some((message) => message.id === action.message.id)) return state;
-      const stamped = bumpThreadUpdatedAt(state, action.threadId, action.message.at);
+      const stamped = bumpThreadUpdatedAt(state, action.threadId, action.message.at, movesThreadToTop(action.message), action.message.turnCompletedAt ?? action.message.at);
       const optimisticId = action.message.sendId
         ? optimisticMessageId(action.message.sendId)
         : null;
@@ -1438,41 +1402,48 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "optimisticMessageRemoved": {
       const id = optimisticMessageId(action.sendId);
+      const remove = (messages: Message[], optimistic: Message) => messages
+        .filter((message) => message.id !== id)
+        .map((message) => message.optimisticThreadOrderAt === optimistic.at
+          ? { ...message, optimisticThreadOrderAt: optimistic.optimisticThreadOrderAt }
+          : message);
       const bot = state.bots.find((candidate) => candidate.threadId === action.threadId);
       if (bot) {
         const optimistic = bot.messages.find((message) => message.id === id);
         if (!optimistic) return state;
         const cleared = updateBot(state, bot.id, (current) => ({
           ...current,
-          messages: current.messages.filter((message) => message.id !== id),
+          messages: remove(current.messages, optimistic),
           activeLeafId: current.activeLeafId === id
             ? (action.restoreLeafId !== undefined ? action.restoreLeafId : (optimistic.parentId ?? null))
             : current.activeLeafId,
         }));
         const task = bot.tasks?.find((candidate) => candidate.threadId === action.threadId);
         const kept = cleared.bots.find((candidate) => candidate.id === bot.id)?.messages ?? [];
-        return rewindThreadUpdatedAt(cleared, action.threadId, kept, task?.createdAt ?? 0);
+        return rewindThreadUpdatedAt(cleared, action.threadId, kept, task?.createdAt ?? 0, bot.hasMore ? optimistic.optimisticThreadOrderAt : undefined);
       }
       const group = state.groups.find((candidate) => candidate.threadId === action.threadId);
-      if (!group || !group.messages.some((message) => message.id === id)) return state;
+      const optimistic = group?.messages.find((message) => message.id === id);
+      if (!group || !optimistic) return state;
       const cleared = {
         ...state,
         groups: state.groups.map((candidate) => candidate.id === group.id
-          ? { ...candidate, messages: candidate.messages.filter((message) => message.id !== id) }
+          ? { ...candidate, messages: remove(candidate.messages, optimistic) }
           : candidate),
       };
       const task = group.tasks?.find((candidate) => candidate.threadId === action.threadId);
       const kept = cleared.groups.find((candidate) => candidate.id === group.id)?.messages ?? [];
-      return rewindThreadUpdatedAt(cleared, action.threadId, kept, task?.createdAt ?? group.createdAt);
+      return rewindThreadUpdatedAt(cleared, action.threadId, kept, task?.createdAt ?? group.createdAt, group.hasMore ? optimistic.optimisticThreadOrderAt : undefined);
     }
     case "messagePatched": {
-      const bot = state.bots.find((b) => b.threadId === action.threadId);
+      const stamped = movesThreadToTop(action.message) ? bumpThreadUpdatedAt(state, action.threadId, action.message.at, true, action.message.turnCompletedAt ?? action.message.at) : state;
+      const bot = stamped.bots.find((b) => b.threadId === action.threadId);
       if (!bot) {
-        const group = state.groups.find((g) => g.threadId === action.threadId);
-        if (!group) return state;
+        const group = stamped.groups.find((g) => g.threadId === action.threadId);
+        if (!group) return stamped;
         return {
-          ...state,
-          groups: state.groups.map((g) =>
+          ...stamped,
+          groups: stamped.groups.map((g) =>
             g.id === group.id
               ? { ...g, messages: g.messages.map((m) => (m.id === action.message.id ? action.message : m)) }
               : g,
@@ -1487,7 +1458,7 @@ export function reducer(state: AppState, action: Action): AppState {
               ? "success"
               : "working"
           : null;
-      const next = motion ? withMascotMotion(state, bot.id, motion) : state;
+      const next = motion ? withMascotMotion(stamped, bot.id, motion) : stamped;
       return updateBot(next, bot.id, (b) => ({
         ...b,
         messages: b.messages.map((m) => (m.id === action.message.id ? action.message : m)),
@@ -1867,11 +1838,12 @@ export function reducer(state: AppState, action: Action): AppState {
         action.replyToId,
         bot.activeLeafId,
       );
+      message.optimisticThreadOrderAt = bot.tasks?.find((task) => task.threadId === threadId)?.lastThreadOrderAt;
       return bumpThreadUpdatedAt(updateBot(animated, bot.id, (current) => ({
         ...current,
         messages: [...current.messages, message],
         activeLeafId: message.id,
-      })), threadId, message.at);
+      })), threadId, message.at, true);
     }
     case "editMessage": {
       const animated = withMascotMotion(state, action.botId, "working");
@@ -1888,11 +1860,12 @@ export function reducer(state: AppState, action: Action): AppState {
         source.replyToId,
         source.parentId ?? null,
       );
-      return updateBot(animated, bot.id, (current) => ({
+      message.optimisticThreadOrderAt = bot.tasks?.find((task) => task.threadId === threadId)?.lastThreadOrderAt;
+      return bumpThreadUpdatedAt(updateBot(animated, bot.id, (current) => ({
         ...current,
         messages: [...current.messages, message],
         activeLeafId: message.id,
-      }));
+      })), threadId, message.at, true);
     }
     case "deleteTask":
     case "newGroupTask":
@@ -2028,7 +2001,8 @@ export function reducer(state: AppState, action: Action): AppState {
         null,
         action.mode ?? "chat",
       );
-      const stamped = bumpThreadUpdatedAt(state, threadId, message.at);
+      message.optimisticThreadOrderAt = group.tasks?.find((task) => task.threadId === threadId)?.lastThreadOrderAt;
+      const stamped = bumpThreadUpdatedAt(state, threadId, message.at, threadId === group.threadId);
       if (threadId !== group.threadId) return stamped;
       return {
         ...stamped,

@@ -126,6 +126,16 @@ export function parseAskQuestions(input: unknown): AskQuestion[] | null {
   return questions.length ? questions : null;
 }
 
+/** Codex request_user_input_async's `{ title, options: string[] | null }` entries in the card's shape. Null unless one
+ * offers an option: a bare question already reads in the message text. */
+export function parseAsyncQuestions(entries: unknown): AskQuestion[] | null {
+  if (!Array.isArray(entries)) return null;
+  const questions = parseAskQuestions({
+    questions: entries.map((entry) => (isRecord(entry) ? { question: entry.title, options: entry.options } : null)),
+  });
+  return questions?.some((question) => question.options.length > 0) ? questions : null;
+}
+
 /** The one line the card subtitle and a spoken prompt show. */
 export function askQuestionSummary(questions: readonly AskQuestion[]): string {
   const first = questions[0]?.question ?? "";
@@ -243,6 +253,19 @@ export function answerWithoutPreamble(answer: string): string {
   return answer.startsWith(`${ANSWER_PREAMBLE}\n\n`) ? answer.slice(ANSWER_PREAMBLE.length + 2) : answer;
 }
 
+/** Sized so a reply typed in a card is never cut; only a longer chat message echoed back as free text is. */
+export const MAX_ANSWER_ECHO = ANSWER_PREAMBLE.length + MAX_QUESTIONS
+  * ("\n\nQ: \nA: ".length + MAX_QUESTION_TEXT + MAX_OPTIONS * (MAX_LABEL + ", ".length) + MAX_CUSTOM_ANSWER);
+
+/** Cut back to the last whole block, so no partial answer reads as one. */
+export function capAnswerEcho(answer: string, limit = MAX_ANSWER_ECHO): string {
+  if (answer.length <= limit) return answer;
+  const cut = answer.slice(0, limit);
+  const boundary = cut.lastIndexOf("\n\nQ: ");
+  const kept = boundary > 0 ? cut.slice(0, boundary) : cut;
+  return kept + "\n\n[answer truncated]";
+}
+
 /**
  * The card sends one answer for the whole set; `formatQuestionAnswers` writes
  * each question's text beside its answer, so the map is recovered rather than
@@ -254,6 +277,37 @@ export function questionAnswersByQuestion(
   questions: readonly AskQuestion[],
 ): Record<string, string> {
   return questionAnswersById(message, questions.map(question => ({ id: question.question, question })));
+}
+
+/**
+ * One answer read back as picked option labels plus the person's own words, for a protocol that answers by option.
+ * The card joins multi-select labels with ", " and a label may contain ", ": every reading is tried, a reading that
+ * is labels end to end wins, and when the best readings disagree the whole answer is own words, never a guessed option.
+ */
+export function pickedOptionLabels(answer: string, question: AskQuestion): { labels: string[]; other?: string } {
+  const text = answer.trim();
+  const labels = question.options.map((option) => option.label);
+  if (!question.multiSelect) {
+    if (labels.includes(text)) return { labels: [text] };
+    return text ? { labels: [], other: text } : { labels: [] };
+  }
+  const whole: string[][] = [];
+  const partial: Array<{ labels: string[]; other: string }> = [];
+  const read = (rest: string, picked: string[]): void => {
+    const next = labels.filter((label) => !picked.includes(label) && (rest === label || rest.startsWith(`${label}, `)));
+    if (!next.length) {
+      if (rest) partial.push({ labels: picked, other: rest });
+      else whole.push(picked);
+      return;
+    }
+    for (const label of next) read(rest.slice(label.length + 2), [...picked, label]);
+  };
+  read(text, []);
+  const key = (reading: { labels: string[]; other?: string }) => JSON.stringify([[...reading.labels].sort(), reading.other ?? null]);
+  const readings = whole.length ? whole.map((picked) => ({ labels: picked })) : partial;
+  const first = readings[0]!;
+  const agree = readings.every((reading) => key(reading) === key(first));
+  return agree ? first : { labels: [], other: text };
 }
 
 /** Ids ride the reply, so they are capped like the rest. */
@@ -286,6 +340,11 @@ export function parseProtocolAskQuestions(entries: unknown): ProtocolAskQuestion
     if (parsed.length === MAX_QUESTIONS) break;
   }
   return parsed.length ? parsed : null;
+}
+
+/** A card reply answers by question text, so it cannot tell two questions with the same text apart. */
+export function repeatsQuestionText(questions: readonly ProtocolAskQuestion[]): boolean {
+  return new Set(questions.map(({ question }) => question.question)).size !== questions.length;
 }
 
 /**

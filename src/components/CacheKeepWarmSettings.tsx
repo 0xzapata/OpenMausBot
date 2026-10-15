@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { Card, Switch } from "./SettingsPrimitives";
+import { Select } from "./Select";
 
 type KeepWarm = NonNullable<ConfigStatus["cacheKeepWarm"]>;
 
@@ -47,13 +48,12 @@ export function CacheKeepWarmSettings() {
       <p id="cache-keepwarm-cost" className="mt-2 text-[12px] leading-relaxed text-ink-secondary">{t("settings.keepWarm.cost")}</p>
       <div className="mt-3 flex items-center justify-between gap-4">
         <label htmlFor="cache-keepwarm-window" className="text-[13px] font-medium text-ink">{t("settings.keepWarm.window")}</label>
-        <select id="cache-keepwarm-window" value={current.windowMinutes} disabled={saving || !current.enabled}
-          onChange={(event) => void save({ ...current, windowMinutes: Number(event.target.value) })}
-          className="cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink disabled:opacity-50">
+        <Select id="cache-keepwarm-window" value={current.windowMinutes} disabled={saving || !current.enabled}
+          onChange={(event) => void save({ ...current, windowMinutes: Number(event.target.value) })}>
           {windows.map((minutes) => (
             <option key={minutes} value={minutes}>{t("settings.keepWarm.hours", { hours: Number((minutes / 60).toFixed(2)) })}</option>
           ))}
-        </select>
+        </Select>
       </div>
       {saving && <span role="status" className="sr-only">{t("settings.threads.saving")}</span>}
       {error && <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p>}

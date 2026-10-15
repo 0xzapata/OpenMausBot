@@ -103,6 +103,29 @@ describe("sidebar bot threads", () => {
     }
   });
 
+  it("folds open threads another bot opened into one collapsed group outside the six visible rows", () => {
+    const openedBy = { botId: "pepper", name: "Pepper", at: 1 };
+    const own = Array.from({ length: 7 }, (_, index) => ({ threadId: `own-${index}`, title: `Own ${index}`, createdAt: 10 + index, busy: false, activity: "idle" as const }));
+    const helpers = [
+      { threadId: "email", title: "Draft launch email", createdAt: 30, busy: true, activity: "working" as const, openedBy },
+      { threadId: "pricing", title: "Check pricing page", createdAt: 31, busy: false, activity: "idle" as const, openedBy },
+      { threadId: "review", title: "Review copy", createdAt: 5, busy: false, activity: "idle" as const, openedBy, unread: true },
+    ];
+    const markup = renderToStaticMarkup(threadList({ ...bot, threadId: "own-6", tasks: [...own, ...helpers] }));
+    const group = markup.slice(markup.indexOf("data-sidebar-helper-threads"));
+    expect(group).toContain('aria-expanded="false" aria-label="Expand Opened by bots threads"');
+    expect(group).toContain('opacity-50">2</span>');
+    expect(group).toContain("animate-spin");
+    expect(markup).not.toContain('data-sidebar-thread-row="email"');
+    expect(markup).not.toContain('data-sidebar-thread-row="pricing"');
+    expect(markup).toContain('data-sidebar-thread-row="review"');
+    for (let index = 1; index < 7; index += 1) expect(markup).toContain(`data-sidebar-thread-row="own-${index}"`);
+    expect(markup).toContain("Show all 8 threads");
+    const searched = renderToStaticMarkup(threadList({ ...bot, threadId: "own-6", tasks: [...own, ...helpers] }, "pricing"));
+    expect(searched).toContain('data-sidebar-thread-row="pricing"');
+    expect(searched).not.toContain("data-sidebar-helper-threads");
+  });
+
   it("exposes group history through the same nested thread rows and All threads picker", () => {
     const group: Group = { id: "team", threadId: "group-current", name: "Launch team", memberIds: [], defaultResponder: { kind: "everyone" }, bulletin: "", unread: false, createdAt: 1, messages: [],
       tasks: [{ threadId: "group-current", title: "Launch plan", createdAt: 3 }, { threadId: "group-old", title: "Previous review", createdAt: 2 }] };
