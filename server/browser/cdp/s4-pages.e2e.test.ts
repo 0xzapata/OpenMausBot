@@ -274,7 +274,7 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
     expect(pngSize(element.data)).toEqual({ width: 200, height: 100 });
     const full = await page.screenshot({ fullPage: true });
     // The document's width: 1280 where scrollbars overlay the page (macOS), less a classic scrollbar elsewhere.
-    expect(pngSize(full.data).width).toBe(await read("document.documentElement.scrollWidth"));
+    expect(pngSize(full.data).width).toBe(await read("document.documentElement.clientWidth"));
     expect(pngSize(full.data).height).toBeGreaterThan(3000);
     const retina = await startChrome("retina", { launch: { screen: { width: 1512, height: 982, deviceScaleFactor: 2 } } });
     extra.push(retina);
@@ -288,13 +288,13 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
   });
 
   it("fits each headless window so its page is exactly the viewport asked for", async () => {
-    const fitted = await startChrome("fit", { browser: { viewport: { width: 1024, height: 640 } } });
+    const fitted = await startChrome("fit", { browser: { viewport: { width: 1366, height: 768 } } });
     extra.push(fitted);
     const first = await fitted.browser.waitForPage();
     await first.navigate(serve("<p>fitted</p>"));
-    expect(await first.evaluate("[innerWidth, innerHeight]")).toEqual([1024, 640]);
+    expect(await first.evaluate("[innerWidth, innerHeight]")).toEqual([1366, 768]);
     const second = await fitted.browser.newPage(serve("<p>second tab</p>"));
-    expect(await second.evaluate("[innerWidth, innerHeight]")).toEqual([1024, 640]);
+    expect(await second.evaluate("[innerWidth, innerHeight]")).toEqual([1366, 768]);
   });
 
   it("streams screencast frames with paced acks, and stops", async () => {
