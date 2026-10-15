@@ -1,15 +1,19 @@
 // @vitest-environment happy-dom
 // An empty device list is the first thing Android discovery reports and also
 // the answer to a failed or missing adb, so the persisted panel view may only
-// fall back once a check finished without a failure reason. These cases drive
-// the real hook through a fake native bridge, so the contract the panel reads
-// is the one the hook actually produces.
-import { createElement } from "react";
+// fall back once a check finished without a failure reason. The fallback also
+// reads the persisted view when it runs, so a focus effect that persisted a
+// newer view wins. These cases drive the real hook through a fake native
+// bridge, so the contract the panel reads is the one the hook actually
+// produces.
+import { act, createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AndroidDeviceStatus, AndroidUsbDevice } from "@/types/ogb";
 import type { AppState, Bot, InstanceInfo } from "@/state/store";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   ...await importOriginal<typeof import("./DesktopCapabilities")>(),
@@ -165,5 +169,32 @@ describe("Computer panel Android tab", () => {
     // The unplug is confirmed once a check succeeds with an empty list.
     await check(makeBot(), async () => ({ available: true, devices: [] }));
     expect(panelViewStore.current).toBe("computer");
+  });
+
+  it("keeps the view a focus effect persisted when the check finishes in the same commit", async () => {
+    panelViewStore.current = "android";
+    let resolveScan: (status: AndroidDeviceStatus) => void = () => {};
+    vi.stubGlobal("ogb", {
+      androidDevice: {
+        status: () => new Promise<AndroidDeviceStatus>((resolve) => { resolveScan = resolve; }),
+        frame: async () => ({ serial: "", dataUrl: "" }),
+        input: async () => {},
+      },
+    });
+    const bot = makeBot();
+    await open(bot);
+    // The check is still unanswered, so nothing may persist yet.
+    expect(panelViewStore.current).toBe("android");
+
+    // The focus and the finished check land in one commit: the fallback must
+    // read the newer persisted view, not the one this render was built with.
+    await act(async () => {
+      const focused = value();
+      focused.state = { ...focused.state, dataResultFocus: { botId: bot.id, id: "card", requestId: 1, consumed: false } };
+      root!.render(createElement(BotEditorStore, { value: focused, children: createElement(ComputerPanel, { bot }) }));
+      resolveScan({ available: true, devices: [] });
+    });
+    expect(panelViewStore.current).toBe("data");
+    expect(selectedTab()).toBe("Data");
   });
 });

@@ -452,12 +452,13 @@ export function ComputerPanel({
   }, [bot.id]);
 
   useEffect(() => {
-    if (!androidStatusUsable) return;
-    if (!androidConnected && storedPanelView === "android") {
-      setPanelView("computer");
-      writeComputerPanelView(bot.id, "computer");
-    }
-  }, [androidConnected, androidStatusUsable, bot.id, storedPanelView]);
+    if (!androidStatusUsable || androidConnected) return;
+    // A focus effect may persist a newer view in the same commit, so the
+    // stored view, not the render-time one, decides the fallback.
+    if (readComputerPanelView(bot.id) !== "android") return;
+    setPanelView("computer");
+    writeComputerPanelView(bot.id, "computer");
+  }, [androidConnected, androidStatusUsable, bot.id]);
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computer]);
