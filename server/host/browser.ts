@@ -97,7 +97,7 @@ export function createBrowserHost(deps: BrowserHostDeps) {
   const browserSweep = {
     start() {
       agentBrowserSweep.start();
-      chromeEngine.start(builtInBrowserEnabled(cfg) && browserEngineKind(cfg) === "chrome");
+      chromeEngine.start({ inUse: browserEngineKind(cfg) === "chrome", prepare: builtInBrowserEnabled(cfg) });
       return browserSweep;
     },
     closeAll: () => agentBrowserSweep.closeAll(),
@@ -241,7 +241,8 @@ export function createBrowserHost(deps: BrowserHostDeps) {
         if (!closed) console.warn(`browser ${session}: could not close it after the browser engine changed`);
       });
     }
-    chromeEngine.start(builtInBrowserEnabled(cfg) && browserEngineKind(cfg) === "chrome");
+    if (browserEngineKind(cfg) !== "chrome") void chromeEngine.service.closeAll().catch(() => undefined);
+    chromeEngine.start({ inUse: browserEngineKind(cfg) === "chrome", prepare: builtInBrowserEnabled(cfg) });
   }
   /** A deleted bot's or profile's browser on the new engine, whatever the flag says now. */
   function eraseChromeBrowser(request: { type: string; botId?: string; partitionId?: string }): Promise<boolean> {

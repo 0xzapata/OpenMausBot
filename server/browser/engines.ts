@@ -1,6 +1,9 @@
 // The bots' browser runs on agent-browser or, with browserEngine.engine set to "chrome", on OpenMausBot's own Chrome
 // driver. A session's spec says which: the new engine's names the profile it drives. Everything that reaches a browser
 // goes through the two routers here, which keep the agent-browser engine's API.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
 import type { BrowserLive } from "../browser-live.ts";
 import type { BrowserRuntime, BrowserSpawnSpec } from "../browser-runtime.ts";
 import type { StepContext } from "../browser-steps.ts";
@@ -55,6 +58,7 @@ export class ChromeEngine {
   readonly #registry: ProcessRegistry;
   readonly #options: ChromeEngineOptions;
   #timer: ReturnType<typeof setInterval> | null = null;
+  #cleared = false;
 
   constructor(options: ChromeEngineOptions) {
     this.#options = options;
@@ -105,14 +109,27 @@ export class ChromeEngine {
     return key ? { session, key } : null;
   }
 
-  /** Prepares Chrome before a bot needs it, then closes idle browsers and stray processes every minute. */
-  start(prepare: boolean): void {
-    if (prepare && this.launcher.plan().kind !== "legacy") void this.launcher.prepare();
-    if (this.#timer) return;
+  /**
+   * In use, it prepares Chrome before a bot needs it and closes idle browsers and stray processes every minute. Not in
+   * use, it only clears, once, what an earlier run of the engine left behind, so a server that never turned it on
+   * lists no processes.
+   */
+  start({ inUse, prepare }: { inUse: boolean; prepare: boolean }): void {
+    const root = browserRoot(this.#options.dataDir);
     const tick = () => {
       void this.service.closeIdle().catch(() => undefined);
-      void sweep({ root: browserRoot(this.#options.dataDir), registry: this.#registry }).catch(() => undefined);
+      void sweep({ root, registry: this.#registry }).catch(() => undefined);
     };
+    if (!inUse) {
+      if (this.#timer) clearInterval(this.#timer);
+      this.#timer = null;
+      if (!this.#cleared && (existsSync(join(root, "profiles")) || existsSync(join(root, "temp")))) tick();
+      this.#cleared = true;
+      return;
+    }
+    this.#cleared = true;
+    if (prepare && this.launcher.plan().kind !== "legacy") void this.launcher.prepare();
+    if (this.#timer) return;
     tick();
     this.#timer = setInterval(tick, SWEEP_MS);
     this.#timer.unref?.();
