@@ -53,6 +53,7 @@ import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptF
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
 import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
+import { effectiveApprovalPolicy, effectiveApprovalsReviewer } from "./codex-approval-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { gateServer, mcpStdioServer } from "../mcp-gate-config.ts";
@@ -363,38 +364,6 @@ function withResolvedSandbox(params: CodexApprovalParams, session: unknown): Cod
   return { ...params, turn: { ...params.turn, sandboxPolicy: sandbox } };
 }
 
-function effectiveApprovalPolicy(value: unknown): unknown {
-  if (value === "untrusted" || value === "on-request" || value === "never") return value;
-  const granular = plainRecord(plainRecord(value)?.granular);
-  if (
-    granular &&
-    typeof granular.mcp_elicitations === "boolean" &&
-    typeof granular.rules === "boolean" &&
-    typeof granular.sandbox_approval === "boolean" &&
-    (granular.request_permissions === undefined || typeof granular.request_permissions === "boolean") &&
-    (granular.skill_approval === undefined || typeof granular.skill_approval === "boolean")
-  ) {
-    return {
-      granular: {
-        mcp_elicitations: granular.mcp_elicitations,
-        rules: granular.rules,
-        sandbox_approval: granular.sandbox_approval,
-        ...(typeof granular.request_permissions === "boolean"
-          ? { request_permissions: granular.request_permissions }
-          : {}),
-        ...(typeof granular.skill_approval === "boolean"
-          ? { skill_approval: granular.skill_approval }
-          : {}),
-      },
-    };
-  }
-  return "on-request";
-}
-
-function effectiveApprovalsReviewer(value: unknown): string {
-  return value === "auto_review" || value === "guardian_subagent" ? value : "user";
-}
-
 function legacyCustomApprovalParams(config: Record<string, unknown>): CodexApprovalParams {
   const approvalPolicy = effectiveApprovalPolicy(config.approval_policy);
   const approvalsReviewer = effectiveApprovalsReviewer(config.approvals_reviewer);
@@ -612,6 +581,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       }
       try { writeStartupModelCache(instanceId, models); } catch {}
     };
+    // Codex's model list ships with the CLI: updating 0.155.1 to 0.162.1 in place adds gpt-6.1-sol.
+    let modelsCliVersion: string | null = null;
     let startupModelRefresh: Promise<void> | null = null;
     if (config.managed) {
       await refreshModels();
@@ -1750,6 +1721,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     if (planAuth) return { state: "available", version, chatgptPlan: true, billing: "subscription", ...await planAuth.snapshot(), update: await codexReleaseUpdate(version, config.cli),
       ...(planWarning ? { warning: { title: "Check ChatGPT connection", message: planWarning } } : {}) };
     if (config.managed) return { state: "available", version, authenticated: Boolean(input.environment.OPENMAUSBOT_COMPANY_API_KEY && input.environment.CODEX_HOME), billing: "metered" };
+    const previousCliVersion = modelsCliVersion;
+    modelsCliVersion = version;
+    if (previousCliVersion !== null && previousCliVersion !== version) await refreshModels();
     const authenticated = await codexLoginStatus(config.cli, env) === "signed-in";
     if (authenticated && loginRejected()) {
       return { state: "available", version, authenticated: false, reason: CODEX_SIGN_IN_EXPIRED,

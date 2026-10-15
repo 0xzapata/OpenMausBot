@@ -78,6 +78,7 @@ import {
   saveImage,
 } from "./attachments.ts";
 import {
+  messageAttachmentName,
   messageFileRoots,
 } from "./message-file.ts";
 import {
@@ -369,7 +370,6 @@ import {
   scanSkillText,
   listSkills,
   listStagedSkillWrites,
-  isSkillName,
   readSkillFile,
   rejectStagedSkillWrite,
   setSkillEnabled,
@@ -384,6 +384,7 @@ import { ensureTaskWorkspaceWithSkills } from "./skill-task-links.ts";
 import { parseSkillManageReferences, previousSkillVersion, skillCardCopy, skillRequestReferences } from "./skill-request-card.ts";
 import { skillReferencesSha256 } from "./skill-storage.ts";
 import { createSkillsLibraryHost } from "./host/skills-library.ts";
+import { skillExport } from "./skill-export.ts";
 import { pickBotName } from "./names.ts";
 import { botSkillTemplateSchema, newBotDefaultsSchema } from "./new-bot-defaults.ts";
 import { expandLearnTurnText, learnSource } from "./skill-learn.ts";
@@ -429,13 +430,14 @@ import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
-import { BROWSER_CONTROL_REFUSAL, BrowserRuntime, attachesToChrome, browserRuntimeEnv, formatBrowserTiming } from "./browser-runtime.ts";
+import { BROWSER_CONTROL_REFUSAL, BROWSER_UPLOAD_TOOL, BrowserRuntime, TransportError, attachesToChrome, browserRuntimeEnv, formatBrowserTiming } from "./browser-runtime.ts";
+import { namedUploadPaths, uploadableFiles } from "./browser-upload.ts";
 import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { HeldSecrets, LoginStore } from "./login-store.ts";
 import { OnePasswordLogins, sdkOnePasswordClient, type OnePasswordSdk } from "./onepassword.ts";
 import { nativeRequire } from "./data/engine.ts";
 import { fillLogin, type FillCandidate } from "./login-fill.ts";
-import { relayFrame, relayInsertText } from "./browser-relay.ts";
+import { RelayTimeout, relayCommand, relayFrame, relayInsertText } from "./browser-relay.ts";
 import { browserEvidence, browserSteps, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
@@ -464,7 +466,6 @@ import { TeamSetupError, TeamSetupRequestService } from "./team-setup-requests.t
 import type { TeamSetupRequest } from "../shared/team-setup.ts";
 import { profileRevision, profileSnapshot } from "./profile-revision.ts";
 import { flushAllProfileHistory, flushProfileHistory, readHistory, recordProfileChange } from "./profile-versions.ts";
-import { BOT_PACKAGE_MAX_SKILLS } from "./bot-package.ts";
 import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
 import { describeTool } from "./activity.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
@@ -489,7 +490,7 @@ import {
 } from "./skill-library.ts";
 import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
-import { picture as sharedPicture, type ExportablePackageSkill, type TeamExportSkip } from "./package-export.ts";
+import { picture as sharedPicture, type TeamExportSkip } from "./package-export.ts";
 import type { PackageImportDeps } from "./package-import.ts";
 import {
   createPresetStore, DEFAULTS_PRESET_KEY,
@@ -518,6 +519,7 @@ import { environmentDescriptor, loadEnvironmentId, serverVersion } from "./envir
 import { WorkspaceBackupMaintenance } from "./workspace-backup-maintenance.ts";
 import { createWorkspaceBackupRoutes, isWorkspaceBackupSessionControl } from "./workspace-backup-http.ts";
 import { applyPendingWorkspaceRestore, readLastWorkspaceRestore, type WorkspaceRestoreResult } from "./workspace-backup.ts";
+import { repairMovedWorkspacePaths } from "./moved-paths-repair.ts";
 import { createCustomDomainVerifier, customDomainIpv4, normalizeCustomDomain } from "./custom-domain.ts";
 import { allowedScopes, createEmailSignIn, parseAllowList } from "./account-signin.ts";
 import { ProviderAuthSessions } from "./provider-auth-sessions.ts";
@@ -660,9 +662,7 @@ let restoredAtStart: string | undefined;
 if (existsSync(join(DATA_DIR, ".backups"))) {
   workspaceRestore = applyPendingWorkspaceRestore(DATA_DIR);
   if (workspaceRestore.restored) restoredAtStart = workspaceRestore.id;
-  if (!workspaceRestore.restored && !workspaceRestore.rolledBack) {
-    workspaceRestore = readLastWorkspaceRestore(DATA_DIR) ?? workspaceRestore;
-  }
+  if (!workspaceRestore.restored && !workspaceRestore.rolledBack) workspaceRestore = readLastWorkspaceRestore(DATA_DIR) ?? workspaceRestore;
 }
 const workspaceMaintenance = new WorkspaceBackupMaintenance();
 // Only after ensureDirs(), whose one-time legacy data-dir rename must not find ~/.openmausbot already there.
@@ -684,6 +684,7 @@ const sharedComputers = new SharedComputers(id => sessions.isLive(id));
 const CLOUD_SECRETS = BOOT_CLOUD_SECRETS;
 const CLOUD_ENV: NodeJS.ProcessEnv = { ...process.env, ...CLOUD_SECRETS };
 const CLOUD_HOME = cloudHomeConfiguration(CLOUD_ENV);
+if (CLOUD_HOME) repairMovedWorkspacePaths(DATA_DIR);
 if (CLOUD_HOME) sessions.requireAdmin(CLOUD_PERSONAL_REFUSAL);
 const lendingEnabled = () => sharedComputersEnabled(cfg) || CLOUD_HOME !== null;
 const CLOUD_HOME_LENDER = "cloud-home";
@@ -2658,6 +2659,9 @@ const browserRuntime = new BrowserRuntime({
     return closed;
   },
   applyViewport: (spec) => setBrowserViewport(spec.command, spec.env),
+  relayCommand: (spec, session, command, timeoutMs) => relayCommand(spec, session, command, timeoutMs).catch((error: unknown) => {
+    throw error instanceof RelayTimeout ? new TransportError(error.message) : error;
+  }),
   steps: browserSteps,
   onTiming: process.env.OMB_BROWSER_TIMING === "1" ? (timing) => console.info(formatBrowserTiming(timing)) : undefined,
 });
@@ -3158,93 +3162,6 @@ function healThreadModel(botId: string, threadId: string): void {
     name: `notice: This thread's model (${modelName(own)}) isn't available, so it now uses ${bot.name}'s model (${modelName(bot.modelSelection)}).`,
     ok: true,
   } });
-}
-
-function checkedExportSkillNames(
-  value: unknown,
-  bots: readonly BotRecord[],
-): { ok: true; names: string[] } | { ok: false; error: string } {
-  if (value === undefined) return { ok: true, names: [] };
-  if (!Array.isArray(value) || value.some((name) => typeof name !== "string" || !isSkillName(name))) {
-    return { ok: false, error: "skillIds must be a list of exact imported skill names" };
-  }
-  const names = [...value] as string[];
-  if (new Set(names).size !== names.length) return { ok: false, error: "skillIds must not contain duplicates" };
-  if (names.length > BOT_PACKAGE_MAX_SKILLS) return { ok: false, error: `skillIds must contain at most ${BOT_PACKAGE_MAX_SKILLS} names` };
-  const available = new Set(bots.flatMap((bot) => listBotSkills(bot).map((skill) => skill.name)));
-  const unknown = names.find((name) => !available.has(name));
-  if (unknown) return { ok: false, error: `skillIds contains unknown imported skill "${unknown}"` };
-  return { ok: true, names };
-}
-
-function collectExportSkills(
-  bots: readonly BotRecord[],
-  names: readonly string[],
-): ReadonlyMap<string, readonly ExportablePackageSkill[]> {
-  const selected = new Set(names);
-  const byBot = new Map<string, ExportablePackageSkill[]>();
-  if (!selected.size) return byBot;
-  for (const bot of bots) {
-    const assigned: ExportablePackageSkill[] = [];
-    for (const listing of listBotSkills(bot)) {
-      if (!selected.has(listing.name)) continue;
-      const instructions = readBotSkillFile(bot, listing.name);
-      if (instructions === null) {
-        throw new Error(`Skill "${listing.name}" changed or is unavailable and cannot be exported safely`);
-      }
-      const skill: ExportablePackageSkill = {
-        name: listing.name,
-        description: listing.description,
-        ...(listing.source ? { source: listing.source } : {}),
-        ...(listing.license ? { license: listing.license } : {}),
-        ...(listing.compatibility ? { compatibility: listing.compatibility } : {}),
-        instructions,
-      };
-      assigned.push(skill);
-    }
-    if (assigned.length) byBot.set(bot.id, assigned);
-  }
-  return byBot;
-}
-
-function collectTeamSkills(
-  bots: readonly BotRecord[],
-  selection: unknown,
-): { ok: true; all: boolean; skillsByBot: Map<string, ExportablePackageSkill[]>; skipped: TeamExportSkip[]; available: string[] } | { ok: false; error: string; available: string[] } {
-  const all = selection === undefined || selection === "all";
-  const available = [...new Set(bots.flatMap((bot) => listBotSkills(bot).map((skill) => skill.name)))].sort();
-  if (!all && (!Array.isArray(selection) || selection.some((name) => typeof name !== "string" || !isSkillName(name)))) {
-    return { ok: false, error: "skills must be \"all\" or a list of skill names", available };
-  }
-  const chosen = new Set(all ? available : selection as string[]);
-  const unknown = [...chosen].find((name) => !available.includes(name));
-  if (unknown) return { ok: false, error: `This team has no skill named "${unknown}"`, available };
-  const skillsByBot = new Map<string, ExportablePackageSkill[]>();
-  const skipped: TeamExportSkip[] = [];
-  for (const bot of bots) {
-    const assigned: ExportablePackageSkill[] = [];
-    for (const listing of listBotSkills(bot)) {
-      if (!chosen.has(listing.name)) continue;
-      const instructions = readBotSkillFile(bot, listing.name);
-      if (instructions === null) {
-        if (!all) return { ok: false, error: `Skill "${listing.name}" changed or is unavailable and cannot be shared safely`, available };
-        const part = `skills[${listing.name}]`;
-        if (!skipped.some((skip) => skip.part === part)) skipped.push({ part, reason: "skill_changed" });
-        continue;
-      }
-      assigned.push({
-        name: listing.name,
-        description: listing.description,
-        ...(listing.source ? { source: listing.source } : {}),
-        ...(listing.license ? { license: listing.license } : {}),
-        ...(listing.compatibility ? { compatibility: listing.compatibility } : {}),
-        instructions,
-        enabled: listing.enabled,
-      });
-    }
-    if (assigned.length) skillsByBot.set(bot.id, assigned);
-  }
-  return { ok: true, all, skillsByBot, skipped, available };
 }
 
 function starterNotes(botId: string): Array<{ path: string; text: string }> {
@@ -12438,6 +12355,17 @@ function resolveReplyTarget(threadId: string, value: unknown): Message | undefin
 
 const CONNECTOR_SLUG = /^[a-z0-9][a-z0-9_-]{0,80}$/;
 
+/** The name the person gave an attachment, from the newest of this thread's messages that carries its exact tag. */
+function attachmentNameInThread(threadId: string, path: string): string | null {
+  const messages = store.messagesFor(threadId);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const text = messages[i]!.text;
+    const name = text ? messageAttachmentName(text, path) : null;
+    if (name) return name;
+  }
+  return null;
+}
+
 function messageFileRootsForThread(senderId: string, threadId: string): string[] {
   const directBot = store.botByThread(threadId);
   const group = directBot ? undefined : store.groupByThread(threadId);
@@ -13937,9 +13865,7 @@ ROUTES.push(createTeamRoutes({
   defaultsPresetFor,
   packageImportDeps,
   starterNotes,
-  checkedExportSkillNames,
-  collectExportSkills,
-  collectTeamSkills,
+  ...skillExport(skillsHost),
 }));
 ROUTES.push(createBrowserSiteRoutes({
   target: (which) => {
@@ -14786,7 +14712,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (body?.method !== "tools/list" && body?.method !== "tools/call") {
           return json(res, 400, { error: "unsupported browser method" });
         }
-        const result = await browserRuntime.agentRpc(browser.session, browser.spec, body.method, body.params, () => {
+        let params = body.params;
+        if (body.method === "tools/call" && params?.name === BROWSER_UPLOAD_TOOL) {
+          const upload = uploadableFiles(params.arguments?.files, messageFileRootsForThread(bot.id, internalCapability.threadId));
+          if ("error" in upload) return json(res, 200, { result: { isError: true, content: [{ type: "text", text: upload.error }] } });
+          const requested = params.arguments.files as string[];
+          const files = namedUploadPaths(upload.files.map((file, i) => ({ file, name: attachmentNameInThread(internalCapability.threadId, requested[i]!) })), join(DATA_DIR, "browser-uploads"));
+          params = { ...params, arguments: { ...params.arguments, files } };
+        }
+        const result = await browserRuntime.agentRpc(browser.session, browser.spec, body.method, params, () => {
           requireActiveInternalCapability();
           const current = store.bot(bot.id);
           if (!current || current.browser === false || current.computer === "off" || !builtInBrowserEnabled(cfg) ||

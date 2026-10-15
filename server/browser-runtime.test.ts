@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { addHeldSecretScrubber, HELD_SECRET_MASK } from "../shared/redact.ts";
-import { BROWSER_CALL_DEFAULTS, BROWSER_RESTART_TOOL, BrowserRuntime, TransportError, browserRuntimeEnv, formatBrowserTiming, type BrowserSpawnSpec, type BrowserTiming } from "./browser-runtime.ts";
+import { BROWSER_CALL_DEFAULTS, BROWSER_HOVER_TOOL, BROWSER_RESTART_TOOL, BROWSER_UPLOAD_TOOL, BrowserRuntime, TransportError, browserRuntimeEnv, formatBrowserTiming, type BrowserSpawnSpec, type BrowserTiming } from "./browser-runtime.ts";
 import { HARNESS_CALL_BUDGET_MS, HARNESS_PROXY_TIMEOUT_MS } from "./harness-budget.ts";
 import { RelayPorts } from "./browser-relay.ts";
 import { BrowserSteps, type StepCall, type StepContext } from "./browser-steps.ts";
@@ -514,7 +514,45 @@ describe("server-owned browser MCP runtime", () => {
     expect(other.pid).not.toBe(list.pid);
     await value.take("one", "owner");
     await expect(value.agentRpc("one", spec(), "tools/call", { name: "echo" })).rejects.toThrow(/paused/);
-    await expect(value.agentRpc("one", spec(), "tools/list", {})).resolves.toMatchObject({ tools: [{ name: "echo" }, { name: "restart_browser" }] });
+    await expect(value.agentRpc("one", spec(), "tools/list", {})).resolves.toMatchObject({ tools: [{ name: "echo" }, { name: BROWSER_UPLOAD_TOOL }, { name: BROWSER_HOVER_TOOL }, { name: "restart_browser" }] });
+  });
+
+  it("runs upload and hover through the daemon's relay, with only their own fields", async () => {
+    const commands: Array<{ session: string; command: Record<string, unknown> }> = [];
+    const value = runtime({ relayCommand: async (_spec, session, command) => {
+      commands.push({ session, command });
+      return { success: true, data: { selector: "#cv", uploaded: 1, lifecycle: { launched: false, relaunchedBrowser: false } } };
+    } });
+    const result = await value.agentRpc("s", spec(), "tools/call", {
+      name: BROWSER_UPLOAD_TOOL, arguments: { selector: "#cv", files: ["/files/cv.pdf"], session: "another-bot", extraArgs: ["--headed"] },
+    }) as { isError?: boolean; content: Array<{ text: string }> };
+    await value.agentRpc("s", spec(), "tools/call", { name: BROWSER_HOVER_TOOL, arguments: { selector: "@e4", files: ["/files/cv.pdf"] } });
+    expect(commands).toEqual([
+      { session: "s", command: { action: "upload", selector: "#cv", files: ["/files/cv.pdf"] } },
+      { session: "s", command: { action: "hover", selector: "@e4" } },
+    ]);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('"uploaded":1');
+    expect(result.content[0].text).not.toContain("lifecycle");
+  });
+
+  it("answers a refused relay command as a tool error, and a silent one as a lost call", async () => {
+    const refused = runtime({ relayCommand: async () => ({ success: false, data: null, error: "Element not found: #cv" }) });
+    await expect(refused.agentRpc("s", spec(), "tools/call", { name: BROWSER_UPLOAD_TOOL, arguments: { selector: "#cv", files: ["/f"] } }))
+      .resolves.toMatchObject({ isError: true, content: [{ text: "Element not found: #cv" }] });
+    const silent = runtime({ relayCommand: async () => { throw new TransportError("The browser did not answer in time."); } });
+    await expect(silent.agentRpc("t", spec(), "tools/call", { name: BROWSER_HOVER_TOOL, arguments: { selector: "#menu" } }))
+      .resolves.toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/did not answer this agent_browser_hover call/) }] });
+    expect(silent.interrupted("t")).toBe(true);
+  });
+
+  it("refuses upload and hover while a person controls the browser", async () => {
+    const relayCommand = vi.fn(async () => ({ success: true, data: {} }));
+    const value = runtime({ relayCommand });
+    await value.agentRpc("s", spec(), "tools/list", {});
+    await value.take("s", "owner");
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: BROWSER_HOVER_TOOL, arguments: { selector: "#menu" } })).rejects.toThrow(/paused/);
+    expect(relayCommand).not.toHaveBeenCalled();
   });
 
   it("lets the agent restart an interrupted browser itself, then resume", async () => {
@@ -531,7 +569,7 @@ describe("server-owned browser MCP runtime", () => {
         content: [{ text: expect.stringMatching(/restart_browser/) }],
       });
       const listed = await value.agentRpc("s", spec(), "tools/list", {}) as { tools: Array<{ name: string }> };
-      expect(listed.tools.map((tool) => tool.name)).toEqual(["echo", "restart_browser"]);
+      expect(listed.tools.map((tool) => tool.name)).toEqual(["echo", BROWSER_UPLOAD_TOOL, BROWSER_HOVER_TOOL, "restart_browser"]);
       const check = vi.fn();
       await expect(value.agentRpc("s", spec(), "tools/call", { name: "restart_browser", arguments: {} }, check))
         .resolves.toMatchObject({ content: [{ text: expect.stringContaining("Browser restarted") }] });
