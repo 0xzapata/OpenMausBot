@@ -1,9 +1,4 @@
 // @vitest-environment happy-dom
-// The USB hook separates "a check finished" from "a check answered": `scanned`
-// latches on failure too, and only the status' own reasonCode tells a real
-// empty list apart from an adb failure. Overlapping checks may answer out of
-// order, so a superseded check is dropped whole. The panel's persistence gate
-// reads all of this, so this file locks that contract.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";

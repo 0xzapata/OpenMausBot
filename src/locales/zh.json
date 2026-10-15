@@ -1934,6 +1934,7 @@
   "routines.scheduleNote.server": "在这台服务器运行时运行。",
   "computer.tab.android": "Android",
   "computer.tab.browser": "浏览器",
+  "computer.tabsAria": "机器人面板视图",
   "computer.screenOf": "{name} 的屏幕",
   "computer.badge.local": "这台电脑",
   "computer.badge.vps": "自托管 VPS",

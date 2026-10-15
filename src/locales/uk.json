@@ -1668,6 +1668,7 @@
   "routines.scheduleNote.server": "Виконується, поки працює цей сервер.",
   "computer.tab.android": "Android",
   "computer.tab.browser": "Браузер",
+  "computer.tabsAria": "Перегляд панелі бота",
   "computer.screenOf": "Екран {name}",
   "computer.badge.local": "цей комп'ютер",
   "computer.badge.vps": "самохостний VPS",

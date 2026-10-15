@@ -3351,6 +3351,7 @@
   "computer.tab.browser": "Browser",
   "computer.tab.data": "Data",
   "computer.tab.files": "Files",
+  "computer.tabsAria": "Bot panel view",
   "computer.fullScreen": "Full screen",
   "computer.browserOff.title": "The browser is off",
   "computer.browserOff.body": "Turn on the built-in browser to watch {name} browse the web, and take over any time.",

@@ -8,15 +8,11 @@ type UnitPoint = { x: number; y: number };
 
 const EMPTY_STATUS: AndroidDeviceStatus = { available: false, devices: [] };
 
-/** USB Android discovery result with a completion flag for the first scan. */
 export type AndroidUsbDevicesStatus = AndroidDeviceStatus & {
-  /** Whether a device check has finished, successfully or not. Callers must
-   *  still read `reasonCode` before trusting an empty device list. */
+  /** A check has finished, successfully or not; read `reasonCode` before trusting an empty list. */
   scanned: boolean;
 };
 
-/** Polls the native Android USB bridge; `scanned` marks a finished check so
- *  callers can tell "no device" apart from "not asked yet". */
 export function useAndroidUsbDevices(): AndroidUsbDevicesStatus {
   const bridge = window.ogb?.androidDevice;
   const [status, setStatus] = useState<AndroidDeviceStatus>(EMPTY_STATUS);
@@ -25,16 +21,13 @@ export function useAndroidUsbDevices(): AndroidUsbDevicesStatus {
 
   useEffect(() => {
     if (!bridge) {
-      // No native bridge: USB discovery can never produce devices, so the
-      // empty list is already the final answer.
       setScanned(true);
       return;
     }
     // Every tick is an adb subprocess, so nothing runs while hidden.
     if (!pageVisible) return;
     let alive = true;
-    // adb checks overlap and can answer out of order, so a check older than
-    // the last one that landed is discarded, completion included.
+    // Overlapping adb checks can answer out of order; an older answer is dropped.
     let issued = 0;
     let answered = 0;
     const refresh = async () => {

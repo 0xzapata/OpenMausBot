@@ -1,11 +1,4 @@
 // @vitest-environment happy-dom
-// An empty device list is the first thing Android discovery reports and also
-// the answer to a failed or missing adb, so the persisted panel view may only
-// fall back once a check finished without a failure reason. The fallback also
-// reads the persisted view when it runs, so a focus effect that persisted a
-// newer view wins. These cases drive the real hook through a fake native
-// bridge, so the contract the panel reads is the one the hook actually
-// produces.
 import { act, createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -41,7 +34,8 @@ vi.mock("./CloudBackendPicker", () => ({ CloudBackendPicker: () => null }));
 vi.mock("./bot-settings/RoutinesSection", () => ({ RoutinesSection: () => null }));
 vi.mock("./data/DataPanel", () => ({ DataPanel: () => createElement("div", { "data-testid": "data-panel" }) }));
 const panelViewStore = vi.hoisted(() => ({ current: "computer" }));
-vi.mock("@/lib/computer-panel-view", () => ({
+vi.mock("@/lib/computer-panel-view", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/computer-panel-view")>(),
   readComputerPanelView: () => panelViewStore.current,
   writeComputerPanelView: (_botId: string, view: string) => {
     panelViewStore.current = view;

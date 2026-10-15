@@ -2949,6 +2949,7 @@
   "computer.tab.browser": "ブラウザー",
   "computer.tab.data": "データ",
   "computer.tab.files": "ファイル",
+  "computer.tabsAria": "ボットパネルの表示",
   "computer.fullScreen": "フルスクリーン",
   "computer.browserOff.title": "ブラウザーはオフです",
   "computer.browserOff.body": "内蔵ブラウザーをオンにすると、{name} が Web を閲覧する様子を確認でき、いつでも操作を引き継げます。",

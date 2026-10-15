@@ -1,5 +1,17 @@
 export type ComputerPanelView = "computer" | "android" | "browser" | "routines" | "files" | "data";
 
+type PanelTabsContext = { advanced: boolean; androidConnected: boolean };
+
+export function computerPanelTabs({ advanced, androidConnected }: PanelTabsContext): ComputerPanelView[] {
+  return advanced
+    ? ["computer", "routines", ...(androidConnected ? (["android"] as const) : []), "browser", "data"]
+    : ["computer", "browser", "data", "files"];
+}
+
+export function resolveComputerPanelView(view: ComputerPanelView, context: PanelTabsContext): ComputerPanelView {
+  return computerPanelTabs(context).includes(view) ? view : "computer";
+}
+
 const STORAGE_PREFIX = "omb-computer-panel-view";
 
 function storageKey(botId: string): string {
