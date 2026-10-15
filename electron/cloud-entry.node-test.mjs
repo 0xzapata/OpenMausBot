@@ -114,7 +114,7 @@ test("a consumed launch link is not replayed by the companion or updater relaunc
   takeCloudDeepLink(argv);
   const calls = [];
   runInNewContext(`${between("function relaunchAfterDesktopRemoteChange()", 'ipcMain.handle("desktop-remote:state"')}\nrelaunchAfterDesktopRemoteChange();`, {
-    process: { argv }, setTimeout: callback => { callback(); return {}; },
+    desktopShutdownStarted: false, process: { argv }, setTimeout: callback => { callback(); return {}; },
     app: { relaunch: options => calls.push(options.args), quit: () => {} },
   });
   const patched = patchOrganizationUpdater("      relaunch() {\n        this.app.relaunch();\n      }");
@@ -143,14 +143,34 @@ test("startup delivers a pending Cloud link before default navigation", () => {
 test("the Cloud entry checks the owned server, waits for the saved sign-in, and never asks", () => {
   const entry = between("async function openCloudEntry()", "\n}\n");
   const guard = entry.indexOf("if (!serverReady) throw new Error(");
-  const restored = entry.indexOf("await Promise.race([cloudAccountStarted, ");
+  const restored = entry.indexOf("await cloudAccountRestored();");
   assert.ok(guard !== -1 && restored > guard);
+  assert.match(between("function cloudAccountRestored()", "\n}\n"), /Promise\.race\(\[cloudAccountStarted, new Promise\(resolve => setTimeout\(resolve, 5_000\)/);
   for (const action of ["createWindow(", "persistEnvironments(", "win.webContents.send(", "win.loadURL("]) {
     assert.ok(entry.indexOf(action) > restored, `${action} must follow the server guard and the restore`);
   }
   assert.ok(entry.indexOf("if (desktopRemoteAccess) throw") < guard, "companion client mode is not changed by the link");
-  // Owner rule: no app-side approval prompt, and nothing but the fixed action reaches the page.
   assert.doesNotMatch(entry, /dialog\.|confirm/);
-  assert.deepEqual([...entry.matchAll(/webContents\.send\(([^)]*)\)/g)].map(match => match[1]), ['"app:open-settings", "cloud"']);
-  assert.deepEqual([...entry.matchAll(/loadURL\((.*)\);/g)].map(match => match[1]), ["`${rendererOrigin()}/?desktop-settings=cloud`"]);
+  assert.match(entry, /const action = cloudAccount\?\.checkoutPending\(\) \? "cloud-add" : "cloud";/);
+  assert.deepEqual([...entry.matchAll(/webContents\.send\(([^)]*)\)/g)].map(match => match[1]), ['"app:open-settings", action']);
+  assert.deepEqual([...entry.matchAll(/loadURL\((.*)\);/g)].map(match => match[1]), ["`${rendererOrigin()}/?desktop-settings=${action}`"]);
+});
+
+test("Add a Cloud… is decided in main: someone with a Cloud gets the native box and stays put; anyone else gets the dialog on this computer's page", () => {
+  const add = between("async function openCloudAdd(source)", "\n}\n");
+  assert.ok(add.indexOf("if (!cloudOffersAllowed() || !serverReady) return;") < add.indexOf("await cloudAccountRestored();"));
+  const box = add.indexOf("if (cloudOwned(state)) { await anotherCloudBox(state); return; }");
+  assert.ok(box > add.indexOf("await cloudAccountRestored();"));
+  for (const action of ["persistEnvironments(", "createWindow(", "win.webContents.send(", "win.loadURL("]) assert.ok(add.indexOf(action) > box, `${action} after the box`);
+  assert.ok(add.indexOf("persistEnvironments(withActive(environmentsState, LOCAL_ID))") < add.indexOf("win.webContents.send("));
+  assert.match(add, /const action = source === "app_howto" \? "cloud-add-howto" : "cloud-add";/);
+  assert.deepEqual([...add.matchAll(/webContents\.send\(([^)]*)\)/g)].map(match => match[1]), ['"app:open-settings", action']);
+  assert.deepEqual([...add.matchAll(/loadURL\((.*)\);/g)].map(match => match[1]), ["`${rendererOrigin()}/?desktop-settings=${action}`"]);
+  assert.match(between("function cloudOwned(state)", "\n}\n"), /state\?\.status === "connected" && state\.entitlement\?\.plan === "pro" && state\.entitlement\.status === "active"/);
+  const native = between("async function anotherCloudBox(state)", "\n}\n");
+  assert.match(native, /message: "You already have My Cloud"/);
+  assert.match(native, /buttons: \["Email me when it’s ready", "Open My Cloud", "Cancel"\]/);
+  assert.match(native, /await ensureCloudAccount\(\)\.interest\("another_cloud"\);/);
+  assert.match(between("function cloudOffersAllowed()", "\n}\n"), /return app\.isPackaged && !desktopRemoteAccess && brandedBuild === false;/);
+  assert.match(between("async function readCloudOfferBrand()", "\n}\n"), /fetch\(`http:\/\/127\.0\.0\.1:\$\{SERVER_PORT\}\/api\/brand`/);
 });

@@ -1,17 +1,13 @@
-// One voice note in the transcript: a play button, a scrub bar, and the
-// clip's length. Playback rides the Speaker's one-voice rule — pressing
-// play claims the window's voice, so call-mode speech (or another note)
-// takes over by pausing this element rather than talking over it.
+// No playback during a Live call: the call's microphone would pick the note up.
 import { useEffect, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 
 import { attachmentAudioUrl } from "@/lib/composer-attachments";
 import { t } from "@/lib/i18n";
+import { isLiveCallRunning, useLiveMedia } from "@/lib/live-call-media";
 import { speaker } from "@/lib/tts";
 import { cn } from "@/lib/cn";
 
-/** The wire's audio attachment shape (shared/wire.ts): a parked clip plus
- * the server's duration estimate, used until the element loads metadata. */
 export interface VoiceNoteAttachment {
   kind: "audio";
   path: string;
@@ -36,16 +32,14 @@ export function VoiceNoteBubble({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const releaseRef = useRef<(() => void) | null>(null);
   const [playing, setPlaying] = useState(false);
-  // metadata estimate first, real duration once the element loads it
   const [duration, setDuration] = useState<number | null>(
     typeof attachment.durationMs === "number" && attachment.durationMs > 0
       ? attachment.durationMs / 1000
       : null,
   );
   const [time, setTime] = useState(0);
+  const onLiveCall = isLiveCallRunning(useLiveMedia().phase);
 
-  // Release the claim on unmount: a gone bubble cannot be paused again, and
-  // the singleton must not keep a callback into a dead element.
   useEffect(() => () => releaseRef.current?.(), []);
 
   if (!url) return null;
@@ -59,20 +53,19 @@ export function VoiceNoteBubble({
   const toggle = () => {
     const audio = audioRef.current;
     if (!audio) return;
-    // the element's own paused state, not the playing flag: media play
-    // events are queued, so a second click before onPlay fires must still
-    // read as "playing" and pause instead of claiming and playing again
+    // The element's paused state, not the flag: play events are queued, so a second click before onPlay must still
+    // pause.
     if (!audio.paused) {
       audio.pause();
       return;
     }
-    // claim before play: the Speaker's stop() path silences call mode and
-    // any other note first, then this element takes the voice
+    if (onLiveCall) return;
+    // Claim before play: the Speaker's stop() silences call mode and any other note first.
     releaseRef.current?.();
     const release = speaker.claimExternalVoice(() => audio.pause());
     releaseRef.current = release;
-    // a refused play() never fires pause, so the claim comes back here —
-    // but only if this attempt's claim is still the active one
+    // A refused play() never fires pause, so the claim comes back here, if this attempt's claim is still the active
+    // one.
     void audio.play().catch(() => giveBackVoice(release));
   };
 
@@ -98,8 +91,7 @@ export function VoiceNoteBubble({
         onTimeUpdate={(event) => setTime(event.currentTarget.currentTime)}
         onPlay={() => setPlaying(true)}
         onPause={(event) => {
-          // a queued pause can land after playback already resumed; only
-          // a pause that stuck gives the voice back
+          // A queued pause can land after playback already resumed.
           if (!event.currentTarget.paused) return;
           setPlaying(false);
           giveBackVoice();
@@ -112,9 +104,10 @@ export function VoiceNoteBubble({
       <button
         type="button"
         onClick={toggle}
-        aria-label={playing ? t("chat.voiceNote.pause") : t("chat.voiceNote.play")}
-        title={playing ? t("chat.voiceNote.pause") : t("chat.voiceNote.play")}
-        className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-opacity hover:opacity-90"
+        disabled={onLiveCall && !playing}
+        aria-label={playing ? t("chat.voiceNote.pause") : onLiveCall ? t("chat.voiceNote.onLiveCall") : t("chat.voiceNote.play")}
+        title={playing ? t("chat.voiceNote.pause") : onLiveCall ? t("chat.voiceNote.onLiveCall") : t("chat.voiceNote.play")}
+        className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-opacity hover:opacity-90 disabled:opacity-40"
       >
         {playing ? <Pause size={13} className="fill-current" /> : <Play size={13} className="translate-x-px fill-current" />}
       </button>
