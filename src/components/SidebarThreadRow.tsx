@@ -17,6 +17,7 @@ type ThreadRowTask = Pick<Task, "threadId" | "title" | "projectId" | "busy" | "a
   pinned?: boolean;
   createdAt?: number;
   updatedAt?: number;
+  lastThreadOrderAt?: number;
 };
 
 export function formatUpdatedAt(at: number): string {
@@ -48,13 +49,13 @@ export function threadRecency(task: { updatedAt?: number; createdAt?: number }):
   return 0;
 }
 
-export function orderedThreadList<T extends { pinned?: boolean; updatedAt?: number; createdAt?: number }>(tasks: T[]): T[] {
+export function orderedThreadList<T extends { pinned?: boolean; lastThreadOrderAt?: number; createdAt?: number }>(tasks: T[]): T[] {
   return tasks
     .map((task, index) => ({ task, index }))
     .sort((a, b) => {
       const pin = Number(b.task.pinned === true) - Number(a.task.pinned === true);
       if (pin) return pin;
-      const recency = threadRecency(b.task) - threadRecency(a.task);
+      const recency = (b.task.lastThreadOrderAt ?? b.task.createdAt ?? 0) - (a.task.lastThreadOrderAt ?? a.task.createdAt ?? 0);
       if (recency) return recency;
       return a.index - b.index;
     })

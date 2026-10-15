@@ -33,6 +33,7 @@ import type {
   OptionCardData, TaskClosedBy, TaskOpenedBy, TaskUsage, WireBot, WireGroup,
   WireMessage, WireTask, BotProject as BotProjectRecord,
 } from "../shared/wire.ts";
+import { movesThreadToTop } from "../shared/wire.ts";
 import { parseConnectorTools } from "./connector-tools.ts";
 import { sameModelSelection } from "../shared/thread-model.ts";
 export type {
@@ -742,20 +743,12 @@ export class Store {
   }
 
   /** In memory only: message writes must not rewrite bots.json. */
-  private noteThreadActivity(threadId: string, at: number): void {
+  private noteThreadActivity(threadId: string, at: number, forOrder = false, orderAt = at): void {
     if (!Number.isFinite(at)) return;
-    const advance = (current: number | undefined) => Math.max(current ?? 0, at);
-    for (const bot of this.bots) {
-      const task = bot.tasks?.find((candidate) => candidate.threadId === threadId);
+    for (const task of [...this.bots, ...this.groups].map((owner) => owner.tasks?.find((candidate) => candidate.threadId === threadId))) {
       if (!task) continue;
-      const next = advance(task.updatedAt);
-      if (task.updatedAt !== next) task.updatedAt = next;
-    }
-    for (const group of this.groups) {
-      const task = group.tasks?.find((candidate) => candidate.threadId === threadId);
-      if (!task) continue;
-      const next = advance(task.updatedAt);
-      if (task.updatedAt !== next) task.updatedAt = next;
+      task.updatedAt = Math.max(task.updatedAt ?? 0, at);
+      if (forOrder) task.lastThreadOrderAt = Math.max(task.lastThreadOrderAt ?? 0, orderAt);
     }
   }
 
@@ -764,16 +757,20 @@ export class Store {
     const botTasks = this.bots.flatMap((bot) => bot.tasks ?? []);
     const groupTasks = this.groups.flatMap((group) => group.tasks ?? []);
     const latest = mdb.latestMessageAts([...botTasks, ...groupTasks].map((task) => task.threadId));
+    const latestOrder = mdb.latestMessageAts([...botTasks, ...groupTasks].map((task) => task.threadId), true);
     let botsDirty = false;
     let groupsDirty = false;
-    const repair = (task: { threadId: string; createdAt: number; updatedAt?: number }) => {
+    const repair = (task: { threadId: string; createdAt: number; updatedAt?: number; lastThreadOrderAt?: number }) => {
       const fromMessages = latest.get(task.threadId);
       const next = fromMessages !== undefined && (task.updatedAt === undefined || fromMessages > task.updatedAt)
         ? fromMessages
         : task.updatedAt ?? task.createdAt;
-      if (task.updatedAt === next) return false;
+      const fromOrder = latestOrder.get(task.threadId);
+      const orderAt = fromOrder === undefined ? task.lastThreadOrderAt : Math.max(task.lastThreadOrderAt ?? task.createdAt, fromOrder);
+      const changed = task.updatedAt !== next || task.lastThreadOrderAt !== orderAt;
       task.updatedAt = next;
-      return true;
+      task.lastThreadOrderAt = orderAt;
+      return changed;
     };
     for (const task of botTasks) if (repair(task)) botsDirty = true;
     for (const task of groupTasks) if (repair(task)) groupsDirty = true;
@@ -1307,7 +1304,8 @@ export class Store {
     mdb.importThread(threadId, messages, activeLeafId);
     this.threads.delete(threadId);
     const newest = messages.reduce((max, message) => Math.max(max, message.at), Number.NEGATIVE_INFINITY);
-    if (Number.isFinite(newest)) this.noteThreadActivity(threadId, newest);
+    const newestOrder = messages.reduce((max, message) => movesThreadToTop(message) ? Math.max(max, message.turnCompletedAt ?? message.at) : max, Number.NEGATIVE_INFINITY);
+    if (Number.isFinite(newest)) this.noteThreadActivity(threadId, newest, Number.isFinite(newestOrder), newestOrder);
   }
 
   activeLeaf(threadId: string): string | null {
@@ -1332,7 +1330,7 @@ export class Store {
       const message = path[i];
       if (message.role === "bot" && message.kind === "text" && message.turnId === turnId) {
         if (message.turnTerminal) return message;
-        return this.patchMessage(threadId, message.id, { turnTerminal: true });
+        return this.patchMessage(threadId, message.id, { turnTerminal: true, turnCompletedAt: Date.now() });
       }
     }
     return null;
@@ -1352,7 +1350,7 @@ export class Store {
         this.emit({ type: "message.patch", threadId, message: pruned });
       }
     }
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, movesThreadToTop(full), full.turnCompletedAt ?? full.at);
     this.emit({ type: "message", threadId, message: full });
     if (full.role === "user" && full.kind === "text") this.dismissOnboardingCard(threadId);
     return full;
@@ -1372,7 +1370,7 @@ export class Store {
         this.emit({ type: "message.patch", threadId, message: pruned });
       }
     }
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, movesThreadToTop(full), full.turnCompletedAt ?? full.at);
     this.emit({ type: "message", threadId, message: full });
     // After the insert, so no client ever sees two siblings claiming the same parent.
     for (const child of children) this.patchMessage(threadId, child.id, { parentId: full.id });
@@ -1422,7 +1420,7 @@ export class Store {
     t.messages.push(full);
     t.activeLeafId = full.id;
     mdb.appendMessage(threadId, full);
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, true);
     this.emit({ type: "message", threadId, message: full });
     // A client adopts a new message as its leaf only when it chains onto its leaf; a sibling needs this pointer.
     this.emit({ type: "thread", threadId, activeLeafId: full.id });
@@ -1454,6 +1452,7 @@ export class Store {
     const persist = () => { mdb.updateMessage(threadId, next); applied = true; return next; };
     const committed = command ? runCommand(command, persist) : persist();
     if (!applied) return committed;
+    if (!movesThreadToTop(t.messages[idx]) && movesThreadToTop(next)) this.noteThreadActivity(threadId, next.at, true, next.turnCompletedAt ?? next.at);
     t.messages[idx] = next;
     this.emit({ type: "message.patch", threadId, message: next });
     return next;
