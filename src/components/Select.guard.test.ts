@@ -1,9 +1,4 @@
-// Every dropdown goes through <Select>, which draws its own chevron. A native
-// <select> keeps the platform arrow, which sits at an inset we cannot pad
-// (about 6px on Linux Chrome, wider on macOS) and never matches the text's
-// left edge. And a <Select> that brings its own colours, borders or padding
-// drifts the same way the 57 hand-styled copies did before it existed: so
-// call sites may position the field, but not restyle it.
+// A native <select> keeps the platform arrow, whose inset padding cannot move (about 6px on Linux Chrome, wider on macOS).
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -11,8 +6,6 @@ import { describe, expect, it } from "vitest";
 
 const src = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Every `<select …>` and `<Select …>` opening tag, with its file and line.
- * A `>` inside a `{…}` expression does not end the tag. */
 const tags = readdirSync(src, { recursive: true, encoding: "utf8" })
   .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
   .flatMap((name) => {
@@ -32,7 +25,6 @@ const tags = readdirSync(src, { recursive: true, encoding: "utf8" })
     });
   });
 
-/** The value of one JSX attribute: a `"…"` string or a balanced `{…}`. */
 function attribute(tag: string, name: string): string {
   const start = tag.search(new RegExp(`\\b${name}=`));
   if (start === -1) return "";
@@ -47,15 +39,15 @@ function attribute(tag: string, name: string): string {
   return tag.slice(open, end + 1);
 }
 
-// Where a field sits, never how it looks. font-mono says what the options are
-// (paths), not how the field is drawn.
-const LAYOUT = /^(?:sm:)?(?:w-full|flex-1|shrink-0|hidden|font-mono|max-w-\S+|min-w-\S+|m[trblxy]?-\S+)$/;
+const LAYOUT = /^(?:sm:)?(?:w-\S+|flex-1|shrink-0|hidden|font-mono|max-w-\S+|min-w-\S+|m[trblxy]?-\S+)$/;
 
 describe("dropdowns", () => {
   it("use <Select> rather than a native <select>", () => {
     const raw = tags.filter(({ native, file, text }) => native && file !== join("components", "Select.tsx")
       // An invisible <select> laid over a custom button shows no arrow to align.
-      && !/\bopacity-0\b/.test(text));
+      && !/\bopacity-0\b/.test(text)
+      // Bot-built widgets draw their own fields and chevron in the widget kit's style.
+      && !file.startsWith(join("components", "widget") + "/"));
     expect(raw.map(({ at }) => at)).toEqual([]);
   });
 

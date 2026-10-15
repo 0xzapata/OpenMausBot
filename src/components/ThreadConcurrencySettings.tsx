@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { t } from "@/lib/i18n";
-import { Select } from "./Select";
 import { Card } from "./SettingsPrimitives";
+import { Select } from "./Select";
 
 export function ThreadConcurrencySettings() {
   const { state, dispatch } = useStore();
@@ -31,10 +31,9 @@ export function ThreadConcurrencySettings() {
   return (
     <Card title={t("settings.threads.title")} subtitle={t("settings.threads.subtitle")}>
       <label htmlFor="thread-concurrency" className="block text-[13px] font-medium text-ink">{t("settings.threads.label")}</label>
-      <Select id="thread-concurrency" value={pending ?? confirmed} disabled={pending !== null}
+      <Select className="mt-2" id="thread-concurrency" value={pending ?? confirmed} disabled={pending !== null}
         aria-describedby="thread-concurrency-help"
-        onChange={(event) => void save(Number(event.target.value))}
-        className="mt-2">
+        onChange={(event) => void save(Number(event.target.value))}>
         {Array.from({ length: 10 }, (_, i) => i + 1).map((limit) => <option key={limit} value={limit}>{limit}</option>)}
       </Select>
       <p id="thread-concurrency-help" className="mt-2 text-[12px] leading-relaxed text-ink-secondary">{t("settings.threads.help")}</p>
