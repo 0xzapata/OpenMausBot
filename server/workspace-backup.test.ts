@@ -230,7 +230,8 @@ describe("encrypted full workspace backups", () => {
     } finally { db.close(); }
   });
 
-  it("brings a Windows computer's data folder over wherever it is written, and clears and lists the folders and files left on that PC", async () => {
+  // A Windows PC moves to a Linux Cloud; restored on Windows, its paths are this computer's own and are kept.
+  it.skipIf(process.platform === "win32")("brings a Windows computer's data folder over wherever it is written, and clears and lists the folders and files left on that PC", async () => {
     const source = directory();
     const windows = "C:\\Users\\Ada\\.openmausbot", site = "C:\\Users\\Ada\\Projects\\site";
     const soul = `Read ${windows}\\files\\brief.md before you start.`;
