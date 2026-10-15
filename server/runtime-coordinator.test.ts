@@ -502,6 +502,10 @@ describe("RuntimeCoordinator: read models", () => {
     expect(w.coordinator.activeDirect("builder-work")).toBe(false);
     const { node: b } = send(w, chief, "gen-1", undefined, builder, "Build it");
     const { node: r } = send(w, chief, "gen-1", undefined, inRoom("scout"), "Scout it");
+    // The close_thread guard must see queued work before a dispatch tick.
+    expect(w.coordinator.node(b.id)?.status).toBe("queued");
+    expect(w.coordinator.activeDirect("builder-work")).toBe(true);
+    expect(w.host.runs).toHaveLength(0);
     w.coordinator.tick();
     expect(w.coordinator.activeDirect("builder-work")).toBe(true);
     expect(w.coordinator.activeDirect("chief-chat")).toBe(true);

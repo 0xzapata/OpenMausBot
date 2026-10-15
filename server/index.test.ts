@@ -9026,7 +9026,7 @@ describe("harness HTTP API", () => {
   it("keeps skill authoring on by default and persists an explicit opt-out", async () => {
     const before = await api("GET", "/api/config");
     expect(before.status).toBe(200);
-    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, llmThreadTitles: true });
+    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
     const untouched = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     expect(untouched.features?.skillAuthoring).toBeUndefined();
     expect(untouched.features?.skillReview).toBeUndefined();
@@ -9036,7 +9036,7 @@ describe("harness HTTP API", () => {
       features: { skillAuthoring: false },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, llmThreadTitles: true });
+    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
 
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     // Earlier browser coverage may have persisted its own toggle: opting out must preserve sibling settings.
@@ -9044,7 +9044,7 @@ describe("harness HTTP API", () => {
 
     const tools = await api("PATCH", "/api/config", { features: { showToolCalls: true } });
     expect(tools.status).toBe(200);
-    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, showToolCalls: true, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, llmThreadTitles: true });
+    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: true, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
 
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     try {
@@ -11042,6 +11042,59 @@ describe("harness HTTP API", () => {
       held?.close();
       await api("DELETE", `/api/bots/${sender.id}`);
       await api("DELETE", `/api/bots/${victim.id}`);
+    }
+  });
+
+  it("stages learned skill references on the card and explains the SKILL.md size cap", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { skillAuthoring: true });
+      const post = (body: Record<string, unknown>) => fetch(`${BASE}/api/internal/skills/stage`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, source: "conversation", ...body }),
+      });
+      const skillMd = (extra = "") =>
+        `---\nname: expense-rules\ndescription: Applies the expense rules.\n---\n\n# Expense rules\n\nFor edge cases, read references/edge-cases.md.\n${extra}`;
+      const latestCard = async () => {
+        const messages = (await api("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id).messages;
+        return messages.filter((message: any) => message.card?.skillRequest?.name === "expense-rules").at(-1).card;
+      };
+
+      expect((await post({ action: "create", skill_md: skillMd() })).status).toBe(201);
+      const tooBig = await post({ action: "update", skill_name: "expense-rules", skill_md: skillMd("- one more rule\n".repeat(2_500)) });
+      expect(tooBig.status).toBe(422);
+      expect(((await tooBig.json()) as { error: string }).error).toMatch(
+        /at most 32KB; this SKILL\.md is \d+\.\dKB, the current version is 0\.\dKB\. .*references\/<topic>\.md/,
+      );
+
+      const moved = await post({
+        action: "update",
+        skill_name: "expense-rules",
+        skill_md: skillMd("Rules moved out.\n"),
+        references: [{ path: "references/edge-cases.md", content: "# Edge cases\n\n- one more rule\n" }],
+      });
+      expect(moved.status).toBe(201);
+      expect(await moved.json()).toMatchObject({ state: "applied", action: "update" });
+      const card = await latestCard();
+      expect(card.skillRequest.references).toEqual([{ path: "references/edge-cases.md", content: "# Edge cases\n\n- one more rule\n" }]);
+      expect(card.skillRequest.referencesSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(card.subtitle).toContain("1 reference file");
+      const reference = join(home, ".openmausbot", "workspaces", bot.id, ".agents", "skills", "expense-rules", "references", "edge-cases.md");
+      expect(readFileSync(reference, "utf8")).toContain("one more rule");
+
+      // Undo puts back the version without references.
+      expect(await api("POST", `/api/threads/${bot.threadId}/undo`, { requestId: card.requestId }))
+        .toMatchObject({ status: 200, body: { undone: true } });
+      expect(existsSync(reference)).toBe(false);
+
+      expect((await post({ action: "update", skill_name: "expense-rules", skill_md: skillMd("x\n"), references: "nope" })).status).toBe(400);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
 

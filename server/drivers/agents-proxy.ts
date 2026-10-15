@@ -6,14 +6,17 @@
 //   OMB_TURN_DEPTH  this turn's comms depth (the harness refuses recursion)
 //   OMB_EXTERNAL_RUNTIME  "1" for a standing process: oversized results are cut instead of cached
 //   OMB_CHIEF_OF_STAFF  "1" for a Chief of Staff, the only bot shown the Chief-only tools
-// scripts/bundle-server.mjs inlines agents-catalog/-call/-client into this file, which the harness spawns.
+//   OMB_AGENTS_TOOL_BRIDGE  "1" lists a few tools and puts the rest behind find_tool and use_tool
+// scripts/bundle-server.mjs inlines agents-catalog/-call/-client/-bridge into this file, which the harness spawns.
 import readline from "node:readline";
 
+import { TOOL_BRIDGE_ENV, createToolBridge } from "./agents-bridge.ts";
 import { availableTools, catalogProfileFromEnv } from "./agents-catalog.ts";
 import { callTool, capResult, toolCallContextFromEnv } from "./agents-call.ts";
 import type { Json } from "./agents-client.ts";
 
 const AVAILABLE_TOOLS = availableTools(catalogProfileFromEnv(process.env));
+const BRIDGE = process.env[TOOL_BRIDGE_ENV] === "1" ? createToolBridge(AVAILABLE_TOOLS) : undefined;
 const CONTEXT = toolCallContextFromEnv(process.env);
 
 const send = (msg: Json) => process.stdout.write(JSON.stringify(msg) + "\n");
@@ -42,13 +45,21 @@ async function handle(msg: Json) {
       ok(id, {});
       return;
     case "tools/list":
-      ok(id, { tools: AVAILABLE_TOOLS });
+      ok(id, { tools: BRIDGE ? BRIDGE.listed : AVAILABLE_TOOLS });
       return;
     case "tools/call": {
-      const name = params.name as string;
-      if (!AVAILABLE_TOOLS.some((t) => t.name === name)) return rpcErr(id, -32602, `Unknown tool: ${name}`);
+      const called = { name: params.name as string, arguments: (params.arguments ?? {}) as Json };
+      // Security: past the bridge a use_tool call is a direct call: same unknown-tool check, callTool and result bounds.
+      const bridged = BRIDGE ? await BRIDGE.route(called.name, called.arguments) : undefined;
+      if (bridged && "answer" in bridged) return textResult(id, bridged.answer.text, bridged.answer.isError);
+      const { name, arguments: args } = bridged ?? called;
+      if (!AVAILABLE_TOOLS.some((t) => t.name === name)) {
+        // A name written into use_tool fails the call, not the protocol: the chat runtime ends a turn on a protocol error.
+        const unknown = `Unknown tool: ${name}`;
+        return bridged ? textResult(id, unknown, true) : rpcErr(id, -32602, unknown);
+      }
       try {
-        const { text, isError, passthrough } = await callTool(name, (params.arguments ?? {}) as Json, CONTEXT);
+        const { text, isError, passthrough } = await callTool(name, args, CONTEXT);
         if (passthrough) ok(id, passthrough);
         else textResult(id, name === "tool_result_read" ? text : await capResult(text, CONTEXT), isError);
       } catch (e) {

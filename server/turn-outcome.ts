@@ -46,6 +46,12 @@ export class TurnStops {
     return stop && (!turnId || !stop.turnId || stop.turnId === turnId) ? stop : undefined;
   }
 
+  /** The turn's own last error, else the provider's stop token; undefined for a turn that did not fail. */
+  failureCause(event: { threadId: string; turnId?: string; ok: boolean; stopReason?: string | null }): string | undefined {
+    if (event.ok) return undefined;
+    return this.read(event.threadId, event.turnId)?.error ?? (event.stopReason?.trim() || undefined);
+  }
+
   forget(threadId: string): void {
     this.#byThread.delete(threadId);
   }

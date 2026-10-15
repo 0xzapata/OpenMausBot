@@ -160,6 +160,18 @@ describe("buildMcpServers", () => {
     expect(() => buildMcpServers({ threadId: "bad", text: "Stop", toolScope: { allow: null } as never })).toThrow(/tool selection/i);
     expect(buildMcpServers({ threadId: "native", text: "Draft", toolScope: { allow: ["native:read", "native:write"] }, integrations: { agents: { command: "node", args: [], env: {} } } })).toBeNull();
   });
+  it("gates a URL server that has its own result limit, and only that one", () => {
+    const url = { type: "http" as const, url: "https://mcp.example.test/mcp", headers: {} };
+    const servers = buildMcpServers({ threadId: "t", text: "hi", integrations: {
+      custom: { motion: { ...url }, shop: { ...url } },
+      customResultBudgets: { motion: 40_000 },
+    } }) as Record<string, { args: string[]; env: Record<string, string> }>;
+    expect(servers.motion.env.OMB_GATE_BUDGET).toBe("40000");
+    expect(servers.motion.args[0]).toContain("mcp-gate");
+    expect(servers.shop.env).not.toHaveProperty("OMB_GATE_BUDGET");
+    expect(servers.shop.args[0]).toContain("mcp-remote-proxy");
+  });
+
   it("returns null when there are no integrations", () => {
     expect(buildMcpServers({ threadId: "t", text: "hi" })).toBeNull();
   });

@@ -3,6 +3,7 @@
 // exact saved commands and remembered MCP read tools, and Approve for me's web search. A bot's question always reaches a human.
 
 import { supportsApprovalMode, type ApprovalMode } from "../shared/approval-mode.ts";
+import { failedTurnTool, type FailedTurnTool } from "../shared/failed-turn.ts";
 import { isOutboundTool } from "../shared/outbound.ts";
 import type { ProviderAdapter, RequestOutcome } from "./contracts.ts";
 
@@ -78,6 +79,7 @@ export type AutoVerdictSource =
   | "native-approval"
   | "explicit-approval-block"
   | "outbound-guard"
+  | "safety-floor"
   | "no-grant";
 
 export interface AutoVerdict {
@@ -112,6 +114,17 @@ export function autoVerdict(
   }
   if (mode === "auto" || mode === "custom") return { approve: null, source: "native-approval" };
   return { approve: null, source: "no-grant" };
+}
+
+/** `unavailable` and `allowed-once` have no transcript row, so callers do not ask for one. */
+export function undeliveredApprovalTool(
+  outcome: Exclude<RequestOutcome, "allowed-once" | "unavailable"> | "failed",
+  source: AutoVerdictSource,
+): FailedTurnTool | { name: string; ok: false } {
+  if (outcome !== "rejected") return failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting.");
+  const grant = source === "command-allowlist" ? "the saved command permission"
+    : source === "tool-allowlist" ? "the saved tool permission" : "Full access";
+  return { name: `The provider rejected this action despite ${grant}.`, ok: false };
 }
 
 /** The client translates by key and falls back to this text, which the server keeps sending for older cards. */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { gateServer, mcpStdioServer } from "./mcp-gate-config.ts";
+import { customServerGate, gateServer, hasOwnResultBudget, mcpStdioServer, resultBudget, serverResultBudget } from "./mcp-gate-config.ts";
+import { DEFAULT_RESULT_BUDGET } from "./mcp-trim.ts";
 
 const server = { command: "example-mcp", args: ["--stdio"], env: { TOKEN: "disposable-test-token" } };
 const input = { name: "notes", server, threadId: "disposable-thread", budget: 0 };
@@ -20,6 +21,23 @@ describe("MCP scope configuration", () => {
   it("rejects malformed scopes and unmountable scoped servers instead of returning a bypass", () => {
     expect(() => gateServer({ ...input, toolScope: { allow: null } as never })).toThrow(/tool selection/i);
     expect(() => gateServer({ ...input, server: {}, toolScope: { allow: [] } })).toThrow(/MCP server/i);
+  });
+});
+
+describe("result budget", () => {
+  it("uses a server's own budget, else the environment's, else the default", () => {
+    expect(resultBudget({})).toBe(DEFAULT_RESULT_BUDGET);
+    expect(serverResultBudget("motion", { motion: 40_000 }, {})).toBe(40_000);
+    // 0 is a real setting (never trim), not a missing one
+    expect(serverResultBudget("motion", { motion: 0 }, { OMB_MCP_RESULT_BUDGET: "12000" })).toBe(0);
+    expect(serverResultBudget("notes", { motion: 40_000 }, { OMB_MCP_RESULT_BUDGET: "12000" })).toBe(12_000);
+    expect(serverResultBudget("notes", undefined, {})).toBe(DEFAULT_RESULT_BUDGET);
+    // an inherited name is not a setting
+    expect(serverResultBudget("toString", {}, {})).toBe(DEFAULT_RESULT_BUDGET);
+  });
+
+  it("hands the gate the budget it was given", () => {
+    expect(gateServer({ ...input, budget: 40_000 })!.env.OMB_GATE_BUDGET).toBe("40000");
   });
 });
 
@@ -110,5 +128,26 @@ describe("tool directory configuration", () => {
     expect(JSON.parse(plain.env.OMB_GATE_UPSTREAM).env).not.toHaveProperty("OMB_REMOTE_MCP_DIRECTORY");
     expect(gateServer({ ...input, toolScope: { allow: [] }, directory: true })!.env).not.toHaveProperty("OMB_GATE_DIRECTORY");
     expect(gateServer({ name: "whop", server: remote, threadId: "disposable-thread", budget: 8_000, directory: true })).toBeNull();
+  });
+
+  it("gates an unselected URL server only when its own result limit is set", () => {
+    expect(hasOwnResultBudget("whop", { whop: 40_000 })).toBe(true);
+    expect(hasOwnResultBudget("whop", { whop: 0 })).toBe(false);
+    expect(hasOwnResultBudget("whop", { other: 40_000 })).toBe(false);
+    expect(hasOwnResultBudget("whop", undefined)).toBe(false);
+    const gated = gateServer({ name: "whop", server: remote, threadId: "disposable-thread", budget: 40_000, gateRemote: true, directory: true })!;
+    expect(gated.env.OMB_GATE_BUDGET).toBe("40000");
+    expect(gated.env).not.toHaveProperty("OMB_GATE_TOOL_SCOPE");
+    expect(JSON.parse(gated.env.OMB_GATE_UPSTREAM).args[0]).toContain("mcp-remote-proxy");
+    // 0 = never trim: nothing to gate
+    expect(gateServer({ name: "whop", server: remote, threadId: "disposable-thread", budget: 0, gateRemote: true })).toBeNull();
+  });
+
+  it("gives a person's own server its limit and leaves an engine's server alone", () => {
+    const env = { OMB_MCP_RESULT_BUDGET: "12000" };
+    expect(customServerGate("whop", true, { whop: 40_000 }, env)).toEqual({ budget: 40_000, gateRemote: true });
+    expect(customServerGate("whop", true, { whop: 0 }, env)).toEqual({ budget: 0, gateRemote: false });
+    expect(customServerGate("notes", true, { whop: 40_000 }, env)).toEqual({ budget: 12_000, gateRemote: false });
+    expect(customServerGate("whop", false, { whop: 40_000 }, env)).toEqual({ budget: 0, gateRemote: false });
   });
 });

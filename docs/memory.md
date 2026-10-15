@@ -198,8 +198,84 @@ hooks start) and with the shell and every other tool off; it uses the
 smallest model the account lists (GPT-6 Luna) at low effort, since it runs
 on the person's own plan, and is dropped the moment Codex reports a tool
 call. The text goes only to the provider the bot already uses. On any other
-engine (Pi, for now) the panel says so — under Memory upkeep and under
-Learn from group chats — and only the expiry and exact-duplicate steps run.
+engine (Pi and Muse Code, for now) the panel says so — under Memory upkeep
+and under Learn from group chats — and only the expiry and exact-duplicate
+steps run, unless a helper model is set.
+
+### The helper model
+
+A helper model fills the gaps an engine leaves. It is one connected provider
+instance, and optionally one of its models, that writes a small background
+text a bot's own engine cannot write:
+
+- memory upkeep's steps and the automatic skill review, for an engine with no
+  quick text call at all (Pi and Muse Code, for now);
+- the summary written when a long conversation is compacted, for those
+  engines and for Codex and the ACP engines too. Their own quick call starts
+  a whole agent process, so it is kept for background work and a turn never
+  waits on it; without a helper they keep a summary made of excerpts.
+
+A bot whose own engine can write a job always writes it itself; the helper
+never takes its place.
+
+It is off unless you set it. Add it to `config.json`; the server follows the
+file, so adding the helper or taking it out again applies without a restart:
+
+```json
+{ "helper": { "instanceId": "claude", "model": "claude-haiku-4-5" } }
+```
+
+or set `OMB_HELPER_INSTANCE` (and, if you want, `OMB_HELPER_MODEL`) in the
+server's environment before it starts. The environment wins over the file,
+and an empty `OMB_HELPER_INSTANCE` switches a saved helper off. `instanceId` is the id of
+a connected instance as `config.json` and `GET /api/instances` name it, such
+as `claude`, `claudeApi`, `openai` or `openrouter`; it has to be Claude or an
+API model, the engines with a quick text call of their own. `model` is
+optional: without it the instance uses the model it already uses for quick
+calls. There is no Settings screen for this yet, and Settings still describes
+each engine by its own abilities: the line under **Learn skills
+automatically** that says bots on an engine won't learn skills this way does
+not know about the helper.
+
+**What leaves the bot's provider.** With a helper set, the text those jobs
+read is sent to the helper's provider, which may not be the one the bot runs
+on: the turns being captured and the bot's memory notes, the history being
+summarised, and the conversation and skills under review. That is why it is
+opt-in. It applies to every bot whose engine cannot write the job, including
+one you run on a local model, unless you keep that bot off the helper (below).
+An engine your organisation does not allow is never used as the helper, and
+on a hosted workspace only a model assigned to it is.
+
+**Keeping one bot off the helper.** Any bot can be switched to never use the
+helper model: send `PATCH /api/bots/<bot id>` with `{ "helperModel": false }`
+(there is no Settings switch for it yet). From its next job on, the helper
+writes none of that bot's own jobs: not its compaction summary, not its memory
+upkeep, not its skill review. For those three the bot gets what it would get
+with no helper set.
+
+The switch covers that bot's own jobs and nothing else. What the bot says in
+a room, or in reply to a teammate, becomes part of the other bots'
+conversations. Their engines read it, and so does whatever writes their
+background jobs, the helper included. The switch does not change that. To
+keep a bot's text on the machine, run it on a local model, switch it off the
+helper, and keep it out of rooms and teams with bots that are not set up the
+same way.
+
+The switch is saved with the bot, and a copy made with **Duplicate** keeps
+it. It travels in a full workspace backup and in a team backup, the two
+exports that hold a bot's notes and chats, so a restored bot stays off the
+helper. A shared team package carries no personal settings and does not carry
+this one.
+
+A helper that is missing, switched off, failing or slow breaks nothing: the
+job falls back exactly as it does with no helper (an excerpt summary, no
+capture, no review), and the server log says once why the helper is not
+used. The one job a turn waits for is the compaction summary, and a helper
+that hangs holds it for at most the summary's usual 20 seconds. Helper calls
+count toward the monthly spend limit and stop at it. Each is its own row in
+**Settings → Usage → History**, for the bot it wrote for, with the helper's
+engine and model: group by **Person** to see them together as *Helper
+model*, which is also what the CSV's `triggered_by` column says.
 
 ## Editing
 

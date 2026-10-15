@@ -212,20 +212,27 @@ export async function discoverSkillDirs(target: Target, fetcher: typeof fetch): 
   return found;
 }
 
+/** Entries that are not downloaded come back path-only (empty content) so the install lists them as skipped. */
 export async function fetchSkillDir(target: Target, dir: string, fetcher: typeof fetch): Promise<FetchedSkill> {
   const entries = await listDir(target, dir, fetcher);
-  const markdown = entries
-    .filter((entry) => entry.type === "file" && /\.md$/i.test(entry.name) && entry.download_url)
-    .slice(0, MAX_FILES);
+  const markdown = entries.filter((entry) => entry.type === "file" && /\.md$/i.test(entry.name) && entry.download_url);
   if (!markdown.some((entry) => entry.name === "SKILL.md")) {
     throw new Error(`no SKILL.md in ${dir || "the repository root"}`);
   }
+  const downloadable = [
+    markdown.find((entry) => entry.name === "SKILL.md")!,
+    ...markdown.filter((entry) => entry.name !== "SKILL.md").slice(0, MAX_FILES - 1),
+  ];
   const files: FetchedSkill["files"] = [];
-  for (let i = 0; i < markdown.length; i += 4) {
-    files.push(...await Promise.all(markdown.slice(i, i + 4).map(async (entry) => ({
+  for (let i = 0; i < downloadable.length; i += 4) {
+    files.push(...await Promise.all(downloadable.slice(i, i + 4).map(async (entry) => ({
       path: entry.name,
       content: await fetchText(entry.download_url!, fetcher),
     }))));
+  }
+  for (const entry of entries) {
+    if (downloadable.includes(entry)) continue;
+    files.push({ path: entry.type === "dir" ? `${entry.name}/` : entry.name, content: "" });
   }
   const ref = target.ref ? `@${target.ref}` : "";
   return { source: `github.com/${target.owner}/${target.repo}${ref}/${dir}`.replace(/\/$/, ""), files };
