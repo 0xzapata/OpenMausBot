@@ -521,3 +521,60 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 7
+
+  browser-driver:
+    needs: static
+    if: needs.static.outputs.runtime == 'true'
+    # Advisory, outside the CI gate until it has run green for a while: the
+    # omb-cdp S4 conformance suites on the runner's own Google Chrome (PRs run
+    # Linux and Windows; main pushes, merge groups and manual runs add macOS,
+    # as for the vitest shards), then on Linux inside the server image's
+    # runtime as a non-root user. Every suite also fails when its trace holds
+    # Runtime.enable or another forbidden CDP method (docs/ci.md).
+    name: browser driver S4 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.static.outputs.vitest_os) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Let Chrome build its sandbox on this runner, and give it a display
+        # Ubuntu 24.04 restricts unprivileged user namespaces; Chrome's own
+        # documented fix for 23.10+. The sandbox itself stays on.
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update && sudo apt-get install -y xvfb
+      - name: S4 on the runner's Google Chrome
+        # The headed-identity case needs a display, which Linux runners get from Xvfb.
+        env:
+          OMB_CDP_E2E: "1"
+        shell: bash
+        run: |
+          run=(pnpm exec vitest run server/browser/cdp/s4- --reporter=verbose --silent=false --reporter=github-actions)
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a "${run[@]}"; else "${run[@]}"; fi
+      - name: S4 inside the server image's runtime, as its own user
+        # maus, with its real home, as the server runs there. The image's
+        # Chrome for Testing has no setuid sandbox helper yet, so this leg
+        # runs with the operator opt-out; the host legs keep the sandbox.
+        # Vitest writes its bundled config beside it and its cache under
+        # node_modules/.vite, so those two places are opened to maus. It runs
+        # even when the host leg failed: they test different Chromes.
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: |
+          docker build --target runtime -t omb-runtime:s4 .
+          mkdir -p node_modules/.vite && chmod a+w . node_modules/.vite
+          docker run --rm --init --shm-size=512m --user maus -e CI=true \
+            -e OMB_CDP_CHROME=/opt/openmausbot-browser/chrome -e OMB_CDP_HOST=container -e OMB_BROWSER_SANDBOX=0 \
+            -v "$PWD:/src" -w /src omb-runtime:s4 \
+            node node_modules/vitest/vitest.mjs run server/browser/cdp/s4- --reporter=verbose --silent=false
