@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -36,7 +36,7 @@ it("sums up the synced folders and the disk", () => {
   const { sync, folder } = setup();
   const summary = sync.summary();
   expect(summary.folders).toEqual([folder]);
-  expect(summary.disk).toEqual({ totalBytes: 10 * GB, freeBytes: 9 * GB, syncedBytes: 0, botFileBytes: 0, trashBytes: 0, reserveBytes: GB });
+  expect(summary.disk).toEqual({ totalBytes: 10 * GB, freeBytes: 9 * GB, syncedBytes: 0, botFileBytes: 0, trashBytes: 0, reserveBytes: 2 * GB });
   expect(typeof summary.cursor).toBe("number");
 });
 
@@ -72,12 +72,12 @@ it("refuses bytes that do not match their hash, and a commit over a version it h
   expect(sync.trash().entries).toMatchObject([{ path: "a.txt", size: 2 }]);
 });
 
-it("answers 507 when a file would leave less than 1 GB free", async () => {
-  const { sync, folder } = setup({ freeBytes: GB + 10 });
+it("answers 507 when a file would leave less than the reserve free (2 GB, or 15% of a bigger disk)", async () => {
+  const { sync, folder } = setup({ freeBytes: 2 * GB + 10 });
   expect(sync.beginUpload(folder.id, { path: "small", size: 10, sha256: sha("x"), baseSha256: null }).received).toBe(0);
   try { sync.beginUpload(folder.id, { path: "big", size: 11, sha256: sha("y"), baseSha256: null }); throw new Error("accepted"); }
   // The open upload of "small" still has its 10 bytes to land, so it counts against the reserve too.
-  catch (error) { expect((error as SyncError).status).toBe(507); expect((error as SyncError).body).toMatchObject({ neededBytes: 11 + 10 + GB, freeBytes: GB + 10 }); }
+  catch (error) { expect((error as SyncError).status).toBe(507); expect((error as SyncError).body).toMatchObject({ neededBytes: 11 + 10 + 2 * GB, freeBytes: 2 * GB + 10 }); }
 });
 
 it("answers 410 when a folder's copy is gone, and can delete a folder's copy to the trash", async () => {
@@ -102,17 +102,12 @@ it("serves a file with its hash", async () => {
   expect(await status(() => sync.download(folder.id, "../escape"))).toBe(400);
 });
 
-it("deletes into the trash and moves, only over the version the desktop saw", async () => {
+it("deletes into the trash only over the version the desktop saw, and does nothing else", async () => {
   const { sync, folder } = setup();
   await put(sync, folder.id, "deep/a.txt", "one", null);
-  await put(sync, folder.id, "b.txt", "two", null);
-  const { results } = await sync.ops(folder.id, { ops: [
-    { op: "delete", path: "deep/a.txt", baseSha256: sha("stale") },
-    { op: "move", from: "b.txt", to: "moved/b.txt", sha256: sha("two") },
-  ] });
+  const { results } = await sync.ops(folder.id, { ops: [{ op: "delete", path: "deep/a.txt", baseSha256: sha("stale") }] });
   expect(results[0]).toMatchObject({ conflict: true, current: { sha256: sha("one") } });
-  expect(results[1]).toEqual({ ok: true });
-  expect(readFileSync(join(folder.cloudPath, "moved", "b.txt"), "utf8")).toBe("two");
+  expect(await status(() => sync.ops(folder.id, { ops: [{ op: "move", from: "deep/a.txt", to: "b.txt", sha256: sha("one") }] }))).toBe(400);
   expect((await sync.ops(folder.id, { ops: [{ op: "delete", path: "deep/a.txt", baseSha256: sha("one") }] })).results).toEqual([{ ok: true }]);
   expect(existsSync(join(folder.cloudPath, "deep"))).toBe(false);
   expect(sync.trash().entries.map((entry) => entry.path)).toEqual(["deep/a.txt"]);
@@ -146,13 +141,22 @@ it("answers a long poll as soon as a folder changes, and every folder for a curs
   expect(quiet).toEqual({ cursor: settled.cursor, folderIds: [] });
 });
 
-it("notices a file a bot writes straight into a synced folder", async () => {
-  const { sync, folder } = setup();
+it("a bot's turn ending wakes the desktop's long poll for that bot's folder", async () => {
+  const { sync } = setup();
   const signal = new AbortController().signal;
   const { cursor } = await sync.changes(0, 60_000, signal);
   const waiting = sync.changes(cursor, 5_000, signal);
-  writeFileSync(join(folder.cloudPath, "from-a-bot.md"), "written by a bot");
-  expect((await waiting).folderIds).toContain(folder.id);
+  sync.noteBotTurn("owl", "t1");
+  expect((await waiting).folderIds).toEqual(["bot-owl-t1"]);
+});
+
+it("a copy from the person's computer is read-only for bots", async () => {
+  const { sync, folder } = setup();
+  await put(sync, folder.id, "brief.md", "the brief", null);
+  expect(statSync(join(folder.cloudPath, "brief.md")).mode & 0o777).toBe(0o444);
+  // The desktop still replaces it: the folder, not the file, decides that.
+  await put(sync, folder.id, "brief.md", "v2", sha("the brief"));
+  expect(readFileSync(join(folder.cloudPath, "brief.md"), "utf8")).toBe("v2");
 });
 
 it("answers 503 for a folder part or a file it cannot read, rather than leaving it out of the listing", async () => {
@@ -211,8 +215,8 @@ it("turning off with delete trashes synced files, keeps what sync never carried,
   expect(readFileSync(join(outside, "x.txt"), "utf8")).toBe("not synced");
 });
 
-it("counts open uploads against the 1 GB reserve", () => {
-  const { sync, folder } = setup({ freeBytes: GB + 100 });
+it("counts open uploads against the reserve", () => {
+  const { sync, folder } = setup({ freeBytes: 2 * GB + 100 });
   sync.beginUpload(folder.id, { path: "a", size: 60, sha256: sha("a"), baseSha256: null });
   expect(() => sync.beginUpload(folder.id, { path: "b", size: 60, sha256: sha("b"), baseSha256: null })).toThrow(SyncError);
 });

@@ -1,13 +1,13 @@
-// Sync with My Cloud end to end: the full server as a Cloud home over its real HTTP boundary, and the desktop's sync
-// service driving it, with the owner's pairing token standing in for the desktop window's Cloud cookie. No network.
+// Files end to end: the full server as a Cloud home over its real HTTP boundary, and the desktop's Files service
+// driving it, with the owner's pairing token standing in for the desktop window's Cloud cookie. No network.
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { createCloudSyncService } from "../electron/cloud-sync.mjs";
+import { createCloudFilesService } from "../electron/cloud-sync.mjs";
 import { cloudPairingSignature } from "./cloud-home.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { freePortBlock } from "./testing/ports.ts";
@@ -103,71 +103,77 @@ afterAll(async () => {
 const desktopFetch = (url: string, init: RequestInit & { headers?: Record<string, string> } = {}) =>
   fetch(url.replace(PC_ORIGIN, base), { ...init, headers: { ...init.headers, host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https", authorization: `Bearer ${ownerToken}` } });
 
-function desktop(pcHome: string, bots: unknown[] = []) {
-  return createCloudSyncService({
+function desktop(pcHome: string) {
+  return createCloudFilesService({
     settingsFile: join(pcHome, "user", "settings.json"), stateFile: join(pcHome, "user", "state.db"),
     documentsDir: join(pcHome, "Documents"), localDataDir: join(pcHome, ".openmausbot"), homeDir: pcHome, platform: process.platform, hostname: "Ash-PC",
-    cloudOrigin: () => PC_ORIGIN, fetch: desktopFetch as typeof fetch, localBots: async () => ({ bots, groups: [] }),
-    growDisk: async () => null, planDisk: () => null, trashItem: async (file: string) => rmSync(file), watch: () => () => {},
-    now: () => Date.now() + 60_000,
+    cloudOrigin: () => PC_ORIGIN, fetch: desktopFetch as typeof fetch, trashItem: async (file: string) => rmSync(file), markDownloaded: async () => {},
+    watch: () => () => {}, now: () => Date.now() + 60_000,
   });
 }
 
-it("syncs a linked PC folder both ways, keeps both on a clash, trashes and restores, and points the Cloud bot at the copy", async () => {
-  const pcHome = mkdtempSync(join(tmpdir(), "omb-sync-pc-"));
-  const project = join(pcHome, "Clients", "Acme");
+it("shares a PC folder as a read-only copy: changes go to My Cloud, a bot's edit there is replaced, a delete goes to the trash", async () => {
+  const pcHome = realpathSync(mkdtempSync(join(tmpdir(), "omb-files-pc-")));
+  const project = join(pcHome, "Clients");
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, "brief.md"), "the brief");
-  const created = await api("POST", "/api/bots", { body: { name: "Sync fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } } });
+  const created = await api("POST", "/api/bots", { body: { name: "Files fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } } });
   expect(created.status, JSON.stringify(created.body)).toBe(201);
-  const botId = created.body.bot.id as string;
-  const service = desktop(pcHome, [{ id: botId, name: "Sync fixture", cwd: project, tasks: [] }]);
+  const service = desktop(pcHome);
   try {
-    await service.setEnabled(true);
-    await service.pass();
-    expect(service.state().phase, JSON.stringify(service.state())).toBe("synced");
-    const synced = join(home, "Synced", "Ash-PC", "Acme");
-    expect(readFileSync(join(synced, "brief.md"), "utf8")).toBe("the brief");
+    await service.share(project);
+    expect(service.state().shared.map((folder) => folder.status), JSON.stringify(service.state())).toEqual(["synced"]);
+    const copy = join(home, "Synced", "Ash-PC", "Clients");
+    expect(readFileSync(join(copy, "brief.md"), "utf8")).toBe("the brief");
+    expect(statSync(join(copy, "brief.md")).mode & 0o222).toBe(0);
+    // The Cloud bot is not pointed anywhere: it keeps its own folder.
     const bots = await api("GET", "/api/bots?messages=0");
-    expect(bots.body.bots.find((bot: { id: string }) => bot.id === botId).cwd).toBe(synced);
+    expect(bots.body.bots.find((bot: { id: string }) => bot.id === created.body.bot.id).cwd ?? null).toBe(null);
 
-    writeFileSync(join(synced, "from-a-bot.md"), "made on My Cloud");
+    chmodSync(join(copy, "brief.md"), 0o644);
+    writeFileSync(join(copy, "brief.md"), "a bot's edit");
+    writeFileSync(join(copy, "notes-by-a-bot.md"), "its own file");
     await service.pass();
-    expect(readFileSync(join(project, "from-a-bot.md"), "utf8")).toBe("made on My Cloud");
+    expect(readFileSync(join(copy, "brief.md"), "utf8")).toBe("the brief");
+    expect(readFileSync(join(copy, "notes-by-a-bot.md"), "utf8")).toBe("its own file");
+    expect(existsSync(join(project, "notes-by-a-bot.md"))).toBe(false);
 
-    writeFileSync(join(project, "brief.md"), "PC edit");
+    writeFileSync(join(project, "brief.md"), "v2");
     utimesSync(join(project, "brief.md"), new Date(Date.now() - 10_000), new Date(Date.now() - 5_000));
-    writeFileSync(join(synced, "brief.md"), "bot edit");
     await service.pass();
-    expect(readFileSync(join(project, "brief.md"), "utf8")).toBe("bot edit");
-    const clash = readdirSync(project).find((name) => name.startsWith("brief (PC copy, "))!;
-    expect(readFileSync(join(project, clash), "utf8")).toBe("PC edit");
-    expect(readFileSync(join(synced, clash), "utf8")).toBe("PC edit");
+    expect(readFileSync(join(copy, "brief.md"), "utf8")).toBe("v2");
 
-    rmSync(join(project, "from-a-bot.md"));
+    rmSync(join(project, "brief.md"));
     await service.pass();
-    expect(existsSync(join(synced, "from-a-bot.md"))).toBe(false);
-    const [entry] = await service.trash();
-    expect(entry!.path).toBe("from-a-bot.md");
-    await service.restore(entry!.id);
-    await service.pass();
-    expect(readFileSync(join(project, "from-a-bot.md"), "utf8")).toBe("made on My Cloud");
+    // The only file gone: the person is asked first.
+    expect(service.state().shared[0]!.status).toBe("confirm-deletes");
+    await service.answerDeletes(service.state().shared[0]!.id, true);
+    expect(existsSync(join(copy, "brief.md"))).toBe(false);
+    expect((await api("GET", "/api/sync/trash")).body.entries.map((entry: { path: string }) => entry.path)).toContain("brief.md");
   } finally {
     service.close();
     rmSync(pcHome, { recursive: true, force: true });
   }
 }, 60_000);
 
-it("brings a bot's conversation folder down to Documents/MausBot", async () => {
-  const pcHome = mkdtempSync(join(tmpdir(), "omb-sync-pc-"));
+it("a bot's turn wakes the desktop, and its new work comes down to Documents/MausBot/<bot>/<conversation>", async () => {
+  const pcHome = realpathSync(mkdtempSync(join(tmpdir(), "omb-files-pc-")));
   const created = await api("POST", "/api/bots", { body: { name: "Report Owl", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } } });
   const bot = created.body.bot as { id: string; threadId: string };
-  const output = join(home, ".openmausbot", "task-workspaces", bot.id, bot.threadId);
-  mkdirSync(output, { recursive: true });
-  writeFileSync(join(output, "report.md"), "# Q3");
   const service = desktop(pcHome);
   try {
-    await service.setEnabled(true);
+    await service.pass();
+    const output = join(home, ".openmausbot", "task-workspaces", bot.id, bot.threadId);
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "report.md"), "# Q3");
+    const later = new Date(Date.now() + 120_000);
+    utimesSync(join(output, "report.md"), later, later);
+    // A turn ending on My Cloud is what tells the desktop's long poll.
+    const headers = { host: HOST, "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https", authorization: `Bearer ${ownerToken}` };
+    const { cursor } = await (await fetch(`${base}/api/sync/changes?cursor=0&waitMs=0`, { headers })).json() as { cursor: number };
+    const woken = fetch(`${base}/api/sync/changes?cursor=${cursor}&waitMs=20000`, { headers }).then((response) => response.json() as Promise<{ folderIds: string[] }>);
+    expect((await api("POST", `/api/bots/${bot.id}/messages`, { body: { text: "write the report" } })).status).toBe(202);
+    expect((await woken).folderIds).toContain(`bot-${bot.id}-${bot.threadId}`);
     await service.pass();
     const owl = join(pcHome, "Documents", "MausBot", "Report Owl");
     const [conversation] = readdirSync(owl);

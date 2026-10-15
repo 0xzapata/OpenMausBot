@@ -17,7 +17,7 @@ const LISTED_FROM = 1000;
 const LINES: Record<string, number> = {
   "server/index.ts": 17692,
   "src/state/store.tsx": 3641,
-  "electron/main.mjs": 3522,
+  "electron/main.mjs": 3520,
   "server/store.ts": 2479,
   "src/components/Sidebar.tsx": 2647,
   "server/drivers/claude.ts": 2194,

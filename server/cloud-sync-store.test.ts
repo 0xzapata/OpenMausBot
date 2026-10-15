@@ -55,7 +55,7 @@ it("offers a bot's conversation folder only once it holds a file", () => {
   writeFileSync(join(dataDir, "task-workspaces", "bot1", "thread2", "node_modules", "x.js"), "skipped");
   expect(store.botFolders()).toEqual([]);
   writeFileSync(join(dataDir, "task-workspaces", "bot1", "thread1", "report.md"), "# Report");
-  expect(store.botFolders()).toEqual([{ id: "bot-bot1-thread1", kind: "bot", botId: "bot1", threadId: "thread1", cloudPath: join(dataDir, "task-workspaces", "bot1", "thread1") }]);
+  expect(store.botFolders()).toEqual([{ id: "bot-bot1-thread1", kind: "bot", botId: "bot1", threadId: "thread1", cloudPath: join(dataDir, "task-workspaces", "bot1", "thread1"), newestMs: expect.any(Number) }]);
 });
 
 it("resolves a path only inside its folder, never through a link", () => {
