@@ -23,7 +23,8 @@ export interface CloudFilesState {
 /** A folder the person picked, checked on this computer before anything is shared. `token` stands for its path in `share`. */
 export interface FolderCheck {
   token: string; name: string; pcPath: string; files: number; bytes: number; partial: boolean;
-  refusal: null | "not-a-folder" | "too-broad" | "app-data" | "already-shared";
+  /** "private": a folder of keys or settings (.ssh, .aws, Library, AppData…), never shared. */
+  refusal: null | "not-a-folder" | "too-broad" | "app-data" | "already-shared" | "private";
 }
 export interface CloudFilesBridge {
   state(): Promise<CloudFilesState>;
