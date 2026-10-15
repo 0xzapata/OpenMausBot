@@ -12,6 +12,11 @@ authentication, and runtime temporary-folder behavior from T3 Code, Copyright
 Selected-text citation matching adapts T3 Code's assistant citation selection,
 Copyright 2026 T3 Tools Inc., used under the MIT License.
 
+Prompt-cache keep-warm (server/cache-keepwarm.ts and
+server/drivers/claude-keepwarm.ts) ports the design of Cache Tax,
+https://github.com/karanb192/claude-code-mods, Copyright (c) 2026 Karan
+Bansal, used under the MIT License (third_party/cache-tax/LICENSE).
+
 The secure phone credential transport uses @hpke/core and @hpke/common from
 hpke-js, Copyright 2023-2024 Ajitomi Daisuke, used under the MIT License.
 

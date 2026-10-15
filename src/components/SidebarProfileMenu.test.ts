@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   phoneMenuItems,
   profileInitials,
+  profileMenuItems,
   selectPhoneDestination,
   profileLabel,
   updateBusy,
@@ -66,20 +67,15 @@ describe("updatePhase", () => {
     expect(updatePhase(null, false)).toBe("idle");
   });
 
-  // the acknowledgement is only for a genuinely quiet result — a found
-  // update must not be papered over by a stale "up to date"
   it("lets a real status outrank the acknowledgement", () => {
-    expect(updatePhase(state({ status: "available" }), true)).toBe("available");
+    expect(updatePhase(state({ status: "downloading" }), true)).toBe("downloading");
   });
 });
 
 describe("updateLabel", () => {
-  it("names the version it found and the one it is ready to install", () => {
-    expect(updateLabel("available", state({ status: "available", version: "0.2.0" }))).toBe(
-      "Version 0.2.0 available — download",
-    );
+  it("names the version it is ready to install", () => {
     expect(updateLabel("downloaded", state({ status: "downloaded", version: "0.2.0" }))).toBe(
-      "Version 0.2.0 ready — restart",
+      "OpenMausBot 0.2.0 ready — restart",
     );
   });
 
@@ -93,7 +89,7 @@ describe("updateLabel", () => {
     expect(updateLabel("installing", state({ status: "installing", message: "Restart is taking longer than expected." })))
       .toBe("Restart is taking longer than expected.");
     expect(updateLabel("downloaded", state({ status: "downloaded", version: "0.2.0", installMode: "handoff" })))
-      .toBe("Version 0.2.0 ready — install");
+      .toBe("OpenMausBot 0.2.0 ready — install");
     expect(updateLabel("installing", state({ status: "installing", installMode: "handoff" })))
       .toBe("Opening a terminal…");
   });
@@ -123,16 +119,13 @@ describe("updateBusy", () => {
     expect(updateBusy("downloading")).toBe(true);
     expect(updateBusy("preparing")).toBe(true);
     expect(updateBusy("installing")).toBe(true);
-    expect(updateBusy("available")).toBe(false);
     expect(updateBusy("downloaded")).toBe(false);
     expect(updateBusy("idle")).toBe(false);
   });
 
-  // the click starts a round-trip through main; until it lands, the status
-  // still reads "available" and the row would otherwise invite a second click
   it("blocks the gap between the click and the bridge catching up", () => {
-    expect(updateBusy("available", true)).toBe(true);
     expect(updateBusy("downloaded", true)).toBe(true);
+    expect(updateBusy("error", true)).toBe(true);
   });
 });
 
@@ -148,7 +141,6 @@ describe("platformLabel", () => {
 
 describe("updateNoteworthy", () => {
   it("puts a real update on the profile row", () => {
-    expect(updateNoteworthy("available")).toBe(true);
     expect(updateNoteworthy("downloading")).toBe(true);
     expect(updateNoteworthy("preparing")).toBe(true);
     expect(updateNoteworthy("downloaded")).toBe(true);
@@ -157,8 +149,6 @@ describe("updateNoteworthy", () => {
     expect(updateNoteworthy("handed-off")).toBe(true);
   });
 
-  // a check the user started from inside the open menu is answered there;
-  // badging the row for it would flash at someone already looking elsewhere
   it("leaves a quiet updater quiet", () => {
     expect(updateNoteworthy("idle")).toBe(false);
     expect(updateNoteworthy("checking")).toBe(false);
@@ -171,8 +161,6 @@ describe("updateNoteworthy", () => {
 });
 
 describe("outward links", () => {
-  // both were pointed somewhere else once; pin them so a future tidy-up of
-  // app-links does not quietly send Help back to the README
   it("sends Help Center to the docs the website also links to", () => {
     expect(HELP_CENTER_URL).toBe(DOCS_URL);
     expect(DOCS_URL).toBe("https://github.com/milind-soni/OpenMausBot/tree/main/docs");
@@ -190,8 +178,6 @@ describe("the phone entries", () => {
   const paid = (tier: string, machine?: CloudMachine): CloudAccountState => ({ ...signedIn, entitlement: { plan: "pro", tier, status: "active", expiresAt: null, version: 1 }, ...(machine ? { machine } : {}) });
   const ready: CloudMachine = { status: "ready", origin: "https://home-7f3k2.fly.dev" };
   const free: CloudAccountState = { ...signedIn, entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 1 } };
-  /** The menu as SidebarProfileMenu builds it: this window's pairing, plus the
-   * person's Cloud as the native snapshot reports it (only read on this computer). */
   const items = (target: PhonePairingTarget, access: PhonePairingAccess | null, account: CloudAccountState | null = null, connected = false) => {
     const onConnect = vi.fn(), onGetApp = vi.fn();
     const destinations = phoneDestinations(connectPhoneEntry(target, access), cloudPhoneDestination(account));
@@ -207,7 +193,7 @@ describe("the phone entries", () => {
   it("on this computer with a paid Cloud that is Ready: both, the Cloud first", () => {
     for (const tier of ["personal", "pro", "max"]) {
       expect(shown("computer", null, paid(tier, ready))).toEqual([
-        ["Connect your phone", "to your Cloud (always on)"],
+        ["Connect your phone", "to My Cloud (always on)"],
         ["Connect your phone", "to this computer"],
         APP,
       ]);
@@ -218,7 +204,6 @@ describe("the phone entries", () => {
     for (const account of [free, { status: "signed-out" } as CloudAccountState, null]) {
       expect(shown("computer", null, account)).toEqual([["Connect your phone", "to this computer"], APP]);
     }
-    // a lapsed plan, or one this app cannot verify right now, is not offered either
     expect(shown("computer", null, { ...paid("pro", ready), entitlement: { plan: "pro", status: "inactive", expiresAt: null, version: 2 } }))
       .toEqual([["Connect your phone", "to this computer"], APP]);
     expect(shown("computer", null, { status: "unavailable", lastPlan: { tier: "pro", active: true }, machine: ready }))
@@ -228,17 +213,16 @@ describe("the phone entries", () => {
   it("on this computer with a paid Cloud that is not Ready: only this computer, and a hint", () => {
     for (const machine of [undefined, { status: "provisioning" }, { status: "stopped", origin: ready.origin }, { status: "failed", origin: ready.origin }] as Array<CloudMachine | undefined>) {
       expect(shown("computer", null, paid("pro", machine))).toEqual([
-        ["Connect your phone", "to this computer", "Your Cloud shows here once it is ready."],
+        ["Connect your phone", "to this computer", "My Cloud shows here once it is ready."],
         APP,
       ]);
     }
   });
 
-  it("on the person's own Cloud: unchanged, one Connect your phone to your Cloud", () => {
-    expect(shown("cloud", admin)).toEqual([["Connect your phone", "to your Cloud"], APP]);
-    // whatever the account says, the Cloud is never offered a second time from itself
-    expect(shown("cloud", admin, paid("max", ready))).toEqual([["Connect your phone", "to your Cloud"], APP]);
-    expect(shown("cloud", admin, paid("max"))).toEqual([["Connect your phone", "to your Cloud"], APP]);
+  it("on the person's own Cloud: unchanged, one Connect your phone to My Cloud", () => {
+    expect(shown("cloud", admin)).toEqual([["Connect your phone", "to My Cloud"], APP]);
+    expect(shown("cloud", admin, paid("max", ready))).toEqual([["Connect your phone", "to My Cloud"], APP]);
+    expect(shown("cloud", admin, paid("max"))).toEqual([["Connect your phone", "to My Cloud"], APP]);
   });
 
   it("on another server: to this server, and gone for a session that cannot make a pairing code", () => {
@@ -280,7 +264,7 @@ describe("choosing where the phone connects", () => {
   const readyCloud: CloudAccountState = { status: "connected", entitlement: { plan: "pro", status: "active", expiresAt: null, version: 1 }, machine: { status: "ready", origin: "https://home-7f3k2.fly.dev" } };
   const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
 
-  it("to your Cloud opens the Cloud on its phone pairing, as Use your Cloud on your phone does, sending nothing", async () => {
+  it("to My Cloud opens the Cloud on its phone pairing, as Use My Cloud on your phone does, sending nothing", async () => {
     const bridge = { connectHomeForPhone: vi.fn().mockResolvedValue({ status: "connected" }) };
     const dispatch = vi.fn();
     selectPhoneDestination(destinations(readyCloud)[0]!, { bridge, dispatch });
@@ -289,7 +273,7 @@ describe("choosing where the phone connects", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("when the Cloud cannot be opened, lands on Settings → OMB Cloud, which says what to do", async () => {
+  it("when the Cloud cannot be opened, lands on Settings → MausBot Cloud, which says what to do", async () => {
     const bridge = { connectHomeForPhone: vi.fn().mockRejectedValue(new Error("offline")) };
     const dispatch = vi.fn();
     selectPhoneDestination(destinations(readyCloud)[0]!, { bridge, dispatch });
@@ -332,18 +316,57 @@ describe("Get the phone app", () => {
     expect(html).toContain("Download the APK");
     expect(html).toContain("Connect your phone");
     expect(html).toContain("to this computer");
-    // nothing to pair with here: the dialog only says where the app is
     expect(render()).not.toContain("Connect your phone");
     expect(render([])).not.toContain("Connect your phone");
   });
 
   it("offers every destination the menu does, in the same order", () => {
-    const html = render([to("cloud", "to your Cloud (always on)"), to("here", "to this computer")]);
+    const html = render([to("cloud", "to My Cloud (always on)"), to("here", "to this computer")]);
     expect(html.indexOf('data-phone-app-connect="cloud"')).toBeGreaterThan(-1);
     expect(html.indexOf('data-phone-app-connect="cloud"')).toBeLessThan(html.indexOf('data-phone-app-connect="here"'));
   });
 
   it("is not drawn while closed", () => {
     expect(renderToStaticMarkup(createElement(PhoneAppDialog, { open: false, onClose: () => {} }))).toBe("");
+  });
+});
+
+describe("profileMenuItems", () => {
+  const noop = () => {};
+  const build = (patch: Partial<Parameters<typeof profileMenuItems>[0]> = {}) => profileMenuItems({
+    phone: [{ key: "phone-app", label: "Get the phone app", onSelect: noop }],
+    usage: true,
+    update: null,
+    account: "OpenMausBot Cloud",
+    onUsage: noop, onSettings: noop, onShortcuts: noop, onAbout: noop, onHelp: noop, onFeedback: noop, onAccount: noop,
+    ...patch,
+  });
+
+  it("groups usage and the phone, then help and settings, then the account under a divider", () => {
+    const items = build();
+    expect(items.map((item) => item.key)).toEqual(["usage", "phone-app", "support", "settings", "account"]);
+    expect(items.filter((item) => item.separatorBefore).map((item) => item.key)).toEqual(["account"]);
+    expect(items.find((item) => item.key === "support")!.submenu!.map((item) => item.key)).toEqual(["help", "feedback", "shortcuts", "about"]);
+    expect(items.find((item) => item.key === "account")!.label).toBe("OpenMausBot Cloud");
+  });
+
+  it("only offers what this window has: no usage on a remote server, no account without one", () => {
+    const items = build({ usage: false, account: null });
+    expect(items.map((item) => item.key)).toEqual(["phone-app", "support", "settings"]);
+    expect(items.some((item) => item.separatorBefore)).toBe(false);
+  });
+
+  it("keeps the update entry beside settings", () => {
+    const update = { key: "update", label: "Check for updates", onSelect: noop };
+    expect(build({ update }).map((item) => item.key)).toEqual(["usage", "phone-app", "support", "settings", "update", "account"]);
+  });
+
+  it("opens the Usage and account pages of Settings", () => {
+    const onUsage = vi.fn(), onAccount = vi.fn();
+    const items = build({ onUsage, onAccount });
+    items.find((item) => item.key === "usage")!.onSelect();
+    items.find((item) => item.key === "account")!.onSelect();
+    expect(onUsage).toHaveBeenCalledOnce();
+    expect(onAccount).toHaveBeenCalledOnce();
   });
 });
