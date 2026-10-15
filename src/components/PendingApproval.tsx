@@ -157,7 +157,7 @@ export const PendingApprovalPanel = memo(function PendingApprovalPanel({
   const [open, setOpen] = useState(false);
   const outbound = pending.message.card ? outboundSummary(pending.message.card) : undefined;
   const heldNote = outbound?.opaque && pending.heldCode === "approval.held.outbound"
-    ? t("approval.held.code")
+    ? t("approval.opaqueCode")
     : tFromServer(pending.heldCode, pending.held);
   const { line, inline } = rowText(pending, botName);
   const detailsId = `approval-details-${pending.requestId}`;
