@@ -551,6 +551,43 @@ the same Cloudflare user share its 1,200 requests per five minutes. On
 Workers Free, four accounts with `OMB_CLEANUP_SWEEP_LIMIT` 4 use the whole
 50-subrequest budget, hence at most three extra accounts.
 
+### HighLevel OAuth relay
+
+OpenMausBot's native HighLevel (GoHighLevel, and white-labels such as Growably)
+integration signs a person in through a Marketplace app registered to us. The
+app's client secret lives only in this Worker; the harness (desktop or a Cloud
+home) never sees it. Routes, none of which need an installation credential: the
+random `state` and the tokens themselves are the secrets, and each route is
+rate-limited per caller address.
+
+| Route | Does |
+| --- | --- |
+| `POST /v1/highlevel/start` | Mints a 32-byte `state`, stores only `HKDF(state, "lookup")`, returns the white-label authorization URL (`marketplace.leadconnectorhq.com/v2/oauth/chooselocation`) with our client id, redirect URL and scopes. |
+| `GET /v1/highlevel/callback?code&state` | HighLevel sends the person's browser here. Exchanges the code (`POST services.leadconnectorhq.com/oauth/token`, `user_type=Location`), seals the token payload with AES-GCM under `HKDF(state, "wrap")`, shows a plain "Connected" page. Never echoes query parameters. |
+| `POST /v1/highlevel/claim {state}` | The harness collects the payload once (404 before the callback, 410 after); the row is emptied. |
+| `POST /v1/highlevel/refresh {refreshToken}` | Refreshes with the client secret; HighLevel's refusal is `401 highlevel_refresh_rejected`. |
+
+Rows live at most ten minutes (`highlevel_flows`, swept by the cron). Without the
+raw state a row opens nothing, and no plaintext token is ever written to D1.
+Logs carry counts and error codes, never codes or tokens.
+
+Setup, once:
+
+1. Register the Marketplace app (private, sub-account, installable by agency and
+   sub-account). Redirect URL: `https://accounts.openmausbot.com/v1/highlevel/callback`.
+   Scopes: `contacts.readonly contacts.write opportunities.readonly opportunities.write conversations.readonly locations.readonly calendars.readonly users.readonly`.
+2. Put the client id in `vars.HIGHLEVEL_CLIENT_ID` (it is public: it appears in the
+   authorization URL). Keep `HIGHLEVEL_REDIRECT_URL` and `HIGHLEVEL_SCOPES` in step
+   with the app.
+3. `wrangler d1 migrations apply DB --config wrangler.jsonc` (0009).
+4. `wrangler secret put HIGHLEVEL_CLIENT_SECRET --config wrangler.jsonc`. It is
+   deliberately not in `secrets.required`: until it exists the routes answer
+   `503 highlevel_unavailable`.
+5. `wrangler deploy --config wrangler.jsonc`.
+
+A private app stops accepting installs past five external agencies; publish it
+(HighLevel review) before that.
+
 ## Local checks
 
 Install from the repository root, then run:

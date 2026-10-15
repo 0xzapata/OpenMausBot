@@ -61,7 +61,16 @@
     "OMB_TUNNEL_OFFLINE_RECLAIM_DAYS": "3",
     // Cleanup rows per five-minute cron run. 20 needs Workers Paid; use 4 on
     // Workers Free (50 subrequests per invocation).
-    "OMB_CLEANUP_SWEEP_LIMIT": "20"
+    "OMB_CLEANUP_SWEEP_LIMIT": "20",
+    // HighLevel OAuth relay (README "HighLevel OAuth relay"). The client id
+    // is public (it is in the authorization URL); the secret is
+    // HIGHLEVEL_CLIENT_SECRET, set with `wrangler secret put` and deliberately
+    // not in secrets.required: the relay answers 503 highlevel_unavailable
+    // until it exists. The redirect URL must match the one registered in the
+    // HighLevel Marketplace app exactly.
+    "HIGHLEVEL_CLIENT_ID": "",
+    "HIGHLEVEL_REDIRECT_URL": "https://accounts.openmausbot.com/v1/highlevel/callback",
+    "HIGHLEVEL_SCOPES": "contacts.readonly contacts.write opportunities.readonly opportunities.write conversations.readonly locations.readonly calendars.readonly users.readonly"
   },
   "secrets": {
     "required": ["BETTER_AUTH_SECRET", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN_MAUSBOT_SI"]
