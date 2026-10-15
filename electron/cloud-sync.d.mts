@@ -1,38 +1,60 @@
-export interface CloudSyncDisk { totalBytes: number; freeBytes: number; syncedBytes: number; botFileBytes: number; trashBytes: number; reserveBytes: number; usedBytes: number; planMaxBytes: number; warn: boolean }
-export interface CloudSyncStatus {
-  enabled: boolean;
-  openAtLogin?: boolean;
-  phase: "off" | "syncing" | "synced" | "waiting" | "offline" | "signed-out";
+/** My Cloud's disk as Files shows it: what the Cloud holds and what is free there. */
+export interface CloudFilesDisk { totalBytes: number; freeBytes: number; usedBytes: number; sharedBytes: number; warn: boolean }
+/**
+ * One folder this computer shares with My Cloud. "copying": files are on their way (`done` of `files`); "synced": the
+ * Cloud's copy matches; "waiting": My Cloud is full, `waitingBytes` wait for room; "confirm-deletes": `pendingDeletes`
+ * files went from this computer at once and wait for the person's answer; "missing": the folder is not on this computer
+ * (moved or renamed); "problem": `problem` says what went wrong.
+ */
+export type SharedFolderStatus = "copying" | "synced" | "waiting" | "confirm-deletes" | "missing" | "problem";
+export interface SharedFolder {
+  id: string; name: string; pcPath: string; status: SharedFolderStatus;
+  files: number; done: number; waitingBytes: number; pendingDeletes: number; problem: string | null;
+}
+export interface CloudFilesState {
+  /** "unavailable": no Ready My Cloud for this app; "signed-out": sign in again; "offline": My Cloud can't be reached. */
+  phase: "unavailable" | "signed-out" | "offline" | "idle" | "syncing";
   lastSyncedAt: number | null;
-  disk: CloudSyncDisk | null;
-  folders: Array<{ id: string; kind: "pc" | "bot"; local: string; cloudPath: string }>;
-  waiting: Array<{ folderId: string; path: string; size: number; toThisComputer?: boolean }>;
-  clashes: Array<{ folderId: string; path: string; clashPath: string }>;
-  held: Array<{ folderId: string; path: string; reason: "windows-name" | "case-clash" }>;
-  problems: Array<{ folderId: string; path: string; error: string }>;
-  notices: Array<{ folderId: string; path: string }>;
-  missing: string[];
+  disk: CloudFilesDisk | null;
+  shared: SharedFolder[];
+  /** What Cloud bots make, kept in `dir` (Documents/MausBot): one folder per bot, one inside it per conversation. */
+  outputs: { enabled: boolean; dir: string; folders: number; problem: string | null };
 }
-export interface CloudSyncTrashEntry { id: string; folderId: string; path: string; size: number; deletedAt: number }
-export interface CloudSyncBridge {
-  state(): Promise<CloudSyncStatus>;
-  set(input: { enabled?: boolean; keepCloudCopy?: boolean; openAtLogin?: boolean }): Promise<CloudSyncStatus>;
-  trash(): Promise<CloudSyncTrashEntry[]>;
-  restore(entryId: string): Promise<CloudSyncStatus>;
-  open(input: { folderId: string; path: string }): Promise<void>;
-  upgrade(): Promise<void>;
-  onState(callback: (state: CloudSyncStatus) => void): () => void;
+/** A folder the person picked, checked on this computer before anything is shared. `token` stands for its path in `share`. */
+export interface FolderCheck {
+  token: string; name: string; pcPath: string; files: number; bytes: number; partial: boolean;
+  refusal: null | "not-a-folder" | "too-broad" | "app-data" | "already-shared";
 }
-export declare function linkedFolders(input: { bots?: Array<{ id: string; cwd?: string; tasks?: Array<{ cwd?: string }> }>; groups?: Array<{ id: string; cwd?: string }>; localDataDir: string; homeDir: string; platform?: NodeJS.Platform }): { links: Array<{ pcPath: string; bots: string[]; rooms: string[] }>; refused: Array<{ pcPath: string; reason: "too-broad" }> };
-export declare function createCloudSyncService(options: Record<string, unknown>): {
+export interface CloudFilesBridge {
+  state(): Promise<CloudFilesState>;
+  onState(callback: (state: CloudFilesState) => void): () => void;
+  /** The native folder picker, then the check. Null when the person cancels. */
+  pickFolder(): Promise<FolderCheck | null>;
+  /** The check for folders the app suggests (the ones that stayed on this PC after a move to My Cloud). */
+  checkFolders(paths: string[]): Promise<FolderCheck[]>;
+  share(token: string): Promise<CloudFilesState>;
+  /** Stops sharing; My Cloud's copy goes to its trash (kept 30 days). Nothing on this computer changes. */
+  stopSharing(folderId: string): Promise<CloudFilesState>;
+  /** The person's answer for "confirm-deletes": remove those files from My Cloud too, or keep them there. */
+  answerDeletes(folderId: string, remove: boolean): Promise<CloudFilesState>;
+  /** A "missing" folder: the person shows where it is now (native picker). */
+  locate(folderId: string): Promise<CloudFilesState>;
+  setOutputs(enabled: boolean): Promise<CloudFilesState>;
+  open(target: { folderId: string } | { outputs: true }): Promise<void>;
+  /** Opens where the person gets more space for My Cloud. */
+  moreSpace(): Promise<void>;
+}
+export declare function createCloudFilesService(options: Record<string, unknown>): {
   start(): void;
   pass(only?: Set<string> | null): Promise<void>;
-  state(): CloudSyncStatus;
-  setEnabled(on: boolean, options?: { keepCloudCopy?: boolean }): Promise<CloudSyncStatus>;
-  linkFolder(pcPath: string): Promise<{ cloudPath: string }>;
-  trash(): Promise<CloudSyncTrashEntry[]>;
-  restore(entryId: string): Promise<CloudSyncStatus>;
-  localPath(folderId: string, path: string): string | null;
+  state(): CloudFilesState;
+  check(pcPath: string): Promise<Omit<FolderCheck, "token">>;
+  share(pcPath: string): Promise<CloudFilesState>;
+  stopSharing(folderId: string): Promise<CloudFilesState>;
+  answerDeletes(folderId: string, remove: boolean): Promise<CloudFilesState>;
+  relocate(folderId: string, pcPath: string): Promise<CloudFilesState>;
+  setOutputs(enabled: boolean): Promise<CloudFilesState>;
+  localFolder(target: { folderId: string } | { outputs: true }): string | null;
   wake(): void;
   close(): void;
 };
