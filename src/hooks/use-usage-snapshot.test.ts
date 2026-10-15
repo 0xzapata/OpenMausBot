@@ -164,7 +164,7 @@ describe("what the snapshot asks this page's app", () => {
   });
 
   it("runs in the app shell, so every app page sends it", () => {
-    const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "App.tsx"), "utf8");
+    const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "App.tsx"), "utf8").replace(/\r\n/g, "\n");
     const shell = app.slice(app.indexOf("function Shell("), app.indexOf("\nfunction ", app.indexOf("function Shell(") + 1));
     expect(shell).toMatch(/\n {2}useUsageSnapshot\(\);\n/);
   });
