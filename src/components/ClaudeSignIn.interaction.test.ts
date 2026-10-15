@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
   values: [] as unknown[], index: 0, effects: [] as (() => (() => void) | undefined)[],
-  api: vi.fn(), refreshInstances: vi.fn(), refreshModels: vi.fn(), openExternal: vi.fn(),
+  api: vi.fn(), refreshInstances: vi.fn(), refreshModels: vi.fn(), openExternal: vi.fn(), track: vi.fn(),
 }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
@@ -19,6 +19,7 @@ vi.mock("@/state/store", async (original) => ({
   ...await original<typeof import("@/state/store")>(), api: fixture.api,
   useStore: () => ({ refreshInstances: fixture.refreshInstances, refreshModels: fixture.refreshModels }),
 }));
+vi.mock("@/lib/analytics", () => ({ track: fixture.track }));
 const { ApiError } = await import("@/state/store");
 const { ClaudeSignIn } = await import("./ClaudeSignIn");
 
@@ -63,6 +64,7 @@ it("treats a code Claude Code accepts as the sign-in: no status request after it
   expect(fixture.refreshInstances).toHaveBeenCalled();
   expect(fixture.refreshModels).toHaveBeenCalledWith("claude");
   expect(onDone).toHaveBeenCalledWith(true);
+  expect(fixture.track.mock.calls).toEqual([["engine_signed_in", { engine: "claude", method: "code" }]]);
 });
 
 it("ends the flow with Claude Code's own words when it refuses the code, and offers to try again", async () => {
@@ -71,6 +73,7 @@ it("ends the flow with Claude Code's own words when it refuses the code, and off
   await startAndPaste("bad-12345678");
   expect(fixture.values[AUTH]).toMatchObject({ phase: "failed", message: refused });
   expect(JSON.stringify(render().filter((node) => node.type === "button").map((node) => node.props.children))).toContain("Try again");
+  expect(fixture.track).not.toHaveBeenCalled();
 });
 
 it("keeps the flow open after a code Claude Code never took, so a typo can be fixed", async () => {
@@ -80,6 +83,23 @@ it("keeps the flow open after a code Claude Code never took, so a typo can be fi
   await startAndPaste("half-a-code");
   expect(fixture.values[AUTH]).toMatchObject({ phase: "waiting", flowId: "flow-one" });
   expect(fixture.values[ERROR]).toBe("Paste the whole code shown on Anthropic's page after signing in.");
+  expect(fixture.track).not.toHaveBeenCalled();
+});
+
+it("reports no sign-in when the person cancels or the code expires", async () => {
+  fixture.api.mockResolvedValueOnce({ auth: waiting }).mockResolvedValueOnce({});
+  render().find((node) => node.type === "button")!.props.onClick!();
+  await flush();
+  const cancel = render().filter((node) => node.type === "button").find((node) => JSON.stringify(node.props.children).includes("Cancel"))!;
+  await cancel.props.onClick!();
+  await flush();
+  expect(fixture.values[AUTH]).toBeNull();
+  fixture.values[AUTH] = { ...waiting, expiresAt: "2000-01-01T00:00:00.000Z" };
+  render();
+  fixture.effects.forEach((effect) => effect());
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(fixture.values[AUTH]).toMatchObject({ phase: "expired" });
+  expect(fixture.track).not.toHaveBeenCalled();
 });
 
 it("starts once on its own when asked, even if its effects run twice", async () => {

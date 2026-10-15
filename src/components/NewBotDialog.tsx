@@ -8,6 +8,7 @@ import { chosenPreset, presetDraftPatch, presetGroups, presetPictureFile, preset
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
+import { botCreated } from "@/lib/product-events";
 import { visibilityFromForm, type VisibilityMode } from "./bot-settings/VisibilitySection";
 import type { NewBotDefaults } from "../../shared/new-bot-defaults";
 import type { Routine } from "@/lib/routines";
@@ -55,7 +56,7 @@ export function CompanionNewBotDialog() {
       <h2 className="mb-4 text-[17px] font-semibold">{t("newBot.create")}</h2>
       <div className="flex justify-end gap-2">
         <button type="button" onClick={close} className="rounded-lg px-3 py-2">{t("common.cancel")}</button>
-        <button type="button" disabled={state.botCreationPending} onClick={() => dispatch({ type: "newBot", onCreated: close })}
+        <button type="button" disabled={state.botCreationPending} onClick={() => dispatch({ type: "newBot", onCreated: () => { botCreated("blank"); close(); } })}
           className="rounded-lg bg-accent px-4 py-2 text-white disabled:opacity-40">{t("newBot.create")}</button>
       </div>
     </div>
@@ -143,6 +144,7 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
       if (defaultsMode) await api("/api/config", { method: "PATCH", body: JSON.stringify({ newBotDefaults: await preparedBotTemplate(draft) }) });
       else {
         const { bot, warnings } = await createConfiguredBot(draft, undefined, undefined, undefined, visibility?.ok ? visibility.visibility : undefined);
+        botCreated(draft.preset ? "preset" : draft.role ? "template" : "blank", draft.role);
         parent.dispatch({ type: "botAdded", bot, preserveSelection });
         if (warnings.length) parent.dispatch({ type: "error", message: warnings.join("\n") });
         try { await onCreated?.(bot); }
@@ -277,6 +279,7 @@ function StartingRole({ draft, defaultsMode }: { draft: BotCreationDraft; defaul
     if (!preset) {
       draft.choosePreset(undefined);
       const role = BOT_ROLES.find(role => role.id === value);
+      draft.chooseRole(role?.id);
       if (role) draft.patch(roleProfilePatch(role));
       return;
     }

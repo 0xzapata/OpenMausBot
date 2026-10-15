@@ -3,7 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ effects: [] as EffectCallback[], dispatch: vi.fn(), api: vi.fn(), create: vi.fn(), setDraft: vi.fn(), ready: false, hook: 0, admin: false,
-  profile: {} as Record<string, unknown> }));
+  profile: {} as Record<string, unknown>, choice: {} as { role?: string; preset?: { id: string; skills: string[]; notes: string[] } }, track: vi.fn() }));
+vi.mock("@/lib/analytics", () => ({ track: fixture.track }));
 vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => fixture.admin }));
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: {} }) }));
 vi.mock("react", async importOriginal => {
@@ -14,6 +15,7 @@ vi.mock("react", async importOriginal => {
     if (fixture.ready && index === 1) {
       const draft = state[0] as { bot: { name: string }; patch: (patch: { name: string }) => void };
       if (draft.bot.name !== "Fixture") draft.patch({ name: "Fixture", ...fixture.profile });
+      Object.assign(draft, fixture.choice);
     }
     if (index === 1) return [state[0], fixture.setDraft];
     return fixture.ready && index === 3 ? [true, state[1]] : state;
@@ -43,6 +45,7 @@ function render(defaultsMode = false, onCreated?: () => void | Promise<void>) {
 beforeEach(() => {
   fixture.effects = []; fixture.dispatch.mockReset(); fixture.api.mockReset();
   fixture.ready = false; fixture.admin = false; fixture.create.mockReset(); fixture.setDraft.mockReset(); fixture.profile = {};
+  fixture.choice = {}; fixture.track.mockReset();
   fixture.api.mockReturnValue(new Promise(() => {}));
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -153,6 +156,43 @@ describe("bot draft dialog", () => {
     result.nodes.find(node => node.type === "button" && node.props["aria-label"] === "Close")!.props.onClick!();
     expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "toggleNewBot", open: false });
     expect(fixture.api).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{}, { source: "blank" }],
+    [{ role: "research" }, { source: "template", template: "research" }],
+    [{ role: "a role from a newer build" }, { source: "template", template: "other" }],
+    [{ role: "coder", preset: { id: "My secret preset", skills: [], notes: [] } }, { source: "preset" }],
+  ])("reports one bot_created per create, saying where it started (%j)", async (choice, props) => {
+    fixture.ready = true;
+    fixture.choice = choice;
+    fixture.create.mockResolvedValue({ bot: { id: "created", name: "Fixture" }, warnings: [] });
+    render().nodes.filter(node => node.type === "button").at(-1)!.props.onClick!();
+    await vi.waitFor(() => expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleNewBot", open: false }));
+    expect(fixture.track.mock.calls).toEqual([["bot_created", props]]);
+  });
+
+  it("reports nothing when saving the defaults for new bots, or when creating fails", async () => {
+    fixture.ready = true;
+    fixture.api.mockResolvedValue({});
+    render(true).nodes.filter(node => node.type === "button").at(-1)!.props.onClick!();
+    await vi.waitFor(() => expect(fixture.api).toHaveBeenCalledWith("/api/config", expect.objectContaining({ method: "PATCH" })));
+    fixture.create.mockRejectedValue(new Error("no engine"));
+    render().nodes.filter(node => node.type === "button").at(-1)!.props.onClick!();
+    await vi.waitFor(() => expect(fixture.create).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fixture.track).not.toHaveBeenCalled();
+  });
+
+  it("reports a bot made from a paired companion as blank, once it exists", () => {
+    vi.stubGlobal("window", { ogb: { remoteClient: { active: true } } });
+    let tree!: ReturnType<typeof CompanionNewBotDialog>;
+    function Capture() { tree = CompanionNewBotDialog(); return tree; }
+    renderToStaticMarkup(createElement(Capture));
+    nodes(tree).filter(node => node.type === "button").at(-1)!.props.onClick!();
+    expect(fixture.track).not.toHaveBeenCalled();
+    fixture.dispatch.mock.calls[0]![0].onCreated({ id: "created" });
+    expect(fixture.track.mock.calls).toEqual([["bot_created", { source: "blank" }]]);
   });
 
   it("uses the same section editor for default templates", () => {
