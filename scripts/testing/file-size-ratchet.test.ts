@@ -15,8 +15,7 @@ const HARD_CAP = 2000;
 const LISTED_FROM = 1000;
 
 const LINES: Record<string, number> = {
-  // +24 for the HighLevel CRM mount, prompt part and internal handler (logic lives in server/highlevel/*); lower again with the next move-out.
-  "server/index.ts": 17693,
+  "server/index.ts": 17590,
   "src/state/store.tsx": 3617,
   "electron/main.mjs": 3498,
   "server/store.ts": 2478,
