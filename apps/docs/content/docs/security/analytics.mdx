@@ -19,7 +19,9 @@ sent.
 - PostHog adds its standard device facts to every event: operating system, browser and its version, device type,
   screen and window size, language and time zone. Like any server, PostHog sees the IP address a request comes from.
 - Events are tied to a random id that PostHog keeps in the page's storage. If you shared your email on the first-run
-  screen, your events are tied to that email from then on (`email_submitted`). Nothing else identifies you.
+  screen, your events are tied to that email from then on (`email_submitted`). If you are signed in to MausBot Cloud in
+  the desktop app and choose the Cloud Pro popup's main button or Compare plans, your events are tied to
+  your Cloud account's email from then on (`cloud_pro_popup`). Nothing else identifies you.
 
 ## Turning it off
 
@@ -34,7 +36,8 @@ Cloud's page, so switch it off there too.
 
 - API keys, tokens or passwords, or anything derived from them: no length, prefix, hash or last characters.
 - Names of bots, rooms, teams, people, routines, files, devices, models, presets or accounts.
-- Emails, except the one you chose to share on the first-run screen.
+- Emails, except the one you chose to share on the first-run screen, and your Cloud account's email once you choose the
+  Cloud Pro popup's main button or Compare plans while signed in to MausBot Cloud.
 - URLs, hosts and addresses. PostHog's own `$current_url`, `$host`, `$pathname`, `$referrer`, `$referring_domain`,
   campaign parameters (`utm_*`, `gclid` and the like) and their `$initial_*` and `$session_entry_*` copies are removed
   before an event leaves the app.
@@ -125,7 +128,7 @@ use their own Boat key, and how many bots run on cloud computers, without sendin
 | `app_first_open` | The first time this app page starts with analytics on | `platform`: `desktop`, `browser` |
 | `app_opened` | Each time this app page starts with analytics on | `platform`: `desktop`, `browser` |
 | `email_submitted` | You shared your email on the first-run screen; your events are tied to that email from then on | none |
-| `$identify` | PostHog's own event, sent with `email_submitted` to tie your events to that email | `$set`: `email`, the email you shared; `$anon_distinct_id`: the random id your events had before |
+| `$identify` | PostHog's own event, sent with `email_submitted`, and before a `cloud_pro_popup` click by someone signed in to MausBot Cloud, to tie your events to that email. When your events were already tied to an email, PostHog sends its `$set` event with the new one instead | `$set`: `email`, the email you shared or your Cloud account's email; `$anon_distinct_id`: the random id your events had before |
 | `email_skipped` | You skipped the email on the first-run screen | none |
 | `onboarding_step` | A first-run tour step is shown | `step`: `hello`, `reel`, `engines`, `permissions`, `phone`, `bot`; `replay`: true/false |
 | `onboarding_completed` | The first-run tour ends | `reason`: `completed`, `skipped`; `at`: the step it ended on; `replay`: true/false |
@@ -145,8 +148,9 @@ use their own Boat key, and how many bots run on cloud computers, without sendin
 | `app_snapshot` | Once a day, as described above | The properties in the snapshot table |
 | `cloud_card_shown` | The MausBot Cloud card is shown | `variant`: `signed_out`, `free` |
 | `cloud_card_action` | You act on the MausBot Cloud card | `action`: `start`, `howto`, `signin`, `not_now`, `close` |
+| `cloud_pro_popup` | The Cloud Pro popup the desktop app shows once after an update is shown (once per launch until it is closed), or you choose one of its buttons. Signed in to MausBot Cloud, a click on `upgrade`, `manage` or `see_plans` first ties your events to your Cloud account's email (`$identify`); `shown`, `not_now` and `close` never do | `action`: `shown`, `upgrade` (Start free trial or Upgrade to Cloud Pro), `manage` (Manage plan), `see_plans` (Compare plans), `not_now`, `close` (the X, Escape or a click outside); `plan`: `none`, `trial`, `personal`, `pro`, `max`, `other` (a plan newer than the app), `unknown` (the sign-in ended); `signed_in`: true/false, signed in to MausBot Cloud in the app |
 | `cloud_howto` | The "Show me how" tip ends | `result`: `no_button`, `skipped`, `closed` |
-| `cloud_dialog_shown` | The Add a Cloud dialog opens | `source`: `app_card`, `app_howto`, `app_menu`, `app_settings`, `app_routines`; `view`: the dialog's first screen |
+| `cloud_dialog_shown` | The Add a Cloud dialog opens | `source`: `app_card`, `app_howto`, `app_menu`, `app_settings`, `app_routines`, `update_popup` (the Cloud Pro popup); `view`: the dialog's first screen |
 | `cloud_dialog_view` | The Add a Cloud dialog reaches a step | `view`: `received`, `starting`, `ready` |
 | `cloud_checkout_opened` | A Cloud checkout opens in the browser | `plan`: Cloud plan; `trial`: true/false; `source`: as for `cloud_dialog_shown` |
 | `cloud_setup_started` | A new Cloud starts its first job | none |
