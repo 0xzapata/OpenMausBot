@@ -84,11 +84,19 @@ export function computerPrompt(kind: ComputerPromptKind | null): string {
 
 export const CLOUD_HOME_PLACE = "the user's My Cloud, their always-on OpenMausBot in the cloud, not on their own computer";
 
-export function cloudHomePrompt(sharedComputerTools: boolean): string {
+export function cloudHomePrompt(sharedComputerTools: boolean, synced: ReadonlyArray<{ computerName: string; pcPath: string; cloudPath: string }> = []): string {
   return ` You run on ${CLOUD_HOME_PLACE}.` + (sharedComputerTools
     ? " If they ask for something on their own Mac or PC, check list_shared_computers: a computer they lend to My Cloud is reachable through shared_computer, within the folders and apps it allows. If none is lent and online, say so in one sentence: they can turn on Let My Cloud use this computer under Settings → MausBot Cloud in the desktop app on that computer."
     : " You cannot see or use their Mac or PC, its screen or its files from here. If they ask for something on it, say so in one sentence.")
-    + " Offer what works here: the built-in browser and their cloud computer, a desktop in the cloud. Call it their cloud computer, as the app does. Never ask them to set up this computer or a Local VM; neither exists here.";
+    + " Offer what works here: the built-in browser and their cloud computer, a desktop in the cloud. Call it their cloud computer, as the app does. Never ask them to set up this computer or a Local VM; neither exists here."
+    + syncedFoldersPrompt(synced);
+}
+
+function syncedFoldersPrompt(synced: ReadonlyArray<{ computerName: string; pcPath: string; cloudPath: string }>): string {
+  if (!synced.length) return "";
+  const shown = synced.slice(0, 20).map((folder) => `${folder.pcPath} on ${folder.computerName} → ${folder.cloudPath}`).join("; ");
+  return ` Folders synced from the person's computer: ${shown}${synced.length > 20 ? `; and ${synced.length - 20} more` : ""}.`
+    + " A path on that computer inside one of these means its synced copy here; when a folder is also lent, use the synced copy.";
 }
 
 export const COMPOSIO_PROMPT =

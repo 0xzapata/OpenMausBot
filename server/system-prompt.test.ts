@@ -299,3 +299,12 @@ describe("longCommandsPrompt", () => {
     }
   });
 });
+
+it("tells Cloud bots which computer folders are synced here, and to use the synced copy", () => {
+  expect(cloudHomePrompt(true)).not.toContain("synced");
+  const text = cloudHomePrompt(true, [{ computerName: "Ash-PC", pcPath: "C:\\Users\\Ash\\Documents\\PA", cloudPath: "/data/Synced/Ash-PC/PA" }]);
+  expect(text).toContain("Folders synced from the person's computer: C:\\Users\\Ash\\Documents\\PA on Ash-PC → /data/Synced/Ash-PC/PA.");
+  expect(text).toContain("A path on that computer inside one of these means its synced copy here");
+  const many = Array.from({ length: 23 }, (_, i) => ({ computerName: "PC", pcPath: `/f${i}`, cloudPath: `/data/Synced/PC/f${i}` }));
+  expect(cloudHomePrompt(false, many)).toContain("and 3 more");
+});
