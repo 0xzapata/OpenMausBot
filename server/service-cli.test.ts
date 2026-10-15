@@ -81,7 +81,8 @@ describe("openmausbot service", () => {
     expect(err.join("\n")).toContain("\\\"--out\\\" \\\"C:\\Users\\maus\\AppData\\Local\\openmausbot-sentinel\\\"");
   });
 
-  it("--sentinel refuses an output folder the scan itself would refuse, before writing anything", () => {
+  // Simulates a Linux install with the host's paths; on Windows those are backslash paths no Linux unit has.
+  it.skipIf(process.platform === "win32")("--sentinel refuses an output folder the scan itself would refuse, before writing anything", () => {
     const dataDir = join(dir, "data");
     mkdirSync(dataDir);
     const base = { action: "install" as const, dataDir, port: 8799, sentinel: true, script: "/usr/lib/node_modules/openmausbot/cli.js", node: "/usr/bin/node", exists: () => false };
