@@ -1,15 +1,9 @@
-// The opt-out has one job that matters: an install that turned analytics off
-// must not talk to PostHog at all. optAction pins the decision, the storage
-// round-trip pins that the choice survives a restart, and the loading tests
-// pin that posthog-js is only evaluated once analytics are on.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { analyticsEnabled, initAnalytics, optAction, setAnalyticsEnabled } from "./analytics";
+import { appVersion } from "./app-links";
 
-// posthog-js is replaced by a recorder. `loads` counts evaluations of the
-// library (an opted-out session must leave it at 0), `calls` is everything
-// that would have reached PostHog, in order, and `options` holds what init()
-// was given. Each fresh module load gets its own client.
+// `loads` counts evaluations of posthog-js (an opted-out session must leave it at 0); `calls` is what would reach PostHog.
 const ph = vi.hoisted(() => {
   const ph = {
     loads: 0,
@@ -17,6 +11,7 @@ const ph = vi.hoisted(() => {
     initThrows: false,
     calls: [] as string[],
     options: [] as Record<string, unknown>[],
+    registered: [] as Record<string, unknown>[],
     module: () => {
       if (ph.fail) throw new Error("chunk failed to load");
       ph.loads += 1;
@@ -37,6 +32,7 @@ const ph = vi.hoisted(() => {
             optedOut = true;
             ph.calls.push("opt_out_capturing");
           },
+          register: (properties: Record<string, unknown>) => { ph.calls.push("register"); ph.registered.push(properties); },
           capture: (event: string) => void ph.calls.push(`capture ${event}`),
           identify: (id: string) => void ph.calls.push(`identify ${id}`),
         },
@@ -63,22 +59,19 @@ beforeEach(() => {
   ph.initThrows = false;
   ph.calls = [];
   ph.options = [];
+  ph.registered = [];
 });
-// Tests that swap in a throwing storage get the base one back even when an
-// assertion fails mid-test — an inline restore at the end would be skipped.
+// Restored in afterEach: an inline restore would be skipped when an assertion fails mid-test.
 afterEach(() => vi.stubGlobal("localStorage", baseStorage));
 
-// A fresh module, so the module-scoped client starts unset: with a used
-// module a test passes on leftover state and proves nothing.
-// resetModules alone keeps the mocked posthog-js cached, so it is registered
-// again: `loads` then counts evaluations by this module graph only.
+// resetModules keeps the mocked posthog-js cached, so it is registered again and `loads` counts this graph only.
 async function freshAnalytics() {
   vi.resetModules();
   vi.doMock("posthog-js", () => ph.module());
   return import("./analytics");
 }
 
-const OPENED = ["init", "capture app_first_open", "capture app_opened"];
+const OPENED = ["init", "register", "capture app_first_open", "capture app_opened"];
 
 describe("optAction", () => {
   it("initialises on the first opt-in of a session that started off", () => {
@@ -94,8 +87,6 @@ describe("optAction", () => {
   });
 
   it("does nothing when there is no client to stop", () => {
-    // The important half: opting out before init must not reach PostHog to
-    // tell it so — that request would itself be the leak.
     expect(optAction(false, false)).toBe("none");
   });
 });
@@ -107,22 +98,18 @@ describe("the stored choice", () => {
 
   it("survives a restart once opted out", () => {
     setAnalyticsEnabled(false);
-    expect(analyticsEnabled()).toBe(false); // same read a later launch performs
+    expect(analyticsEnabled()).toBe(false);
   });
 
   it("can be turned back on", async () => {
     setAnalyticsEnabled(false);
     setAnalyticsEnabled(true);
     expect(analyticsEnabled()).toBe(true);
-    // turning it on starts the client; let that finish inside this test
-    // rather than write the install marker into the next one
+    // Let init finish here rather than write the install marker into the next test.
     await initAnalytics();
   });
 
   it("holds an opt-out for the session even when the write is rejected", async () => {
-    // The failure this guards: the setter swallows the write error, the next
-    // read finds nothing and answers "enabled", and a later initAnalytics()
-    // starts the client the user just switched off.
     const fresh = await freshAnalytics();
     vi.stubGlobal("localStorage", {
       getItem: () => null,
@@ -154,7 +141,7 @@ describe("the stored choice", () => {
 
 describe("initAnalytics while opted out", () => {
   it("returns before loading the client or touching the install marker", async () => {
-    store.set("omb-analytics-opt-out", "1"); // as a previous session left it
+    store.set("omb-analytics-opt-out", "1");
     const fresh = await freshAnalytics();
 
     expect(fresh.analyticsEnabled()).toBe(false);
@@ -162,9 +149,6 @@ describe("initAnalytics while opted out", () => {
     fresh.track("onboarding_step");
     fresh.identifyEmail("someone@example.com");
 
-    // posthog-js was never even evaluated, so no request of its own could
-    // leave either. The missing marker also means opting back in later
-    // still counts the install.
     expect(ph.loads).toBe(0);
     expect(ph.calls).toEqual([]);
     expect(store.get("omb-installed")).toBeUndefined();
@@ -173,17 +157,25 @@ describe("initAnalytics while opted out", () => {
 
 describe("loading the client", () => {
   it("leaves posthog-js out of the startup bundle until initAnalytics runs", async () => {
-    // A static import would evaluate the library with this module, before
-    // first paint, for every install including the opted-out ones.
     const fresh = await freshAnalytics();
     expect(ph.loads).toBe(0);
     await fresh.initAnalytics();
     expect(ph.loads).toBe(1);
   });
 
+  it("says which app sent every event, and from which page, before the first one", async () => {
+    const fresh = await freshAnalytics();
+    await fresh.initAnalytics();
+    expect(ph.registered).toEqual([{ app_version: appVersion(), surface: "server" }]);
+    expect(appVersion()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(ph.calls.indexOf("register")).toBeLessThan(ph.calls.indexOf("capture app_first_open"));
+    vi.stubGlobal("window", { ogb: { environments: {} } });
+    try { expect(fresh.analyticsSurface()).toBe("local"); } finally { vi.unstubAllGlobals(); vi.stubGlobal("localStorage", baseStorage); }
+    expect(fresh.analyticsSurface()).toBe("server");
+  });
+
   it("initialises once, with autocapture and surveys off", async () => {
     const fresh = await freshAnalytics();
-    // StrictMode runs the mount effect twice: both calls share one load
     const first = fresh.initAnalytics();
     expect(fresh.initAnalytics()).toBe(first);
     await first;
@@ -191,8 +183,6 @@ describe("loading the client", () => {
 
     expect(ph.calls).toEqual(OPENED);
     expect(ph.options).toHaveLength(1);
-    // autocapture would ship clicked-element text (conversation fragments);
-    // surveys would fetch a survey script for a UI the app does not have
     expect(ph.options[0]).toMatchObject({ autocapture: false, disable_surveys: true });
   });
 
@@ -231,7 +221,6 @@ describe("loading the client", () => {
     expect(ph.calls).toEqual([]);
     expect(store.get("omb-installed")).toBeUndefined();
 
-    // a later opt-in starts a clean session; the email never goes out
     fresh.setAnalyticsEnabled(true);
     await fresh.initAnalytics();
     expect(ph.calls).toEqual(OPENED);
@@ -262,7 +251,6 @@ describe("loading the client", () => {
   });
 
   it("stays off without throwing when the library fails to load", async () => {
-    // e.g. a browser tab still holding an index.html from before an update
     ph.fail = true;
     const fresh = await freshAnalytics();
     const loading = fresh.initAnalytics();
@@ -271,8 +259,6 @@ describe("loading the client", () => {
     fresh.track("after_failure");
     expect(ph.calls).toEqual([]);
 
-    // switching the setting on again calls import() again (with a mocked
-    // import here; a browser may hand back the cached failure instead)
     ph.fail = false;
     fresh.setAnalyticsEnabled(true);
     await fresh.initAnalytics();
@@ -280,8 +266,6 @@ describe("loading the client", () => {
   });
 
   it("settles quietly, and drops the queue, when the library throws while starting", async () => {
-    // Nothing awaits initAnalytics(), so a rejection would surface as an
-    // unhandled one, and calls queued during the load would be kept for good.
     ph.initThrows = true;
     const fresh = await freshAnalytics();
     const loading = fresh.initAnalytics();
@@ -290,8 +274,6 @@ describe("loading the client", () => {
     fresh.track("after_failure");
     expect(ph.calls).toEqual([]);
 
-    // a later start (the switch going off and on) begins a clean session:
-    // the email queued before the failure never goes out
     ph.initThrows = false;
     await fresh.initAnalytics();
     expect(ph.calls).toEqual(OPENED);
