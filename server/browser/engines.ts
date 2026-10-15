@@ -123,7 +123,7 @@ export class ChromeEngine {
     if (!inUse) {
       if (this.#timer) clearInterval(this.#timer);
       this.#timer = null;
-      if (!this.#cleared && (existsSync(join(root, "profiles")) || existsSync(join(root, "temp")))) tick();
+      if (!this.#cleared && this.#everUsed()) tick();
       this.#cleared = true;
       return;
     }
@@ -133,6 +133,12 @@ export class ChromeEngine {
     tick();
     this.#timer = setInterval(tick, SWEEP_MS);
     this.#timer.unref?.();
+  }
+
+  /** Whether this engine ever made a profile in this data folder. */
+  #everUsed(): boolean {
+    const root = browserRoot(this.#options.dataDir);
+    return existsSync(join(root, "profiles")) || existsSync(join(root, "temp"));
   }
 
   async close(): Promise<void> {
@@ -145,6 +151,7 @@ export class ChromeEngine {
   /** A deleted bot's or profile's browser: stopped, and its folder, downloads and screenshots gone. */
   async erase(request: { kind: "bot" | "profile"; id: string; partitionId: string }): Promise<boolean> {
     const key = request.kind === "bot" ? `bot:${request.id}` : `shared:${request.partitionId}`;
+    if (!this.#everUsed()) return true;
     try {
       await this.service.erase(key);
       return true;
