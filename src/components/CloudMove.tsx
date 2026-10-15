@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { keepFoldersInSync, noteMovePhase, setKeepFoldersInSync } from "./cloud-move-sync";
 import type { CloudMoveBridge, CloudMoveOverview, CloudMoveState } from "../../electron/cloud-move.mjs";
 import type { LocaleKey } from "@/locales";
 import { activeLocale, t } from "@/lib/i18n";
@@ -153,6 +154,7 @@ export function useCloudMove(bridge: CloudMoveBridge | undefined, destination?: 
         if (finished) load();
         return;
       }
+      noteMovePhase(next.phase, next.destination?.kind, () => void window.ogb?.cloudAccount?.sync?.set({ enabled: true })?.catch(() => {}));
       setLive(next);
       if (finished) load();
     });
@@ -205,8 +207,17 @@ function moveStatus(view: MoveView, state: CloudMoveState) {
 function moveButton(view: MoveView, move: CloudMoveHandle, onStart?: () => void) {
   const action = view.action;
   if (!action) return null;
-  return <button type="button" disabled={move.pending && action.kind !== "cancel"} className="ui-button"
+  const button = <button type="button" disabled={move.pending && action.kind !== "cancel"} className="ui-button"
     onClick={() => { if (action.kind === "start") onStart?.(); move.run(action.kind); }}>{action.label}</button>;
+  const toCloud = (move.state.destination ?? move.overview?.destination)?.kind === "cloud";
+  if (action.kind !== "start" || !toCloud || !window.ogb?.cloudAccount?.sync) return button;
+  return <>
+    <label className="flex w-full items-center gap-2 text-[13px] text-ink">
+      <input type="checkbox" defaultChecked={keepFoldersInSync()} onChange={(event) => setKeepFoldersInSync(event.target.checked)} />
+      {t("cloudMove.keepInSync")}
+    </label>
+    {button}
+  </>;
 }
 
 export function CloudMoveSettings({ destination, onClose }: { destination: string; onClose?: () => void }) {

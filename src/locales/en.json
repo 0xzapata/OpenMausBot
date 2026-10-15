@@ -531,6 +531,7 @@
   "cloudMove.retry": "Copy again",
   "cloudMove.ok": "Done",
   "cloudMove.close": "Close",
+  "cloudMove.keepInSync": "Keep the folders bots use in sync with My Cloud",
   "cloudSync.title": "Sync with My Cloud",
   "cloudSync.help": "Keeps the folders your bots use, and what your bots make on My Cloud, the same here and there, so your bots can work on your files while this computer is off.",
   "cloudSync.everyBot": "Every bot on My Cloud can read and change synced files, including ones started by webhooks or routines.",

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { linkPcFolder } from "./link-pc-folder";
 import { browserUnavailableReason } from "@/lib/feature-flags";
 import { ChevronDown, ChevronRight, FolderOpen, Plus } from "lucide-react";
 
@@ -39,6 +40,7 @@ function WorkingFolder({ bot }: { bot: Bot }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const canPick = Boolean(window.ogb?.pickFolder);
+  const cloudSync = window.ogb?.cloudSync;
   const task = bot.tasks?.find((t) => t.threadId === bot.threadId);
   const pinned = task?.cwd;
   const pinnedElsewhere = pinned !== undefined && (pinned ?? undefined) !== bot.cwd;
@@ -96,6 +98,12 @@ function WorkingFolder({ bot }: { bot: Bot }) {
           <button type="submit" disabled={saving || draft === null} className="shrink-0 rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50">
             Save
           </button>
+          {cloudSync && !canPick && (
+            <button type="button" disabled={saving} className="shrink-0 rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
+              onClick={() => void linkPcFolder(cloudSync, (cwd) => save(cwd)).then((problem) => { if (problem) setError(problem); })}>
+              Choose on this PC
+            </button>
+          )}
         </form>
       )}
       {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
