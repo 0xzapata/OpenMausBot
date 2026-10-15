@@ -2,6 +2,8 @@
 // shows when headed: no --enable-automation, AutomationControlled off, the
 // headed user agent, the real display, the person's language.
 
+import { userInfo } from "node:os";
+
 export type BrowserMode = "headless" | "window";
 export type HostKind = "desktop" | "server" | "container";
 
@@ -100,8 +102,22 @@ export interface ChromeEnvInput {
   profileMarker?: string | null;
 }
 
-export function chromeEnv(base: NodeJS.ProcessEnv, input: ChromeEnvInput): NodeJS.ProcessEnv {
+/** The account's own home, from the user database rather than HOME, which a test or a wrapper may have pointed elsewhere. */
+export function accountHome(): string | null {
+  try {
+    return userInfo().homedir || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Chrome keeps per-user state under the home directory, so it always gets the account's real one, never a temporary HOME. */
+export function chromeEnv(base: NodeJS.ProcessEnv, input: ChromeEnvInput, home: string | null = accountHome()): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
+  if (home) {
+    env.HOME = home;
+    if (process.platform === "win32") env.USERPROFILE = home;
+  }
   if (input.host !== "desktop" && input.timezone) env.TZ = input.timezone;
   if (input.sandboxHelper) env.CHROME_DEVEL_SANDBOX = input.sandboxHelper;
   if (input.profileMarker) env.OMB_BROWSER_PROFILE = input.profileMarker;
