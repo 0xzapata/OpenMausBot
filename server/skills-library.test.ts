@@ -108,16 +108,16 @@ describe("skills library store", () => {
   });
 
   it("defaults the feature flag off and switches on only via features.skillsLibrary", () => {
-    expect(config.skillsLibraryEnabled({} as AppConfig)).toBe(false);
-    expect(config.skillsLibraryEnabled({ features: {} } as AppConfig)).toBe(false);
-    expect(config.skillsLibraryEnabled({ features: { skillsLibrary: true } } as AppConfig)).toBe(true);
+    expect(library.skillsLibraryEnabled({} as AppConfig)).toBe(false);
+    expect(library.skillsLibraryEnabled({ features: {} } as AppConfig)).toBe(false);
+    expect(library.skillsLibraryEnabled({ features: { skillsLibrary: true } } as AppConfig)).toBe(true);
   });
 
   it("parseStoredConfig keeps features.skillsLibrary while stripping genuinely unknown keys", () => {
     const stored = config.parseStoredConfig({ features: { skillsLibrary: true, browser: true } });
     expect(stored).toEqual({ features: { skillsLibrary: true, browser: true } });
-    expect(config.skillsLibraryEnabled(stored)).toBe(true);
-    expect(config.skillsLibraryEnabled(config.parseStoredConfig({ features: { browser: true } }))).toBe(false);
+    expect(library.skillsLibraryEnabled(stored)).toBe(true);
+    expect(library.skillsLibraryEnabled(config.parseStoredConfig({ features: { browser: true } }))).toBe(false);
     expect(config.parseStoredConfig({ features: { skillsLibrary: true, teleport: true } })).toEqual({
       features: { skillsLibrary: true },
     });

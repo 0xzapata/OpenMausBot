@@ -35,6 +35,7 @@ it("deletes the memory journal and memory index with the bot", async () => {
     await api(`/api/bots/${kept.id}/memory/file`, "PUT", { path: "memory/notes.md", text: "other notes\n" });
     const journal = await api<{ entries: unknown[] }>(`/api/bots/${bot.id}/memory/journal`);
     expect(journal.entries.length).toBeGreaterThan(0);
+    expect((await api<{ entries: unknown[] }>(`/api/bots/${kept.id}/memory/journal`)).entries.length).toBeGreaterThan(0);
     const journalPath = join(fixture.info.dataDir, "memory-journal", `${bot.id}.ndjson`);
     const keptJournal = join(fixture.info.dataDir, "memory-journal", `${kept.id}.ndjson`);
     expect(existsSync(journalPath)).toBe(true);

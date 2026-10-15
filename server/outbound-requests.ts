@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { ConnectorCall } from "../shared/outbound.ts";
+import { describeTool } from "./activity.ts";
 
 export type OutboundAnswer = "allow" | "deny" | "timeout";
 
@@ -62,4 +64,18 @@ export class OutboundRequestService {
     if (entry) clearTimeout(entry.timer);
     this.held.delete(requestId);
   }
+}
+
+/** What a "Send on your behalf?" card shows: each app action and its arguments, cut at 400 characters. */
+export function outboundCard(outboundCalls: ConnectorCall[]): { app: string | null; calls: { app: string | null; label: string }[]; summary: string } {
+  const calls = outboundCalls.map((call) => {
+    const { app, label } = describeTool(call.slug);
+    return { app, label };
+  });
+  const summary = outboundCalls.map((call, index) => {
+    const described = calls[index];
+    const argsText = call.arguments === undefined ? "" : JSON.stringify(call.arguments);
+    return `${described.app ? `${described.app} · ` : ""}${described.label}${argsText ? `\n${argsText.slice(0, 400)}${argsText.length > 400 ? "… [arguments truncated]" : ""}` : ""}`;
+  }).join("\n\n");
+  return { app: calls[0]?.app ?? null, calls, summary };
 }

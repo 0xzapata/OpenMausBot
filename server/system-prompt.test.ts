@@ -5,6 +5,7 @@ import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import {
   longCommandsPrompt,
   buildSystemPrompt,
+  CONVERSATIONAL_STYLE_PROMPT,
   CLOUD_HOME_PLACE,
   cloudHomePrompt,
   userProfileSystemPrompt,
@@ -307,4 +308,26 @@ it("tells Cloud bots which computer folders are synced here, and to use the sync
   expect(text).toContain("A path on that computer inside one of these means its synced copy here");
   const many = Array.from({ length: 23 }, (_, i) => ({ computerName: "PC", pcPath: `/f${i}`, cloudPath: `/data/Synced/PC/f${i}` }));
   expect(cloudHomePrompt(false, many)).toContain("and 3 more");
+});
+
+describe("reply style", () => {
+  it("adds nothing for the default style, so existing prompts are unchanged", () => {
+    const plain = buildSystemPrompt("persona", "soul", [{ id: "x", label: "X", text: " tail" }]);
+    expect(buildSystemPrompt("persona", "soul", [{ id: "x", label: "X", text: " tail" }], undefined, { replyStyle: "default" })).toEqual(plain);
+    expect(plain.sections.map((s) => s.id)).not.toContain("reply-style");
+  });
+
+  it("puts the conversational guidance right after the soul, in the stable half", () => {
+    const built = buildSystemPrompt("persona", "soul", [
+      { id: "memory", label: "Memory", text: " memory" },
+      { id: "x", label: "X", text: " tail" },
+    ], undefined, { replyStyle: "conversational" });
+    expect(built.sections.map((s) => s.id)).toEqual(["persona", "soul", "reply-style", "memory", "x"]);
+    expect(built.stable).toContain(CONVERSATIONAL_STYLE_PROMPT);
+    expect(built.volatile).not.toContain("Reply style");
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/short/i);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/blank line/);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/code block/);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/language/);
+  });
 });

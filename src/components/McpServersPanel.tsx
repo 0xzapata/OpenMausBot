@@ -26,17 +26,18 @@ import { api, useStore, type ConfigStatus } from "@/state/store";
 
 import { Switch } from "./SettingsPrimitives";
 import { WhopIcon } from "./WhopIcon";
+import { McpResultBudgetField, resultBudgetDraft, withResultBudget, type McpMessage, type McpResultBudgetDraft, type McpResultBudgetListing } from "./McpResultBudgetField";
 import { WHOP_MCP_URL, isWhopServer, whopServerName } from "@/lib/whop-integration";
 
 /** Security: secrets arrive as names only. */
-interface StdioMcpListing {
+interface StdioMcpListing extends McpResultBudgetListing {
   name: string;
   command: string;
   args: string[];
   envKeys: string[];
   enabled: boolean;
 }
-interface RemoteMcpListing {
+interface RemoteMcpListing extends McpResultBudgetListing {
   name: string;
   type: "http" | "sse";
   url: string;
@@ -59,7 +60,7 @@ export function isRemoteMcpListing(server: McpServerListing): server is RemoteMc
 
 type McpTransport = "stdio" | "remote";
 
-interface McpDraft {
+interface McpDraft extends McpResultBudgetDraft {
   name: string;
   transport: McpTransport;
   command: string;
@@ -99,14 +100,9 @@ export async function signedInToolsCheck(
   return { ...tested, error: t("whop.testFailed", { reason: reason && !/[.!?]$/.test(reason) ? `${reason}.` : reason }) };
 }
 
-interface McpMessage {
-  key: LocaleKey;
-  params?: Record<string, string | number>;
-}
-
 const EMPTY_DRAFT: McpDraft = {
   name: "", transport: "stdio", command: "", args: "", env: "", type: "http", url: "", headers: "",
-  oauthClientId: "", oauthClientSecret: "", oauthScopes: "", oauthForgetSecret: false,
+  oauthClientId: "", oauthClientSecret: "", oauthScopes: "", oauthForgetSecret: false, resultBudget: "",
 };
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -191,6 +187,7 @@ function draftFor(server: McpServerListing): McpDraft {
       headers: server.headerKeys.map((key) => `${key}: `).join("\n"),
       oauthClientId: server.oauth?.clientId ?? "",
       oauthScopes: server.oauth?.scopes.join(" ") ?? "",
+      resultBudget: resultBudgetDraft(server),
     };
   }
   return {
@@ -199,6 +196,7 @@ function draftFor(server: McpServerListing): McpDraft {
     command: server.command,
     args: server.args.join("\n"),
     env: server.envKeys.map((key) => `${key}=`).join("\n"),
+    resultBudget: resultBudgetDraft(server),
   };
 }
 
@@ -314,7 +312,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
   const save = async () => {
     const name = draft.name.trim();
     const existing = editing === "new" ? undefined : servers?.find((server) => server.name === editing);
-    const prepared = draftBody(existing);
+    const prepared = withResultBudget(draft.resultBudget, () => draftBody(existing));
     if (!prepared.ok) {
       setError(prepared.error);
       return;
@@ -870,6 +868,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
               </label>
                 </>
               )}
+              <McpResultBudgetField value={draft.resultBudget} onChange={(resultBudget) => setDraft((current) => ({ ...current, resultBudget }))} />
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={closeEditor} className="rounded-lg px-3 py-2 text-[12.5px] text-ink-secondary hover:bg-raised">{t("mcp.cancel")}</button>

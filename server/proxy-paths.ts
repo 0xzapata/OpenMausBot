@@ -25,3 +25,6 @@ export const SPAWNED_PROXIES = {
   hook: resolveProxy("hooks/omb-hook"),
   piMcpExtension: resolveProxy("drivers/pi-mcp-extension"),
 } as const;
+
+// in the packaged app process.execPath is Electron — run the proxy as node
+export const AGENTS_NODE_FLAG = { ELECTRON_RUN_AS_NODE: "1" };

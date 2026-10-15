@@ -11,6 +11,16 @@ export function sameMentionPerson(a?: MentionPerson, b?: MentionPerson): boolean
   return Boolean(a) === Boolean(b) && (a?.profileName ?? "") === (b?.profileName ?? "");
 }
 
+export function mentionQueryAt(text: string, caret: number): { start: number; query: string } | null {
+  const upto = text.slice(0, caret);
+  const at = upto.lastIndexOf("@");
+  if (at === -1) return null;
+  if (at > 0 && !/\s/.test(upto[at - 1])) return null;
+  const query = upto.slice(at + 1);
+  if (query.length > 24 || query.includes("@") || query.includes("\n")) return null;
+  return { start: at, query };
+}
+
 export function mentionChoicesForQuery<T extends { name: string }>(pool: readonly T[], query: string): T[] {
   const normalized = query.trim().toLowerCase();
   if (query.endsWith(" ") && pool.some((choice) => choice.name.toLowerCase() === normalized)) return [];

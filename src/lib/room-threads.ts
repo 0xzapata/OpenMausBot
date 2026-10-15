@@ -1,4 +1,6 @@
+import { t } from "@/lib/i18n";
 import type { Group, GroupTask } from "@/state/store";
+import type { RoomQueueEntry } from "../../shared/wire";
 
 type RoomThreads = Pick<Group, "threadId" | "working" | "busyBotId" | "tasks">;
 type RoomThread = Pick<GroupTask, "threadId" | "working" | "busyBotId">;
@@ -31,4 +33,26 @@ export function roomSpeakerIds(group: RoomThreads): string[] {
 
 export function roomThreadsWorkingElsewhere(group: RoomThreads): number {
   return (group.tasks ?? []).filter((task) => task.threadId !== group.threadId && roomThreadWorking(group, task.threadId)).length;
+}
+
+export function roomThreadQueue(group: Pick<Group, "queue">, threadId: string): RoomQueueEntry[] {
+  return (group.queue ?? []).filter((entry) => entry.threadId === threadId && entry.state === "queued");
+}
+
+export function roomQueueLabel(entry: RoomQueueEntry, nameOf: (botId: string) => string | undefined): string {
+  const name = entry.waitingForBotId ? nameOf(entry.waitingForBotId) : undefined;
+  return name
+    ? t("room.queue.waitingFor", { name, position: entry.position, of: entry.of })
+    : t("room.queue.waiting", { position: entry.position, of: entry.of });
+}
+
+export function roomWorkingPreview(group: RoomThreads & Pick<Group, "queue">, nameOf: (botId: string) => string | undefined): string | undefined {
+  const speakerId = group.busyBotId ?? roomSpeakerIds(group)[0];
+  const queued = (group.queue ?? []).filter((entry) => entry.state === "queued");
+  if (speakerId) {
+    const name = nameOf(speakerId) ?? t("sidebar.preview.aBot");
+    return queued.length ? t("sidebar.preview.botWorkingQueued", { name, count: queued.length }) : t("sidebar.preview.botWorking", { name });
+  }
+  if (queued[0]) return t("room.queue.member", { name: nameOf(queued[0].botId) ?? t("sidebar.preview.aBot"), status: roomQueueLabel(queued[0], nameOf) });
+  return undefined;
 }

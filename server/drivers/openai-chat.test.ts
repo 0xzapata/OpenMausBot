@@ -92,6 +92,14 @@ describe("createOpenAIChatRuntime one-shot usage", () => {
     await instance.dispose();
   });
 
+  it("writes with the model a caller names, and with its own quick model otherwise", async () => {
+    const instance = await fixture({ choices });
+    await expect(instance.generateText!("summarize", { model: "grok-4.7" })).resolves.toBe("helper result");
+    await instance.generateText!("summarize");
+    expect(vi.mocked(fetch).mock.calls.map((call) => JSON.parse(call[1]!.body as string).model)).toEqual(["grok-4.7", "grok-3-mini"]);
+    await instance.dispose();
+  });
+
   it("does not invent usage for malformed JSON or an aborted request", async () => {
     const instance = await fixture("not JSON");
     const onUsage = vi.fn();
