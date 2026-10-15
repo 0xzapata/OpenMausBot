@@ -104,6 +104,19 @@ function tarEntry(path: string, type: "File" | "Directory" | "SymbolicLink" | "L
 afterEach(() => { for (const root of scratch.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("encrypted full workspace backups", () => {
+  it("leaves Sync with My Cloud's own records out of a backup", async () => {
+    const source = directory();
+    mkdirSync(join(source, "sync", "trash"), { recursive: true });
+    writeFileSync(join(source, "sync", "folders.json"), "[]");
+    writeFileSync(join(source, "notes.md"), "kept");
+    const exported = await createWorkspaceBackup(source, { password: PASSWORD });
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    const manifest = readJson(join(target, ".backups", staged.id, "staged", "manifest.json"));
+    expect(manifest.entries.some((entry: { path: string }) => entry.path === "sync" || entry.path.startsWith("sync/"))).toBe(false);
+    expect(manifest.entries.some((entry: { path: string }) => entry.path === "notes.md")).toBe(true);
+  });
+
   it("round-trips WAL conversations, binary files, drafts and IDs; preserves destination identity and connections", async () => {
     const source = directory();
     const db = fixture(source);

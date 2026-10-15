@@ -289,6 +289,23 @@ const bridge = {
       save: input => ipcRenderer.invoke("lending:save", input),
       stop: () => ipcRenderer.invoke("lending:stop"),
     },
+    files: {
+      state: () => ipcRenderer.invoke("files:state"),
+      pickFolder: () => ipcRenderer.invoke("files:pick"),
+      checkFolders: paths => ipcRenderer.invoke("files:check", paths),
+      share: token => ipcRenderer.invoke("files:share", token),
+      stopSharing: folderId => ipcRenderer.invoke("files:stop", folderId),
+      answerDeletes: (folderId, remove) => ipcRenderer.invoke("files:deletes", folderId, remove),
+      locate: folderId => ipcRenderer.invoke("files:locate", folderId),
+      setOutputs: enabled => ipcRenderer.invoke("files:outputs", enabled),
+      open: target => ipcRenderer.invoke("files:open", target),
+      moreSpace: () => ipcRenderer.invoke("files:more-space"),
+      onState: cb => {
+        const handler = (_event, state) => cb(state);
+        ipcRenderer.on("files:state-changed", handler);
+        return () => ipcRenderer.removeListener("files:state-changed", handler);
+      },
+    },
   } : undefined,
   cloudMove: process.argv.includes("--omb-company-desktop=1") ? {
     state: id => ipcRenderer.invoke("cloud-move:state", ...savedServer(id)),
