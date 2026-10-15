@@ -7,11 +7,11 @@ import type { LoginRouteDeps } from "./routes/logins.ts";
 /** What the bot's browser shows while the person answers a sign-in card. */
 export interface ObservedPage {
   host: string;
-  /** It has a password box, shown or not yet: a sign-in page. */
+  /** It has a password box, shown or not yet, or a username or email box: a sign-in page, or its first step. */
   signIn: boolean;
 }
 
-const OBSERVE_PAGE = `JSON.stringify({ href: location.href, signIn: Boolean(document.querySelector('input[type="password"]')) })`;
+const OBSERVE_PAGE = `JSON.stringify({ href: location.href, signIn: Boolean(document.querySelector('input[type="password"], input[type="email"], input[autocomplete~="username"], input[autocomplete~="email"]')) })`;
 
 /** Null when nothing a login could be filled on is open. */
 export async function observeSignInPage(engine: (args: string[]) => Promise<Record<string, unknown> | null>): Promise<ObservedPage | null> {

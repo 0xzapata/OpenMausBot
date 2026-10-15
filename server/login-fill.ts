@@ -79,6 +79,12 @@ const PAGE_HELPERS = `
     }
     return "";
   };
+  // A page sending a login by script shows no submit event: it marks itself busy or disables the form's submit control.
+  const sending = (fields) => {
+    const form = fields.map((el) => el.form).find(Boolean);
+    const controls = form ? Array.from(form.querySelectorAll("button, input[type=submit], input[type=image]")).filter((el) => el.type === "submit" || el.type === "image") : [];
+    return Boolean(document.querySelector('[aria-busy="true"]')) || controls.some((el) => el.disabled);
+  };
   const humanCheck = () => Array.from(document.querySelectorAll("iframe")).some((frame) => {
     const src = frame.getAttribute("src") || "";
     if (!/recaptcha|hcaptcha|challenges\\.cloudflare\\.com|arkoselabs|funcaptcha/i.test(src) || /size=invisible|checkbox-invisible/i.test(src)) return false;
@@ -156,7 +162,8 @@ const FOCUS_FIELD = `((nonce, key, mode, keep) => {
     setter.call(el, "");
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
-  return JSON.stringify({ href: location.href, focused: document.activeElement === el, same: false });
+  const busy = mode === "submit" && sending(marked(nonce + ":").filter((field) => field instanceof HTMLInputElement));
+  return JSON.stringify({ href: location.href, focused: document.activeElement === el, same: false, busy });
 })`;
 
 const CHECK_FIELDS = `((key) => {
@@ -189,7 +196,7 @@ const PAGE_STATE = `((nonce) => {
   const ours = marked(nonce + ":").filter((el) => el instanceof HTMLInputElement);
   const sent = window["__ombLogin" + nonce] || {};
   return JSON.stringify({
-    href: location.href, title: document.title, present: ours.some(visible),
+    href: location.href, title: document.title, present: ours.some(visible), busy: sending(ours),
     submitted: sent.submitted === true, leaving: sent.leaving === true, alert: alertText(), human: humanCheck(),
   });
 })`;
@@ -249,12 +256,12 @@ function sameDocumentUrl(a: string, b: string): boolean {
 
 const FIELD_WORDS: Record<FilledField, string> = { username: "the username", password: "the password", code: "the one-time code" };
 
-interface PageState { href: string; title: string; present: boolean; submitted: boolean; leaving: boolean; alert: string; human: boolean }
+interface PageState { href: string; title: string; present: boolean; busy: boolean; submitted: boolean; leaving: boolean; alert: string; human: boolean }
 
 function pageState(value: Record<string, unknown> | null): PageState | null {
   if (!value || typeof value.href !== "string") return null;
   return {
-    href: value.href, title: typeof value.title === "string" ? value.title : "", present: value.present === true,
+    href: value.href, title: typeof value.title === "string" ? value.title : "", present: value.present === true, busy: value.busy === true,
     submitted: value.submitted === true, leaving: value.leaving === true,
     alert: typeof value.alert === "string" ? value.alert : "", human: value.human === true,
   };
@@ -528,6 +535,8 @@ class LoginRun {
     const key = `${this.nonce}:${step}:`;
     const focus = await this.page(FOCUS_FIELD, this.nonce, key + last, "submit", null);
     const before = typeof focus?.href === "string" ? focus.href : "";
+    const busyBefore = focus?.busy === true;
+    const sending = (state: PageState) => state.submitted || (state.busy && !busyBefore);
     const fresh = (alert: string) => Boolean(alert) && alert !== alertBefore;
     const moved = (state: PageState) => !sameDocumentUrl(state.href, before) || !state.present || state.leaving;
     const settled = (state: PageState | "silent") => state === "silent" || moved(state) || state.human || fresh(state.alert);
@@ -537,13 +546,13 @@ class LoginRun {
       for (;;) {
         await this.sleep(POLL_MS);
         const state = pageState(await this.page(PAGE_STATE, this.nonce));
-        if (state && (settled(state) || (untilSent && state.submitted))) return state;
+        if (state && (settled(state) || (untilSent && sending(state)))) return state;
         if (this.now() >= until) return state ?? "silent";
       }
     };
     await this.deps.press("Enter");
     let state = await watch(ENTER_WAIT_MS, true);
-    if (!settled(state) && !(state !== "silent" && state.submitted)) {
+    if (!settled(state) && !(state !== "silent" && sending(state))) {
       const control = await this.page(MARK_SUBMIT, key);
       if (control?.found !== true) return { kind: "no-control" };
       await this.deps.click(`[${MARK}="${key}submit"]`);

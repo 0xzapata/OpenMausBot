@@ -28,9 +28,11 @@ describe("a login saved from a sign-in card", () => {
 });
 
 describe("the bot's open page", () => {
-  it("is read as its host and whether it has a password box, only for a page a login could be filled on", async () => {
+  it("is read as its host and whether it shows a password, username or email box, only for a page a login could be filled on", async () => {
     page = new FakeLoginPage("https://login.microsoftonline.com/common/oauth2/authorize?client_id=x", LOGIN_FORM);
     expect(await observeSignInPage((args) => page!.engine(args))).toEqual({ host: "login.microsoftonline.com", signIn: true });
+    page.navigate("https://login.example.net/u/login/identifier", `<form><input name="username" autocomplete="username"><button>Continue</button></form>`);
+    expect(await observeSignInPage((args) => page!.engine(args))).toEqual({ host: "login.example.net", signIn: true });
     page.navigate("https://example.com/dashboard", "<h1>Hello</h1>");
     expect(await observeSignInPage((args) => page!.engine(args))).toEqual({ host: "example.com", signIn: false });
     page.navigate("http://example.com/login", LOGIN_FORM);

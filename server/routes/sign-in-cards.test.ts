@@ -29,6 +29,7 @@ async function serve() {
       targets.push({ botId, threadId, messageId });
       return { status: 200, body: { site: "example.com", signInHost: "login.microsoftonline.com" } };
     },
+    threadVisible: (_auth, threadId) => threadId !== "hidden",
   })];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -88,6 +89,17 @@ describe("sign-in card routes", () => {
     expect(text).not.toContain("fake-card-pass");
     expect(saved).toEqual([{ botId: "scout", threadId: "t1", messageId: "m1", body: { threadId: "t1", username: "alice", password: "fake-card-pass" } }]);
     expect(settled).toEqual([]);
+  });
+
+  it("answers a card in a thread the caller cannot see as one that does not exist, and touches nothing", async () => {
+    const { base, settled, saved, targets, post } = await serve();
+    for (const action of ["done", "cancel"]) {
+      const response = await post(`/api/bots/scout/sign-in-cards/m1/${action}`, { threadId: "hidden" });
+      expect({ status: response.status, body: await response.json() }).toEqual({ status: 404, body: { error: "no such sign-in request" } });
+    }
+    expect((await post("/api/bots/scout/sign-in-cards/m1/save-login", { threadId: "hidden", password: "fake-card-pass" })).status).toBe(404);
+    expect((await fetch(`${base}/api/bots/scout/sign-in-cards/m1/save-login?threadId=hidden`)).status).toBe(404);
+    expect([settled, saved, targets]).toEqual([[], [], []]);
   });
 
   it("takes a login as JSON only, so another page's form cannot post one", async () => {

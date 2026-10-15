@@ -23,6 +23,9 @@ export class FakeLoginPage {
   answer: ((fields: Record<string, string>) => SiteAnswer) | null = null;
   /** Frames get the size a browser would lay them out at; happy-dom lays out nothing. */
   frameSize: { width: number; height: number } | null = null;
+  /** The page's own script for a key pressed through the relay. */
+  onKey: ((key: string) => void) | null = null;
+  private submitting: unknown = null;
   streamEnabled = false;
   readonly streamPort = 19_977;
 
@@ -39,6 +42,11 @@ export class FakeLoginPage {
       return size ? { x: 0, y: 0, top: 0, left: 0, right: size.width, bottom: size.height, ...size, toJSON: () => size } as never : box.call(this);
     };
     window.document.body.innerHTML = html;
+    // After the page's own handlers: a form nobody's script kept goes to the site, never to happy-dom's own loader.
+    window.addEventListener("submit", (event) => {
+      if (!event.defaultPrevented) this.submitting = event.target;
+      event.preventDefault();
+    });
     window.document.addEventListener("input", (event) => {
       const target = event.target as unknown as { name?: string; id?: string; value?: string };
       this.state[target.name || target.id || "?"] = target.value ?? "";
@@ -81,25 +89,28 @@ export class FakeLoginPage {
    * or that field is its only one. */
   async press(key: string): Promise<void> {
     this.pressed.push(key);
+    this.onKey?.(key);
     const field = this.window.document.activeElement as unknown as { form?: unknown } | null;
-    const form = field?.form as unknown as { querySelectorAll(selector: string): ArrayLike<{ type?: string }> } | null | undefined;
+    const form = field?.form as unknown as { requestSubmit(): void; querySelectorAll(selector: string): ArrayLike<{ type?: string }> } | null | undefined;
     if (key !== "Enter" || !form) return;
     const buttons = Array.from(form.querySelectorAll("button, input[type=submit]")).filter((el) => el.type === "submit");
-    if (buttons.length || form.querySelectorAll("input:not([type=hidden])").length === 1) this.send(form);
+    if (buttons.length || form.querySelectorAll("input:not([type=hidden])").length === 1) form.requestSubmit();
+    this.deliver();
   }
 
-  /** A real click: a form's submit button sends its form; anything else gets the click event. */
+  /** A real click: the page's handlers run, and a submit button then sends its form unless they kept it. */
   async click(selector: string): Promise<void> {
     this.clicked.push(selector);
-    const el = this.window.document.querySelector(selector) as unknown as { type?: string; form?: unknown; click(): void } | null;
+    const el = this.window.document.querySelector(selector) as unknown as { dispatchEvent(event: unknown): boolean } | null;
     if (!el) throw new Error(`Element not found: ${selector}`);
-    if (el.type === "submit" && el.form) this.send(el.form as never);
-    else el.click();
+    el.dispatchEvent(new this.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    this.deliver();
   }
 
-  private send(form: unknown): void {
-    const element = form as { dispatchEvent(event: unknown): boolean; querySelectorAll(selector: string): ArrayLike<{ name?: string; value?: string }> };
-    element.dispatchEvent(new this.window.Event("submit", { bubbles: true, cancelable: true }));
+  private deliver(): void {
+    const element = this.submitting as { querySelectorAll(selector: string): ArrayLike<{ name?: string; value?: string }> } | null;
+    this.submitting = null;
+    if (!element) return;
     const fields = Object.fromEntries(Array.from(element.querySelectorAll("input")).filter((el) => el.name).map((el) => [el.name!, el.value ?? ""]));
     this.sent.push(fields);
     const answer = this.answer?.(fields) ?? null;

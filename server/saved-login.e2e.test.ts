@@ -159,7 +159,7 @@ it.skipIf(process.platform === "win32")("fills a login saved for example.com on 
     expect((await api("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
     const bot = (await api("POST", "/api/bots", { name: "Filler" })).body.bot;
     expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "browser", browserProfile: "guest" })).status).toBe(200);
-    expect((await api("POST", "/api/logins", { site: "example.com", username: "alice", password: PASSWORD })).status).toBe(201);
+    expect((await api("POST", "/api/logins", { site: "example.com", username: USERNAME, password: PASSWORD })).status).toBe(201);
     expect((await api("POST", "/api/logins", { site: "alice.github.io", username: "alice", password: "fake-pages-pass" })).status).toBe(201);
     const readPassword = { server: "browser", tool: "agent_browser_eval", arguments: { script: "document.querySelector('#password').value" } };
     writeFileSync(browser.planPath, JSON.stringify({ [bot.id]: { turns: [
@@ -174,7 +174,7 @@ it.skipIf(process.platform === "win32")("fills a login saved for example.com on 
     };
 
     await turn("Sign in to example.com.", 1);
-    expect(answered(0, "fill_login")[0].content[0].text).toBe("Filled the username and the password for alice on accounts.example.com. Submit the form now (its sign-in button, or Enter). The password is cleared from the page in 60 seconds. You never see the password; do not read it back from the page.");
+    expect(answered(0, "fill_login")[0].content[0].text).toBe(`Filled the username and the password for ${USERNAME} on accounts.example.com. Submit the form now (its sign-in button, or Enter). The password is cleared from the page in 60 seconds. You never see the password; do not read it back from the page.`);
     const [evaluated] = answered(0, "agent_browser_eval");
     expect(evaluated).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/^A saved password was just filled on this page, so agent_browser_eval is refused here/u) }] });
     expect(page.field("#password").value).toBe(PASSWORD);
@@ -182,13 +182,13 @@ it.skipIf(process.platform === "win32")("fills a login saved for example.com on 
 
     page.navigate("https://bob.github.io/login", LOGIN_FORM);
     await turn("Sign in to Bob's page.", 2);
-    expect(answered(1, "fill_login")[0].content[0].text).toBe("No saved login for bob.github.io. A login fills on its own site and the sign-in hosts saved with it, never on another site. Your saved logins: alice.github.io (alice), example.com (alice). Open that site's login page, or call request_sign_in so the person signs in.");
-    expect(page.typed).toEqual(["alice", PASSWORD]);
+    expect(answered(1, "fill_login")[0].content[0].text).toBe(`No saved login for bob.github.io. A login fills on its own site and the sign-in hosts saved with it, never on another site. Your saved logins: alice.github.io (alice), example.com (${USERNAME}). Open that site's login page, or call request_sign_in so the person signs in.`);
+    expect(page.typed).toEqual([USERNAME, PASSWORD]);
 
     page.navigate("https://www.example.com/login", LOGIN_FORM);
     page.answer = () => ({ error: "Incorrect password." });
     await turn("Try www.", 3);
-    expect(answered(2, "fill_login")[0].content[0].text).toBe("The site did not accept the login for alice on www.example.com. It said: “Incorrect password.”. Check the saved login in Settings → Logins, or call request_sign_in. The password was cleared from the page.");
+    expect(answered(2, "fill_login")[0].content[0].text).toBe(`The site did not accept the login for ${USERNAME} on www.example.com. It said: “Incorrect password.”. Check the saved login in Settings → Logins, or call request_sign_in. The password was cleared from the page.`);
     expect(page.sent).toHaveLength(1);
     expect(page.field("#password").value).toBe("");
     expect(JSON.stringify(evidence())).not.toContain(PASSWORD);

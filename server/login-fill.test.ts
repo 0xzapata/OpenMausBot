@@ -80,6 +80,24 @@ describe("fill_login fills and submits in one call", () => {
     expect(outcome.text).toContain("the page is now https://example.com/dashboard");
   });
 
+  it("waits for a page that sends the login by its own script, instead of pressing its button as well", async () => {
+    const { page, fill } = setup("https://example.com/login",
+      `<div><input name="email" type="email" autocomplete="username"><input name="password" type="password"><button type="button" id="go">Log in</button></div>`,
+      [{ host: "example.com", username: "alice@example.com" }]);
+    let polls = 0;
+    page.onKey = (key) => { if (key === "Enter") page.window.document.body.setAttribute("aria-busy", "true"); };
+    const engine = page.engine.bind(page);
+    page.engine = async (args) => {
+      if (args[0] === "eval" && args[1]!.includes("present:") && page.window.document.body.getAttribute("aria-busy") === "true" && ++polls === 12) page.navigate(DASHBOARD.url, DASHBOARD.html);
+      return engine(args);
+    };
+    const outcome = await fill();
+    expect(outcome).toMatchObject({ ok: true, filled: ["username", "password"] });
+    expect(page.clicked).toEqual([]);
+    expect(polls).toBe(12);
+    expect(outcome.text).toContain("the page is now https://example.com/dashboard");
+  });
+
   it("goes through a two-step login in one call: the username, Next, then the password", async () => {
     const { page, fill } = setup("https://login.example.com/", `<form><input name="identifier" type="email" autocomplete="username"><button>Next</button></form>`,
       [{ host: "login.example.com", username: "alice@example.com" }]);
@@ -155,11 +173,11 @@ describe("a login fills on its own site, and nowhere else", () => {
   });
 
   it("keeps a login marked for its exact host to that host", async () => {
-    const saved = [{ host: "acme.okta.com", username: "alice", exactHost: true }];
+    const saved = [{ host: "acme.okta.com", username: "alice@example.com", exactHost: true }];
     const { page, fill } = setup("https://evil.okta.com/login", LOGIN_FORM, saved);
     const refused = await fill();
     expect(refused.text).toContain("No saved login for evil.okta.com.");
-    expect(refused.text).toContain("Your saved logins: acme.okta.com (alice).");
+    expect(refused.text).toContain("Your saved logins: acme.okta.com (alice@example.com).");
     page.navigate("https://acme.okta.com/login", LOGIN_FORM);
     page.answer = () => ({ navigate: { url: "https://acme.okta.com/app", html: "<title>Apps</title>" } });
     expect(await fill()).toMatchObject({ ok: true, filled: ["username", "password"] });
@@ -210,17 +228,17 @@ describe("a login the site refuses is cleared from the page", () => {
   });
 
   it("never submits twice when the site answers with its login form again", async () => {
-    const { page, fill } = setup("https://example.com/login", LOGIN_FORM, [{ host: "example.com", username: "alice" }]);
+    const { page, fill } = setup("https://example.com/login", LOGIN_FORM, [{ host: "example.com", username: "alice@example.com" }]);
     page.answer = () => ({ navigate: { url: "https://example.com/login", html: `<div role="alert">Wrong email or password</div>${LOGIN_FORM}` } });
     const outcome = await fill();
     expect(outcome.ok).toBe(false);
     expect(outcome.text).toContain("it asked for it again, and nothing was submitted twice. It said: “Wrong email or password”.");
     expect(page.sent).toHaveLength(1);
-    expect(page.typed).toEqual(["alice", PASSWORD]);
+    expect(page.typed).toEqual(["alice@example.com", PASSWORD]);
   });
 
   it("clears the password when the page does not answer the submit at all", async () => {
-    const { page, fill } = setup("https://example.com/login", LOGIN_FORM, [{ host: "example.com", username: "alice" }]);
+    const { page, fill } = setup("https://example.com/login", LOGIN_FORM, [{ host: "example.com", username: "alice@example.com" }]);
     const outcome = await fill();
     expect(outcome.ok).toBe(false);
     expect(outcome.text).toContain("The page did not change.");
@@ -244,21 +262,21 @@ describe("what the page shows after the login is sent", () => {
 
   it("ignores an invisible CAPTCHA badge, and reports one that appears after the password went in", async () => {
     const { page, fill } = setup("https://example.com/login", `<iframe src="https://www.google.com/recaptcha/api2/anchor?k=fake&size=invisible"></iframe>${LOGIN_FORM}`,
-      [{ host: "example.com", username: "alice" }]);
+      [{ host: "example.com", username: "alice@example.com" }]);
     page.frameSize = { width: 304, height: 78 };
     page.answer = () => ({ navigate: { url: "https://example.com/verify", html: `<title>Verify</title>${CHECKBOX_CAPTCHA}` } });
     const outcome = await fill();
     expect(page.sent).toHaveLength(1);
     expect(outcome).toMatchObject({ ok: true, filled: ["username", "password"] });
-    expect(outcome.text).toBe("Submitted the username and the password for alice, and a human check (CAPTCHA) appeared. Call request_sign_in so the person finishes signing in.");
+    expect(outcome.text).toBe("Submitted the username and the password for alice@example.com, and a human check (CAPTCHA) appeared. Call request_sign_in so the person finishes signing in.");
   });
 
   it("sends the person in for a one-time code the page asks for after the password, when no 2FA key is saved", async () => {
-    const { page, fill } = setup("https://example.com/login", LOGIN_FORM, [{ host: "example.com", username: "alice" }]);
+    const { page, fill } = setup("https://example.com/login", LOGIN_FORM, [{ host: "example.com", username: "alice@example.com" }]);
     page.answer = () => ({ navigate: { url: "https://example.com/2fa", html: `<form><input name="otp" autocomplete="one-time-code"><button>Verify</button></form>` } });
     const outcome = await fill();
     expect(outcome).toMatchObject({ ok: true, filled: ["username", "password"] });
-    expect(outcome.text).toBe("Submitted the username and the password for alice. The page now asks for a one-time code, and the saved login has no 2FA key: call request_sign_in so the person enters it.");
+    expect(outcome.text).toBe("Submitted the username and the password for alice@example.com. The page now asks for a one-time code, and the saved login has no 2FA key: call request_sign_in so the person enters it.");
     expect(page.sent).toHaveLength(1);
   });
 });

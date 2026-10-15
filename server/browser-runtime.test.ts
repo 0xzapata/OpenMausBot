@@ -1232,10 +1232,11 @@ describe("a password fill_login left on a page", () => {
     const value = runtime();
     const daemon = daemonSpec();
     try {
-      await value.withSecretInput("s", daemon.spec, filled({ url: "http://fixture.test/after", ms: 40 }));
+      await value.withSecretInput("s", daemon.spec, filled({ url: "http://fixture.test/after", ms: 60_000 }));
       expect((await evaluate(value, daemon)).isError).toBe(true);
-      await sleep(60);
-      expect((await evaluate(value, daemon)).isError).toBeUndefined();
+      const later = Date.now() + 61_000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => later);
+      try { expect((await evaluate(value, daemon)).isError).toBeUndefined(); } finally { clock.mockRestore(); }
       daemon.spec.env.NO_URL = "1";
       const unreadable = runtime();
       await unreadable.withSecretInput("s", daemon.spec, filled({ url: "http://fixture.test/elsewhere", ms: 60_000 }));
@@ -1248,15 +1249,17 @@ describe("a password fill_login left on a page", () => {
     const daemon = daemonSpec();
     try {
       const clear = vi.fn(async () => undefined);
-      await value.withSecretInput("s", daemon.spec, filled({ url: "http://fixture.test/after", ms: 40, clear }));
-      await sleep(60);
+      await value.withSecretInput("s", daemon.spec, filled({ url: "http://fixture.test/after", ms: 50, clear }));
       await vi.waitFor(() => expect(clear).toHaveBeenCalledTimes(1));
       expect((await evaluate(value, daemon)).isError).toBeUndefined();
 
       const held = vi.fn(async () => undefined);
-      await value.withSecretInput("s", daemon.spec, filled({ url: "http://fixture.test/after", ms: 40, clear: held }));
-      await value.take("s", "person");
-      await sleep(60);
+      await value.withSecretInput("s", daemon.spec, filled({ url: "http://fixture.test/after", ms: 300, clear: held }));
+      // In the same tick, so the person holds the browser before the hold's timer can run; Node runs timers in order of
+      // expiry, so the clear has been tried once the longer sleep returns.
+      const taking = value.take("s", "person");
+      await sleep(600);
+      await taking;
       value.release("s", "person");
       expect(held).not.toHaveBeenCalled();
       expect((await evaluate(value, daemon)).isError).toBe(true);
