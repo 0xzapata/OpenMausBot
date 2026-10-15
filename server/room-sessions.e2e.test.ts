@@ -136,6 +136,9 @@ async function build(session: Awaited<ReturnType<typeof launchVerificationServer
       else rmSync(modePath, { force: true });
       const pid = launches(botId).at(-1)?.pid;
       if (pid) await expect.poll(() => alive(pid), { timeout: 30_000 }).toBe(false);
+      // Windows reports the pid gone before the server's child "close" runs; a turn sent in that gap reuses the
+      // dead warm process, and the driver's recovery then resumes its session instead of launching a fresh one.
+      if (pid && process.platform === "win32") await new Promise((resolve) => setTimeout(resolve, 2_000));
     },
     gate: (name: string) => join(dataDir, `${name}.gate`),
     open: (path: string) => writeFileSync(path, "open"),

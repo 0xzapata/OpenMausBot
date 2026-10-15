@@ -36,7 +36,7 @@ test("Files channels answer this computer's own window only, and share only a fo
   // A refused folder gets no token that shares it.
   pick = { canceled: false, filePaths: [join(dir, "home")] };
   const broad = await handlers.get("files:pick")({});
-  assert.equal(broad.refusal, "app-data");
+  assert.equal(broad.refusal, "too-broad");
   await assert.rejects(handlers.get("files:share")({}, broad.token));
   pick = { canceled: true, filePaths: [] };
   assert.equal(await handlers.get("files:pick")({}), null);

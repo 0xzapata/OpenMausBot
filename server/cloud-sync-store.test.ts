@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 it("puts synced folders beside the data folder unless OMB_SYNC_ROOT says otherwise", () => {
-  expect(syncRoot("/data/.openmausbot", {})).toBe("/data/Synced");
+  expect(syncRoot("/data/.openmausbot", {})).toBe(join("/data", "Synced"));
   expect(syncRoot("/data/.openmausbot", { OMB_SYNC_ROOT: "/mnt/sync" })).toBe("/mnt/sync");
 });
 
