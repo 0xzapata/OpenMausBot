@@ -131,6 +131,8 @@ try {
   const ui = (verb: string, ...args: string[]) => runControlOmb(["ui", verb, "--ui", handlePath, ...args]) as Promise<Record<string, any>>;
   const evaluate = async (js: string) => (await ui("eval", "--js", js)).result;
   const click = (name: string) => ui("click", "--name", name);
+  // The selected panel shares its tab's name; click the tab itself.
+  const clickTab = (tour: string) => evaluate(`document.querySelector('[data-tour=${tour}]')?.click(); true`);
   const browser = (...args: string[]) => agentBrowser(binary, sessionEnv(handle!), args);
   const drag = async (element: string, dx: number, dy: number) => {
     const { x, y } = await evaluate(`(() => { const { left, top, width, height } = (${element}).getBoundingClientRect(); return { x: Math.round(left + width / 2), y: Math.round(top + height / 2) }; })()`);
@@ -228,7 +230,7 @@ try {
     await until(async () => await evaluate(receiptSelected), "First receipt did not mount its Data result");
     await ui("wait-settle", "--timeout", "30");
     assert.equal(await evaluate(receiptSelected), true, "First receipt lost its Data selection after configuration settled");
-    await click("Browser");
+    await clickTab("computer-browser");
     await click("Close computer panel");
     await until(async () => await evaluate("!document.querySelector('[data-tour=computer-data]')"), "Computer panel did not close after Browser selection");
     await click("Bot's computer");
@@ -241,7 +243,7 @@ try {
     await chooseHistory("Latest result");
   } else {
     if (!await evaluate("!!document.querySelector('[data-tour=computer-data]')")) await click("Bot's computer");
-    await click("Data");
+    await clickTab("computer-data");
   }
 
   if (!check) {
@@ -704,7 +706,7 @@ try {
       await runControlOmb(["set-model", "--bot", bot.id, "--instance", "openaiCompat", "--model", "data-chat-fixture", "--url", url]);
       await api("PATCH", `/api/bots/${bot.id}`, { toolScope: { allow: ["mcp:data:data_describe", "mcp:data:data_show"] } });
       await browser("set", "viewport", "1600", "1000");
-      await click("Data");
+      await clickTab("computer-data");
       await until(async () => await evaluate("!!document.querySelector('[data-testid=data-panel] [data-testid=data-history]')"), "Data view did not reopen after configuring the fixture provider");
       await chooseHistory("All 100,000 orders");
       await typeSql(manualSql);

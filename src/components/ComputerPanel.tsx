@@ -1279,8 +1279,8 @@ export function ComputerPanel({
   const tabIndexFor = (view: ComputerPanelView) => (view === tabStop ? 0 : -1);
   const onTabRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
-      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1
+    const step = event.key === "ArrowRight" ? 1
+      : event.key === "ArrowLeft" ? -1
       : event.key === "Home" ? "first"
       : event.key === "End" ? "last" : null;
     if (step === null) return;
@@ -1356,7 +1356,7 @@ export function ComputerPanel({
               <Settings size={18} />
             </button>
           )}
-          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-0.5 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" role="tablist" aria-label={t("computer.tabsAria")} onKeyDown={onTabRowKeyDown}>
+          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-1 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" role="tablist" aria-label={t("computer.tabsAria")} onKeyDown={onTabRowKeyDown}>
             <button
               id={panelTabId("computer")}
               role="tab"
@@ -1458,11 +1458,11 @@ export function ComputerPanel({
       </div>
 
       {panelView === "routines" ? (
-        <div role="tabpanel" id={panelTabPanelId("routines")} aria-labelledby={panelTabId("routines")} className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+        <div role="tabpanel" id={panelTabPanelId("routines")} aria-labelledby={panelTabId("routines")} tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
           <RoutinesSection key={bot.id} bot={bot} routines={botRoutines} runs={state.routineRuns} defaultRunOn={cloudRoutineReady ? "cloud" : "maus"} />
         </div>
       ) : panelView === "browser" && browserEnabled ? (
-        <div role="tabpanel" id={panelTabPanelId("browser")} aria-labelledby={panelTabId("browser")} className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        <div role="tabpanel" id={panelTabPanelId("browser")} aria-labelledby={panelTabId("browser")} tabIndex={0} className="flex min-h-0 flex-1 flex-col px-4 pb-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
           {browserSwitchRow}
           {signInHelp?.place === "browser" && <div className="-mt-1 mb-3">{signInBanner()}</div>}
           <BrowserPanel bot={bot} signIn={signInRequest} />
@@ -1473,7 +1473,7 @@ export function ComputerPanel({
           )}
         </div>
       ) : panelView === "browser" ? (
-        <div role="tabpanel" id={panelTabPanelId("browser")} aria-labelledby={panelTabId("browser")} className="flex-1 overflow-y-auto px-5 pb-5" data-testid="browser-off">
+        <div role="tabpanel" id={panelTabPanelId("browser")} aria-labelledby={panelTabId("browser")} tabIndex={0} className="flex-1 overflow-y-auto px-5 pb-5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60" data-testid="browser-off">
           {browserSwitchRow}
           <div className="mt-2 flex flex-col items-center gap-3 rounded-xl bg-card px-6 py-8 text-center">
             <Globe size={22} className="text-ink-secondary" aria-hidden="true" />
@@ -1489,21 +1489,21 @@ export function ComputerPanel({
           </div>
         </div>
       ) : panelView === "data" ? (
-        <div role="tabpanel" id={panelTabPanelId("data")} aria-labelledby={panelTabId("data")} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div role="tabpanel" id={panelTabPanelId("data")} aria-labelledby={panelTabId("data")} tabIndex={0} className="flex min-h-0 flex-1 flex-col overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
           <Suspense fallback={<div className="flex flex-1 items-center justify-center text-[13px] text-ink-secondary" role="status">{t("data.loading")}</div>}>
             <DataPanel key={bot.id} bot={bot} requestedCard={dataRequest} />
           </Suspense>
         </div>
       ) : panelView === "files" ? (
-        <div role="tabpanel" id={panelTabPanelId("files")} aria-labelledby={panelTabId("files")} className="flex min-h-0 flex-1 flex-col">
+        <div role="tabpanel" id={panelTabPanelId("files")} aria-labelledby={panelTabId("files")} tabIndex={0} className="flex min-h-0 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
           <ComputerFilesPane bot={bot} />
         </div>
       ) : panelView === "android" && androidConnected ? (
-        <div role="tabpanel" id={panelTabPanelId("android")} aria-labelledby={panelTabId("android")} className="flex-1 overflow-y-auto px-4 pt-2">
+        <div role="tabpanel" id={panelTabPanelId("android")} aria-labelledby={panelTabId("android")} tabIndex={0} className="flex-1 overflow-y-auto px-4 pt-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
           <AndroidDevicePanel status={androidStatus} />
         </div>
       ) : (
-      <div role="tabpanel" id={panelTabPanelId("computer")} aria-labelledby={panelTabId("computer")} className="flex-1 overflow-y-auto px-5 pb-5">
+      <div role="tabpanel" id={panelTabPanelId("computer")} aria-labelledby={panelTabId("computer")} tabIndex={0} className="flex-1 overflow-y-auto px-5 pb-5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
           <div className="mb-1.5 mt-2 flex items-center justify-between text-[13px] text-ink-secondary">
             <span>{t("computer.screenOf", { name: bot.name })}</span>
             {currentTeamComputer && <span className="text-[11px]">{autoView.short}</span>}

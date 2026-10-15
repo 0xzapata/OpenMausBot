@@ -82,7 +82,11 @@ const tabLabels = () => tabs().map((candidate) => candidate.textContent?.trim())
 const selected = () => tabs().find((candidate) => candidate.getAttribute("aria-selected") === "true")?.textContent?.trim();
 const tabStops = () => tabs().filter((candidate) => candidate.getAttribute("tabindex") === "0").map((candidate) => candidate.textContent?.trim());
 const tabListName = () => document.querySelector('[data-testid="computer-tabs"]')?.getAttribute("aria-label");
-const press = (label: string, key: string) => flushSync(() => tab(label).dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })));
+const press = (label: string, key: string) => {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+  flushSync(() => tab(label).dispatchEvent(event));
+  return event;
+};
 
 beforeAll(() => {
   vi.stubGlobal("ogb", undefined);
@@ -165,6 +169,16 @@ describe("Computer panel tab", () => {
     expect(document.activeElement).toBe(tab("Computer"));
   });
 
+  it("leaves the vertical arrows to the page's scrolling", async () => {
+    await open(makeBot());
+    flushSync(() => tab("Computer").focus());
+    expect(press("Computer", "ArrowDown").defaultPrevented).toBe(false);
+    expect(press("Computer", "ArrowUp").defaultPrevented).toBe(false);
+    await settle();
+    expect(selected()).toBe("Computer");
+    expect(document.activeElement).toBe(tab("Computer"));
+  });
+
   it("moves over an Android tab that appeared", async () => {
     fixture.android = true;
     await open(makeBot());
@@ -193,6 +207,16 @@ describe("Computer panel tab", () => {
       const panel = document.getElementById(trigger.getAttribute("aria-controls")!);
       expect(panel?.getAttribute("role")).toBe("tabpanel");
       expect(panel?.getAttribute("aria-labelledby")).toBe(trigger.id);
+    }
+  });
+
+  it("puts every selected panel in the tab sequence", async () => {
+    await open(makeBot());
+    for (const label of ["Computer", "Routines", "Browser", "Data"]) {
+      flushSync(() => tab(label).click());
+      await settle();
+      const panel = document.getElementById(tab(label).getAttribute("aria-controls")!);
+      expect(panel?.getAttribute("tabindex"), label).toBe("0");
     }
   });
 });
