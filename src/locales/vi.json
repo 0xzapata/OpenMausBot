@@ -382,7 +382,7 @@
   "approval.opaqueCode": "Thao tác này chạy mã có thể gửi hoặc thay đổi nội dung trong các ứng dụng của bạn, vì vậy luôn hỏi trước.",
   "approval.held.outbound": "Thao tác này sẽ thay mặt bạn gửi thông tin, vì vậy hệ thống luôn hỏi trước.",
   "approval.held.undeliveredFull": "Toàn quyền truy cập không thể gửi phê duyệt này.",
-  "approval.held.undelivered": "Tính năng \"Phê duyệt cho tôi\" không thể xử lý yêu cầu này.",
+  "approval.held.undelivered": "Tính năng \"Tự động duyệt cho bạn\" không thể xử lý yêu cầu này.",
   "settings.title": "Cài đặt",
   "settings.search": "Tìm kiếm",
   "settings.searchAria": "Tìm kiếm cài đặt",
