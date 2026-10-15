@@ -1,5 +1,7 @@
-// Reads a PC folder for Sync with My Cloud: every regular file as a wire path with its size, modified time and sha256,
-// hashing only what changed since the base. A file still being written, or open in Office, is unsettled and waits.
+// Reads a folder on this computer for Files: every regular file as a wire path with its size, modified time and sha256,
+// hashing only what changed since the base. A file still being written, or open in Office, is unsettled and waits. A link
+// or a hard-linked file is `kept`: there, but never carried, so it can never read as deleted; a linked folder keeps
+// everything under it (`keptDirs`).
 import { createHash } from "node:crypto";
 import { createReadStream, lstatSync, readdirSync, statSync, watch } from "node:fs";
 import { join } from "node:path";
@@ -31,9 +33,11 @@ function* walkPc(root, wire = "", real = []) {
     const path = wire ? `${wire}/${name}` : name;
     if (skipped(entry.name, entry.isDirectory()) || !validWirePath(path)) continue;
     if (entry.isDirectory()) { yield* walkPc(root, path, [...real, entry.name]); continue; }
+    if (entry.isSymbolicLink()) { yield { path, kept: true, dir: statSync(file, { throwIfNoEntry: false })?.isDirectory() ?? false }; continue; }
     if (!entry.isFile()) continue;
     const stat = lstatSync(file, { throwIfNoEntry: false });
-    if (!stat?.isFile() || stat.nlink !== 1) continue;
+    if (!stat?.isFile()) continue;
+    if (stat.nlink !== 1) { yield { path, kept: true, dir: false }; continue; }
     const locked = names.some((other) => other.startsWith("~$") && other.length > 2 && entry.name.endsWith(other.slice(2)));
     yield { path, file, size: stat.size, mtimeMs: stat.mtimeMs, locked };
   }
@@ -41,12 +45,13 @@ function* walkPc(root, wire = "", real = []) {
 
 export async function scanPc(root, base, { now = Date.now, hash = sha256File } = {}) {
   const entries = new Map();
-  const temps = [];
+  const temps = [], keptDirs = [];
   for (const item of walkPc(root)) {
     if (item.temp) { temps.push({ file: item.file, mtimeMs: item.mtimeMs }); continue; }
+    if (item.kept) { if (item.dir) keptDirs.push(item.path); else entries.set(item.path, { kept: true }); continue; }
     const known = base.get(item.path);
     if (known && known.size === item.size && known.mtimeMs === item.mtimeMs) {
-      entries.set(item.path, { sha256: known.sha256, size: item.size, mtimeMs: item.mtimeMs });
+      entries.set(item.path, { sha256: known.sha256, size: item.size, mtimeMs: item.mtimeMs, file: item.file });
       continue;
     }
     if (item.locked || now() - item.mtimeMs < QUIET_MS) { entries.set(item.path, { unsettled: true }); continue; }
@@ -54,9 +59,9 @@ export async function scanPc(root, base, { now = Date.now, hash = sha256File } =
     try { sha256 = await hash(item.file); } catch { entries.set(item.path, { unsettled: true }); continue; }
     const after = lstatSync(item.file, { throwIfNoEntry: false });
     if (!after || after.size !== item.size || after.mtimeMs !== item.mtimeMs) { entries.set(item.path, { unsettled: true }); continue; }
-    entries.set(item.path, { sha256, size: item.size, mtimeMs: item.mtimeMs });
+    entries.set(item.path, { sha256, size: item.size, mtimeMs: item.mtimeMs, file: item.file });
   }
-  return { entries, temps };
+  return { entries, temps, keptDirs };
 }
 
 /** True when the folder's file system treats "A.txt" and "a.txt" as one file. */

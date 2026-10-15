@@ -120,9 +120,11 @@ export function cloudHomePrompt(sharedComputerTools: boolean, synced: ReadonlyAr
 
 function syncedFoldersPrompt(synced: ReadonlyArray<{ computerName: string; pcPath: string; cloudPath: string }>): string {
   if (!synced.length) return "";
-  const shown = synced.slice(0, 20).map((folder) => `${folder.pcPath} on ${folder.computerName} → ${folder.cloudPath}`).join("; ");
-  return ` Folders synced from the person's computer: ${shown}${synced.length > 20 ? `; and ${synced.length - 20} more` : ""}.`
-    + " A path on that computer inside one of these means its synced copy here; when a folder is also lent, use the synced copy.";
+  // eslint-disable-next-line no-control-regex
+  const clean = (value: string, max: number) => value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ").slice(0, max);
+  const shown = synced.slice(0, 20).map((folder) => `${clean(folder.pcPath, 300)} on ${clean(folder.computerName, 80)} → ${clean(folder.cloudPath, 300)}`).join("; ");
+  return ` Folders the person shares from their computer, as read-only copies kept up to date here: ${shown}${synced.length > 20 ? `; and ${synced.length - 20} more` : ""}.`
+    + " A path on that computer inside one of these means its copy here. Read from these copies, never change or delete files in them: save your work in your own working folder; the person gets it on their computer in Documents › MausBot.";
 }
 
 export const COMPOSIO_PROMPT =

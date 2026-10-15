@@ -1,39 +1,48 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { installCloudSync } from "./cloud-sync-main.mjs";
+import { installCloudFiles } from "./cloud-sync-main.mjs";
 
-test("registers Settings channels as local-only and Choose on this PC for the My Cloud page", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "omb-sync-main-"));
+test("Files channels answer this computer's own window only, and share only a folder the person picked here", async (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "omb-files-main-")));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const handlers = new Map(), guards = [];
-  let login = { openAtLogin: false };
-  const installed = installCloudSync({
-    app: { getPath: (name) => join(dir, name), getLoginItemSettings: () => login, setLoginItemSettings: (next) => { login = next; } },
+  const picked = join(dir, "home", "Clients");
+  mkdirSync(picked, { recursive: true });
+  const handlers = new Map(), guards = [], opened = [];
+  let pick = { canceled: false, filePaths: [picked] };
+  const installed = installCloudFiles({
+    app: { getPath: (name) => join(dir, name) },
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
-    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
-    shell: { trashItem: async () => {}, showItemInFolder: () => {} },
+    dialog: { showOpenDialog: async () => pick },
+    shell: { trashItem: async () => {}, openPath: async (folder) => { opened.push(folder); return ""; } },
     powerMonitor: { on: () => {} },
-    Tray: class {}, Menu: { buildFromTemplate: () => ({}) }, nativeImage: { createFromPath: () => ({ resize: () => ({}) }) }, iconPath: "/icon.png",
     fetch: async () => { throw new Error("offline"); },
-    localWorkspaceOnly: (channel, handler) => { guards.push(["local", channel]); return handler; },
-    cloudPageSender: (channel, handler) => { guards.push(["cloud", channel]); return () => handler(true); },
-    send: () => {}, cloudOrigin: () => null, localBots: async () => ({ bots: [], groups: [] }),
-    cloudAccount: () => ({ growDisk: async () => null, openDashboard: async () => {} }), planDisk: () => null,
-    localDataDir: join(dir, ".openmausbot"), openSettings: () => {},
+    localWorkspaceOnly: (channel, handler) => { guards.push(channel); return handler; },
+    send: () => {}, cloudOrigin: () => null, cloudAccount: () => ({ openDashboard: async () => {} }),
+    localDataDir: join(dir, "home", ".openmausbot"),
   });
   t.after(() => installed.close());
-  assert.deepEqual(guards, [
-    ["local", "sync:state"], ["local", "sync:set"], ["local", "sync:trash"], ["local", "sync:restore"], ["local", "sync:open"], ["local", "sync:upgrade"],
-    ["cloud", "cloud-sync:link-folder"],
-  ]);
-  const state = await handlers.get("sync:set")({}, { enabled: true });
-  assert.equal(state.enabled, true);
-  assert.equal(login.openAtLogin, true, "turning sync on opens the app at login");
-  assert.equal((await handlers.get("sync:set")({}, { openAtLogin: false })).openAtLogin, false);
-  assert.equal(await handlers.get("cloud-sync:link-folder")({}), null, "a cancelled picker links nothing");
+  assert.deepEqual(guards, ["files:state", "files:pick", "files:check", "files:share", "files:stop", "files:deletes", "files:locate", "files:outputs", "files:open", "files:more-space"]);
+  const checked = await handlers.get("files:pick")({});
+  assert.equal(checked.name, "Clients");
+  assert.equal(checked.refusal, null);
+  // Only the token stands for the folder: a made-up one, or the same one twice, shares nothing.
+  await assert.rejects(handlers.get("files:share")({}, "not-a-token"), /Choose the folder again/);
+  const state = await handlers.get("files:share")({}, checked.token);
+  assert.deepEqual(state.shared.map((folder) => folder.pcPath), [picked]);
+  await assert.rejects(handlers.get("files:share")({}, checked.token), /Choose the folder again/);
+  // A refused folder gets no token that shares it.
+  pick = { canceled: false, filePaths: [join(dir, "home")] };
+  const broad = await handlers.get("files:pick")({});
+  assert.equal(broad.refusal, "app-data");
+  await assert.rejects(handlers.get("files:share")({}, broad.token));
+  pick = { canceled: true, filePaths: [] };
+  assert.equal(await handlers.get("files:pick")({}), null);
+  await assert.rejects(handlers.get("files:check")({}, "not a list"));
+  await handlers.get("files:open")({}, { outputs: true });
+  assert.deepEqual(opened, [join(dir, "documents", "MausBot")]);
   // before-quit runs twice when quitting: closing again must not throw.
   installed.close();
   assert.doesNotThrow(() => installed.close());

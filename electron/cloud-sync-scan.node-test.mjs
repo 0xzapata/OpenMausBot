@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,15 +12,21 @@ function folder(t) {
   return dir;
 }
 
-test("lists files as wire paths with hashes, skipping links, litter and sync's own downloads", async (t) => {
+test("lists files as wire paths with hashes, keeping links and hard links as present, skipping litter and sync's own downloads", async (t) => {
   const dir = folder(t);
   mkdirSync(join(dir, "sub"));
   writeFileSync(join(dir, "sub", "a.txt"), "one");
   writeFileSync(join(dir, "Thumbs.db"), "x");
   writeFileSync(join(dir, ".a.txt.omb-sync-1a2b3c4d"), "half");
   symlinkSync(join(dir, "sub", "a.txt"), join(dir, "link.txt"));
-  const { entries, temps } = await scanPc(dir, new Map(), { now: LATER });
-  assert.deepEqual([...entries.keys()], ["sub/a.txt"]);
+  writeFileSync(join(dir, "hard.txt"), "two");
+  linkSync(join(dir, "hard.txt"), join(dir, "sub", "hard-too.txt"));
+  mkdirSync(join(dir, "elsewhere"));
+  symlinkSync(join(dir, "elsewhere"), join(dir, "linked-dir"));
+  const { entries, temps, keptDirs } = await scanPc(dir, new Map(), { now: LATER });
+  assert.deepEqual([...entries].filter(([, entry]) => entry.kept).map(([path]) => path).sort(), ["hard.txt", "link.txt", "sub/hard-too.txt"]);
+  assert.deepEqual(keptDirs, ["linked-dir"]);
+  assert.deepEqual([...entries].filter(([, entry]) => !entry.kept).map(([path]) => path), ["sub/a.txt"]);
   assert.equal(entries.get("sub/a.txt").sha256, await sha256File(join(dir, "sub", "a.txt")));
   assert.deepEqual(temps.map((temp) => temp.file), [join(dir, ".a.txt.omb-sync-1a2b3c4d")]);
 });

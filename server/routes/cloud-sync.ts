@@ -1,5 +1,5 @@
-// /api/sync: folder sync with the owner's desktop, on a Cloud home only. Listed in ROUTES (table.ts) with no wiring
-// from index.ts: the service is built from the data folder on first use.
+// /api/sync: Files with the owner's desktop, on a Cloud home only. Listed in ROUTES (table.ts): the service is built from
+// the data folder on first use; index.ts only says when a bot's turn ends (`noteSyncBotTurn`).
 import { createReadStream } from "node:fs";
 import { cloudHomeConfigured } from "../cloud-home.ts";
 import { DATA_DIR } from "../config.ts";
@@ -14,7 +14,7 @@ export function createCloudSyncRoutes(options: {
   cloudHome: () => boolean;
   root?: string;
   statfs?: (path: string) => { totalBytes: number; freeBytes: number };
-}): RouteHandler & { close(): void } {
+}): RouteHandler & { close(): void; noteBotTurn(botId: string, threadId: string): void } {
   let sync: CloudSync | null = null;
   const service = () => sync ??= createCloudSync({ dataDir: options.dataDir, root: options.root, statfs: options.statfs });
   const handler = async ({ req, res, url, path, method, auth, json, readBody }: RouteContext): Promise<typeof PASS | void> => {
@@ -54,6 +54,7 @@ export function createCloudSyncRoutes(options: {
         const start = range ? Math.min(Number(range[1]), file.size) : 0;
         res.writeHead(range ? 206 : 200, {
           "content-type": "application/octet-stream", "content-length": String(file.size - start), "x-omb-sha256": file.sha256,
+          "x-content-type-options": "nosniff", "content-disposition": "attachment", "content-security-policy": "sandbox",
           ...(range ? { "content-range": `bytes ${start}-${Math.max(file.size - 1, start)}/${file.size}` } : {}),
         });
         if (file.size === start) { res.end(); return; }
@@ -71,7 +72,9 @@ export function createCloudSyncRoutes(options: {
       throw error;
     }
   };
-  return Object.assign(handler, { close: () => { sync?.close(); sync = null; } });
+  // Before the desktop's first call there is nobody to tell: its first pass reads every folder.
+  return Object.assign(handler, { close: () => { sync?.close(); sync = null; }, noteBotTurn: (botId: string, threadId: string) => sync?.noteBotTurn(botId, threadId) });
 }
 
 export const cloudSyncRoutes = createCloudSyncRoutes({ dataDir: DATA_DIR, cloudHome: () => cloudHomeConfigured() });
+export const noteSyncBotTurn = (botId: string, threadId: string) => cloudSyncRoutes.noteBotTurn(botId, threadId);

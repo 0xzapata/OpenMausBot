@@ -1,10 +1,12 @@
-// Folder sync on a Cloud home: what the /api/sync routes do. The desktop drives every pass; this side lists, takes whole
-// files in resumable parts, serves them back, and keeps what it replaces or removes in the trash.
+// Files on a Cloud home: what the /api/sync routes do. The desktop drives every pass; this side lists, takes whole files
+// in resumable parts, serves them back, and keeps what it replaces or removes in the trash. A folder shared from the
+// person's computer is a read-only copy for bots; a bot's own folder goes the other way. A bot's turn ending says its
+// folder changed (`noteBotTurn`), so nothing watches the disk.
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statfsSync, watch, writeSync, type FSWatcher } from "node:fs";
-import { dirname, join, posix, relative, sep, win32 } from "node:path";
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statfsSync, writeSync, existsSync } from "node:fs";
+import { dirname, join, posix, sep, win32 } from "node:path";
 import { writeFileAtomic } from "./atomic.ts";
-import { RESERVE_BYTES, clashPath, validWirePath } from "../electron/cloud-sync-rules.mjs";
+import { clashPath, cloudReserveBytes, validWirePath } from "../electron/cloud-sync-rules.mjs";
 import { SyncPathError, insideFolder } from "./cloud-sync-paths.ts";
 import { CloudSyncStore, sha256File, walk, type SyncFile, type SyncFolder } from "./cloud-sync-store.ts";
 
@@ -36,7 +38,6 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
   let cursor = now();
   const changes: Array<{ seq: number; folderId: string }> = [];
   const waiters = new Set<() => void>();
-  let watchers: FSWatcher[] | null = null;
 
   const folderOf = (id: string): SyncFolder => {
     const folder = store.folder(id);
@@ -63,7 +64,7 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
   const disk = () => {
     const { totalBytes, freeBytes } = statfs(store.root);
     const { pc, bot } = store.bytesByKind();
-    return { totalBytes, freeBytes, syncedBytes: pc, botFileBytes: bot, trashBytes: store.trashBytes(), reserveBytes: RESERVE_BYTES };
+    return { totalBytes, freeBytes, syncedBytes: pc, botFileBytes: bot, trashBytes: store.trashBytes(), reserveBytes: cloudReserveBytes(totalBytes) };
   };
   const uploadFile = (id: string, ext: "json" | "part") => join(uploadsDir, `${id}.${ext}`);
   const readUpload = (id: string): Upload => {
@@ -79,27 +80,6 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
       try { found.push(readUpload(name.slice(0, -5))); } catch { rmSync(join(uploadsDir, name), { force: true }); }
     }
     return found;
-  };
-  const startWatching = () => {
-    if (watchers) return;
-    const started: FSWatcher[] = [];
-    watchers = started;
-    const watchTree = (dir: string, folderFor: (path: string) => string | null) => {
-      try {
-        mkdirSync(dir, { recursive: true, mode: 0o700 });
-        const watcher = watch(dir, { recursive: true }, (_event, name) => {
-          const folderId = name ? folderFor(String(name).split(sep).join("/")) : null;
-          if (folderId) noteChange(folderId);
-        });
-        watcher.on("error", () => {});
-        started.push(watcher);
-      } catch {}
-    };
-    watchTree(store.root, (path) => store.pcFolders().find((folder) => `${path}/`.startsWith(`${relative(store.root, folder.cloudPath).split(sep).join("/")}/`))?.id ?? null);
-    watchTree(join(options.dataDir, "task-workspaces"), (path) => {
-      const [botId, threadId] = path.split("/");
-      return botId && threadId ? `bot-${botId}-${threadId}` : null;
-    });
   };
   const removeEmptyParents = (folder: SyncFolder, file: string) => {
     for (let dir = dirname(file); dir.startsWith(folder.cloudPath + sep); dir = dirname(dir)) {
@@ -153,8 +133,8 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
       if (open) return { uploadId: open.id, received: open.received };
       // Uploads still open will land too: count what they have left to send against the reserve.
       const pending = uploads().reduce((sum, upload) => sum + Math.max(0, upload.size - upload.received), 0);
-      const { freeBytes } = statfs(store.root);
-      if (freeBytes - pending - size < RESERVE_BYTES) throw new SyncError(507, { error: "My Cloud is full", neededBytes: size + pending + RESERVE_BYTES, freeBytes });
+      const { totalBytes, freeBytes } = statfs(store.root), reserve = cloudReserveBytes(totalBytes);
+      if (freeBytes - pending - size < reserve) throw new SyncError(507, { error: "My Cloud is full", neededBytes: size + pending + reserve, freeBytes });
       const upload: Upload = { id: randomUUID(), folderId: folder.id, path: input.path, size, sha256: input.sha256, baseSha256: base as string | null, received: 0, updatedAt: now() };
       closeSync(openSync(uploadFile(upload.id, "part"), "w", 0o600));
       saveUpload(upload);
@@ -189,6 +169,8 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
       if (current) store.toTrash(folder, upload.path, target);
       mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
       renameSync(part, target);
+      // A copy from the person's computer: bots read it, and save their own work in their own folder.
+      if (folder.kind === "pc") chmodSync(target, 0o444);
       dropUpload(uploadId);
       const stat = lstatSync(target);
       store.remember(folder, { path: upload.path, size: stat.size, mtimeMs: stat.mtimeMs, sha256: upload.sha256 });
@@ -215,17 +197,6 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
           if (current.sha256 !== op.baseSha256) { results.push({ conflict: true, current }); continue; }
           store.toTrash(folder, op.path as string, file);
           removeEmptyParents(folder, file);
-          results.push({ ok: true });
-        } else if (op?.op === "move" && typeof op.sha256 === "string") {
-          const from = fileOf(folder, op.from), to = fileOf(folder, op.to);
-          const current = await store.current(folder, op.from as string);
-          if (!current || current.sha256 !== op.sha256 || existsSync(to)) { results.push({ conflict: true, current }); continue; }
-          mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
-          renameSync(from, to);
-          store.forget(folder, op.from as string);
-          const stat = lstatSync(to);
-          store.remember(folder, { path: op.to as string, size: stat.size, mtimeMs: stat.mtimeMs, sha256: current.sha256 });
-          removeEmptyParents(folder, from);
           results.push({ ok: true });
         } else {
           throw new SyncError(400, { error: "invalid op" });
@@ -256,8 +227,9 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
     trash() {
       return { entries: store.trash() };
     },
+    /** A bot's turn ended: its folder may hold new work for the desktop. */
+    noteBotTurn(botId: string, threadId: string) { noteChange(`bot-${botId}-${threadId}`); },
     async changes(since: number, waitMs: number, signal: AbortSignal): Promise<{ cursor: number; folderIds: string[] }> {
-      startWatching();
       const pick = () => {
         const issued = since === cursor || changes.some((change) => change.seq === since) || (changes.length > 0 && since === changes[0]!.seq - 1);
         if (!issued) return { cursor, folderIds: store.folders().map((folder) => folder.id) };
@@ -274,8 +246,6 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
       return pick();
     },
     close() {
-      for (const watcher of watchers ?? []) watcher.close();
-      watchers = null;
       for (const wake of waiters) wake();
       store.close();
     },

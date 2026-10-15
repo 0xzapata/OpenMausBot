@@ -9,3 +9,5 @@ export declare function windowsProblem(path: string): "characters" | "trailing" 
 export declare function foldKey(path: string): string;
 export declare function clashPath(path: string, at: number, taken: (path: string) => boolean, label?: string): string;
 export declare function safeFolderName(name: string, taken: ReadonlySet<string>): string;
+export declare function cloudReserveBytes(totalBytes: number): number;
+export declare function neverFromCloud(path: string): boolean;

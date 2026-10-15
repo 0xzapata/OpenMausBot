@@ -1,4 +1,4 @@
-// An in-memory My Cloud with createSyncClient's surface, for the sync engine and service tests.
+// An in-memory My Cloud with createSyncClient's surface, for the Files engine and service tests.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -9,6 +9,7 @@ export function fakeCloud({ freeBytes = 100 * GB } = {}) {
   const folders = new Map();
   const calls = [];
   const missing = new Set();
+  let ids = 0;
   let bots = { bots: [], groups: [] };
   const state = { freeBytes };
   const files = (id) => folders.get(id).files;
@@ -19,7 +20,7 @@ export function fakeCloud({ freeBytes = 100 * GB } = {}) {
       calls.push(["register", input.pcPath]);
       const existing = [...folders.values()].find((entry) => entry.folder.pcPath === input.pcPath && entry.folder.computerId === input.computerId);
       if (existing) return existing.folder;
-      const folder = { id: `pc-${folders.size + 1}`, kind: "pc", computerId: input.computerId, computerName: input.computerName, pcPath: input.pcPath, cloudPath: `/data/Synced/PC/${input.name}` };
+      const folder = { id: `pc-${++ids}`, kind: "pc", computerId: input.computerId, computerName: input.computerName, pcPath: input.pcPath, cloudPath: `/data/Synced/PC/${input.name}` };
       folders.set(folder.id, { folder, files: new Map() });
       return folder;
     },
@@ -54,12 +55,7 @@ export function fakeCloud({ freeBytes = 100 * GB } = {}) {
         list.delete(op.path);
         return { ok: true };
       }
-      calls.push(["move", `${op.from}->${op.to}`]);
-      const current = list.get(op.from);
-      if (!current || sha(current) !== op.sha256 || list.has(op.to)) return { conflict: true, current: null };
-      list.delete(op.from);
-      list.set(op.to, current);
-      return { ok: true };
+      throw new Error(`unknown op ${op.op}`);
     }),
     // Like the real long poll, answers only when told to stop: a loop over it must not spin.
     changes: (_cursor, _waitMs, signal) => new Promise((resolve) => {
@@ -69,8 +65,6 @@ export function fakeCloud({ freeBytes = 100 * GB } = {}) {
     trash: async () => [],
     restore: async () => ({}),
     bots: async () => bots,
-    setBotFolder: async (id, cwd) => { calls.push(["setBotFolder", id, cwd]); },
-    setRoomFolder: async (id, cwd) => { calls.push(["setRoomFolder", id, cwd]); },
   };
   return {
     client, folders, missing, calls, state,

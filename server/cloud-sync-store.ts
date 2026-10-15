@@ -18,6 +18,8 @@ export interface SyncFolder {
   pcPath?: string;
   botId?: string;
   threadId?: string;
+  /** A bot folder: when it last changed (the folder and what sits directly in it). */
+  newestMs?: number;
   createdAt?: number;
 }
 
@@ -116,7 +118,13 @@ export class CloudSyncStore {
         let holdsFile = true;
         try { holdsFile = !walk(cloudPath).next().done; } catch {}
         if (!holdsFile) continue;
-        folders.push({ id: `bot-${botId}-${threadId}`, kind: "bot", botId, threadId, cloudPath });
+        // When it last changed, cheaply: the folder and what sits directly in it (the desktop takes only recent work).
+        let newestMs = 0;
+        try {
+          newestMs = lstatSync(cloudPath).mtimeMs;
+          for (const name of readdirSync(cloudPath)) newestMs = Math.max(newestMs, lstatSync(join(cloudPath, name), { throwIfNoEntry: false })?.mtimeMs ?? 0);
+        } catch {}
+        folders.push({ id: `bot-${botId}-${threadId}`, kind: "bot", botId, threadId, cloudPath, newestMs });
       }
     }
     return folders;

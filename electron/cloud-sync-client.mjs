@@ -1,4 +1,4 @@
-// The desktop's calls to My Cloud's /api/sync, with the Cloud sign-in the app window already holds (main passes
+// The desktop's calls to My Cloud's /api/sync for Files, with the Cloud sign-in the app window already holds (main passes
 // session.defaultSession.fetch). Uploads go in resumable parts; downloads resume a partial file.
 import { closeSync, createWriteStream, openSync, readSync, statSync } from "node:fs";
 import { Readable } from "node:stream";
@@ -50,8 +50,6 @@ export function createSyncClient({ origin, fetch: fetchImpl, chunkBytes = CHUNK_
     trash: () => json("GET", "/api/sync/trash").then((result) => result.entries),
     restore: (entryId) => json("POST", "/api/sync/trash/restore", { body: { entryId } }),
     bots: () => json("GET", "/api/bots?messages=0").then((result) => ({ bots: result?.bots ?? [], groups: result?.groups ?? [] })),
-    setBotFolder: (botId, cwd) => json("PATCH", `/api/bots/${id(botId)}`, { body: { cwd } }),
-    setRoomFolder: (roomId, cwd) => json("PATCH", `/api/groups/${id(roomId)}`, { body: { cwd } }),
     async upload({ folderId, path, file, size, sha256, baseSha256 }) {
       let begun;
       try {

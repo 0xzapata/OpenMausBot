@@ -22,17 +22,16 @@ function load({ remote, active = true }) {
   return { bridge, invoked };
 }
 
-test("the My Cloud page can ask to link a folder on a click, and sees none of the sync settings", async () => {
+test("the My Cloud page gets no Files bridge at all", () => {
   const remote = load({ remote: true });
-  assert.equal(typeof remote.bridge.cloudSync.linkFolder, "function");
   assert.equal(remote.bridge.cloudAccount, undefined);
-  await remote.bridge.cloudSync.linkFolder();
-  assert.deepEqual(remote.invoked.filter(([channel]) => channel === "cloud-sync:link-folder"), [["cloud-sync:link-folder"]]);
-  await assert.rejects(load({ remote: true, active: false }).bridge.cloudSync.linkFolder());
+  assert.equal(remote.bridge.cloudSync, undefined);
 });
 
-test("this computer's own Settings gets the sync controls", async () => {
+test("this computer's own window gets the Files controls", async () => {
   const local = load({ remote: false });
-  await local.bridge.cloudAccount.sync.set({ enabled: true });
-  assert.deepEqual(local.invoked.at(-1), ["sync:set", { enabled: true }]);
+  await local.bridge.cloudAccount.files.share("token-1");
+  assert.deepEqual(local.invoked.at(-1), ["files:share", "token-1"]);
+  await local.bridge.cloudAccount.files.answerDeletes("f1", true);
+  assert.deepEqual(local.invoked.at(-1), ["files:deletes", "f1", true]);
 });

@@ -1,50 +1,63 @@
-// Wires Sync with My Cloud into the desktop app: the service with Electron's pieces, its Settings channels (this
-// computer's own window only), Choose on this PC for the My Cloud page, the tray item and Open MausBot when I log in.
+// Wires Files into the desktop app: the service with Electron's pieces, and its channels for this computer's own window
+// only. A folder reaches `share` only as a token for one the person picked (or the app suggested and checked) here.
+import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { createCloudSyncService } from "./cloud-sync.mjs";
-import { createCloudSyncIndicator } from "./cloud-sync-indicator.mjs";
+import { createCloudFilesService } from "./cloud-sync.mjs";
+import { createDownloadMarker } from "./cloud-sync-mark.mjs";
 
-export function installCloudSync({
-  app, ipcMain, dialog, shell, powerMonitor, Tray, Menu, nativeImage, iconPath, fetch,
-  localWorkspaceOnly, cloudPageSender, send, cloudOrigin, localBots, cloudAccount, planDisk, localDataDir, openSettings,
-}) {
+const TOKEN_MS = 30 * 60_000;
+
+export function installCloudFiles({ app, ipcMain, dialog, shell, powerMonitor, fetch, localWorkspaceOnly, send, cloudOrigin, cloudAccount, localDataDir, now = Date.now }) {
   const dir = path.join(app.getPath("userData"), "cloud-sync");
-  const indicator = createCloudSyncIndicator({ Tray, Menu, nativeImage, iconPath, onOpen: openSettings });
-  const openAtLogin = () => app.getLoginItemSettings().openAtLogin === true;
-  const setOpenAtLogin = (on) => app.setLoginItemSettings({ openAtLogin: on });
-  const service = createCloudSyncService({
+  const service = createCloudFilesService({
     settingsFile: path.join(dir, "settings.json"), stateFile: path.join(dir, "state.db"),
-    documentsDir: app.getPath("documents"), localDataDir, cloudOrigin, fetch, localBots,
-    growDisk: (sizeGb) => cloudAccount().growDisk(sizeGb), planDisk, trashItem: (file) => shell.trashItem(file),
-    onChange: (state) => { send("sync:state-changed", { ...state, openAtLogin: openAtLogin() }); indicator.update(state); },
+    documentsDir: app.getPath("documents"), localDataDir, cloudOrigin, fetch,
+    trashItem: (file) => shell.trashItem(file), markDownloaded: createDownloadMarker(),
+    onChange: (state) => send("files:state-changed", state),
   });
-  const snapshot = () => ({ ...service.state(), openAtLogin: openAtLogin() });
-  ipcMain.handle("sync:state", localWorkspaceOnly("sync:state", () => snapshot()));
-  ipcMain.handle("sync:set", localWorkspaceOnly("sync:set", async (_event, input) => {
-    if (!input || typeof input !== "object") throw new Error("Invalid sync settings.");
-    if (typeof input.openAtLogin === "boolean") setOpenAtLogin(input.openAtLogin);
-    if (typeof input.enabled === "boolean") {
-      if (input.enabled && !service.state().enabled) setOpenAtLogin(true);
-      await service.setEnabled(input.enabled, { keepCloudCopy: input.keepCloudCopy !== false });
-    }
-    return snapshot();
-  }));
-  ipcMain.handle("sync:trash", localWorkspaceOnly("sync:trash", () => service.trash()));
-  ipcMain.handle("sync:restore", localWorkspaceOnly("sync:restore", async (_event, entryId) => {
-    if (typeof entryId !== "string" || !/^[0-9a-f-]{36}$/.test(entryId)) throw new Error("Invalid deleted file.");
-    await service.restore(entryId);
-    return snapshot();
-  }));
-  ipcMain.handle("sync:open", localWorkspaceOnly("sync:open", (_event, input) => {
-    const file = service.localPath(String(input?.folderId ?? ""), String(input?.path ?? ""));
-    if (file) shell.showItemInFolder(file);
-  }));
-  ipcMain.handle("sync:upgrade", localWorkspaceOnly("sync:upgrade", async () => { await cloudAccount().openDashboard(); }));
-  ipcMain.handle("cloud-sync:link-folder", cloudPageSender("cloud-sync:link-folder", async () => {
-    const picked = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
-    if (picked.canceled || !picked.filePaths[0]) return null;
-    return service.linkFolder(picked.filePaths[0]);
-  }));
+  const tokens = new Map();
+  const issue = (checked) => {
+    for (const [token, entry] of tokens) if (entry.at + TOKEN_MS < now()) tokens.delete(token);
+    const token = randomUUID();
+    if (!checked.refusal) tokens.set(token, { pcPath: checked.pcPath, at: now() });
+    return { token, ...checked };
+  };
+  const pick = async () => {
+    const picked = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    return picked.canceled || !picked.filePaths[0] ? null : picked.filePaths[0];
+  };
+  const handle = (channel, work) => ipcMain.handle(channel, localWorkspaceOnly(channel, work));
+  handle("files:state", () => service.state());
+  handle("files:pick", async () => {
+    const picked = await pick();
+    return picked ? issue(await service.check(picked)) : null;
+  });
+  handle("files:check", async (_event, paths) => {
+    if (!Array.isArray(paths) || paths.length > 20 || !paths.every((value) => typeof value === "string" && value.length <= 4096)) throw new Error("Invalid folders.");
+    return Promise.all(paths.map(async (value) => issue(await service.check(value))));
+  });
+  handle("files:share", async (_event, token) => {
+    const entry = typeof token === "string" ? tokens.get(token) : null;
+    if (!entry) throw new Error("Choose the folder again.");
+    tokens.delete(token);
+    return service.share(entry.pcPath);
+  });
+  const folderId = (value) => {
+    if (typeof value !== "string" || !/^[\w-]{1,200}$/.test(value)) throw new Error("Invalid folder.");
+    return value;
+  };
+  handle("files:stop", (_event, id) => service.stopSharing(folderId(id)));
+  handle("files:deletes", (_event, id, remove) => service.answerDeletes(folderId(id), remove === true));
+  handle("files:locate", async (_event, id) => {
+    const picked = await pick();
+    return picked ? service.relocate(folderId(id), picked) : service.state();
+  });
+  handle("files:outputs", (_event, enabled) => service.setOutputs(enabled === true));
+  handle("files:open", async (_event, target) => {
+    const folder = service.localFolder(target?.outputs === true ? { outputs: true } : { folderId: folderId(target?.folderId) });
+    if (folder) await shell.openPath(folder);
+  });
+  handle("files:more-space", async () => { await cloudAccount().openDashboard(); });
   powerMonitor.on("resume", () => service.wake());
-  return { start: () => service.start(), close: () => { service.close(); indicator.destroy(); } };
+  return { start: () => service.start(), close: () => service.close() };
 }

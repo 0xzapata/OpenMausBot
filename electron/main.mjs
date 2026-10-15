@@ -89,7 +89,7 @@ import { CHECKOUT_SOURCES, cloudMenuSublabel, cloudPlanSnapshot, createCloudAcco
 import { createTrialNotices } from "./cloud-trial-notice.mjs";
 import { createProPlanRelay } from "./pro-plan.mjs";
 import { cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome } from "./cloud-home.mjs";
-import { installCloudSync } from "./cloud-sync-main.mjs";
+import { installCloudFiles } from "./cloud-sync-main.mjs";
 import { createCloudEntry } from "./cloud-entry.mjs";
 import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, parseCloudMoveStatus } from "./cloud-move.mjs";
 import { createOrgLibrary } from "./org-library.mjs";
@@ -3025,13 +3025,11 @@ ipcMain.handle("lending:stop", localWorkspaceOnly("lending:stop", async () => {
   stopLending();
   return lendingSnapshot();
 }));
-const cloudSync = installCloudSync({
-  app, ipcMain, dialog, shell, powerMonitor, Tray, Menu, nativeImage, iconPath: APP_ICON,
-  fetch: (...args) => session.defaultSession.fetch(...args), localWorkspaceOnly, cloudPageSender, localDataDir: desktopDataDir(),
+const cloudSync = installCloudFiles({
+  app, ipcMain, dialog, shell, powerMonitor, localWorkspaceOnly, localDataDir: desktopDataDir(),
+  fetch: (...args) => session.defaultSession.fetch(...args),
   send: (channel, value) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, value); },
-  cloudOrigin: () => myCloud(), cloudAccount: () => ensureCloudAccount(), planDisk: () => cloudPlanDisk(cloudAccount?.state()),
-  localBots: async () => (await fetch(`http://127.0.0.1:${SERVER_PORT}/api/bots?messages=0`, { headers: desktopServerHeaders({ accept: "application/json" }, { packaged: app.isPackaged, token: desktopMutationToken }) })).json(),
-  openSettings: () => void openLendingSettings().catch(error => slog(`sync settings: ${error?.message ?? error}`)),
+  cloudOrigin: () => myCloud(), cloudAccount: () => ensureCloudAccount(),
 });
 
 // window.confirm() has no parent window, so (tiling) window managers cannot center it over the app.

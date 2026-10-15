@@ -1,23 +1,20 @@
-// One folder's pass of Sync with My Cloud: read both sides, plan against the base, carry out each action, and record a
-// new base only once both sides hold the same bytes. A per-file failure is retried next pass; a signed-out or offline
-// Cloud stops the whole pass.
+// One folder's pass of Files: read both sides, plan (cloud-sync-plan.mjs), carry each action out, and record the base
+// only once both sides hold the same bytes. A shared folder goes this computer → My Cloud; a bot's work My Cloud → this
+// computer. A per-file failure is retried next pass; a signed-out or offline Cloud stops the whole pass.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { RESERVE_BYTES, clashPath, foldKey, validWirePath } from "./cloud-sync-rules.mjs";
-import { planFolder } from "./cloud-sync-plan.mjs";
-import { caseInsensitive, scanPc, sha256File } from "./cloud-sync-scan.mjs";
+import { RESERVE_BYTES, clashPath, neverFromCloud, validWirePath, windowsProblem } from "./cloud-sync-rules.mjs";
+import { planOutputs, planShare } from "./cloud-sync-plan.mjs";
+import { scanPc, sha256File } from "./cloud-sync-scan.mjs";
 import { SyncAuthError } from "./cloud-sync-client.mjs";
 
 const TEMP_TAG = ".omb-sync-";
 const TEMP_STALE_MS = 24 * 60 * 60_000;
-const AGENT_CONFIG = /(?:^|\/)(?:CLAUDE\.md|AGENTS\.md|\.claude\/.+)$/;
 const CONCURRENCY = 2;
-// This many files or more vanishing from one side at once reads as a lost folder, not as that many deletes.
-const LOST_AT_ONCE = 3;
 
 export function newReport() {
-  return { waiting: [], clashes: [], held: [], problems: [], notices: [], missing: [], uploaded: 0, downloaded: 0 };
+  return { folders: new Map(), outputsProblem: null };
 }
 
 /** True when the whole pass should stop (signed out, offline), not just this file. */
@@ -28,52 +25,8 @@ export function passStopper(error) {
 
 const defaultFree = (dir) => { const stats = fs.statfsSync(dir); return stats.bavail * stats.bsize; };
 
-export async function syncFolder({ client, state, folder, local, platform = process.platform, now = Date.now, trashItem, grow = async () => false, freeBytes = defaultFree, report }) {
-  let listed;
-  try { listed = await client.files(folder.id); } catch (error) {
-    if (error?.status === 410) { report.missing.push(folder.id); return; }
-    throw error;
-  }
-  if (folder.kind === "pc" && !fs.lstatSync(local, { throwIfNoEntry: false })?.isDirectory()) {
-    report.problems.push({ folderId: folder.id, path: "", error: "This folder is no longer on this computer." });
-    return;
-  }
-  fs.mkdirSync(local, { recursive: true });
-  let base = state.base(folder.id);
-  const { entries: pc, temps } = await scanPc(local, base, { now });
-  for (const temp of temps) if (now() - temp.mtimeMs > TEMP_STALE_MS) fs.rmSync(temp.file, { force: true });
-  // Never trust a path My Cloud sends: one that cannot travel is dropped here, and localFile checks the rest.
-  const cloud = new Map(listed.filter((file) => validWirePath(file.path)).map((file) => [file.path, file]));
-  const lostOn = base.size >= LOST_AT_ONCE && cloud.size === 0 ? "My Cloud" : base.size >= LOST_AT_ONCE && pc.size === 0 ? "this computer" : null;
-  if (lostOn) {
-    // Without the record a pass is a first sync: whatever is left on either side is copied, nothing is deleted.
-    state.dropFolder(folder.id);
-    base = new Map();
-    report.problems.push({ folderId: folder.id, path: "", error: lostOn === "My Cloud"
-      ? "Everything in this folder disappeared on My Cloud at once, so it is being copied back from this computer instead of deleted here."
-      : "Everything in this folder disappeared from this computer at once, so it is being copied back from My Cloud instead of deleted there." });
-  }
-  const { actions, held } = planFolder({ base, pc, cloud, windows: platform === "win32", caseInsensitive: caseInsensitive(local, platform), now: now() });
-  report.held.push(...held.map((item) => ({ folderId: folder.id, ...item })));
-  const ctx = { client, state, folder, local, pc, cloud, now, trashItem, grow, freeBytes, report, grew: false };
-  // Uploads last and smallest first, so a file that does not fit cannot hold back the small ones.
-  const uploads = actions.filter((action) => action.type === "upload").sort((a, b) => a.size - b.size);
-  await inPool([...actions.filter((action) => action.type !== "upload"), ...uploads], CONCURRENCY, async (action) => {
-    const key = action.path ?? action.to;
-    try {
-      await apply(ctx, action);
-      state.cleared(folder.id, key);
-    } catch (error) {
-      if (passStopper(error)) throw error;
-      const message = String(error?.message ?? error);
-      if (state.failed(folder.id, key, message) >= 3) report.problems.push({ folderId: folder.id, path: key, error: message });
-    }
-  });
-}
-
 async function inPool(items, size, work) {
-  let next = 0;
-  let stop = null;
+  let next = 0, stop = null;
   const runner = async () => {
     while (next < items.length && !stop) {
       const item = items[next++];
@@ -82,6 +35,96 @@ async function inPool(items, size, work) {
   };
   await Promise.all(Array.from({ length: Math.min(size, items.length) }, runner));
   if (stop) throw stop;
+}
+
+/** Each action once; a failure is this file's (three in a row show as the folder's problem), unless it stops the pass. */
+async function carryOut(ctx, actions, work) {
+  await inPool(actions, CONCURRENCY, async (action) => {
+    try {
+      await work(action);
+      ctx.state.cleared(ctx.folder.id, action.path);
+    } catch (error) {
+      if (passStopper(error)) throw error;
+      const message = String(error?.message ?? error);
+      if (ctx.state.failed(ctx.folder.id, action.path, message) >= 3) ctx.result.problem ??= `${action.path}: ${message}`;
+    }
+  });
+}
+
+/**
+ * A shared folder: this computer's files to My Cloud. Not on this computer (moved, renamed, a drive unplugged): nothing
+ * is touched, and the person is asked where it went. Many files gone at once wait for the person (`approveDeletes`).
+ */
+export async function shareFolder({ client, state, folder, local, now = Date.now, approveDeletes = null, report }) {
+  const result = { status: "synced", files: 0, done: 0, waitingBytes: 0, pendingDeletes: 0, problem: null };
+  report.folders.set(folder.id, result);
+  if (!fs.lstatSync(local, { throwIfNoEntry: false })?.isDirectory()) { result.status = "missing"; return result; }
+  const base = state.base(folder.id);
+  const { entries: pc, temps, keptDirs } = await scanPc(local, base, { now });
+  for (const temp of temps) if (now() - temp.mtimeMs > TEMP_STALE_MS) fs.rmSync(temp.file, { force: true });
+  const cloud = new Map((await client.files(folder.id)).filter((file) => validWirePath(file.path)).map((file) => [file.path, file]));
+  const plan = planShare({ base, pc, cloud, keptDirs });
+  const ctx = { client, state, folder, result };
+  result.files = [...pc.values()].filter((file) => !file.kept).length;
+  result.done = result.files - plan.uploads.length;
+  for (const record of plan.records) state.setBase(folder.id, record.path, record);
+  for (const { path: wire } of plan.forgets) state.dropBase(folder.id, wire);
+  // Smallest first, so one file that does not fit cannot hold the small ones back.
+  await carryOut(ctx, plan.uploads.sort((a, b) => a.size - b.size), async (action) => {
+    const sent = await send(ctx, action);
+    if (sent === "full") { result.waitingBytes += action.size; return; }
+    state.setBase(folder.id, action.path, action);
+    result.done++;
+  });
+  if (plan.deletes.length) {
+    if (plan.ask && approveDeletes == null) result.pendingDeletes = plan.deletes.length;
+    else if (plan.ask && approveDeletes === false) for (const { path: wire } of plan.deletes) state.dropBase(folder.id, wire);
+    else await carryOut(ctx, plan.deletes, async ({ path: wire, baseSha256 }) => {
+      const [answer] = await client.ops(folder.id, [{ op: "delete", path: wire, baseSha256 }]);
+      if (answer?.ok || answer?.conflict) state.dropBase(folder.id, wire);
+    });
+  }
+  result.status = result.pendingDeletes ? "confirm-deletes" : result.waitingBytes ? "waiting" : result.done < result.files ? "copying" : result.problem ? "problem" : "synced";
+  return result;
+}
+
+/** This computer's version wins: a change a bot made on My Cloud since the listing is replaced too (its copy goes to the trash there). */
+async function send(ctx, action, again = true) {
+  const sent = await ctx.client.upload({ folderId: ctx.folder.id, path: action.path, file: action.file, size: action.size, sha256: action.sha256, baseSha256: action.baseSha256 });
+  if (sent.ok) return "ok";
+  if (sent.full) return "full";
+  if (sent.conflict) {
+    if (sent.current?.sha256 === action.sha256) return "ok";
+    if (again) return send(ctx, { ...action, baseSha256: sent.current?.sha256 ?? null }, false);
+    throw new Error("It kept changing on My Cloud; it will be sent again.");
+  }
+  throw new Error("My Cloud gave an answer this app does not understand.");
+}
+
+/**
+ * A bot's work: My Cloud's files to this computer, in `local` (Documents/MausBot/<bot>/<conversation>). Never deletes here,
+ * never writes a config an agent or tool would obey, and marks each file as downloaded (`markDownloaded`).
+ */
+export async function fetchOutputs({ client, state, folder, local, platform = process.platform, now = Date.now, trashItem, markDownloaded = async () => {}, freeBytes = defaultFree, report }) {
+  const result = { status: "synced", files: 0, done: 0, waitingBytes: 0, pendingDeletes: 0, problem: null };
+  report.folders.set(folder.id, result);
+  fs.mkdirSync(local, { recursive: true });
+  const base = state.base(folder.id);
+  const { entries: pc, temps } = await scanPc(local, base, { now });
+  for (const temp of temps) if (now() - temp.mtimeMs > TEMP_STALE_MS) fs.rmSync(temp.file, { force: true });
+  const listed = (await client.files(folder.id)).filter((file) => validWirePath(file.path) && !neverFromCloud(file.path) && !(platform === "win32" && windowsProblem(file.path)));
+  const cloud = new Map(listed.map((file) => [file.path, file]));
+  const { downloads, records } = planOutputs({ base, pc, cloud });
+  const ctx = { client, state, folder, local, pc, cloud, now, trashItem, markDownloaded, freeBytes, result };
+  result.files = cloud.size;
+  result.done = cloud.size - downloads.length;
+  for (const record of records) state.setBase(folder.id, record.path, record);
+  await carryOut(ctx, downloads, async (action) => {
+    if (await receive(ctx, action) === "full") { result.waitingBytes += action.size; return; }
+    result.done++;
+  });
+  result.status = result.waitingBytes ? "waiting" : result.done < result.files ? "copying" : result.problem ? "problem" : "synced";
+  return result;
 }
 
 /** Where a wire path lives in this folder: never outside it, and never through a link or a file in the way. */
@@ -95,137 +138,40 @@ function localFile(ctx, wire) {
     if (stat && !stat.isDirectory()) throw new Error(`${wire} goes through a link or a file on this computer.`);
   }
   const file = path.join(ctx.local, ...parts);
-  if (!file.startsWith(ctx.local + path.sep)) throw new Error("My Cloud sent a path outside this folder.");
+  if (!file.startsWith(path.join(ctx.local, path.sep))) throw new Error("My Cloud sent a path outside this folder.");
   return file;
 }
 
-/** True when the file is still exactly as the scan saw it: nothing is moved or thrown away over a newer edit. */
-function untouched(ctx, wire) {
-  const seen = ctx.pc.get(wire);
-  const now = fs.lstatSync(localFile(ctx, wire), { throwIfNoEntry: false });
-  return Boolean(seen && !seen.unsettled && now?.isFile() && now.size === seen.size && now.mtimeMs === seen.mtimeMs);
-}
-
-function removeEmptyDirs(root, file) {
-  for (let dir = path.dirname(file); dir.startsWith(root + path.sep); dir = path.dirname(dir)) {
-    try { fs.rmdirSync(dir); } catch { return; }
-  }
-}
-
-async function apply(ctx, action) {
-  const { state, folder, pc } = ctx;
-  switch (action.type) {
-    case "upload":
-      if (await upload(ctx, action) === "ok") state.setBase(folder.id, action.path, { sha256: action.sha256, size: action.size, mtimeMs: action.mtimeMs });
-      return;
-    case "download":
-      return download(ctx, action.path, action.size, pc.get(action.path) ?? null);
-    case "record":
-      state.setBase(folder.id, action.path, { sha256: action.sha256, size: action.size, mtimeMs: action.mtimeMs });
-      return;
-    case "forget":
-      state.dropBase(folder.id, action.path);
-      return;
-    case "deleteCloud": {
-      const [result] = await ctx.client.ops(folder.id, [{ op: "delete", path: action.path, baseSha256: action.baseSha256 }]);
-      if (result?.ok) state.dropBase(folder.id, action.path);
-      return;
-    }
-    case "deletePc": {
-      const seen = pc.get(action.path);
-      if (!seen || seen.unsettled || seen.sha256 !== action.sha256 || !untouched(ctx, action.path)) return;
-      const file = localFile(ctx, action.path);
-      await ctx.trashItem(file);
-      removeEmptyDirs(ctx.local, file);
-      state.dropBase(folder.id, action.path);
-      return;
-    }
-    case "clash":
-      return clash(ctx, action);
-    case "moveCloud": {
-      const [result] = await ctx.client.ops(folder.id, [{ op: "move", from: action.from, to: action.to, sha256: action.sha256 }]);
-      if (result?.ok) {
-        state.dropBase(folder.id, action.from);
-        state.setBase(folder.id, action.to, { sha256: action.sha256, size: action.size, mtimeMs: action.mtimeMs });
-        return;
-      }
-      await apply(ctx, { type: "upload", path: action.to, sha256: action.sha256, size: action.size, mtimeMs: action.mtimeMs, baseSha256: null });
-      await apply(ctx, { type: "deleteCloud", path: action.from, baseSha256: action.sha256 });
-      return;
-    }
-    case "movePc": {
-      const from = localFile(ctx, action.from), to = localFile(ctx, action.to);
-      const seen = pc.get(action.from);
-      // A rename in capitals only is the same file on a case-insensitive disk, so the target "exists".
-      const caseOnly = foldKey(action.from) === foldKey(action.to);
-      if (seen?.sha256 === action.sha256 && untouched(ctx, action.from) && (caseOnly || !fs.existsSync(to))) {
-        fs.mkdirSync(path.dirname(to), { recursive: true });
-        fs.renameSync(from, to);
-        if (!caseOnly) removeEmptyDirs(ctx.local, from);
-        state.dropBase(folder.id, action.from);
-        // A rename keeps the modified time: the scan's size and time are this file's.
-        state.setBase(folder.id, action.to, { sha256: action.sha256, size: seen.size, mtimeMs: seen.mtimeMs });
-        return;
-      }
-      await download(ctx, action.to, action.size, pc.get(action.to) ?? null);
-      return;
-    }
-    default:
-      throw new Error(`Unknown sync action ${action.type}`);
-  }
-}
-
-async function upload(ctx, { path: wire, sha256, size, baseSha256 }) {
-  const { client, folder, report } = ctx;
-  const result = await client.upload({ folderId: folder.id, path: wire, file: localFile(ctx, wire), size, sha256, baseSha256 });
-  if (result.ok) { report.uploaded++; return "ok"; }
-  if (result.conflict) {
-    const current = result.current;
-    if (current?.sha256 === sha256) return "ok";
-    if (!current) return upload(ctx, { path: wire, sha256, size, baseSha256: null });
+async function receive(ctx, { path: wire, sha256, size, replace, beside }) {
+  const { client, folder, state } = ctx;
+  if (ctx.freeBytes(ctx.local) - size < RESERVE_BYTES) return "full";
+  let target = localFile(ctx, wire);
+  const kept = fs.lstatSync(target, { throwIfNoEntry: false });
+  // The person's own edit stays as it is: My Cloud's newer version lands beside it.
+  if (beside && kept) {
     const taken = (candidate) => ctx.pc.has(candidate) || ctx.cloud.has(candidate) || fs.existsSync(localFile(ctx, candidate));
-    await clash(ctx, { path: wire, clashPath: clashPath(wire, ctx.now(), taken), pcSha256: sha256, pcSize: size, cloudSha256: current.sha256, cloudSize: current.size });
-    return "clash";
+    target = localFile(ctx, clashPath(wire, ctx.now(), taken, "new from My Cloud"));
   }
-  if (result.full) {
-    if (!ctx.grew) {
-      ctx.grew = true;
-      if (await ctx.grow(result.neededBytes)) return upload(ctx, { path: wire, sha256, size, baseSha256 });
-    }
-    report.waiting.push({ folderId: folder.id, path: wire, size });
-    return "waiting";
-  }
-  throw new Error("My Cloud gave an answer this app does not understand.");
-}
-
-async function download(ctx, wire, size, expected) {
-  const { client, folder, state, report } = ctx;
-  const target = localFile(ctx, wire);
-  if (ctx.freeBytes(ctx.local) - size < RESERVE_BYTES) { report.waiting.push({ folderId: folder.id, path: wire, size, toThisComputer: true }); return; }
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tag = createHash("sha256").update(`${folder.id}\n${wire}`).digest("hex").slice(0, 8);
-  const temporary = path.join(path.dirname(target), `.${path.basename(target)}${TEMP_TAG}${tag}`);
+  const temporary = path.join(path.dirname(target), `.${path.basename(target).slice(0, 180)}${TEMP_TAG}${tag}`);
   const sent = await client.download(folder.id, wire, temporary, size);
   const got = await sha256File(temporary);
-  if (sent.sha256 && got !== sent.sha256) { fs.rmSync(temporary, { force: true }); throw new Error("The download was damaged; it will be fetched again."); }
+  if (got !== (sent.sha256 ?? sha256)) { fs.rmSync(temporary, { force: true }); throw new Error("The download was damaged; it will be fetched again."); }
+  await ctx.markDownloaded(temporary);
   const now = fs.lstatSync(target, { throwIfNoEntry: false });
-  const unchanged = expected ? Boolean(now?.isFile() && now.size === expected.size && now.mtimeMs === expected.mtimeMs) : !now;
-  if (!unchanged) { fs.rmSync(temporary, { force: true }); return; }
+  if (now) {
+    // Only a file still exactly as the plan saw it is replaced, and the one it replaces goes to the Recycle Bin first.
+    if (!replace || !now.isFile() || now.size !== replace.size || now.mtimeMs !== replace.mtimeMs) { fs.rmSync(temporary, { force: true }); return "skipped"; }
+    await ctx.trashItem(target);
+  }
   fs.renameSync(temporary, target);
   const stat = fs.statSync(target);
-  state.setBase(folder.id, wire, { sha256: got, size: stat.size, mtimeMs: stat.mtimeMs });
-  report.downloaded++;
-  if (AGENT_CONFIG.test(wire)) report.notices.push({ folderId: folder.id, path: wire });
+  if (target === localFile(ctx, wire)) state.setBase(folder.id, wire, { sha256: got, size: stat.size, mtimeMs: stat.mtimeMs });
+  else {
+    const here = ctx.pc.get(wire);
+    if (here && !here.unsettled) state.setBase(folder.id, wire, { sha256, size: here.size, mtimeMs: here.mtimeMs });
+  }
+  return "ok";
 }
 
-async function clash(ctx, action) {
-  const from = localFile(ctx, action.path), to = localFile(ctx, action.clashPath);
-  fs.mkdirSync(path.dirname(to), { recursive: true });
-  fs.renameSync(from, to);
-  const stat = fs.statSync(to);
-  if (await upload(ctx, { path: action.clashPath, sha256: action.pcSha256, size: stat.size, baseSha256: null }) === "ok") {
-    ctx.state.setBase(ctx.folder.id, action.clashPath, { sha256: action.pcSha256, size: stat.size, mtimeMs: stat.mtimeMs });
-  }
-  await download(ctx, action.path, action.cloudSize, null);
-  ctx.report.clashes.push({ folderId: ctx.folder.id, path: action.path, clashPath: action.clashPath });
-}

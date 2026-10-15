@@ -1,66 +1,35 @@
-// Sync with My Cloud, the desktop service. While the switch is on and the app runs, it keeps every folder a local bot
-// or room works in, and every bot's output folder on My Cloud, the same on both sides. It drives every pass over the
-// Cloud sign-in the window holds; My Cloud only answers /api/sync. A new Cloud (another account) starts from no base.
+// Files, the desktop service: the folders the person shared go to My Cloud, and what Cloud bots make comes to
+// Documents/MausBot. This computer decides what is shared (settings.shared); a folder My Cloud names is never synced
+// unless this computer registered it. It drives every pass over the Cloud sign-in the window holds.
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { foldKey, safeFolderName } from "./cloud-sync-rules.mjs";
+import { foldKey, safeFolderName, skipped } from "./cloud-sync-rules.mjs";
 import { SyncAuthError, createSyncClient } from "./cloud-sync-client.mjs";
-import { newReport, passStopper, syncFolder } from "./cloud-sync-engine.mjs";
+import { fetchOutputs, newReport, passStopper, shareFolder } from "./cloud-sync-engine.mjs";
 import { openSyncState } from "./cloud-sync-state.mjs";
 import { watchFolder } from "./cloud-sync-scan.mjs";
 
 const FULL_PASS_MS = 5 * 60_000;
 const LONG_POLL_MS = 60_000;
 const BACKOFF_MS = [1_000, 3_000, 8_000, 15_000, 30_000];
-const GB = 1024 ** 3;
-const OFF = { enabled: false, phase: "off", lastSyncedAt: null, disk: null, folders: [], waiting: [], clashes: [], held: [], problems: [], notices: [], missing: [] };
+const CHECK_FILES_MAX = 100_000, CHECK_MS = 3_000;
+// Keys and settings: never shared, wherever they sit.
+const PRIVATE = [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".local", ".npm", "Library", "AppData", ".openmausbot"];
 
 const pathKey = (value, platform) => {
   const slashed = value.replaceAll("\\", "/").replace(/\/+$/, "");
   return platform === "win32" || platform === "darwin" ? slashed.toLowerCase() : slashed;
 };
-const contains = (parent, child, platform) => pathKey(child, platform) === pathKey(parent, platform) || pathKey(child, platform).startsWith(`${pathKey(parent, platform)}/`);
-
-/** Absolute folders local bots, their tasks and rooms work in, outside the data folder; a nested one folds into its outer. */
-export function linkedFolders({ bots = [], groups = [], localDataDir, homeDir, platform = process.platform }) {
-  const p = platform === "win32" ? path.win32 : path.posix;
-  const key = (value) => pathKey(value, platform);
-  const within = (child, parent) => contains(parent, child, platform);
-  const users = new Map();
-  const add = (folder, kind, id) => {
-    if (typeof folder !== "string" || !p.isAbsolute(folder)) return;
-    const entry = users.get(key(folder)) ?? { pcPath: folder, bots: new Set(), rooms: new Set() };
-    entry[kind].add(id);
-    users.set(key(folder), entry);
-  };
-  for (const bot of bots) {
-    add(bot.cwd, "bots", bot.id);
-    for (const task of bot.tasks ?? []) add(task.cwd, "bots", bot.id);
-  }
-  for (const group of groups) add(group.cwd, "rooms", group.id);
-  const links = [];
-  const refused = [];
-  for (const entry of [...users.values()].sort((a, b) => key(a.pcPath).length - key(b.pcPath).length)) {
-    if (within(entry.pcPath, localDataDir)) continue;
-    if (entry.pcPath === p.parse(entry.pcPath).root || within(homeDir, entry.pcPath)) { refused.push({ pcPath: entry.pcPath, reason: "too-broad" }); continue; }
-    const outer = links.find((link) => within(entry.pcPath, link.pcPath));
-    if (outer) {
-      for (const id of entry.bots) outer.bots.add(id);
-      for (const id of entry.rooms) outer.rooms.add(id);
-      continue;
-    }
-    links.push(entry);
-  }
-  return { links: links.map((link) => ({ pcPath: link.pcPath, bots: [...link.bots], rooms: [...link.rooms] })), refused };
-}
+const within = (child, parent, platform) => pathKey(child, platform) === pathKey(parent, platform) || pathKey(child, platform).startsWith(`${pathKey(parent, platform)}/`);
 
 function readSettings(file) {
   try {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
-    return value && typeof value === "object" ? value : { version: 1, enabled: false };
-  } catch { return { version: 1, enabled: false }; }
+    if (value?.version === 2) return value;
+  } catch {}
+  return { version: 2, shared: [], outputs: null };
 }
 
 function writeSettings(file, value) {
@@ -76,86 +45,93 @@ const sleep = (ms, signal) => new Promise((resolve) => {
   signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
 });
 
-export function createCloudSyncService({
+export function createCloudFilesService({
   settingsFile, stateFile, documentsDir, localDataDir, homeDir = os.homedir(), platform = process.platform, hostname = os.hostname(),
-  cloudOrigin, fetch: fetchImpl, localBots, growDisk, planDisk, trashItem,
+  cloudOrigin, fetch: fetchImpl, trashItem, markDownloaded, openDashboard = async () => {},
   createClient = createSyncClient, watch = watchFolder, freeBytes, now = Date.now, onChange = () => {},
 }) {
   let settings = readSettings(settingsFile);
   const state = openSyncState(stateFile);
-  let status = { ...OFF, enabled: settings.enabled === true };
+  const outputsDir = path.join(documentsDir, "MausBot");
   let closed = false, interval = null, poller = null, cursor = 0, chain = Promise.resolve(), pending = null;
+  let status = { phase: "unavailable", lastSyncedAt: null, disk: null, shared: [], outputs: { enabled: true, dir: outputsDir, folders: 0, problem: null } };
+  const results = new Map();
   const watchers = new Map();
-  const pcKey = (value) => (platform === "win32" ? value.replaceAll("\\", "/").toLowerCase() : value);
 
   const save = (next) => { settings = next; writeSettings(settingsFile, next); };
-  /** The lending rule on the real folder: not a volume root, not the home folder or above it, not a mount point. */
-  const tooBroad = (pcPath) => {
-    let real;
-    try { real = fs.realpathSync(pcPath); } catch { return false; }
-    const p = platform === "win32" ? path.win32 : path.posix;
-    if (real === p.parse(real).root) return true;
-    let home = homeDir;
-    try { home = fs.realpathSync(homeDir); } catch {}
-    if (contains(real, home, platform)) return true;
-    try { return fs.statSync(real).dev !== fs.statSync(path.dirname(real)).dev; } catch { return false; }
-  };
-  const publish = (next) => { status = next; onChange(api.state()); };
+  if (!settings.computerId || !settings.outputs) save({ ...settings, computerId: settings.computerId ?? randomUUID(), outputs: settings.outputs ?? { enabled: true, since: now() } });
+  const view = () => ({
+    ...status,
+    shared: settings.shared.map((folder) => ({ id: folder.id ?? folder.key, name: folder.name, pcPath: folder.pcPath,
+      ...(results.get(folder.key) ?? { status: "copying", files: 0, done: 0, waitingBytes: 0, pendingDeletes: 0, problem: null }) })),
+    outputs: { ...status.outputs, enabled: settings.outputs.enabled === true, dir: outputsDir },
+  });
+  const publish = (next) => { status = { ...status, ...next }; onChange(view()); };
   const client = () => {
     const origin = cloudOrigin();
     return origin ? createClient({ origin, fetch: fetchImpl }) : null;
   };
+  const sharedBy = (idOrKey) => settings.shared.find((folder) => folder.key === idOrKey || folder.id === idOrKey);
+  const update = (key, patch) => save({ ...settings, shared: settings.shared.map((folder) => (folder.key === key ? { ...folder, ...patch } : folder)) });
 
-  async function linkFolders(cloud, folders) {
-    const { links, refused } = linkedFolders({ ...(await localBots()), localDataDir, homeDir, platform });
-    const mine = folders.filter((folder) => folder.kind === "pc" && folder.computerId === settings.computerId);
-    let listed = null;
-    for (const link of links) {
-      if (tooBroad(link.pcPath)) { refused.push({ pcPath: link.pcPath, reason: "too-broad" }); continue; }
-      if (!fs.statSync(link.pcPath, { throwIfNoEntry: false })?.isDirectory()) continue;
-      let folder = mine.find((entry) => pcKey(entry.pcPath) === pcKey(link.pcPath));
-      if (!folder) {
-        folder = await cloud.register({ computerId: settings.computerId, computerName: hostname, pcPath: link.pcPath, name: path.basename(link.pcPath) || "Folder" });
-        mine.push(folder);
+  /** Whether `pcPath` may be shared, and how much it holds (counted for a moment at most; `partial` past that). */
+  async function check(pcPath, self = null) {
+    const p = platform === "win32" ? path.win32 : path.posix;
+    const name = p.basename(pcPath) || pcPath;
+    const refused = (refusal) => ({ name, pcPath, files: 0, bytes: 0, partial: false, refusal });
+    let real;
+    try { real = fs.realpathSync(pcPath); } catch { return refused("not-a-folder"); }
+    if (!fs.statSync(real, { throwIfNoEntry: false })?.isDirectory()) return refused("not-a-folder");
+    let home = homeDir;
+    try { home = fs.realpathSync(homeDir); } catch {}
+    if (real === p.parse(real).root || within(home, real, platform)) return refused("too-broad");
+    try { if (fs.statSync(real).dev !== fs.statSync(path.dirname(real)).dev) return refused("too-broad"); } catch {}
+    const appDirs = [localDataDir, outputsDir].filter(Boolean);
+    if (appDirs.some((dir) => within(real, dir, platform) || within(dir, real, platform))) return refused("app-data");
+    const parts = pathKey(p.relative(home, real), platform).split("/");
+    if (parts.some((part) => PRIVATE.some((name) => pathKey(name, platform) === part))) return refused("private");
+    if (settings.shared.some((folder) => folder.key !== self && (within(real, folder.pcPath, platform) || within(folder.pcPath, real, platform)))) return refused("already-shared");
+    let files = 0, bytes = 0, partial = false;
+    const deadline = Date.now() + CHECK_MS;
+    const walk = (dir) => {
+      if (partial) return;
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (files >= CHECK_FILES_MAX || Date.now() > deadline) { partial = true; return; }
+        if (skipped(entry.name, entry.isDirectory())) continue;
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(file);
+        else if (entry.isFile()) { files++; bytes += fs.lstatSync(file, { throwIfNoEntry: false })?.size ?? 0; }
       }
-      if (state.meta(`relinked:${folder.id}`)) continue;
-      listed ??= await cloud.bots();
-      for (const id of link.bots) {
-        const bot = listed.bots.find((entry) => entry.id === id);
-        if (bot && (!bot.cwd || pcKey(bot.cwd) === pcKey(link.pcPath))) await cloud.setBotFolder(id, folder.cloudPath);
-      }
-      for (const id of link.rooms) {
-        const room = listed.groups.find((entry) => entry.id === id);
-        if (room && (!room.cwd || pcKey(room.cwd) === pcKey(link.pcPath))) await cloud.setRoomFolder(id, folder.cloudPath);
-      }
-      state.setMeta(`relinked:${folder.id}`, "1");
-    }
-    return refused;
+    };
+    walk(real);
+    return { name, pcPath: real, files, bytes, partial, refusal: null };
   }
 
-  const takenIn = (dir) => {
-    const taken = new Set();
-    try { for (const name of fs.readdirSync(dir)) taken.add(foldKey(name)); } catch {}
-    for (const { local } of state.places()) if (path.dirname(local) === dir) taken.add(foldKey(path.basename(local)));
-    return taken;
-  };
-
-  async function botPlaces(cloud, folders) {
+  /** Bot output folders that hold work from since the person turned this on, each in Documents/MausBot/<bot>/<conversation>. */
+  async function outputPlaces(cloud, folders) {
     const places = new Map();
+    const taken = (dir) => {
+      const names = new Set();
+      try { for (const name of fs.readdirSync(dir)) names.add(foldKey(name)); } catch {}
+      for (const { local } of state.places()) if (path.dirname(local) === dir) names.add(foldKey(path.basename(local)));
+      return names;
+    };
     let listed = null;
-    const root = path.join(documentsDir, "MausBot");
-    for (const folder of folders.filter((entry) => entry.kind === "bot")) {
+    for (const folder of folders) {
       let local = state.place(folder.id);
       if (!local) {
+        if (!((folder.newestMs ?? 0) >= settings.outputs.since)) continue;
         listed ??= await cloud.bots();
         const bot = listed.bots.find((entry) => entry.id === folder.botId);
         const task = bot?.tasks?.find((entry) => entry.threadId === folder.threadId);
         let botDir = state.meta(`botdir:${folder.botId}`);
         if (!botDir) {
-          botDir = path.join(root, safeFolderName(bot?.name ?? folder.botId, takenIn(root)));
+          botDir = path.join(outputsDir, safeFolderName(bot?.name ?? "Bot", taken(outputsDir)));
           state.setMeta(`botdir:${folder.botId}`, botDir);
         }
-        local = path.join(botDir, safeFolderName(task?.title || folder.threadId, takenIn(botDir)));
+        local = path.join(botDir, safeFolderName(task?.title || "Conversation", taken(botDir)));
         state.setPlace(folder.id, local);
       }
       places.set(folder.id, local);
@@ -163,21 +139,18 @@ export function createCloudSyncService({
     return places;
   }
 
-  function watchAll(folders, localOf) {
-    const ids = new Set(folders.map((folder) => folder.id));
-    for (const [id, close] of watchers) if (!ids.has(id)) { close(); watchers.delete(id); }
-    for (const folder of folders) {
-      if (watchers.has(folder.id)) continue;
-      const local = localOf(folder);
-      if (local && fs.existsSync(local)) watchers.set(folder.id, watch(local, () => void pass(new Set([folder.id]))));
+  function watchShared() {
+    const keys = new Set(settings.shared.map((folder) => folder.key));
+    for (const [key, close] of watchers) if (!keys.has(key)) { close(); watchers.delete(key); }
+    for (const folder of settings.shared) {
+      if (watchers.has(folder.key) || !folder.id || !fs.existsSync(folder.pcPath)) continue;
+      watchers.set(folder.key, watch(folder.pcPath, () => void pass(new Set([folder.id]))));
     }
   }
 
-  const merge = (previous, next, only) => (only ? [...previous.filter((entry) => !only.has(entry.folderId)), ...next] : next);
-
   /** Passes run one at a time. A call while one waits joins it (its folders added, or all of them) and gets its promise. */
   function pass(only = null) {
-    if (!settings.enabled || closed) return Promise.resolve();
+    if (closed) return Promise.resolve();
     if (pending) {
       pending.only = pending.only && only ? new Set([...pending.only, ...only]) : null;
       return pending.promise;
@@ -193,63 +166,74 @@ export function createCloudSyncService({
   }
 
   async function runPass(only) {
-    if (!settings.enabled || closed) return;
+    if (closed) return;
+    const origin = cloudOrigin();
+    if (!origin) { publish({ phase: "unavailable", disk: null }); return; }
+    // Another My Cloud (another account): nothing recorded applies; the shared folders are registered there afresh.
+    if (settings.origin !== origin) {
+      state.reset();
+      results.clear();
+      save({ ...settings, origin, unregister: [], shared: settings.shared.map((folder) => ({ ...folder, id: null, deletes: null })) });
+    }
+    const cloud = createClient({ origin, fetch: fetchImpl });
     const report = newReport();
     try {
-      const origin = cloudOrigin();
-      if (!origin) { publish({ ...status, phase: "signed-out" }); return; }
-      if (settings.origin !== origin) { state.reset(); save({ ...settings, origin }); }
-      const cloud = createClient({ origin, fetch: fetchImpl });
-      publish({ ...status, phase: "syncing" });
-      const refused = await linkFolders(cloud, (await cloud.summary()).folders);
-      const { folders, disk } = await cloud.summary();
-      const mine = folders.filter((folder) => folder.kind === "bot" || folder.computerId === settings.computerId);
-      const places = await botPlaces(cloud, mine);
-      const localOf = (folder) => (folder.kind === "pc" ? folder.pcPath : places.get(folder.id));
-      let grew = false;
-      const grow = async (neededBytes) => {
-        if (grew) return false;
-        grew = true;
-        const plan = planDisk();
-        if (!plan || plan.volumeBytes >= plan.maxBytes) return false;
-        const sizeGb = Math.min(plan.maxBytes / GB, Math.ceil(plan.volumeBytes / GB) + 10 * Math.max(1, Math.ceil(neededBytes / (10 * GB))));
-        const result = await growDisk(sizeGb).catch(() => null);
-        return Boolean(result?.disk);
-      };
-      for (const folder of mine) {
-        if (only && !only.has(folder.id)) continue;
-        // One folder's trouble is that folder's problem; only a signed-out or unreachable Cloud stops the pass.
+      publish({ phase: "syncing" });
+      for (const id of settings.unregister ?? []) {
+        await cloud.unregister(id, false).catch((error) => { if (passStopper(error) || error?.status !== 404) throw error; });
+        save({ ...settings, unregister: (settings.unregister ?? []).filter((other) => other !== id) });
+      }
+      const summary = await cloud.summary();
+      const listed = new Set(summary.folders.map((folder) => folder.id));
+      for (const folder of settings.shared) {
+        if (only && folder.id && !only.has(folder.id)) continue;
         try {
-          await syncFolder({ client: cloud, state, folder, local: localOf(folder), platform, now, trashItem, grow, ...(freeBytes ? { freeBytes } : {}), report });
+          if (!folder.id || !listed.has(folder.id)) {
+            const registered = await cloud.register({ computerId: settings.computerId, computerName: hostname, pcPath: folder.pcPath, name: folder.name });
+            if (registered.id !== folder.id) state.dropFolder(folder.id ?? folder.key);
+            update(folder.key, { id: registered.id });
+          }
+          const current = sharedBy(folder.key);
+          const approveDeletes = current.deletes === "remove" ? true : current.deletes === "keep" ? false : null;
+          const result = await shareFolder({ client: cloud, state, folder: { id: current.id }, local: current.pcPath, now, approveDeletes, report });
+          results.set(folder.key, result);
+          if (current.deletes) update(folder.key, { deletes: null });
         } catch (error) {
-          if (error instanceof SyncAuthError || passStopper(error)) throw error;
-          report.problems.push({ folderId: folder.id, path: "", error: String(error?.message ?? error) });
+          if (passStopper(error)) throw error;
+          if (error?.status === 410) update(folder.key, { id: null });
+          results.set(folder.key, { status: "problem", files: 0, done: 0, waitingBytes: 0, pendingDeletes: 0, problem: String(error?.message ?? error) });
         }
       }
-      watchAll(mine, localOf);
-      const plan = planDisk();
+      let outputsProblem = null, outputFolders = 0;
+      if (settings.outputs.enabled) {
+        try {
+          const places = await outputPlaces(cloud, summary.folders.filter((folder) => folder.kind === "bot"));
+          outputFolders = places.size;
+          for (const [id, local] of places) {
+            if (only && !only.has(id)) continue;
+            try {
+              await fetchOutputs({ client: cloud, state, folder: { id }, local, platform, now, trashItem, markDownloaded, ...(freeBytes ? { freeBytes } : {}), report });
+            } catch (error) {
+              if (passStopper(error)) throw error;
+              if (error?.status !== 410) outputsProblem = String(error?.message ?? error);
+            }
+          }
+        } catch (error) {
+          if (passStopper(error)) throw error;
+          outputsProblem = String(error?.message ?? error);
+        }
+      }
+      watchShared();
+      const disk = summary.disk;
       const usedBytes = disk.totalBytes - disk.freeBytes;
-      const planMaxBytes = plan?.maxBytes ?? disk.totalBytes;
-      const waiting = merge(status.waiting, report.waiting, only);
       publish({
-        enabled: true,
-        phase: waiting.length ? "waiting" : "synced",
-        lastSyncedAt: now(),
-        disk: { ...disk, usedBytes, planMaxBytes, warn: usedBytes >= 0.8 * planMaxBytes },
-        folders: mine.map((folder) => ({ id: folder.id, kind: folder.kind, local: localOf(folder), cloudPath: folder.cloudPath })),
-        waiting,
-        clashes: [...report.clashes, ...status.clashes].slice(0, 50),
-        held: merge(status.held, report.held, only),
-        problems: [
-          ...refused.map((entry) => ({ folderId: "", path: entry.pcPath, error: "This folder is too broad to sync. Link a folder inside your home folder instead." })),
-          ...merge(status.problems.filter((entry) => entry.folderId), report.problems, only),
-        ],
-        notices: [...report.notices, ...status.notices].slice(0, 20),
-        missing: only ? [...status.missing.filter((id) => !only.has(id)), ...report.missing] : report.missing,
+        phase: "idle", lastSyncedAt: now(),
+        disk: { totalBytes: disk.totalBytes, freeBytes: disk.freeBytes, usedBytes, sharedBytes: disk.syncedBytes ?? 0, warn: usedBytes >= 0.8 * disk.totalBytes },
+        outputs: { ...status.outputs, folders: outputFolders, problem: outputsProblem },
       });
     } catch (error) {
-      publish({ ...status, phase: error instanceof SyncAuthError ? "signed-out" : "offline" });
-      if (!passStopper(error) && !(error instanceof SyncAuthError)) console.error(`[cloud-sync] pass stopped: ${error?.message ?? error}`);
+      publish({ phase: error instanceof SyncAuthError ? "signed-out" : "offline" });
+      if (!passStopper(error) && !(error instanceof SyncAuthError)) console.error(`[files] pass stopped: ${error?.message ?? error}`);
     }
   }
 
@@ -260,9 +244,8 @@ export function createCloudSyncService({
         const cloud = client();
         if (!cloud) { await sleep(30_000, signal); continue; }
         const result = await cloud.changes(cursor, LONG_POLL_MS, signal);
-        const recovered = attempt > 0;
+        const recovered = attempt > 0, known = cursor !== 0;
         attempt = 0;
-        const known = cursor !== 0;
         cursor = result.cursor;
         // Back online after failures: anything may have changed meanwhile, so look at every folder.
         if (recovered) void pass();
@@ -275,7 +258,7 @@ export function createCloudSyncService({
   }
 
   function start() {
-    if (!settings.enabled || closed || interval) return;
+    if (closed || interval) return;
     interval = setInterval(() => void pass(), FULL_PASS_MS);
     interval.unref?.();
     poller = new AbortController();
@@ -283,82 +266,70 @@ export function createCloudSyncService({
     void pass();
   }
 
-  function stop() {
-    clearInterval(interval);
-    interval = null;
-    poller?.abort();
-    poller = null;
-    for (const close of watchers.values()) close();
-    watchers.clear();
-  }
-
   const api = {
     start,
     pass,
-    state: () => ({ ...status, enabled: settings.enabled === true }),
-    async setEnabled(on, { keepCloudCopy = true } = {}) {
-      if (on) {
-        save({ ...settings, version: 1, enabled: true, computerId: settings.computerId ?? randomUUID() });
-        publish({ ...status, enabled: true, phase: "syncing" });
-        start();
-        return api.state();
-      }
-      stop();
-      const cloud = client();
-      if (!keepCloudCopy && cloud) {
-        const { folders } = await cloud.summary();
-        const listed = await cloud.bots();
-        for (const folder of folders.filter((entry) => entry.kind === "pc" && entry.computerId === settings.computerId)) {
-          for (const bot of listed.bots.filter((entry) => entry.cwd === folder.cloudPath)) await cloud.setBotFolder(bot.id, null);
-          for (const room of listed.groups.filter((entry) => entry.cwd === folder.cloudPath)) await cloud.setRoomFolder(room.id, null);
-          await cloud.unregister(folder.id, false);
-        }
-      }
-      // Kept copies keep their record and their folders here, so turning on again carries on where it left off.
-      if (!keepCloudCopy) state.reset();
-      save({ ...settings, enabled: false });
-      publish({ ...OFF });
-      return api.state();
+    state: () => view(),
+    check: (pcPath) => check(pcPath),
+    async share(pcPath) {
+      const checked = await check(pcPath);
+      if (checked.refusal) throw new Error(`This folder can't be shared (${checked.refusal}).`);
+      const key = randomUUID();
+      save({ ...settings, shared: [...settings.shared, { key, id: null, pcPath: checked.pcPath, name: checked.name, deletes: null, addedAt: now() }] });
+      results.set(key, { status: "copying", files: checked.files, done: 0, waitingBytes: 0, pendingDeletes: 0, problem: null });
+      onChange(view());
+      await pass();
+      return view();
     },
-    async linkFolder(pcPath) {
-      if (!settings.enabled) throw new Error("Turn on Sync with My Cloud first.");
-      if (!fs.statSync(pcPath, { throwIfNoEntry: false })?.isDirectory()) throw new Error("Choose a folder.");
-      const { links, refused } = linkedFolders({ bots: [{ id: "chosen", cwd: pcPath }], localDataDir, homeDir, platform });
-      if (refused.length || tooBroad(pcPath)) throw new Error("This folder is too broad to sync. Choose a folder inside your home folder.");
-      if (!links.length) throw new Error("MausBot's own data folder does not sync this way.");
-      const cloud = client();
-      if (!cloud) throw new Error("Open My Cloud from Settings → MausBot Cloud first.");
-      // A folder inside one already synced folds into it: its Cloud copy is the matching folder inside that copy.
-      const outer = (await cloud.summary()).folders.find((folder) => folder.kind === "pc" && folder.computerId === settings.computerId && contains(folder.pcPath, pcPath, platform));
-      if (outer) {
-        const inner = path.relative(outer.pcPath, pcPath).split(path.sep).filter(Boolean);
-        return { cloudPath: path.posix.join(outer.cloudPath, ...inner) };
-      }
-      const folder = await cloud.register({ computerId: settings.computerId, computerName: hostname, pcPath, name: path.basename(pcPath) || "Folder" });
-      state.setMeta(`relinked:${folder.id}`, "1");
-      void pass(new Set([folder.id]));
-      return { cloudPath: folder.cloudPath };
+    async stopSharing(idOrKey) {
+      const folder = sharedBy(idOrKey);
+      if (!folder) return view();
+      watchers.get(folder.key)?.();
+      watchers.delete(folder.key);
+      results.delete(folder.key);
+      if (folder.id) state.dropFolder(folder.id);
+      save({ ...settings, shared: settings.shared.filter((other) => other.key !== folder.key), unregister: folder.id ? [...(settings.unregister ?? []), folder.id] : settings.unregister ?? [] });
+      onChange(view());
+      void pass();
+      return view();
     },
-    async trash() {
-      const cloud = client();
-      return cloud ? cloud.trash() : [];
+    async answerDeletes(idOrKey, remove) {
+      const folder = sharedBy(idOrKey);
+      if (!folder) return view();
+      update(folder.key, { deletes: remove ? "remove" : "keep" });
+      await pass(folder.id ? new Set([folder.id]) : null);
+      return view();
     },
-    async restore(entryId) {
-      const cloud = client();
-      if (!cloud) throw new Error("Open My Cloud from Settings → MausBot Cloud first.");
-      const restored = await cloud.restore(entryId);
-      void pass(restored?.folderId ? new Set([restored.folderId]) : null);
-      return api.state();
+    async relocate(idOrKey, pcPath) {
+      const folder = sharedBy(idOrKey);
+      if (!folder) return view();
+      const checked = await check(pcPath, folder.key);
+      if (checked.refusal) throw new Error(`This folder can't be shared (${checked.refusal}).`);
+      watchers.get(folder.key)?.();
+      watchers.delete(folder.key);
+      update(folder.key, { pcPath: checked.pcPath });
+      await pass(folder.id ? new Set([folder.id]) : null);
+      return view();
     },
-    localPath(folderId, wire) {
-      const folder = status.folders.find((entry) => entry.id === folderId);
-      return folder?.local ? path.join(folder.local, ...String(wire).split("/").filter(Boolean)) : null;
+    async setOutputs(enabled) {
+      save({ ...settings, outputs: { enabled, since: settings.outputs.since ?? now() } });
+      onChange(view());
+      if (enabled) void pass();
+      return view();
     },
+    localFolder(target) {
+      if (target?.outputs) { fs.mkdirSync(outputsDir, { recursive: true }); return outputsDir; }
+      return sharedBy(target?.folderId)?.pcPath ?? null;
+    },
+    openDashboard,
     wake: () => void pass(),
     close() {
       if (closed) return;
       closed = true;
-      stop();
+      clearInterval(interval);
+      poller?.abort();
+      for (const close of watchers.values()) close();
+      watchers.clear();
       state.close();
     },
   };

@@ -284,6 +284,7 @@ import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER } from "./hosted-models.t
 import { CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal, firstCloudTurnPatch } from "./cloud-home.ts";
 import { createCloudHealth } from "./cloud-health.ts";
 import { createCloudSignedRoutes } from "./routes/cloud-signed.ts";
+import { noteSyncBotTurn } from "./routes/cloud-sync.ts";
 import { CLOUD_PERSONAL_REFUSAL, settleCloudOwnership, type CloudOwnership } from "./cloud-owner.ts";
 import { createCloudMoveRoutes, workspaceShared } from "./cloud-move-http.ts";
 import { RESTART_EXIT_CODE } from "./restart.ts";
@@ -5811,6 +5812,8 @@ const memoryUpkeep = createMemoryUpkeep({
 
 bus.subscribe((event: RuntimeEvent) => {
   if (!CLOUD_HOME || event.type !== "turn.completed" || shouldIgnoreProviderEvent(event)) return;
+  const turnBot = store.botByThread(event.threadId);
+  if (turnBot) noteSyncBotTurn(turnBot.id, event.threadId);
   const patch = firstCloudTurnPatch({
     cloudHome: true, recorded: cfg.onboarding?.firstTurnAt, ok: event.ok,
     known: Boolean(store.botByThread(event.threadId) ?? store.groupByThread(event.threadId)),
