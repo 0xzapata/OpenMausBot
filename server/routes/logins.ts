@@ -1,5 +1,5 @@
 // No answer ever carries a password, a 2FA key or the token: a saved secret is only ever replaced.
-import { LOGIN_FIELD_MAX, normalizeLoginHost, type LoginBots, type LoginSummary, type OnePasswordStatus } from "../../shared/logins.ts";
+import { LOGIN_FIELD_MAX, loginPlace, normalizeLoginHost, type LoginBots, type LoginSummary, type OnePasswordStatus } from "../../shared/logins.ts";
 import type { LoginPatch, NewLogin } from "../login-store.ts";
 import { parseTotpKey, type TotpKey } from "../totp.ts";
 import { PASS, type RouteHandler } from "./table.ts";
@@ -16,10 +16,13 @@ export interface LoginRouteDeps {
     connect(token: string): Promise<OnePasswordStatus>;
     refresh(): Promise<OnePasswordStatus>;
     disconnect(): OnePasswordStatus;
+    /** Null for a vault the token does not read. */
+    grant(vaultId: string, bots: LoginBots): OnePasswordStatus | null;
   };
 }
 
 const ONE_PASSWORD = "/api/logins/1password";
+const VAULT = /^\/api\/logins\/1password\/vaults\/([\w-]{1,128})$/u;
 
 const ID = /^[\w-]{1,128}$/u;
 
@@ -30,6 +33,7 @@ export const LOGIN_ERRORS = {
   totp: "That 2FA key is not valid. Paste the setup key (letters A–Z and digits 2–7) or the otpauth:// address from the site's QR code.",
   bots: "Choose every bot, or bots that exist.",
   token: "Paste a 1Password service account token. It starts with ops_.",
+  exactHost: "exactHost must be true or false.",
   readOnly: "This login is in 1Password. Change or remove it there.",
 } as const;
 
@@ -86,6 +90,14 @@ export function createLoginRoutes(deps: LoginRouteDeps): RouteHandler {
     }
     if (path === `${ONE_PASSWORD}/refresh` && method === "POST") return json(res, 200, { onePassword: await deps.onePassword.refresh() });
     if (path === ONE_PASSWORD && method === "DELETE") return json(res, 200, { onePassword: deps.onePassword.disconnect() });
+    const vault = VAULT.exec(path);
+    if (vault && method === "PATCH") {
+      const body = await readBody(req, 16_384);
+      const bots = parseBots(body && typeof body === "object" ? body.bots : undefined, deps.botExists);
+      if (!bots.ok || bots.value === undefined) return json(res, 400, { error: bots.ok ? LOGIN_ERRORS.bots : bots.error });
+      const status = deps.onePassword.grant(vault[1]!, bots.value);
+      return status ? json(res, 200, { onePassword: status }) : json(res, 404, { error: "no such vault" });
+    }
     if (path === ONE_PASSWORD || path.startsWith(`${ONE_PASSWORD}/`)) return json(res, 405, { error: "method not allowed" });
     if (path === "/api/logins" && method === "POST") {
       const body = await readBody(req, 16_384);
@@ -98,8 +110,9 @@ export function createLoginRoutes(deps: LoginRouteDeps): RouteHandler {
       if (!totp.ok) return json(res, 400, { error: totp.error });
       const bots = parseBots(body.bots ?? "all", deps.botExists);
       if (!bots.ok) return json(res, 400, { error: bots.error });
+      if (body.exactHost !== undefined && typeof body.exactHost !== "boolean") return json(res, 400, { error: LOGIN_ERRORS.exactHost });
       const login = deps.create({
-        host, username: fields.value.username ?? "", password: fields.value.password!,
+        ...loginPlace(host, [], body.exactHost === true), username: fields.value.username ?? "", password: fields.value.password!,
         totp: totp.value ?? null, source: "settings", bots: bots.value ?? "all",
       });
       return json(res, 201, { login });
@@ -119,10 +132,12 @@ export function createLoginRoutes(deps: LoginRouteDeps): RouteHandler {
     if (!totp.ok) return json(res, 400, { error: totp.error });
     const bots = parseBots(body.bots, deps.botExists);
     if (!bots.ok) return json(res, 400, { error: bots.error });
+    if (body.exactHost !== undefined && typeof body.exactHost !== "boolean") return json(res, 400, { error: LOGIN_ERRORS.exactHost });
     const login = deps.update(id, {
       ...fields.value,
       ...(totp.value === undefined ? {} : { totp: totp.value }),
       ...(bots.value === undefined ? {} : { bots: bots.value }),
+      ...(body.exactHost === undefined ? {} : { exactHost: body.exactHost }),
     });
     return login ? json(res, 200, { login }) : json(res, 404, { error: "no such login" });
   };

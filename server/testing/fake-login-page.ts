@@ -1,7 +1,10 @@
 // A stand-in for the bot's browser in fill_login tests: one happy-dom page answering the engine commands
-// login-fill sends and taking typed text like the input relay. It records every engine command, so a
+// login-fill sends and taking typed text, keys and clicks like the input relay. It records every engine command, so a
 // test can prove no secret went through one.
 import { Window } from "happy-dom";
+
+/** What the site does with a sent form: show another page (a sign-in that worked, or a next step), or stay and say why. */
+export type SiteAnswer = { navigate: { url: string; html: string } } | { error: string } | null;
 
 export class FakeLoginPage {
   window: Window;
@@ -9,8 +12,17 @@ export class FakeLoginPage {
   readonly engineCalls: string[][] = [];
   /** Every text typed through the input relay. */
   readonly typed: string[] = [];
+  /** Every key pressed and element clicked through the relay. */
+  readonly pressed: string[] = [];
+  readonly clicked: string[] = [];
   /** What the page's scripts saw: field name → the last value an input event carried. */
   readonly state: Record<string, string> = {};
+  /** Each form the page sent, as field name → value. */
+  readonly sent: Array<Record<string, string>> = [];
+  /** The site's answer to a sent form; with none, the form goes nowhere. */
+  answer: ((fields: Record<string, string>) => SiteAnswer) | null = null;
+  /** Frames get the size a browser would lay them out at; happy-dom lays out nothing. */
+  frameSize: { width: number; height: number } | null = null;
   streamEnabled = false;
   readonly streamPort = 19_977;
 
@@ -20,6 +32,12 @@ export class FakeLoginPage {
 
   private open(url: string, html: string): Window {
     const window = new Window({ url, settings: { disableJavaScriptEvaluation: false } });
+    const frameSize = () => this.frameSize;
+    const box = window.HTMLIFrameElement.prototype.getBoundingClientRect;
+    window.HTMLIFrameElement.prototype.getBoundingClientRect = function (this: never) {
+      const size = frameSize();
+      return size ? { x: 0, y: 0, top: 0, left: 0, right: size.width, bottom: size.height, ...size, toJSON: () => size } as never : box.call(this);
+    };
     window.document.body.innerHTML = html;
     window.document.addEventListener("input", (event) => {
       const target = event.target as unknown as { name?: string; id?: string; value?: string };
@@ -29,6 +47,7 @@ export class FakeLoginPage {
   }
 
   navigate(url: string, html: string): void {
+    this.window.dispatchEvent(new this.window.Event("beforeunload"));
     void this.window.happyDOM.close();
     this.window = this.open(url, html);
   }
@@ -56,6 +75,36 @@ export class FakeLoginPage {
     field.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, data: text, inputType: "insertText" }));
     field.value += text;
     field.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+  }
+
+  /** A key at the focused element. Enter in a form's field sends the form when a browser would: it has a submit button,
+   * or that field is its only one. */
+  async press(key: string): Promise<void> {
+    this.pressed.push(key);
+    const field = this.window.document.activeElement as unknown as { form?: unknown } | null;
+    const form = field?.form as unknown as { querySelectorAll(selector: string): ArrayLike<{ type?: string }> } | null | undefined;
+    if (key !== "Enter" || !form) return;
+    const buttons = Array.from(form.querySelectorAll("button, input[type=submit]")).filter((el) => el.type === "submit");
+    if (buttons.length || form.querySelectorAll("input:not([type=hidden])").length === 1) this.send(form);
+  }
+
+  /** A real click: a form's submit button sends its form; anything else gets the click event. */
+  async click(selector: string): Promise<void> {
+    this.clicked.push(selector);
+    const el = this.window.document.querySelector(selector) as unknown as { type?: string; form?: unknown; click(): void } | null;
+    if (!el) throw new Error(`Element not found: ${selector}`);
+    if (el.type === "submit" && el.form) this.send(el.form as never);
+    else el.click();
+  }
+
+  private send(form: unknown): void {
+    const element = form as { dispatchEvent(event: unknown): boolean; querySelectorAll(selector: string): ArrayLike<{ name?: string; value?: string }> };
+    element.dispatchEvent(new this.window.Event("submit", { bubbles: true, cancelable: true }));
+    const fields = Object.fromEntries(Array.from(element.querySelectorAll("input")).filter((el) => el.name).map((el) => [el.name!, el.value ?? ""]));
+    this.sent.push(fields);
+    const answer = this.answer?.(fields) ?? null;
+    if (answer && "navigate" in answer) this.navigate(answer.navigate.url, answer.navigate.html);
+    else if (answer && "error" in answer) this.window.document.body.insertAdjacentHTML("afterbegin", `<p role="alert">${answer.error}</p>`);
   }
 
   close(): void {

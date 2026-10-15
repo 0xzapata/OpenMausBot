@@ -6355,7 +6355,7 @@ describe("harness HTTP API", () => {
     }
   }, 60_000);
 
-  it("saves a login from the sign-in card for its exact host, resumes the bot to fill it, and never hands the password back", async () => {
+  it("saves a login from the sign-in card for its site, resumes the bot to fill it, and never hands the password back", async () => {
     // Obvious fakes only.
     const password = "fake-card-Passw0rd!";
     const twoFactorKey = "JBSWY3DPEHPK3PXP";
@@ -6398,16 +6398,16 @@ describe("harness HTTP API", () => {
 
       rmSync(fakeClaudeDump, { force: true });
       expect(await save({ threadId: bot.threadId, username: "alice@example.com", password, totp: twoFactorKey }))
-        .toMatchObject({ status: 200, body: { done: true, resumed: true, saved: true, host: "accounts.example.com" } });
+        .toMatchObject({ status: 200, body: { done: true, resumed: true, saved: true, site: "example.com" } });
       const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
-      expect(JSON.stringify(resumed.prompt)).toContain("the person saved a login for accounts.example.com. Open its login page in your browser and call fill_login there");
-      expect((await card()).signIn).toMatchObject({ done: true, savedLogin: "accounts.example.com", resumed: true });
+      expect(JSON.stringify(resumed.prompt)).toContain("the person saved a login for example.com. Open its login page in your browser and call fill_login there");
+      expect((await card()).signIn).toMatchObject({ done: true, savedLogin: "example.com", resumed: true });
       expect((await save({ threadId: bot.threadId, username: "bob", password: "fake-other-pass" })).status).toBe(409);
 
       const listed = await api("GET", "/api/logins");
       answers.push(JSON.stringify(listed.body));
       expect(listed.body.logins).toEqual([expect.objectContaining({
-        host: "accounts.example.com", username: "alice@example.com", hasTotp: true, source: "card", bots: [bot.id],
+        site: "example.com", hosts: ["accounts.example.com"], exactHost: false, username: "alice@example.com", hasTotp: true, source: "card", bots: [bot.id],
       })]);
       loginId = listed.body.logins[0].id;
       expect(listed.body.onePassword).toEqual({ connected: false });

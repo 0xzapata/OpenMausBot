@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { BotLogins } from "../bot-logins.ts";
 import { json, readBody } from "../harness/http.ts";
 import { LoginStore } from "../login-store.ts";
 import { OnePasswordLogins, sdkOnePasswordClient } from "../onepassword.ts";
@@ -33,18 +34,9 @@ async function serve() {
   const { sdk } = fakeOnePasswordSdk({ token: TOKEN, vaults: { v1: { title: "Shared with OMB", items: [
     { id: "i1", title: "Example", urls: ["https://vault.example.com"], username: "vault-user", password: VAULT_PASSWORD },
   ] } } });
-  const onePassword = new OnePasswordLogins({ token: () => store.onePasswordToken(), connect: (token) => sdkOnePasswordClient(sdk, token, "0.0.0") });
-  const routes = [createLoginRoutes({
-    list: () => store.list(), create: (input) => store.create(input), update: (id, patch) => store.update(id, patch),
-    remove: (id) => store.remove(id), botExists: (id) => ["pepper", "quill"].includes(id),
-    onePassword: {
-      status: () => onePassword.status(),
-      list: () => onePassword.list(),
-      connect: async (token) => { const status = await onePassword.refresh(token); store.setOnePasswordToken(token); return status; },
-      refresh: () => onePassword.refresh(),
-      disconnect: () => { store.setOnePasswordToken(null); onePassword.clear(); return onePassword.status(); },
-    },
-  })];
+  const onePassword = new OnePasswordLogins({ token: () => store.onePasswordToken(), grants: () => store.onePasswordGrants(), connect: (token) => sdkOnePasswordClient(sdk, token, "0.0.0") });
+  const logins = new BotLogins(store, onePassword);
+  const routes = [createLoginRoutes(logins.routes((id) => ["pepper", "quill"].includes(id)))];
   const answers: string[] = [];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -60,20 +52,21 @@ async function serve() {
     answers.push(text);
     return { status: response.status, body: JSON.parse(text), cache: response.headers.get("cache-control") };
   };
-  return { store, call, answers };
+  return { store, logins, call, answers };
 }
 
 describe("Settings → Logins routes", () => {
   it("are for admins only", () => {
     for (const method of ["GET", "POST"]) expect(requiredScope(method, "/api/logins")).toBe("admin");
     for (const method of ["PATCH", "DELETE"]) expect(requiredScope(method, "/api/logins/abc")).toBe("admin");
+    expect(requiredScope("PATCH", "/api/logins/1password/vaults/v1")).toBe("admin");
   });
 
   it("add, list, change and delete a login, and never return its password or 2FA key", async () => {
     const { store, call, answers } = await serve();
     const added = await call("POST", "/api/logins", { site: "https://accounts.example.com/login", username: " alice@example.com ", password: PASSWORD, totp: KEY, bots: ["pepper"] });
     expect(added.status).toBe(201);
-    expect(added.body.login).toMatchObject({ host: "accounts.example.com", username: "alice@example.com", hasTotp: true, source: "settings", bots: ["pepper"] });
+    expect(added.body.login).toMatchObject({ site: "example.com", hosts: ["accounts.example.com"], exactHost: false, username: "alice@example.com", hasTotp: true, source: "settings", bots: ["pepper"] });
     const id = added.body.login.id;
 
     const listed = await call("GET", "/api/logins");
@@ -88,6 +81,10 @@ describe("Settings → Logins routes", () => {
 
     for (const answer of answers) for (const secret of [PASSWORD, NEW_PASSWORD, KEY]) expect(answer).not.toContain(secret);
 
+    expect((await call("PATCH", `/api/logins/${id}`, { exactHost: true })).body.login).toMatchObject({ exactHost: true, hosts: ["accounts.example.com"] });
+    expect((await call("PATCH", `/api/logins/${id}`, { exactHost: "yes" })).body).toEqual({ error: LOGIN_ERRORS.exactHost });
+    expect(store.get(id)?.exactHost).toBe(true);
+
     expect(await call("DELETE", `/api/logins/${id}`)).toMatchObject({ status: 200, body: { ok: true } });
     expect((await call("GET", "/api/logins")).body.logins).toEqual([]);
     expect((await call("DELETE", `/api/logins/${id}`)).status).toBe(404);
@@ -101,6 +98,7 @@ describe("Settings → Logins routes", () => {
     [{ site: "example.com", username: "a", password: "x".repeat(513) }, LOGIN_ERRORS.long],
     [{ site: "example.com", username: "a", password: PASSWORD, totp: "not a key" }, LOGIN_ERRORS.totp],
     [{ site: "example.com", username: "a", password: PASSWORD, bots: ["nobody"] }, LOGIN_ERRORS.bots],
+    [{ site: "example.com", username: "a", password: PASSWORD, exactHost: 1 }, LOGIN_ERRORS.exactHost],
   ])("refuses a login it cannot save: %j", async (body, error) => {
     const { call } = await serve();
     expect(await call("POST", "/api/logins", body)).toMatchObject({ status: 400, body: { error } });
@@ -116,10 +114,10 @@ describe("Settings → Logins routes", () => {
     expect((await call("POST", "/api/logins/1password", { token: "ops_wrong-fake-token" })).body.error).toBe("1Password did not accept the token. Paste a service account token (it starts with ops_), or make a new one.");
     expect(store.onePasswordToken()).toBeNull();
 
-    expect(await call("POST", "/api/logins/1password", { token: TOKEN })).toMatchObject({ status: 200, body: { onePassword: { connected: true, vaults: ["Shared with OMB"], items: 1 } } });
+    expect(await call("POST", "/api/logins/1password", { token: TOKEN })).toMatchObject({ status: 200, body: { onePassword: { connected: true, vaults: [{ id: "v1", title: "Shared with OMB", items: 1, bots: "all" }], items: 1 } } });
     expect(store.onePasswordToken()).toBe(TOKEN);
     const listed = await call("GET", "/api/logins");
-    expect(listed.body.logins).toEqual([expect.objectContaining({ host: "vault.example.com", username: "vault-user", source: "1password", bots: "all" })]);
+    expect(listed.body.logins).toEqual([expect.objectContaining({ site: "example.com", hosts: ["vault.example.com"], username: "vault-user", source: "1password", bots: "all" })]);
     const id = listed.body.logins[0].id as string;
     for (const method of ["PATCH", "DELETE"]) {
       expect(await call(method, `/api/logins/${encodeURIComponent(id)}`, method === "PATCH" ? { password: "fake-x-pass" } : undefined))
@@ -131,6 +129,24 @@ describe("Settings → Logins routes", () => {
     expect(store.onePasswordToken()).toBeNull();
     expect((await call("GET", "/api/logins")).body.logins).toEqual([]);
     for (const answer of answers) for (const secret of [TOKEN, VAULT_PASSWORD]) expect(answer).not.toContain(secret);
+  });
+
+  it("keeps a vault's logins to the bots chosen for it, and only for a vault the token reads", async () => {
+    const { store, logins, call } = await serve();
+    await call("POST", "/api/logins/1password", { token: TOKEN });
+    expect(await call("PATCH", "/api/logins/1password/vaults/v1", { bots: ["quill"] }))
+      .toMatchObject({ status: 200, body: { onePassword: { vaults: [{ id: "v1", bots: ["quill"] }] } } });
+    expect(store.onePasswordGrants()).toEqual({ v1: ["quill"] });
+    expect(await logins.candidates("pepper", "vault.example.com")).toEqual([]);
+    expect(logins.sitesFor("pepper")).toEqual([]);
+    expect((await logins.candidates("quill", "vault.example.com")).map((login) => login.username)).toEqual(["vault-user"]);
+    expect((await call("GET", "/api/logins")).body.logins[0].bots).toEqual(["quill"]);
+    expect((await call("PATCH", "/api/logins/1password/vaults/v1", { bots: ["nobody"] })).body).toEqual({ error: LOGIN_ERRORS.bots });
+    expect((await call("PATCH", "/api/logins/1password/vaults/v1", {})).status).toBe(400);
+    expect((await call("PATCH", "/api/logins/1password/vaults/v9", { bots: "all" })).status).toBe(404);
+    expect((await call("PATCH", "/api/logins/1password/vaults/v1", { bots: "all" })).body.onePassword.vaults[0].bots).toBe("all");
+    expect(store.onePasswordGrants()).toEqual({});
+    expect((await logins.candidates("pepper", "vault.example.com")).map((login) => login.username)).toEqual(["vault-user"]);
   });
 
   it("takes changes as JSON only, so another page's form cannot post one", async () => {
