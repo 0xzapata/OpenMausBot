@@ -66,7 +66,8 @@ test("a burst of changes is reported once, after it goes quiet", async () => {
   close();
 });
 
-test("a folder it cannot read stops the scan instead of reading as empty", async (t) => {
+// chmod cannot make a folder unreadable on Windows (no POSIX mode bits), so this case is POSIX-only.
+test("a folder it cannot read stops the scan instead of reading as empty", { skip: process.platform === "win32" }, async (t) => {
   const dir = folder(t);
   mkdirSync(join(dir, "sub"));
   writeFileSync(join(dir, "sub", "a.txt"), "one");

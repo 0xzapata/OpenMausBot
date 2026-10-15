@@ -11,7 +11,7 @@ export function installCloudFiles({ app, ipcMain, dialog, shell, powerMonitor, f
   const dir = path.join(app.getPath("userData"), "cloud-sync");
   const service = createCloudFilesService({
     settingsFile: path.join(dir, "settings.json"), stateFile: path.join(dir, "state.db"),
-    documentsDir: app.getPath("documents"), localDataDir, cloudOrigin, fetch,
+    documentsDir: app.getPath("documents"), homeDir: app.getPath("home"), localDataDir, cloudOrigin, fetch,
     trashItem: (file) => shell.trashItem(file), markDownloaded: createDownloadMarker(),
     onChange: (state) => send("files:state-changed", state),
   });
