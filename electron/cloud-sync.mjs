@@ -144,7 +144,8 @@ export function createCloudFilesService({
     for (const [key, close] of watchers) if (!keys.has(key)) { close(); watchers.delete(key); }
     for (const folder of settings.shared) {
       if (watchers.has(folder.key) || !folder.id || !fs.existsSync(folder.pcPath)) continue;
-      watchers.set(folder.key, watch(folder.pcPath, () => void pass(new Set([folder.id]))));
+      // By key: a folder shared again on My Cloud gets a new id.
+      watchers.set(folder.key, watch(folder.pcPath, () => { const id = sharedBy(folder.key)?.id; void pass(id ? new Set([id]) : null); }));
     }
   }
 
@@ -194,12 +195,15 @@ export function createCloudFilesService({
             update(folder.key, { id: registered.id });
           }
           const current = sharedBy(folder.key);
+          if (!current) continue;
           const approveDeletes = current.deletes === "remove" ? true : current.deletes === "keep" ? false : null;
           const result = await shareFolder({ client: cloud, state, folder: { id: current.id }, local: current.pcPath, now, approveDeletes, report });
+          if (!sharedBy(folder.key)) continue;
           results.set(folder.key, result);
           if (current.deletes) update(folder.key, { deletes: null });
         } catch (error) {
           if (passStopper(error)) throw error;
+          if (!sharedBy(folder.key)) continue;
           if (error?.status === 410) update(folder.key, { id: null });
           results.set(folder.key, { status: "problem", files: 0, done: 0, waitingBytes: 0, pendingDeletes: 0, problem: String(error?.message ?? error) });
         }
