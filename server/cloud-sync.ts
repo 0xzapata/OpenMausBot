@@ -1,0 +1,171 @@
+// Folder sync on a Cloud home: what the /api/sync routes do. The desktop drives every pass; this side lists, takes whole
+// files in resumable parts, serves them back, and keeps what it replaces or removes in the trash.
+import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statfsSync, writeSync } from "node:fs";
+import { dirname, join, posix, win32 } from "node:path";
+import { writeFileAtomic } from "./atomic.ts";
+import { RESERVE_BYTES, validWirePath } from "../electron/cloud-sync-rules.mjs";
+import { SyncPathError, insideFolder } from "./cloud-sync-paths.ts";
+import { CloudSyncStore, sha256File, walk, type SyncFile, type SyncFolder } from "./cloud-sync-store.ts";
+
+const PART_MAX = 64 * 1024 ** 2;
+const UPLOAD_STALE_MS = 24 * 60 * 60_000;
+const SHA = /^[0-9a-f]{64}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CHANGE_LOG = 1_000;
+
+export class SyncError extends Error {
+  status: number;
+  body: Record<string, unknown>;
+  constructor(status: number, body: Record<string, unknown>) {
+    super(String(body.error ?? status));
+    this.status = status;
+    this.body = body;
+  }
+}
+
+interface Upload { id: string; folderId: string; path: string; size: number; sha256: string; baseSha256: string | null; received: number; updatedAt: number }
+
+const text = (value: unknown, max: number): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= max && !value.includes("\0");
+
+export function createCloudSync(options: { dataDir: string; root?: string; now?: () => number; statfs?: (path: string) => { totalBytes: number; freeBytes: number } }) {
+  const store = new CloudSyncStore(options);
+  const now = options.now ?? Date.now;
+  const statfs = options.statfs ?? ((path: string) => { const stats = statfsSync(path); return { totalBytes: stats.blocks * stats.bsize, freeBytes: stats.bavail * stats.bsize }; });
+  const uploadsDir = join(store.syncDir(), "uploads");
+  let cursor = now();
+  const changes: Array<{ seq: number; folderId: string }> = [];
+  const waiters = new Set<() => void>();
+
+  const folderOf = (id: string): SyncFolder => {
+    const folder = store.folder(id);
+    if (!folder) throw new SyncError(404, { error: "no such synced folder" });
+    if (!existsSync(folder.cloudPath)) throw new SyncError(410, { error: "this folder is missing on My Cloud" });
+    return folder;
+  };
+  const fileOf = (folder: SyncFolder, path: unknown): string => {
+    try { return insideFolder(folder.cloudPath, path); } catch (error) {
+      if (error instanceof SyncPathError) throw new SyncError(400, { error: error.message });
+      throw error;
+    }
+  };
+  const noteChange = (folderId: string) => {
+    changes.push({ seq: ++cursor, folderId });
+    if (changes.length > CHANGE_LOG) changes.shift();
+    for (const wake of waiters) wake();
+  };
+  const disk = () => {
+    const { totalBytes, freeBytes } = statfs(store.root);
+    const { pc, bot } = store.bytesByKind();
+    return { totalBytes, freeBytes, syncedBytes: pc, botFileBytes: bot, trashBytes: store.trashBytes(), reserveBytes: RESERVE_BYTES };
+  };
+  const uploadFile = (id: string, ext: "json" | "part") => join(uploadsDir, `${id}.${ext}`);
+  const readUpload = (id: string): Upload => {
+    if (!UUID.test(id)) throw new SyncError(404, { error: "no such upload" });
+    try { return JSON.parse(readFileSync(uploadFile(id, "json"), "utf8")) as Upload; } catch { throw new SyncError(404, { error: "no such upload" }); }
+  };
+  const saveUpload = (upload: Upload) => writeFileAtomic(uploadFile(upload.id, "json"), JSON.stringify(upload), { mode: 0o600 });
+  const dropUpload = (id: string) => { rmSync(uploadFile(id, "json"), { force: true }); rmSync(uploadFile(id, "part"), { force: true }); };
+  const uploads = (): Upload[] => {
+    const found: Upload[] = [];
+    for (const name of readdirSync(uploadsDir)) {
+      if (!name.endsWith(".json")) continue;
+      try { found.push(readUpload(name.slice(0, -5))); } catch { rmSync(join(uploadsDir, name), { force: true }); }
+    }
+    return found;
+  };
+
+  return {
+    store,
+    noteChange,
+    summary() {
+      store.sweepTrash();
+      for (const upload of uploads()) if (upload.updatedAt + UPLOAD_STALE_MS < now()) dropUpload(upload.id);
+      return { folders: store.folders(), cursor, disk: disk() };
+    },
+    register(body: unknown): SyncFolder {
+      const input = (body ?? {}) as Record<string, unknown>;
+      if (!UUID.test(String(input.computerId)) || !text(input.computerName, 200) || !text(input.pcPath, 4096) || !text(input.name, 200)) {
+        throw new SyncError(400, { error: "invalid folder" });
+      }
+      if (!posix.isAbsolute(input.pcPath) && !win32.isAbsolute(input.pcPath)) throw new SyncError(400, { error: "the folder on the computer must be an absolute path" });
+      const folder = store.register({ computerId: String(input.computerId), computerName: input.computerName, pcPath: input.pcPath, name: input.name });
+      noteChange(folder.id);
+      return folder;
+    },
+    unregister(id: string, keepCloudCopy: boolean): void {
+      const folder = store.unregister(id);
+      if (!folder) throw new SyncError(404, { error: "no such synced folder" });
+      if (!keepCloudCopy && existsSync(folder.cloudPath)) {
+        // Read the whole tree first: moving files out while walking it would skip some.
+        for (const entry of Array.from(walk(folder.cloudPath))) store.toTrash(folder, entry.path, join(folder.cloudPath, ...entry.path.split("/")));
+        rmSync(folder.cloudPath, { recursive: true, force: true });
+      }
+      noteChange(id);
+    },
+    async files(id: string): Promise<SyncFile[]> {
+      return store.list(folderOf(id));
+    },
+    beginUpload(id: string, body: unknown): { uploadId: string; received: number } {
+      const folder = folderOf(id);
+      const input = (body ?? {}) as Record<string, unknown>;
+      const base = input.baseSha256;
+      if (!validWirePath(input.path) || !Number.isSafeInteger(input.size) || (input.size as number) < 0 || typeof input.sha256 !== "string" || !SHA.test(input.sha256)
+        || !(base === null || (typeof base === "string" && SHA.test(base)))) throw new SyncError(400, { error: "invalid upload" });
+      fileOf(folder, input.path);
+      const size = input.size as number;
+      const open = uploads().find((upload) => upload.folderId === folder.id && upload.path === input.path && upload.sha256 === input.sha256 && upload.size === size);
+      if (open) return { uploadId: open.id, received: open.received };
+      const { freeBytes } = statfs(store.root);
+      if (freeBytes - size < RESERVE_BYTES) throw new SyncError(507, { error: "My Cloud is full", neededBytes: size + RESERVE_BYTES, freeBytes });
+      const upload: Upload = { id: randomUUID(), folderId: folder.id, path: input.path, size, sha256: input.sha256, baseSha256: base as string | null, received: 0, updatedAt: now() };
+      closeSync(openSync(uploadFile(upload.id, "part"), "w", 0o600));
+      saveUpload(upload);
+      return { uploadId: upload.id, received: 0 };
+    },
+    async writePart(uploadId: string, offset: number, body: AsyncIterable<Buffer>): Promise<{ received: number }> {
+      const upload = readUpload(uploadId);
+      if (offset !== upload.received) throw new SyncError(409, { error: "wrong offset", received: upload.received });
+      const fd = openSync(uploadFile(uploadId, "part"), "r+");
+      let written = 0;
+      try {
+        for await (const chunk of body) {
+          if (written + chunk.length > PART_MAX || upload.received + written + chunk.length > upload.size) throw new SyncError(413, { error: "part too large" });
+          writeSync(fd, chunk, 0, chunk.length, upload.received + written);
+          written += chunk.length;
+        }
+      } finally { closeSync(fd); }
+      upload.received += written;
+      upload.updatedAt = now();
+      saveUpload(upload);
+      return { received: upload.received };
+    },
+    async commit(uploadId: string): Promise<{ sha256: string }> {
+      const upload = readUpload(uploadId);
+      if (upload.received !== upload.size) throw new SyncError(409, { error: "upload incomplete", received: upload.received });
+      const part = uploadFile(uploadId, "part");
+      if (await sha256File(part) !== upload.sha256) { dropUpload(uploadId); throw new SyncError(422, { error: "the file's bytes do not match its hash" }); }
+      const folder = folderOf(upload.folderId);
+      const target = fileOf(folder, upload.path);
+      const current = await store.current(folder, upload.path);
+      if ((current?.sha256 ?? null) !== upload.baseSha256) { dropUpload(uploadId); throw new SyncError(409, { error: "changed on My Cloud", current }); }
+      if (current) store.toTrash(folder, upload.path, target);
+      mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+      renameSync(part, target);
+      dropUpload(uploadId);
+      const stat = lstatSync(target);
+      store.remember(folder, { path: upload.path, size: stat.size, mtimeMs: stat.mtimeMs, sha256: upload.sha256 });
+      noteChange(folder.id);
+      return { sha256: upload.sha256 };
+    },
+    trash() {
+      return { entries: store.trash() };
+    },
+    close() {
+      for (const wake of waiters) wake();
+      store.close();
+    },
+  };
+}
+
+export type CloudSync = ReturnType<typeof createCloudSync>;
