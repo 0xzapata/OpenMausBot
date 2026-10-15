@@ -54,6 +54,7 @@ import { extractMcpImages } from "../mcp-tool-images.ts";
 import { parseProtocolAskQuestions, questionChoices } from "../../shared/ask-question.ts";
 import { codexQuestionReply, openAsyncQuestion, type CodexAsk } from "./codex-questions.ts";
 import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
+import { effectiveApprovalPolicy, effectiveApprovalsReviewer } from "./codex-approval-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
 import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { gateServer, mcpStdioServer } from "../mcp-gate-config.ts";
@@ -362,38 +363,6 @@ function withResolvedSandbox(params: CodexApprovalParams, session: unknown): Cod
     throw new Error("Codex did not apply the requested sandbox mode; cannot safely start the turn.");
   }
   return { ...params, turn: { ...params.turn, sandboxPolicy: sandbox } };
-}
-
-function effectiveApprovalPolicy(value: unknown): unknown {
-  if (value === "untrusted" || value === "on-request" || value === "never") return value;
-  const granular = plainRecord(plainRecord(value)?.granular);
-  if (
-    granular &&
-    typeof granular.mcp_elicitations === "boolean" &&
-    typeof granular.rules === "boolean" &&
-    typeof granular.sandbox_approval === "boolean" &&
-    (granular.request_permissions === undefined || typeof granular.request_permissions === "boolean") &&
-    (granular.skill_approval === undefined || typeof granular.skill_approval === "boolean")
-  ) {
-    return {
-      granular: {
-        mcp_elicitations: granular.mcp_elicitations,
-        rules: granular.rules,
-        sandbox_approval: granular.sandbox_approval,
-        ...(typeof granular.request_permissions === "boolean"
-          ? { request_permissions: granular.request_permissions }
-          : {}),
-        ...(typeof granular.skill_approval === "boolean"
-          ? { skill_approval: granular.skill_approval }
-          : {}),
-      },
-    };
-  }
-  return "on-request";
-}
-
-function effectiveApprovalsReviewer(value: unknown): string {
-  return value === "auto_review" || value === "guardian_subagent" ? value : "user";
 }
 
 function legacyCustomApprovalParams(config: Record<string, unknown>): CodexApprovalParams {
