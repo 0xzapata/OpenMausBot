@@ -49,7 +49,6 @@ export class CdpBrowser implements PageHost {
   readonly #failureListeners = new Set<(page: CdpPage, error: unknown) => void>();
   readonly #failures: Array<{ page: CdpPage; error: unknown }> = [];
   readonly #running = new WeakMap<CdpPage, Promise<void>>();
-  readonly #fittedWindows = new Set<number>();
   #active: CdpPage | null = null;
 
   private constructor(connection: CdpConnection, options: BrowserOptions) {
@@ -140,10 +139,12 @@ export class CdpBrowser implements PageHost {
   }
 
   /**
-   * A headless window's frame differs by platform: --window-size=1280,863 gives
-   * a 1280x720 page on macOS and Linux but 1264x712 on Windows (measured), so
-   * each window is measured and resized, a few rounds at most, until its page
-   * is the viewport.
+   * The page a headless window shows differs by platform (--window-size=1280,863
+   * gives 1280x720 on macOS and Linux, 1264x712 on Windows) and by tab: Google
+   * Chrome's startup tab carries a 56 px bar the others lack (measured on the
+   * Linux and Windows runners). So the tab in front is measured, when it opens
+   * and whenever it comes to the front, and its window resized until the page
+   * is the viewport, a few rounds at most.
    */
   async #fitWindow(page: CdpPage): Promise<void> {
     const viewport = this.#options.viewport === undefined ? (this.setup.focusEmulation ? VIEWPORT : null) : this.#options.viewport;
@@ -152,8 +153,6 @@ export class CdpBrowser implements PageHost {
     const measure = () => valueInWorld<[number, number]>(page.frames, page.frames.mainFrameId, "[innerWidth, innerHeight]");
     try {
       const { windowId } = await root.send<{ windowId: number }>("Browser.getWindowForTarget", { targetId: page.targetId });
-      if (this.#fittedWindows.has(windowId)) return;
-      this.#fittedWindows.add(windowId);
       let size = await measure();
       for (let round = 0; round < FIT_ROUNDS && (size[0] !== viewport.width || size[1] !== viewport.height); round++) {
         const { bounds } = await root.send<{ bounds: { width?: number; height?: number } }>("Browser.getWindowBounds", { windowId });
@@ -253,6 +252,7 @@ export class CdpBrowser implements PageHost {
     if (this.#active === page) return;
     await page.session.send("Page.bringToFront");
     this.#active = page;
+    await this.#fitWindow(page);
   }
 
   async closePage(page: CdpPage): Promise<void> {
