@@ -1263,6 +1263,7 @@
   "routines.scheduleNote.server": "Läuft, solange dieser Server läuft.",
   "computer.tab.android": "Android",
   "computer.tab.browser": "Browser",
+  "computer.tabsAria": "Bot-Panel-Ansicht",
   "computer.screenOf": "Bildschirm von {name}",
   "computer.badge.local": "dieser Computer",
   "computer.badge.vps": "selbst gehosteter VPS",

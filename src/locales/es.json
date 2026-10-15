@@ -1256,6 +1256,7 @@
   "routines.scheduleNote.server": "Se ejecuta mientras este servidor esté en marcha.",
   "computer.tab.android": "Android",
   "computer.tab.browser": "Navegador",
+  "computer.tabsAria": "Vista del panel del bot",
   "computer.screenOf": "Pantalla de {name}",
   "computer.badge.local": "este equipo",
   "computer.badge.vps": "VPS propio",
