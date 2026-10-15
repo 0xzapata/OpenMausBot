@@ -157,25 +157,3 @@ export function citationTabShortcut() {
     },
   };
 }
-
-type ShortcutEvent = Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey" | "isComposing">;
-
-// `code` keeps the shortcut on the L key in non-Latin layouts, where `key` is another letter.
-export function isAddToPromptShortcut(event: ShortcutEvent, isMac: boolean): boolean {
-  if (event.isComposing || event.shiftKey || event.altKey) return false;
-  const modifier = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
-  return modifier && (event.key.toLowerCase() === "l" || event.code === "KeyL");
-}
-
-export function addToPromptChord(isMac: boolean): { text: string; aria: string } {
-  return isMac ? { text: "\u2318L", aria: "Meta+L" } : { text: "Ctrl+L", aria: "Control+L" };
-}
-
-export function removesQuoteChip(
-  event: Pick<KeyboardEvent, "key" | "isComposing">,
-  selection: { start: number | null; end: number | null },
-): boolean {
-  if (event.isComposing) return false;
-  if (event.key === "Escape") return true;
-  return event.key === "Backspace" && selection.start === 0 && selection.end === 0;
-}

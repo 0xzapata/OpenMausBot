@@ -17,7 +17,6 @@ describe("chat text follows the writer's direction", () => {
     expectDirAuto("OptionCard.tsx", "value={custom}");
     expectDirAuto("QuestionCard.tsx", "value={draft.custom}");
     expectDirAuto("CitationUI.tsx", "value={comment}");
-    expectDirAuto("ComposerQuotes.tsx", '{"\\u201C"}{flat');
     expectDirAuto("ChatFindBar.tsx", "value={query}");
     expectDirAuto("RawMarkdownToggle.tsx", 'data-testid="raw-markdown-view"');
     expectDirAuto("GroupView.tsx", "value={bulletinDraft}");
