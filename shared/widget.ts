@@ -846,11 +846,24 @@ export function widgetAdvice(root: WidgetRoot): string | undefined {
     && !widgetActions(root).some((entry) => entry.kind === "item" || entry.kind === "button")) {
     notes.push("No row of this list can be chosen: the person can only confirm or cancel it as a whole. If they are meant to pick one row, call update_widget and give the ListView a name (and each row a value), so the rows become selectable and confirm sends the pick.");
   }
-  const typed = widgetFields(root).filter((field) => field.type === "Input" || field.type === "Textarea");
-  const asks = (pattern: RegExp) => typed.filter((field) => pattern.test(`${field.name} ${field.label} ${widgetString(field.node, "placeholder") ?? ""}`)).map((field) => field.label);
+  const fields = widgetFields(root);
+  const sending = widgetActions(root).filter((entry) => !entry.client && entry.tone !== "cancel");
+  if (fields.length > 0 && !sending.length) {
+    notes.push("Nothing in this widget sends what the person fills in. Call update_widget with confirm: {label, action} (and cancel if they may decline) so they can send it.");
+  } else if (fields.length > 0) {
+    const sent = new Set(sending.flatMap((entry) => widgetFields(widgetScope(root, entry.ref), root).map((field) => field.name)));
+    const unsent = fields.filter((field) => !sent.has(field.name)).map((field) => JSON.stringify(field.label));
+    if (unsent.length) notes.push(`${unsent.join(", ")} sits outside the Form whose button is the only way to send, so it is never sent. Call update_widget with it inside that Form, or with confirm on the Card.`);
+  }
+  const typed = fields.filter((field) => field.type === "Input" || field.type === "Textarea");
+  // "each time", "every time" and "how many times" are not a time of day
+  const phrase = (field: WidgetField) => `${field.name} ${field.label} ${widgetString(field.node, "placeholder") ?? ""}`
+    .replace(/\b(each|every|this|next|first|last|any|some|one|other|same|spare|free|full|part|lead|over|down)[\s-]+times?\b/gi, " ")
+    .replace(/\btimes\b/gi, " ");
+  const asks = (pattern: RegExp) => typed.filter((field) => pattern.test(phrase(field))).map((field) => field.label);
   const pickers: Array<[RegExp, string]> = [
-    [/\b(days?|weekdays?|weekly|repeat)\b/i, "DayPicker"],
-    [/\b(times?|o'?clock|hh:mm)\b|\b\d{1,2}(:\d{2})?\s?[ap]m\b|\b\d{1,2}:\d{2}\b/i, "TimePicker"],
+    [/\b(time|o'?clock|hh:mm)\b|\b\d{1,2}(:\d{2})?\s?[ap]m\b|\b\d{1,2}:\d{2}\b/i, "TimePicker"],
+    [/\b(days|weekdays?|weekly|repeats?|repeating|(which|what) days?|days? of the week)\b/i, "DayPicker"],
     [/\b(dates?|deadline|due)\b/i, "DatePicker"],
   ];
   const seen = new Set<string>();
