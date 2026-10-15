@@ -1146,6 +1146,10 @@ beforeAll(async () => {
       }
       return res.end(JSON.stringify({ ok: true }));
     }
+    if (req.headers.authorization === "Bearer box_unavailable") {
+      res.writeHead(500, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, message: "fixture outage" }));
+    }
     const ok = req.headers.authorization === "Bearer box_good" || req.headers.authorization === "Bearer box_slow";
     const directBoatRead = /^\/sandboxes\/bx_[23456789abcdefghjkmnpqrstuvwxyz]{8}$/.test(req.url ?? "");
     res.writeHead(ok && directBoatRead ? 404 : ok ? 200 : 401, { "content-type": "application/json" });
@@ -7821,11 +7825,46 @@ describe("harness HTTP API", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("answers the daily snapshot's computer counts from the real server, without and with a Boat account", async () => {
+    let botId = "";
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
+      const teams = (await api("GET", "/api/team-computers")).body.computers.length;
+      boatRouteCalls.length = 0;
+      const none = await fetch(`${BASE}/api/computers/usage`);
+      expect(none.status).toBe(200);
+      expect(none.headers.get("cache-control")).toBe("private, no-store");
+      expect(await none.json()).toEqual({ cloudComputers: 0, teamComputers: teams });
+
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      botId = (await api("POST", "/api/bots")).body.bot.id;
+      managedBoatRows = [
+        { id: "bx_23456789", name: managedBoatNameForFixture(botId), state: "idle" },
+        { id: "bx_jkmnpqrs", name: "someone-elses-box", state: "idle" },
+      ];
+      boatRouteCalls.length = 0;
+      const counted = await fetch(`${BASE}/api/computers/usage`);
+      expect(counted.status).toBe(200);
+      expect(counted.headers.get("cache-control")).toBe("private, no-store");
+      expect(await counted.json()).toEqual({ cloudComputers: 1, teamComputers: teams });
+      expect(boatRouteCalls).toEqual([{ method: "GET", path: "/sandboxes?limit=200" }]);
+    } finally {
+      managedBoatRows = [];
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } });
+      boatRouteCalls.length = 0;
+    }
+  });
+
   it("refuses a box token the provider rejects, at the point of pasting", async () => {
     // the stub answers 401 for anything but the good token
     const bad = await api("PUT", "/api/config", { box: { token: "box_wrong" } });
     expect(bad.status).toBe(400);
     expect(String(bad.body.error)).toMatch(/rejected/i);
+    expect(bad.body.code).toBe("key_rejected");
+    const unchecked = await api("PUT", "/api/config", { box: { token: "box_unavailable" } });
+    expect(unchecked.status).toBe(400);
+    expect(unchecked.body).toEqual({ error: "boat.dev returned 500 for that token — try again in a moment." });
     const after = await api("GET", "/api/config");
     expect(after.body.box).toEqual({ configured: false });
   });

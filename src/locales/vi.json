@@ -882,7 +882,6 @@
   "settings.diagnostics.exporting": "Đang xuất…",
   "settings.diagnostics.saved": "Đã lưu vào {path}",
   "settings.analytics.title": "Phân tích sử dụng",
-  "settings.analytics.subtitle": "Các sự kiện sản phẩm ẩn danh — mở ứng dụng, những tính năng nào được sử dụng. Không bao giờ gửi các cuộc trò chuyện, câu lệnh, nội dung tệp hay kết quả đầu ra của bot. Email của bạn chỉ được đính kèm nếu bạn đã chia sẻ trong quá trình thiết lập.",
   "settings.analytics.aria": "Gửi dữ liệu phân tích sử dụng",
   "settings.updates.startingDownload": "Đang bắt đầu tải xuống…",
   "settings.updates.preparing": "Tải xuống hoàn tất. macOS đang chuẩn bị bản cập nhật.",

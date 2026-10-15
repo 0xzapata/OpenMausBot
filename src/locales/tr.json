@@ -882,7 +882,6 @@
   "settings.diagnostics.exporting": "Dışa aktarılıyor…",
   "settings.diagnostics.saved": "{path} konumuna kaydedildi",
   "settings.analytics.title": "Kullanım analitiği",
-  "settings.analytics.subtitle": "Anonim ürün etkinlikleri — uygulamanın açılması, hangi özelliklerin kullanıldığı. Asla konuşmalar, istemler, dosya içerikleri veya bot çıktıları dahil edilmez. E-postanız yalnızca kurulum sırasında paylaştıysanız eklenir.",
   "settings.analytics.aria": "Kullanım analitiği gönder",
   "settings.updates.startingDownload": "İndirme başlatılıyor…",
   "settings.updates.preparing": "İndirme tamamlandı. macOS güncellemeyi hazırlıyor.",

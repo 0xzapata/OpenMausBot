@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { AppConfig } from "./config.ts";
 import {
+  CURATED_SLUGS,
   applyManagedBrokerMessage,
   authorizeService,
   connectedServiceSlugs,
@@ -28,8 +29,13 @@ import {
   parseConnectorServiceSlugsEnv,
 } from "./connector-advertisement.ts";
 import type { ConnectorToolGrant } from "../shared/wire.ts";
+import { CURATED_CONNECTOR_SLUGS } from "../shared/connector-curated.ts";
 
 let api: Server;
+it("lists exactly the curated apps product analytics may name, in the same order", () => {
+  expect(CURATED_SLUGS).toEqual([...CURATED_CONNECTOR_SLUGS]);
+});
+
 it("only sends Session MCP credentials over HTTPS or loopback HTTP", () => {
   const old = process.env.OMB_COMPOSIO_API;
   try {

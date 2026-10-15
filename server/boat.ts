@@ -901,7 +901,7 @@ export function describeBoatAccount(cfg: AppConfig): { configured: boolean; incl
   return { configured: Boolean(account), ...(account?.included ? { included: true as const } : {}) };
 }
 
-export async function verifyToken(token: string): Promise<{ ok: true } | { ok: false; message: string }> {
+export async function verifyToken(token: string): Promise<{ ok: true } | { ok: false; message: string; rejected?: true }> {
   try {
     const res = await fetch(`${boatProviderApi()}/sandboxes?limit=1`, {
       headers: { authorization: `Bearer ${token}` },
@@ -911,7 +911,7 @@ export async function verifyToken(token: string): Promise<{ ok: true } | { ok: f
     if (res.status === 401 || res.status === 403) {
       // Boat API keys are prefixed boat_ (box_ before v1).
       return {
-        ok: false,
+        ok: false, rejected: true,
         message: /^(boat|box)_/.test(token)
           ? "boat.dev rejected that key — it may have been revoked or expired. Copy a fresh one from your boat.dev account."
           : "That doesn't look like a Boat API key: they start with boat_ (older ones with box_). Copy the API key from your boat.dev account (an account or session token won't work here).",

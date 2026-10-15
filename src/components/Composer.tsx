@@ -1,4 +1,4 @@
-import { track } from "@/lib/analytics";
+import { directMessageSent, roomMessageSent } from "@/lib/product-events";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { ArrowUp, BookOpen, Clock, Mic, Paperclip, Sparkles, Square, Target, Users, X } from "lucide-react";
 import { useStore, visibleMessages, currentTaskBot, type Bot, type Group, type Message } from "@/state/store";
@@ -579,7 +579,7 @@ export function Composer({
         mode: effectiveChannelMode,
         onError: () => restoreDraft(sentDraft),
       });
-      track("message_sent", { room: true, mode: effectiveChannelMode, queued: busy });
+      roomMessageSent(effectiveChannelMode, busy);
     } else if (bot) {
       dispatch({
         type: "send",
@@ -591,7 +591,7 @@ export function Composer({
         dataContext,
         onError: () => restoreDraft(sentDraft),
       });
-      track("message_sent", { driver: bot.modelSelection?.instanceId, queued: busy && !canSteer });
+      directMessageSent(state.instances, bot.modelSelection?.instanceId, busy && !canSteer);
     }
     setText("");
     setAttachments([]);

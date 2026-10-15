@@ -8,6 +8,8 @@ import type { LocaleKey } from "@/locales";
 import { readCachedInventory, writeCachedInventory } from "@/lib/connected-apps-cache";
 import { reserveConnectionPage, reusableConnectionUrl, type PendingAuthorization } from "@/lib/connector-oauth";
 import { mcpSignInLink } from "@/lib/mcp-sign-in";
+import { pollConnector } from "@/lib/connector-poll";
+import { connectorConnect } from "@/lib/product-events";
 import { managedConnectorUnavailableReason } from "../../shared/connector-availability";
 import { connectorServiceAccess, isConnectorToolGrantShape } from "@/lib/connector-grants";
 import {
@@ -257,7 +259,7 @@ export function PluginsPanel() {
   // Appended after the older state so tests that seed state by call order keep their indices.
   const [highLevelConnected, setHighLevelConnected] = useState<boolean | null>(null);
 
-  const pollTimers = useRef(new Map<string, ReturnType<typeof setInterval>>());
+  const polls = useRef(new Map<string, () => void>());
   const statusGenerations = useRef(new Map<string, number>());
   const latestStatusRequests = useRef(new Map<string, number>());
   const opening = useRef<ReturnType<typeof reserveConnectionPage> | null>(null);
@@ -345,8 +347,8 @@ export function PluginsPanel() {
   useEffect(() => () => {
     opening.current?.cancel();
     opening.current = null;
-    for (const timer of pollTimers.current.values()) clearInterval(timer);
-    pollTimers.current.clear();
+    for (const stop of polls.current.values()) stop();
+    polls.current.clear();
   }, []);
 
   useEffect(() => {
@@ -438,20 +440,13 @@ export function PluginsPanel() {
     }
   };
 
-  const startPolling = (slug: string) => {
-    const old = pollTimers.current.get(slug);
-    if (old) clearInterval(old);
-    let tries = 0;
-    const timer = setInterval(() => {
-      void refreshStatus([slug]).then((services) => {
-        const state = services[slug];
-        if (++tries >= 24 || (state?.connected && !state.pending) || (state?.status && /^(expired|failed)$/i.test(state.status))) {
-          clearInterval(timer);
-          pollTimers.current.delete(slug);
-        }
-      });
-    }, 5000);
-    pollTimers.current.set(slug, timer);
+  const startPolling = (slug: string, before: ConnectorStatus | undefined) => {
+    polls.current.get(slug)?.();
+    const stop = pollConnector(before, () => refreshStatus([slug]).then((services) => services[slug]), (result) => {
+      if (polls.current.get(slug) === stop) polls.current.delete(slug);
+      connectorConnect(slug, result);
+    });
+    polls.current.set(slug, stop);
   };
 
   const connect = async (slug: string, alias?: string, replacing?: ConnectorAccount) => {
@@ -482,7 +477,7 @@ export function PluginsPanel() {
       }));
       setAliasSlug(null);
       setAliasDraft("");
-      startPolling(slug);
+      startPolling(slug, status[slug]);
       if (!await launch.open(url) && opening.current === launch) {
         setError({ key: "connectors.popupBlockedContinue" });
       }
