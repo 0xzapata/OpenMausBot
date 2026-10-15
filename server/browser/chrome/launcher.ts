@@ -50,7 +50,7 @@ export function chromeFingerprint(path: string): string {
  * engine's own browser instead of a browser that never starts. */
 function runsLauncher(path: string, env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile(path, ["--version"], { env, timeout: 30_000, windowsHide: true }, (error) => error ? reject(new Error(`the browser launcher does not run here: ${error.message}`)) : resolve());
+    execFile(path, ["--version"], { env, timeout: 10_000, windowsHide: true }, (error) => error ? reject(new Error(`the browser launcher does not run here: ${error.message}`)) : resolve());
   });
 }
 

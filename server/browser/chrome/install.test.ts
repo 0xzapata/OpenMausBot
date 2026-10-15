@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -88,18 +88,21 @@ describe("downloading Chrome for Testing", () => {
     expect(existsSync(chromeForTestingDirectory(root, pin()))).toBe(false);
   });
 
-  it("shares one download between callers, and clears what an interrupted one left", async () => {
+  it("shares one download between callers, and clears what an interrupted one left, never another's live download", async () => {
     const root = dataDir();
     const version = join(root, "tools", "chrome", "153.0.8010.47");
     mkdirSync(join(version, "mac-arm64.dead.part"), { recursive: true });
     writeFileSync(join(version, "mac-arm64.dead.zip.part"), "half");
+    const hourAgo = new Date(Date.now() - 60 * 60_000);
+    for (const name of ["mac-arm64.dead.part", "mac-arm64.dead.zip.part"]) utimesSync(join(version, name), hourAgo, hourAgo);
+    writeFileSync(join(version, "mac-arm64.live.zip.part"), "still arriving");
     const [first, second] = await Promise.all([
       installChromeForTesting({ dataDir: root, pin: pin(), url: `${base}/shared.zip`, extract }),
       installChromeForTesting({ dataDir: root, pin: pin(), url: `${base}/shared.zip`, extract }),
     ]);
     expect(first).toBe(second);
     expect(requests).toBe(1);
-    expect(leftovers(root)).toEqual([]);
+    expect(leftovers(root)).toEqual(["mac-arm64.live.zip.part"]);
   });
 
   it("downloads from Google's Chrome for Testing bucket, by pinned version and platform", () => {

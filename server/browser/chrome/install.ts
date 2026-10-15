@@ -2,7 +2,7 @@
 // before it is unpacked, and unpacked beside its final folder so a reader only ever sees a complete browser.
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { once } from "node:events";
 import { dirname, join, win32 } from "node:path";
 
@@ -134,8 +134,10 @@ async function install(options: Parameters<typeof installChromeForTesting>[0]): 
   const directory = chromeForTestingDirectory(dataDir, pin);
   const root = dirname(directory);
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  // Only what an interrupted install left: a download still running elsewhere keeps writing, so its files stay recent.
   for (const name of readdirSync(root)) {
-    if (name.endsWith(".part")) rmSync(join(root, name), { recursive: true, force: true });
+    const part = join(root, name);
+    if (name.endsWith(".part") && Date.now() - statSync(part).mtimeMs > DOWNLOAD_TIMEOUT_MS) rmSync(part, { recursive: true, force: true });
   }
   const tag = randomBytes(6).toString("hex");
   const archive = join(root, `${pin.platform}.${tag}.zip.part`);
