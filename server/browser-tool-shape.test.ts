@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
+import { BROWSER_HOVER_TOOL, BROWSER_UPLOAD_TOOL } from "./browser-runtime.ts";
 import { DEFAULT_BROWSER_RESULT_BUDGET, describePageChange, HARNESS_OWNED_BROWSER_PARAMS, parsePageState, sanitizeUrl, scrubBrowserResult, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments, withoutLifecycle } from "./browser-tool-shape.ts";
 
 const snapshotTool = {
@@ -63,14 +64,14 @@ describe("browser tool shaping", () => {
     const text = "line of accessibility tree\n".repeat(4_000);
     const shaped = shapeBrowserToolResult({ content: [{ type: "text", text }], structuredContent: {} }, { toolName: "agent_browser_snapshot" }) as { content: Array<{ text: string }> };
     expect(shaped.content[0].text.length).toBeLessThan(DEFAULT_BROWSER_RESULT_BUDGET + 600);
-    expect(shaped.content[0].text).toContain("trimmed this tool result");
+    expect(shaped.content[0].text).toContain("TRUNCATED by OpenMausBot");
     expect(shaped.content[0].text).toContain("agent_browser_get_text");
     const custom = shapeBrowserToolResult({ content: [{ type: "text", text }] }, { budget: 1_000 }) as { content: Array<{ text: string }> };
     expect(custom.content[0].text.length).toBeLessThan(1_600);
   });
 
   it("names only tools the pinned engine advertises", () => {
-    // `agent-browser mcp --tools core` on the pinned 0.37.0 plus the restart tool: guidance naming a tool the engine does not list costs a failed call.
+    // `agent-browser mcp --tools core` on the pinned 0.37.0 plus OMB's own tools: guidance naming a tool the engine does not list costs a failed call.
     const advertised = new Set([
       "agent_browser_tools_profiles", "agent_browser_open", "agent_browser_read", "agent_browser_snapshot", "agent_browser_click",
       "agent_browser_fill", "agent_browser_type", "agent_browser_press", "agent_browser_check", "agent_browser_uncheck",
@@ -78,7 +79,7 @@ describe("browser tool shaping", () => {
       "agent_browser_wait_for_text", "agent_browser_wait_for_load", "agent_browser_screenshot", "agent_browser_get_text",
       "agent_browser_get_url", "agent_browser_get_title", "agent_browser_eval", "agent_browser_close", "agent_browser_back",
       "agent_browser_forward", "agent_browser_reload", "agent_browser_tab_new", "agent_browser_tab_list", "agent_browser_tab_switch",
-      "agent_browser_tab_close",
+      "agent_browser_tab_close", BROWSER_UPLOAD_TOOL, BROWSER_HOVER_TOOL,
     ]);
     const hint = (shapeBrowserToolResult({ content: [{ type: "text", text: "x\n".repeat(40_000) }] }, { toolName: "agent_browser_snapshot" }) as { content: Array<{ text: string }> }).content[0].text;
     for (const text of [BUILT_IN_BROWSER_SYSTEM_PROMPT, hint]) {

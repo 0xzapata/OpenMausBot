@@ -1580,7 +1580,7 @@ describe("idle tunnel reclaim", () => {
     offlineFor(offline.tunnel, 22);
     connected(healthy.tunnel);
     connected(degraded.tunnel, "degraded");
-    offlineFor(recentlyDown.tunnel, 3);
+    offlineFor(recentlyDown.tunnel, 2);
     neverRan(recentlySeen.tunnel, 30);
     neverRan(recentlyReconciled.tunnel, 30);
     neverRan(mismatched.tunnel, 30);
@@ -1596,7 +1596,7 @@ describe("idle tunnel reclaim", () => {
 
     // The deployed policy, pinned here so retuning wrangler.jsonc cannot change
     // which of these endpoints count as idle.
-    await runScheduledCleanup(worker, { OMB_TUNNEL_OFFLINE_RECLAIM_DAYS: "7" });
+    await runScheduledCleanup(worker, { OMB_TUNNEL_OFFLINE_RECLAIM_DAYS: "3" });
 
     for (const reclaimed of [neverConnected, offline]) {
       expect(await endpointState(reclaimed.id)).toMatchObject({

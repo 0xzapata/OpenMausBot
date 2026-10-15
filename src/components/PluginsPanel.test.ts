@@ -4,16 +4,20 @@ import {
   botsMissingConnectedApps,
   botsWithLimitedServiceTools,
   hasUsableConnectedApps,
-  connectedInventoryCopy,
-  connectorActionLabel,
   connectorSetupNotice,
   disconnectAccountConfirmation,
   mergeCompleteConnectorStatus,
   mergeCurrentConnectorStatus,
-  requiresAccountAlias,
   onlyLatestConnectorResponses,
-  type ConnectorStatus,
 } from "./PluginsPanel";
+import {
+  accountToReconnect,
+  connectedInventoryCopy,
+  connectorActionLabel,
+  hasActiveConnection,
+  requiresAccountAlias,
+  type ConnectorStatus,
+} from "@/lib/connector-status";
 import { managedConnectorUnavailableReason } from "../../shared/connector-availability";
 import type { Bot, InstanceInfo } from "@/state/store";
 
@@ -234,6 +238,22 @@ describe("connected-app status races", () => {
   it("recognizes the existing-account alias guard and ignores unrelated errors", () => {
     expect(requiresAccountAlias("Add an account alias so the existing connection is not replaced")).toBe(true);
     expect(requiresAccountAlias("Authorization expired")).toBe(false);
+  });
+
+  it("counts only an ACTIVE account as connected and offers to sign the newest dead one in again", () => {
+    const expired = { id: "ca_old", alias: "work", status: "EXPIRED" };
+    const failed = { id: "ca_failed", status: "FAILED" };
+    const gmail = (accounts: ConnectorStatus["accounts"], connected = true): ConnectorStatus => ({ connected, accounts });
+    expect(hasActiveConnection(gmail([expired]))).toBe(false);
+    expect(accountToReconnect(gmail([expired, failed]))).toBe(expired);
+    expect(hasActiveConnection(gmail([expired, { id: "ca_new", status: "ACTIVE" }]))).toBe(true);
+    expect(accountToReconnect(gmail([expired, { id: "ca_new", status: "ACTIVE" }]))).toBeUndefined();
+    expect(accountToReconnect(gmail([{ id: "ca_pending", status: "INITIATED" }]))).toBeUndefined();
+    expect(hasActiveConnection(gmail([]))).toBe(true);
+    expect(hasActiveConnection(gmail([], false))).toBe(false);
+    expect(connectorActionLabel("ready", {
+      busy: false, included: false, canContinue: false, reconnect: true, hasAccounts: true, failed: true,
+    })).toBe("Reconnect");
   });
 
   it("never presents unloaded account state as disconnected", () => {

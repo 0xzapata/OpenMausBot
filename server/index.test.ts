@@ -9026,7 +9026,7 @@ describe("harness HTTP API", () => {
   it("keeps skill authoring on by default and persists an explicit opt-out", async () => {
     const before = await api("GET", "/api/config");
     expect(before.status).toBe(200);
-    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, llmThreadTitles: true });
+    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
     const untouched = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     expect(untouched.features?.skillAuthoring).toBeUndefined();
     expect(untouched.features?.skillReview).toBeUndefined();
@@ -9036,7 +9036,7 @@ describe("harness HTTP API", () => {
       features: { skillAuthoring: false },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, llmThreadTitles: true });
+    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
 
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     // Earlier browser coverage may have persisted its own toggle: opting out must preserve sibling settings.
@@ -9044,7 +9044,7 @@ describe("harness HTTP API", () => {
 
     const tools = await api("PATCH", "/api/config", { features: { showToolCalls: true } });
     expect(tools.status).toBe(200);
-    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, showToolCalls: true, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, llmThreadTitles: true });
+    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: true, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
 
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     try {
@@ -11045,6 +11045,59 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("stages learned skill references on the card and explains the SKILL.md size cap", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { skillAuthoring: true });
+      const post = (body: Record<string, unknown>) => fetch(`${BASE}/api/internal/skills/stage`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, source: "conversation", ...body }),
+      });
+      const skillMd = (extra = "") =>
+        `---\nname: expense-rules\ndescription: Applies the expense rules.\n---\n\n# Expense rules\n\nFor edge cases, read references/edge-cases.md.\n${extra}`;
+      const latestCard = async () => {
+        const messages = (await api("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id).messages;
+        return messages.filter((message: any) => message.card?.skillRequest?.name === "expense-rules").at(-1).card;
+      };
+
+      expect((await post({ action: "create", skill_md: skillMd() })).status).toBe(201);
+      const tooBig = await post({ action: "update", skill_name: "expense-rules", skill_md: skillMd("- one more rule\n".repeat(2_500)) });
+      expect(tooBig.status).toBe(422);
+      expect(((await tooBig.json()) as { error: string }).error).toMatch(
+        /at most 32KB; this SKILL\.md is \d+\.\dKB, the current version is 0\.\dKB\. .*references\/<topic>\.md/,
+      );
+
+      const moved = await post({
+        action: "update",
+        skill_name: "expense-rules",
+        skill_md: skillMd("Rules moved out.\n"),
+        references: [{ path: "references/edge-cases.md", content: "# Edge cases\n\n- one more rule\n" }],
+      });
+      expect(moved.status).toBe(201);
+      expect(await moved.json()).toMatchObject({ state: "applied", action: "update" });
+      const card = await latestCard();
+      expect(card.skillRequest.references).toEqual([{ path: "references/edge-cases.md", content: "# Edge cases\n\n- one more rule\n" }]);
+      expect(card.skillRequest.referencesSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(card.subtitle).toContain("1 reference file");
+      const reference = join(home, ".openmausbot", "workspaces", bot.id, ".agents", "skills", "expense-rules", "references", "edge-cases.md");
+      expect(readFileSync(reference, "utf8")).toContain("one more rule");
+
+      // Undo puts back the version without references.
+      expect(await api("POST", `/api/threads/${bot.threadId}/undo`, { requestId: card.requestId }))
+        .toMatchObject({ status: 200, body: { undone: true } });
+      expect(existsSync(reference)).toBe(false);
+
+      expect((await post({ action: "update", skill_name: "expense-rules", skill_md: skillMd("x\n"), references: "nope" })).status).toBe(400);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("applies a bot's own learned skill at once and undoes it from its receipt", async () => {
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     try {
@@ -11323,6 +11376,12 @@ describe("harness HTTP API", () => {
       expect(connectorLinkRequests).toHaveLength(before + 3);
       expect((await api("POST", card, { threadId: "wrong-thread" })).status).toBe(404);
       expect(connectorLinkRequests).toHaveLength(before + 3);
+      const labelled = await api("POST", card, { threadId: bot.threadId, alias: " personal " });
+      expect(labelled.status).toBe(200);
+      expect(connectorLinkRequests.at(-1)).toEqual({ toolkit: "slack", alias: "personal" });
+      const relabelled = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages.find((message: any) => message.id === messageIds[0]);
+      expect(relabelled.connector).toMatchObject({ alias: "personal", status: "authorizing" });
+      expect((await api("POST", card, { threadId: bot.threadId, alias: "x".repeat(65) })).status).toBe(400);
     } finally {
       connectorAccounts = [];
       await api("DELETE", `/api/bots/${bot.id}`);
@@ -11463,6 +11522,7 @@ describe("harness HTTP API", () => {
       try {
         expect((await api("PATCH", `/api/bots/${legacy.id}`, {
           composio: true,
+          approvalMode: "ask",
           outbound: { policy: "allow", dailyCap: 10 },
         })).status).toBe(200);
         const legacyToken = await mintTestCapability(BASE, legacy.id, legacy.threadId, { kind: "connectors" });
@@ -12150,6 +12210,35 @@ describe("bot memory API", () => {
       const ownHits = ((await own.json()) as { hits: Array<Record<string, unknown>> }).hits;
       expect(ownHits[0]).toMatchObject({ current: true, crossed: false });
       expect(await roomActivity()).toHaveLength(1);
+
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "The deploy checklist was signed off" })).status).toBe(202);
+      await api("POST", `/api/groups/${room.id}/interrupt`, {});
+      const roomHits = ((await (await searchFrom(privateThreadId, "deploy checklist signed")).json()) as { hits: Array<Record<string, unknown>> }).hits;
+      expect(roomHits[0]).toMatchObject({ threadId: roomThreadId, room: "Ops" });
+      const roomRead = await fetch(
+        `${BASE}/api/internal/session-read?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(privateThreadId)}&threadId=${encodeURIComponent(roomThreadId)}&messageId=${encodeURIComponent(String(roomHits[0]!.messageId))}`,
+        { headers: { authorization: `Bearer ${await mintTestCapability(BASE, bot.id, privateThreadId)}` } },
+      );
+      expect(roomRead.status).toBe(200);
+      expect(await roomRead.json()).toMatchObject({ text: "The deploy checklist was signed off", crossed: false });
+
+      const otherRoom = (await api("POST", "/api/groups", { name: "Launch", memberIds: [bot.id] })).body.group;
+      try {
+        const otherThreadId = otherRoom.threadId as string;
+        const fromOther = ((await (await searchFrom(otherThreadId, "deploy checklist signed")).json()) as { hits: Array<Record<string, unknown>> }).hits;
+        expect(fromOther[0]).toMatchObject({ threadId: roomThreadId, crossed: false });
+        const across = await fetch(
+          `${BASE}/api/internal/session-read?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(otherThreadId)}&threadId=${encodeURIComponent(roomThreadId)}&messageId=${encodeURIComponent(String(fromOther[0]!.messageId))}`,
+          { headers: { authorization: `Bearer ${await mintTestCapability(BASE, bot.id, otherThreadId)}` } },
+        );
+        expect(across.status).toBe(200);
+        expect(await across.json()).toMatchObject({ crossed: false });
+        const otherDump = await api("GET", `/api/threads/${otherThreadId}/export?format=json`);
+        expect(((otherDump.body.messages ?? []) as Array<{ kind?: string; tool?: { name?: string } }>)
+          .filter((message) => message.kind === "activity" && /recalled/.test(message.tool?.name ?? ""))).toEqual([]);
+      } finally {
+        await api("DELETE", `/api/groups/${otherRoom.id}`);
+      }
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`);
       await api("DELETE", `/api/groups/${room.id}`);

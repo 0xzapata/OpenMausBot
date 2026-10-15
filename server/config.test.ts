@@ -22,7 +22,6 @@ import { cacheUntilConfigChanges,
   persistableInstanceConfigs,
   roomTurnTimeoutMinutes,
   mcpCallTimeoutMinutes,
-  toolErrorCorrectiveRounds,
   maxConcurrentBotThreads,
   threadEventLogMaxBytes,
   threadEventLogRetentionDays,
@@ -88,6 +87,17 @@ describe("configuration boundaries", () => {
     }
     for (const value of [512, 1_024.1, 1_000_001]) {
       expect(() => parseConfigPatch({ context: { rebuildBytes: value } })).toThrow();
+    }
+  });
+  it("accepts the replay tool-history switch as a boolean, without reloading providers", () => {
+    for (const replayToolHistory of [true, false]) {
+      const context = { replayToolHistory };
+      expect(parseStoredConfig({ context })).toEqual({ context });
+      expect(parseConfigPatch({ context })).toEqual({ context });
+      expect(reloaded({ context })).toEqual([]);
+    }
+    for (const value of ["1", 1, "true", null]) {
+      expect(() => parseConfigPatch({ context: { replayToolHistory: value } })).toThrow();
     }
   });
   it("keeps Fish Audio and ElevenLabs voice credentials separate", () => {
@@ -530,27 +540,6 @@ describe("configuration boundaries", () => {
     expect(() => parseConfigPatch({ mcp: { callTimeoutMinutes: 10, surprise: 1 } })).toThrow("mcp");
   });
 
-  it("accepts persisted tool-error corrective rounds and supplies the default of 0", () => {
-    expect(parseStoredConfig({ toolErrors: { correctiveRounds: 2 } })).toEqual({
-      toolErrors: { correctiveRounds: 2 },
-    });
-    expect(toolErrorCorrectiveRounds({ toolErrors: { correctiveRounds: 2 } })).toBe(2);
-    expect(toolErrorCorrectiveRounds({})).toBe(0);
-  });
-
-  it.each([-1, 1.5, 6, 10, "2", null])(
-    "rejects an invalid corrective-rounds value: %j",
-    (correctiveRounds) => {
-      expect(() => parseConfigPatch({ toolErrors: { correctiveRounds } })).toThrow(
-        "toolErrors.correctiveRounds",
-      );
-    },
-  );
-
-  it("rejects unknown keys under the toolErrors config section", () => {
-    expect(() => parseConfigPatch({ toolErrors: { correctiveRounds: 2, surprise: 1 } })).toThrow("toolErrors");
-  });
-
   it("preserves shared Local VM behavior by default and accepts bounded per-bot mode", () => {
     expect(localVmMode({})).toBe("shared");
     expect(localVmMaxInstances({})).toBe(2);
@@ -608,6 +597,11 @@ describe("configuration boundaries", () => {
     expect(() => parseConfigPatch({ features: { skillAuthoring: "yes" } })).toThrow(
       "features.skillAuthoring",
     );
+  });
+
+  it("accepts only off, ask and auto for sharing learned skills", () => {
+    expect(parseConfigPatch({ features: { shareLearnedSkills: "off" } })).toEqual({ features: { shareLearnedSkills: "off" } });
+    expect(() => parseConfigPatch({ features: { shareLearnedSkills: "always" } })).toThrow("features.shareLearnedSkills");
   });
 
   it("keeps computer sharing off unless config.json explicitly turns it on", () => {
@@ -1522,6 +1516,13 @@ describe("credential env preference", () => {
     saveConfig({ context: { rebuildBytes: 32_000, autoCompact: false } });
     saveConfig({ context: { compactAt: 0.75 } });
     expect(loadConfig().context).toEqual({ rebuildBytes: 32_000, autoCompact: false, compactAt: 0.75 });
+  });
+
+  it("persists the replay tool-history switch beside the other context preferences", () => {
+    saveConfig({ context: { rebuildBytes: 32_000 } });
+    expect(loadConfig().context?.replayToolHistory).toBeUndefined();
+    saveConfig({ context: { replayToolHistory: true } });
+    expect(loadConfig().context).toEqual({ rebuildBytes: 32_000, replayToolHistory: true });
   });
 
   it("falls back to the config file when the env var is unset (dev mode)", () => {

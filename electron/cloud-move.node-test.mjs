@@ -7,7 +7,7 @@ import test from "node:test";
 import vm from "node:vm";
 import environments from "./environments.cjs";
 import localOrigin from "./local-origin.cjs";
-import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, olderVersion, parseMoveEstimate } from "./cloud-move.mjs";
+import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, olderVersion, parseCloudMoveStatus, parseMoveEstimate } from "./cloud-move.mjs";
 import { cloudPlanSnapshot } from "./cloud-account.mjs";
 import { cloudPlanDisk, isCloudHomeEntry, myCloudOrigin } from "./cloud-home.mjs";
 
@@ -36,7 +36,7 @@ function desktop({ bytes = 5000, busy = false, exportError = null, routines, ide
 }
 
 function cloudFake({ freeBytes = 1024 ** 4, volumeBytes, empty = true, failPut = () => false, dropAnswer = () => false, loseAt = 0, busyRestores = 0, storedPart = 0, previewBots = 3, identity = {}, refuse = null,
-  partBytes = 1024, proxyLimit = Infinity } = {}) {
+  partBytes = 1024, proxyLimit = Infinity, leftBehind = null } = {}) {
   const state = { freeBytes, upload: storedPart ? { sha256: "e".repeat(64), bytes: storedPart } : null, received: Buffer.alloc(storedPart), job: null, lastRestoreId: null, restarting: 0,
       previous: null, contents: { bots: 1, rooms: 0, chats: 0 }, empty, discards: 0, restoreAsks: [] },
     log = [], tokens = new Set();
@@ -57,7 +57,7 @@ function cloudFake({ freeBytes = 1024 ** 4, volumeBytes, empty = true, failPut =
     if (refuse && pathname.startsWith("/api/cloud-move")) return json(refuse.status, refuse.body);
     if (pathname === "/api/cloud-move" && (init.method ?? "GET") === "GET") {
       return json(200, { ...identity, contents: state.contents, empty: state.empty, freeBytes: state.freeBytes, ...(volumeBytes ? { volumeBytes } : {}), previous: state.previous, job: state.job, pendingRestore: false, busy: false,
-        lastRestoreId: state.lastRestoreId, rolledBackId: null, partBytes: 1024,
+        lastRestoreId: state.lastRestoreId, leftBehind: state.lastRestoreId ? leftBehind : null, rolledBackId: null, partBytes: 1024,
         upload: state.upload && { ...state.upload, received: state.received.length } });
     }
     const body = init.body && !(init.body instanceof Uint8Array) ? JSON.parse(init.body) : undefined;
@@ -137,6 +137,22 @@ test("moves this computer's archive in parts, waits out the restart, signs its s
     assert.equal(f.cloud.tokens.size, 0, "the move's session was signed out");
     assert.deepEqual(readdirSync(join(f.temp, "move")), []);
   } finally { f.done(); }
+});
+
+test("after a move from another kind of computer, says which of its folders and files did not come over", async () => {
+  const leftBehind = { bots: 2, paths: ["C:\\Users\\Ada\\Projects\\site", "C:\\Users\\Ada\\Desktop\\x.docx"] };
+  const f = harness({ cloud: { leftBehind } });
+  try {
+    const result = await f.move.move();
+    assert.equal(result.phase, "done", JSON.stringify(result));
+    assert.deepEqual(result.leftBehind, leftBehind);
+  } finally { f.done(); }
+  const status = { contents: { bots: 1, rooms: 0, chats: 0 }, empty: false, freeBytes: 1 };
+  assert.equal(parseCloudMoveStatus(status).leftBehind, null);
+  assert.equal(parseCloudMoveStatus({ ...status, leftBehind: { bots: -1, paths: [] } }).leftBehind, null);
+  assert.equal(parseCloudMoveStatus({ ...status, leftBehind: { bots: 0, paths: [7, ""] } }).leftBehind, null);
+  assert.deepEqual(parseCloudMoveStatus({ ...status, leftBehind: { bots: 0, paths: ["C:\\a\nb", ...Array(30).fill("D:\\x")] } }).leftBehind,
+    { bots: 0, paths: ["C:\\a b", ...Array(19).fill("D:\\x")] });
 });
 
 const puts = f => f.cloud.log.filter(([method, path]) => method === "PUT" && path.startsWith("/api/cloud-move/upload/")).length;

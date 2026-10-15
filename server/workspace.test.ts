@@ -439,6 +439,18 @@ describe("workspace", () => {
     expect(loadMemory(BOT)?.truncated).toBe(false);
   });
 
+  it("tells a turn whose notes would be refused where facts go, and still shows it the memory", () => {
+    const empty = memorySystemPrompt(BOT, { managedWrites: true, fileTools: true, writesRefused: true });
+    expect(empty).toContain("Notes cannot be saved from this conversation");
+    expect(empty).toContain("in your result to that bot");
+    writeMemoryFile(BOT, "- The owner likes figs.");
+    const refused = memorySystemPrompt(BOT, { managedWrites: true, fileTools: true, writesRefused: true });
+    expect(refused).toContain("The owner likes figs.");
+    expect(refused).not.toContain("Change MEMORY.md only with memory_update");
+    expect(refused).not.toContain("Record only facts");
+    expect(memorySystemPrompt(BOT, { managedWrites: true, fileTools: true })).toContain("Change MEMORY.md only with memory_update");
+  });
+
   it("requires explicit remove to delete a memory passage", () => {
     writeMemoryFile(BOT, "Keep this unique fact.");
     for (const text of ["", " \n\t "]) {

@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import { bridgedCallName } from "./agents-bridge-names.ts";
 import { readDecisions, type DecisionKind, type DecisionRow } from "./decision-log.ts";
 import { isRuntimeEvent, readRecentLines } from "./thread-events.ts";
 
@@ -143,7 +144,8 @@ function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
           at: event.createdAt,
           threadId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
-          tool: event.title ?? "unknown",
+          // A bridged call reads as the tool it ran, only where the title itself names the agents server.
+          tool: bridgedCallName(event.title ?? "unknown", event.input, { serverNamed: true }),
           outcome: "running",
         }),
       );

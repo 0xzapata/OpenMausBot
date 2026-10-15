@@ -1,6 +1,6 @@
 // Redacted before it is cut: a key sliced in half would slip past the shapes redaction knows.
 import { MAX_QUESTION_TEXT } from "../shared/ask-question.ts";
-import { redactSecrets, redactSecretsInText } from "./redact.ts";
+import { HELD_SECRET_MASK, redactSecrets, redactSecretsInText } from "./redact.ts";
 
 export function toolDetailPreview(value: unknown): string | undefined {
   if (value === undefined) return undefined;
@@ -39,7 +39,15 @@ export function toolDetailPreview(value: unknown): string | undefined {
   return text.length > 6_000 ? `${text.slice(0, 6_000)}\n[… preview shortened]` : text;
 }
 
-const LIMIT = 200;
+export const COMMAND_SUMMARY_MAX = 200;
+const LIMIT = COMMAND_SUMMARY_MAX;
+
+const NOT_SHOWN = /\[(?:redacted|(?:binary|large) content omitted|additional (?:data|items|fields) omitted|… preview shortened)\]|«redacted \d+ chars»/;
+
+/** Two previews that read the same prove the same call only when neither masked, left out or cut a value. */
+export function previewIsPartial(preview: string): boolean {
+  return NOT_SHOWN.test(preview) || preview.includes(HELD_SECRET_MASK);
+}
 
 function fieldsOf(input: unknown): Record<string, unknown> | undefined {
   if (input === null || typeof input !== "object" || Array.isArray(input)) return undefined;

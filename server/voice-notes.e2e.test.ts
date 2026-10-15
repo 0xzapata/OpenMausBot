@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 import { request } from "../scripts/mcp-server.ts";
+import { listSystemVoices } from "./tts/system-voices.ts";
 
 const MP3 = Buffer.from("ID3 fake mp3 for the voice note fixture");
 
@@ -44,7 +45,7 @@ async function withVoiceFixture(test: (f: any) => Promise<void>, options?: { fai
         ? readFileSync(planPath + ".evidence.jsonl", "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
         : [],
       messages: async (threadId: string) => (await api("/api/threads/" + threadId + "/messages")).messages,
-      serveTts: async (options?: { holdUntil?: string }) => {
+      serveTts: async (options?: { holdUntil?: string; audio?: { mime: string; bytes: Buffer } }) => {
         const server = createServer((req, res) => {
           let raw = "";
           req.on("data", (chunk: Buffer) => { raw += chunk; });
@@ -56,9 +57,10 @@ async function withVoiceFixture(test: (f: any) => Promise<void>, options?: { fai
             }
             const body = JSON.parse(raw);
             seen.push({ input: String(body.input ?? ""), voice: String(body.voice ?? "") });
+            const { mime, bytes } = options?.audio ?? { mime: "audio/mpeg", bytes: MP3 };
             const finish = () => {
-              res.writeHead(200, { "content-type": "audio/mpeg", "content-length": String(MP3.byteLength) });
-              res.end(MP3);
+              res.writeHead(200, { "content-type": mime, "content-length": String(bytes.byteLength) });
+              res.end(bytes);
             };
             const holdUntil = options?.holdUntil;
             if (!holdUntil) return finish();
@@ -121,6 +123,41 @@ it("advertises send_voice_note to a ready bot and attaches the clip to the settl
   // Windows cannot represent a POSIX owner-only mode.
   if (process.platform !== "win32") expect(statSync(stored).mode & 0o777).toBe(0o600);
   expect(readFileSync(stored).equals(MP3)).toBe(true);
+}), 60_000);
+
+async function sendWavNote(f: any): Promise<Buffer> {
+  const bot = (await f.cli("new-bot", "--name", "WAV voice bot")).bot;
+  f.savePlan({ [bot.id]: { steps: [{ tool: "send_voice_note", arguments: { text: "A WAV note." } }], reply: "Sent." } });
+  await f.cli("send", "--bot", bot.id, "--task", bot.activeTaskId, "--text", "Send a voice note.");
+  const waited = await f.cli("wait", "--bot", bot.id, "--task", bot.activeTaskId, "--timeout", "30");
+  const step = f.evidence().find((entry: any) => entry.botId === bot.id).evidence.find((entry: any) => entry.step);
+  expect(step.response.result.content[0].text).toContain("Voice note recorded");
+  expect(waited.status).toBe("settled");
+
+  const messages = await f.messages(bot.activeTaskId);
+  const audio = messages.flatMap((m: any) => m.attachments ?? []).find((a: any) => a.kind === "audio");
+  expect(audio?.mime).toBe("audio/wav");
+  const name = audio.path.split(/[\\/]/).pop();
+  expect(name).toMatch(/^[\w-]+\.wav$/);
+  const res = await fetch(f.session.info.url + "/api/attachments/" + name);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toBe("audio/wav");
+  return Buffer.from(await res.arrayBuffer());
+}
+
+it("delivers a WAV voice note from a provider that answers in WAV", async () => withVoiceFixture(async (f) => {
+  const wav = Buffer.from("RIFF\0\0\0\0WAVE fake wav for the voice note fixture", "latin1");
+  const baseUrl = await f.serveTts({ audio: { mime: "audio/wav", bytes: wav } });
+  await f.api("/api/config", { tts: { provider: "chatterbox", baseUrl, voice: "voice-a" } }, "PUT");
+  expect((await sendWavNote(f)).equals(wav)).toBe(true);
+}), 60_000);
+
+it.runIf(process.platform === "darwin")("delivers a voice note spoken by the built-in Mac voices", async () => withVoiceFixture(async (f) => {
+  const [voice] = await listSystemVoices();
+  await f.api("/api/config", { tts: { provider: "system", voice: voice!.id } }, "PUT");
+  const served = await sendWavNote(f);
+  expect(served.subarray(0, 4).toString("latin1")).toBe("RIFF");
+  expect(served.subarray(8, 12).toString("latin1")).toBe("WAVE");
 }), 60_000);
 
 it("makes the note text the visible transcript when the turn writes no reply", async () => withVoiceFixture(async (f) => {

@@ -17,6 +17,8 @@ export type NotifyKind =
    * the results; both are internal, so without this the parent conversation
    * sits silent until the resume's first token. */
   | "delegation-settled"
+  /** A bot's settled room reply tagged the person (`@you` or their profile name). Rooms only. */
+  | "mention"
   /** The workspace crossed its monthly spend warning or reached its cap.
    * Sent to admins only, at most once per month for each. */
   | "spend";
@@ -37,3 +39,9 @@ export interface Notification {
   groupId?: string;
 }
 
+/** A `Notification` as the feed stores it: the live `notify` frame and `GET /api/notifications` carry the same entry. */
+export interface NotificationLogEntry extends Notification {
+  id: string;
+  at: number;
+  read: boolean;
+}

@@ -3,6 +3,7 @@ import type { ValidateFunction } from "ajv";
 import { isolatedRemoteCommand, runCommand, screenshotBoat } from "./boat.ts";
 import type { AppConfig } from "./config.ts";
 import { controlRefusal, type ControlState } from "./control-client.ts";
+import { HARNESS_CALL_BUDGET_MS } from "./harness-budget.ts";
 import { compileToolSchema } from "./mcp-schema-validator.ts";
 
 const coordinate = { type: "integer", minimum: 0, maximum: 32767 };
@@ -22,6 +23,7 @@ export const CLOUD_COMPUTER_TOOLS = [
 ];
 /** A call the gate let through while no Boat had landed for the turn. */
 export const CLOUD_COMPUTER_NOT_READY = "The cloud computer is not ready. This call was not performed. Take a fresh screenshot in a moment.";
+export const CLOUD_COMPUTER_LATE = "The cloud computer did not answer in time. This call may still have run; take a fresh screenshot before repeating it.";
 const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
 const buttons: Record<string, number> = { left: 1, middle: 2, right: 3 };
 const scrollButtons: Record<string, number> = { up: 4, down: 5, left: 6, right: 7 };
@@ -92,8 +94,11 @@ export async function cloudComputerRpc(
     gate(): Promise<Pick<ControlState, "held" | "reason" | "blockedReason">>;
     assertActive(): void;
     signal: AbortSignal;
+    /** The whole call, the gate's wait included, answers within this. */
+    budgetMs?: number;
   },
 ): Promise<{ tools: typeof CLOUD_COMPUTER_TOOLS } | CloudComputerResult> {
+  const deadline = Date.now() + (deps.budgetMs ?? HARNESS_CALL_BUDGET_MS);
   if (request?.method === "tools/list") {
     deps.assertActive();
     return { tools: CLOUD_COMPUTER_TOOLS };
@@ -108,7 +113,14 @@ export async function cloudComputerRpc(
   if (control.held) return { isError: true, content: [{ type: "text", text: controlRefusal(control) }] };
   const boxId = deps.boxId();
   if (!boxId) return { isError: true, content: [{ type: "text", text: CLOUD_COMPUTER_NOT_READY }] };
-  const result = await runCloudComputerTool(deps.cfg, boxId, params.name as string, args as Record<string, unknown>, deps.signal);
+  const late = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+  let result: CloudComputerResult;
+  try {
+    result = await runCloudComputerTool(deps.cfg, boxId, params.name as string, args as Record<string, unknown>, AbortSignal.any([deps.signal, late]));
+  } catch (error) {
+    if (!late.aborted || deps.signal.aborted) throw error;
+    return { isError: true, content: [{ type: "text", text: CLOUD_COMPUTER_LATE }] };
+  }
   deps.assertActive();
   return result;
 }

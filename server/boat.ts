@@ -419,9 +419,16 @@ function boatInventoryProblem(status: number, body: any, included = false): stri
   if (status === 401 || status === 403) {
     return included ? INCLUDED_BOAT_UNAVAILABLE : "boat.dev rejected the Boat API key — update it in Settings → API keys";
   }
-  if (status === 429) return "boat.dev is rate-limiting this account — wait a minute and refresh";
+  const service = boatServiceName(included);
+  if (status === 429) return `${service} is rate-limiting this account — wait a minute and refresh`;
   const message = typeof body?.message === "string" ? body.message.trim() : "";
-  return message ? `boat.dev could not list cloud computers: ${message}` : `boat.dev could not list cloud computers (${status})`;
+  return message ? `${service} could not list cloud computers: ${message}` : `${service} could not list cloud computers (${status})`;
+}
+
+/** A read that fails on the network or times out is sent once more; any answer, even an error status, is final. */
+function boatRead(cfg: AppConfig, path: string) {
+  const read = () => boatJson(cfg, path, { signal: AbortSignal.timeout(20_000) });
+  return read().catch(async () => { await new Promise((resolve) => setTimeout(resolve, 1_000)); return read(); });
 }
 
 function safeBoatState(value: unknown): string {
@@ -432,7 +439,7 @@ function safeBoatState(value: unknown): string {
 
 async function listBoatPages(
   cfg: AppConfig,
-): Promise<{ ok: true; boats: any[] } | { ok: false; problem: string; credentialRejected?: boolean }> {
+): Promise<{ ok: true; boats: any[] } | { ok: false; problem: string; credentialRejected?: boolean; unreachable?: boolean }> {
   const boats: any[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | null = null;
@@ -441,16 +448,13 @@ async function listBoatPages(
     const path = `/sandboxes?limit=${BOAT_INVENTORY_PAGE_SIZE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
     let listed: Awaited<ReturnType<typeof boatJson>>;
     try {
-      listed = await boatJson(cfg, path, { signal: AbortSignal.timeout(20_000) });
+      listed = await boatRead(cfg, path);
     } catch {
-      return { ok: false, problem: "Could not reach boat.dev to list cloud computers — check your connection and refresh" };
+      return { ok: false, unreachable: true, problem: `Could not reach ${boatServiceName(usesIncludedBoat(cfg))} to list cloud computers — check your connection and refresh` };
     }
     if (!listed.ok || !Array.isArray(listed.body?.sandboxes)) {
-      return {
-        ok: false,
-        problem: boatInventoryProblem(listed.status, listed.body, usesIncludedBoat(cfg)),
-        credentialRejected: listed.status === 401 || listed.status === 403,
-      };
+      const credentialRejected = listed.status === 401 || listed.status === 403;
+      return { ok: false, problem: boatInventoryProblem(listed.status, listed.body, usesIncludedBoat(cfg)), credentialRejected };
     }
     boats.push(...listed.body.sandboxes);
 
@@ -481,15 +485,7 @@ export async function listManagedBoats(
   }
 
   const listed = await listBoatPages(cfg);
-  if (!listed.ok) {
-    return {
-      configured: true,
-      available: false,
-      problem: listed.problem,
-      credentialRejected: listed.credentialRejected,
-      instances: [],
-    };
-  }
+  if (!listed.ok) return { configured: true, available: false, problem: listed.problem, credentialRejected: listed.credentialRejected, instances: [] };
 
   const namedOwners = await Promise.all(owners.map(async (owner) => ({
     currentName: await boatNameFor(owner.botId),
@@ -690,7 +686,7 @@ export async function inspectBoatIdentity(cfg: AppConfig, boxId: string): Promis
     return {
       available: false,
       identity: null,
-      problem: "Could not reach boat.dev to verify a remembered cloud computer",
+      problem: `Could not reach ${boatServiceName(usesIncludedBoat(cfg))} to verify a remembered cloud computer`,
     };
   }
   const candidate = inspected.body?.sandbox;
@@ -859,7 +855,7 @@ export async function findBoat(cfg: AppConfig, botId: string) {
   const legacyName = legacyBoatNameFor(botId);
   const listed = await listBoatPages(cfg);
   if (!listed.ok) {
-    throw Object.assign(new Error(listed.problem), { status: 503 });
+    throw Object.assign(new Error(listed.problem), { status: 503, transient: listed.unreachable === true });
   }
   const expected = listed.boats.filter((candidate: any) => candidate?.name === name || candidate?.name === legacyName);
   if (expected.some((candidate: any) => !BOAT_ID.test(candidate?.id))) {
@@ -928,6 +924,7 @@ export async function verifyToken(token: string): Promise<{ ok: true } | { ok: f
 }
 
 const INCLUDED_BOAT_UNAVAILABLE = "The cloud computers included with your Cloud plan aren't available right now. Try again later.";
+const boatServiceName = (included: boolean) => included ? "MausBot Cloud's computer service" : "boat.dev";
 
 export function boatErrorMessage(status: number, what: string, body?: any, included = false): string {
   const theirs = typeof body?.message === "string" ? body.message.trim() : "";

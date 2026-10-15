@@ -36,6 +36,13 @@ export function chiefForBot<T extends IncidentBot>(bots: readonly T[], bot: Inci
     ?? null;
 }
 
+/** Why retry_thread cannot resume a thread yet, in words the Chief can act on. */
+export const RETRY_BLOCKED = {
+  running: "that thread is still running — wait for it to settle before retrying",
+  settling: "that thread's last run has ended but is still shutting down — try again in a minute",
+  queued: "that thread is waiting for a free slot and starts on its own — do not retry it",
+} as const;
+
 export const INCIDENT_RETRY_LIMIT = 2;
 export const INCIDENT_HARD_LIMIT = 5;
 export const INCIDENT_WINDOW_MS = 60 * 60_000;
@@ -107,6 +114,13 @@ export function incidentRequest(messages: readonly Pick<Message, "role" | "kind"
     if (asked) return asked;
   }
   return null;
+}
+
+export function incidentContext(messages: readonly Pick<Message, "role" | "kind" | "text" | "peerAsk">[]): Pick<Incident, "lastRequest" | "lastReply"> {
+  return {
+    lastRequest: incidentRequest(messages),
+    lastReply: messages.findLast((message) => message.role === "bot" && message.kind === "text" && message.text)?.text ?? null,
+  };
 }
 
 export function incidentChip(incident: Incident): string {

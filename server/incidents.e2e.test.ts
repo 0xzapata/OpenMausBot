@@ -131,6 +131,31 @@ it("reports a crashed run to the Chief, who retries it from the incidents thread
   }
 }, 150_000);
 
+it("files a failed run's incident only once its thread has settled, so the Chief's retry is accepted straight away", async () => {
+  const { url, api, control, dump, useCli, incidentsThread, close } = await launch();
+  const stream = await openSse(`${url}/api/events`, { origin: url });
+  try {
+    const chief = (await control(["new-bot", "--name", "Clive", "--section", "Ops"])).bot;
+    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
+    const ada = (await control(["new-bot", "--name", "Ada", "--section", "Ops"])).bot;
+    await useCli(`thread === ${JSON.stringify(ada.activeTaskId)} ? "exit-early" : "slow"`);
+
+    await control(["send", "--bot", ada.id, "--text", "Reconcile the September invoices."]);
+    const incidents = (await incidentsThread(chief.id)).threadId;
+    const chip = await stream.until((frame) => frame.kind === "message" && frame.threadId === incidents &&
+      String(frame.message?.tool?.name ?? "").startsWith("Incident: Ada's run"), 20_000);
+    const adaBefore = stream.frames.slice(0, stream.frames.indexOf(chip)).filter((frame) => frame.kind === "bot" && frame.bot?.id === ada.id);
+    expect(adaBefore.at(-1)?.bot.tasks.find((task: any) => task.threadId === ada.activeTaskId)?.busy).toBe(false);
+
+    const token = (await dump(incidents)).mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
+    const retry = { fromBotId: chief.id, fromThreadId: incidents, toBotId: ada.id, toThreadId: ada.activeTaskId };
+    expect(await api("POST", "/api/internal/retry-thread", retry, token, 200)).toMatchObject({ started: true });
+  } finally {
+    stream.close();
+    await close();
+  }
+}, 150_000);
+
 it("queues reports that find the Chief's incidents thread busy, answers them together, and runs each without a computer it cannot have", async () => {
   const { api, control, file, dump, messages, useCli, incidentsThread, close } = await launch();
   try {

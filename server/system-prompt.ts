@@ -1,7 +1,9 @@
 // One builder for every turn's system prompt, so what a bot receives and the "what the model sees" preview are the same bytes.
 import { soulSystemPrompt } from "./bot-folder.ts";
+import { agentsToolBridged } from "./drivers/agents-bridge.ts";
 import { teammateAvailabilityPrompt, type RosterMember } from "./peer-roster.ts";
 import type { ConnectorToolGrant } from "../shared/wire.ts";
+import { isConversational, type ReplyStyle } from "../shared/reply-style.ts";
 
 export type PromptPart = { id: string; label: string; text: string };
 export type PromptSection = PromptPart & { bytes: number };
@@ -20,14 +22,35 @@ export function teamAvailabilityPart(team: readonly RosterMember[]): PromptPart 
   return { id: "availability", label: "Team availability", text: teammateAvailabilityPrompt(team) };
 }
 
+/** One standing rule for a bridged turn, so every tool name the prompt, a description or a result gives
+ * stays reachable. It names no tools, so it is the same for every turn, and it holds only if the bridge
+ * tools are listed: a selection saved after the prompt is built mounts the agents server unbridged. */
+export const AGENTS_TOOL_BRIDGE_PROMPT =
+  " If find_tool and use_tool are in your tool list, your other OpenMausBot tools are reached through them: for a tool named in these instructions, a tool's description or a tool's result that is not itself in your tool list, call find_tool with a few words about what you need or with the tool's name, which returns its description and exact input schema, then run it with use_tool, giving its name and its arguments; find_tool's own description lists the tools reached this way, and they do exactly what they would if called directly. A tool that is in your tool list is always called directly.";
+
+/** `agents` is the turn's agents integration, if any; only a turn asked to bridge is told about the bridge. */
+
+/** Fixed text in the stable half, so it changes the cached prefix only when the setting flips. */
+export const CONVERSATIONAL_STYLE_PROMPT =
+  "\n\nReply style: conversational. Talk like a person in a chat. Keep replies short unless the person asks for detail. Use plain text with no headings, bullet lists, tables or bold unless the person asks for them or the content truly needs them; code always goes in a fenced code block. Send each distinct point as its own short message, separated by a blank line, in the order you find things. When it helps, end with one brief follow-up question. Match the person's language and roughly the length of their message.\n";
+
+export function replyStylePrompt(style: ReplyStyle | undefined): string {
+  return isConversational(style) ? CONVERSATIONAL_STYLE_PROMPT : "";
+}
+
 export function buildSystemPrompt(
   persona: string,
   soul: string,
   parts: PromptPart[],
+  agents?: { env?: Record<string, string | undefined> },
+  opts?: { replyStyle?: ReplyStyle },
 ): { text: string; sections: PromptSection[]; stable: string; volatile: string } {
   const ordered: PromptPart[] = [
     { id: "persona", label: "Identity", text: persona },
     { id: "soul", label: "Standing instructions (SOUL.md)", text: soulSystemPrompt(soul) },
+    // Right after the soul: on a direct turn, ahead of every section that names a tool.
+    { id: "tool-bridge", label: "Tool search", text: agentsToolBridged(agents) ? AGENTS_TOOL_BRIDGE_PROMPT : "" },
+    { id: "reply-style", label: "Reply style", text: replyStylePrompt(opts?.replyStyle) },
     ...parts,
   ];
   const sections = ordered
@@ -86,7 +109,7 @@ export const CLOUD_HOME_PLACE = "the user's My Cloud, their always-on OpenMausBo
 
 export function cloudHomePrompt(sharedComputerTools: boolean): string {
   return ` You run on ${CLOUD_HOME_PLACE}.` + (sharedComputerTools
-    ? " If they ask for something on their own Mac or PC, check list_shared_computers: a Mac they lend to My Cloud is reachable through shared_computer, within the folders and apps it allows. If none is lent and online, say so in one sentence: they can turn on Let My Cloud use this Mac under Settings → MausBot Cloud in the desktop app on that Mac."
+    ? " If they ask for something on their own Mac or PC, check list_shared_computers: a computer they lend to My Cloud is reachable through shared_computer, within the folders and apps it allows. If none is lent and online, say so in one sentence: they can turn on Let My Cloud use this computer under Settings → MausBot Cloud in the desktop app on that computer."
     : " You cannot see or use their Mac or PC, its screen or its files from here. If they ask for something on it, say so in one sentence.")
     + " Offer what works here: the built-in browser and their cloud computer, a desktop in the cloud. Call it their cloud computer, as the app does. Never ask them to set up this computer or a Local VM; neither exists here.";
 }
@@ -97,7 +120,9 @@ export const COMPOSIO_PROMPT =
 export function composioSystemPrompt(grants: Record<string, ConnectorToolGrant> | undefined): string {
   if (grants === undefined) return COMPOSIO_PROMPT;
   const services = Object.keys(grants);
-  if (services.length === 0) return "";
+  if (services.length === 0) {
+    return " No connected apps are assigned to this bot. If a task needs one, or an app's sign-in has expired, call COMPOSIO_MANAGE_CONNECTIONS to show the user a card that connects it, and ask them to allow that app for this bot in OpenMausBot.";
+  }
   const named = services.map(connectorServiceLabel).join(", ");
   return ` The user's connected apps assigned to this bot (${named}) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Only the tools this bot was granted will run; when a needed tool is refused, tell the user and ask them to grant it in OpenMausBot. Reach for the granted services before telling the user you have no access.`;
 }
@@ -116,6 +141,15 @@ export function customMcpPrompt(names: string[]): string {
 }
 export const CREDENTIAL_PROMPT =
   " If a supported API key is missing for the service actually needed, use request_credential to create a secure credential request. Before requesting a computer-provider key, inspect the configured targets with select_computer; an existing self-hosted VPS does not need Boat credentials. Do not request a different provider's key merely because a task mentions cloud. A freshly QR-paired mobile app or the desktop app can show the secure entry card. Never claim it opened unless the request succeeded, and never ask the user to paste credentials into chat.";
+/** Ten minutes stays inside the 20-minute turn stall watchdog, which sees nothing while a command runs. */
+export const BASH_MAX_TIMEOUT_MS = 600_000;
+const LONG_COMMANDS_TEXT =
+  ` Long-running shell commands: a shell call is stopped after a default limit (2 minutes for a Bash call) and the output of a stopped command is lost. Before running anything that can take more than a minute, such as transcription (whisper), ffmpeg or ffprobe over long media, renders, large builds or big file transfers, either pass a longer per-call timeout (Bash takes \`timeout\` in milliseconds, up to ${BASH_MAX_TIMEOUT_MS}) or start it detached with its output in a file (\`nohup <command> > /tmp/<job>.log 2>&1 &\`) and check that file in later calls. Never scan the whole disk with \`find /\` or similar: search by name with \`mdfind -name\` on macOS, or search a specific folder such as your workspace or home with a depth limit. If a command times out, do not rerun it the same way.`;
+const VM_LONG_COMMANDS_TEXT =
+  " In your Local VM, vm_exec takes `timeout_seconds` instead (default 60, at most 300); start anything longer detached the same way, inside the VM, and check its log with later vm_exec calls.";
+export function longCommandsPrompt(computer: ComputerPromptKind | null): string {
+  return LONG_COMMANDS_TEXT + (computer === "vm-private" || computer === "vm-shared" ? VM_LONG_COMMANDS_TEXT : "");
+}
 export const THREADS_PROMPT =
   " A thread is one conversation with its own history and its own run; a bot can have several running at once, and the person sees them as rows under that bot. Use start_thread to open one on yourself for separate work; to hand a teammate a job in a fresh thread of its own, use coordinate_bots with thread \"new\". Use list_threads to see how the ones you opened are going. When you mention a thread to the person, write its title as #Title so it links. Do not use a ticket comment, a note, or a room post as a stand-in for a thread.";
 export const WIDGET_PROMPT =

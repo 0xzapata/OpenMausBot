@@ -1,5 +1,5 @@
 // Nothing secret goes in, and it is for the person's view only: a bot's tool call always uses live state.
-import type { ConnectorStatus } from "@/components/PluginsPanel";
+import type { ConnectorStatus } from "@/lib/connector-status";
 
 export interface CachedInventory {
   at: number;

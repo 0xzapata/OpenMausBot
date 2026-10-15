@@ -6,6 +6,7 @@ import {
 } from "./lib/session";
 import { bootstrapBrand } from "./lib/brand";
 import { applySkin, readSkin } from "./lib/skins";
+import { applyChatWidth, readChatWidth } from "./lib/chat-width";
 import { applyFont, readFont } from "./lib/fonts";
 import { settleAdvancedModeDefault } from "./lib/interface-mode";
 import { BrowserSignInPage } from "./pair/BrowserSignInPage";
@@ -16,6 +17,7 @@ import "./styles.css";
 settleAdvancedModeDefault();
 applySkin(readSkin());
 applyFont(readFont());
+applyChatWidth(readChatWidth());
 
 async function chooseRoot(): Promise<React.ReactNode> {
   if (location.pathname === "/pair") {

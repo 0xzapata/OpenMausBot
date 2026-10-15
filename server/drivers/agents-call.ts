@@ -8,6 +8,7 @@ import { callCardTool, CARD_TOOL_NAMES } from "./agents-call-cards.ts";
 import { catalogProfileFromEnv, SHARED_COMPUTER_TOOL_NAMES, WEEKDAYS } from "./agents-catalog.ts";
 import { harnessClientFromEnv } from "./agents-client.ts";
 import type { HarnessClient, Json } from "./agents-client.ts";
+import { memorySearchText } from "./memory-search-text.ts";
 import { boundedAgentResult } from "./agents-result.ts";
 
 export interface ToolCallContext {
@@ -567,7 +568,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (!threads.length) return { text: "No threads yet: you have none of your own beyond this one, and you have not opened any on a teammate." };
     const stateWord: Record<string, string> = { running: "running", "waiting-on-you": "waiting on the person", queued: "queued", idle: "idle" };
     const lines = threads.map((thread) => {
-      const where = thread.own === true ? "yours" : `on @${String(thread.botName)}`;
+      const where = thread.own === true ? "yours" : `on @${String(thread.botName)}${typeof thread.openedBy === "string" && thread.openedBy ? `, opened by @${thread.openedBy}` : ""}`;
       const state = stateWord[String(thread.state)] ?? String(thread.state);
       const unread = thread.unread === true ? ", unread for the person" : "";
       const handoff = typeof thread.delegationId === "string" && thread.delegationId ? ` [delegation id: ${thread.delegationId}]` : "";
@@ -965,6 +966,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
         fromBotId: BOT_ID,
         fromThreadId: THREAD_ID,
         kind,
+        key: typeof args.key === "string" ? args.key : undefined,
         name: entryName,
         detail,
         aliases: Array.isArray(args.aliases) ? args.aliases.filter((alias) => typeof alias === "string") : undefined,
@@ -984,17 +986,14 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (since) query.set("since", since);
     if (until) query.set("until", until);
     if (typeof args.limit === "number" && Number.isFinite(args.limit)) query.set("limit", String(Math.trunc(args.limit)));
-    if (args.scope === "conversations" || args.scope === "memory") query.set("scope", args.scope);
+    if (args.scope === "conversations" || args.scope === "memory" || args.scope === "team") query.set("scope", args.scope);
     const r = await api(`/api/internal/session-search?${query.toString()}`);
     const hits = Array.isArray(r.hits) ? (r.hits as Json[]) : [];
     const memoryHits = Array.isArray(r.memoryHits) ? r.memoryHits.filter(jsonRecord) : [];
-    const memoryBlock = memoryHits.length
-      ? `${memoryHits.length} matching memory file${memoryHits.length === 1 ? "" : "s"} of yours:\n${
-        memoryHits.map((hit) => `- [memory file ${String(hit.file)}] ${String(hit.snippet)}`).join("\n")
-      }\n\n`
-      : "";
+    const teamHits = Array.isArray(r.teamHits) ? r.teamHits.filter(jsonRecord) : [];
+    const memoryBlock = memorySearchText(memoryHits, teamHits);
     const asked = q ? `matches "${q}"` : `is there since ${since}${until ? ` until ${until}` : ""}`;
-    if (!hits.length && !memoryHits.length) {
+    if (!hits.length && !memoryHits.length && !teamHits.length) {
       return { text: q
         ? `Nothing of yours ${asked} — no earlier conversation and no memory file. Try fewer or different words; every word must appear.`
         : `Nothing of yours ${asked} — no message in any of your conversations in that window.` };
@@ -1033,7 +1032,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     try {
       r = await api(`/api/internal/session-read?${query.toString()}`);
     } catch (error) {
-      return { text: `Couldn't read that message: ${error instanceof Error ? error.message : String(error)}. Use ids from a session_search hit.`, isError: true };
+      return { text: `Couldn't read message ${JSON.stringify(messageId.slice(0, 80))} in thread ${JSON.stringify(threadId.slice(0, 80))}: ${error instanceof Error ? error.message : String(error)}. Copy thread_id and message_id exactly from a session_search hit's "thread …" and "message …" fields.`, isError: true };
     }
     const when = recallWhen(r.at, true);
     const readTask = typeof r.task === "string" && r.task ? `task "${r.task}"` : "an earlier task";
@@ -1055,9 +1054,8 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       ? skills.map((skill) => {
         const row = skill as Json;
         // Unreviewed imports: a hostile description is still prompt content, so only names and status.
-        const editable = row.editable === true;
-        const status = row.enabled ? "enabled" : "disabled";
-        return `- ${row.name} (${status}, ${editable ? "learned/editable" : "imported"})`;
+        const revision = typeof row.revision === "string" ? `, shared with your team, revision ${row.revision}` : "";
+        return `- ${row.name} (${row.enabled ? "enabled" : "disabled"}, ${row.editable === true ? "learned/editable" : "imported"}${revision})`;
       }).join("\n")
       : "(none)";
     const pending = staged.length
@@ -1088,12 +1086,13 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const r = await api("/api/internal/skills/stage", {
       method: "POST",
       body: JSON.stringify({
-        fromBotId: BOT_ID,
-        fromThreadId: THREAD_ID,
+        fromBotId: BOT_ID, fromThreadId: THREAD_ID,
         action: args.action,
         skill_name: skillName || undefined,
         skill_md: skillMd,
+        ...(Array.isArray(args.references) ? { references: args.references } : {}),
         gist: typeof args.gist === "string" ? args.gist : undefined,
+        base_revision: typeof args.base_revision === "string" ? args.base_revision : undefined,
         source,
       }),
     });

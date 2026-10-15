@@ -163,4 +163,18 @@ describe("cloud computer tools", () => {
     expect(calls.filter(entry => entry.path.endsWith("/commands"))).toHaveLength(1);
     server.closeAllConnections();
   });
+
+  it("answers within its call budget, the gate's wait included, when the Boat holds a command", async () => {
+    holdCommand = true;
+    const started = Date.now();
+    const result = await tools.cloudComputerRpc({ method: "tools/call", params: { name: "exec", arguments: { command: "sleep 600" } } }, {
+      cfg, boxId: () => "bx_23456789", signal: new AbortController().signal, budgetMs: 600, assertActive: () => {},
+      gate: async () => { await new Promise(resolve => setTimeout(resolve, 300)); return { held: false }; },
+    });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: tools.CLOUD_COMPUTER_LATE }] });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(550);
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(calls.filter(entry => entry.path.endsWith("/commands"))).toHaveLength(1);
+    server.closeAllConnections();
+  });
 });

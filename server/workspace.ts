@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { join } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
-import { alwaysCore, isExpired, isMemoryDate, parseMemoryEntries, untilMark, withoutExpired, type MemoryEntryLine } from "./memory-entries.ts";
+import { alwaysCore, isExpired, isMemoryDate, parseMemoryEntries, untilMark, withoutExpired, withoutSuperseded, type MemoryEntryLine } from "./memory-entries.ts";
 import { parseTopicHeader, readTopicHead, renderTopicIndex } from "./memory-topics.ts";
 import { indexMemoryFile, indexedMemoryFiles, recallMemory, removeMemoryFile, type MemoryHit, type SearchMode } from "./message-db.ts";
 import { redactSecretsInText } from "./redact.ts";
@@ -167,7 +167,7 @@ function indexWrittenMemoryFile(botId: string, relativePath: string): void {
   }
 }
 
-function memoryFilesOnDisk(botId: string): Array<{ path: string; mtimeMs: number; bytes: number }> {
+export function memoryFilesOnDisk(botId: string): Array<{ path: string; mtimeMs: number; bytes: number }> {
   const dir = workspaceDir(botId);
   const names = [
     "MEMORY.md",
@@ -189,7 +189,7 @@ const memoryIndexDates = new Map<string, string>();
 function searchableMemoryText(path: string, text: string): string {
   if (path === "MEMORY.md" && text === MEMORY_SEED) return "";
   if (path === "memory/archive.md" || path.startsWith(`memory/${MEMORY_LOG_DIR}/`)) return text;
-  return withoutExpired(text, memoryDate()).text;
+  return withoutSuperseded(withoutExpired(text, memoryDate()).text);
 }
 
 export function syncMemoryIndex(botId: string): void {
@@ -511,15 +511,21 @@ export function memoryTopicIndex(botId: string): string {
   return renderTopicIndex(listMemoryTopics(botId).map((topic) => ({ name: topic.name, header: parseTopicHeader(readTopicHead(join(dir, topic.name))) })));
 }
 
-/** Memory is a prompt-injection persistence vector once a bot copies untrusted text into it. */
-export function memorySystemPrompt(botId: string, opts: { managedWrites?: boolean; fileTools?: boolean; enabled?: boolean } = {}): string {
+const NOTES_IN_RESULT =
+  " Notes cannot be saved from this conversation: on this Cloud only a conversation that only its owner writes in may change memory, and another bot or person wrote here." +
+  " Do not call memory_update or memory_log or edit memory files. Put any fact worth keeping in your reply; for work another bot handed you, in your result to that bot.";
+
+/** Memory is a prompt-injection persistence vector once a bot copies untrusted text into it.
+ * `writesRefused`: this turn's notes would be refused, so it is told where facts go instead. */
+export function memorySystemPrompt(botId: string, opts: { managedWrites?: boolean; fileTools?: boolean; enabled?: boolean; writesRefused?: boolean } = {}): string {
   if (opts.enabled === false) return "";
   const memory = loadMemory(botId);
   const memoryFile = join(workspaceDir(botId), "MEMORY.md");
   const topicDir = join(workspaceDir(botId), "memory");
-  if (opts.fileTools === false && !opts.managedWrites) {
-    if (!memory) return "";
-    return ` Your saved memory is supplied as context; this turn has no memory editing tools.\n\nYour memory (MEMORY.md):\n${memory.text}${memory.truncated ? " [Only the initial memory excerpt is visible.]" : ""}${topicIndexBlock(botId, false)}`;
+  if (opts.writesRefused || (opts.fileTools === false && !opts.managedWrites)) {
+    const lead = opts.writesRefused ? NOTES_IN_RESULT : " Your saved memory is supplied as context; this turn has no memory editing tools.";
+    if (!memory) return opts.writesRefused ? lead : "";
+    return `${lead}\n\nYour memory (MEMORY.md):\n${memory.text}${memory.truncated ? " [Only the initial memory excerpt is visible.]" : ""}${topicIndexBlock(botId, opts.fileTools !== false)}`;
   }
   const writeGuidance = opts.managedWrites
     ? " Change MEMORY.md only with memory_update" + (opts.fileTools === false ? "; on a conflict, find the current passage with session_search." : ".")
