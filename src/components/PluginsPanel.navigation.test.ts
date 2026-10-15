@@ -45,6 +45,10 @@ vi.mock("./McpServersPanel", () => ({
     : createElement("div", { "data-embedded": String(Boolean(embedded)) }, "MCP inventory"),
 }));
 vi.mock("./Avatar", () => ({ BotAvatar: ({ bot }: { bot: Bot }) => createElement("span", { "data-avatar": bot.id }) }));
+// The native HighLevel card has its own DOM suite; here it is a marker so tile counts stay the catalog's.
+vi.mock("./HighLevelCard", () => ({
+  HighLevelCard: () => createElement("div", { "data-highlevel-card": true }, "Connect HighLevel"),
+}));
 import { APPS_PREVIEW_COUNT, PluginsPanel, USED_BY_AVATAR_SIZE, botsUsingService } from "./PluginsPanel";
 import { FACE_BOX } from "./cursor-face-data";
 import { MASCOT_BODIES } from "../../shared/mascot-bodies";
@@ -53,6 +57,7 @@ const CARDS = 0;
 const CONFIGURED = 3;
 const STATUS = 6;
 const PHASE = 13;
+const HIGHLEVEL_CONNECTED = 21;
 
 type Node = ReactElement<{ children?: ReactNode; "aria-pressed"?: boolean; "data-apps-filter"?: string; onClick?: () => void; [key: string]: unknown }>;
 function nodes(value: ReactNode): Node[] {
@@ -108,6 +113,28 @@ describe("Apps pop-up", () => {
     fixture.overrides.set(18, true);
     const { html } = render();
     expect(html).toContain("2 connected");
+  });
+  it("shows the native HighLevel card in the grid and counts it once connected", () => {
+    const { html, nodes: tree } = render();
+    const grid = tree.find((node) => node.props["data-apps-grid"] !== undefined)!;
+    expect(nodes(grid).some((node) => node.props.onConnection !== undefined && node.props.refreshKey !== undefined)).toBe(true);
+    expect(html).toContain("Connect HighLevel");
+    expect(html).toContain("1 connected");
+    fixture.overrides.set(HIGHLEVEL_CONNECTED, true);
+    expect(render().html).toContain("2 connected");
+  });
+  it("hides HighLevel from the Connected tab until it is connected, and from a search that does not name it", () => {
+    fixture.overrides.set(16, "connected");
+    fixture.overrides.set(HIGHLEVEL_CONNECTED, false);
+    const wrapper = (tree: Node[]) => tree.find((node) => node.props["data-native-card"] === "highlevel")!;
+    expect(wrapper(render().nodes).props.className).toBe("hidden");
+    fixture.overrides.set(HIGHLEVEL_CONNECTED, true);
+    expect(wrapper(render().nodes).props.className).toBe("contents");
+    fixture.overrides.set(16, "marketplace");
+    fixture.overrides.set(15, "growably");
+    expect(wrapper(render().nodes).props.className).toBe("contents");
+    fixture.overrides.set(15, "zendesk");
+    expect(wrapper(render().nodes).props.className).toBe("hidden");
   });
   it("keeps a safe explicit authorization link and reopens without creating another account", async () => {
     const url = "https://auth.example.test/flow";

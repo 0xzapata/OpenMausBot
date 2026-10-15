@@ -16,7 +16,8 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { Switch } from "../SettingsPrimitives";
 import { ProposalStatus } from "./ProposalStatus";
 import { ToolSelectionCard } from "./ToolSelectionCard";
-import { preloadConnectedApps, type ConnectorInventory } from "../PluginsPanel";
+import { HIGHLEVEL_SLUG } from "@/lib/highlevel-sign-in";
+import { useBotApps } from "./useBotApps";
 import {
   classifyConnectorTool,
   connectorServiceAccess,
@@ -541,25 +542,14 @@ export function AccessSection({
   const worksOn = placeViewFor(placeFacts({
     bot, place: bot.computer ?? "auto", seat: placeSeat, config: state.config, instances: state.instances,
   }));
-  const [inventory, setInventory] = useState<ConnectorInventory | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void preloadConnectedApps().then((result) => {
-      if (!cancelled) setInventory(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // The same list the Vault tab shows: Composio's connected accounts plus the native HighLevel connection.
+  const apps = useBotApps(bot);
+  const inventoryReady = apps.phase === "ready";
+  const connectedSlugs = apps.connectedSlugs;
+  const appLabels = Object.fromEntries(apps.apps.map((app) => [app.slug, app.label]));
 
   const webhooks = state.webhooks.filter((webhook) => webhook.botId === bot.id);
   const alwaysAllow = bot.alwaysAllow ?? [];
-  const connectedSlugs = inventory?.authoritative
-    ? Object.entries(inventory.services)
-        .filter(([, status]) => status.connected)
-        .map(([slug]) => slug)
-    : [];
 
   return (
     <div className="flex flex-col gap-4">
@@ -645,10 +635,11 @@ export function AccessSection({
             className="disabled:cursor-not-allowed"
           />
         </div>
-        {connectedAppsEnabled && inventory?.authoritative && (
+        {connectedAppsEnabled && inventoryReady && (
           <>
-            {!draft && <ConnectorScopesControl connectedSlugs={connectedSlugs} scopes={bot.connectorScopes} onChange={(connectorScopes) => patch({ connectorScopes })} />}
-            <ConnectorToolsGrants bot={bot} patch={patch} slugs={connectedSlugs} />
+            {!draft && <ConnectorScopesControl connectedSlugs={connectedSlugs} labels={appLabels} scopes={bot.connectorScopes} onChange={(connectorScopes) => patch({ connectorScopes })} />}
+            {/* Tool-level grants list Composio's tools; HighLevel's tools are scoped by read/write above. */}
+            <ConnectorToolsGrants bot={bot} patch={patch} slugs={connectedSlugs.filter((slug) => slug !== HIGHLEVEL_SLUG)} />
           </>
         )}
         {connectedAppsEnabled && connectedAppsConfigured && (
@@ -768,8 +759,10 @@ export function AccessSection({
   );
 }
 
-function ConnectorScopesControl({ connectedSlugs, scopes, onChange }: {
+function ConnectorScopesControl({ connectedSlugs, labels = {}, scopes, onChange }: {
   connectedSlugs: string[];
+  /** display names by slug; a slug without one shows as itself */
+  labels?: Record<string, string>;
   scopes: ConnectorScopes | undefined;
   onChange: (scopes: ConnectorScopes | null) => void;
 }) {
@@ -791,7 +784,7 @@ function ConnectorScopesControl({ connectedSlugs, scopes, onChange }: {
     {limited && <div className="mt-2 flex flex-col divide-y divide-hairline/20 rounded-lg bg-inset">
       {!slugs.length && <div className="px-3 py-2 text-[11.5px] text-ink-secondary">No apps connected yet. Connect one, then allow it here.</div>}
       {slugs.map((slug) => <div key={slug} className="flex flex-wrap items-center justify-between gap-3 px-3 py-1.5">
-        <span className="min-w-0 text-[13px] text-ink">{slug}{!connectedSlugs.includes(slug) && <span className="ml-2 text-[10.5px] text-ink-secondary">not connected</span>}</span>
+        <span className="min-w-0 text-[13px] text-ink">{labels[slug] ?? slug}{!connectedSlugs.includes(slug) && <span className="ml-2 text-[10.5px] text-ink-secondary">not connected</span>}</span>
         <div className="flex shrink-0 gap-0.5 rounded-md bg-card p-0.5" role="group" aria-label={`${slug} access`}>
           {([[null, "Off", "This bot cannot use it."], ["read", "Read", "Search, fetch, and list only."], ["write", "Read & write", "Tool grants and sending limits still apply."]] as const).map(([value, label, hint]) =>
             <button key={label} type="button" title={hint} aria-pressed={(scopes?.apps[slug] ?? null) === value} onClick={() => setScope(slug, value)}
