@@ -1,11 +1,12 @@
 import * as boat from "../boat.ts";
 import { boatCreateRecoverySnapshot, retireDeletedBoatCreate } from "../boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "../boat-delete-journal.ts";
-import { browserEngineStatus, browserSessionId, closeBrowserSession } from "../browser-engine.ts";
+import { browserEngineStatus, browserSessionId } from "../browser-engine.ts";
+import { browserEngineKind } from "../browser/config.ts";
 import type { BrowserCleanupCoordinator, BrowserCleanupRequest } from "../browser-lifecycle-cleanup.ts";
 import { finalizeBrowserCleanupMutation, requireBrowserCleanupAcknowledged } from "../browser-lifecycle-cleanup.ts";
 import type { BrowserLive } from "../browser-live.ts";
-import { browserRuntimeEnv, type BrowserRuntime } from "../browser-runtime.ts";
+import type { BrowserRuntime } from "../browser-runtime.ts";
 import { boatAccountResourceChangeError, vpsAliasResourceChangeError } from "../cloud-backend.ts";
 import { CLOUD_PERSONAL_REFUSAL } from "../cloud-owner.ts";
 import * as composio from "../composio.ts";
@@ -60,6 +61,9 @@ export interface ConfigRouteDeps {
   browserLive: Pick<BrowserLive, "closeAll" | "closeForSession">;
   browserRuntime: Pick<BrowserRuntime, "heldBy">;
   usedBrowserSessions: Pick<Map<string, { command: string; env: Record<string, string> }>, "get" | "delete">;
+  closeBrowser(session: string, spec: { command: string; env: Record<string, string> }): Promise<boolean>;
+  /** After browserEngine.engine changed: closes the viewers and the browsers the other engine ran. */
+  browserEngineSwitched(): void;
   decider: Pick<Decider, "testKey">;
   sharedComputers: Pick<SharedComputers, "close">;
   sharedComputerControl: Pick<SharedComputerControl, "close">;
@@ -93,7 +97,7 @@ export interface ConfigRouteDeps {
 export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
   const {
     store, cfg, registry, sessions, browserCleanup, browserLive, browserRuntime, usedBrowserSessions, decider,
-    sharedComputers, sharedComputerControl, hostedModels, cloudHome: CLOUD_HOME, lendingEnabled, providerConfigs,
+    closeBrowser, browserEngineSwitched, sharedComputers, sharedComputerControl, hostedModels, cloudHome: CLOUD_HOME, lendingEnabled, providerConfigs,
     localVmIdleMs, localVmIdles, localVmActiveThreads, localVmLifecycleBusy, localVmImageBusy, localVmModeChangeBusy,
     providerConfigBusy, computerProviderConfigTransitions, managedBoatOwners, providerOperationConflict,
     perBotLocalVmCountForModeChange, checkedModelSelection, policyModelRefusal, browserSessionSpec, configStatus,
@@ -155,6 +159,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         }
       }
       const disablingBuiltInBrowser = patch.features?.browser === false && builtInBrowserEnabled(cfg);
+      const switchingBrowserEngine = patch.browserEngine?.engine !== undefined && patch.browserEngine.engine !== browserEngineKind(cfg);
       const removedBrowserProfileIds = patch.browserProfiles === undefined
         ? []
         : (cfg.browserProfiles ?? [])
@@ -447,6 +452,8 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         const switching = store.bots.find((bot) => bot.busy && bot.browserProfile && browserChoiceChanged.includes(bot.browserProfile));
         if (switching) return json(res, 409, { error: `stop ${switching.name}'s turn before changing its browser` });
       }
+      const browsing = switchingBrowserEngine ? store.bots.find((bot) => bot.busy && bot.browser !== false) : undefined;
+      if (browsing) return json(res, 409, { error: `stop ${browsing.name}'s turn before switching the browser` });
       // Observed again after the awaits: catches an operation that already held a claim.
       for (const provider of transitioningProviders) {
         const conflict = providerOperationConflict(provider);
@@ -477,12 +484,13 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         return next === undefined ? [] : [cfg[kind]?.key, next];
       });
       const engineForSwitch = browserEngineStatus();
-      const browsersToClose = engineForSwitch.kind === "ready" ? browserChoiceChanged.flatMap((id) => {
+      const browsersToClose = browserChoiceChanged.flatMap((id) => {
         const target = browserProfilePartitionTarget(cfg, id);
         if (!target) return [];
         const session = browserSessionId("", target.partitionId);
-        return [{ session, spec: usedBrowserSessions.get(session) ?? browserSessionSpec(engineForSwitch.binaryPath, session, id) }];
-      }) : [];
+        const spec = usedBrowserSessions.get(session) ?? (engineForSwitch.kind === "ready" ? browserSessionSpec(engineForSwitch.binaryPath, session, id) : null);
+        return spec ? [{ session, spec }] : [];
+      });
       let configWriteCommitted = false;
       const enginesBefore = engineLaunches(providerConfigs());
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
@@ -539,13 +547,14 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         sharedComputerControl.close();
       }
       if (disablingBuiltInBrowser) browserLive.closeAll();
+      if (switchingBrowserEngine) browserEngineSwitched();
       for (const request of browserCleanupRequests) {
         if (request.kind === "profile") browserLive.closeForSession(browserSessionId("", request.partitionId));
       }
       for (const { session, spec } of browsersToClose) {
         browserLive.closeForSession(session);
         usedBrowserSessions.delete(session);
-        void closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })).then((closed) => {
+        void closeBrowser(session, spec).then((closed) => {
           if (!closed) console.warn(`browser ${session}: could not close it after its browser changed; the next turn may still use the old one`);
         });
       }

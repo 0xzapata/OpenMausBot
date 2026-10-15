@@ -51,6 +51,12 @@ its copy capture and its browser host diagnosis adapt T3 Code's server
 browser (apps/server/src/preview), Copyright 2026 T3 Tools Inc., used under
 the MIT License (third_party/t3-code/LICENSE).
 
+The bots' browser service on that driver (server/browser/) adapts T3 Code's
+server browser and preview tools: its session control, tab lifecycle,
+viewers and screencast pacing, tool definitions and snapshot bound
+(apps/server/src/preview and apps/server/src/mcp), Copyright 2026 T3 Tools
+Inc., used under the MIT License (third_party/t3-code/LICENSE).
+
 The browser desktop viewer bundles the unmodified noVNC 1.7.0 library,
 Copyright the noVNC authors, under MPL-2.0 and its accompanying licenses.
 Attribution, license terms and the corresponding source location are in

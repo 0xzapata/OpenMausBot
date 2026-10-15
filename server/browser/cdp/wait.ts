@@ -85,6 +85,14 @@ export class Lifecycle {
     });
   }
 
+  /** A document that was already loaded when the driver attached: its lifecycle events went by unseen. */
+  adopt(loaderId: string, loaded: boolean): void {
+    if (this.#loaderId !== null) return;
+    this.#reset(loaderId);
+    if (loaded) for (const name of ["DOMContentLoaded", "load"]) this.#reached.add(name);
+    this.#notify();
+  }
+
   #event(params: Params): void {
     if (params.frameId !== this.#mainFrameId) return;
     const loaderId = String(params.loaderId ?? "");

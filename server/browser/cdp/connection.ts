@@ -93,7 +93,7 @@ export class CdpConnection {
       const timer = timeoutMs > 0
         ? setTimeout(() => {
           this.#pending.delete(id);
-          reject(new DriverError("timeout", `${method} got no answer within ${timeoutMs} ms.`, { method }));
+          reject(new DriverError("timeout", `${method} got no answer within ${timeoutMs} ms.`, { method, unanswered: true }));
         }, timeoutMs)
         : undefined;
       this.#pending.set(id, { method, session, resolve, reject, timer });

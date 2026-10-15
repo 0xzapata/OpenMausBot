@@ -2,22 +2,20 @@
 // launcher written that gives it that identity. The engine's own browser stays when nothing here applies, or with
 // OMB_BROWSER_LEGACY_SHELL=1; once a machine's choice is made it is not switched while the server runs.
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { userInfo } from "node:os";
-import { dirname, join } from "node:path";
 
-import { writeFileAtomic } from "../../atomic.ts";
 import { browserEngineStatus } from "../../browser-engine.ts";
 import { attachesToChrome, ownsBrowserViewport, type BrowserLaunch } from "../../browser-runtime.ts";
 import { DATA_DIR } from "../../config.ts";
-import { calibrateIdentity, isChromeIdentity, type ChromeIdentity } from "./identity.ts";
+import { calibrateIdentity, chromeFingerprint, loadOrCalibrateIdentity, type CalibratedIdentity } from "./calibrate.ts";
+import { needsNoSandbox, type ChromeIdentity } from "./identity.ts";
 import { installChromeForTesting, type ChromeForTestingPin, type DownloadProgress } from "./install.ts";
 import { chromeHost, resolveChromePlan, type ChromeEngine, type ChromeHost, type ChromePlan, type FoundChrome } from "./resolve.ts";
 import { IdentitySidecars } from "./sidecar.ts";
 import { browserLanguage, browserTimeZone, launcherPath, primaryScreen, writeLauncher, type Screen } from "./wrapper.ts";
 
-type Ready = { kind: "ready"; chrome: FoundChrome; identity: ChromeIdentity; fingerprint: string };
+type Ready = { kind: "ready"; chrome: FoundChrome; identity: ChromeIdentity; product: string; fingerprint: string };
 type State =
   | { kind: "idle" }
   | { kind: "preparing" }
@@ -37,14 +35,7 @@ const SOURCES: Record<FoundChrome["source"], string> = {
 const megabytes = (bytes: number) => Math.round(bytes / 1_048_576);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-/** Changes when the browser is updated in place: Chrome's updater rewrites the bundle's Info.plist on macOS, the executable
- * elsewhere. */
-export function chromeFingerprint(path: string): string {
-  const real = realpathSync(path);
-  const plist = /\.app[\\/]Contents[\\/]MacOS[\\/][^\\/]+$/u.test(real) ? join(real, "..", "..", "Info.plist") : null;
-  const stat = statSync(plist && existsSync(plist) ? plist : real);
-  return createHash("sha256").update(`${real}\0${stat.size}\0${stat.mtimeMs}`).digest("hex").slice(0, 24);
-}
+export { chromeFingerprint };
 
 /** A data dir on a volume mounted noexec cannot run the launcher; finding that out before the engine needs it keeps the
  * engine's own browser instead of a browser that never starts. */
@@ -68,6 +59,10 @@ export interface ChromeLauncherOptions {
   sidecars?: IdentitySidecars;
   readyWaitMs?: number;
   log?: (line: string) => void;
+  /** False for OpenMausBot's own driver, which needs the binary and its identity but no launcher for agent-browser. */
+  wrapper?: boolean;
+  /** Chrome's sandbox while its identity is read; by default off only where agent-browser turns it off. */
+  sandbox?: boolean;
 }
 
 export class ChromeLauncher implements BrowserLaunch {
@@ -180,7 +175,7 @@ export class ChromeLauncher implements BrowserLaunch {
 
   private async prepareFor(plan: Exclude<ChromePlan, { kind: "legacy" }>): Promise<Ready> {
     let chrome = plan.kind === "download" ? await this.download(plan.pin) : plan.chrome;
-    let identity: ChromeIdentity;
+    let identity: CalibratedIdentity;
     try {
       identity = await this.identityOf(chrome);
     } catch (error) {
@@ -190,14 +185,16 @@ export class ChromeLauncher implements BrowserLaunch {
       identity = await this.identityOf(chrome);
     }
     const { env, platform } = this.options;
-    this.screen ??= this.options.screen ? this.options.screen() : primaryScreen(platform, env);
-    writeLauncher(this.path, {
-      chrome: chrome.path, userAgent: identity.userAgent, screen: await this.screen,
-      language: browserLanguage(env), timeZone: browserTimeZone(env, platform),
-      ...(platform === "darwin" ? { home: userInfo().homedir } : {}),
-    }, platform);
-    if (platform !== "win32") await (this.options.checkLauncher ?? runsLauncher)(this.path, this.chromeEnv());
-    return { kind: "ready", chrome, identity, fingerprint: chromeFingerprint(chrome.path) };
+    if (this.options.wrapper !== false) {
+      this.screen ??= this.options.screen ? this.options.screen() : primaryScreen(platform, env);
+      writeLauncher(this.path, {
+        chrome: chrome.path, userAgent: identity.userAgent, screen: await this.screen,
+        language: browserLanguage(env), timeZone: browserTimeZone(env, platform),
+        ...(platform === "darwin" ? { home: userInfo().homedir } : {}),
+      }, platform);
+      if (platform !== "win32") await (this.options.checkLauncher ?? runsLauncher)(this.path, this.chromeEnv());
+    }
+    return { kind: "ready", chrome, identity: { userAgent: identity.userAgent, userAgentMetadata: identity.userAgentMetadata }, product: identity.product, fingerprint: chromeFingerprint(chrome.path) };
   }
 
   private async download(pin: ChromeForTestingPin): Promise<FoundChrome> {
@@ -210,16 +207,39 @@ export class ChromeLauncher implements BrowserLaunch {
   }
 
   /** Read once per binary version and kept, since starting a browser to read it takes about a second. */
-  private async identityOf(chrome: FoundChrome): Promise<ChromeIdentity> {
-    const file = join(this.options.dataDir, "browser", "identity", `${chromeFingerprint(chrome.path)}.json`);
-    try {
-      const saved: unknown = JSON.parse(readFileSync(file, "utf8"));
-      if (isChromeIdentity(saved)) return saved;
-    } catch {}
-    const identity = await (this.options.calibrate ?? ((path: string, env: NodeJS.ProcessEnv) => calibrateIdentity(path, { env })))(chrome.path, this.chromeEnv());
-    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-    writeFileAtomic(file, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
-    return identity;
+  private async identityOf(chrome: FoundChrome): Promise<CalibratedIdentity> {
+    const env = this.chromeEnv();
+    const injected = this.options.calibrate;
+    const calibrate = injected
+      ? async (options: { executablePath: string }): Promise<CalibratedIdentity> => {
+        const read = await injected(options.executablePath, env);
+        return { ...read, product: `Chrome/${read.userAgentMetadata.fullVersion}`, fingerprint: chromeFingerprint(options.executablePath), calibratedAt: new Date().toISOString() };
+      }
+      : calibrateIdentity;
+    const host = this.options.platform === "linux" && existsSync("/.dockerenv") ? "container" : "desktop";
+    const options = { executablePath: chrome.path, host, env, sandbox: this.options.sandbox ?? !needsNoSandbox(env) } as const;
+    return (await loadOrCalibrateIdentity(this.options.dataDir, options, calibrate)).identity;
+  }
+
+  /** The Chrome and its identity for OpenMausBot's own driver: found or downloaded once, and read once per version. */
+  async binary(): Promise<{ path: string; identity: ChromeIdentity; product: string; source: FoundChrome["source"] }> {
+    const plan = this.plan();
+    if (plan.kind === "legacy") throw new Error(`no Chrome to run here (${plan.reason})`);
+    let timer: NodeJS.Timeout | undefined;
+    const done = await Promise.race([
+      this.prepare().then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), this.options.readyWaitMs); timer.unref?.(); }),
+    ]);
+    clearTimeout(timer);
+    const state = this.state;
+    if (!done) {
+      throw new Error(state.kind === "downloading"
+        ? `Getting the browser ready (${megabytes(state.progress.received)} of ${megabytes(state.progress.total)} MB). Try again in a minute.`
+        : "Getting the browser ready. Try again in a moment.");
+    }
+    if (state.kind === "failed") throw new Error(`Chrome could not be started (${state.reason}).`);
+    if (state.kind !== "ready") throw new Error("Chrome is not ready yet. Try again in a moment.");
+    return { path: state.chrome.path, identity: state.identity, product: state.product, source: state.chrome.source };
   }
 
   private managedEngine(): ChromeEngine | null {

@@ -1,11 +1,12 @@
 import * as actions from "./actions.ts";
 import type { ActionContext, Target } from "./actions.ts";
 import { sessionKindOf, type CdpSession, type Params } from "./connection.ts";
+import { AuthChallenges, type AuthChallenge } from "./auth.ts";
 import { Dialogs, type PendingDialog } from "./dialogs.ts";
 import { DriverError, parseNetError } from "./errors.ts";
 import { evaluate, valueInWorld, type EvaluateOptions } from "./evaluate.ts";
 import { FileChoosers, setInputFiles } from "./files.ts";
-import { FrameTree } from "./frames.ts";
+import { FrameTree, type FrameTreeNode } from "./frames.ts";
 import { PageHealth, type HealthReport } from "./health.ts";
 import { Mouse, type Point } from "./input.ts";
 import { Keyboard } from "./keyboard.ts";
@@ -45,6 +46,8 @@ export interface NavigationResult {
   url: string;
   /** The main document's HTTP status, when one arrived. */
   status: number | null;
+  /** The site asked for an HTTP sign-in, which now waits for an answer; the navigation goes on once it has one. */
+  signInPrompt?: { origin: string; realm: string };
 }
 
 export interface PageSnapshot extends Snapshot {
@@ -68,6 +71,7 @@ export class CdpPage implements ActionContext, WaitContext {
   readonly keyboard: Keyboard;
   readonly mouse: Mouse;
   readonly dialogs = new Dialogs();
+  readonly auth = new AuthChallenges();
   readonly fileChoosers = new FileChoosers();
   readonly health: PageHealth;
   readonly lifecycle: Lifecycle;
@@ -95,6 +99,7 @@ export class CdpPage implements ActionContext, WaitContext {
     this.health = new PageHealth(() => this.url());
     this.lifecycle = new Lifecycle(session, info.targetId);
     this.dialogs.watch(session);
+    if (host.setup.handleAuth) this.auth.watch(session);
     this.fileChoosers.watch(session);
     this.health.watch(session);
     this.frames.onChange((change) => {
@@ -109,7 +114,20 @@ export class CdpPage implements ActionContext, WaitContext {
         this.#documentStatus = { loaderId: params.loaderId, status: response.status };
       }
     });
-    this.ready = setUpDocumentSession(session, host.setup, { isPage: true });
+    this.ready = setUpDocumentSession(session, host.setup, { isPage: true }).then(() => this.#adoptDocument());
+  }
+
+  async #adoptDocument(): Promise<void> {
+    if (this.frames.main?.loaderId !== null) return;
+    try {
+      const { frameTree } = await this.session.send<{ frameTree: FrameTreeNode }>("Page.getFrameTree");
+      if (this.frames.main?.loaderId !== null) return;
+      this.frames.adopt(frameTree);
+      const loaderId = frameTree.frame.loaderId;
+      if (!loaderId || this.lifecycle.loaderId !== null) return;
+      const state = await valueInWorld<string>(this.frames, this.frames.mainFrameId, "document.readyState").catch(() => "loading");
+      this.lifecycle.adopt(loaderId, state === "complete");
+    } catch {}
   }
 
   get closed(): boolean {
@@ -121,7 +139,7 @@ export class CdpPage implements ActionContext, WaitContext {
   }
 
   url(): string {
-    return this.frames.main.url || this.#url;
+    return this.frames.main?.url || this.#url;
   }
 
   title(): string {
@@ -187,7 +205,15 @@ export class CdpPage implements ActionContext, WaitContext {
     return this.dialogs.acceptingBeforeUnload(async () => {
       const sameDocument = this.session.waitFor("Page.navigatedWithinDocument", { match: (params) => params.frameId === this.targetId, timeoutMs });
       sameDocument.catch(() => {});
-      const result = await this.session.send<{ loaderId?: string; errorText?: string; isDownload?: boolean }>("Page.navigate", { url }, { timeoutMs });
+      const navigating = this.session.send<{ loaderId?: string; errorText?: string; isDownload?: boolean }>("Page.navigate", { url }, { timeoutMs });
+      navigating.catch(() => {});
+      let stopAsking = () => {};
+      const asked = new Promise<AuthChallenge>((resolve) => {
+        stopAsking = this.auth.onChange((challenge) => { if (challenge) resolve(challenge); });
+      });
+      const first = await Promise.race([navigating, asked]).finally(() => stopAsking());
+      if ("origin" in first) return { url, status: 401, signInPrompt: { origin: first.origin, realm: first.realm } };
+      const result = first;
       if (result.isDownload) {
         throw new DriverError("navigation", `${url} is a file this browser cannot show, so it was downloaded instead. The tab's downloads list it.`, { download: true });
       }
@@ -303,7 +329,7 @@ export class CdpPage implements ActionContext, WaitContext {
     return actions.click(this, target, options);
   }
 
-  async hover(target: Target, options: { timeoutMs?: number } = {}): Promise<Point> {
+  async hover(target: Target, options: { timeoutMs?: number; pointer?: actions.PointerReporter } = {}): Promise<Point> {
     this.#ready();
     return actions.hover(this, target, options);
   }
@@ -340,7 +366,7 @@ export class CdpPage implements ActionContext, WaitContext {
     return actions.check(this, target, checked, options);
   }
 
-  async drag(from: Target, to: Target, options: { timeoutMs?: number } = {}): Promise<{ from: Point; to: Point; dropped: "html5" | "mouse" }> {
+  async drag(from: Target, to: Target, options: { timeoutMs?: number; pointer?: actions.PointerReporter } = {}): Promise<{ from: Point; to: Point; dropped: "html5" | "mouse" }> {
     this.#ready();
     return actions.drag(this, from, to, options);
   }

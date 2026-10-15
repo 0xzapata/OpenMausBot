@@ -4,6 +4,8 @@
 
 import { userInfo } from "node:os";
 
+import { credentialStoreFlags, gateChromeFlags } from "../egress/gate.ts";
+
 export type BrowserMode = "headless" | "window";
 export type HostKind = "desktop" | "server" | "container";
 
@@ -20,7 +22,10 @@ export interface ScreenSpec {
 /** Servers declare a display the way Xvfb's -screen does. */
 export const SERVER_SCREEN: ScreenSpec = { width: 1920, height: 1080, deviceScaleFactor: 1 };
 
-/** A 1280x720 page on macOS and Linux, where new headless reserves 143 px of window chrome; the driver fits other platforms' windows. */
+/** New headless reserves this much of a window's height on macOS and Linux; the driver fits other platforms' windows. */
+const HEADLESS_CHROME_HEIGHT = 143;
+
+/** A 1280x720 page on macOS and Linux. */
 export const WINDOW_SIZE = "1280,863";
 
 export interface ChromeFlagsInput {
@@ -33,8 +38,10 @@ export interface ChromeFlagsInput {
   /** The display pages see; headless only (a window has the real one). */
   screen?: ScreenSpec | null;
   locale?: string | null;
-  /** The egress gate, e.g. socks5://127.0.0.1:41234. */
-  proxyServer?: string | null;
+  /** The port of this browser's egress gate on 127.0.0.1. */
+  egressPort?: number | null;
+  /** The page size the window opens at; the driver fits it exactly once a tab runs. */
+  viewport?: { width: number; height: number } | null;
   /** False only when an operator explicitly turned Chrome's sandbox off. */
   sandbox?: boolean;
   /** Null when session restore reopens the profile's tabs. */
@@ -44,7 +51,6 @@ export interface ChromeFlagsInput {
 }
 
 const LOCALE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
-const LOCAL_PROXY = /^socks5:\/\/(?:127\.0\.0\.1|\[::1\]):\d{1,5}$/;
 
 /** Headless takes the display in device pixels: --screen-info={3024x1964 devicePixelRatio=2 colorDepth=30} is a 1512x982 Retina screen. */
 export function screenInfo(screen: ScreenSpec): string {
@@ -68,7 +74,7 @@ export function chromeArgs(input: ChromeFlagsInput): string[] {
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-blink-features=AutomationControlled",
-    `--window-size=${WINDOW_SIZE}`,
+    `--window-size=${input.viewport ? `${Math.round(input.viewport.width)},${Math.round(input.viewport.height) + HEADLESS_CHROME_HEIGHT}` : WINDOW_SIZE}`,
   ];
   if (headless && input.userAgent) {
     if (/[\r\n\0]/.test(input.userAgent)) throw new Error("The user agent holds a line break.");
@@ -77,12 +83,12 @@ export function chromeArgs(input: ChromeFlagsInput): string[] {
   if (headless) args.push(`--screen-info=${screenInfo(input.screen ?? SERVER_SCREEN)}`);
   else if (input.windowPosition) args.push(`--window-position=${Math.round(input.windowPosition.x)},${Math.round(input.windowPosition.y)}`);
   if (input.locale && LOCALE.test(input.locale)) args.push(`--lang=${input.locale}`);
-  if (input.proxyServer) {
-    if (!LOCAL_PROXY.test(input.proxyServer)) throw new Error("The browser only goes through OpenMausBot's own local gate.");
-    args.push(`--proxy-server=${input.proxyServer}`, "--proxy-bypass-list=<-loopback>", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+  if (input.egressPort !== undefined && input.egressPort !== null) {
+    if (!Number.isInteger(input.egressPort) || input.egressPort < 1 || input.egressPort > 65_535) throw new Error("The browser only goes through OpenMausBot's own local gate.");
+    args.push(...gateChromeFlags(input.egressPort, platform));
+  } else {
+    args.push(...credentialStoreFlags(platform));
   }
-  if (platform === "darwin") args.push("--use-mock-keychain");
-  if (platform === "linux") args.push("--password-store=basic");
   if (headless) args.push("--mute-audio");
   if (input.host !== "desktop") args.push("--disk-cache-size=52428800");
   if (input.host === "container") args.push("--disable-dev-shm-usage");

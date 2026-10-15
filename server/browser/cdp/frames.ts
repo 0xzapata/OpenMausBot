@@ -28,6 +28,11 @@ interface FramePayload {
   loaderId?: string;
 }
 
+export interface FrameTreeNode {
+  frame: FramePayload;
+  childFrames?: FrameTreeNode[];
+}
+
 /** One tab's frames across its sessions, and the isolated world in each. */
 export class FrameTree {
   readonly mainFrameId: string;
@@ -57,8 +62,9 @@ export class FrameTree {
     return [...this.#frames.values()];
   }
 
-  get main(): FrameRecord {
-    return this.#frames.get(this.mainFrameId)!;
+  /** Gone once the page's session detaches, when the tab closes or its browser stops. */
+  get main(): FrameRecord | undefined {
+    return this.#frames.get(this.mainFrameId);
   }
 
   /** The frame an out-of-process iframe's session renders, or null for the page's own session. */
@@ -103,6 +109,25 @@ export class FrameTree {
       for (const off of offs) off();
       offDetach();
     };
+  }
+
+  /**
+   * Takes the frames Chrome reports for a page that was already showing a
+   * document when it was set up: a tab session restore reopens commits its
+   * page before any frame event reaches the driver (measured on 153).
+   */
+  adopt(tree: FrameTreeNode): void {
+    const visit = (node: FrameTreeNode, parentId: string | null) => {
+      const existing = this.#frames.get(node.frame.id);
+      if (!existing || existing.session === this.mainSession) {
+        const url = node.frame.url + (node.frame.urlFragment ?? "");
+        if (!existing || existing.url !== url || existing.loaderId === null) {
+          this.#frames.set(node.frame.id, { id: node.frame.id, parentId, session: this.mainSession, url, loaderId: node.frame.loaderId ?? existing?.loaderId ?? null });
+        }
+      }
+      for (const child of node.childFrames ?? []) visit(child, node.frame.id);
+    };
+    visit(tree, null);
   }
 
   #attached(session: CdpSession, params: Params): void {

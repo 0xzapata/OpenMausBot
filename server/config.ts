@@ -20,7 +20,7 @@ import { migrateLegacyFeatureFlags } from "./legacy-feature-flags.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import { deciderConfigSchema, type DeciderConfig } from "./decider/config.ts";
-import { browserEgressConfigSchema, type BrowserEgressConfig } from "./browser/egress/policy.ts";
+import { browserEngineConfigSchema, isValidCdpTarget, type BrowserEngineConfig } from "./browser/config.ts";
 import { roomContextSettings } from "./room-context-settings.ts";
 
 const optionalText = z.string().optional();
@@ -55,19 +55,6 @@ export function isValidSshAlias(value: unknown): value is string {
   return typeof value === "string" && SSH_ALIAS.test(value);
 }
 
-const CDP_PORT = /^[0-9]{1,5}$/;
-const CDP_URL = /^(https?|wss?):\/\/\S+$/i;
-
-/** agent-browser's `--cdp` takes a bare port or an http(s)/ws(s) DevTools URL. */
-export function isValidCdpTarget(value: unknown): value is string {
-  if (typeof value !== "string" || value === "") return false;
-  if (CDP_PORT.test(value)) {
-    const port = Number(value);
-    return port >= 1 && port <= 65535;
-  }
-  return CDP_URL.test(value);
-}
-
 export function normalizeVpsConfig(raw: unknown): { sshAlias?: string } {
   if (raw === undefined || raw === null) return {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -83,13 +70,6 @@ export function normalizeVpsConfig(raw: unknown): { sshAlias?: string } {
 
 const vpsConfigSchema = z.object({
   sshAlias: z.string().refine((value) => value === "" || isValidSshAlias(value), { message: "must be a simple SSH config alias" }).optional(),
-});
-/** `attachCdpUrl`: a running Chrome that My Chrome profiles attach to. Config only, never env: the ambient environment must not redirect a bot's browser. */
-const browserEngineConfigSchema = z.object({
-  attachCdpUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidCdpTarget(value),
-    { message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL" }).optional(),
-  idleTimeoutMinutes: z.number().int().min(1).max(60).optional(), // an unused browser closes after this
-  egress: browserEgressConfigSchema.optional(),
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -537,7 +517,7 @@ export interface AppConfig extends HelperConfig {
   features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; claudeUserSkills?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; shareLearnedSkills?: "off" | "ask" | "auto"; roomMemoryCapture?: boolean; parallelRoomJobs?: boolean; chiefEscalations?: boolean; acpPlanLines?: boolean; agentsToolBridge?: boolean };
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   browserProfiles?: BrowserProfile[];
-  browserEngine?: { attachCdpUrl?: string; idleTimeoutMinutes?: number; egress?: BrowserEgressConfig };
+  browserEngine?: BrowserEngineConfig;
   instances?: InstanceConfigMap;
 }
 export type BrowserProfile = z.output<typeof browserProfileSchema> & {

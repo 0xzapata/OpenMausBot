@@ -6,6 +6,7 @@
 import type { CdpSession } from "./connection.ts";
 import { isGone } from "./errors.ts";
 import { WORLD_NAME } from "./frames.ts";
+import { AUTH_PATTERNS } from "./auth.ts";
 import type { IdentityOverride } from "./identity.ts";
 
 export const CLIPBOARD_TEXT_LIMIT = 1024 * 1024;
@@ -50,6 +51,8 @@ export interface TargetSetup {
   /** Headless: the agent's tab behaves as the focused one (WebAuthn create() and clipboard writes need focus). */
   focusEmulation: boolean;
   interceptFileChooser: boolean;
+  /** Tabs hold HTTP authentication challenges for an answer (AuthChallenges) instead of failing them. */
+  handleAuth?: boolean;
 }
 
 const AUTO_ATTACH = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
@@ -68,6 +71,7 @@ export async function setUpDocumentSession(session: CdpSession, setup: TargetSet
   ];
   if (setup.identity) calls.push(session.send("Emulation.setUserAgentOverride", { ...setup.identity }));
   if (isPage && setup.focusEmulation) calls.push(session.send("Emulation.setFocusEmulationEnabled", { enabled: true }));
+  if (isPage && setup.handleAuth) calls.push(session.send("Fetch.enable", { patterns: AUTH_PATTERNS, handleAuthRequests: true }));
   calls.push(
     session.send("Page.setInterceptFileChooserDialog", { enabled: setup.interceptFileChooser }),
     session.send("Page.addScriptToEvaluateOnNewDocument", { source: BOOTSTRAP, worldName: WORLD_NAME, runImmediately: true }),

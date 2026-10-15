@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { writeFileAtomic } from "../../atomic.ts";
+import { credentialStoreFlags } from "../egress/gate.ts";
 
 export interface Screen { width: number; height: number }
 
@@ -28,7 +29,7 @@ export function launcherFlags(settings: LauncherSettings, platform: NodeJS.Platf
     `--user-agent=${settings.userAgent}`,
     `--screen-info={${settings.screen.width}x${settings.screen.height}}`,
     ...(settings.language ? [`--lang=${settings.language}`] : []),
-    ...(platform === "darwin" ? ["--use-mock-keychain"] : platform === "linux" ? ["--password-store=basic"] : []),
+    ...credentialStoreFlags(platform),
   ];
 }
 

@@ -15,8 +15,7 @@ const HARD_CAP = 2000;
 const LISTED_FROM = 1000;
 
 const LINES: Record<string, number> = {
-  // +24 for the HighLevel CRM mount, prompt part and internal handler (logic lives in server/highlevel/*); lower again with the next move-out.
-  "server/index.ts": 17693,
+  "server/index.ts": 17586,
   "src/state/store.tsx": 3617,
   "electron/main.mjs": 3498,
   "server/store.ts": 2478,
@@ -27,7 +26,7 @@ const LINES: Record<string, number> = {
   "server/routines.ts": 1879,
   "src/components/ComputerPanel.tsx": 1918,
   "src/components/RoutineCalendarPage.tsx": 2099,
-  "server/config.ts": 1476,
+  "server/config.ts": 1456,
   "src/components/ChatView.tsx": 1598,
   "server/routine-requests.ts": 1680,
   "src/components/GroupView.tsx": 1616,
@@ -44,7 +43,7 @@ const LINES: Record<string, number> = {
   "src/components/ModelPicker.tsx": 1204,
   "src/components/PhoneSetupFlow.tsx": 1283,
   "server/cli.ts": 1080,
-  "src/components/SettingsModal.tsx": 1148,
+  "src/components/SettingsModal.tsx": 1101,
   "server/drivers/agents-call.ts": 1138,
   "src/components/ChatMarkdown.tsx": 1039,
   "src/components/PluginsPanel.tsx": 1115,

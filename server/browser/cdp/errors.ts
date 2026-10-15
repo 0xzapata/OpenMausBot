@@ -61,6 +61,11 @@ export function isGone(error: unknown): boolean {
   return error instanceof Error && GONE.test(error.message);
 }
 
+/** Chrome never answered a command: whatever it was doing may still be running. */
+export function isUnanswered(error: unknown): boolean {
+  return error instanceof DriverError && error.code === "timeout" && error.detail?.unanswered === true;
+}
+
 export function isMissingContext(error: unknown): boolean {
   return error instanceof Error && /Cannot find context with specified id|Execution context was destroyed|Cannot find default execution context/i.test(error.message);
 }

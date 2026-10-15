@@ -12,9 +12,10 @@ export const SCREEN_TOUCHING_TOOLS: ReadonlySet<string> = new Set([
   // built-in browser: the Electron surface's names, from older remote harnesses
   "browser_navigate", "browser_type", "browser_press", "browser_scroll", "browser_hover", "browser_drag",
   "browser_select_option", "browser_back", "browser_forward", "browser_screenshot",
-  // built-in browser: agent-browser's names
+  // built-in browser: agent-browser's names, and the new browser's
   "agent_browser_open", "agent_browser_click", "agent_browser_fill", "agent_browser_type", "agent_browser_press",
   "agent_browser_select", "agent_browser_check", "agent_browser_screenshot", "agent_browser_hover", "agent_browser_upload",
+  "agent_browser_navigate", "agent_browser_drag", "agent_browser_scroll", "agent_browser_tabs", "agent_browser_dialog", "agent_browser_eval",
   // Cua Driver (local Mac, Local VM, VPS)
   "double_click", "right_click", "drag", "hotkey", "move_cursor", "launch_app", "bring_to_front", "zoom",
 ]);

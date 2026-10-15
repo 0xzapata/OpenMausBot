@@ -276,9 +276,10 @@ export async function takeSnapshot(frames: FrameTree, refs: RefTable, options: S
   const records = frames.all();
   const [trees, owners] = await Promise.all([axTrees(records), frameOwners(frames, records)]);
   const main = trees.get(frames.mainFrameId);
-  if (!Array.isArray(main)) throw new Error(`The page's accessibility tree could not be read: ${main ?? "no main frame"}`);
+  const mainFrame = frames.main;
+  if (!Array.isArray(main) || !mainFrame) throw new Error(`The page's accessibility tree could not be read: ${Array.isArray(main) ? "the tab closed" : main ?? "no main frame"}`);
   const budget = { left: MAX_LINES * 2 };
-  const items = buildItems(frames.main, main, owners, trees, budget);
+  const items = buildItems(mainFrame, main, owners, trees, budget);
   await readStyles(frames, items);
   const lines: string[] = [];
   for (const item of items) render(item, 0, refs, options, lines);
