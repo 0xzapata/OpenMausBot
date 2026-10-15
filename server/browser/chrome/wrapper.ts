@@ -16,15 +16,19 @@ export interface LauncherSettings {
   /** Absent: Chrome takes the language from the system, as it does headed. */
   language?: string;
   timeZone?: string;
+  /** macOS: Chrome with any HOME but the person's own asks, in a dialog on their screen, for a keychain it cannot find. */
+  home?: string;
 }
 
-/** Last on the command line, so they win over any switch of the same name: Chrome keeps the last value of a switch. */
-export function launcherFlags(settings: LauncherSettings): string[] {
+/** Last on the command line, so they win over any switch of the same name: Chrome keeps the last value of a switch. A bot's
+ * Chrome never touches the person's keychain or keyring (agent-browser 0.37 passes these too). */
+export function launcherFlags(settings: LauncherSettings, platform: NodeJS.Platform = process.platform): string[] {
   return [
     "--disable-blink-features=AutomationControlled",
     `--user-agent=${settings.userAgent}`,
     `--screen-info={${settings.screen.width}x${settings.screen.height}}`,
     ...(settings.language ? [`--lang=${settings.language}`] : []),
+    ...(platform === "darwin" ? ["--use-mock-keychain"] : platform === "linux" ? ["--password-store=basic"] : []),
   ];
 }
 
@@ -44,12 +48,13 @@ export function batchQuote(value: string): string {
 }
 
 export function launcherScript(settings: LauncherSettings, platform: NodeJS.Platform = process.platform): string {
-  const flags = launcherFlags(settings);
+  const flags = launcherFlags(settings, platform);
   if (platform === "win32") {
     return ["@echo off", `${batchQuote(settings.chrome)} %* ${flags.map(batchQuote).join(" ")}`, ""].join("\r\n");
   }
   return [
     "#!/bin/sh",
+    ...(settings.home ? [`HOME=${shellQuote(settings.home)}`, "export HOME"] : []),
     ...(settings.timeZone ? [`TZ=${shellQuote(settings.timeZone)}`, "export TZ"] : []),
     `exec ${shellQuote(settings.chrome)} "$@" ${flags.map(shellQuote).join(" ")}`,
     "",

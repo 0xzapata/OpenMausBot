@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { dirname, join, posix } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { removeTempDir } from "../../testing/cleanup.ts";
@@ -26,7 +26,7 @@ function mac(options: { chrome?: boolean; env?: NodeJS.ProcessEnv } = {}) {
   const root = mkdtempSync(join(tmpdir(), "omb-launcher-"));
   folders.push(root);
   const app = join(root, "Google Chrome.app");
-  const chrome = join(app, "Contents", "MacOS", "Google Chrome");
+  const chrome = posix.join(app, "Contents/MacOS/Google Chrome");
   if (options.chrome !== false) {
     mkdirSync(dirname(chrome), { recursive: true });
     writeFileSync(chrome, "#!/bin/sh\n", { mode: 0o755 });
@@ -50,6 +50,8 @@ function launcher(machine: ReturnType<typeof mac>, overrides: Partial<Constructo
     dataDir: machine.dataDir, env: machine.env, platform: "darwin", arch: "arm64", host: machine.host, engine: () => ({ managed: true }),
     calibrate: vi.fn(async () => identity("155")), screen: async () => ({ width: 1440, height: 900 }), sidecars: sidecars(), log: () => {},
     install: async () => { throw new Error("offline"); },
+    // A Mac's launcher is a shell script, which a Windows machine running this test cannot start.
+    ...(process.platform === "win32" ? { checkLauncher: async () => {} } : {}),
     ...overrides,
   });
 }
@@ -63,11 +65,13 @@ describe("the Chrome launcher", () => {
     const chrome = launcher(machine, { calibrate });
     expect(chrome.env()).toEqual({ AGENT_BROWSER_EXECUTABLE_PATH: chrome.path, AGENT_BROWSER_HIDE_SCROLLBARS: "0" });
     await chrome.ready(headless(chrome.path));
-    expect(calibrate).toHaveBeenCalledExactlyOnceWith(machine.chrome);
+    expect(calibrate).toHaveBeenCalledExactlyOnceWith(machine.chrome, { ...machine.env, HOME: userInfo().homedir });
     const script = readFileSync(chrome.path, "utf8");
     expect(script).toContain(`exec '${machine.chrome}' "$@"`);
     expect(script).toContain(`'--user-agent=${identity("155").userAgent}'`);
     expect(script).toContain("'--screen-info={1440x900}'");
+    expect(script).toContain(`HOME='${userInfo().homedir}'`);
+    expect(script).toContain("'--use-mock-keychain'");
     expect(chrome.describe()).toBe("Google Chrome 155 (installed)");
     await launcher(machine, { calibrate }).ready(headless(chrome.path));
     expect(calibrate).toHaveBeenCalledOnce();
@@ -104,6 +108,7 @@ describe("the Chrome launcher", () => {
     await expect(chrome.ready(headless(chrome.path))).rejects.toThrow("Getting the browser ready (52 of 182 MB). Try again in a minute.");
     expect(chrome.describe()).toBe("Chrome for Testing 153.0.8010.47 (downloading: 52 of 182 MB)");
     finish();
+    await chrome.prepare();
     await chrome.ready(headless(chrome.path));
     expect(install).toHaveBeenCalledOnce();
     expect(chrome.describe()).toBe("Chrome for Testing 153 (downloaded)");
@@ -124,7 +129,7 @@ describe("the Chrome launcher", () => {
     const chrome = launcher(machine, { install, calibrate });
     await chrome.ready(headless(chrome.path));
     expect(chrome.describe()).toBe("Chrome for Testing 153 (downloaded)");
-    expect(readFileSync(chrome.path, "utf8")).toContain("chrome-mac-arm64/Google Chrome for Testing.app");
+    expect(readFileSync(chrome.path, "utf8")).toMatch(/chrome-mac-arm64[\\/]Google Chrome for Testing\.app/u);
   });
 
   it("keeps the engine's own browser, and says why, when Chrome cannot be prepared at all", async () => {
@@ -153,6 +158,24 @@ describe("the Chrome launcher", () => {
     expect(chrome.describe()).toBe("Google Chrome 155 (installed)");
     await chrome.ready(headless(chrome.path));
     expect(calibrate).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts the launcher once before any bot needs it, with the person's own home on a Mac whatever HOME the server has", async () => {
+    const machine = mac();
+    const checkLauncher = vi.fn(async () => {});
+    const chrome = launcher(machine, { checkLauncher });
+    await chrome.ready(headless(chrome.path));
+    expect(checkLauncher).toHaveBeenCalledExactlyOnceWith(chrome.path, { ...machine.env, HOME: userInfo().homedir });
+    expect(machine.env.HOME).not.toBe(userInfo().homedir);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps the engine's own browser where the data dir cannot run the launcher", async () => {
+    const machine = mac();
+    const chrome = launcher(machine);
+    chmodSync(machine.chrome, 0o644);
+    await expect(chrome.ready(headless(chrome.path))).rejects.toThrow(/Chrome could not be started \(the browser launcher does not run here/);
+    expect(chrome.env()).toEqual({});
+    chmodSync(machine.chrome, 0o755);
   });
 
   it("changes nothing on OMB_BROWSER_LEGACY_SHELL=1", async () => {

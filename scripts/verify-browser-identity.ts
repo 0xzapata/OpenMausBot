@@ -1,10 +1,10 @@
 // What sites see of a bot's browser: today's engine (agent-browser) drives the Chrome OMB resolves, through the same launcher
-// and identity connection as the server, in a throwaway home. It checks the identity on a loopback probe page and, with
+// and identity connection as the server, on a throwaway profile. It checks the identity on a loopback probe page and, with
 // --public, reads the four public bot-test pages. Read-only: it never signs in or submits a form.
 // Usage: node --experimental-strip-types scripts/verify-browser-identity.ts [--chrome PATH] [--engine PATH] [--public] [--out DIR]
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -69,12 +69,14 @@ export interface IdentityReadout {
 
 export interface PublicVerdict { name: string; pass: boolean; detail: string; screenshot?: string }
 
-/** A desktop Chrome reports every high-entropy hint; only `model` is empty there. */
+/** A desktop Chrome reports every high-entropy hint. `model` is empty on desktops, and Chrome on Linux reports no platform
+ * version (an empty Sec-CH-UA-Platform-Version), headed or not. */
 export function completeHints(high: Record<string, unknown> | null | undefined): boolean {
   if (!high) return false;
   const filled = (name: string) => typeof high[name] === "string" && high[name] !== "";
   const list = (name: string) => Array.isArray(high[name]) && (high[name] as unknown[]).length > 0;
-  return ["architecture", "bitness", "platform", "platformVersion", "uaFullVersion"].every(filled) && list("brands") && list("fullVersionList")
+  const version = high.platform === "Linux" ? typeof high.platformVersion === "string" : filled("platformVersion");
+  return ["architecture", "bitness", "platform", "uaFullVersion"].every(filled) && version && list("brands") && list("fullVersionList")
     && typeof high.model === "string" && typeof high.mobile === "boolean" && typeof high.wow64 === "boolean";
 }
 
@@ -124,12 +126,16 @@ export async function verifyBrowserIdentity(options: {
 }): Promise<{ readout: IdentityReadout; public: PublicVerdict[] }> {
   const log = options.log ?? (() => {});
   mkdirSync(options.out, { recursive: true });
-  const home = mkdtempSync(join(options.out, "home-"));
+  const work = mkdtempSync(join(options.out, "run-"));
+  const profiles = join(work, "tmp");
+  mkdirSync(profiles);
   // agent-browser's socket path must stay under 104 bytes; temporary folders on macOS are long.
   const sockets = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "omb-id-"));
-  mkdirSync(join(home, "tmp"));
+  // Chrome on macOS with any other HOME asks for a keychain it cannot find, in a dialog on the person's screen; a test
+  // runner's HOME is a temporary folder, so the real one comes from the user database.
+  const home = userInfo().homedir;
   const session = `${options.sessionPrefix ?? "omb-identity"}-${randomBytes(3).toString("hex")}`;
-  const launcher = new ChromeLauncher({ dataDir: join(home, ".openmausbot"), env: { ...process.env, OMB_CHROME_PATH: options.chrome }, log });
+  const launcher = new ChromeLauncher({ dataDir: join(work, "data"), env: { ...process.env, HOME: home, USERPROFILE: home, OMB_CHROME_PATH: options.chrome }, log });
   // Where the launcher adds nothing (OMB_BROWSER_LEGACY_SHELL=1, a headless shell), agent-browser would otherwise look for a
   // browser of its own, such as an installed Google Chrome, instead of the one named here.
   const launcherEnv = launcher.env();
@@ -137,7 +143,7 @@ export async function verifyBrowserIdentity(options: {
     binaryPath: options.engine, session, encryptionKey: randomBytes(32).toString("hex"), persistent: false, launcher: launcherEnv,
     env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, ...(Object.keys(launcherEnv).length ? {} : { AGENT_BROWSER_EXECUTABLE_PATH: options.chrome }) },
   });
-  const spec: BrowserSpawnSpec = { ...integration, env: { ...integration.env, HOME: home, USERPROFILE: home, TMPDIR: join(home, "tmp"), AGENT_BROWSER_SOCKET_DIR: sockets } };
+  const spec: BrowserSpawnSpec = { ...integration, env: { ...integration.env, HOME: home, USERPROFILE: home, TMPDIR: profiles, TEMP: profiles, TMP: profiles, AGENT_BROWSER_SOCKET_DIR: sockets } };
   const runtime = new BrowserRuntime({
     launch: launcher, resultBudget: 500_000,
     applyViewport: (value) => setBrowserViewport(value.command, value.env),
@@ -174,7 +180,7 @@ export async function verifyBrowserIdentity(options: {
     await closeBrowserSession(options.engine, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })).catch(() => false);
     await runtime.closeAll();
     await probe.close();
-    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     rmSync(sockets, { recursive: true, force: true });
   }
 }

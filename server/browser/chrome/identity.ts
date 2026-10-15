@@ -94,8 +94,9 @@ export function needsNoSandbox(env: NodeJS.ProcessEnv = process.env, exists: (pa
 }
 
 /** Starts the binary headless on a throwaway profile, reads its identity from a loopback page (client hints need a secure
- * context) and stops it again. */
-export async function calibrateIdentity(executable: string, options: { timeoutMs?: number; connect?: typeof connectCdp } = {}): Promise<ChromeIdentity> {
+ * context) and stops it again. `env` is the browser's: its HOME must be the person's real one, or macOS shows a "keychain
+ * cannot be found" dialog. */
+export async function calibrateIdentity(executable: string, options: { timeoutMs?: number; connect?: typeof connectCdp; env?: NodeJS.ProcessEnv } = {}): Promise<ChromeIdentity> {
   const deadline = Date.now() + (options.timeoutMs ?? 30_000);
   const page = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -108,10 +109,10 @@ export async function calibrateIdentity(executable: string, options: { timeoutMs
     "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-default-apps", "--disable-sync",
     ...(process.platform === "darwin" ? ["--use-mock-keychain"] : process.platform === "linux" ? ["--password-store=basic"] : []),
-    ...(needsNoSandbox() ? ["--no-sandbox", "--disable-dev-shm-usage"] : []),
+    ...(needsNoSandbox(options.env) ? ["--no-sandbox", "--disable-dev-shm-usage"] : []),
     url,
   ];
-  const chrome = spawn(executable, args, { stdio: "ignore", windowsHide: true });
+  const chrome = spawn(executable, args, { stdio: "ignore", windowsHide: true, env: options.env ?? process.env });
   let exited = false;
   const started = new Promise<void>((resolve, reject) => {
     chrome.once("error", (error) => { exited = true; reject(error); });

@@ -1,8 +1,10 @@
 // The Chrome agent-browser starts for the bots, prepared once per binary: found or downloaded, its identity read, and a
 // launcher written that gives it that identity. The engine's own browser stays when nothing here applies, or with
 // OMB_BROWSER_LEGACY_SHELL=1; once a machine's choice is made it is not switched while the server runs.
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
 import { writeFileAtomic } from "../../atomic.ts";
@@ -39,9 +41,17 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
  * elsewhere. */
 export function chromeFingerprint(path: string): string {
   const real = realpathSync(path);
-  const plist = /\.app\/Contents\/MacOS\/[^/]+$/u.test(real) ? join(real, "..", "..", "Info.plist") : null;
+  const plist = /\.app[\\/]Contents[\\/]MacOS[\\/][^\\/]+$/u.test(real) ? join(real, "..", "..", "Info.plist") : null;
   const stat = statSync(plist && existsSync(plist) ? plist : real);
   return createHash("sha256").update(`${real}\0${stat.size}\0${stat.mtimeMs}`).digest("hex").slice(0, 24);
+}
+
+/** A data dir on a volume mounted noexec cannot run the launcher; finding that out before the engine needs it keeps the
+ * engine's own browser instead of a browser that never starts. */
+function runsLauncher(path: string, env: NodeJS.ProcessEnv): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(path, ["--version"], { env, timeout: 30_000, windowsHide: true }, (error) => error ? reject(new Error(`the browser launcher does not run here: ${error.message}`)) : resolve());
+  });
 }
 
 export interface ChromeLauncherOptions {
@@ -51,9 +61,10 @@ export interface ChromeLauncherOptions {
   arch?: string;
   host?: ChromeHost;
   engine?: () => ChromeEngine | null;
-  calibrate?: (executable: string) => Promise<ChromeIdentity>;
+  calibrate?: (executable: string, env: NodeJS.ProcessEnv) => Promise<ChromeIdentity>;
   install?: typeof installChromeForTesting;
   screen?: () => Promise<Screen>;
+  checkLauncher?: (path: string, env: NodeJS.ProcessEnv) => Promise<void>;
   sidecars?: IdentitySidecars;
   readyWaitMs?: number;
   log?: (line: string) => void;
@@ -149,6 +160,12 @@ export class ChromeLauncher implements BrowserLaunch {
     return `${product(plan.chrome)} (${SOURCES[plan.chrome.source]}; not started yet)`;
   }
 
+  /** On macOS every Chrome this starts gets the person's own home, whatever HOME the server runs with (a test fixture's is
+   * temporary): elsewhere a "keychain cannot be found" dialog would appear on their screen. */
+  private chromeEnv(): NodeJS.ProcessEnv {
+    return this.options.platform === "darwin" ? { ...this.options.env, HOME: userInfo().homedir } : this.options.env;
+  }
+
   private uses(spec: LaunchSpec): boolean {
     return spec.env?.AGENT_BROWSER_EXECUTABLE_PATH === this.path && !attachesToChrome(spec.env);
   }
@@ -177,7 +194,9 @@ export class ChromeLauncher implements BrowserLaunch {
     writeLauncher(this.path, {
       chrome: chrome.path, userAgent: identity.userAgent, screen: await this.screen,
       language: browserLanguage(env), timeZone: browserTimeZone(env, platform),
+      ...(platform === "darwin" ? { home: userInfo().homedir } : {}),
     }, platform);
+    if (platform !== "win32") await (this.options.checkLauncher ?? runsLauncher)(this.path, this.chromeEnv());
     return { kind: "ready", chrome, identity, fingerprint: chromeFingerprint(chrome.path) };
   }
 
@@ -197,7 +216,7 @@ export class ChromeLauncher implements BrowserLaunch {
       const saved: unknown = JSON.parse(readFileSync(file, "utf8"));
       if (isChromeIdentity(saved)) return saved;
     } catch {}
-    const identity = await (this.options.calibrate ?? calibrateIdentity)(chrome.path);
+    const identity = await (this.options.calibrate ?? ((path: string, env: NodeJS.ProcessEnv) => calibrateIdentity(path, { env })))(chrome.path, this.chromeEnv());
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     writeFileAtomic(file, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
     return identity;

@@ -59,7 +59,10 @@ platform version, architecture). agent-browser runs a generated launcher
 (`browser/chrome-launcher.sh`, `.cmd` on Windows) that adds
 `--disable-blink-features=AutomationControlled`, that user agent, the primary
 display's size and, when OMB knows it, the language; on a server it also
-passes the server's `TZ`. A second DevTools connection gives every page,
+passes the server's `TZ`. A bot's Chrome never touches the person's keychain
+or keyring (`--use-mock-keychain` on macOS, `--password-store=basic` on
+Linux), and on macOS it always runs with the person's own home, so no
+"keychain cannot be found" dialog can appear. A second DevTools connection gives every page,
 cross-site frame and worker the matching client hints before it runs.
 Nothing is invented: Chrome for Testing reports Chromium brands, Google Chrome
 its own. `OMB_BROWSER_SCREEN`, `OMB_BROWSER_LANG` and `OMB_BROWSER_TIMEZONE`

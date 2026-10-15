@@ -22,11 +22,13 @@ const ENGINE_ARGS = [
 describe("the launcher agent-browser runs instead of Chrome", () => {
   const settings: LauncherSettings = { chrome: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", userAgent: UA, screen: { width: 1512, height: 982 }, language: "en-IN" };
 
-  it("adds the identity flags after the engine's own, so they win, and keeps the user agent whole", () => {
-    expect(launcherFlags(settings)).toEqual([
-      "--disable-blink-features=AutomationControlled", `--user-agent=${UA}`, "--screen-info={1512x982}", "--lang=en-IN",
+  it("adds the identity flags after the engine's own, so they win, keeps the user agent whole, and keeps Chrome off the keychain", () => {
+    expect(launcherFlags(settings, "darwin")).toEqual([
+      "--disable-blink-features=AutomationControlled", `--user-agent=${UA}`, "--screen-info={1512x982}", "--lang=en-IN", "--use-mock-keychain",
     ]);
-    expect(launcherFlags({ ...settings, language: undefined })).not.toContainEqual(expect.stringMatching(/^--lang/u));
+    expect(launcherFlags(settings, "linux").at(-1)).toBe("--password-store=basic");
+    expect(launcherFlags(settings, "win32").at(-1)).toBe("--lang=en-IN");
+    expect(launcherFlags({ ...settings, language: undefined }, "darwin")).not.toContainEqual(expect.stringMatching(/^--lang/u));
   });
 
   it.skipIf(!posix)("passes every argument through a POSIX shell byte for byte, commas, quotes and dollars included", () => {
@@ -35,16 +37,17 @@ describe("the launcher agent-browser runs instead of Chrome", () => {
     const chromeFolder = join(folder, "Chrome's \"odd\" $place");
     mkdirSync(chromeFolder);
     const chrome = join(chromeFolder, "Google Chrome");
-    writeFileSync(chrome, `#!/bin/sh\nprintf '%s\\0' "$@" > "$ARGV_OUT"\nprintf '%s' "$TZ" > "$ARGV_OUT.tz"\n`, { mode: 0o755 });
+    writeFileSync(chrome, `#!/bin/sh\nprintf '%s\\0' "$@" > "$ARGV_OUT"\nprintf '%s' "$TZ" > "$ARGV_OUT.tz"\nprintf '%s' "$HOME" > "$ARGV_OUT.home"\n`, { mode: 0o755 });
     const path = launcherPath(join(folder, "data"), "darwin");
-    writeLauncher(path, { ...settings, chrome, timeZone: "America/New_York" }, "darwin");
+    writeLauncher(path, { ...settings, chrome, timeZone: "America/New_York", home: "/Users/ada" }, "darwin");
     expect(statSync(path).mode & 0o777).toBe(0o700);
     const out = join(folder, "argv");
-    execFileSync(path, ENGINE_ARGS, { env: { PATH: "/usr/bin:/bin", ARGV_OUT: out } });
+    execFileSync(path, ENGINE_ARGS, { env: { PATH: "/usr/bin:/bin", ARGV_OUT: out, HOME: join(folder, "temporary-home") } });
     const argv = readFileSync(out, "utf8").split("\0").slice(0, -1);
-    expect(argv).toEqual([...ENGINE_ARGS, ...launcherFlags(settings)]);
+    expect(argv).toEqual([...ENGINE_ARGS, ...launcherFlags(settings, "darwin")]);
     expect(argv).toContain(`--user-agent=${UA}`);
     expect(readFileSync(`${out}.tz`, "utf8")).toBe("America/New_York");
+    expect(readFileSync(`${out}.home`, "utf8")).toBe("/Users/ada");
   });
 
   it("writes a shell script that execs Chrome, so agent-browser keeps Chrome's own pid and process group", () => {
@@ -53,7 +56,7 @@ describe("the launcher agent-browser runs instead of Chrome", () => {
       "#!/bin/sh",
       "TZ='Asia/Kolkata'",
       "export TZ",
-      `exec '/opt/it'\\''s/chrome' "$@" '--disable-blink-features=AutomationControlled' '--user-agent=${UA}' '--screen-info={1512x982}' '--lang=en-IN'`,
+      `exec '/opt/it'\\''s/chrome' "$@" '--disable-blink-features=AutomationControlled' '--user-agent=${UA}' '--screen-info={1512x982}' '--lang=en-IN' '--password-store=basic'`,
       "",
     ]);
   });

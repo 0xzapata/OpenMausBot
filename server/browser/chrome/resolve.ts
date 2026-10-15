@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, posix, resolve, win32 } from "node:path";
+import { posix, resolve, win32 } from "node:path";
 
 import { chromeForTestingExecutable, chromeForTestingPin, type ChromeForTestingPin } from "./install.ts";
 
@@ -50,12 +50,15 @@ const AGENT_BROWSER_LAYOUTS: Partial<Record<NodeJS.Platform, string>> = {
   win32: "chrome.exe",
 };
 
+const paths = (platform: NodeJS.Platform) => platform === "win32" ? win32 : posix;
+
 /** Chromium's headless shell cannot pass for Chrome: its TLS handshake differs and it has no `window.chrome`. */
 export function isHeadlessShell(path: string): boolean {
-  return /^chrome-headless-shell(?:\.exe)?$/iu.test(basename(path)) || /chrome-headless-shell/iu.test(path);
+  return /chrome-headless-shell/iu.test(path);
 }
 
 export function installedGoogleChrome(host: ChromeHost): string | null {
+  const { join } = paths(host.platform);
   const candidates: string[] = [];
   if (host.platform === "darwin") {
     const registered = host.appForBundleId("com.google.Chrome");
@@ -67,7 +70,7 @@ export function installedGoogleChrome(host: ChromeHost): string | null {
       if (registered) candidates.push(registered.replace(/^"|"$/gu, ""));
     }
     for (const root of [host.env.ProgramFiles, host.env["ProgramFiles(x86)"], host.env.LOCALAPPDATA]) {
-      if (root) candidates.push(win32.join(root, "Google", "Chrome", "Application", "chrome.exe"));
+      if (root) candidates.push(join(root, "Google", "Chrome", "Application", "chrome.exe"));
     }
   } else if (host.platform === "linux") {
     candidates.push(LINUX_CHROME);
@@ -77,6 +80,7 @@ export function installedGoogleChrome(host: ChromeHost): string | null {
 
 /** Machine policies only: a managed machine runs Chrome for Testing in profiles of OMB's own instead. */
 export function chromePolicyManaged(host: ChromeHost): boolean {
+  const { basename, join } = paths(host.platform);
   if (host.platform === "darwin") {
     const user = host.env.USER || basename(host.home);
     return host.exists(join(MAC_POLICIES, "com.google.Chrome.plist")) || host.exists(join(MAC_POLICIES, user, "com.google.Chrome.plist"));
@@ -90,10 +94,10 @@ export function chromePolicyManaged(host: ChromeHost): boolean {
 export function agentBrowserChrome(host: ChromeHost): string | null {
   const layout = AGENT_BROWSER_LAYOUTS[host.platform];
   if (!layout) return null;
-  const { join: within } = host.platform === "win32" ? win32 : posix;
-  const browsers = within(host.home, ".agent-browser", "browsers");
+  const { join } = paths(host.platform);
+  const browsers = join(host.home, ".agent-browser", "browsers");
   const versions = host.list(browsers).filter((name) => name.startsWith("chrome-")).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-  return versions.map((version) => within(browsers, version, layout)).find((candidate) => host.exists(candidate)) ?? null;
+  return versions.map((version) => join(browsers, version, layout)).find((candidate) => host.exists(candidate)) ?? null;
 }
 
 export function resolveChromePlan(host: ChromeHost, engine: ChromeEngine | null): ChromePlan {
@@ -103,7 +107,7 @@ export function resolveChromePlan(host: ChromeHost, engine: ChromeEngine | null)
   if (named) {
     if (isHeadlessShell(named)) return { kind: "legacy", reason: "the named browser is a headless shell" };
     if (!host.exists(named)) return { kind: "legacy", reason: `${named} does not exist` };
-    return { kind: "chrome", chrome: { path: resolve(named), source: "named" }, fallback: null };
+    return { kind: "chrome", chrome: { path: paths(platform).isAbsolute(named) ? named : resolve(named), source: "named" }, fallback: null };
   }
   if (!engine?.managed) return { kind: "legacy", reason: "agent-browser was named, so it picks its own browser" };
   const pin = platform === "darwin" || platform === "win32" ? chromeForTestingPin(platform, host.arch) : null;
