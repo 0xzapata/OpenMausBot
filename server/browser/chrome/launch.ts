@@ -10,6 +10,7 @@ export interface LaunchOptions extends ChromeFlagsInput, Omit<ChromeEnvInput, "h
   /** A resolved Chrome or Chrome for Testing executable. */
   executablePath: string;
   env?: NodeJS.ProcessEnv;
+  /** A first launch on a fresh machine can take half a minute (font caches, a virus scan of the binary). */
   handshakeTimeoutMs?: number;
   registry?: ProcessRegistry | null;
 }
@@ -115,7 +116,7 @@ export async function launchChrome(options: LaunchOptions): Promise<ChromeProces
   const transport = pipeTransport(child.stdio[3] as Writable, child.stdio[4] as Readable);
   let version: BrowserVersion;
   try {
-    version = await handshake(transport, exited, options.handshakeTimeoutMs ?? 30_000);
+    version = await handshake(transport, exited, options.handshakeTimeoutMs ?? 60_000);
   } catch (error) {
     killTree(child, "SIGKILL");
     await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 2_000))]);

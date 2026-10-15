@@ -1,11 +1,15 @@
 import { CdpConnection, sessionKindOf, type Params } from "./connection.ts";
 import { Downloads, type DownloadLimits } from "./downloads.ts";
 import { DriverError, isGone } from "./errors.ts";
+import { valueInWorld } from "./evaluate.ts";
 import { identityOverride, type Identity } from "./identity.ts";
 import { CdpPage, type PageHost, type TargetInfo } from "./page.ts";
 import { RefCounter } from "./refs.ts";
 import { applyPermissions, releaseSession, setUpWorkerSession, type TargetSetup } from "./targets.ts";
 import type { CdpTransport } from "./transport.ts";
+
+/** Every headless page is this size, so pictures, boxes and clicks agree. */
+export const VIEWPORT = { width: 1280, height: 720 } as const;
 
 export interface BrowserOptions {
   /** The binary's calibrated headed identity, applied to every page, frame and worker. Null in a window, which is natively that identity. */
@@ -21,6 +25,8 @@ export interface BrowserOptions {
   platform?: NodeJS.Platform;
   /** Popups past this many tabs are closed. */
   maxPages?: number;
+  /** The page size every headless window is fitted to; null leaves the window as Chrome made it. */
+  viewport?: { width: number; height: number } | null;
   timeoutMs?: number;
 }
 
@@ -41,6 +47,8 @@ export class CdpBrowser implements PageHost {
   readonly #closeListeners = new Set<PageListener>();
   readonly #failureListeners = new Set<(page: CdpPage, error: unknown) => void>();
   readonly #failures: Array<{ page: CdpPage; error: unknown }> = [];
+  readonly #running = new WeakMap<CdpPage, Promise<void>>();
+  readonly #fittedWindows = new Set<number>();
   #active: CdpPage | null = null;
 
   private constructor(connection: CdpConnection, options: BrowserOptions) {
@@ -104,7 +112,9 @@ export class CdpBrowser implements PageHost {
     const page = new CdpPage(this, session, info);
     this.#pages.set(info.targetId, page);
     this.#active = page;
-    void page.ready.then(
+    const running = page.ready.then(() => this.#fitWindow(page));
+    this.#running.set(page, running);
+    void running.then(
       () => {
         if (page.closed) return;
         if (page.openerId && this.#options.maxPages !== undefined && this.#pages.size > this.#options.maxPages) {
@@ -126,6 +136,27 @@ export class CdpBrowser implements PageHost {
         this.#gone(info.targetId);
       },
     );
+  }
+
+  /**
+   * A headless window's frame differs by platform: --window-size=1280,863 gives
+   * a 1280x720 page on macOS and Linux but 1264x712 on Windows (measured), so
+   * each window is measured once and resized until its page is the viewport.
+   */
+  async #fitWindow(page: CdpPage): Promise<void> {
+    const viewport = this.#options.viewport === undefined ? (this.setup.focusEmulation ? VIEWPORT : null) : this.#options.viewport;
+    if (!viewport || page.closed) return;
+    const root = this.connection.root;
+    try {
+      const { windowId, bounds } = await root.send<{ windowId: number; bounds: { width?: number; height?: number } }>("Browser.getWindowForTarget", { targetId: page.targetId });
+      if (this.#fittedWindows.has(windowId)) return;
+      this.#fittedWindows.add(windowId);
+      const [width, height] = await valueInWorld<[number, number]>(page.frames, page.frames.mainFrameId, "[innerWidth, innerHeight]");
+      if ((width === viewport.width && height === viewport.height) || !bounds.width || !bounds.height) return;
+      await root.send("Browser.setWindowBounds", { windowId, bounds: { width: bounds.width + viewport.width - width, height: bounds.height + viewport.height - height } });
+    } catch (error) {
+      if (!isGone(error)) throw error;
+    }
   }
 
   #gone(targetId: string): void {
@@ -189,7 +220,7 @@ export class CdpBrowser implements PageHost {
       const offFailure = () => this.#failureListeners.delete(failed);
       const timer = setTimeout(() => finish(null, new DriverError("timeout", `No matching tab opened within ${timeoutMs} ms.`)), timeoutMs);
       for (const page of this.#pages.values()) {
-        void page.ready.then(() => {
+        void (this.#running.get(page) ?? page.ready).then(() => {
           if (!page.closed && match(page)) finish(page);
         }, () => {});
       }

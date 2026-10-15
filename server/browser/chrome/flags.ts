@@ -20,9 +20,8 @@ export interface ScreenSpec {
 /** Servers declare a display the way Xvfb's -screen does. */
 export const SERVER_SCREEN: ScreenSpec = { width: 1920, height: 1080, deviceScaleFactor: 1 };
 
-/** A 1280x720 page: new headless reserves 143 px of window chrome (measured on Chrome 153). */
+/** A 1280x720 page on macOS and Linux, where new headless reserves 143 px of window chrome; the driver fits other platforms' windows. */
 export const WINDOW_SIZE = "1280,863";
-export const VIEWPORT = { width: 1280, height: 720 } as const;
 
 export interface ChromeFlagsInput {
   userDataDir: string;

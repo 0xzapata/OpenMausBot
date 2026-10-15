@@ -52,6 +52,7 @@ export interface CalibrateOptions {
   tmpRoot?: string;
   sandbox?: boolean;
   timeoutMs?: number;
+  handshakeTimeoutMs?: number;
 }
 
 /**
@@ -69,6 +70,7 @@ export async function calibrateIdentity(options: CalibrateOptions): Promise<Cali
     mode: "headless",
     host: options.host,
     ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
+    ...(options.handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs: options.handshakeTimeoutMs }),
   }).catch((error: unknown) => {
     page.close();
     rmSync(userDataDir, { recursive: true, force: true });
