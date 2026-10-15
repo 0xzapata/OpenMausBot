@@ -1256,6 +1256,7 @@
   "routines.scheduleNote.server": "S'exécute tant que ce serveur fonctionne.",
   "computer.tab.android": "Android",
   "computer.tab.browser": "Navigateur",
+  "computer.tabsAria": "Vue du panneau du bot",
   "computer.screenOf": "Écran de {name}",
   "computer.badge.local": "cet ordinateur",
   "computer.badge.vps": "VPS auto-hébergé",

@@ -2829,6 +2829,7 @@
   "computer.browserSwitch.title": "讓 {name} 使用瀏覽器",
   "computer.tab.browser": "瀏覽器",
   "computer.tab.files": "檔案",
+  "computer.tabsAria": "機器人面板檢視",
   "computer.fullScreen": "全螢幕",
   "computer.browserOff.title": "瀏覽器已關閉",
   "computer.browserOff.body": "開啟內建瀏覽器，即可觀看 {name} 瀏覽網頁，並隨時接手控制。",

@@ -74,7 +74,7 @@ const open = async (bot: Bot) => {
   await settle();
 };
 const tab = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[data-testid="computer-tabs"] button')].find((candidate) => candidate.textContent?.trim() === label)!;
-const pressed = () => [...document.querySelectorAll<HTMLButtonElement>('[data-testid="computer-tabs"] button')].find((candidate) => candidate.getAttribute("aria-pressed") === "true")?.textContent?.trim();
+const selected = () => [...document.querySelectorAll<HTMLButtonElement>('[data-testid="computer-tabs"] button')].find((candidate) => candidate.getAttribute("aria-selected") === "true")?.textContent?.trim();
 
 beforeAll(() => {
   vi.stubGlobal("ogb", undefined);
@@ -88,17 +88,17 @@ afterEach(() => {
 describe("Computer panel tab", () => {
   it("stays on Data through a model change and follows a conversation change", async () => {
     await open(makeBot());
-    expect(pressed()).toBe("Computer");
+    expect(selected()).toBe("Computer");
     flushSync(() => tab("Data").click());
     await settle();
-    expect(pressed()).toBe("Data");
+    expect(selected()).toBe("Data");
     await vi.waitFor(() => expect(document.querySelector('[data-testid="data-panel"]')).not.toBeNull());
 
     await open(makeBot({ modelSelection: { instanceId: "codex", model: "m" } }));
-    expect(pressed()).toBe("Data");
+    expect(selected()).toBe("Data");
     expect(document.querySelector('[data-testid="data-panel"]')).not.toBeNull();
 
     await open(makeBot({ threadId: "thread-2", tasks: [{ threadId: "thread-2", title: "Second", createdAt: 2, approvalMode: "ask" }] } as Partial<Bot>));
-    expect(pressed()).toBe("Computer");
+    expect(selected()).toBe("Computer");
   });
 });
