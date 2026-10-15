@@ -132,7 +132,7 @@ try {
   const evaluate = async (js: string) => (await ui("eval", "--js", js)).result;
   const click = (name: string) => ui("click", "--name", name);
   // The selected panel shares its tab's name; click the tab itself.
-  const clickTab = (tour: string) => evaluate(`document.querySelector('[data-tour=${tour}]')?.click(); true`);
+  const clickTab = (tour: string) => evaluate(`(() => { const tab = document.querySelector('[data-tour=${tour}]'); if (!tab) throw new Error('Missing tab ${tour}'); tab.click(); return true; })()`);
   const browser = (...args: string[]) => agentBrowser(binary, sessionEnv(handle!), args);
   const drag = async (element: string, dx: number, dy: number) => {
     const { x, y } = await evaluate(`(() => { const { left, top, width, height } = (${element}).getBoundingClientRect(); return { x: Math.round(left + width / 2), y: Math.round(top + height / 2) }; })()`);
