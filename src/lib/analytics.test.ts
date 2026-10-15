@@ -186,6 +186,40 @@ describe("loading the client", () => {
     expect(ph.options[0]).toMatchObject({ autocapture: false, disable_surveys: true });
   });
 
+  it("sends no address: no URL, host, path, referrer or campaign, on the event or on the person", async () => {
+    const fresh = await freshAnalytics();
+    await fresh.initAnalytics();
+    expect(ph.options[0]).toMatchObject({ save_referrer: false, save_campaign_params: false, disable_capture_url_hashes: true });
+    const beforeSend = ph.options[0]!.before_send as (event: unknown) => unknown;
+    const page = "https://ada-tenant.mausbot.cloud/?share-computer=cmp_123&utm_source=hn#copy-to";
+    const event = {
+      uuid: "u", event: "app_snapshot",
+      properties: {
+        token: "phc_token", distinct_id: "d", app_version: "0.1.111", surface: "server", bots: 3, key_providers: ["boat"], $os: "Mac OS X",
+        $current_url: page, $host: "ada-tenant.mausbot.cloud", $pathname: "/", $referrer: "https://www.google.com/?q=ada", $referring_domain: "www.google.com",
+        $search_engine: "google", ph_keyword: "ada", utm_source: "hn", utm_campaign: "launch", gclid: "g1", fbclid: "f1", gad_source: "1",
+        $session_entry_url: page, $session_entry_host: "ada-tenant.mausbot.cloud", $session_entry_pathname: "/", $session_entry_referrer: "https://www.google.com/",
+        $session_entry_referring_domain: "www.google.com", $session_entry_utm_source: "hn", $session_entry_gclid: "g1", $prev_pageview_pathname: "/old",
+        $set: { email: "ada@example.com", $current_url: page },
+      },
+      $set: { email: "ada@example.com", $current_url: page, $pathname: "/", $referrer: "https://www.google.com/", $referring_domain: "www.google.com" },
+      $set_once: {
+        $initial_current_url: page, $initial_host: "ada-tenant.mausbot.cloud", $initial_pathname: "/", $initial_referrer: "https://www.google.com/",
+        $initial_referring_domain: "www.google.com", $initial_utm_source: "hn", $initial_gclid: "g1", $initial_search_engine: "google", $initial_ph_keyword: "ada",
+        $current_url: page, $host: "ada-tenant.mausbot.cloud", $referrer: "https://www.google.com/", utm_medium: "social",
+      },
+    };
+    const sent = beforeSend(structuredClone(event));
+    expect(sent).toEqual({
+      uuid: "u", event: "app_snapshot",
+      properties: { token: "phc_token", distinct_id: "d", app_version: "0.1.111", surface: "server", bots: 3, key_providers: ["boat"], $os: "Mac OS X", $set: { email: "ada@example.com" } },
+      $set: { email: "ada@example.com" },
+      $set_once: {},
+    });
+    expect(JSON.stringify(sent)).not.toMatch(/mausbot\.cloud|google|share-computer|cmp_123|hn|g1|f1/);
+    expect(beforeSend(null)).toBeNull();
+  });
+
   it("delivers calls made while it loads once each, after app_opened, in order", async () => {
     const fresh = await freshAnalytics();
     const loading = fresh.initAnalytics();
