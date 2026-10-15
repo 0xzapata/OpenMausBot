@@ -16,9 +16,9 @@ function storage(): Storage | undefined {
 export function readColorUserBubbles(): boolean {
   if (sessionChoice !== undefined) return sessionChoice;
   try {
-    return storage()?.getItem(USER_BUBBLE_COLOR_KEY) === "1";
+    return storage()?.getItem(USER_BUBBLE_COLOR_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
