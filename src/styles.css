@@ -25,6 +25,15 @@
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
+.mention-highlight.mention-you {
+  --mention-color: var(--color-accent);
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--mention-color) 40%, var(--color-inset));
+  text-decoration: none;
+  font-weight: 600;
+  padding: 0 0.25em;
+  border-radius: 4px;
+}
 ::highlight(search-result-text) {
   color: var(--color-ink);
   background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
@@ -170,6 +179,22 @@
 
 /* Tokens that no utility generates — declared outside `@theme` so Tailwind
    can't tree-shake them away, and so a skin can redefine them freely. */
+:root {
+  --chat-bubble-max: 42rem;
+  --chat-bubble-pct: 78%;
+  --chat-card-pct: 88%;
+}
+:root[data-chat-width="wide"] {
+  --chat-bubble-max: 64rem;
+  --chat-bubble-pct: 92%;
+  --chat-card-pct: 94%;
+}
+:root[data-chat-width="full"] {
+  --chat-bubble-max: 100%;
+  --chat-bubble-pct: 96%;
+  --chat-card-pct: 96%;
+}
+
 :root {
   --code-color-scheme: dark;
   /* ink carried by a filled accent / danger surface (see the rule at the
@@ -1231,6 +1256,23 @@ body {
   from { transform: translateY(4px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+.reply-bubble {
+  width: fit-content;
+  max-width: min(100%, 36rem);
+  border-radius: 20px;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--color-ink) 8%, transparent);
+  font-size: 16px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+@keyframes bubble-in {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.reply-bubble-in {
+  animation: bubble-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 /* mascot arrives at the tail */
 @keyframes turn-mascot-in {
   from { opacity: 0; transform: scale(0.82); }
@@ -1414,6 +1456,7 @@ html[data-cloud-intent-morph] [data-tour="composer"] { view-transition-name: clo
   .turn-phrase-in { animation: none; }
   .turn-phrase-out { display: none; }
   .turn-mascot-in, .turn-mascot-out, .turn-answer { animation: none; }
+  .reply-bubble-in { animation: none; }
   .animate-rise, .animate-spot-in { animation: none; }
   .animate-ripple, .animate-bolt { animation: none; }
   .step-open, .check-in, .progress-fill { animation: none; transition: none; }

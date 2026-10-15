@@ -31,7 +31,7 @@ describe("custom MCP registry", () => {
   });
 
   it("refuses harness-owned environment names in stored and renderer entries", () => {
-    for (const key of ["OMB_HARNESS_URL", "OGB_BOX_TOKEN", "ELECTRON_RUN_AS_NODE"]) {
+    for (const key of ["OMB_HARNESS_URL", "OGB_BOX_TOKEN"]) {
       expect(parseStoredMcpServer("notes", { command: "notes-mcp", env: { [key]: "bad" } })).toEqual({
         ok: false,
         error: `Environment variable “${key}” is reserved by OpenMausBot.`,
@@ -41,6 +41,21 @@ describe("custom MCP registry", () => {
         error: `Environment variable “${key}” is reserved by OpenMausBot.`,
       });
     }
+  });
+
+  it("lets a custom server run an Electron binary as node, and nothing else", () => {
+    const refused = "Environment variable “ELECTRON_RUN_AS_NODE” is reserved by OpenMausBot; a custom server may set it to “1” only.";
+    expect(parseStoredMcpServer("notes", { command: "notes-mcp", env: { ELECTRON_RUN_AS_NODE: "0" } })).toEqual({ ok: false, error: refused });
+    expect(parseMcpServerMutation("notes", { command: "notes-mcp", env: { ELECTRON_RUN_AS_NODE: "true" } })).toEqual({ ok: false, error: refused });
+    const stored = parseStoredMcpServer("bundled", {
+      command: "/Applications/App.app/Contents/MacOS/App",
+      args: ["server.js"],
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    });
+    expect(stored).toMatchObject({ ok: true, server: { env: { ELECTRON_RUN_AS_NODE: "1" } } });
+    if (!stored.ok) throw new Error(stored.error);
+    // A "keep the saved value" placeholder judges the saved value.
+    expect(parseMcpServerMutation("bundled", { command: "other", env: { ELECTRON_RUN_AS_NODE: true } }, stored.server)).toMatchObject({ ok: true });
   });
 
   it("never puts environment values in renderer listings", () => {
@@ -286,5 +301,30 @@ describe("a url server's sign-in app", () => {
       ok: false, error: "Scopes are single words, like offline_access or api://my-app/mcp.read.",
     });
     expect(parseStoredMcpServer("docs", { url, oauth: { clientId: "a", callbackPort: 8080 } })).toMatchObject({ ok: false });
+  });
+});
+
+describe("a server's result size limit", () => {
+  it("is stored, listed, and optional", () => {
+    expect(parseMcpServerMutation("motion", { command: "effectcraft-mcp", resultBudget: 40_000 })).toEqual({
+      ok: true,
+      server: { command: "effectcraft-mcp", args: [], env: {}, enabled: false, resultBudget: 40_000 },
+    });
+    expect(parseMcpServerMutation("docs", { url: "https://docs.example/mcp", resultBudget: 0 })).toMatchObject({ ok: true, server: { resultBudget: 0 } });
+    const plain = parseMcpServerMutation("notes", { command: "notes-mcp" });
+    expect(plain.ok && "resultBudget" in plain.server).toBe(false);
+    const listings = listMcpServers({ motion: { command: "effectcraft-mcp", resultBudget: 40_000 }, docs: { url: "https://docs.example/mcp", resultBudget: 0 }, notes: { command: "notes-mcp" } });
+    expect(listings.map((l) => l.resultBudget)).toEqual([40_000, 0, undefined]);
+  });
+
+  it("refuses a negative, fractional, oversized or non-numeric limit", () => {
+    for (const resultBudget of [-1, 1.5, 3_000_000, "40000"]) {
+      expect(parseMcpServerMutation("motion", { command: "effectcraft-mcp", resultBudget })).toMatchObject({ ok: false, error: expect.stringMatching(/result size limit/i) });
+    }
+  });
+
+  it("survives a pasted config block", () => {
+    const parsed = parseMcpServersImport(JSON.stringify({ mcpServers: { motion: { command: "effectcraft-mcp", resultBudget: 40_000 } } }));
+    expect(parsed).toMatchObject({ ok: true, servers: { motion: { resultBudget: 40_000 } } });
   });
 });

@@ -8,7 +8,7 @@ import { fromMarkdown, type Options as MarkdownParseOptions } from "mdast-util-f
 import { Check, Copy, Download, LoaderCircle, RotateCcw, WrapText, X } from "lucide-react";
 import { useCopyFeedback } from "@/lib/copy-text";
 import { t } from "@/lib/i18n";
-import { remarkMentions, type MentionPeer } from "@/lib/mentions";
+import { remarkMentions, sameMentionPerson, type MentionPeer, type MentionPerson } from "@/lib/mentions";
 
 import {
   countLines,
@@ -986,9 +986,9 @@ const MARKDOWN_COMPONENTS: Components = {
 const MAY_LINK_THREAD = /#|openmausbot/i;
 const NO_THREAD_REFS: ThreadRefsValue = { threads: [] };
 
-function ChatMarkdownComponent({ text, message, mentionPeers = NO_MENTION_PEERS, everyone = false, delivered }: {
+function ChatMarkdownComponent({ text, message, mentionPeers = NO_MENTION_PEERS, everyone = false, mentionPerson, delivered }: {
   text: string; message?: MessageAttachmentContext;
-  mentionPeers?: readonly MentionPeer[]; everyone?: boolean;
+  mentionPeers?: readonly MentionPeer[]; everyone?: boolean; mentionPerson?: MentionPerson;
   delivered?: DeliveredFiles;
 }) {
   // use() may be called conditionally: only a message that can hold a thread link subscribes to the thread list.
@@ -1016,7 +1016,7 @@ function ChatMarkdownComponent({ text, message, mentionPeers = NO_MENTION_PEERS,
     <MessageScopeContext.Provider value={{ message, imageOffsets, threads, currentBotId, delivered }}>
       <div className="chat-md min-w-0 [&>*+*]:mt-2">
         <Markdown
-          remarkPlugins={[remarkGfm, remarkMath, remarkWindowsPathDestinations, unwrapLinkedImages, remarkGithubRefs, [remarkMentions, { peers: mentionPeers, everyone }], remarkThreadRefs(threads, currentBotId)]}
+          remarkPlugins={[remarkGfm, remarkMath, remarkWindowsPathDestinations, unwrapLinkedImages, remarkGithubRefs, [remarkMentions, { peers: mentionPeers, everyone, person: mentionPerson }], remarkThreadRefs(threads, currentBotId)]}
           rehypePlugins={mathPlugin ? [mathPlugin] : []}
           urlTransform={chatUrlTransform}
           components={MARKDOWN_COMPONENTS}
@@ -1040,7 +1040,7 @@ export function samePeers(previous: readonly MentionPeer[], next: readonly Menti
 export const ChatMarkdown = memo(ChatMarkdownComponent, (previous, next) => (
   previous.text === next.text
   && samePeers(previous.mentionPeers ?? NO_MENTION_PEERS, next.mentionPeers ?? NO_MENTION_PEERS)
-  && previous.everyone === next.everyone
+  && previous.everyone === next.everyone && sameMentionPerson(previous.mentionPerson, next.mentionPerson)
   && previous.message?.threadId === next.message?.threadId
   && previous.message?.messageId === next.message?.messageId
   && sameDelivered(previous.delivered, next.delivered)

@@ -12,6 +12,8 @@ export interface PeerDeliveryReceipt {
   taskId?: string;
   requestId?: string;
   threadId?: string;
+  /** Its place in a room's line when room jobs there run one at a time. */
+  queue?: { position: number; of: number; waitingFor?: string };
 }
 
 // Detail can carry peer- or provider-authored text: flattened and clipped like a roster entry.
@@ -26,6 +28,8 @@ export function peerDeliveryReceipt(receipt: PeerDeliveryReceipt): PeerDeliveryR
     ...(receipt.taskId ? { taskId: receipt.taskId } : {}),
     ...(receipt.requestId ? { requestId: receipt.requestId } : {}),
     ...(receipt.threadId ? { threadId: receipt.threadId } : {}),
+    ...(receipt.queue ? { queue: { position: receipt.queue.position, of: receipt.queue.of,
+      ...(receipt.queue.waitingFor ? { waitingFor: clip(receipt.queue.waitingFor, DETAIL_MAX) } : {}) } } : {}),
   };
 }
 

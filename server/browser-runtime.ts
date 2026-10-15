@@ -3,6 +3,7 @@ import { scrubHeldSecrets } from "../shared/redact.ts";
 import { DEFAULT_BROWSER_RESULT_BUDGET, describePageChange, OBSERVE_PAGE_SCRIPT, parsePageState, scrubBrowserResult, shapeBrowserToolResult, slimBrowserToolList, stripHarnessOwnedArguments, type PageState } from "./browser-tool-shape.ts";
 import { BrowserLanes } from "./browser-lane.ts";
 import type { BrowserSteps, StepCall, StepContext } from "./browser-steps.ts";
+import { HARNESS_CALL_BUDGET_MS } from "./harness-budget.ts";
 
 export interface BrowserSpawnSpec {
   command: string;
@@ -17,14 +18,43 @@ const BROWSER_RESTART_TOOL_SPEC = {
   description: "Close and restart your browser. Use this only when a browser tool says the browser must be restarted, or it stays busy after a call that did not answer. Every open tab is closed and page state such as form input and sign-ins is lost; afterwards open the page you need again and check whether the interrupted action already happened before repeating it.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
 };
+export const BROWSER_UPLOAD_TOOL = "agent_browser_upload";
+export const BROWSER_HOVER_TOOL = "agent_browser_hover";
+/** agent-browser 0.37.0 offers upload and hover only in its 156-tool "all" profile, so OMB runs these two through the daemon's relay. */
+const RELAYED_TOOL_SPECS = [
+  {
+    name: BROWSER_UPLOAD_TOOL,
+    description: "Put files into a file input (<input type=\"file\">), then submit its form as usual. files are absolute paths of files the person attached to this conversation or files in your own working folder; any other path is refused.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["selector", "files"],
+      properties: {
+        selector: { type: "string", minLength: 1, description: "The file input: an @eN ref from a snapshot, or a CSS selector." },
+        files: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1 }, description: "Absolute paths of the files to put in the input." },
+      },
+    },
+  },
+  {
+    name: BROWSER_HOVER_TOOL,
+    description: "Move the mouse over an element, for menus and tooltips that open on hover.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["selector"],
+      properties: { selector: { type: "string", minLength: 1, description: "An @eN ref from a snapshot, or a CSS selector." } },
+    },
+  },
+];
+type RelayedToolSpec = (typeof RELAYED_TOOL_SPECS)[number];
+const RELAYED_TOOLS: ReadonlyMap<string, RelayedToolSpec> = new Map(RELAYED_TOOL_SPECS.map((spec) => [spec.name, spec]));
 const BROWSER_INTERRUPTED = `The browser engine is stuck. Press Restart in the Browser panel, or call ${BROWSER_RESTART_TOOL}, before using browser tools again.`;
 const idleClosedNote = (saves: boolean) => `Your browser sat unused and was closed to free memory; this call opened it again. Pages you had open are gone (${saves ? "saved sign-ins are kept" : "it is a temporary browser, so its sign-ins are gone too"}), so open the page you need again before using earlier @eN refs.`;
-/** The lane waits 30 s, inside the harness proxy's 130 s per call; a stuck action holds 120 s. */
+const PERSON_RESTARTED = "The person restarted your browser from the Browser panel; this call ran in the fresh browser. Pages you had open are gone, so open the page you need again before using earlier @eN refs, and check whether an interrupted action already happened before repeating it.";
 const LANE_BUSY = "Your previous browser call is still running; wait for it to finish, then call again.";
+/** One bot call, lane wait included, answers within `callBudgetMs`; the engine's action keeps `followUpReserveMs` of it for the reads after. */
+export const BROWSER_CALL_DEFAULTS = { requestTimeoutMs: 120_000, laneWaitMs: 30_000, callBudgetMs: HARNESS_CALL_BUDGET_MS, followUpReserveMs: 15_000 } as const;
 const RESTART_COST = "a restart closes every tab and loses page state such as form input and sign-ins";
+const LATE = Symbol("late");
 const PAGE_ACTIONS: ReadonlySet<string> = new Set([
   "agent_browser_click", "agent_browser_fill", "agent_browser_type", "agent_browser_press",
-  "agent_browser_check", "agent_browser_uncheck", "agent_browser_select",
+  "agent_browser_check", "agent_browser_uncheck", "agent_browser_select", BROWSER_UPLOAD_TOOL, BROWSER_HOVER_TOOL,
 ]);
 const MAX_REQUEST_BYTES = 1_048_576;
 const MAX_RESPONSE_BYTES = 16_777_216;
@@ -263,6 +293,8 @@ interface Gate {
   ready: boolean;
   releasing: boolean;
   agents: number;
+  /** Of `agents`, reads that only check whether a lost call ended. */
+  probes: number;
   dispatched: number;
   humans: number;
   uncertain: boolean;
@@ -276,32 +308,38 @@ interface Gate {
   spec?: BrowserSpawnSpec;
   /** An idle close in progress: agent calls and new views wait for it. */
   idleClose?: Promise<void>;
-  idleClosed: boolean;
+  /** Closed since the bot's last call: its next answer says why its pages are gone. */
+  reopened: "idle" | "restart" | null;
 }
 
 type ClientEntry = { key: string; client: BrowserClient; viewport?: Promise<unknown> };
 
 /** Closes one session's native browser daemon; true only when it is gone. */
 export type CloseBrowser = (session: string, spec: BrowserSpawnSpec) => Promise<boolean>;
+/** Sends one command to the session's running agent-browser daemon. Throws TransportError when it does not answer in time. */
+export type RelayCommand = (spec: BrowserSpawnSpec, session: string, command: Record<string, unknown>, timeoutMs: number) =>
+  Promise<{ success: boolean; data: Record<string, unknown> | null; error?: string }>;
 
 export class BrowserRuntime {
   private gates = new Map<string, Gate>();
   private clients = new Map<string, ClientEntry>();
   private recoveries = new Map<string, Promise<string | null>>();
   private toolLists = new Map<string, unknown>();
-  private options: { requestTimeoutMs: number; takeoverTimeoutMs: number; idleMs: number; maxPending: number; resultBudget: number; recoveryCheckMs: number; laneWaitMs: number };
+  private options: { requestTimeoutMs: number; takeoverTimeoutMs: number; idleMs: number; maxPending: number; resultBudget: number; recoveryCheckMs: number; laneWaitMs: number; callBudgetMs: number; followUpReserveMs: number };
   private closeBrowser: CloseBrowser;
   private applyViewport?: ApplyViewport;
+  private relayCommand?: RelayCommand;
   private steps?: Pick<BrowserSteps, "before" | "after" | "signIn" | "note" | "forget" | "recentFrame" | "personTook">;
   private lanes = new BrowserLanes();
   /** Strips held secrets (a filled password, a one-time code) from every tool result before the bot reads it. */
   private scrub: (text: string) => string;
   private onTiming?: (timing: BrowserTiming) => void;
 
-  constructor({ closeBrowser, applyViewport, steps, scrub, onTiming, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser; applyViewport?: ApplyViewport; steps?: BrowserRuntime["steps"]; scrub?: (text: string) => string; onTiming?: (timing: BrowserTiming) => void } = {}) {
-    this.options = { requestTimeoutMs: 120_000, takeoverTimeoutMs: 15_000, idleMs: 60_000, maxPending: 16, resultBudget: DEFAULT_BROWSER_RESULT_BUDGET, recoveryCheckMs: 30_000, laneWaitMs: 30_000, ...options };
+  constructor({ closeBrowser, applyViewport, relayCommand, steps, scrub, onTiming, ...options }: Partial<BrowserRuntime["options"]> & { closeBrowser?: CloseBrowser; applyViewport?: ApplyViewport; relayCommand?: RelayCommand; steps?: BrowserRuntime["steps"]; scrub?: (text: string) => string; onTiming?: (timing: BrowserTiming) => void } = {}) {
+    this.options = { ...BROWSER_CALL_DEFAULTS, takeoverTimeoutMs: 15_000, idleMs: 60_000, maxPending: 16, resultBudget: DEFAULT_BROWSER_RESULT_BUDGET, recoveryCheckMs: 30_000, ...options };
     this.closeBrowser = closeBrowser ?? (async () => false);
     this.applyViewport = applyViewport;
+    this.relayCommand = relayCommand;
     this.steps = steps;
     this.scrub = scrub ?? scrubHeldSecrets;
     this.onTiming = onTiming;
@@ -325,7 +363,7 @@ export class BrowserRuntime {
   private gate(session: string): Gate {
     let gate = this.gates.get(session);
     if (!gate) {
-      gate = { owner: null, ready: false, releasing: false, agents: 0, dispatched: 0, humans: 0, uncertain: false, lostCall: null, closing: false, changed: new Set(), watchers: 0, calls: 0, lastUsed: Date.now(), idleClosed: false };
+      gate = { owner: null, ready: false, releasing: false, agents: 0, probes: 0, dispatched: 0, humans: 0, uncertain: false, lostCall: null, closing: false, changed: new Set(), watchers: 0, calls: 0, lastUsed: Date.now(), reopened: null };
       this.gates.set(session, gate);
     }
     return gate;
@@ -393,21 +431,35 @@ export class BrowserRuntime {
     const gate = this.gate(session);
     gate.spec = spec;
     gate.calls++;
+    const deadline = Date.now() + this.options.callBudgetMs;
     let result: unknown;
     try {
-      const request = () => this.agentRequest(session, spec, method, params, beforeDispatch, ctx);
-      result = method !== "tools/call" || toolNameOf(params) === BROWSER_RESTART_TOOL || gate.uncertain ? await request() : await this.lanes.run(session, request, this.options.laneWaitMs);
+      const request = () => this.agentRequest(session, spec, method, params, deadline, beforeDispatch, ctx);
+      const work = method !== "tools/call" || toolNameOf(params) === BROWSER_RESTART_TOOL || gate.uncertain ? request() : this.lanes.run(session, request, this.options.laneWaitMs);
+      result = await this.withinBudget(session, method, toolNameOf(params) ?? "browser", work, deadline);
     } finally { gate.calls--; gate.lastUsed = Date.now(); }
     if (method !== "tools/call") return result;
     if (result === null || result === undefined) return scrubBrowserResult({ isError: true, content: [{ type: "text", text: LANE_BUSY }] }, this.scrub);
-    if (!gate.idleClosed) return scrubBrowserResult(result, this.scrub);
-    gate.idleClosed = false;
+    if (!gate.reopened) return scrubBrowserResult(result, this.scrub);
+    const note = gate.reopened === "restart" ? PERSON_RESTARTED : idleClosedNote(spec.env.AGENT_BROWSER_RESTORE_SAVE !== "never");
+    gate.reopened = null;
     const content = (result as { content?: unknown } | null)?.content;
-    const note = idleClosedNote(spec.env.AGENT_BROWSER_RESTORE_SAVE !== "never");
     return scrubBrowserResult({ ...result as object, content: [{ type: "text", text: note }, ...Array.isArray(content) ? content : []] }, this.scrub);
   }
 
-  private async agentRequest(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void, ctx?: StepContext): Promise<unknown> {
+  /** Work that outlasts the budget goes on, so its outcome is unknown: the call counts as lost until the engine answers again. */
+  private async withinBudget(session: string, method: "tools/list" | "tools/call", call: string, work: Promise<unknown>, deadline: number): Promise<unknown> {
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<typeof LATE>((resolve) => { timer = setTimeout(() => resolve(LATE), Math.max(0, deadline - Date.now())); timer.unref(); });
+    let outcome: unknown;
+    try { outcome = await Promise.race([work, late]); } finally { clearTimeout(timer); }
+    if (outcome !== LATE) return outcome;
+    if (method !== "tools/call") throw new TransportError("The browser did not answer in time.");
+    this.latchLostCall(session, call);
+    return this.gate(session).lostCall === null ? stuckBrowserToolError() : lostCallToolError(call);
+  }
+
+  private async agentRequest(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, deadline: number, beforeDispatch?: () => void, ctx?: StepContext): Promise<unknown> {
     if (method !== "tools/list" && method !== "tools/call") throw new Error("Unsupported browser method.");
     // tools/list skips withAgentAction, so it must refuse the closing window itself or its client outlives restart().
     if (method !== "tools/call" && this.gate(session).closing) throw new Error("The browser is closing. Try again shortly.");
@@ -422,15 +474,17 @@ export class BrowserRuntime {
     const toolName = toolNameOf(params);
     const gate = this.gate(session);
     if (gate.uncertain) {
-      if (method === "tools/list") return withRestartTool(this.toolLists.get(session) ?? { tools: [] });
+      if (method === "tools/list") return withOmbTools(this.toolLists.get(session) ?? { tools: [] });
       if (gate.owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
       const lostCall = gate.lostCall;
       if (lostCall === null) return stuckBrowserToolError();
       beforeDispatch?.();
       const url = await this.recoverAfterLoss(session, spec);
       beforeDispatch?.();
+      if (gate.owner !== null) throw new Error(BROWSER_CONTROL_REFUSAL);
       return url === null ? stillBusyToolError(lostCall) : recoveredResult(lostCall, url);
     }
+    const followUpMs = () => Math.min(this.options.requestTimeoutMs, deadline - Date.now());
     const phases: Partial<BrowserTiming> = {};
     const invoke = async () => {
       const launchStarted = performance.now();
@@ -461,11 +515,12 @@ export class BrowserRuntime {
         phases.stepsMs = performance.now() - stepsStarted;
         // Read with eval, not a snapshot: agent-browser's snapshot renumbers every @eN ref the model holds.
         const observePage = async (): Promise<PageState | null> => {
+          if (followUpMs() <= 0) return null;
           const observeStarted = performance.now();
           try {
             return parsePageState(await entry.client.rpc("tools/call", {
               name: "agent_browser_eval", arguments: { script: OBSERVE_PAGE_SCRIPT, timeoutMs: 5_000 },
-            }));
+            }, followUpMs()));
           } catch (error) {
             if (error instanceof TransportError) throw error;
             return null;
@@ -481,11 +536,15 @@ export class BrowserRuntime {
         }
         const engineStarted = performance.now();
         if (method === "tools/call") { dispatched = true; gate.dispatched++; }
-        let result = await entry.client.rpc(method, request);
+        const engineTimeoutMs = Math.max(1, Math.min(this.options.requestTimeoutMs, deadline - Date.now() - this.options.followUpReserveMs));
+        const relayed = method === "tools/call" && toolName !== undefined ? RELAYED_TOOLS.get(toolName) : undefined;
+        let result = relayed
+          ? await this.relayTool(session, spec, relayed, args, engineTimeoutMs)
+          : await entry.client.rpc(method, request, engineTimeoutMs);
         phases.engineMs = performance.now() - engineStarted;
         beforeDispatch?.();
         if (method === "tools/list") {
-          const tools = withRestartTool(slimBrowserToolList(result));
+          const tools = withOmbTools(slimBrowserToolList(result));
           this.toolLists.set(session, tools);
           return tools;
         }
@@ -506,9 +565,9 @@ export class BrowserRuntime {
           let observation: unknown;
           const observeStarted = performance.now();
           try {
-            observation = await entry.client.rpc("tools/call", {
+            observation = followUpMs() <= 0 ? { isError: true, content: [] } : await entry.client.rpc("tools/call", {
               name: "agent_browser_snapshot", arguments: { compact: true },
-            });
+            }, followUpMs());
           } catch (error) {
             if (error instanceof TransportError) throw error;
             observation = { isError: true, content: [] };
@@ -562,6 +621,22 @@ export class BrowserRuntime {
     }
   }
 
+  private async relayTool(session: string, spec: BrowserSpawnSpec, tool: RelayedToolSpec, args: unknown, timeoutMs: number): Promise<unknown> {
+    const action = tool.name.replace("agent_browser_", "");
+    const given = args && typeof args === "object" ? args as Record<string, unknown> : {};
+    const fields = Object.keys(tool.inputSchema.properties).filter((field) => field in given);
+    const command = Object.fromEntries([["action", action], ...fields.map((field) => [field, given[field]])]);
+    try {
+      if (!this.relayCommand) throw new Error(`This browser cannot ${action} here.`);
+      const answer = await this.relayCommand(spec, session, command, timeoutMs);
+      if (!answer.success) return { isError: true, content: [{ type: "text", text: answer.error ?? `The browser could not ${action} that element.` }] };
+      return { content: [{ type: "text", text: JSON.stringify({ success: true, data: answer.data }) }] };
+    } catch (error) {
+      if (error instanceof TransportError) throw error;
+      return { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] };
+    }
+  }
+
   private connect(session: string, spec: BrowserSpawnSpec): ClientEntry {
     const key = JSON.stringify([spec.command, spec.args, Object.entries(spec.env).sort(([a], [b]) => a.localeCompare(b))]);
     const existing = this.clients.get(session);
@@ -596,11 +671,12 @@ export class BrowserRuntime {
   private async checkEngine(session: string, spec: BrowserSpawnSpec): Promise<string | null> {
     const gate = this.gate(session);
     gate.agents++;
+    gate.probes++;
     try {
       const { client } = this.connect(session, spec);
       await client.ready;
       const result = await client.rpc("tools/call", { name: "agent_browser_get_url", arguments: {} }, this.options.recoveryCheckMs);
-      if (gate.closing || gate.owner !== null || !gate.uncertain || gate.lostCall === null) return null;
+      if (gate.closing || !gate.uncertain || gate.lostCall === null) return null;
       gate.uncertain = false;
       gate.lostCall = null;
       return firstText(result).trim().slice(0, 500);
@@ -608,11 +684,13 @@ export class BrowserRuntime {
       return null;
     } finally {
       gate.agents--;
+      gate.probes--;
       this.changed(gate);
     }
   }
 
-  /** True when the grant waited for a bot command the engine received: the page may have changed since the person aimed. */
+  /** True when the grant waited for a bot command the engine received: the page may have changed since the person aimed. A bot
+   * call that never answered is checked once with the engine: if it answers, that call has ended and the person may take over. */
   async take(session: string, owner: string): Promise<boolean> {
     if (!owner) throw new Error("Browser control requires an owner.");
     const gate = this.gate(session);
@@ -622,8 +700,13 @@ export class BrowserRuntime {
     gate.ready = false;
     this.steps?.personTook(session);
     const waited = gate.dispatched > 0;
+    const stillRunning = "A browser action may still be running. Restart this browser before taking control.";
     await new Promise<void>((resolve, reject) => {
+      let probe: "none" | "running" | "done" = "none";
+      let done = false;
       const finish = (error?: Error) => {
+        if (done) return;
+        done = true;
         clearTimeout(timer);
         gate.changed.delete(check);
         if (error) reject(error);
@@ -631,10 +714,13 @@ export class BrowserRuntime {
       };
       const check = () => {
         if (gate.owner !== owner || gate.releasing || gate.closing) finish(new Error("Browser control request was cancelled."));
-        else if (gate.uncertain) finish(new Error("A browser action may still be running. Restart this browser before taking control."));
+        else if (gate.uncertain && probe === "none" && gate.lostCall !== null && gate.spec) {
+          probe = "running";
+          void this.recoverAfterLoss(session, gate.spec).finally(() => { probe = "done"; check(); });
+        } else if (gate.uncertain) { if (probe !== "running") finish(new Error(stillRunning)); }
         else if (gate.agents === 0) finish();
       };
-      const timer = setTimeout(() => finish(new Error("Browser action is still finishing. Control remains paused; retry taking control or hand it back.")), this.options.takeoverTimeoutMs);
+      const timer = setTimeout(() => finish(new Error(gate.uncertain ? stillRunning : "Browser action is still finishing. Control remains paused; retry taking control or hand it back.")), this.options.takeoverTimeoutMs);
       timer.unref();
       gate.changed.add(check);
       check();
@@ -649,8 +735,10 @@ export class BrowserRuntime {
 
   heldBy(session: string): string | null { return this.gates.get(session)?.owner ?? null; }
 
-  /** An interrupted action left the browser's state unknown; only a restart clears it. */
+  /** An interrupted action left the browser's state unknown until the engine answers again or the browser restarts. */
   interrupted(session: string): boolean { return this.gates.get(session)?.uncertain === true; }
+
+  interruptedCount(): number { return [...this.gates.values()].filter((gate) => gate.uncertain).length; }
 
   /** A disconnected viewer may leave a key or button pressed; an agent must never inherit that input state. */
   abandonHumanInput(session: string, owner: string): void {
@@ -723,7 +811,7 @@ export class BrowserRuntime {
       await this.clients.get(session)?.client.stop();
       gate.uncertain = false;
       gate.lostCall = null;
-      gate.idleClosed = true;
+      gate.reopened = "idle";
       return true;
     } catch {
       return false;
@@ -735,11 +823,12 @@ export class BrowserRuntime {
     }
   }
 
-  /** Never waits through active work or admits human input; a successful native close is its safety barrier. */
+  /** Never waits through active work or admits human input; a successful native close is its safety barrier. A read that only
+   * checks whether a lost call ended is not such work. */
   async restart(session: string, owner: string, closeBrowser: () => Promise<void>): Promise<void> {
     if (!owner) throw new Error("Browser recovery requires an owner.");
     const gate = this.gate(session);
-    if (gate.closing || gate.releasing || gate.agents || gate.humans) throw new Error("The browser is busy. Wait for current work to finish before restarting.");
+    if (gate.closing || gate.releasing || gate.agents > gate.probes || gate.humans) throw new Error("The browser is busy. Wait for current work to finish before restarting.");
     if (gate.owner !== null && gate.owner !== owner) throw new Error("Another person controls this browser.");
     gate.owner = owner;
     gate.ready = false;
@@ -755,6 +844,7 @@ export class BrowserRuntime {
       gate.lostCall = null;
       gate.owner = null;
       gate.releasing = false;
+      gate.reopened = "restart";
     } catch (error) {
       gate.owner = owner;
       gate.uncertain = true;
@@ -839,8 +929,9 @@ function firstText(result: unknown): string {
   return part ? (part as { text: string }).text : "";
 }
 
-function withRestartTool(result: unknown): unknown {
+function withOmbTools(result: unknown): unknown {
   if (!result || typeof result !== "object" || !Array.isArray((result as { tools?: unknown }).tools)) return result;
-  const tools = ((result as { tools: unknown[] }).tools).filter((tool) => (tool as { name?: unknown } | null)?.name !== BROWSER_RESTART_TOOL);
-  return { ...result, tools: [...tools, BROWSER_RESTART_TOOL_SPEC] };
+  const own = [...RELAYED_TOOL_SPECS, BROWSER_RESTART_TOOL_SPEC];
+  const tools = ((result as { tools: unknown[] }).tools).filter((tool) => !own.some((spec) => spec.name === (tool as { name?: unknown } | null)?.name));
+  return { ...result, tools: [...tools, ...own] };
 }

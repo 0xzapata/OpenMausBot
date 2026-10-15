@@ -89,6 +89,17 @@ describe("configuration boundaries", () => {
       expect(() => parseConfigPatch({ context: { rebuildBytes: value } })).toThrow();
     }
   });
+  it("accepts the replay tool-history switch as a boolean, without reloading providers", () => {
+    for (const replayToolHistory of [true, false]) {
+      const context = { replayToolHistory };
+      expect(parseStoredConfig({ context })).toEqual({ context });
+      expect(parseConfigPatch({ context })).toEqual({ context });
+      expect(reloaded({ context })).toEqual([]);
+    }
+    for (const value of ["1", 1, "true", null]) {
+      expect(() => parseConfigPatch({ context: { replayToolHistory: value } })).toThrow();
+    }
+  });
   it("keeps Fish Audio and ElevenLabs voice credentials separate", () => {
     const parsed = parseConfigPatch({
       tts: { provider: "fish", key: "eleven-key", fishKey: "fish-key", voice: "fish-voice" },
@@ -586,6 +597,11 @@ describe("configuration boundaries", () => {
     expect(() => parseConfigPatch({ features: { skillAuthoring: "yes" } })).toThrow(
       "features.skillAuthoring",
     );
+  });
+
+  it("accepts only off, ask and auto for sharing learned skills", () => {
+    expect(parseConfigPatch({ features: { shareLearnedSkills: "off" } })).toEqual({ features: { shareLearnedSkills: "off" } });
+    expect(() => parseConfigPatch({ features: { shareLearnedSkills: "always" } })).toThrow("features.shareLearnedSkills");
   });
 
   it("keeps computer sharing off unless config.json explicitly turns it on", () => {
@@ -1500,6 +1516,13 @@ describe("credential env preference", () => {
     saveConfig({ context: { rebuildBytes: 32_000, autoCompact: false } });
     saveConfig({ context: { compactAt: 0.75 } });
     expect(loadConfig().context).toEqual({ rebuildBytes: 32_000, autoCompact: false, compactAt: 0.75 });
+  });
+
+  it("persists the replay tool-history switch beside the other context preferences", () => {
+    saveConfig({ context: { rebuildBytes: 32_000 } });
+    expect(loadConfig().context?.replayToolHistory).toBeUndefined();
+    saveConfig({ context: { replayToolHistory: true } });
+    expect(loadConfig().context).toEqual({ rebuildBytes: 32_000, replayToolHistory: true });
   });
 
   it("falls back to the config file when the env var is unset (dev mode)", () => {

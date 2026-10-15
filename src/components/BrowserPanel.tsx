@@ -8,6 +8,7 @@ import { BrowserViewport, type BrowserFrame } from "./BrowserViewport";
 import { createBrowserInputQueue } from "@/lib/browser-input-queue";
 import { createBrowserControl, type BrowserInteraction, type BrowserTakeStatus } from "@/lib/browser-control";
 import { resolveAddressBarInput } from "@/lib/browser-address";
+import { BROWSER_HELD_ELSEWHERE } from "../../shared/browser-held";
 
 interface BrowserTab { tabId: string; title: string; url: string; active: boolean }
 type ViewerFrame = BrowserFrame & { viewerId: string; generation: number };
@@ -72,7 +73,7 @@ export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn 
     return api(`/api/bots/${encodeURIComponent(bot.id)}/browser/action`, { method: "POST", body: JSON.stringify({ ...body, viewerId: expected }), timeoutMs: 120_000 });
   }, [bot.id]);
   const interact = useCallback((item: BrowserInteraction) => {
-    if (controlNow.current.held && !controlNow.current.owned) return;
+    if (controlNow.current.held && !controlNow.current.owned) { setError(BROWSER_HELD_ELSEWHERE); return; }
     browserControl.current?.interact(item);
   }, []);
   const input = useCallback((body: Record<string, unknown>) => interact({ input: body }), [interact]);
@@ -306,7 +307,7 @@ export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn 
         onReturnToToolbar={() => addressInput.current?.focus()}
         acknowledge={(seq) => { if (generation.current === frame.generation && viewer.current === frame.viewerId) void action({ type: "ack", seq }, frame.viewerId).catch(() => {}); }}
         onDecodeError={() => { if (generation.current === frame.generation && viewer.current === frame.viewerId) setError("A browser frame could not be decoded. Close and reopen the panel to reconnect."); }} />
-        : <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-6 text-center text-[13px] text-ink-secondary">{connected && heldElsewhere ? <Hand size={24} /> : error && !reconnecting ? <Globe size={24} /> : <Loader2 size={24} className="animate-spin" />}<span>{heldElsewhere ? "Live view paused for human control" : reconnecting ? "Reconnecting…" : error ? "Browser disconnected" : busy ? t("browser.live.botBusy", { name: bot.name }) : "Opening the live browser…"}</span></div>}
+        : <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-6 text-center text-[13px] text-ink-secondary">{connected && heldElsewhere ? <Hand size={24} /> : error && !reconnecting ? <Globe size={24} /> : <Loader2 size={24} className="animate-spin" />}<span>{heldElsewhere ? BROWSER_HELD_ELSEWHERE : reconnecting ? "Reconnecting…" : error ? "Browser disconnected" : busy ? t("browser.live.botBusy", { name: bot.name }) : "Opening the live browser…"}</span></div>}
       <div role="status" className="pointer-events-none absolute inset-x-0 top-2 flex justify-center px-3">
         {takeStatus === "slow" ? <span className={`${pill} border-hairline text-ink-secondary`}>
           <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" /><span className="truncate">{t("browser.control.waiting", { name: bot.name })}</span>

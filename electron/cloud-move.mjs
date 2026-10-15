@@ -129,6 +129,11 @@ export function moveFit({ localBytes, freeBytes, uploadReceived = 0, volumeBytes
   }
   return { fit: "never", neededBytes, freeBytes: available, ...(maxBytes ? { maxBytes, ...(disk?.largest === true ? { largest: true } : {}) } : volume ? { volumeBytes: volume } : {}) };
 }
+function leftBehindOf(value) {
+  if (!record(value) || !count(value.bots) || !Array.isArray(value.paths)) return null;
+  const paths = value.paths.filter(path => typeof path === "string" && path.length <= 4096).slice(0, 20).map(sentence).filter(Boolean);
+  return value.bots || paths.length ? { bots: value.bots, paths } : null;
+}
 export function parseCloudMoveStatus(value) {
   if (!record(value) || !record(value.contents) || !["bots", "rooms", "chats"].every(key => count(value.contents[key])) ||
     typeof value.empty !== "boolean" || !count(value.freeBytes)) return null;
@@ -143,6 +148,7 @@ export function parseCloudMoveStatus(value) {
     pendingRestore: value.pendingRestore === true, busy: value.busy === true,
     job: record(value.job) ? value.job : null,
     lastRestoreId: typeof value.lastRestoreId === "string" ? value.lastRestoreId : null,
+    leftBehind: leftBehindOf(value.leftBehind),
     rolledBackId: typeof value.rolledBackId === "string" ? value.rolledBackId : null,
     partBytes: Number.isSafeInteger(value.partBytes) && value.partBytes > 0 && value.partBytes <= MAX_PART_BYTES ? value.partBytes : PART_BYTES,
     ...identity(value),
@@ -490,7 +496,8 @@ export function createCloudMove({ localRequest, fetchImpl = fetch, tempRoot, ava
       }
       await disposeArchive();
       const after = await waitForRestart(session, "restore", { id: preview.id }, signal);
-      return publish({ phase: "done", action: "move", moved: after.contents, previous: Boolean(after.previous), ...(local.routines > 0 ? { routines: local.routines } : {}) });
+      return publish({ phase: "done", action: "move", moved: after.contents, previous: Boolean(after.previous), ...(local.routines > 0 ? { routines: local.routines } : {}),
+        ...(after.leftBehind ? { leftBehind: after.leftBehind } : {}) });
     }),
     restorePrevious: dest => run("restore", dest, async (session, signal) => {
       const before = await cloudStatus(session, signal);

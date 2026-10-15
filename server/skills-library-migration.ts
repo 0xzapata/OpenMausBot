@@ -29,7 +29,7 @@ function sha256Hex(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function archiveSkillDirectory(source: string, archive: string, expectSha256: string): void {
+export function archiveSkillDirectory(source: string, archive: string, expectSha256: string): void {
   mkdirSync(dirname(archive), { recursive: true, mode: 0o700 });
   let destination = archive;
   if (existsSync(destination)) {

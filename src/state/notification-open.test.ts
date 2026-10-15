@@ -132,7 +132,7 @@ const scoutNow = () => state.bots.find((bot) => bot.id === "scout")!;
 const unread = (threadId: string) => scoutNow().tasks!.find((task) => task.threadId === threadId)!.unread;
 
 async function followNotification() {
-  const frame: ServerFrame = { kind: "notify", notification: { kind: "done", botId: "scout", botName: "Scout", threadId: "finished", title: "Scout finished", body: "Side job done." } };
+  const frame: ServerFrame = { kind: "notify", notification: { id: "n1", at: 1, read: false, kind: "done", botId: "scout", botName: "Scout", threadId: "finished", title: "Scout finished", body: "Side job done." } };
   stream().send(frame, "run:1");
   await settle();
   expect(FixtureNotification.shown).toHaveLength(1);

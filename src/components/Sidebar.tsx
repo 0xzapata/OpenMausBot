@@ -1,6 +1,5 @@
 import { track } from "@/lib/analytics";
 import { OrganizationIdentity } from "./OrganizationIdentity";
-import { approvalCardOutcome } from "./ApprovalCard";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -37,8 +36,6 @@ import {
 } from "lucide-react";
 import { api, useStore, formatTime, visibleMessages, currentTaskBot, botOpensTo, openBot, openThread, type Action, type AppState, type Bot, type BotProject, type Group, type InstanceInfo, type Message } from "@/state/store";
 import { approvalModeFor } from "../../shared/approval-mode";
-import { avatarCropRadius, botAvatarProfile } from "../../shared/bot-avatar";
-import { peerLine } from "@/lib/peer-message";
 import { liveActivityLabel } from "@/lib/live-activity";
 import { llmThreadTitlesEnabled } from "@/lib/feature-flags";
 
@@ -48,11 +45,13 @@ import { cn } from "@/lib/cn";
 import { searchMatchesThreads, useSearchDisclosure } from "@/lib/search-disclosure";
 import { useHeldMenuMotion, useMenuMotion } from "./MenuMotion";
 import { lastNonReceipt } from "@/lib/receipts";
-import { activityPreview, botEngine } from "@/lib/failed-turn";
+import { botPreview, groupPreview } from "./sidebar-preview";
 import { activeLocale, t } from "@/lib/i18n";
 import { copyText } from "@/lib/copy-text";
 import type { LocaleKey } from "@/locales";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { BulkSelectFilters, ThreadListFooter, deleteThreadsInBulk, useBulkSelect } from "./BulkSelectBar";
+import { StackedMauses } from "./StackedMauses";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { WorkingDots } from "./WorkingIndicator";
 import { nextRename } from "@/lib/rename";
@@ -105,8 +104,6 @@ import {
   placeSection,
   pinnedCircleThreadListVisible,
   sameSectionOrder,
-  sidebarConnectorPreview,
-  sidebarGoalRunPreview,
   sidebarLayoutInteractive,
   sidebarSectionCollapsed,
   sidebarSectionLabel,
@@ -132,12 +129,12 @@ import { SidebarPinnedThreadsPanel } from "./SidebarPinnedThreadsPanel";
 import { useLiveMedia } from "@/lib/live-call-media";
 import { LiveCallPill, liveBadgeFor } from "./LiveCallPill";
 import { ShortcutHint } from "./ShortcutHint";
-import { citationPreviewText } from "@/lib/citations";
-import { plainPreviewText } from "@/lib/plain-preview";
-import { isClientCancellation } from "../../shared/client-cancel";
-import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
+import { roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { useAdvancedMode } from "@/lib/interface-mode";
+import { PinnedBotRoster } from "./PinnedCircleThreads";
+
+export { PinnedBotCircle, PinnedCircleThreadPanel } from "./PinnedCircleThreads";
 
 /** Coupled to electron/window-chrome.mjs: trafficLightPosition.y = 16 and 14px-tall buttons. */
 export const MAC_TRAFFIC_LIGHT_CENTER_Y = 23;
@@ -154,24 +151,6 @@ function sectionLabel(id: string): string {
   return key ? t(key) : sidebarSectionLabel(id);
 }
 
-function preview(bot: Bot, visible: Message[], instances: InstanceInfo[]): string {
-  if (bot.activity === "waiting-on-you") return t("sidebar.preview.waiting");
-  if (bot.waitingForTeammates) return t("sidebar.preview.waitingOnTeammate");
-  if (bot.busy) return t("sidebar.preview.working");
-  const last = lastNonReceipt(visible);
-  if (!last) return "";
-  if (last.kind === "options" && last.card) {
-    return (last.card.requestId && last.card.tool && !last.card.questionRequest && approvalCardOutcome(last.card)) || last.card.title;
-  }
-  if (last.kind === "activity" && last.tool) return activityPreview(last.tool, botEngine(bot, instances), last.dataResult);
-  if (last.kind === "screen") return t("sidebar.preview.screenFrame");
-  if (last.kind === "connector" && last.connector) return sidebarConnectorPreview(last.connector, t);
-  const peer = peerLine(last);
-  if (peer) return `${peer.name}: ${plainPreviewText(peer.body)}`;
-  if (last.role !== "user" && isClientCancellation(last.text ?? "")) return t("chat.turnStopped");
-  return plainPreviewText(citationPreviewText(last.text ?? ""));
-}
-
 interface MenuState {
   botId: string;
   x: number;
@@ -181,62 +160,6 @@ interface MenuState {
 function openBotContextMenu(onMenu: (menu: MenuState) => void, botId: string, event: React.MouseEvent) {
   event.preventDefault();
   onMenu({ botId, x: event.clientX, y: event.clientY });
-}
-
-function groupPreview(group: Group, bots: Bot[], instances: InstanceInfo[]): string {
-  const speakerId = group.busyBotId ?? roomSpeakerIds(group)[0];
-  if (speakerId) {
-    return t("sidebar.preview.botWorking", {
-      name: bots.find((b) => b.id === speakerId)?.name ?? t("sidebar.preview.aBot"),
-    });
-  }
-  if (group.working) return t("sidebar.preview.teamWorking");
-  const last = lastNonReceipt(group.messages);
-  if (!last) return t("sidebar.preview.noMessages");
-  if (last.kind === "text" && last.role !== "user" && isClientCancellation(last.text ?? "")) {
-    const stopped = t("chat.turnStopped");
-    return last.from ? `${last.from.name}: ${stopped}` : stopped;
-  }
-  const text = last.kind === "activity" && last.tool
-    ? activityPreview(last.tool, botEngine(bots.find((bot) => bot.id === last.from?.botId), instances), last.dataResult)
-    : last.kind === "goal.run" && last.goalRun
-      ? sidebarGoalRunPreview(last.goalRun)
-      : last.kind === "connector" && last.connector
-        ? sidebarConnectorPreview(last.connector, t)
-        : (last.text ?? "");
-  const readable = plainPreviewText(citationPreviewText(text));
-  if (last.role === "user") return t("sidebar.preview.you", { text: readable });
-  return last.from ? `${last.from.name}: ${readable}` : readable;
-}
-
-function StackedMauses({ members, density }: { members: Bot[]; density: SidebarDensity }) {
-  const iconOnly = density === "icons";
-  const slotSize = iconOnly ? "size-12" : density === "compact" ? "size-7" : "size-8";
-  const singleSize = iconOnly ? 44 : density === "compact" ? 26 : 32;
-  if (members.length <= 1) {
-    const b = members[0];
-    return (
-      <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
-        {b ? <BotAvatar bot={b} state="happy" size={singleSize} animated={false} /> : <Users size={24} className="text-ink-secondary" />}
-      </div>
-    );
-  }
-  const shown = members.slice(0, 2);
-  const extra = members.length - shown.length;
-  return (
-    <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
-      <div className="flex items-center -space-x-2.5">
-        {shown.map((b) => (
-          <BotAvatar key={b.id} bot={b} state="happy" size={iconOnly ? 30 : 20} animated={false} />
-        ))}
-        {extra > 0 && (
-          <span className="z-10 flex size-4 items-center justify-center rounded-full border border-hairline/40 bg-raised text-[9px] font-medium text-ink-secondary">
-            +{extra}
-          </span>
-        )}
-      </div>
-    </div>
-  );
 }
 
 export function GroupListItem({
@@ -253,6 +176,7 @@ export function GroupListItem({
   onMenu: (menu: { groupId: string; x: number; y: number }) => void;
 }) {
   const { state, dispatch } = useStore();
+  const advanced = useAdvancedMode();
   const selected = state.activeView === "chat" && state.selectedId === group.id;
   const [threadsOpen, setThreadsOpen] = useSearchDisclosure(`group:${group.id}`, query ?? "", searchMatchesThreads(query ?? "", group.tasks), selected);
   const wasSelected = useRef(selected);
@@ -302,7 +226,7 @@ export function GroupListItem({
           {(expanded || (quiet && !groupStatus)) && group.unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>
         {!expanded && (!quiet || groupStatus) && <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-[11px] text-ink-secondary">{groupPreview(group, state.bots, state.instances)}</span>
+          <span className="truncate text-[11px] text-ink-secondary">{groupPreview(group, state.bots, state.instances, advanced)}</span>
           {group.unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
         </div>}
       </div>
@@ -343,7 +267,9 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
       activity: waiting ? "waiting-on-you" as const : undefined,
     };
   });
-  const visible = orderedThreadList(visibleSidebarThreads(tasks, group.threadId, query, [], showAll));
+  const bulk = useBulkSelect();
+  const visible = orderedThreadList(visibleSidebarThreads(tasks, group.threadId, query, [], showAll || bulk.active));
+  const selection = bulk.forRows(visible);
   useRevealedThreadRow(state.revealThread, selected ? group.threadId : null);
   const latest = useRef(group);
   latest.current = group;
@@ -359,9 +285,11 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
   }), [groupId, dispatch]);
   const locale = activeLocale();
   return <div className="mb-2 space-y-0.5" role="group" aria-label={t("task.namedList", { name: group.name })}>
+    {bulk.active && <BulkSelectFilters rows={visible} selected={selection} now={now} onChange={bulk.setSelected} onDone={bulk.finish} />}
     {visible.map((task) => <SidebarThreadRow key={task.threadId} task={task} ownerId={group.id} current={selected && task.threadId === group.threadId} compact={density === "compact"}
-      now={stampClock(threadRecency(task), now)} locale={locale} {...actions} />)}
-    {!query && !showAll && tasks.length > visible.length && <button type="button" onClick={() => setShowAll(true)} className="inline-flex h-7 items-center self-start pl-6 pr-3 text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button>}
+      now={stampClock(threadRecency(task), now)} locale={locale} {...actions} selectMode={bulk.active} checked={selection.has(task.threadId)} onToggleSelect={bulk.toggle} />)}
+    <ThreadListFooter bulk={bulk} rows={visible} selected={selection} total={tasks.length} canShowAll={!query && !showAll && tasks.length > visible.length} canSelect={tasks.length > 1 && !group.dm}
+      onShowAll={() => setShowAll(true)} maxDeletable={tasks.length - 1} freshConversation={false} onDelete={(threadIds) => deleteThreadsInBulk({ groupId }, threadIds, dispatch)} />
   </div>;
 }
 
@@ -1030,7 +958,8 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
     });
   }, [selected, currentProjectId]);
   useSnoozeExpiry(tasks);
-  const visibleTasks = orderedThreadList(visibleSidebarThreads(tasks, bot.threadId, query, projects, showAll));
+  const bulk = useBulkSelect();
+  const visibleTasks = orderedThreadList(visibleSidebarThreads(tasks, bot.threadId, query, projects, showAll || bulk.active));
   const visibleProjectIndex = (projectId: string) => visibleTasks.findIndex((task) => task.projectId === projectId);
   const folderRank = (projectId: string) => {
     const index = visibleProjectIndex(projectId);
@@ -1068,9 +997,13 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
   const renderThread = (task: (typeof tasks)[number]) => {
     const thread = currentTaskBot(bot, task.threadId);
     return <SidebarThreadRow key={task.threadId} task={{ ...task, busy: thread.busy, activity: thread.activity, waitingForTeammates: thread.waitingForTeammates }} ownerId={bot.id} current={selected && task.threadId === bot.threadId} compact={density === "compact"} folders={projects}
-      activityLabel={task.threadId === bot.threadId ? activityLabel : undefined} now={stampClock(threadRecency(task), now)} locale={locale} {...actions} />;
+      activityLabel={task.threadId === bot.threadId ? activityLabel : undefined} now={stampClock(threadRecency(task), now)} locale={locale} {...actions}
+      selectMode={bulk.active} checked={selection.has(task.threadId)} onToggleSelect={bulk.toggle} />;
   };
   const ungrouped = visibleTasks.filter((task) => !projects.some((project) => project.id === task.projectId));
+  const shownRows = [...orderedProjects.filter((project) => query || !collapsed.has(project.id)).flatMap((project) => visibleTasks.filter((task) => task.projectId === project.id)), ...ungrouped]
+    .map((task) => { const thread = currentTaskBot(bot, task.threadId); return { ...task, busy: thread.busy, activity: thread.activity }; });
+  const selection = bulk.forRows(shownRows);
   const projectToEdit = projects.find((project) => project.id === editingProject);
   const projectIds = projects.map((project) => project.id);
   const saveOrder = (ids: string[], onSaved?: () => void) => {
@@ -1098,6 +1031,7 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
       onDragOver={(event) => { if (event.dataTransfer.types.includes(FOLDER_DRAG_TYPE)) event.stopPropagation(); }}
       onDrop={(event) => { if (event.dataTransfer.types.includes(FOLDER_DRAG_TYPE)) { event.preventDefault(); event.stopPropagation(); resetFolderDrag(); } }}>
       {!hidden && <>
+      {bulk.active && <BulkSelectFilters rows={shownRows} selected={selection} now={now} onChange={bulk.setSelected} onDone={bulk.finish} />}
       {orderedProjects.map((project) => {
         const index = projects.indexOf(project);
         const projectTasks = tasks.filter((task) => task.projectId === project.id);
@@ -1171,7 +1105,8 @@ export function BotThreadList({ bot, selected, density, query, pendingQueued, re
       <span role="status" className="sr-only">{readStatus}</span>
       {projects.length > 0 && ungrouped.length > 0 && <div className="pl-6 pr-3 pb-1 pt-2 text-[10.5px] text-ink-tertiary">{t("task.list")}</div>}
       {ungrouped.map(renderThread)}
-      {!query && !showAll && tasks.length > visibleTasks.length && <button type="button" onClick={() => setShowAll(true)} className="inline-flex h-7 items-center self-start pl-6 pr-3 text-[13px] font-medium leading-4 text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button>}
+      <ThreadListFooter bulk={bulk} rows={shownRows} selected={selection} total={tasks.length} canShowAll={!query && !showAll && tasks.length > visibleTasks.length} canSelect={tasks.length > 1}
+        onShowAll={() => setShowAll(true)} freshConversation onDelete={(threadIds) => deleteThreadsInBulk({ botId: bot.id }, threadIds, dispatch)} />
       <LocalComputerAutoWarning
         open={permissionRefresh?.kind === "local-auto"}
         onCancel={() => setPermissionRefresh(null)}
@@ -1234,66 +1169,6 @@ function useVisibleMessages(bot: Bot): Message[] {
   return useMemo(() => visibleMessages({ messages, activeLeafId }), [messages, activeLeafId]);
 }
 
-export const PinnedBotCircle = memo(function PinnedBotCircle({ bot, selected, mascotMotion, pendingQueued, dispatch, onMenu }: BotRowProps) {
-  const showThreads = useShowThreads();
-  const visible = useVisibleMessages(bot);
-  const activityTasks = sidebarBotActivityTasks(bot, pendingQueued);
-  const waiting = bot.activity === "waiting-on-you" || activityTasks.some((task) => task.activity === "waiting-on-you");
-  const working = !waiting && (Boolean(bot.busy) || activityTasks.some((task) => task.busy || task.activity === "working"));
-  const unread = bot.unread || activityTasks.some((task) => task.unread);
-  const radius = avatarCropRadius(botAvatarProfile(bot).avatarCrop);
-  return (
-    <button
-      type="button"
-      data-sidebar-bot-row={bot.id}
-      aria-current={selected ? "page" : undefined}
-      aria-label={`${bot.name}${waiting ? ` · ${t("sidebar.preview.waiting")}` : working ? ` · ${t("chat.activity.working")}` : ""}${unread ? ` · ${t("task.unread")}` : ""}`}
-      title={bot.name}
-      onClick={() => openBot(dispatch, bot, showThreads)}
-      onContextMenu={(event) => openBotContextMenu(onMenu, bot.id, event)}
-      className="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1 text-center outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
-    >
-      <span className="relative">
-        <span
-          className={cn(
-            "flex size-16 items-center justify-center overflow-hidden",
-            selected && "ring-2 ring-accent ring-offset-2 ring-offset-panel",
-          )}
-          style={{ borderRadius: radius }}
-        >
-          <BotAvatar
-            bot={bot}
-            state={stateForBot({ ...bot, messages: visible })}
-            size={64}
-            motion={mascotMotion?.kind ?? "none"}
-            motionKey={mascotMotion?.nonce ?? 0}
-            animated={working || Boolean(bot.unread) || (mascotMotion?.kind ?? "none") !== "none"}
-          />
-        </span>
-        {unread && (
-          <span className="absolute top-0.5 right-0.5 size-2.5 rounded-full border-2 border-panel bg-accent" aria-label={t("task.unreadMany")} />
-        )}
-        {working && (
-          <span
-            data-testid="working-dot"
-            className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-panel bg-success"
-          />
-        )}
-        {waiting && (
-          <span
-            data-testid="waiting-dot"
-            role="status"
-            aria-label={t("sidebar.preview.waiting")}
-            title={t("sidebar.preview.waiting")}
-            className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-panel bg-warning"
-          />
-        )}
-      </span>
-      <span className="w-full truncate text-center text-[11px] leading-4 text-ink">{bot.name}</span>
-    </button>
-  );
-});
-
 export function PinnedCircleThreadSection({
   bots,
   collapsed,
@@ -1321,36 +1196,8 @@ export function PinnedCircleThreadSection({
   );
 }
 
-function PinnedBotRoster({
-  bots,
-  density,
-  circles,
-  row,
-}: {
-  bots: Bot[];
-  density: SidebarDensity;
-  circles: boolean;
-  row: (bot: Bot) => BotRowProps;
-}) {
-  if (circles && density !== "icons") {
-    return (
-      <div
-        data-sidebar-pinned-circles=""
-        className="grid gap-1 px-1 pb-1"
-        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))" }}
-      >
-        {bots.map((bot) => <PinnedBotCircle key={bot.id} {...row(bot)} />)}
-      </div>
-    );
-  }
-  return (
-    <>
-      {bots.map((bot) => <BotListItem key={bot.id} {...row(bot)} />)}
-    </>
-  );
-}
-
 export const BotListItem = memo(function BotListItem(props: BotRowProps) {
+  const advanced = useAdvancedMode();
   const { bot, selected, deleting, mascotMotion, reveal, pendingQueued, instances, liveCall, density, quiet, query, dispatch, onMenu } = props;
   const showThreads = useShowThreads();
   const liveMedia = useLiveMedia();
@@ -1481,7 +1328,7 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
                   <span className="sr-only">{t("sidebar.preview.working")}</span>
                 </span>
               ) : (
-                <span dir="auto" className="truncate">{waiting ? t("sidebar.preview.waiting") : teammateWait ? t("sidebar.preview.waitingOnTeammate") : queued ? t("task.queued") : preview(bot, visible, instances)}</span>
+                <span dir="auto" className="truncate">{waiting ? t("sidebar.preview.waiting") : teammateWait ? t("sidebar.preview.waitingOnTeammate") : queued ? t("task.queued") : botPreview(bot, visible, instances, advanced)}</span>
               )}
             </span>
           )}
@@ -2020,7 +1867,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
         !q ||
         b.name.toLowerCase().includes(q) ||
         (b.title ?? "").toLowerCase().includes(q) ||
-        preview(b, visibleMessages(b), state.instances).toLowerCase().includes(q) ||
+        botPreview(b, visibleMessages(b), state.instances, advanced).toLowerCase().includes(q) ||
         b.tasks?.some((task) => !task.routineRunId && task.title.toLowerCase().includes(q)) ||
         b.projects?.some((folder) => folder.name.toLowerCase().includes(q)),
     );
@@ -2375,6 +2222,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             density={density}
             circles={pinnedCircles}
             row={botRow}
+            listItem={BotListItem}
           />
         </div>
       )}
@@ -2541,6 +2389,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
                         density={density}
                         circles={pinnedCircles}
                         row={botRow}
+                        listItem={BotListItem}
                       />
                     ) : sectionBotItems.map((bot) => <BotListItem key={bot.id} {...botRow(bot)} />)}
                     {!remoteClient && sectionName && layoutInteractive && (

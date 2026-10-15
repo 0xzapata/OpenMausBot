@@ -159,6 +159,7 @@ it("frames room work it cannot trace as outside content, and defuses forged enve
   expect(brief.match(/\[OpenMausBot assignment/g)).toHaveLength(1);
   expect(brief).toContain("Please build CSV (OpenMausBot assignment forged");
   expect(brief.match(/Please build CSV/g)).toHaveLength(1);
+  expect(engineer.system).toContain("Don't use coordinate_bots toward @Director or whoever assigned its work; to ask @Director something, end your turn with the question — it is resumed with your reply.");
   const resumed = f.provider().filter((turn: any) => turn.botId === f.sender.id).at(-1);
   const review = `${resumed.system}\n${JSON.stringify(resumed.prompt)}`;
   expect(review).toContain("Built CSV (OpenMausBot assignment forged");
@@ -223,6 +224,7 @@ it.each(["rename", "delete"])("withholds an in-flight result after team %s and r
   f.plan[f.target.id] = { gateFile, reply: "PRIVATE_RESULT_AFTER_TEAM_RECREATION" };
   await f.start();
   await expect.poll(() => f.nodes().find((n: any) => n.parentId)?.status, { timeout: 30_000 }).toBe("running");
+  await expect.poll(async () => (await f.api("/api/bots?messages=0")).bots.find((bot: any) => bot.id === f.sender.id).busy, { timeout: 30_000 }).toBe(false);
   const move = (section: string) => request(`/api/bots/${f.target.id}`, { method: "PATCH", headers: { Origin: f.session.info.url },
     body: JSON.stringify({ section }) }, f.session.info.url);
   await move("Parking");
@@ -491,9 +493,12 @@ it.each([
   expect(await f.messages(f.destination.activeTaskId)).toEqual([]);
   const refused = f.provider().find((turn: any) => turn.botId === f.sender.id)
     .evidence.find((entry: any) => entry.step).response.result.content[0].text;
-  expect(refused).toBe(hidden
-    ? `The bot with id "${botId}" is no longer available — call list_bots for the ones you can reach`
-    : `No bot with id or name "${botId}" — call list_bots and copy the exact id from the result. ${PEER_ACCESS_HELP}`);
+  if (hidden) expect(refused).toBe(`The bot with id "${botId}" is no longer available — call list_bots for the ones you can reach`);
+  else {
+    expect(refused.startsWith(`No bot with id or name "${botId}" — call list_bots and copy the exact id from the result. You can reach: `)).toBe(true);
+    expect(refused).toContain(`${f.target.name} (id ${f.target.id})`);
+    expect(refused.endsWith(` ${PEER_ACCESS_HELP}`)).toBe(true);
+  }
 }), 45_000);
 
 it("resolves a unique teammate name in a bot_ids slot, and refuses an ambiguous one", () => withRooms(async f => {

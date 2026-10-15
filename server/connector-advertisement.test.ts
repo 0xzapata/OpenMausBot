@@ -77,10 +77,11 @@ describe("connector tool advertisement", () => {
     expect(connectorToolAdvertised("BLAND_AI_MAKE_CALL", grants({ bland: { tools: "*" } }), ["bland_ai"])).toBe(false);
   });
 
-  it("advertises nothing at all — not even the meta-tools — when no tools are granted", () => {
+  it("advertises only COMPOSIO_MANAGE_CONNECTIONS when no tools are granted, so the bot can still ask for a sign-in", () => {
     const none = grants({});
     expect(connectorToolAdvertised("COMPOSIO_SEARCH_TOOLS", none)).toBe(false);
-    expect(connectorToolAdvertised("COMPOSIO_MANAGE_CONNECTIONS", none)).toBe(false);
+    expect(connectorToolAdvertised("COMPOSIO_MULTI_EXECUTE_TOOL", none)).toBe(false);
+    expect(connectorToolAdvertised("COMPOSIO_MANAGE_CONNECTIONS", none)).toBe(true);
     expect(connectorToolAdvertised("COMPOSIO_WAIT_FOR_CONNECTIONS", none)).toBe(false);
     expect(connectorToolAdvertised("GMAIL_SEND_EMAIL", none)).toBe(false);
     expect(connectorToolAdvertised("GMAIL_MANAGE_CONNECTIONS", none)).toBe(false);
@@ -121,9 +122,9 @@ describe("tools/list frame filtering", () => {
     expect(JSON.stringify(filtered)).toContain('"description":"send"');
   });
 
-  it("filters to an empty list for a bot with no granted tools", () => {
+  it("keeps only the way to ask for a sign-in for a bot with no granted tools", () => {
     const filtered = filterToolsListFrame(structuredClone(frame), grants({}));
-    expect((filtered.result as { tools: unknown[] }).tools).toEqual([]);
+    expect((filtered.result as { tools: unknown[] }).tools).toEqual([{ name: "COMPOSIO_MANAGE_CONNECTIONS" }]);
   });
 
   it("passes frames it cannot read through unchanged instead of guessing", () => {

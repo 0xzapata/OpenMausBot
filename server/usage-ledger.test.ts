@@ -176,6 +176,23 @@ describe("usage summaries", () => {
     expect(triggerLabel({ kind: "routine" })).toBe("Routine: unknown");
   });
 
+  it("keeps helper-model calls in a group of their own, apart from bot-to-bot turns, and never as a routine", () => {
+    const helper: UsageRow = {
+      ...row({ botId: "b2", botName: "Clerk", threadId: "memory-1", instanceId: "claude", driverKind: "claudeAgent", model: "claude-haiku-4-5", costUsd: 0.002, trigger: { kind: "helper", botId: "b2", job: "memory" } }),
+      at: "2026-09-02T11:00:00.000Z",
+    };
+    expect(triggerKey(helper.trigger)).toBe("helper");
+    expect(triggerLabel(helper.trigger)).toBe("Helper model");
+    const byPerson = summarizeUsage([...rows, helper], "user").groups;
+    expect(byPerson.find((group) => group.key === "helper")).toMatchObject({ label: "Helper model", turns: 1, costUsd: 0.002 });
+    expect(byPerson.find((group) => group.key === "bot")).toMatchObject({ label: "Bot to bot", turns: 1, costUsd: 0.001 });
+    // still the bot's spend, on the helper's engine, and not a routine's
+    expect(summarizeUsage([helper], "bot").groups.map((group) => group.label)).toEqual(["Clerk"]);
+    expect(summarizeUsage([helper], "engine").groups.map((group) => group.label)).toEqual(["claudeAgent"]);
+    expect(summarizeUsage([helper], "routine").groups.map((group) => group.key)).toEqual(["manual"]);
+    expect(usageCsv([helper]).split("\n")[1]).toBe("2026-09-02T11:00:00.000Z,Clerk,claude-haiku-4-5,claudeAgent,Helper model,1200,300,900,0.002,reported,memory-1");
+  });
+
   it("exports spreadsheet-safe CSV with one line per turn", () => {
     const csv = usageCsv([
       rows[0]!,

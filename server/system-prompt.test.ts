@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { soulSystemPrompt } from "./bot-folder.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import {
+  longCommandsPrompt,
   buildSystemPrompt,
+  CONVERSATIONAL_STYLE_PROMPT,
   CLOUD_HOME_PLACE,
   cloudHomePrompt,
   userProfileSystemPrompt,
@@ -237,8 +239,12 @@ describe("composioSystemPrompt", () => {
     expect(composioSystemPrompt(undefined)).toBe(COMPOSIO_PROMPT);
   });
 
-  it("is absent when no tools are granted", () => {
-    expect(composioSystemPrompt({})).toBe("");
+  it("offers only a connection card when no tools are granted", () => {
+    const prompt = composioSystemPrompt({});
+    expect(prompt).toContain("No connected apps are assigned to this bot");
+    expect(prompt).toContain("COMPOSIO_MANAGE_CONNECTIONS");
+    expect(prompt).not.toContain("COMPOSIO_MULTI_EXECUTE_TOOL");
+    expect(prompt.startsWith(" ")).toBe(true);
   });
 
   it("names exactly the granted services for a partial grant", () => {
@@ -274,10 +280,45 @@ describe("cloudHomePrompt", () => {
     }
   });
 
-  it("points to a lent Mac only when the turn has the shared-computer tools", () => {
-    expect(cloudHomePrompt(true)).toContain("check list_shared_computers: a Mac they lend to My Cloud is reachable through shared_computer");
-    expect(cloudHomePrompt(true)).toContain("turn on Let My Cloud use this Mac under Settings → MausBot Cloud in the desktop app on that Mac");
+  it("points to a lent computer only when the turn has the shared-computer tools", () => {
+    expect(cloudHomePrompt(true)).toContain("check list_shared_computers: a computer they lend to My Cloud is reachable through shared_computer");
+    expect(cloudHomePrompt(true)).toContain("turn on Let My Cloud use this computer under Settings → MausBot Cloud in the desktop app on that computer");
     expect(cloudHomePrompt(false)).not.toMatch(/shared_computer|list_shared_computers/);
     expect(cloudHomePrompt(false)).toContain("You cannot see or use their Mac or PC, its screen or its files from here.");
+  });
+});
+
+describe("longCommandsPrompt", () => {
+  it("names Bash's limit everywhere and vm_exec's own limit only with a Local VM", () => {
+    for (const kind of [null, "local", "vps", "box"] as const) {
+      const text = longCommandsPrompt(kind);
+      expect(text).toContain("`timeout` in milliseconds, up to 600000");
+      expect(text).not.toContain("vm_exec");
+    }
+    for (const kind of ["vm-private", "vm-shared"] as const) {
+      expect(longCommandsPrompt(kind)).toContain("vm_exec takes `timeout_seconds` instead (default 60, at most 300)");
+    }
+  });
+});
+
+describe("reply style", () => {
+  it("adds nothing for the default style, so existing prompts are unchanged", () => {
+    const plain = buildSystemPrompt("persona", "soul", [{ id: "x", label: "X", text: " tail" }]);
+    expect(buildSystemPrompt("persona", "soul", [{ id: "x", label: "X", text: " tail" }], undefined, { replyStyle: "default" })).toEqual(plain);
+    expect(plain.sections.map((s) => s.id)).not.toContain("reply-style");
+  });
+
+  it("puts the conversational guidance right after the soul, in the stable half", () => {
+    const built = buildSystemPrompt("persona", "soul", [
+      { id: "memory", label: "Memory", text: " memory" },
+      { id: "x", label: "X", text: " tail" },
+    ], undefined, { replyStyle: "conversational" });
+    expect(built.sections.map((s) => s.id)).toEqual(["persona", "soul", "reply-style", "memory", "x"]);
+    expect(built.stable).toContain(CONVERSATIONAL_STYLE_PROMPT);
+    expect(built.volatile).not.toContain("Reply style");
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/short/i);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/blank line/);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/code block/);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/language/);
   });
 });

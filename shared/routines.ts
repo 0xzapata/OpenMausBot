@@ -101,6 +101,8 @@ export interface Routine {
   skippedRuns?: number;
   lastSkippedAt?: number;
   failureStreak?: number;
+  /** A plain sentence when the routine names a path that cannot exist on the computer that runs it. */
+  warning?: string;
   attachments?: RoutineContextAttachment[];
   sourceThreadId?: string;
   resultsThreadId?: string;

@@ -11,12 +11,11 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { pipeline } from "node:stream/promises";
 import { Worker } from "node:worker_threads";
 import * as tar from "tar";
-import { fromMarkdown } from "mdast-util-from-markdown";
 import { writeFileAtomic } from "./atomic.ts";
-import { escapeAttribute, splitTranscriptAttachments } from "../src/lib/composer-attachments.ts";
 import { WORKSPACE_BACKUP_CLIENT_KEYS } from "../shared/workspace-backup-client.ts";
-import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, liveDataEnginePath, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
-import type { WorkspaceBackupClientState, WorkspaceBackupPrivateMetadata, WorkspaceBackupSummary } from "../shared/workspace-backup.ts";
+import { INSTRUCTION_FILE, restorePaths, validRelative } from "./workspace-backup-paths.ts";
+import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, liveDataEnginePath, managedTaskSkillLink, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
+import type { WorkspaceBackupClientState, WorkspaceBackupPrivateMetadata, WorkspaceBackupSummary, WorkspaceLeftBehind } from "../shared/workspace-backup.ts";
 
 export type { WorkspaceBackupSummary, WorkspaceBackupPrivateMetadata } from "../shared/workspace-backup.ts";
 export const MAX_WORKSPACE_BACKUP_BYTES = 10 * 1024 ** 3;
@@ -69,9 +68,11 @@ export interface WorkspaceRestoreResult {
   id?: string;
   safetyCopyPath?: string;
   summary?: WorkspaceBackupSummary;
+  leftBehind?: WorkspaceLeftBehind;
   clientState?: WorkspaceBackupClientState;
 }
-export type LastWorkspaceRestore = WorkspaceRestoreResult & { restored: true; id: string };
+/** `pathsRewritten`: the source data folder was rewritten in text too, by the restore or by repairMovedWorkspacePaths. */
+export type LastWorkspaceRestore = WorkspaceRestoreResult & { restored: true; id: string; pathsRewritten?: true };
 
 function excluded(name: string): boolean {
   return EXCLUDED.has(name) || excludedWorkspaceAuthPath(name) || name.startsWith("openmausbot-server.lease.") || name.startsWith("box-create-requests.lock.") || /^perm-[A-Za-z0-9_-]+\.sock$/.test(name);
@@ -119,11 +120,6 @@ function newJob(dataDir: string, id: string = randomUUID()): { id: string; direc
   const directory = jobPath(dataDir, id);
   mkdirSync(directory, { mode: 0o700 });
   return { id, directory };
-}
-function validRelative(path: string): boolean {
-  return !!path && path.length <= 4096 && !isAbsolute(path) && !/[\\\0:]/.test(path) &&
-    path.split("/").every((part) => !!part && part !== "." && part !== ".." && !/[. ]$/.test(part) &&
-      !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part));
 }
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -333,7 +329,7 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
           continue;
         }
         if (stat.isSymbolicLink() && path.startsWith("task-workspaces/")) {
-          skippedWorkLinks++;
+          if (managedTaskSkillLink(source, path, [root, resolve(dataDir)])) skippedLinks++; else skippedWorkLinks++;
           continue;
         }
         if (stat.isSymbolicLink()) {
@@ -647,49 +643,6 @@ function rollback(dataDir: string, journal: RestoreJournal): void {
   }
 }
 
-function rebasePath(value: string, source: string, destination: string): string {
-  const normalized = value.replaceAll("\\", "/");
-  const original = source.replaceAll("\\", "/").replace(/\/$/, "");
-  if (normalized !== original && !normalized.startsWith(`${original}/`)) return value;
-  const suffix = normalized.slice(original.length).replace(/^\//, "");
-  if (suffix && !validRelative(suffix)) return value;
-  return suffix ? join(destination, suffix) : destination;
-}
-const PATH_KEYS = new Set(["cwd", "pinnedCwd", "workspace", "configDir", "profileDirectory", "agentDir", "dataDir", "home", "cli", "path", "filePath", "localPath"]);
-function rebaseFields(value: unknown, source: string, destination: string): void {
-  if (Array.isArray(value)) { for (const item of value) rebaseFields(item, source, destination); }
-  else if (record(value)) {
-    for (const [key, item] of Object.entries(value)) {
-      if (PATH_KEYS.has(key) && typeof item === "string") value[key] = rebasePath(item, source, destination);
-      else if (typeof item === "object") rebaseFields(item, source, destination);
-    }
-  }
-}
-function rebaseMessage(message: unknown, source: string, destination: string): void {
-  if (!record(message)) return;
-  for (const field of ["attachments", "images", "fileAttachments", "file", "card"]) rebaseFields(message[field], source, destination);
-  if (typeof message.text !== "string") return;
-  const text = message.text;
-  const edits: Array<{ from: number; to: number; text: string }> = [];
-  // After a single newline a tag is inline HTML in a Markdown paragraph, though the app's parser shows it as a card.
-  const candidates = fromMarkdown(text).children.flatMap((node) => node.type === "html" ? [node] :
-    node.type === "paragraph" ? node.children.filter((child) => child.type === "html") : []);
-  for (const node of candidates) {
-    if (node.position?.start.offset === undefined || node.position.end.offset === undefined || node.position.start.column !== 1) continue;
-    const lineEnd = text.indexOf("\n", node.position.end.offset);
-    if (text.slice(node.position.end.offset, lineEnd < 0 ? text.length : lineEnd).trim()) continue;
-    const parsed = splitTranscriptAttachments(node.value, false);
-    if (parsed.display.trim() || !parsed.images.length && !parsed.files.length) continue;
-    const next = node.value.replace(/(<attached-(?:image|file)[\t ]+path=")([^"\r\n]*)(")/g, (whole, before: string, encoded: string, after: string) => {
-      const attachment = [...parsed.images, ...parsed.files].find((item) => escapeAttribute(item.path) === encoded);
-      return attachment ? `${before}${escapeAttribute(rebasePath(attachment.path, source, destination))}${after}` : whole;
-    });
-    if (next !== node.value) edits.push({ from: node.position.start.offset, to: node.position.end.offset, text: next });
-  }
-  let next = text;
-  for (const edit of edits.reverse()) next = next.slice(0, edit.from) + edit.text + next.slice(edit.to);
-  message.text = next;
-}
 function prepareRestore(dataDir: string, id: string, manifest: Manifest): string {
   assertLocalAuthOutsideSnapshot(dataDir);
   const job = jobPath(dataDir, id);
@@ -709,13 +662,26 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
     change(value);
     writeJson(path, value);
   };
-  for (const name of ["bots.json", "groups.json", "config.json", "routines.json", "calendar-calls.json"]) {
-    changeJson(name, (value) => rebaseFields(value, manifest.sourceDataDir, resolve(dataDir)));
-  }
+  const paths = restorePaths(manifest.sourceDataDir, resolve(dataDir));
   changeJson("bots.json", (value) => {
     if (!Array.isArray(value)) throw new Error("Invalid bot definitions in workspace backup.");
-    for (const bot of value) if (record(bot)) delete bot.voice;
+    for (const bot of value) if (record(bot)) {
+      paths.definitions(bot, String(bot.id));
+      if (typeof bot.soul === "string") bot.soul = paths.text(bot.soul);
+      delete bot.voice;
+    }
   });
+  changeJson("groups.json", (value) => {
+    paths.definitions(value);
+    if (Array.isArray(value)) for (const group of value) if (record(group) && typeof group.bulletin === "string") group.bulletin = paths.text(group.bulletin);
+  });
+  for (const name of ["config.json", "routines.json", "calendar-calls.json"]) changeJson(name, (value) => paths.definitions(value));
+  for (const entry of installed) {
+    if (entry.type !== "file" || entry.size > MAX_METADATA_BYTES || !INSTRUCTION_FILE.test(entry.path)) continue;
+    const before = readFileSync(join(prepared, entry.path), "utf8");
+    const after = paths.text(before);
+    if (after !== before) writeFileAtomic(join(prepared, entry.path), after, { mode: entry.mode });
+  }
   // Never install source connection settings.
   const oldConfig = join(dataDir, "config.json");
   const newConfig = join(prepared, "config.json");
@@ -739,7 +705,10 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
   }
   changeJson("routines.json", (value) => {
     if (!record(value)) throw new Error("Invalid routine definitions in workspace backup.");
-    if (Array.isArray(value.routines)) for (const routine of value.routines) if (record(routine)) routine.enabled = false;
+    if (Array.isArray(value.routines)) for (const routine of value.routines) if (record(routine)) {
+      routine.enabled = false;
+      if (typeof routine.prompt === "string") routine.prompt = paths.text(routine.prompt);
+    }
     if (Array.isArray(value.runs)) for (const run of value.runs) {
       if (record(run) && ["queued", "running", "waiting"].includes(String(run.status))) {
         run.status = "failed";
@@ -769,8 +738,8 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
   if (existsSync(join(prepared, "browser-cleanups.json"))) writeJson(join(prepared, "browser-cleanups.json"), []);
   for (const entry of manifest.entries) {
     if (/^messages-[^/]+\.json$/.test(entry.path)) changeJson(entry.path, (value) => {
-      if (Array.isArray(value)) for (const message of value) rebaseMessage(message, manifest.sourceDataDir, resolve(dataDir));
-      else if (record(value) && Array.isArray(value.messages)) for (const message of value.messages) rebaseMessage(message, manifest.sourceDataDir, resolve(dataDir));
+      if (Array.isArray(value)) for (const message of value) paths.message(message);
+      else if (record(value) && Array.isArray(value.messages)) for (const message of value.messages) paths.message(message);
     });
   }
   const dbPath = join(prepared, "messages.db");
@@ -782,7 +751,7 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
         const update = db.prepare("UPDATE messages SET json = ?, text = ? WHERE thread_id = ? AND id = ?");
         for (const row of db.prepare("SELECT thread_id, id, json FROM messages").iterate()) {
           const message: unknown = JSON.parse(String(row.json));
-          rebaseMessage(message, manifest.sourceDataDir, resolve(dataDir));
+          paths.message(message);
           const json = JSON.stringify(message);
           if (json !== row.json) update.run(json, record(message) && typeof message.text === "string" ? message.text : null, row.thread_id, row.id);
         }
@@ -792,7 +761,7 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
         const pause = db.prepare("UPDATE chat_followups SET status = 'interrupted', payload = ? WHERE id = ?");
         for (const row of db.prepare("SELECT id, payload FROM chat_followups WHERE status IN ('pending', 'dispatching', 'interrupted')").iterate()) {
           const payload: unknown = JSON.parse(String(row.payload));
-          rebaseMessage(payload, manifest.sourceDataDir, resolve(dataDir));
+          paths.message(payload);
           if (record(payload)) delete payload.prompt;
           pause.run(JSON.stringify(payload), row.id);
         }
@@ -827,6 +796,9 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
       db.exec("PRAGMA journal_mode = DELETE");
     } finally { db.close(); }
   }
+  const leftBehind = paths.leftBehind();
+  if (leftBehind) writeJson(join(job, "left-behind.json"), leftBehind);
+  else rmSync(join(job, "left-behind.json"), { force: true });
   return prepared;
 }
 
@@ -846,11 +818,13 @@ function finishRestore(dataDir: string, id: string, consumePending = true): Last
     try {
       const value: unknown = JSON.parse(draftAttachments);
       const manifest = validateManifest(privateJson(join(jobPath(dataDir, id), "staged", "manifest.json")));
-      rebaseFields(value, manifest.sourceDataDir, resolve(dataDir));
+      restorePaths(manifest.sourceDataDir, resolve(dataDir)).fields(value);
       clientState["omb-draft-attachments"] = JSON.stringify(value);
     } catch {}
   }
-  const result: LastWorkspaceRestore = { restored: true, id, safetyCopyPath: join(root, `safety-${id}`), summary, clientState };
+  const leftBehind = join(jobPath(dataDir, id), "left-behind.json");
+  const result: LastWorkspaceRestore = { restored: true, id, safetyCopyPath: join(root, `safety-${id}`), summary, clientState, pathsRewritten: true,
+    ...(existsSync(leftBehind) ? { leftBehind: privateJson(leftBehind) as WorkspaceLeftBehind } : {}) };
   writeJson(join(root, "last-restore.json"), result);
   if (consumePending) rmSync(join(root, "pending-restore.json"), { force: true });
   return result;

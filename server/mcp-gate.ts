@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { allowsTool, parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
+import { bridgedCallTarget } from "./drivers/agents-bridge.ts";
 import { resolveCliSpawn } from "./env-path.ts";
 import { directoryCallTarget, isDirectoryTool } from "./mcp-directory.ts";
 import { DEFAULT_RESULT_BUDGET, trimResultText, trimStructured } from "./mcp-trim.ts";
@@ -120,6 +121,28 @@ function spill(tool: string, text: string): string | undefined {
   }
 }
 
+/** Object key order aside (a server may build the two copies differently); array order counts. */
+function sameJson(text: string, value: unknown): boolean {
+  try {
+    return sameValue(JSON.parse(text), value, 0);
+  } catch {
+    return false;
+  }
+}
+
+function sameValue(a: unknown, b: unknown, depth: number): boolean {
+  if (a === b) return true;
+  if (depth > 200 || !a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => sameValue(item, b[i], depth + 1));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => Object.hasOwn(right, key) && sameValue(left[key], right[key], depth + 1));
+}
+
 function trimCallResult(result: Json, tool: string): boolean {
   if (BUDGET === 0) return false;
   const content = result.content;
@@ -134,18 +157,26 @@ function trimCallResult(result: Json, tool: string): boolean {
 
   const share = Math.floor(BUDGET / textBlocks.length);
   const path = spill(tool, textBlocks.map((block) => block.text).join("\n"));
+  const structuredIsText = textBlocks.length === 1 && Boolean(result.structuredContent) && typeof result.structuredContent === "object"
+    && sameJson(textBlocks[0]!.text, result.structuredContent);
   let trimmed = false;
+  let keptValue: unknown;
   for (const block of textBlocks) {
     const outcome = trimResultText({ text: block.text, budget: share, spillPath: path, spillHint: SPILL_HINT, toolName: tool });
     if (!outcome.trimmed) continue;
     block.text = outcome.text;
+    keptValue = outcome.value;
     trimmed = true;
   }
 
   // Trim structuredContent too, or the provider gets a second full copy; structurally only, so it stays valid against the output schema.
   if (trimmed && result.structuredContent && typeof result.structuredContent === "object") {
-    const structured = trimStructured(result.structuredContent, BUDGET);
-    if (structured) result.structuredContent = structured.value as Json;
+    if (structuredIsText && keptValue && typeof keptValue === "object") {
+      result.structuredContent = keptValue as Json;
+    } else {
+      const structured = trimStructured(result.structuredContent, BUDGET);
+      if (structured) result.structuredContent = structured.value as Json;
+    }
   }
   return trimmed;
 }
@@ -217,8 +248,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       || (params.arguments !== undefined && !isRecord(params.arguments))) {
       return rejectRequest(message.id, -32602, "Invalid tool call");
     }
-    const target = callTarget(params.name, params.arguments);
-    if (target !== undefined && !allowsTool(scope, { kind: "mcp", server: NAME, name: target })) {
+    // Security: should a bridged agents server answer here, use_tool is also judged by the tool it names.
+    const targets = [callTarget(params.name, params.arguments), ...(NAME === "agents" ? [bridgedCallTarget(params.name, params.arguments)] : [])];
+    if (targets.some((target) => target !== undefined && !allowsTool(scope, { kind: "mcp", server: NAME, name: target }))) {
       return rejectRequest(message.id, -32602, "Tool selection excludes this tool. Check the bot's Access settings.");
     }
   }

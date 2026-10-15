@@ -25,7 +25,8 @@ import { recordProfileChange } from "../profile-versions.ts";
 import { clientBotPatchViolation, requestSource } from "../request-auth.ts";
 import type { RoutineManager } from "../routines.ts";
 import type { SessionRegistry } from "../sessions.ts";
-import { parseConnectorTools, sectionKey, type BotRecord, type GroupRecord, type Store } from "../store.ts";
+import { parseConnectorTools } from "../connector-tools.ts";
+import { sectionKey, type BotRecord, type GroupRecord, type Store } from "../store.ts";
 import { pinnedClientThreadGuard } from "./pinned-client-thread.ts";
 import type { ModelSelectionCheck } from "./bots-create.ts";
 import { PASS, type RouteHandler } from "./table.ts";
@@ -92,7 +93,12 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         if (field) return json(res, 403, { error: `forbidden: this session may change how a bot looks, not "${field}" (needs the admin scope)` });
       }
       const existingBot = store.bot(m[1]);
-      const selectedTask = existingBot ? requestedTaskBot(existingBot.id, undefined) : null;
+      const rawSelection = (body as Record<string, unknown>).modelSelection;
+      if (body.threadId !== undefined && rawSelection === undefined) {
+        return json(res, 400, { error: "threadId goes with modelSelection" });
+      }
+      if (rawSelection !== undefined) requirePinnedClientThread(m[1], body.threadId);
+      const selectedTask = existingBot ? requestedTaskBot(existingBot.id, body.threadId) : null;
       const beforeProfile = existingBot ? profileSnapshot(existingBot) : undefined;
       const beforeVisibility = existingBot?.visibility;
       if (body.requireAvailableModel !== undefined && typeof body.requireAvailableModel !== "boolean") {
@@ -102,8 +108,6 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       const beforeBrowserEnabled = existingBot?.browser;
       // Codex and Grok accept any effort string, so this is the only gate on it; an unresolved
       // instance declares no levels and is let through (startTurn refuses an unavailable instance).
-      const rawSelection = (body as Record<string, unknown>).modelSelection;
-      if (rawSelection !== undefined) requirePinnedClientThread(m[1], undefined);
       if (body.keepThreadModels !== undefined) {
         if (typeof body.keepThreadModels !== "boolean") return json(res, 400, { error: "keepThreadModels must be true or false" });
         if (body.keepThreadModels && rawSelection === undefined) return json(res, 400, { error: "keepThreadModels goes with modelSelection" });
@@ -276,6 +280,10 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       if (body.cacheKeepWarm !== undefined) {
         if (body.cacheKeepWarm !== null && typeof body.cacheKeepWarm !== "boolean") return json(res, 400, { error: "cacheKeepWarm must be true, false or null" });
         patch.cacheKeepWarm = body.cacheKeepWarm ?? undefined;
+      }
+      if (body.helperModel !== undefined) {
+        if (typeof body.helperModel !== "boolean") return json(res, 400, { error: "helperModel must be true or false" });
+        patch.helperModel = body.helperModel;
       }
       if (body.browser !== undefined) {
         if (typeof body.browser !== "boolean") return json(res, 400, { error: "browser must be true or false" });

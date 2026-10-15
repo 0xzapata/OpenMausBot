@@ -2,16 +2,16 @@ import type { ServerResponse } from "node:http";
 import { z } from "zod";
 
 import { approvalModeFor } from "../../shared/approval-mode.ts";
-import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE } from "../../shared/ask-question.ts";
+import { isPersistentQuestionCard } from "../../shared/ask-question.ts";
 import type { ResolvedSender, SteerQueueReason } from "../../shared/wire.ts";
 import { admit } from "../admission.ts";
+import { dismissQuestionCard } from "../card-dismissal.ts";
 import { prepareWidgetPress, reopenCancelledPress } from "../chat-widgets.ts";
 import type { ModelSelection, RequestOutcome, SteerOutcome } from "../contracts.ts";
 import { parseDataContext, type DataContext } from "../data-context.ts";
 import type { Handoffs } from "../delta-context.ts";
 import type { ProviderRegistry } from "../harness/registry.ts";
 import { spokenLineFields } from "../live-call-record.ts";
-import { resolvePeerComms, type ApprovalBus } from "../peer-approval.ts";
 import type { PhoneSecretSubmissionRegistry } from "../phone-secret.ts";
 import type { ReplyTarget } from "../replies.ts";
 import type { RequestAuth } from "../request-auth.ts";
@@ -46,7 +46,6 @@ export interface BotMessageRouteDeps {
   registry: Pick<ProviderRegistry, "get">;
   routines(): RoutineManager | null;
   handoffs: Pick<Handoffs, "current" | "steered" | "stoppedByPerson">;
-  approvalBus: ApprovalBus;
   phoneSecretSubmissions: Pick<PhoneSecretSubmissionRegistry, "hasThread">;
   directTurnDispatchClaims: { get(threadId: string): { threadId: string } | undefined };
   groupSpeakers: ReadonlyMap<string, { botId: string }>;
@@ -104,6 +103,8 @@ export interface BotMessageRouteDeps {
   revokeInternalCapabilitiesForThread(threadId: string): void;
   cancelGroupTurnOperations(groupId: string, threadId: string): void;
   closeOpenApprovals(threadId: string): void;
+  /** The outcome of a card the harness raised itself (a peer approval, a quota-switch offer); undefined for any other card. */
+  harnessCardOutcome(threadId: string, requestId: string, behavior: Behavior, message: unknown): Promise<string | undefined>;
 }
 
 /** External interfaces (the Slack worker) opt in. `onBehalfOf`, advertised by /api/health as
@@ -123,7 +124,7 @@ const guardedSendSchema = z.object({
 
 export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler {
   const {
-    store, registry, handoffs, approvalBus, phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
+    store, registry, handoffs, phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
     desktopManaged: DESKTOP_MANAGED, cloudHome: CLOUD_HOME, DirectSendRefused,
     acceptDirectSend, directSendRefusal, startTurn, usageTriggerFor, messageSender, cloudGuestSendRefusal, cloudThreadRefusal,
     cloudOwnerSession, cardAnswerRefusal, commandRememberRefusal, requestBehavior, requestedTaskBot, botForThread, threadBusy,
@@ -131,7 +132,7 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
     turnSelection, policyModelRefusal, clearUnattended, drainQueuedSends, answeringCardAs, resolveAndSendTrust, resolveAndSendTeamSetup,
     resolveAndSendRoutine, resolveAndSendProfile, resolveAndSendModel, resolveSkillRequest, sendSkillResolution, answerRequest,
     deliverLateQuestionAnswer, interruptDirectThread, cancelDirectTurnDispatch, revokeInternalCapabilitiesForThread,
-    cancelGroupTurnOperations, closeOpenApprovals,
+    cancelGroupTurnOperations, closeOpenApprovals, harnessCardOutcome,
   } = deps;
   const pinnedClientThread = pinnedClientThreadGuard(store);
   /** widget -> sendId of a press on its way in: a second tap before acceptance must not send a second answer. */
@@ -440,20 +441,12 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
           behavior,
           reviewedSha256,
         }))) return;
-        if (store.messagesFor(bot.threadId).some((message) => message.card?.requestId === String(body.requestId)) &&
-          resolvePeerComms(approvalBus, String(body.requestId), behavior)) {
-          return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
-        }
         const requestId = String(body.requestId);
+        const own = await harnessCardOutcome(bot.threadId, requestId, behavior, body.message);
+        if (own) return json(res, 200, { ok: true, outcome: own });
         const pending = store.messagesFor(bot.threadId).find((message) => message.card?.requestId === requestId);
-        if (isPersistentQuestionCard(pending?.card) && (body.dismiss === true || body.message === QUESTION_DISMISS_MESSAGE)) {
-          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
-          if (pending.card.answered !== "answer" || pending.card.dismissed) {
-            return json(res, 409, { error: "answer this question before dismissing it" });
-          }
-          store.patchMessage(bot.threadId, pending.id, { card: { ...pending.card, dismissed: true } });
-          return json(res, 200, { ok: true, dismissed: true });
-        }
+        const dismissed = dismissQuestionCard(store, bot.threadId, pending, body);
+        if (dismissed) return json(res, dismissed.status, dismissed.body);
         const outcome = await answerRequest(bot.threadId, bot.modelSelection.instanceId, requestId, behavior, body.message, { id: bot.id, name: bot.name }, body.always === true, body.rememberCommand === true);
         if (outcome === "unavailable" && isPersistentQuestionCard(pending?.card) && behavior === "answer") {
           if (!pending) return json(res, 404, { error: "this question is no longer available" });
@@ -554,20 +547,12 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
             behavior,
           })) return;
         }
-        if (store.messagesFor(threadId).some((message) => message.card?.requestId === requestId) &&
-          resolvePeerComms(approvalBus, requestId, behavior)) {
-          return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
-        }
+        const own = await harnessCardOutcome(threadId, requestId, behavior, body.message);
+        if (own) return json(res, 200, { ok: true, outcome: own });
         const group = store.groupByThread(threadId);
         const pending = store.messagesFor(threadId).find((message) => message.card?.requestId === requestId);
-        if (isPersistentQuestionCard(pending?.card) && (body.dismiss === true || body.message === QUESTION_DISMISS_MESSAGE)) {
-          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
-          if (pending.card.answered !== "answer" || pending.card.dismissed) {
-            return json(res, 409, { error: "answer this question before dismissing it" });
-          }
-          store.patchMessage(threadId, pending.id, { card: { ...pending.card, dismissed: true } });
-          return json(res, 200, { ok: true, dismissed: true });
-        }
+        const dismissed = dismissQuestionCard(store, threadId, pending, body);
+        if (dismissed) return json(res, dismissed.status, dismissed.body);
         const persistentQuestion = isPersistentQuestionCard(pending?.card);
         const owner = group
           ? persistentQuestion

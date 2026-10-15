@@ -5,11 +5,13 @@ import { join } from "node:path";
 import type { CostSource } from "./model-prices.ts";
 import { billableFor, type PriceList } from "./prices.ts";
 
+/** `helper`: a job the helper model wrote for `botId`, kept apart from `bot` so its cost reads on its own. */
 export type UsageTrigger =
   | { kind: "user"; email?: string; label?: string }
   | { kind: "owner" }
   | { kind: "routine"; routineId?: string; label?: string }
-  | { kind: "bot"; botId?: string };
+  | { kind: "bot"; botId?: string }
+  | { kind: "helper"; botId?: string; job?: string };
 
 export interface UsageRow {
   at: string;
@@ -188,6 +190,8 @@ export function triggerKey(trigger: UsageTrigger): string {
       return "owner";
     case "routine":
       return `routine:${trigger.routineId ?? trigger.label ?? "unknown"}`;
+    case "helper":
+      return "helper";
     default:
       return "bot";
   }
@@ -201,6 +205,8 @@ export function triggerLabel(trigger: UsageTrigger): string {
       return "This computer";
     case "routine":
       return `Routine: ${trigger.label ?? trigger.routineId ?? "unknown"}`;
+    case "helper":
+      return "Helper model";
     default:
       return "Bot to bot";
   }

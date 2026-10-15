@@ -88,9 +88,9 @@ beforeAll(async () => {
     });
 
     if (url.pathname.startsWith("/broker/")) {
-      // c/d/e/f back the cache-identity tests; b stays invalid so a token
+      // c/d/e/f/8/9 back the cache-identity tests; b stays invalid so a token
       // switch can be made to fail on purpose.
-      if (!/^[acdef]{64}$/.test(String(req.headers.authorization ?? "").replace(/^Bearer /, ""))) {
+      if (!/^[acdef89]{64}$/.test(String(req.headers.authorization ?? "").replace(/^Bearer /, ""))) {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: "invalid broker token" }));
       }
@@ -1202,12 +1202,12 @@ describe.sequential("Composio Sessions", () => {
     }
   });
 
-  it("preserves explicit aliases and requires one when any existing account is not a retryable flow", async () => {
+  it("requires a label only beside an account that may be working, and keeps that account's label", async () => {
     const cfg: AppConfig = {
       composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
     };
     try {
-      for (const status of ["ACTIVE", "INACTIVE", "FAILED", "REVOKED", "PENDING", "FUTURE_STATUS", undefined]) {
+      for (const status of ["ACTIVE", undefined]) {
         connectedAccountsOverride = [
           { id: "ca_existing", alias: "Personal", status, toolkit: { slug: "slack" } },
         ];
@@ -1216,14 +1216,60 @@ describe.sequential("Composio Sessions", () => {
         connectedAccountsOverride.push({ id: "ca_unfinished", status: "INITIALIZING", toolkit: { slug: "slack" } });
         await expect(authorizeService(cfg, "slack")).rejects.toThrow(/alias.*not replaced/i);
         await expect(authorizeService(cfg, "slack", "personal")).rejects.toThrow(/already in use/i);
-        expect(calls.slice(before).some((call) => call.method === "POST" && call.path.endsWith("/link"))).toBe(false);
+        const since = calls.slice(before);
+        expect(since.some((call) => call.method === "POST" && call.path.endsWith("/link"))).toBe(false);
+        expect(since.some((call) => call.method === "DELETE")).toBe(false);
       }
-      connectedAccountsOverride = [{ id: "ca_expired", alias: "Personal", status: "EXPIRED", toolkit: { slug: "slack" } }];
-      await expect(authorizeService(cfg, "slack", "personal")).rejects.toThrow(/already in use/i);
       await expect(authorizeService(cfg, "slack", "  team  ")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
       expect(calls.filter((call) => call.method === "POST" && call.path.endsWith("/link")).at(-1)?.body).toEqual({
         toolkit: "slack", alias: "team",
       });
+    } finally {
+      connectedAccountsOverride = null;
+    }
+  });
+
+  it("links a toolkit whose only account failed to sign in", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
+    };
+    try {
+      for (const status of ["FAILED", "INACTIVE", "EXPIRED"]) {
+        connectedAccountsOverride = [{ id: "ca_dead", status, toolkit: { slug: "slack" } }];
+        const before = calls.length;
+        await expect(authorizeService(cfg, "slack")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
+        const since = calls.slice(before);
+        expect(since.filter((call) => call.method === "POST" && call.path.endsWith("/link"))).toHaveLength(1);
+        expect(since.some((call) => call.method === "DELETE")).toBe(false);
+      }
+    } finally {
+      connectedAccountsOverride = null;
+    }
+  });
+
+  it("replaces an account that is not active when its label is asked for again", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
+    };
+    try {
+      for (const status of ["INITIATED", "INITIALIZING", "FAILED", "EXPIRED", "INACTIVE"]) {
+        connectedAccountsOverride = [
+          { id: "ca_old_work", alias: "Work", status, toolkit: { slug: "slack" } },
+          { id: "ca_personal", alias: "personal", status: "ACTIVE", toolkit: { slug: "slack" } },
+        ];
+        const before = calls.length;
+        await expect(authorizeService(cfg, "slack", "work")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
+        const since = calls.slice(before).filter((call) => call.method === "DELETE" || call.path.endsWith("/link"));
+        expect(since.map((call) => [call.method, call.path, call.query])).toEqual([
+          ["DELETE", "/api/v3.1/connected_accounts/ca_old_work", "?revoke_on_delete=true"],
+          ["POST", "/api/v3.1/tool_router/session/trs_test/link", ""],
+        ]);
+        expect(since[1]!.body).toEqual({ toolkit: "slack", alias: "work" });
+      }
+      connectedAccountsOverride = [{ id: "ca_work", alias: "work", status: "ACTIVE", toolkit: { slug: "slack" } }];
+      const before = calls.length;
+      await expect(authorizeService(cfg, "slack", "work")).rejects.toThrow(/already in use/i);
+      expect(calls.slice(before).some((call) => call.method === "DELETE" || call.path.endsWith("/link"))).toBe(false);
     } finally {
       connectedAccountsOverride = null;
     }
@@ -1243,6 +1289,43 @@ describe.sequential("Composio Sessions", () => {
       expect(calls.slice(before).some((call) => call.method === "POST" && call.path.endsWith("/link"))).toBe(false);
     } finally {
       connectedAccountsOverride = null;
+    }
+  });
+});
+
+describe("a connector tools/list that fails", () => {
+  const list = async (id: number) => {
+    const relayed = await relayMcp({}, { jsonrpc: "2.0", id, method: "tools/list" });
+    return { status: relayed.status, body: JSON.parse(new TextDecoder().decode(relayed.bytes)) };
+  };
+
+  it("answers with the same backend's last good list", async () => {
+    setManagedBrokerAccess({ url: origin + "/broker", token: "9".repeat(64) });
+    brokerMcpTools = [{ name: "GMAIL_SEND_EMAIL" }, { name: "COMPOSIO_MANAGE_CONNECTIONS" }];
+    const realFetch = globalThis.fetch;
+    let offline = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (offline) throw new TypeError("fetch failed");
+      return realFetch(input, init);
+    });
+    try {
+      expect((await list(1)).status).toBe(200);
+      brokerToolsListFail = true;
+      await expect(list(2)).resolves.toEqual({
+        status: 200,
+        body: { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "GMAIL_SEND_EMAIL" }, { name: "COMPOSIO_MANAGE_CONNECTIONS" }] } },
+      });
+      offline = true;
+      expect((await list(3)).body.id).toBe(3);
+      offline = false;
+
+      setManagedBrokerAccess({ url: origin + "/broker", token: "8".repeat(64) });
+      expect((await list(4)).status).toBe(500);
+    } finally {
+      fetchSpy.mockRestore();
+      brokerToolsListFail = false;
+      brokerMcpTools = null;
+      setManagedBrokerAccess(null);
     }
   });
 });

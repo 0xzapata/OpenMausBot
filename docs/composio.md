@@ -75,13 +75,26 @@ pending link instead of creating another account. Links stay in UI memory only;
 after ten minutes, retry requests a fresh link, as required by
 [Composio's connection lifecycle](https://docs.composio.dev/kb/guide/platform-connected-accounts).
 
-If all existing accounts for that app are `INITIALIZING`, `INITIATED`, or
-`EXPIRED`, an alias-less retry gets a unique `omb-retry-…` alias. It never deletes
-or replaces an account: `EXPIRED` can also describe a formerly active grant.
-Active or unknown states still require an explicit unique label, and the
-five-usable-account limit remains. At that limit, inspect the account rows and
-disconnect only an account you intend to revoke. Managed installations need
-the updated broker as well as the updated app; this is not a client-side bypass.
+A label is required only when the app already has an `ACTIVE` account (or one
+whose status Composio did not report). While no account works, an alias-less
+retry gets a unique `omb-retry-…` alias and leaves the other accounts alone.
+Asking again for a label held only by an account that is not active (for
+example an `INITIATED` sign-in that was abandoned, or a `FAILED` or `EXPIRED`
+one) revokes and deletes that account, then links a new one under the same
+label; a label an active account holds is still refused with 409. The
+five-usable-account limit remains; the account being replaced does not count
+toward it. Managed installations need the updated broker as well as the
+updated app; this is not a client-side bypass.
+
+In **Connected apps**, only an `ACTIVE` account shows the app as connected. An
+app whose accounts all stopped working shows **Reconnect**, which removes the
+newest stopped account and signs in again under its label; each stopped account
+beside a working one has its own **Reconnect**. When a connected-app call fails
+because the account is signed out (Composio's `USER_NOT_LOGGED_IN`, a 401, or no
+connected account), OpenMausBot adds a note telling the bot to call
+`COMPOSIO_MANAGE_CONNECTIONS`, which shows the person a reconnect card. That
+tool stays available to a bot with no app grants, and a failed `tools/list` is
+retried once and then answered with the last list the connection service gave.
 
 ## Renderer-neutral connection inventory
 

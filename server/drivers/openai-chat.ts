@@ -16,7 +16,7 @@ import { toolDetailPreview } from "../tool-summary.ts";
 import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
 import { assertImageTransport, chatImageBudget, chatToolImages, chatUserContent, type ChatContentPart } from "./chat-images.ts";
 import { promptHalves, volatileContextNote, withContextNote } from "./prompt-split.ts";
-import { createChatToolApproval } from "./chat-tool-approval.ts";
+import { createChatToolApproval, refusal } from "./chat-tool-approval.ts";
 import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, object, type ChatToolCall } from "./openai-chat-protocol.ts";
 import { appendNative } from "./native.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
@@ -590,6 +590,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         if (!parsed.ok) throw new Error(parsed.error);
         const scope = parsed.scope;
         tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal, options.computerUse, scope, turn.mcpCallTimeoutMs);
+        for (const { server, reason } of tools.skipped) {
+          emit({ ...base(turn.threadId, turnId), type: "runtime.notice", message: `MCP server "${server}" was skipped for this turn: ${safeText(reason)}` });
+        }
         const questionAllowed = options.tools !== false && allowsTool(scope, { kind: "native", name: ASK_USER_TOOL });
         let optionalQuestionOnly = questionAllowed && tools.definitions.length === 0;
           // An MCP server squatting ask_user cannot shadow it (dispatch intercepts the name); skip its definition.
@@ -744,8 +747,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 const shown = tools.view(call.function.name, args as Record<string, unknown>);
                 const shownPreview = shown.input === args ? inputPreview : preview(shown.input);
                 // This runtime has no provider reviewer, so Full access is honoured here.
-                const allowed = turn.approvalMode === "full" || !shown.ask
-                  || await approval.ask(shown.title, shownPreview ?? "This tool has no arguments.", shown.grant);
+                const floored = approval.floored({ full: turn.approvalMode === "full", threadId: turn.threadId, botId: turn.botId, shown, summary: shownPreview });
+                const allowed = !floored && (turn.approvalMode === "full" || !shown.ask
+                  || await approval.ask(shown.title, shownPreview ?? "This tool has no arguments.", shown.grant));
                 abort.signal.throwIfAborted();
                 emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
                   title: shown.title, ...(shownPreview ? { input: shownPreview } : {}),
@@ -767,7 +771,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                   }
                 } else {
                   denials.push(shown.title);
-                  result = { ok: false, text: "Permission denied or expired; the tool was not executed." };
+                  result = { ok: false, text: refusal(floored, (message) => emit({ ...base(turn.threadId, turnId), type: "runtime.notice", message })) };
                 }
               }
             } catch (error) {
@@ -882,8 +886,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         return () => listeners.delete(listener);
       },
     },
-    generateText: async (prompt, { signal, onUsage } = {}) => {
-      const model = options.generateModel?.() ?? options.models().default;
+    generateText: async (prompt, { signal, onUsage, model: named } = {}) => {
+      const model = named ?? options.generateModel?.() ?? options.models().default;
       const { text, reasoning, toolCalls } = await complete([{ role: "user", content: prompt }], model, false, signal, undefined, [], onUsage);
       if (toolCalls.length) throw new ChatProtocolError("provider returned tool calls to a text-only helper");
       return text.trim() ? text : reasoning;

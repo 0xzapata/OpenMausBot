@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordEvents } from "../testing/events.ts";
-import { buildTurnContext, NATIVELY_REPLAYING_DRIVER_KINDS } from "../turn-context.ts";
+import { buildTurnContext, replaysNatively } from "../turn-context.ts";
 import { instanceConfigs } from "../config.ts";
 import { OpenAICompatDriver } from "./openai-compat.ts";
 
@@ -499,7 +499,7 @@ describe("OpenAICompatDriver", () => {
       rewound: true,
       fresh: false,
       externallyUpdated: false,
-      replaysNatively: NATIVELY_REPLAYING_DRIVER_KINDS.includes("openai-compat"),
+      replaysNatively: replaysNatively("openai-compat"),
     });
     const inst = await OpenAICompatDriver.create({
       instanceId: "test-u25",

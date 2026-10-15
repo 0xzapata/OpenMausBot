@@ -90,7 +90,7 @@ describe("Computer panel Works on", () => {
   it("lists neither on My Cloud, and says why", () => {
     const markup = computerTab({ cloudHome: true });
     expect(places(markup)).toEqual(["Auto", "Cloud computer", "Browser", "Off"]);
-    expect(markup).toContain("Choose where this bot works. To let it use your Mac, turn on Let My Cloud use this Mac");
+    expect(markup).toContain("Choose where this bot works. To let it use your computer, turn on Let My Cloud use this computer");
   });
 });
 

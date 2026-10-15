@@ -319,6 +319,12 @@ servers gets the enabled tools on its next task.
   `browser`, `phone`, `dweb`, `ogb`, …) so a custom entry can never shadow
   a built-in tool surface. Names are lowercase letters/digits/`_`/`-`, max
   32 chars, starting with a letter.
+- **Environment names are checked.** `OMB_*` and `OGB_*` are refused: Codex
+  hands MCP children their variables from one shared environment, and those
+  names carry OpenMausBot's own routing and bearers. `ELECTRON_RUN_AS_NODE`
+  is accepted as `1` only — the value OpenMausBot's own proxies use — so a
+  server bundled inside an Electron app (its binary as the command) can run
+  as node; any other value would overwrite what the built-in proxies need.
 - **One bad entry never takes the fleet down.** Invalid entries are skipped
   with a logged reason; the rest still mount.
 - **Credentials are write-only in the UI.** The API returns environment and

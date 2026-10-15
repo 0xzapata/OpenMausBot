@@ -26,7 +26,7 @@
 //   FAKE_ACP_RPC_FAILURE_METHOD  initialize, session/new or session/prompt (default)
 //   FAKE_ACP_RPC_FAILURE_GATE  hold the error until this file exists
 //   FAKE_ACP_RPC_FAILURE_AFTER_OUTPUT  emit text and a tool result before failing
-//   FAKE_ACP_RPC_FAILURE_AFTER_USAGE  emit scripted usage updates before failing
+//   FAKE_ACP_RPC_FAILURE_AFTER_USAGE  emit the scripted usage updates and FAKE_ACP_UPDATES_FILE's before failing
 //   FAKE_ACP_LOAD_ERROR  JSON-RPC error returned by session/load
 //   FAKE_ACP_MODELS  model ids: opencode-shaped configOptions and set_config_option (-32602 for others);
 //     a new session starts on AGY_ACP_DEFAULT_MODEL when set, taken unchecked as agy_acp_server 1.1.1 does
@@ -38,9 +38,10 @@
 //   FAKE_ACP_CONFIG_UPDATES  JSON [{after, sessionId?, configOptions, replay?}] emitted after the named response
 //   FAKE_ACP_USAGE_ROOT  usage at the prompt result's root, as opencode 1.18.18 sends it
 //   FAKE_ACP_USAGE_UPDATES_FILE  JSON numbers re-read per prompt, each sent as usage_update {used, size: 200000}
+//   FAKE_ACP_UPDATES_FILE  JSON array of session/update params ({update, _meta?}) re-read per prompt, sent as-is
 //   FAKE_ACP_MODE_ACK_FILE  while it exists a mode switch answers "empty" (no configOptions) or "error"
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
 
@@ -203,8 +204,27 @@ const dumpEnv = Object.fromEntries(
   ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]] as const)),
 );
 const dumpState: Record<string, unknown> = { argv, env: dumpEnv, pid: process.pid };
+const writeDumpAtomic = (path: string, contents: string): void => {
+  const tmp = `${path}.${process.pid}.tmp`;
+  const delays = [5, 10, 20, 40, 80];
+  try {
+    writeFileSync(tmp, contents);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        renameSync(tmp, path);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? "";
+        if (!["EPERM", "EACCES", "EBUSY"].includes(code) || attempt >= delays.length) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delays[attempt]);
+      }
+    }
+  } finally {
+    try { unlinkSync(tmp); } catch {}
+  }
+};
 if (process.env.FAKE_ACP_DUMP) {
-  writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
+  writeDumpAtomic(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
 }
 if (process.env.FAKE_ACP_LAUNCH_COUNT_FILE) {
   let launches = 0;
@@ -371,7 +391,15 @@ async function listMcpTools(entry: AnyMcpEntry, handshake: unknown): Promise<str
 }
 let liveSession: string | null = null;
 let rpcFailure: unknown = null;
-function emitUsageUpdates(): void {
+function emitSessionReports(): void {
+  const updatesFile = process.env.FAKE_ACP_UPDATES_FILE;
+  if (updatesFile && existsSync(updatesFile)) {
+    try {
+      for (const params of JSON.parse(readFileSync(updatesFile, "utf8")) as unknown[]) {
+        if (params && typeof params === "object") out({ jsonrpc: "2.0", method: "session/update", params });
+      }
+    } catch {}
+  }
   const usageFile = process.env.FAKE_ACP_USAGE_UPDATES_FILE;
   if (usageFile && existsSync(usageFile)) {
     try {
@@ -388,7 +416,7 @@ function failRpc(msg: { method: string; id: unknown }): boolean {
   const failureFile = process.env.FAKE_ACP_RPC_FAILURE_FILE;
   if (failureFile && existsSync(failureFile)) rpcFailure = JSON.parse(readFileSync(failureFile, "utf8"));
   if (!rpcFailure) return false;
-  if (msg.method === "session/prompt" && process.env.FAKE_ACP_RPC_FAILURE_AFTER_USAGE === "1") emitUsageUpdates();
+  if (msg.method === "session/prompt" && process.env.FAKE_ACP_RPC_FAILURE_AFTER_USAGE === "1") emitSessionReports();
   if (msg.method === "session/prompt" && process.env.FAKE_ACP_RPC_FAILURE_AFTER_OUTPUT === "1") playTurn();
   const fail = () => {
     recordMethod(`${msg.method}.error`);
@@ -576,7 +604,7 @@ function handle(msg: any) {
       if (process.env.FAKE_ACP_DUMP) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.session.json`, JSON.stringify(msg.params));
         dumpState.mcpServers = servers;
-        writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
+        writeDumpAtomic(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
       }
       agentsMcp = servers.find((s: any) => s?.name === "agents") ?? null;
       sessionMcp = servers as AnyMcpEntry[];
@@ -758,7 +786,7 @@ function handle(msg: any) {
         return;
       }
       const complete = () => {
-        emitUsageUpdates();
+        emitSessionReports();
         recordMethod("session/prompt.result");
         result(
           msg.id,

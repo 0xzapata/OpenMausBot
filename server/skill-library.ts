@@ -2,13 +2,17 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
 import { z } from "zod";
 
 import { writeFileAtomic } from "./atomic.ts";
-import { DATA_DIR } from "./config.ts";
+import { DATA_DIR, type AppConfig } from "./config.ts";
 import { isSkillName, parseSkillMd, SKILL_FILE_MAX_BYTES } from "../shared/skill-md.ts";
 import type { SkillPackageStamp } from "./skills.ts";
+
+export function skillsLibraryEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.skillsLibrary === true;
+}
 
 export interface SkillManifest {
   id: string;
@@ -145,6 +149,17 @@ export interface SkillLibraryEntry {
   warnings: string[];
   skippedFiles: string[];
   package?: SkillPackageStamp;
+  /** Replaced descriptions, oldest first, with when each was replaced, so a running conversation keeps its prompt. */
+  descriptionHistory?: Array<{ description: string; until: number }>;
+}
+
+/** Pruned by age, never by count: providers keep a prompt cache an hour at most. */
+export const DESCRIPTION_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function libraryDescriptionsAt(startedAt: number | undefined, root: string = skillsLibraryRoot()): (name: string, current: string) => string {
+  if (startedAt === undefined) return (_name, current) => current;
+  const index = readSkillLibraryIndex(root);
+  return (name, current) => index[name]?.descriptionHistory?.find((change) => change.until > startedAt)?.description ?? current;
 }
 
 export interface LibrarySkillListing {
@@ -182,6 +197,7 @@ const skillLibraryEntrySchema = z.object({
     w: z.string().regex(/^[a-f0-9]{64}$/),
     via: z.literal("preset").optional(),
   }).optional(),
+  descriptionHistory: z.array(z.object({ description: z.string(), until: z.number() })).optional(),
 });
 const skillLibraryIndexSchema = z.record(z.string(), skillLibraryEntrySchema);
 
@@ -357,4 +373,88 @@ export function setLibrarySkillReviewState(
   writeSkillLibraryIndex(root, index);
   skillLibraryEvents.emit("invalidate", { kind: "review-state", name });
   return librarySkillListing(root, entry);
+}
+
+/** Applied only while the stored bytes still match `expectSha256`; otherwise `stale` and nothing changes. */
+export function updateLibrarySkill(input: {
+  name: string;
+  instructions: string;
+  expectSha256: string;
+  source?: string;
+  root?: string;
+}): LibrarySkillListing | { stale: true } | { error: string } {
+  const root = input.root ?? skillsLibraryRoot();
+  if (!isSkillName(input.name)) return { error: "invalid skill name" };
+  if (Buffer.byteLength(input.instructions, "utf8") > SKILL_FILE_MAX_BYTES) {
+    return { error: `SKILL.md is larger than ${SKILL_FILE_MAX_BYTES / 1024}KB` };
+  }
+  const parsed = parseSkillMd(input.instructions);
+  if ("error" in parsed) return parsed;
+  if (parsed.name !== input.name) return { error: `the skill is named "${parsed.name}", not "${input.name}"` };
+  const indexRead = readSkillLibraryIndexState(root);
+  if ("error" in indexRead) return indexRead;
+  const index = indexRead.index;
+  const entry = index[input.name];
+  if (!entry || entry.sha256 !== input.expectSha256 || !libraryContentMatches(root, entry)) return { stale: true };
+  const sha256 = sha256Hex(input.instructions);
+  const now = Date.now();
+  const descriptionHistory = parsed.description === entry.description
+    ? entry.descriptionHistory
+    : [...(entry.descriptionHistory ?? []), { description: entry.description, until: now }];
+  const keptHistory = descriptionHistory?.filter((change) => now - change.until < DESCRIPTION_HISTORY_MS);
+  const next: SkillLibraryEntry = {
+    ...entry,
+    description: parsed.description,
+    sha256,
+    importedAt: new Date(now).toISOString(),
+    ...(keptHistory?.length ? { descriptionHistory: keptHistory } : {}),
+    ...(input.source ? { source: input.source } : {}),
+    ...(parsed.tags?.length ? { tags: parsed.tags } : {}),
+  };
+  if (!parsed.tags?.length) delete next.tags;
+  if (!keptHistory?.length) delete next.descriptionHistory;
+  // Bytes, then index: a crash between leaves the entry reading "changed after review", never silently enabled.
+  writeFileAtomic(join(librarySkillDirectory(root, input.name), "SKILL.md"), input.instructions, { mode: 0o600 });
+  index[input.name] = next;
+  writeSkillLibraryIndex(root, index);
+  skillLibraryEvents.emit("invalidate", { kind: "update", name: input.name });
+  return librarySkillListing(root, next);
+}
+
+/** Bytes move to the write-once archive before the index entry goes; they are never deleted. */
+export function retireLibrarySkill(
+  name: string,
+  expectSha256: string,
+  root: string = skillsLibraryRoot(),
+): { retired: true } | { stale: true } | { error: string } {
+  if (!isSkillName(name)) return { error: "invalid skill name" };
+  const indexRead = readSkillLibraryIndexState(root);
+  if ("error" in indexRead) return indexRead;
+  const index = indexRead.index;
+  const entry = index[name];
+  if (!entry || entry.sha256 !== expectSha256 || !libraryContentMatches(root, entry)) return { stale: true };
+  const directory = librarySkillDirectory(root, name);
+  const base = join(root, "archive", "retired", `${name}.${expectSha256}`);
+  let destination = base;
+  try {
+    mkdirSync(join(root, "archive", "retired"), { recursive: true, mode: 0o700 });
+    let suffix = 1;
+    while (existsSync(destination)) destination = `${base}.${suffix++}`;
+    renameSync(directory, destination);
+  } catch (error) {
+    return { error: `could not archive the library copy: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  delete index[name];
+  try {
+    writeSkillLibraryIndex(root, index);
+  } catch (error) {
+    try {
+      renameSync(destination, directory);
+    } catch {
+      // The index still lists the skill, which reads "changed after review" until restored from the archive.
+    }
+    return { error: `could not update the skills library index: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  skillLibraryEvents.emit("invalidate", { kind: "remove", name });
+  return { retired: true };
 }
