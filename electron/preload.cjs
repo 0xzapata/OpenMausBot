@@ -39,7 +39,7 @@ ipcRenderer.on("app:open-settings", (_event, section) => {
 const localOrigin = process.argv.find((arg) => arg.startsWith("--omb-local-origin="))?.slice("--omb-local-origin=".length) ?? null;
 const isLocalPage = !localOrigin || location.origin === localOrigin;
 const savedServer = id => isLocalPage && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [id] : [];
-const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudPlan"]);
+const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudSync", "cloudPlan"]);
 function updaterOffered() {
   try { return ipcRenderer.sendSync("update:offered") === true; } catch { return false; }
 }
@@ -288,6 +288,19 @@ const bridge = {
       save: input => ipcRenderer.invoke("lending:save", input),
       stop: () => ipcRenderer.invoke("lending:stop"),
     },
+    sync: {
+      state: () => ipcRenderer.invoke("sync:state"),
+      set: input => ipcRenderer.invoke("sync:set", input),
+      trash: () => ipcRenderer.invoke("sync:trash"),
+      restore: entryId => ipcRenderer.invoke("sync:restore", entryId),
+      open: input => ipcRenderer.invoke("sync:open", input),
+      upgrade: () => ipcRenderer.invoke("sync:upgrade"),
+      onState: cb => {
+        const handler = (_event, state) => cb(state);
+        ipcRenderer.on("sync:state-changed", handler);
+        return () => ipcRenderer.removeListener("sync:state-changed", handler);
+      },
+    },
   } : undefined,
   cloudMove: process.argv.includes("--omb-company-desktop=1") ? {
     state: id => ipcRenderer.invoke("cloud-move:state", ...savedServer(id)),
@@ -304,6 +317,11 @@ const bridge = {
   } : undefined,
   cloudLending: process.argv.includes("--omb-company-desktop=1") ? {
     open: () => ipcRenderer.invoke("cloud-lending:open"),
+  } : undefined,
+  // Choose on this PC from a bot's settings on My Cloud: the person picks in a native dialog; the page never reads paths.
+  cloudSync: process.argv.includes("--omb-company-desktop=1") ? {
+    linkFolder: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-sync:link-folder") : Promise.reject(new Error("Choose the button to pick a folder.")),
   } : undefined,
   cloudPlan: process.argv.includes("--omb-company-desktop=1") ? {
     state: () => ipcRenderer.invoke("cloud-plan:state"),

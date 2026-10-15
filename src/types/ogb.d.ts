@@ -123,6 +123,8 @@ const __APP_VERSION__: string;
       /** The Cloud's setup checklist: shows the lending switch in this app's
        * own Settings → OMB Cloud (leaving the Cloud's page). */
       cloudLending?: { open(): Promise<void> };
+      /** Choose on this PC: links a folder on this computer to My Cloud and answers its Cloud copy, or null if cancelled. */
+      cloudSync?: { linkFolder(): Promise<{ cloudPath: string } | null> };
       /** Settings on the person's own Cloud: the plan, read only. */
       cloudPlan?: import("../../electron/cloud-account.mjs").CloudPlanBridge;
       companyBackups?: {
