@@ -2515,5 +2515,18 @@
   "room.holds.resume": "恢复 {name}",
   "room.holds.stop": "停止 {name}",
   "room.holds.stopTitle": "只停止 {name}，房间里的其他成员继续工作",
-  "room.holds.avatarHeld": "{name} — 已暂停（由你停止）"
+  "room.holds.avatarHeld": "{name} — 已暂停（由你停止）",
+  "apiInstances.title": "更多服务器",
+  "apiInstances.subtitle": "再添加一个兼容 OpenAI 的服务器，使用它自己的基础 URL 和 API 密钥。所有 bot 都可以选用。",
+  "apiInstances.name": "显示名称",
+  "apiInstances.url": "基础 URL",
+  "apiInstances.key": "API 密钥",
+  "apiInstances.models": "模型 ID，用逗号分隔（可选）",
+  "apiInstances.modelsHint": "留空即可自动检测模型。如果模型选择器只显示示例模型，说明该服务器不提供模型列表，请在这里填写。",
+  "apiInstances.add": "添加服务器",
+  "apiInstances.adding": "正在添加…",
+  "apiInstances.remove": "移除 {name}",
+  "apiInstances.refreshModels": "重新检测 {name} 的模型",
+  "apiInstances.empty": "还没有其他服务器。",
+  "apiInstances.failed": "无法保存该服务器。请检查各项后重试。"
 }

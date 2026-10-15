@@ -4444,5 +4444,18 @@
   "teamMemory.history": "Previous versions",
   "teamMemory.restore": "Restore text",
   "teamMemory.pin": "Pin {name}",
-  "teamMemory.unpin": "Unpin {name}"
+  "teamMemory.unpin": "Unpin {name}",
+  "apiInstances.title": "More servers",
+  "apiInstances.subtitle": "Add another OpenAI-compatible server with its own base URL and API key. Every bot can choose it.",
+  "apiInstances.name": "Display name",
+  "apiInstances.url": "Base URL",
+  "apiInstances.key": "API key",
+  "apiInstances.models": "Model IDs, separated by commas (optional)",
+  "apiInstances.modelsHint": "Leave the model IDs empty to detect them. If the model picker then shows only sample models, this server does not list its models: enter them here.",
+  "apiInstances.add": "Add server",
+  "apiInstances.adding": "Adding…",
+  "apiInstances.remove": "Remove {name}",
+  "apiInstances.refreshModels": "Detect models for {name} again",
+  "apiInstances.empty": "No other servers yet.",
+  "apiInstances.failed": "Couldn't save the server. Check the fields and try again."
 }

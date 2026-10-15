@@ -14581,7 +14581,20 @@
       "room.holds.resume": "05f2dae7f5838c7161c94772fc285127afd6de3e26ccbb1b59fb041a8add27cd",
       "room.holds.stop": "300c88bb31db226580ea35a28b2e930ddb05f328b4e6a63601850a6643b882df",
       "room.holds.stopTitle": "839bb3d62635029c1a325673b80f91cb1f16f55ef6179bb37d54f65b634cfa90",
-      "room.holds.avatarHeld": "f11b17aba2842c436d93b02f138b32041eaed0abed7ce03e68e8aefbf671fe73"
+      "room.holds.avatarHeld": "f11b17aba2842c436d93b02f138b32041eaed0abed7ce03e68e8aefbf671fe73",
+      "apiInstances.title": "d5d88561c196b7a3c9161e9aecf82cf3c22dfeca4cdf0544dc906610167535f0",
+      "apiInstances.subtitle": "1f19fcb6fb1f9e64a154730f3594f163a38d938eecc2edb7b4fd2fd96d4b8f3a",
+      "apiInstances.name": "2b7f6a84de917e387539dbe441ca22056e793d738e6c50db30c3f569e4448df3",
+      "apiInstances.url": "70589413a3c9793339fcf764276727ac652fa7dfe2f15fb5671251303a52ca49",
+      "apiInstances.key": "16f0ee47f993d6270c9059450473eea493ca8ae037f8877782ae2bc176f24d18",
+      "apiInstances.models": "bb3b8b62ba13ae6abdf19d5a6d51c1f1febc93e52c3ed1ac657cdb46fd2d9231",
+      "apiInstances.modelsHint": "7398bf3a750846c01926849f20d634d2f8ac67fa736352e39efbe391a7980cb3",
+      "apiInstances.add": "1099b2a9965f4c54b3167cac90b2e35f1e9a0279b3c71b2dc493f9b279150aae",
+      "apiInstances.adding": "c6de6f45c827f464b161b668ae93192ce4e6585c4029d8dd71795cbd7f922719",
+      "apiInstances.remove": "e6a3c4a1250a6ad3f10faa22333e5e50a6ba78e5b28a3b26f5743d9f8c7ede93",
+      "apiInstances.refreshModels": "e02941c724226f34078fcecb136a334ee7a61ee81f07632f9be4fe021997f678",
+      "apiInstances.empty": "ddc8655e13eeb047e4ca2953782271878d3db6be801b604d23d8fa225f74a3be",
+      "apiInstances.failed": "a1c3bf780712478020bd28bd6f81293fb8e3a92c2ddff117b254155b617a17f1"
     },
     "zh-tw": {
       "whop.description": "1a07cf04ef17029448d3781415cbac16d54e66b821907a40d94e0e6349710e70",
