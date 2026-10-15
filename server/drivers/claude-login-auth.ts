@@ -78,6 +78,7 @@ const NOT_AVAILABLE = "This sign-in is no longer available. Start sign-in again.
 export class ClaudeLoginController {
   private flow: Flow | null = null;
   private logoutChild: ChildProcess | null = null;
+  private signingOut: Promise<void> | null = null;
   private disposed = false;
   private readonly options: ClaudeLoginOptions;
 
@@ -181,11 +182,24 @@ export class ClaudeLoginController {
   async dispose(): Promise<void> {
     this.disposed = true;
     await this.cancel();
+    // A stopped sign-out frees the account's lock once its pipes close, which can come after the exit cancel() waits for.
+    const signingOut = this.signingOut;
+    if (signingOut) await Promise.race([signingOut.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 1_500).unref())]);
     this.flow = null;
   }
 
   /** A sign-in in progress is never pulled away underneath the browser completing it. */
   async signOut(): Promise<void> {
+    const run = this.signOutNow();
+    this.signingOut = run;
+    try {
+      await run;
+    } finally {
+      if (this.signingOut === run) this.signingOut = null;
+    }
+  }
+
+  private async signOutNow(): Promise<void> {
     if (this.disposed) throw new Error("This provider was removed. Refresh Settings before signing out.");
     if (this.flow?.status.phase === "waiting") throw new Error("Finish or cancel the Claude sign-in in progress before signing out.");
     await this.flow?.stopping;
