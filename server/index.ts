@@ -8494,7 +8494,7 @@ async function startTurn(
   const turnLineIds = new Set(opts?.excludeMessageIds ?? []);
   const spoken = opts?.via === "call" || opts?.userMessage?.via === "call" ||
     (turnLineIds.size > 0 && store.messagesFor(threadId).some((message) => turnLineIds.has(message.id) && message.via === "call"));
-  console.error(turnStartLogLine({
+  console.log(turnStartLogLine({
     botId, text: resolvedImages.text, images: turnImages.length, depth: commsDepth, card: Boolean(opts?.cardContinuation), spoken,
   }));
   const instanceId = instance.instanceId;
