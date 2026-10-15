@@ -51,7 +51,8 @@ import { codexLoginCheck, codexLoginStatus, storedCodexLogin } from "./codex-log
 import { keyRejected, noteKeyAccepted, noteKeyRejected } from "../key-rejections.ts";
 import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
-import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
+import { parseProtocolAskQuestions, questionChoices } from "../../shared/ask-question.ts";
+import { codexQuestionReply, openAsyncQuestion, type CodexAsk } from "./codex-questions.ts";
 import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
 import { effectiveApprovalPolicy, effectiveApprovalsReviewer } from "./codex-approval-config.ts";
 import { canUseMcpServer } from "../../shared/tool-scope.ts";
@@ -628,7 +629,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       stop: () => Promise<boolean>;
       steer?: (text: string) => Promise<SteerOutcome>;
       turnId: string;
-      asks: Map<string, (behavior: "allow" | "deny" | "answer", message?: string, source?: "user" | "timeout" | "system") => void>;
+      asks: Map<string, CodexAsk>;
     }
     const active = new Map<string, Turn>();
 
@@ -862,7 +863,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         usageBaseline: undefined as { input: number; output: number; cachedInput: number } | undefined,
       };
 
-      const asks = new Map<string, (behavior: "allow" | "deny" | "answer", message?: string, source?: "user" | "timeout" | "system") => void>();
+      const asks = new Map<string, CodexAsk>();
       let nextId = 1;
       const sensitiveResponseIds = new Set<number>();
       const rpcPending = new Map<number, {
@@ -1112,15 +1113,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           if (!asks.delete(requestId)) return;
           clearTimeout(timer);
           if (isQuestion) {
-            // Only the person's reply is filed: system notes never occupy the slot the model reads as their words.
-            const mapped =
-              behavior === "answer" && source === "user" && typeof message === "string"
-                ? questionAnswersById(message, protocolQuestions ?? [])
-                : {};
-            // Null prototype: an id like __proto__ must not hit the inherited setter.
-            const answers: Record<string, { answers: string[] }> = Object.create(null);
-            for (const [id, answer] of Object.entries(mapped)) answers[id] = { answers: [answer] };
-            send({ jsonrpc: "2.0", id: msg.id, result: { answers } });
+            send({ jsonrpc: "2.0", id: msg.id, result: codexQuestionReply(behavior, message, source, protocolQuestions ?? []) });
           } else {
             send({
               jsonrpc: "2.0",
@@ -1304,6 +1297,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 state.sawStreamDelta = false;
                 emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: item.text });
               }
+              openAsyncQuestion(item, asks, steerActiveTurn, (event) => emit({ ...base(threadId, turnId), ...event }));
             } else if (item.type === "imageGeneration" && item.status !== "failed") {
               // The app-server returns the generated raster as base64 `result` and may expose a local
               // `savedPath`; use the bytes, never the provider-owned path.
@@ -1855,8 +1849,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const turn = active.get(threadId);
         const finish = turn?.asks.get(requestId);
         if (!finish) return "unavailable";
-        finish(decision.behavior, decision.message, "user");
-        return decision.behavior === "allow" ? "allowed-once" : decision.behavior === "answer" ? "answered" : "rejected";
+        return (await finish(decision.behavior, decision.message, "user"))
+          ?? (decision.behavior === "allow" ? "allowed-once" : decision.behavior === "answer" ? "answered" : "rejected");
       },
       hasSession: (threadId) => active.has(threadId),
       stopAll: async () => {

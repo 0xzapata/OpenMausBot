@@ -126,6 +126,16 @@ export function parseAskQuestions(input: unknown): AskQuestion[] | null {
   return questions.length ? questions : null;
 }
 
+/** Codex request_user_input_async's `{ title, options: string[] | null }` entries in the card's shape. Null unless one
+ * offers an option: a bare question already reads in the message text. */
+export function parseAsyncQuestions(entries: unknown): AskQuestion[] | null {
+  if (!Array.isArray(entries)) return null;
+  const questions = parseAskQuestions({
+    questions: entries.map((entry) => (isRecord(entry) ? { question: entry.title, options: entry.options } : null)),
+  });
+  return questions?.some((question) => question.options.length > 0) ? questions : null;
+}
+
 /** The one line the card subtitle and a spoken prompt show. */
 export function askQuestionSummary(questions: readonly AskQuestion[]): string {
   const first = questions[0]?.question ?? "";
