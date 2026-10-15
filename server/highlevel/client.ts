@@ -26,7 +26,8 @@ export const FORBIDDEN_PATHS = [
   /\/conversations\/messages/u,
   /\/conversations\/[^/]+\/messages\/[^/]+/u,
   /\/campaigns/u,
-  /\/workflows/u,
+  /\/workflows?\//u,
+  /\/workflows?$/u,
   /\/payments/u,
   /\/emails/u,
   /\/sms/u,
@@ -225,7 +226,7 @@ export class HighLevelClient {
     this.budget.set(locationId, recent);
   }
 
-  private async send(connection: HighLevelConnection, method: string, path: string, options: RequestOptions): Promise<Response> {
+  private async dispatch(connection: HighLevelConnection, method: string, path: string, options: RequestOptions): Promise<Response> {
     const url = new URL(`${this.apiUrl}${path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
     await this.spend(connection.locationId);
@@ -264,7 +265,7 @@ export class HighLevelClient {
     let waited = false;
     let retried5xx = false;
     for (;;) {
-      const response = await this.send(connection, method, path, options);
+      const response = await this.dispatch(connection, method, path, options);
       if (response.ok) return this.body(response);
       const body = await this.body(response);
       if (response.status === 401 && !refreshed) {

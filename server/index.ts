@@ -9143,10 +9143,7 @@ async function startTurn(
         const data = dataIntegration(bot.id, { threadId, generation: dispatchClaimId });
         if (data) integrations.data = data;
       }
-      if (liveBot && instance.adapter.capabilities.highlevelMcp === true) {
-        const crm = highlevelIntegration(liveBot, { threadId, generation: dispatchClaimId });
-        if (crm) integrations.highlevel = crm;
-      }
+      if (liveBot && instance.adapter.capabilities.highlevelMcp === true) { const crm = highlevelIntegration(liveBot, { threadId, generation: dispatchClaimId }); if (crm) integrations.highlevel = crm; }
       const mountedComputer = surfaceOfComputerKind(computerKind);
       if (
         liveBot &&
@@ -11026,10 +11023,7 @@ async function runClaimedGroupMemberTurn(
     const data = dataIntegration(readyBot.id, { threadId, generation: internalGeneration });
     if (data) integrations.data = data;
   }
-  if (instance.adapter.capabilities.highlevelMcp === true) {
-    const crm = highlevelIntegration(readyBot, { threadId, generation: internalGeneration });
-    if (crm) integrations.highlevel = crm;
-  }
+  if (instance.adapter.capabilities.highlevelMcp === true) { const crm = highlevelIntegration(readyBot, { threadId, generation: internalGeneration }); if (crm) integrations.highlevel = crm; }
   if (roomPlan.browser && !(roomPlan.computer === undefined && roomTeamComputer)) {
     const selectedProfile = readyBot.browserProfile;
     const browser = await browserIntegration(readyBot.id, selectedProfile, { threadId, generation: internalGeneration });
@@ -14796,8 +14790,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       // The CRM tokens stay here; the agent process holds only the turn's capability, and every call gets the live bot's verdict.
       if (method === "POST" && path === HIGHLEVEL_INTERNAL_MCP_PATH) {
-        const body = await readInternalBody();
-        return json(res, 200, { result: await highlevelHost.handle(body, internalCapability, requireActiveInternalCapability) });
+        return json(res, 200, { result: await highlevelHost.handle(await readInternalBody(), internalCapability, requireActiveInternalCapability) });
       }
       if (method === "POST" && path === "/api/internal/phone/claim") {
         requireActiveInternalCapability();
@@ -17109,11 +17102,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     if (method === "GET" && path === "/api/connectors/tools") {
       const availability = composio.connectorAvailability(cfg);
+      const highlevelTools = highlevelHost.toolListing();
       if (availability !== "configured") {
-        return json(res, 200, { configured: false, services: {} });
+        return json(res, 200, { configured: Boolean(highlevelTools), services: { ...highlevelTools } });
       }
       try {
-        return json(res, 200, { configured: true, services: await composio.listConnectorTools(cfg) });
+        return json(res, 200, { configured: true, services: { ...await composio.listConnectorTools(cfg), ...highlevelTools } });
       } catch (e) {
         return json(res, 502, { configured: true, services: {}, error: e instanceof Error ? e.message : String(e) });
       }

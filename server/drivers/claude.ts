@@ -1162,13 +1162,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           : { ...turn.integrations.browser };
         allowed.push("mcp__browser");
       }
-      if (turn.integrations?.data) {
-        mcpServers.data = { ...turn.integrations.data };
-        allowed.push("mcp__data");
-      }
-      if (turn.integrations?.highlevel) {
-        mcpServers.highlevel = { ...turn.integrations.highlevel };
-        allowed.push("mcp__highlevel");
+      for (const name of ["data", "highlevel"] as const) {
+        if (turn.integrations?.[name]) { mcpServers[name] = { ...turn.integrations[name] }; allowed.push(`mcp__${name}`); }
       }
       if (turn.integrations?.dweb) {
         mcpServers.dweb = {
@@ -2101,8 +2096,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           composioMcp: true,
           phoneMcp: true,
           browserMcp: true,
-          dataMcp: true,
-          highlevelMcp: true,
+          dataMcp: true, highlevelMcp: true,
           images: true,
           nativeImageInput: true,
           effortLevels: ["low", "medium", "high", "xhigh", "max"],

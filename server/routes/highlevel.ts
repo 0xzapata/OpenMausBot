@@ -43,8 +43,8 @@ export function createHighLevelRoutes(deps: HighLevelRouteDeps): RouteHandler {
           return json(res, 415, { error: "content-type must be application/json" });
         }
         const body = await readBody(req, 20_480);
-        const token = typeof body?.token === "string" ? body.token : "";
-        const locationId = typeof body?.locationId === "string" ? body.locationId : "";
+        const token = typeof body?.token === "string" ? body.token.trim() : "";
+        const locationId = typeof body?.locationId === "string" ? body.locationId.trim() : "";
         if (!token) return json(res, 400, { error: "Paste a Private Integration token. It starts with pit-." });
         if (!locationId) return json(res, 400, { error: "Enter the location id (Settings → Business Profile in HighLevel)." });
         return json(res, 200, await service.connectWithToken(token, locationId));

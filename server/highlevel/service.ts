@@ -1,7 +1,7 @@
 // The HighLevel connection as one object: its store, API client, sign-in flow and the status the app shows.
 // Desktop and Cloud home build the same service; only DATA_DIR and the relay URL differ.
 import type { HighLevelStatus } from "../../shared/highlevel.ts";
-import { HighLevelClient, HighLevelError, lookupLocation } from "./client.ts";
+import { HIGHLEVEL_API_ENV, HighLevelClient, HighLevelError, lookupLocation } from "./client.ts";
 import { createHighLevelRelay, highlevelRelayUrl, type HighLevelRelay } from "./relay.ts";
 import { HighLevelSignIn } from "./sign-in.ts";
 import { HighLevelStore } from "./store.ts";
@@ -39,9 +39,11 @@ export function createHighLevelService(options: HighLevelServiceOptions): HighLe
   const now = options.now ?? Date.now;
   const relayUrl = highlevelRelayUrl(env);
   const relay: HighLevelRelay | null = relayUrl ? createHighLevelRelay(relayUrl, fetchImpl) : null;
+  // The API base is fixed; the env override exists for tests against a fake HighLevel.
+  const apiUrl = env[HIGHLEVEL_API_ENV];
   const store = new HighLevelStore({ dataDir: options.dataDir, now });
-  const client = new HighLevelClient({ store, refresh: relay ? (token) => relay.refresh(token) : null, fetch: fetchImpl, now });
-  const lookupName = async (accessToken: string, locationId: string) => (await lookupLocation({ token: accessToken, locationId, fetch: fetchImpl })).name;
+  const client = new HighLevelClient({ store, refresh: relay ? (token) => relay.refresh(token) : null, apiUrl, fetch: fetchImpl, now });
+  const lookupName = async (accessToken: string, locationId: string) => (await lookupLocation({ token: accessToken, locationId, apiUrl, fetch: fetchImpl })).name;
   const signIn = relay ? new HighLevelSignIn({ relay, store, lookupLocationName: lookupName, now, pollMs: options.pollMs, onChange: options.onChange }) : null;
 
   const status = (): HighLevelStatus => {
@@ -74,7 +76,7 @@ export function createHighLevelService(options: HighLevelServiceOptions): HighLe
       const trimmed = token.trim();
       if (!PIT.test(trimmed)) throw new HighLevelError("Paste a Private Integration token. It starts with pit-.", { status: 400 });
       if (!LOCATION_ID.test(locationId.trim())) throw new HighLevelError("Enter the location id (Settings → Business Profile in HighLevel).", { status: 400 });
-      const location = await lookupLocation({ token: trimmed, locationId: locationId.trim(), fetch: fetchImpl });
+      const location = await lookupLocation({ token: trimmed, locationId: locationId.trim(), apiUrl, fetch: fetchImpl });
       if (signIn) for (const flow of [signIn.active()]) if (flow) signIn.cancel(flow.flowId);
       store.put({ kind: "token", accessToken: trimmed, locationId: location.id, ...(location.companyId ? { companyId: location.companyId } : {}), locationName: location.name, scopes: "" });
       options.onChange?.();
