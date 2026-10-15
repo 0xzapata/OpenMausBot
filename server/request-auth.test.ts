@@ -403,6 +403,7 @@ describe("resolveRequestAuth", () => {
     ["DELETE", "/api/fleet/workspaces/acme"],
     ["POST", "/api/fleet/upgrade"],
     ["POST", "/api/instances/antigravity/auth/complete"],
+    ["GET", "/api/computers/usage"],
   ])("requires admin for server Settings: %s %s", (method, path) => {
     expect(requiredScope(method, path.split("?")[0]!)).toBe("admin");
     const client = pairedToken(["client"]);
