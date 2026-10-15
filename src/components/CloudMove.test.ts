@@ -9,9 +9,12 @@ vi.mock("react", async original => ({ ...await original<typeof import("react")>(
   useRef: (initial: unknown) => { const index = f.index++; if (!(index in f.values)) f.values[index] = { current: initial }; return f.values[index]; },
   useEffect: (effect: EffectCallback) => { f.effects.push(effect); },
 }));
-import { CloudMoveImport, CloudMoveSettings, CloudMoveSuggestion, moveNextSteps, moveView } from "./CloudMove";
+const dispatch = vi.hoisted(() => vi.fn());
+vi.mock("@/state/store", () => ({ useStore: () => ({ dispatch }) }));
+import { CloudMoveImport, CloudMoveSettings, CloudMoveSuggestion, leftBehindToShare, moveNextSteps, moveView } from "./CloudMove";
+import { OpenFilesButton } from "./OpenFilesButton";
 
-type Node = ReactElement<{ children?: ReactNode; onClick?: () => void; disabled?: boolean }>;
+type Node = ReactElement<{ children?: ReactNode; onClick?: () => void; disabled?: boolean; suggest?: string[] }>;
 function nodes(value: ReactNode): Node[] { if (!isValidElement(value)) return []; const node = value as Node; return [node, ...Children.toArray(node.props.children).flatMap(nodes)]; }
 function render(component: () => ReactNode) {
   f.index = 0; f.effects = []; let tree: ReactNode;
@@ -155,6 +158,30 @@ it("after a copy from a PC, one line says which of its folders and files stayed 
   expect(moveNextSteps(done(VPS, { bots: 0, paths: ["C:\\Users\\Ada\\Desktop\\x.docx"] }))[0])
     .toBe("Instructions you copied mention files on this computer, like C:\\Users\\Ada\\Desktop\\x.docx. Those files didn't come over. Upload what your bots need to bots.example.test.");
   expect(moveNextSteps(done(VPS, undefined))).toEqual([expect.stringContaining("from your phone")]);
+});
+
+it("after a move to My Cloud, offers to share the folders left on this computer in Files, and only then", async () => {
+  const left = { bots: 2, paths: ["C:\\Users\\Ada\\Projects\\site", "C:\\Users\\Ada\\Desktop\\x.docx"] };
+  const done = (extra: Partial<CloudMoveState> = {}): CloudMoveState => ({ phase: "done", action: "move", destination: CLOUD, moved: { bots: 3, rooms: 0, chats: 2 }, leftBehind: left, ...extra });
+  const files = { state: vi.fn(), onState: vi.fn() };
+  expect(leftBehindToShare(done())).toBeNull();
+  vi.stubGlobal("window", { ogb: { platform: "darwin", cloudMove: bridge, cloudAccount: { files } } });
+  expect(leftBehindToShare(done())).toEqual(left.paths);
+  expect(leftBehindToShare(done({ destination: VPS }))).toBeNull();
+  expect(leftBehindToShare(done({ leftBehind: undefined }))).toBeNull();
+  expect(leftBehindToShare(done({ leftBehind: { bots: 1, paths: [] } }))).toBeNull();
+  expect(leftBehindToShare(done({ action: "restore" }))).toBeNull();
+  expect(leftBehindToShare(done({ phase: "failed" }))).toBeNull();
+  await ready(settings());
+  expect(render(settings()).html).not.toContain("Share them with My Cloud");
+  push(done());
+  const view = render(settings());
+  expect(view.html).toContain("Share them with My Cloud");
+  expect(view.nodes.find(node => node.type === OpenFilesButton)?.props.suggest).toEqual(left.paths);
+  OpenFilesButton({ label: "Share them with My Cloud", suggest: left.paths }).props.onClick();
+  expect(dispatch).toHaveBeenCalledWith({ type: "showFiles", suggest: left.paths });
+  vi.stubGlobal("window", { ogb: { platform: "darwin", cloudMove: bridge, remoteClient: { active: true }, cloudAccount: { files } } });
+  expect(leftBehindToShare(done())).toBeNull();
 });
 
 it("every state reads as one sentence and one next step, for the Cloud and any other server", () => {

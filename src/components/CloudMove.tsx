@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { keepFoldersInSync, noteMovePhase, noteMoveStart, setKeepFoldersInSync } from "./cloud-move-sync";
 import type { CloudMoveBridge, CloudMoveOverview, CloudMoveState } from "../../electron/cloud-move.mjs";
 import type { LocaleKey } from "@/locales";
+import { cloudFilesBridge } from "@/lib/cloud-files";
 import { activeLocale, t } from "@/lib/i18n";
+import { OpenFilesButton } from "./OpenFilesButton";
 import { Card } from "./SettingsPrimitives";
 
 const RUNNING = new Set<CloudMoveState["phase"]>(["preparing", "growing", "exporting", "uploading", "checking", "replacing", "restarting"]);
@@ -92,6 +93,12 @@ function leftBehindStep(state: CloudMoveState, server: string): string[] {
   return [state.destination?.kind === "cloud" ? `${line} ${t("cloudMove.leftBehindLend")}` : line];
 }
 
+/** What a finished move to My Cloud left on this computer, for Files to offer sharing; null for none, or without Files. */
+export function leftBehindToShare(state: CloudMoveState): string[] | null {
+  const paths = state.leftBehind?.paths ?? [];
+  return state.phase === "done" && state.action !== "restore" && state.destination?.kind === "cloud" && paths.length > 0 && cloudFilesBridge() ? paths : null;
+}
+
 export function moveNextSteps(state: CloudMoveState): string[] {
   if (state.phase !== "done" || state.action === "restore") return [];
   const server = state.destination?.name || t("cloudMove.thisServer");
@@ -154,7 +161,6 @@ export function useCloudMove(bridge: CloudMoveBridge | undefined, destination?: 
         if (finished) load();
         return;
       }
-      noteMovePhase(next.phase, next.destination?.kind, () => void window.ogb?.cloudAccount?.sync?.set({ enabled: true })?.catch(() => {}));
       setLive(next);
       if (finished) load();
     });
@@ -194,12 +200,13 @@ function MoveProgress({ state }: { state: CloudMoveState }) {
 }
 
 function moveStatus(view: MoveView, state: CloudMoveState) {
-  const message = view.message;
+  const message = view.message, share = leftBehindToShare(state);
   return <>
     {message && <p role={message.tone === "error" ? "alert" : message.tone === "note" ? "note" : "status"}
       className={message.tone === "error" ? "text-[13px] text-danger" : message.tone === "status" ? "text-[13px] text-ink-secondary" : "text-[13px] text-ink"}>{message.text}</p>}
     {view.running && <MoveProgress state={state} />}
     {view.next.map(line => <p key={line} className="text-[12px] text-ink-secondary">{line}</p>)}
+    {share && <OpenFilesButton label={t("cloudMove.shareLeftBehind")} suggest={share} />}
     {view.resumable && <p className="text-[12px] text-ink-secondary">{t("cloudMove.resumeNote", { server: view.server })}</p>}
   </>;
 }
@@ -207,17 +214,8 @@ function moveStatus(view: MoveView, state: CloudMoveState) {
 function moveButton(view: MoveView, move: CloudMoveHandle, onStart?: () => void) {
   const action = view.action;
   if (!action) return null;
-  const button = <button type="button" disabled={move.pending && action.kind !== "cancel"} className="ui-button"
-    onClick={() => { if (action.kind === "start") { noteMoveStart(); onStart?.(); } move.run(action.kind); }}>{action.label}</button>;
-  const toCloud = (move.state.destination ?? move.overview?.destination)?.kind === "cloud";
-  if (action.kind !== "start" || !toCloud || !window.ogb?.cloudAccount?.sync) return button;
-  return <>
-    <label className="flex w-full items-center gap-2 text-[13px] text-ink">
-      <input type="checkbox" defaultChecked={keepFoldersInSync()} onChange={(event) => setKeepFoldersInSync(event.target.checked)} />
-      {t("cloudMove.keepInSync")}
-    </label>
-    {button}
-  </>;
+  return <button type="button" disabled={move.pending && action.kind !== "cancel"} className="ui-button"
+    onClick={() => { if (action.kind === "start") onStart?.(); move.run(action.kind); }}>{action.label}</button>;
 }
 
 export function CloudMoveSettings({ destination, onClose }: { destination: string; onClose?: () => void }) {
