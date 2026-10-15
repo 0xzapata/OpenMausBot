@@ -5,6 +5,7 @@ import { z } from "zod";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { managedConnectorUnavailableReason } from "../shared/connector-availability.ts";
 import { planAccountLink } from "../shared/connector-account-link.ts";
+import type { CuratedConnectorSlug } from "../shared/connector-curated.ts";
 import { CONNECTOR_TOOL_NAME_PATTERN, type ConnectorToolGrant } from "../shared/wire.ts";
 import {
   CONNECTOR_ALLOWED_TOOLS_ENV,
@@ -1165,7 +1166,7 @@ export function toolkitCategories(raw: unknown): string[] | undefined {
   return unique.length ? unique : undefined;
 }
 
-const CURATED: ToolkitCard[] = [
+const CURATED: Array<ToolkitCard & { slug: CuratedConnectorSlug }> = [
   { slug: "slack", label: "Slack", blurb: "Post updates and read channels", domain: "slack.com", logo: null, categories: ["Communication"] },
   { slug: "github", label: "GitHub", blurb: "Issues, pull requests, and code", domain: "github.com", logo: null, categories: ["Developer tools"] },
   { slug: "gmail", label: "Gmail", blurb: "Read and send email", domain: "gmail.com", logo: null, categories: ["Communication"] },
@@ -1322,8 +1323,7 @@ export async function listToolkits(cfg: AppConfig): Promise<{ cards: ToolkitCard
         toolkitCache = { at: Date.now(), cards: uniqueCards, identity: identity!, pagination };
         return { cards: uniqueCards, source: "api", pagination };
       }
-    } catch {
-    }
+    } catch {}
   }
   return { cards: CURATED, source: "curated" };
 }
