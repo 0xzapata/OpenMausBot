@@ -212,7 +212,7 @@ try {
   const recordedSql = sheet.cards.find((card) => card.id === daily.id)?.sql;
   const openReceipt = () => evaluate(`[...document.querySelectorAll('${receipt} button')].find(element => element.textContent.includes('Open in Data')).click(); true`);
   const toggleReceiptSql = () => evaluate(`document.querySelector('${receipt} button[aria-expanded]').click(); true`);
-  const receiptSelected = `document.querySelector('[data-tour=computer-data]')?.getAttribute('aria-pressed') === 'true' && ${active}.length === 1 && ${active}[0].getAttribute('data-card-id') === ${JSON.stringify(daily.id)}`;
+  const receiptSelected = `document.querySelector('[data-tour=computer-data]')?.getAttribute('aria-selected') === 'true' && ${active}.length === 1 && ${active}[0].getAttribute('data-card-id') === ${JSON.stringify(daily.id)}`;
   await until(async () => await evaluate("!!document.querySelector('textarea[aria-label=\"Message Data review\"]')"), "Seeded conversation did not mount");
   console.log(JSON.stringify({ ok: true, ui: handlePath, ...fixture.info, pid: server?.pid, previewUrl: preview.previewUrl, botId: bot.id, rows: 100_000, cards: 20, serverChecks: "load, describe, SQL, charts, paging, filter, sort, export, restart" }, null, 2));
   if (check) {
@@ -233,7 +233,7 @@ try {
     await until(async () => await evaluate("!document.querySelector('[data-tour=computer-data]')"), "Computer panel did not close after Browser selection");
     await click("Bot's computer");
     await ui("wait-settle", "--timeout", "30");
-    assert.equal(await evaluate("document.querySelector('[data-tour=computer-browser]')?.getAttribute('aria-pressed') === 'true' && !document.querySelector('[data-testid=data-panel]')"), true, "Consumed receipt replaced Browser when reopening the panel");
+    assert.equal(await evaluate("document.querySelector('[data-tour=computer-browser]')?.getAttribute('aria-selected') === 'true' && !document.querySelector('[data-testid=data-panel]')"), true, "Consumed receipt replaced Browser when reopening the panel");
     await openReceipt();
     await until(async () => await evaluate(receiptSelected), "Clicking the receipt again did not mount its Data result");
     await ui("wait-settle", "--timeout", "30");
