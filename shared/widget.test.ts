@@ -408,5 +408,12 @@ describe("times, days, labels and progress", () => {
     const form = parsed({ type: "Card", children: [{ type: "Form", onSubmitAction: { type: "send" }, children: [{ type: "Input", name: "note", label: "Note" }, { type: "Button", label: "Send", submit: true }] }] });
     expect(widgetAdvice(form)).toBeUndefined();
     expect(widgetAdvice(sample("buildStatus"))).toBeUndefined();
+    const outside = parsed({ type: "Card", children: [{ type: "Input", name: "who", label: "Who" }, { type: "Form", onSubmitAction: { type: "send" }, children: [{ type: "Input", name: "note", label: "Note" }, { type: "Button", label: "Send", submit: true }] }] });
+    expect(widgetAdvice(outside)).toBe('"Who" sits outside the Form whose button is the only way to send, so it is never sent. Call update_widget with it inside that Form, or with confirm on the Card.');
+    const twoForms = parsed({ type: "Card", children: [
+      { type: "Form", onSubmitAction: { type: "a" }, children: [{ type: "Input", name: "one", label: "One" }, { type: "Button", label: "Send one", submit: true }] },
+      { type: "Form", onSubmitAction: { type: "b" }, children: [{ type: "Input", name: "two", label: "Two" }, { type: "Button", label: "Send two", submit: true }] },
+    ] });
+    expect(widgetAdvice(twoForms)).toBeUndefined();
   });
 });
