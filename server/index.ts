@@ -116,7 +116,7 @@ import * as composio from "./composio.ts";
 import { connectorCallFromFrame, connectorRefusalText, connectorScopeRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
 import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { buildRecall, recallRooms, recallThreadIds } from "./recall.ts";
+import { buildRecall, recallRooms, recallThreadIds, withRecalled } from "./recall.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { createCacheKeepWarm, type KeepWarmStatus, type KeepWarmTarget } from "./cache-keepwarm.ts";
@@ -424,7 +424,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
+import { correctiveRounds, createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -1321,10 +1321,6 @@ function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opt
     console.warn(`auto-recall failed for ${bot.id}: ${(err as Error).message}`);
     return "";
   }
-}
-
-function withRecalled(recalled: string, text: string): string {
-  return recalled ? `${recalled}\n\n${text}` : text;
 }
 
 /** A room is one transcript: a restricted bot's words would otherwise feed a teammate everyone can see. */
@@ -9266,6 +9262,7 @@ async function startTurn(
         ...(integrations.browser && browserIsThePlace(plan) ? { preloadBrowserTools: true } : {}),
         mcpFromUserConfig: claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp(),
         mcpCallTimeoutMs: mcpCallTimeoutMinutes(cfg) * 60_000,
+        toolErrorCorrectiveRounds: correctiveRounds(cfg),
         cwd,
       })), () => !directTurnClaimExists(bot.id, dispatchClaimId, threadId), async () => {
         await instance.adapter.interruptTurn(threadId).catch(() => {});
@@ -11388,6 +11385,7 @@ async function runClaimedGroupMemberTurn(
         ...(integrations.browser && browserIsThePlace(roomPlan) ? { preloadBrowserTools: true } : {}),
         mcpFromUserConfig: roomUserMcp,
         mcpCallTimeoutMs: mcpCallTimeoutMinutes(cfg) * 60_000,
+        toolErrorCorrectiveRounds: correctiveRounds(cfg),
         ...(instance.instanceId === readyBot.modelSelection.instanceId
           ? memberTurnSelection(readyBot.modelSelection)
           : { model: instance.models.default }),

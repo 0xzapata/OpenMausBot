@@ -1101,8 +1101,15 @@ off by default, also tells the bot:
 
 The note needs an engine that accepts a message in the middle of a turn
 (Claude Code, Codex, Pi, Muse Code). ACP agents cannot take one, so they get
-only the stop, and only if you set it. Bots on API models and turns in a room
-are not covered yet.
+only the stop, and only if you set it. The note and the stop do not cover bots
+on API models or turns in a room yet.
+
+Bots on API models (xAI, Mistral, Groq, Cerebras, Meta, MiniMax or an
+OpenAI-compatible endpoint) end a turn as failed when a tool call failed and
+the bot then answered. With the loop guard on, set `loopGuard.correctiveRounds`
+(0-5, default 0) and such a bot is sent back to re-run the failed call up to
+that many times first; the turn counts as done only if the tools it runs after
+that succeed. A tool call that was denied is never sent back.
 
 ## Updating
 

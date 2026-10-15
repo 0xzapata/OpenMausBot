@@ -186,6 +186,7 @@ function replayDelivered(
   return { content, matched: found.map(({ record }) => record), volatile };
 }
 
+const CORRECTIVE_ROUND = "[OpenMausBot: a tool call in this turn failed (its result is marked ok:false). Re-run the failed operations with corrected inputs where possible, check the results, then give your final answer. Do not report results you did not get.]";
 const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
 
 export function announcesAction(text: string): boolean {
@@ -582,6 +583,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       let stopReason: string | null = null;
       let failure: string | undefined;
       let toolFailed = false;
+      let correctiveRounds = 0;
       const denials: string[] = [];
       const seenCalls = new Set<string>();
       let nudged = false;
@@ -691,7 +693,12 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               continue;
             }
             if (toolFailed) {
-              // A failed or denied tool op ends the turn: a person's "no" is never answered with another attempt.
+              // A person's "no" is never answered with another attempt; a failure may first get the configured corrective rounds.
+              if (!denials.length && correctiveRounds < (turn.toolErrorCorrectiveRounds ?? 0)) {
+                correctiveRounds += 1;
+                messages.push({ role: "user", content: CORRECTIVE_ROUND });
+                continue;
+              }
               stopReason = "tool_error";
               throw new ChatProtocolError("One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.");
             }
@@ -709,6 +716,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             ...(completion.protocolReasoning && !reasoningReplayRejected.has(model) ? { [options.reasoningReplayField ?? "reasoning_content"]: completion.protocolReasoning } : {}),
             ...(completion.protocolReasoningDetails.length ? { reasoning_details: completion.protocolReasoningDetails } : {}),
           });
+          // After a corrective round, the failure stays pending only until the bot runs tools again.
+          if (correctiveRounds && !denials.length) toolFailed = false;
           const screenshotParts: ChatContentPart[] = [];
           for (const call of completion.toolCalls) {
             abort.signal.throwIfAborted();
