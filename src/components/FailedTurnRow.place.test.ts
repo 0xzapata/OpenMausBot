@@ -1,7 +1,4 @@
-// A failed turn whose place could not be used, as the app shows it: the row's
-// stored state worded again (shared/place-view.ts) as one line and at most
-// one button, in the reader's role and mode. The phones read only the row's
-// English words, so those carry the same line and the same action.
+// The phones read only the row's English words, so those carry the same line and action.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,11 +34,9 @@ const { FailedTurnRow } = await import("./ChatView");
 const { placeRowViewFor } = await import("@/lib/place-view");
 
 
-/** The row exactly as the server stores it. */
 const stored = (place: PlaceRow): NonNullable<Message["tool"]> => failedTurnTool(placeRowText(place), { place });
 const hours: PlaceRow = { state: "cc-no-hours", params: { bot: "Scout", plan: "Pro", hours: 50, month: "November" }, source: "works-on" };
 
-/** Render the row and read its buttons off the rendered tree. */
 function show(tool: NonNullable<Message["tool"]>, onRetry?: () => void) {
   const html = renderToStaticMarkup(createElement(FailedTurnRow, { tool, engine: undefined, botId: "scout", threadId: "thread-scout", onRetry }));
   const buttons = html.match(/<button[^>]*>[\s\S]*?<\/button>/g) ?? [];
@@ -62,7 +57,6 @@ describe("J11: a failed place's row", () => {
     expect(html).toContain("This month&#x27;s 50 cloud computer hours are used up. They come back on 1 November.");
     expect(buttons).toHaveLength(1);
     expect(buttons[0]).toContain("See your plan");
-    // no Retry beside it, and no second copy of the words under Details
     expect(html).not.toContain("Retry");
     expect(html).not.toContain("<details");
   });
@@ -95,15 +89,13 @@ describe("J11: a failed place's row", () => {
     expect(placeRowViewFor(needsKey, seat)).toMatchObject({
       state: "cc-on-my-cloud", line: "Cloud computers from your plan work for bots on My Cloud for now.", action: { id: "open-my-cloud" },
     });
-    // My Cloud itself never reads it that way.
     expect(placeRowViewFor(needsKey, { ...seat, server: "my-cloud" }).state).toBe("cc-needs-key");
   });
 });
 
 describe("the phone row", () => {
-  // What iOS (ChatPreferences.swift failedTurnCause) and Android
-  // (ChatPreferences.kt failedTurnCause) do with a row: drop "error:" and
-  // show the rest. They never read `place`.
+  // What iOS and Android (ChatPreferences failedTurnCause) do with a row: drop "error:" and show the rest; they never
+  // read `place`.
   const phoneCause = (name: string) => name.startsWith("error:") ? name.slice("error:".length).trim() : null;
 
   it("carries the line and its action in words, whole, for every source", () => {
@@ -118,7 +110,6 @@ describe("the phone row", () => {
     ];
     for (const [place, words] of rows) {
       const tool = stored(place);
-      // Sent to a phone as JSON, read back the phone's way.
       const onPhone = JSON.parse(JSON.stringify(tool)) as { name: string };
       expect(phoneCause(onPhone.name)).toBe(words);
       expect(failedTurnCause(onPhone.name)).toBe(words);

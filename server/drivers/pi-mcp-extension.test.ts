@@ -88,8 +88,6 @@ describe("Pi MCP JSON Schema conversion", () => {
       },
       required: [],
     });
-    // SAFETY: toTypebox returns a TypeBox JSON Schema; this test reads only
-    // standard JSON Schema fields represented by SchemaNode.
     const inspected = schema as SchemaNode;
 
     expect(inspected.type).toBe("object");
@@ -110,8 +108,6 @@ describe("Pi MCP JSON Schema conversion", () => {
       },
       required: ["value"],
     });
-    // SAFETY: toTypebox returns a TypeBox JSON Schema; this test reads only
-    // standard JSON Schema fields represented by SchemaNode.
     const inspected = schema as SchemaNode;
 
     expect(inspected.type).toBe("object");
@@ -129,13 +125,10 @@ describe("Pi MCP JSON Schema conversion", () => {
         { type: "object", properties: { id: { type: "integer" } }, required: ["id"] },
       ],
     });
-    // SAFETY: toTypebox returns a TypeBox JSON Schema; this test reads only
-    // standard JSON Schema fields represented by SchemaNode.
     const inspected = schema as SchemaNode;
 
     expect(inspected.type).toBe("object");
     expect(Object.keys(inspected.properties ?? {})).toEqual(["query", "id"]);
-    // A field required by only one choice cannot be globally required.
     expect(inspected.required).toBeUndefined();
   });
 
@@ -352,8 +345,7 @@ describe("Pi MCP extension registration", () => {
     f.api.setActiveTools = () => {};
     f.restore(["read", "bash"]);
     const payload = { tools: ["read", "bash"].map((name) => ({ type: "function", function: { name } })) };
-    // Pi catches extension exceptions and can keep sending the old payload.
-    // This hook must return a deny-all declaration rather than throw past it.
+    // Pi catches extension exceptions and can keep sending the old payload: return deny-all, never throw.
     await f.handlers.get("before_provider_request")?.({ payload });
     expect(payload.tools).toEqual([]);
   });
@@ -424,7 +416,6 @@ describe("Pi MCP extension registration", () => {
         expect(await f.handlers.get("tool_call")?.({ toolName: "whop_call_tool" })).toBeUndefined();
         const asked: string[] = [];
         const ui = { confirm: async (title: string) => { asked.push(title); return true; } };
-        // refused here, before any card asks about a tool the bot may not use
         await expect(f.tools[2].execute("excluded", { name: "payments_create", arguments: {} }, undefined, undefined, { ui })).rejects.toThrow("Tool selection excludes this tool");
         expect(asked).toEqual([]);
         expect(remote.calls).toEqual([]);

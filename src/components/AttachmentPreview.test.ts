@@ -15,6 +15,7 @@ import {
   previewImage,
   previewKeyAction,
   safeDownloadFilename,
+  saveFailureText,
   wrappedImageIndex,
 } from "./AttachmentPreview";
 
@@ -172,7 +173,6 @@ describe("Show in folder for a file outside the workspace", () => {
     try {
       expect(render("/Users/maus/_draft/ollama-gen.js")).toContain("Show in folder");
       expect(render("C:\\Users\\Maus\\_draft\\ollama-gen.js")).toContain("Show in folder");
-      // main refuses these, so the person gets the path to look for instead
       for (const filePath of ["_draft/ollama-gen.js", "\\\\server\\share\\ollama-gen.js"]) {
         expect(render(filePath)).not.toContain("Show in folder");
         expect(render(filePath)).toContain(`>${filePath}</code>`);
@@ -189,6 +189,16 @@ describe("Show in folder for a file outside the workspace", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("a failed save", () => {
+  it("explains a file outside the working folder instead of echoing the server", () => {
+    const server = "the linked file is outside this conversation's workspace";
+    expect(saveFailureText({ reason: server, outsideWorkspace: true }))
+      .toBe("This file is outside this chat's working folder, so it can't be saved from here");
+    expect(saveFailureText({ reason: "the linked file is unavailable", outsideWorkspace: false }))
+      .toBe("the linked file is unavailable");
   });
 });
 

@@ -247,8 +247,7 @@ describe("CLI startup lifecycle", () => {
     const code = "ABCD-EFGH-JKLM";
     const expiresAt = Date.now() + 300_000;
     const pairingUrl = `${origin}/pair#code=${code}`;
-    // A real server mints both encodings of one window; Android can only scan
-    // the openmausbot:// one (android/core Connection.kt).
+    // A real server mints both encodings of one window; Android can only scan the openmausbot:// one.
     const credential = `omb_pair_${"a".repeat(43)}`;
     const inviteUrl = `openmausbot://pair?address=${encodeURIComponent(origin)}&token=${credential}&name=fixture`;
     let healthRequests = 0;
@@ -286,8 +285,6 @@ describe("CLI startup lifecycle", () => {
     expect(output).toMatch(/[▀▄█]/);
     expect(output).toContain(`Or open ${origin}/pair on your phone and enter the code.`);
     expect(output).toContain("On Android, open the OpenMausBot app and scan the QR with its pairing scanner.");
-    // The QR rendered for an Android phone must be the app-scheme invite, not
-    // the https link its scanner rejects.
     expect(output).toContain(qrToString(inviteUrl));
     expect(output).not.toContain(qrToString(pairingUrl));
     expect(output).toContain("client access: chat and approvals, not settings or pairing administration");

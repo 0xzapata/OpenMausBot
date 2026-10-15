@@ -1,8 +1,3 @@
-// A bot's activity log: what it did, in plain words, with the outcome. Two
-// logs already on disk feed it — the per-thread runtime events (what ran,
-// did it finish) and the fleet-wide decision log (what was asked, with
-// which arguments, and who said yes). These tests pin the merge: one row
-// per thing that happened, never one per log that saw it.
 import { appendFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

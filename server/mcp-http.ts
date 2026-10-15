@@ -1,8 +1,8 @@
-// A small MCP client for servers OpenMausBot does not start itself: the
-// current streamable HTTP transport and the older SSE one. The engines
-// speak to these servers natively; this client exists for the Test button
-// (prove the handshake, list the tools) and for anything else the harness
-// itself must ask a remote server. It never logs a header value.
+// This client never logs a header value.
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { Readable } from "node:stream";
+
 import type { RemoteMcpSpec } from "./contracts.ts";
 
 export type McpHttpFailure = "network" | "status" | "protocol";
@@ -10,7 +10,6 @@ export type McpHttpFailure = "network" | "status" | "protocol";
 export class McpHttpError extends Error {
   readonly kind: McpHttpFailure;
   readonly status: number | undefined;
-  /** The server's `WWW-Authenticate` challenge on a 401: where to sign in. */
   readonly wwwAuthenticate: string | undefined;
 
   constructor(kind: McpHttpFailure, message: string, status?: number, wwwAuthenticate?: string) {
@@ -22,22 +21,25 @@ export class McpHttpError extends Error {
   }
 }
 
-/** Bytes of one response (or one SSE stream) this client reads, for the
- * Test button and for the stdio proxy alike. Whop's official server answers
- * tools/list with 425 tools in 1.2 MB of JSON, its largest single tool alone
- * ~51 KB, so a 1 MB cap refused it outright. Still bounded: a server that
- * keeps talking cannot fill memory. */
+export class McpRpcError extends McpHttpError {
+  readonly code: number | undefined;
+  readonly detail: string;
+
+  constructor(code: number | undefined, detail: string) {
+    super("protocol", `MCP error: ${detail}`);
+    this.name = "McpRpcError";
+    this.code = code;
+    this.detail = detail;
+  }
+}
+
+/** Whop's official server lists 425 tools in 1.2 MB of JSON (one tool ~51 KB), so a 1 MB cap refused it. */
 export const MAX_REMOTE_MCP_BYTES = 32 * 1024 * 1024;
 const PROTOCOL_VERSION = "2025-06-18";
 
-/** How long a URL server may take to initialize and list its tools, over
- * the internet: the Test button's budget, and a searched server's at a bot's
- * startup. Command servers start on this computer and keep 8 s. */
 export const REMOTE_MCP_STARTUP_MS = 30_000;
 
-/** The private environment record one remote-proxy mount reads its settings
- * from, when several mounts share one environment (Codex): only this name
- * reaches argv, never the address or a header value. */
+/** Only this name reaches argv, never the address or a header value. */
 export const REMOTE_MCP_CONFIG_ENV = /^OMB_REMOTE_MCP_CONFIG_[a-f0-9]{64}$/;
 
 interface JsonRpcMessage {
@@ -74,7 +76,8 @@ export function remoteMcpSpec(value: unknown): RemoteMcpSpec | undefined {
 function unwrap(message: JsonRpcMessage): unknown {
   if (message.error !== undefined) {
     const detail = isRecord(message.error) && typeof message.error.message === "string" ? message.error.message : "request failed";
-    throw new McpHttpError("protocol", `MCP error: ${detail}`);
+    const code = isRecord(message.error) && Number.isSafeInteger(message.error.code) ? message.error.code as number : undefined;
+    throw new McpRpcError(code, detail);
   }
   return message.result;
 }
@@ -89,7 +92,6 @@ function parseMessage(text: string): JsonRpcMessage | JsonRpcMessage[] | null {
   }
 }
 
-/** One SSE event: its type (default "message") and joined data lines. */
 interface SseEvent {
   event: string;
   data: string;
@@ -110,8 +112,6 @@ function parseSseBlock(block: string): SseEvent | null {
   return data.length ? { event, data: data.join("\n") } : null;
 }
 
-/** Read an event stream until the handler says stop, the server ends it,
- * or the signal fires. Bounded, so a chatty server cannot fill memory. */
 async function readSse(
   response: Response,
   signal: AbortSignal,
@@ -179,7 +179,6 @@ export class RemoteMcpClient {
   private protocolVersion: string | null = null;
   private nextId = 1;
   private closed = false;
-  /** Legacy SSE: one long GET stream carries every response. */
   private readonly pending = new Map<number, Pending>();
   private sseEndpoint: Promise<string> | null = null;
   private readonly sseAbort = new AbortController();
@@ -191,7 +190,6 @@ export class RemoteMcpClient {
     this.onNotification = options.onNotification;
   }
 
-  /** The MCP handshake: initialize, then the initialized notification. */
   async initialize(clientName: string, signal: AbortSignal): Promise<unknown> {
     const result = await this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
@@ -233,8 +231,7 @@ export class RemoteMcpClient {
     this.sseAbort.abort();
     for (const entry of this.pending.values()) entry.reject(new McpHttpError("network", "client closed"));
     this.pending.clear();
-    // Streamable HTTP: tell the server its session is over. Best effort —
-    // many servers answer 405 here, and a probe has nothing left to lose.
+    // Streamable HTTP: end the session. Many servers answer 405 here.
     if (this.sessionId && this.target.type !== "sse") {
       try {
         const headers = this.headers();
@@ -242,7 +239,6 @@ export class RemoteMcpClient {
         const response = await this.fetchImpl(this.target.url, { method: "DELETE", headers, signal: AbortSignal.timeout(2_000) });
         drain(response);
       } catch {
-        // the session lapses on its own
       }
     }
   }
@@ -275,8 +271,6 @@ export class RemoteMcpClient {
     return response;
   }
 
-  // ── streamable HTTP: each request is one POST; the answer is JSON or a
-  //    short event stream that carries the response among server messages ──
   private async streamableRequest(id: number, frame: unknown, signal: AbortSignal): Promise<unknown> {
     const response = await this.post(this.target.url, frame, signal);
     const type = (response.headers.get("content-type") ?? "").toLowerCase();
@@ -306,8 +300,6 @@ export class RemoteMcpClient {
     throw new McpHttpError("protocol", "unexpected content type");
   }
 
-  // ── legacy SSE: a GET opens the stream, its first event names where to
-  //    POST, and every response comes back over the stream ──
   private openSseStream(signal: AbortSignal): Promise<string> {
     if (this.sseEndpoint) return this.sseEndpoint;
     this.sseEndpoint = new Promise<string>((resolveEndpoint, rejectEndpoint) => {
@@ -322,8 +314,7 @@ export class RemoteMcpClient {
       };
       const headers = this.headers();
       headers.set("accept", "text/event-stream");
-      // the caller's signal covers the opening; once open, the stream lives
-      // until close(), because later requests are answered on it
+      // The caller's signal covers only the opening: later requests are answered on this stream.
       const opening = AbortSignal.any([signal, this.sseAbort.signal]);
       this.fetchImpl(this.target.url, { method: "GET", headers, signal: opening })
         .then(async (response) => {
@@ -398,11 +389,7 @@ export class RemoteMcpClient {
     });
   }
 
-  /** Server messages that are not this client's responses: notifications
-   * go to the caller; a ping is answered, as every MCP party must; any other
-   * request (elicitation, sampling, roots…) is refused at once, since this
-   * client offers none of them. Left unanswered, a server waiting on one
-   * holds its own reply until the call times out. */
+  /** Every MCP party must answer ping; other server requests are refused at once, or the server holds its reply until timeout. */
   private deliverNotifications(parsed: JsonRpcMessage | JsonRpcMessage[] | null): void {
     for (const message of Array.isArray(parsed) ? parsed : parsed ? [parsed] : []) {
       if (typeof message.method !== "string") continue;
@@ -420,7 +407,86 @@ export class RemoteMcpClient {
       if (this.target.type === "sse") await this.ssePost(frame, AbortSignal.timeout(10_000));
       else drain(await this.post(this.target.url, frame, AbortSignal.timeout(10_000)));
     } catch {
-      // the server's own timeout ends what it was waiting for
     }
   }
+}
+
+// Node 24's fetch hangs on plain http:// through its env proxy, so such a request goes to HTTP_PROXY in absolute form, as curl does.
+
+function isLoopback(host: string): boolean {
+  return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host);
+}
+
+/** NO_PROXY by curl's rules: a name matches itself and subdomains, a leading dot or `*.` is ignored, `*` matches all, a port must match. */
+export function bypassesProxy(target: URL, noProxy: string): boolean {
+  const host = target.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isLoopback(host)) return true;
+  const port = target.port || (target.protocol === "https:" ? "443" : "80");
+  for (const raw of noProxy.split(/[\s,]+/)) {
+    const entry = raw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry === "*") return true;
+    const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(entry);
+    const hostPort = !bracketed && entry.split(":").length === 2 ? entry.split(":") : undefined;
+    const name = (bracketed?.[1] ?? hostPort?.[0] ?? entry).replace(/^\*?\./, "");
+    const entryPort = bracketed?.[2] ?? hostPort?.[1];
+    if (entryPort && entryPort !== port) continue;
+    if (name && (host === name || host.endsWith(`.${name}`))) return true;
+  }
+  return false;
+}
+
+export function plainHttpProxyFetch(env: Record<string, string | undefined>, fallback: typeof fetch = fetch): typeof fetch | undefined {
+  const configured = env.http_proxy || env.HTTP_PROXY;
+  if (!configured) return undefined;
+  let proxy: URL;
+  try {
+    proxy = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(configured) ? configured : `http://${configured}`);
+    if (proxy.protocol !== "http:" && proxy.protocol !== "https:") return undefined;
+  } catch { return undefined; }
+  const noProxy = [env.no_proxy, env.NO_PROXY].filter(Boolean).join(",");
+  const authorization = proxy.username
+    ? `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString("base64")}`
+    : undefined;
+  const proxied = (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+    const target = new URL(input instanceof Request ? input.url : String(input));
+    const body = init.body;
+    if (input instanceof Request || target.protocol !== "http:" || bypassesProxy(target, noProxy) || (body != null && typeof body !== "string")) {
+      return fallback(input, init);
+    }
+    const headers: Record<string, string> = {};
+    new Headers(init.headers).forEach((value, name) => { headers[name] = value; });
+    headers.host = target.host;
+    if (authorization) headers["proxy-authorization"] = authorization;
+    if (typeof body === "string") headers["content-length"] = String(Buffer.byteLength(body));
+    return new Promise<Response>((resolve, reject) => {
+      const send = proxy.protocol === "https:" ? httpsRequest : httpRequest;
+      const request = send({
+        host: proxy.hostname.replace(/^\[|\]$/g, ""),
+        port: proxy.port || (proxy.protocol === "https:" ? 443 : 80),
+        method: init.method ?? "GET",
+        path: target.href,
+        headers,
+        ...(init.signal ? { signal: init.signal } : {}),
+      });
+      request.on("response", (response: IncomingMessage) => {
+        const status = response.statusCode ?? 502;
+        const received = new Headers();
+        for (const [name, value] of Object.entries(response.headers)) {
+          for (const entry of Array.isArray(value) ? value : value === undefined ? [] : [value]) received.append(name, entry);
+        }
+        const empty = status === 204 || status === 205 || status === 304;
+        if (empty) response.resume();
+        try {
+          resolve(new Response(empty ? null : Readable.toWeb(response) as ReadableStream<Uint8Array>, { status, statusText: response.statusMessage, headers: received }));
+        } catch (error) {
+          response.destroy();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+      request.on("error", reject);
+      request.end(body ?? undefined);
+    });
+  };
+  return proxied as typeof fetch;
 }
