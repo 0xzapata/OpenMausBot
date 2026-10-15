@@ -27,7 +27,7 @@ function eventRows(docs: string): string[] {
     .flatMap((line) => [...line.split("|")[1]!.matchAll(/`([^`]+)`/g)].map((match) => match[1]!));
 }
 
-const read = (path: string) => readFileSync(new URL(path, ROOT), "utf8");
+const read = (path: string) => readFileSync(new URL(path, ROOT), "utf8").replace(/\r\n/g, "\n");
 
 describe("docs/analytics.md", () => {
   it("has an Events row for every event the app sends, and for no other", () => {
