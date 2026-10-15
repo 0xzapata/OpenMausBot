@@ -12,6 +12,7 @@ import { FolderIcon, NewThreadButton } from "./BotProjects";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { attentionJumpAction, attentionOwnerName, AttentionThreadRows, crossBotAttentionThreads, threadsWhenTreeHidden, type AttentionThread } from "./SidebarBotActivity";
 import { formatUpdatedAt, orderedThreadList, threadByline, threadRecency, threadUpdatedLabel, useRelativeNow } from "./SidebarThreadRow";
+import { Select } from "./Select";
 
 export const TASK_PICKER_DISMISS_MS = 500;
 
@@ -422,17 +423,16 @@ export function BotActivityPicker({ bot }: { bot: Bot }) {
   if (!activity.length) return null;
   return (
     <div className="flex shrink-0 items-center gap-2 px-5 py-2" data-background-activity>
-      <select
+      <Select variant="pill" size="sm" className="max-w-[180px] shrink-0"
         aria-label={t("task.otherActivity", { count: activity.length })}
         value=""
         onChange={(event) => dispatch({ type: "switchTask", botId: bot.id, threadId: event.target.value })}
-        className="max-w-[180px] shrink-0 truncate rounded-full border border-hairline/40 bg-panel px-2.5 py-1 text-[12.5px] text-ink-secondary"
       >
         <option value="" disabled>{t("task.otherActivity", { count: activity.length })}</option>
         {activity.map((task) => <option key={task.threadId} value={task.threadId}>
           {task.title} · {task.activity === "waiting-on-you" ? t("task.waiting") : task.waitingForTeammates ? t("task.waitingOnTeammate") : task.busy || task.activity === "working" ? t("chat.activity.working") : task.queued ? t("task.queued") : t("task.unread")}
         </option>)}
-      </select>
+      </Select>
       <span dir="auto" className="truncate text-[12px] text-ink-secondary">{bot.tasks?.find((task) => task.threadId === bot.threadId)?.title}</span>
     </div>
   );

@@ -5,6 +5,7 @@ import { browserProfileDeletionBlockReason, browserProfilesMutation, newBrowserP
 import { isOwnerOrAdmin, readSessionState } from "@/lib/session";
 import { t } from "@/lib/i18n";
 import { SignedInSites } from "./SignedInSites";
+import { Select } from "./Select";
 
 /** Security: the server owns session routing and erasure; this UI never handles cookies or partitions. */
 export function BrowserProfilesManager({ bot, onProfileChanged, disabled = false }: {
@@ -151,19 +152,18 @@ export function BrowserProfilesManager({ bot, onProfileChanged, disabled = false
       {currentBot && (
         <div className="flex flex-col gap-1.5">
           <label htmlFor={`${fieldId}-profile`} className="text-[12px] font-medium text-ink">{t("settings.profiles.browserSession")}</label>
-          <select
+          <Select className="w-full"
             id={`${fieldId}-profile`}
             value={selected}
             disabled={locked || currentBot.busy}
             onChange={(event) => void select(event.target.value)}
-            className={inputClass}
           >
             <option value="">{t("settings.profiles.own")}</option>
             {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
             <option value="guest">{t("settings.profiles.temporary")}</option>
             {selected && selected !== "guest" && !profiles.some((profile) => profile.id === selected)
               ? <option value={selected} disabled>{t("settings.profiles.removed")}</option> : null}
-          </select>
+          </Select>
           <p className="text-[11px] leading-relaxed text-ink-secondary">
             {currentBot.busy ? t("settings.profiles.stopToSwitch") : selected === "guest" ? t("settings.profiles.temporaryHint") : t("settings.profiles.sharedHint")}
           </p>
@@ -210,10 +210,10 @@ export function BrowserProfilesManager({ bot, onProfileChanged, disabled = false
                   <div className="flex min-w-0 flex-col gap-2 pl-6 pt-1">
                     <label className="flex items-center gap-2 text-[12px] text-ink-secondary">
                       {t("settings.profiles.browserLabel")}
-                      <select value={profile.browser ?? ""} disabled={locked} onChange={(event) => void setBrowser(profile, event.target.value)} className="rounded-md border border-hairline/40 bg-inset px-2 py-1 text-[12px] text-ink outline-none focus:border-accent disabled:opacity-50">
+                      <Select size="sm" value={profile.browser ?? ""} disabled={locked} onChange={(event) => void setBrowser(profile, event.target.value)}>
                         <option value="">{t("settings.profiles.builtIn")}</option>
                         <option value="chrome" disabled={!myChrome}>{t("settings.profiles.myChrome")}</option>
-                      </select>
+                      </Select>
                     </label>
                     {chrome ? chromeNote : <SignedInSites target={{ profile: profile.id }} sharedBy={users} disabled={locked} />}
                   </div>

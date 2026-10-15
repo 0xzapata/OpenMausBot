@@ -24,6 +24,7 @@ import { updateMcpServers } from "@/lib/mcp-servers";
 import { completeMcpSignIn, mcpSignInLink, runMcpSignIn, type McpSignInStatus } from "@/lib/mcp-sign-in";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 
+import { Select } from "./Select";
 import { Switch } from "./SettingsPrimitives";
 import { WhopIcon } from "./WhopIcon";
 import { McpResultBudgetField, resultBudgetDraft, withResultBudget, type McpMessage, type McpResultBudgetDraft, type McpResultBudgetListing } from "./McpResultBudgetField";
@@ -766,14 +767,11 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
                   </label>
                   <label className="block">
                     <span className="text-[12px] font-medium text-ink-secondary">{t("mcp.field.type")}</span>
-                    <select
-                      value={draft.type}
-                      onChange={(event) => setDraft((current) => ({ ...current, type: event.target.value === "sse" ? "sse" : "http" }))}
-                      className="mt-1.5 w-full rounded-lg border border-hairline/60 bg-raised px-3 py-2.5 text-[13px] text-ink outline-none focus:border-accent"
-                    >
+                    <Select className="mt-1.5 w-full" value={draft.type}
+                      onChange={(event) => setDraft((current) => ({ ...current, type: event.target.value === "sse" ? "sse" : "http" }))}>
                       <option value="http">{t("mcp.type.http")}</option>
                       <option value="sse">{t("mcp.type.sse")}</option>
-                    </select>
+                    </Select>
                   </label>
                   <label className="block sm:col-span-2">
                     <span className="text-[12px] font-medium text-ink-secondary">{t("mcp.field.headers")}</span>

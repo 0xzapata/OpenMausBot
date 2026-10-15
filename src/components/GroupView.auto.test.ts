@@ -12,6 +12,7 @@ vi.mock("@/state/store", async (original) => ({
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({}) }));
 
 import { DefaultResponderSelect, Transcript } from "./GroupView";
+import { Select } from "./Select";
 import { RoutedByLine } from "./RoomQueueList";
 
 const members = [
@@ -51,7 +52,7 @@ describe("room responder selector", () => {
 
   it("switching a lead room to Auto keeps the lead as its fallback", () => {
     const tree = DefaultResponderSelect({ group: room({ kind: "member", botId: "theo" }), members });
-    const select = nodes(tree).find((node) => node.type === "select")!;
+    const select = nodes(tree).find((node) => node.type === Select)!;
     (select.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: "auto" } });
     expect(fixture.dispatch).toHaveBeenCalledWith({ type: "patchGroup", groupId: "room", patch: { defaultResponder: { kind: "auto", fallbackBotId: "theo" } } });
   });

@@ -6,6 +6,7 @@ import { Brain, Check, Loader2, Pin, Plus, Trash2, X } from "lucide-react";
 import { api } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
+import { Select } from "./Select";
 
 type Kind = "person" | "place" | "decision" | "term";
 
@@ -265,18 +266,17 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
           {adding ? (
             <div className="rounded-xl border border-hairline/40 bg-card p-3">
               <div className="flex flex-wrap items-center gap-2">
-                <select
+                <Select size="sm"
                   value={draft.kind}
                   onChange={(event) => setDraft({ ...draft, kind: event.target.value as Kind })}
                   aria-label="Kind"
-                  className="rounded-lg border border-hairline/40 bg-inset px-2 py-1 text-[13px] text-ink"
                 >
                   {KINDS.map(({ kind, title }) => (
                     <option key={kind} value={kind}>
                       {title.replace(/s$/, "")}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <input
                   value={draft.name}
                   onChange={(event) => setDraft({ ...draft, name: event.target.value })}

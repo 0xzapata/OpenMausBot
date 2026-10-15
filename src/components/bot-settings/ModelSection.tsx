@@ -6,6 +6,7 @@ import { useBotEditor } from "./BotEditorContext";
 import { ProposalStatus } from "./ProposalStatus";
 import { ThreadModelsLine } from "../ThreadModelsLine";
 import { t } from "@/lib/i18n";
+import { Select } from "../Select";
 
 export function ModelSection({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
@@ -59,13 +60,12 @@ function KeepWarmRow({ bot, workspaceOn, onChange }: { bot: Bot; workspaceOn: bo
     <div className="rounded-xl bg-card p-4">
       <label htmlFor="bot-cache-keepwarm" className="text-[15px] font-medium text-ink">{t("bot.keepWarm.title")}</label>
       <div className="mt-0.5 text-[13px] text-ink-secondary">{t("bot.keepWarm.help")}</div>
-      <select id="bot-cache-keepwarm" value={value}
-        onChange={(event) => onChange(event.target.value === "on" ? true : event.target.value === "off" ? false : null)}
-        className="mt-3 max-w-full cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink">
+      <Select className="mt-3 max-w-full" id="bot-cache-keepwarm" value={value}
+        onChange={(event) => onChange(event.target.value === "on" ? true : event.target.value === "off" ? false : null)}>
         <option value="follow">{t("bot.keepWarm.follow", { state: t(workspaceOn ? "bot.keepWarm.on" : "bot.keepWarm.off") })}</option>
         <option value="on">{t("bot.keepWarm.on")}</option>
         <option value="off">{t("bot.keepWarm.off")}</option>
-      </select>
+      </Select>
     </div>
   );
 }
@@ -118,12 +118,11 @@ function FallbackChain({ bot, onChange }: { bot: Bot; onChange: (fallback: Bot["
       )}
       {chain.length < 5 && (
         <div className={cn("flex items-center gap-2", chain.length > 0 ? "mt-2" : "mt-3")}>
-          <select
+          <Select size="sm"
             value=""
             onChange={(event) => add(event.target.value)}
             aria-label="Add a fallback engine"
             disabled={available.length === 0}
-            className="rounded-lg border border-hairline/40 bg-inset px-2 py-1 text-[13px] text-ink disabled:opacity-50"
           >
             <option value="">{available.length === 0 ? "No other engine is available" : "Add an engine…"}</option>
             {available.map((instance) => (
@@ -131,7 +130,7 @@ function FallbackChain({ bot, onChange }: { bot: Bot; onChange: (fallback: Bot["
                 {instance.displayName}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       )}
     </div>

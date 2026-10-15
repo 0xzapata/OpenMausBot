@@ -8,6 +8,7 @@ import type { LocaleKey } from "@/locales";
 import { BotAvatar, type BotAvatarProps } from "./Avatar";
 import { threadUpdatedLabel } from "./SidebarThreadRow";
 import type { NotificationLogEntry, NotifyKind } from "../../shared/notification";
+import { Select } from "./Select";
 
 const KIND_LOOK: Record<NotifyKind, { Icon: LucideIcon; className: string; status: LocaleKey }> = {
   done: { Icon: CheckCircle2, className: "text-success", status: "notifications.status.done" },
@@ -164,17 +165,16 @@ export function NotificationsPanel() {
         </button>
       </div>
       <div className="border-b border-hairline/40 px-3.5 py-2">
-        <select
+        <Select size="sm" className="w-full"
           aria-label={t("notifications.filter")}
           value={activeFilter}
           onChange={(event) => setBotFilter(event.target.value)}
-          className="w-full rounded-md border border-hairline/60 bg-raised px-2 py-1 text-[12px] text-ink focus:outline-none focus:ring-1 focus:ring-accent"
         >
           <option value={ALL_BOTS}>{t("notifications.allBots")}</option>
           {bots.map((bot) => (
             <option key={bot.id} value={bot.id}>{bot.name}</option>
           ))}
-        </select>
+        </Select>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {visible.length === 0 && (

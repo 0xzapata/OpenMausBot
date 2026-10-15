@@ -6,6 +6,7 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { Card, SettingRow, Switch } from "./SettingsPrimitives";
+import { Select } from "./Select";
 
 const KEY_URL = { jev: "https://typesafe.ai", openrouter: "https://openrouter.ai/keys" } as const;
 /** The room decision budget in server/decider/room-routing.ts; slower falls back to the lead. */
@@ -161,21 +162,20 @@ export function DecisionModelSettings() {
         <p className="text-[13px] leading-relaxed text-ink-secondary">{t("decider.intro")}</p>
       </section>
       <SettingRow title={t("decider.provider.label")}>
-        <select
+        <Select className="w-48"
           data-testid="decider-provider"
           value={provider}
           onChange={(event) => choose({ provider: event.target.value === "openrouter" ? "openrouter" : "jev" })}
           disabled={switching || !state.config}
           aria-label={t("decider.provider.label")}
-          className="w-48 cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:outline-none disabled:opacity-50"
         >
           <option value="jev">{t("decider.provider.jev")}</option>
           <option value="openrouter">{t("decider.provider.openrouter")}</option>
-        </select>
+        </Select>
       </SettingRow>
       {openrouter && (
         <SettingRow title={t("decider.model.label")} subtitle={models?.source === "builtin" ? t("decider.model.builtinNote") : undefined}>
-          <select
+          <Select className="w-64 max-w-full"
             data-testid="decider-model"
             value={decider?.model ?? ""}
             onChange={(event) => choose({
@@ -184,7 +184,6 @@ export function DecisionModelSettings() {
             })}
             disabled={switching}
             aria-label={t("decider.model.label")}
-            className="w-64 max-w-full cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:outline-none disabled:opacity-50"
           >
             {decider?.model && !models?.models.some((model) => model.id === decider.model) && (
               <option value={decider.model}>{decider.model}</option>
@@ -197,7 +196,7 @@ export function DecisionModelSettings() {
                 </optgroup>
               );
             })}
-          </select>
+          </Select>
         </SettingRow>
       )}
       <SettingRow
