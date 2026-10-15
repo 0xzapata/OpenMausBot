@@ -15,8 +15,10 @@ import {
   downloadSnippetFile,
   formatLineCount,
   getLanguageDisplayName,
-  getSnippetFileName, parseFenceInfo,
+  getSnippetFileName,
+  parseFenceInfo,
 } from "../lib/code-block";
+import { markdownImageName, markdownImageOpenUrl } from "../lib/markdown-image";
 import { repairMarkdownTables } from "../lib/markdown-tables";
 import { TRANSCRIPT_WINDOW_SIZE } from "../lib/transcript-window";
 import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
@@ -285,11 +287,15 @@ export function blockDirection(node: unknown): "rtl" | "ltr" {
   return textDirection(blockText(node as HastNode));
 }
 
-interface BlockProps { node?: unknown; children?: ReactNode; }
+interface BlockProps {
+  node?: unknown;
+  children?: ReactNode;
+}
 
 export interface CodeBlockProps {
   code: string;
-  lang: string; initialWrap?: boolean;
+  lang: string;
+  initialWrap?: boolean;
 }
 
 export function CodeBlock({ code, lang, initialWrap = false }: CodeBlockProps) {
@@ -615,27 +621,6 @@ function LocalFileLink({ filePath, name, children, message }: { filePath: string
       {save.folder && <MessageFolderFiles folderPath={filePath} listing={save.folder} message={message} />}
     </span>
   );
-}
-
-export function markdownImageName(src: string, alt?: string): string {
-  const supplied = alt?.trim();
-  if (supplied) return supplied;
-  try {
-    const path = decodeURIComponent(new URL(src, "https://openmausbot.invalid").pathname);
-    const name = path.split(/[\\/]/).filter(Boolean).at(-1)?.trim();
-    if (name) return name;
-  } catch {
-  }
-  return "Image";
-}
-
-export function markdownImageOpenUrl(src: string): string | undefined {
-  try {
-    const url = new URL(src.startsWith("//") ? `https:${src}` : src);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function Spoiler({ children }: { children?: ReactNode }) {

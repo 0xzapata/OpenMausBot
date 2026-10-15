@@ -18,8 +18,6 @@ import {
   HIGHLIGHT_MAX_CHARS,
   samePeers,
   chatUrlTransform,
-  markdownImageName,
-  markdownImageOpenUrl,
   localFilePath,
   normalizeMathDelimiters,
   textDirection,
@@ -27,6 +25,7 @@ import {
   messageNeedsKatex,
 } from "./ChatMarkdown";
 import { getSnippetFileName, parseFenceInfo } from "@/lib/code-block";
+import { markdownImageName, markdownImageOpenUrl } from "@/lib/markdown-image";
 import { StoreProvider } from "@/state/store";
 import { setLocale } from "@/lib/i18n";
 import { ThreadRefsContext } from "./ThreadRefs";
