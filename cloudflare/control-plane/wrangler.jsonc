@@ -68,7 +68,7 @@
     // not in secrets.required: the relay answers 503 highlevel_unavailable
     // until it exists. The redirect URL must match the one registered in the
     // HighLevel Marketplace app exactly.
-    "HIGHLEVEL_CLIENT_ID": "",
+    "HIGHLEVEL_CLIENT_ID": "6ad0c3b87999ff4de949c785-mv9n5v73",
     "HIGHLEVEL_REDIRECT_URL": "https://accounts.openmausbot.com/v1/highlevel/callback",
     "HIGHLEVEL_SCOPES": "contacts.readonly contacts.write opportunities.readonly opportunities.write conversations.readonly locations.readonly calendars.readonly users.readonly"
   },
