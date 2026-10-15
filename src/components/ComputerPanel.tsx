@@ -346,7 +346,11 @@ export function ComputerPanel({
   const [dataRequest, setDataRequest] = useState<{ id: string; requestId: number }>();
   const androidStatus = useAndroidUsbDevices();
   const androidConnected = androidStatus.devices.length > 0;
-  const androidScanned = androidStatus.scanned !== false;
+  // A failed or unavailable adb reports an empty device list too, so only a
+  // finished check with no failure reason can prove there is no device.
+  const androidStatusUsable = androidStatus.scanned !== false
+    && androidStatus.reasonCode !== "adb-unavailable"
+    && androidStatus.reasonCode !== "adb-failed";
   const panelView: ComputerPanelView = advanced
     ? storedPanelView === "files" || (storedPanelView === "android" && !androidConnected)
       ? "computer"
@@ -448,12 +452,12 @@ export function ComputerPanel({
   }, [bot.id]);
 
   useEffect(() => {
-    if (!androidScanned) return;
+    if (!androidStatusUsable) return;
     if (!androidConnected && storedPanelView === "android") {
       setPanelView("computer");
       writeComputerPanelView(bot.id, "computer");
     }
-  }, [androidConnected, androidScanned, bot.id, storedPanelView]);
+  }, [androidConnected, androidStatusUsable, bot.id, storedPanelView]);
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computer]);
