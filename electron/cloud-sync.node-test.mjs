@@ -22,7 +22,7 @@ function setup(t, { origin = "https://omb-u-aaaaaaaaaaaa.fly.dev" } = {}) {
   const service = createCloudFilesService({
     settingsFile: join(dir, "user", "settings.json"), stateFile: join(dir, "user", "state.db"),
     documentsDir: join(home, "Documents"), localDataDir: join(home, ".openmausbot"), homeDir: home,
-    platform: "linux", hostname: "Ash-PC", cloudOrigin: () => current.origin, fetch: async () => { throw new Error("no network in tests"); },
+    platform: process.platform, hostname: "Ash-PC", cloudOrigin: () => current.origin, fetch: async () => { throw new Error("no network in tests"); },
     trashItem: async (file) => rmSync(file), markDownloaded: async () => {},
     createClient: () => holder.cloud.client, watch: () => () => {}, freeBytes: () => 100 * 1024 ** 3, now: () => clock.now,
   });
