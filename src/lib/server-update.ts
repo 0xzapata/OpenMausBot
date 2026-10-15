@@ -3,7 +3,7 @@ import { t } from "./i18n";
 /** GET /api/updates/check (server/update-check.ts). */
 export interface ServerUpdateCheck {
   current: string;
-  install: "desktop" | "managed" | "docker" | "npm" | "git" | "unknown";
+  install: "desktop" | "managed" | "docker" | "podman" | "npm" | "git" | "unknown";
   latest?: string;
   available: boolean;
   releaseUrl?: string;
@@ -13,8 +13,6 @@ export interface ServerUpdateCheck {
 
 export type ServerUpdatePhase = "idle" | "checking" | "up-to-date" | "available" | "error";
 
-/** What the profile menu's update row says for a server the desktop app
- * does not manage: it cannot update itself, so it says how (MOCA-276). */
 export function serverUpdateRow(phase: ServerUpdatePhase, check: ServerUpdateCheck | null): { label: string; subtitle?: string } {
   if (phase === "checking") return { label: t("sidebar.update.checking") };
   if (phase === "error") return { label: t("sidebar.update.checkFailed") };

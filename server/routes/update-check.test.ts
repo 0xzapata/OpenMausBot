@@ -28,7 +28,7 @@ async function serve(check: () => Promise<UpdateCheck>): Promise<string> {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-describe("update check route (MOCA-276)", () => {
+describe("update check route", () => {
   it("is open to chat-only sessions: it only reads a version", () => {
     expect(requiredScope("GET", "/api/updates/check")).toBe("client");
   });

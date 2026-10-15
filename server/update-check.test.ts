@@ -13,6 +13,7 @@ describe("server update check", () => {
     expect(installKind({ desktopManaged: true, managed: false, serverRoot: root, exists: () => true })).toBe("desktop");
     expect(installKind({ desktopManaged: false, managed: true, serverRoot: root, exists: () => true })).toBe("managed");
     expect(installKind({ desktopManaged: false, managed: false, serverRoot: root, exists: (path) => path === "/.dockerenv" })).toBe("docker");
+    expect(installKind({ desktopManaged: false, managed: false, serverRoot: root, exists: (path) => path === "/run/.containerenv" })).toBe("podman");
     expect(installKind({
       desktopManaged: false, managed: false, exists: none,
       serverRoot: ["", "usr", "lib", "node_modules", "openmausbot", "dist-server"].join(sep),
@@ -29,6 +30,12 @@ describe("server update check", () => {
     expect(isNewerVersion("v0.1.91", "0.1.92")).toBe(false);
     expect(isNewerVersion("nightly", "0.1.92")).toBe(false);
     expect(isNewerVersion("v0.1.93", "unknown")).toBe(false);
+    expect(isNewerVersion("v0.1.93", "0.1.93-rc.1")).toBe(true);
+    expect(isNewerVersion("v0.1.93-rc.2", "0.1.93-rc.1")).toBe(true);
+    expect(isNewerVersion("v0.1.93-rc.10", "0.1.93-rc.9")).toBe(true);
+    expect(isNewerVersion("v0.1.93-rc.1", "0.1.93")).toBe(false);
+    expect(isNewerVersion("v0.1.93-rc.1", "0.1.93-rc.1")).toBe(false);
+    expect(isNewerVersion("v0.1.93-rc.1.1", "0.1.93-rc.1")).toBe(true);
   });
 
   it("reports a newer release with the update command for this install", async () => {

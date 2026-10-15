@@ -1,28 +1,6 @@
-// Copy this computer here: the receiving server's routes (server/cloud-move.ts,
-// docs/copy-workspace.md). Every server the person adds in the desktop app
-// receives a copy the same way, an OMB Cloud home included; the names stay
-// `cloud-move` so Clouds already running keep answering the desktop.
-//
-//   GET  /api/cloud-move/estimate   what a copy of this workspace carries (the sending side)
-//   GET  /api/cloud-move            contents, free space, upload, job, previous workspace, version
-//   POST /api/cloud-move/upload     start or continue an upload {sha256, bytes, files}
-//   PUT  /api/cloud-move/upload/<sha256>?offset=n   one part
-//   POST /api/cloud-move/preview    {sha256, password}: check it is a valid backup and stage it
-//   POST /api/cloud-move/restore    {id}: back up this server's workspace, restore, restart
-//   POST /api/cloud-move/undo       swap back to the previous workspace, restart
-//   POST /api/cloud-move/discard    drop what a stopped copy staged
-//
-// Preview, restore and undo can take minutes on a large workspace, longer
-// than a proxy keeps a quiet request open, so each starts one job (202) and
-// the app follows it in GET /api/cloud-move.
-//
-// Every receiving route needs a paired session with admin scope, and refuses
-// a client-scope device and the machine's own loopback. That is not a wall
-// against the machine itself: a process there runs as the same user, can
-// already read and write the data folder, and could pair itself as the owner.
-// A workspace shared with other people (workspaceShared) never receives one:
-// replacing it would replace their work too. Nothing here logs a body, a
-// password or a file name.
+// Copy-this-computer receiving routes. Each needs a paired admin-scope session and refuses client-scope devices and this
+// machine's loopback (no wall against the machine itself, which can already read the data folder). A workspace shared with
+// other people never receives one. Nothing here logs a body, a password or a file name.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { sharedSignIn, type SignInLists } from "./admin-activity.ts";
@@ -34,6 +12,7 @@ import {
 } from "./cloud-move.ts";
 import { commitPendingWorkspaceRestore, createWorkspaceBackup, stageWorkspaceBackup } from "./workspace-backup.ts";
 import type { RequestAuth } from "./request-auth.ts";
+import type { WorkspaceLeftBehind } from "../shared/workspace-backup.ts";
 
 export const CLOUD_MOVE_PREFIX = "/api/cloud-move";
 const failure = (message: string, status: number) => Object.assign(new Error(message), { status });
@@ -46,11 +25,7 @@ export type CloudMoveJob =
   | { kind: "restore" | "undo"; state: "done"; id: string; previous?: Omit<PreviousCloud, "bytes"> | null }
   | { kind: "preview" | "restore" | "undo"; state: "failed"; error: string };
 
-/** Shared with other people, so one person's copy must never replace it: a
- * hosted organisation workspace, or (not on a Cloud home, whose sign-in is its
- * owner's OMB Cloud account) an email sign-in list that lets someone else in
- * (sharedSignIn: a member, a second admin, or a whole @domain). The owner's
- * own address alone (`openmausbot access add you@example.com`) is not. */
+/** A hosted organisation workspace, or (off a Cloud home) a sign-in list letting someone else in; the owner's own address alone is not. */
 export function workspaceShared(input: { hosted: boolean; cloudHome: boolean; signIn: SignInLists }): boolean {
   return input.hosted || (!input.cloudHome && sharedSignIn(input.signIn));
 }
@@ -60,18 +35,12 @@ export function createCloudMoveRoutes(options: {
   appVersion: string;
   /** This server's identity, so the app never copies a computer onto itself. */
   environmentId: string;
-  /** Shared with other people: never replaced by one person's copy. */
   sharedWorkspace: () => boolean;
   readBody: (req: IncomingMessage, limit?: number) => Promise<unknown>;
-  /** The workspace-backup maintenance gate (quiet bots, writers flushed). */
   exclusive: <T>(work: () => Promise<T>, keepLocked?: boolean) => Promise<T>;
-  /** The request's session is still live and still admin. */
   authorized: (req: IncomingMessage, auth: RequestAuth) => boolean;
   status: () => { busy: boolean; pendingRestore: boolean };
-  /** What this boot's restore did, for the app waiting on the restart. */
-  restored: { id?: string; restored?: boolean; rolledBack?: boolean; safetyCopyPath?: string };
-  /** Stop so the launcher starts this server again (server/restart.ts);
-   * startup installs the restore. */
+  restored: { id?: string; restored?: boolean; rolledBack?: boolean; safetyCopyPath?: string; leftBehind?: WorkspaceLeftBehind };
   restart: () => void;
   freeBytes?: (path: string) => number;
   volumeBytes?: (path: string) => number;
@@ -80,10 +49,6 @@ export function createCloudMoveRoutes(options: {
 }) {
   const freeBytes = options.freeBytes ?? freeVolumeBytes;
   const volumeBytes = (path: string): number | null => { try { return (options.volumeBytes ?? totalVolumeBytes)(path); } catch { return null; } };
-  // A copy's restore that startup has installed keeps no safety copy or
-  // staged files, and the workspace it replaced becomes the one to swap back
-  // to; an abandoned upload goes after a day. Only what a copy recorded is
-  // touched, so on a server that never received one this does nothing.
   try { tidyCloudMoveStorage(options.dataDir, options.restored); } catch (error) {
     console.warn(`workspace copy: could not tidy backup storage (${error instanceof Error ? error.message : "unknown"})`);
   }
@@ -106,7 +71,6 @@ export function createCloudMoveRoutes(options: {
     if (status.pendingRestore) throw failure("This server is restarting to finish a restore. Try again in a minute.", 409);
     if (status.busy) throw failure("This server is busy with a backup. Try again when it finishes.", 409);
   };
-  /** Delete what earlier previews staged and no restore took. */
   const dropStaged = () => {
     for (const id of staged) removeMoveFiles(options.dataDir, id);
     staged.clear();
@@ -124,8 +88,6 @@ export function createCloudMoveRoutes(options: {
       if (job === current) job = { kind, state: "failed", error: error instanceof Error ? error.message : "The copy could not finish." };
     });
   }
-  // A person's own page can hold the workspace gate for a moment (an ordinary
-  // request in flight); try the gate a few times before giving up.
   const quietly = async <T>(work: () => Promise<T>): Promise<T> => {
     for (let attempt = 0; ; attempt++) {
       try { return await options.exclusive(work, true); } catch (error) {
@@ -134,8 +96,7 @@ export function createCloudMoveRoutes(options: {
       }
     }
   };
-  /** Back up the workspace about to be replaced, then commit `id`. On any
-   * failure nothing is left behind: not the new backup, not the staged files. */
+  /** On any failure nothing is left behind: not the new backup, not the staged files. */
   async function replaceWith(id: string, req: IncomingMessage, auth: RequestAuth) {
     noteMoveRestore(options.dataDir, id);
     try {
@@ -152,15 +113,12 @@ export function createCloudMoveRoutes(options: {
       throw error;
     } finally { staged.delete(id); }
   }
-  /** Room for staging `archive` bytes and installing them, plus a backup of the
-   * workspace they replace; 507 with both numbers otherwise. */
   const roomFor = (archive: number, already = 0) => {
     const needed = moveSpaceNeeded(archive, workspaceMoveSize(options.dataDir).bytes, true) - already;
     const free = freeBytes(options.dataDir);
     return free >= needed ? null : { error: "This server does not have enough free space for this.", freeBytes: free, neededBytes: needed };
   };
-  // The answer that the restore is ready goes out first; then the launcher
-  // starts the server again, and startup installs the restore before anything else loads.
+  // Answer first; startup then installs the restore before anything else loads.
   const restartSoon = () => { setTimeout(() => options.restart(), options.restartDelayMs ?? 1_500).unref?.(); };
 
   return async (req: IncomingMessage, res: ServerResponse, path: string, auth: RequestAuth): Promise<boolean> => {
@@ -183,12 +141,12 @@ export function createCloudMoveRoutes(options: {
         json(res, 200, {
           contents, empty: isEmptyWorkspace(contents), freeBytes: freeBytes(options.dataDir), volumeBytes: volumeBytes(options.dataDir), maxBytes: CLOUD_MOVE_MAX_BYTES,
           partBytes: CLOUD_MOVE_PART_BYTES, upload: uploadStatus(options.dataDir), previous: previousCloud(options.dataDir), job,
-          // What backups and the previous workspace hold on the volume.
           heldBytes: held.bytes,
           // The app refuses a server older than itself, or its own, before exporting.
           ...identity,
           ...options.status(),
           lastRestoreId: options.restored.restored ? options.restored.id ?? null : null,
+          leftBehind: options.restored.restored ? options.restored.leftBehind ?? null : null,
           rolledBackId: options.restored.rolledBack ? options.restored.id ?? null : null,
         });
         return true;
@@ -196,8 +154,6 @@ export function createCloudMoveRoutes(options: {
       if (method === "POST" && path === `${CLOUD_MOVE_PREFIX}/upload`) {
         const declared = validUploadDeclaration(z.object({ sha256: z.unknown(), bytes: z.unknown(), files: z.unknown().optional() }).parse(await options.readBody(req, 4096)));
         ready();
-        // A new upload ends any earlier attempt: its staged files go, and a
-        // stored part (whichever file it was) counts as space about to be freed.
         dropStaged();
         const refused = roomFor(declared.bytes, uploadStatus(options.dataDir)?.received ?? 0);
         if (refused) { json(res, 507, refused); return true; }
@@ -247,7 +203,6 @@ export function createCloudMoveRoutes(options: {
       if (method === "POST" && path === `${CLOUD_MOVE_PREFIX}/discard`) {
         await options.readBody(req, 4096);
         if (job?.state === "running" && job.kind !== "preview") throw failure("This server is already replacing its workspace.", 409);
-        // A preview still running removes what it stages when it ends.
         if (job?.state === "running") discardPreview = true;
         dropStaged();
         held = null;
@@ -272,8 +227,6 @@ export function createCloudMoveRoutes(options: {
         const refused = roomFor(previousCloudArchiveBytes(options.dataDir));
         if (refused) { json(res, 507, refused); return true; }
         dropStaged();
-        // A swap: what this server has now becomes the previous workspace, so
-        // this can be undone the same way.
         start("undo", async () => {
           const prepared = await stagePreviousCloud(options.dataDir, options.appVersion);
           const { committed, previous } = await replaceWith(prepared.id, req, auth);

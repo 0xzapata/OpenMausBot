@@ -1,20 +1,17 @@
-// "Check for updates" for a server the desktop app does not manage. The
-// packaged app updates itself through its own updater; a self-hosted server
-// cannot replace itself, so this only says whether a newer release exists
-// and how this install is updated (MOCA-276).
+// A self-hosted server cannot replace itself, so this only says whether a newer release exists and how this install is updated.
 import { existsSync } from "node:fs";
 import { join, sep } from "node:path";
 
 export const LATEST_RELEASE_URL = "https://api.github.com/repos/milind-soni/OpenMausBot/releases/latest";
 const CACHE_MS = 60 * 60_000;
 
-/** How this server was installed, which decides how it is updated.
- * "managed" is a hosted or Cloud server that is updated for its owner. */
-export type InstallKind = "desktop" | "managed" | "docker" | "npm" | "git" | "unknown";
+/** "managed" is a hosted or Cloud server that is updated for its owner. */
+export type InstallKind = "desktop" | "managed" | "docker" | "podman" | "npm" | "git" | "unknown";
 
-/** The command that updates each kind of install, as the docs give it. */
+/** As docs/self-hosting.md and deploy/podman/README.md give them. */
 export const UPDATE_COMMANDS: Partial<Record<InstallKind, { command: string; restart: boolean }>> = {
   docker: { command: "docker compose pull omb && docker compose up -d", restart: false },
+  podman: { command: "git pull && cd deploy/podman && PODMAN_COMPOSE_PROVIDER=podman-compose podman compose --env-file .env -f compose.yaml up -d --build", restart: false },
   npm: { command: "npm install -g openmausbot@latest", restart: true },
   git: { command: "git pull && pnpm install", restart: true },
 };
@@ -28,25 +25,36 @@ export function installKind(input: {
   const exists = input.exists ?? existsSync;
   if (input.desktopManaged) return "desktop";
   if (input.managed) return "managed";
-  if (exists("/.dockerenv") || exists("/run/.containerenv")) return "docker";
+  if (exists("/.dockerenv")) return "docker";
+  if (exists("/run/.containerenv")) return "podman";
   if (input.serverRoot.split(sep).includes("node_modules")) return "npm";
   if (exists(join(input.serverRoot, "..", ".git"))) return "git";
   return "unknown";
 }
 
-/** Whether `latest` is a newer release than `current`, comparing the
- * numeric parts of tags such as "v0.1.92". Anything unparseable is never
- * reported as an update. */
+/** Semver order on tags such as "v0.1.92"; a prerelease sorts before its release, and anything unparseable is never an update. */
 export function isNewerVersion(latest: string, current: string): boolean {
   const parse = (version: string) => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
-    return match ? match.slice(1).map(Number) : null;
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(version.trim());
+    return match ? { core: match.slice(1, 4).map(Number), pre: match[4]?.split(".") ?? [] } : null;
   };
   const a = parse(latest);
   const b = parse(current);
   if (!a || !b) return false;
   for (let i = 0; i < 3; i++) {
-    if (a[i]! !== b[i]!) return a[i]! > b[i]!;
+    if (a.core[i]! !== b.core[i]!) return a.core[i]! > b.core[i]!;
+  }
+  if (!a.pre.length || !b.pre.length) return !a.pre.length && b.pre.length > 0;
+  for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i++) {
+    const x = a.pre[i];
+    const y = b.pre[i];
+    if (x === undefined || y === undefined) return y === undefined;
+    if (x === y) continue;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn) return Number(x) > Number(y);
+    if (xn !== yn) return yn;
+    return x > y;
   }
   return false;
 }
@@ -61,8 +69,7 @@ export interface UpdateCheck {
   restart?: boolean;
 }
 
-/** One cached GitHub lookup an hour, shared by every caller, so opening
- * the menu on many devices never fans out into many requests. */
+/** One cached GitHub lookup an hour, shared by every caller. */
 export function createUpdateChecker(options: {
   current: string;
   install: InstallKind;
@@ -81,7 +88,6 @@ export function createUpdateChecker(options: {
   });
 
   return async function check(): Promise<UpdateCheck> {
-    // A desktop or hosted server is updated elsewhere; nothing to look up.
     if (options.install === "desktop" || options.install === "managed") return base();
     if (cached && now() - cached.at < CACHE_MS) return cached.result;
     inflight ??= (async () => {
