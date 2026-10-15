@@ -1,10 +1,10 @@
 // Folder sync on a Cloud home: what the /api/sync routes do. The desktop drives every pass; this side lists, takes whole
 // files in resumable parts, serves them back, and keeps what it replaces or removes in the trash.
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statfsSync, writeSync } from "node:fs";
-import { dirname, join, posix, win32 } from "node:path";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statfsSync, writeSync } from "node:fs";
+import { dirname, join, posix, sep, win32 } from "node:path";
 import { writeFileAtomic } from "./atomic.ts";
-import { RESERVE_BYTES, validWirePath } from "../electron/cloud-sync-rules.mjs";
+import { RESERVE_BYTES, clashPath, validWirePath } from "../electron/cloud-sync-rules.mjs";
 import { SyncPathError, insideFolder } from "./cloud-sync-paths.ts";
 import { CloudSyncStore, sha256File, walk, type SyncFile, type SyncFolder } from "./cloud-sync-store.ts";
 
@@ -73,6 +73,11 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
       try { found.push(readUpload(name.slice(0, -5))); } catch { rmSync(join(uploadsDir, name), { force: true }); }
     }
     return found;
+  };
+  const removeEmptyParents = (folder: SyncFolder, file: string) => {
+    for (let dir = dirname(file); dir.startsWith(folder.cloudPath + sep); dir = dirname(dir)) {
+      try { rmdirSync(dir); } catch { return; }
+    }
   };
 
   return {
@@ -157,6 +162,58 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
       store.remember(folder, { path: upload.path, size: stat.size, mtimeMs: stat.mtimeMs, sha256: upload.sha256 });
       noteChange(folder.id);
       return { sha256: upload.sha256 };
+    },
+    async download(id: string, path: unknown): Promise<{ file: string; size: number; sha256: string }> {
+      const folder = folderOf(id);
+      const file = fileOf(folder, path);
+      const current = await store.current(folder, path as string);
+      if (!current) throw new SyncError(404, { error: "no such file" });
+      return { file, size: current.size, sha256: current.sha256 };
+    },
+    async ops(id: string, body: unknown): Promise<{ results: Array<{ ok: true } | { conflict: true; current: SyncFile | null }> }> {
+      const folder = folderOf(id);
+      const list = (body as { ops?: unknown } | null)?.ops;
+      if (!Array.isArray(list) || list.length > 1_000) throw new SyncError(400, { error: "invalid ops" });
+      const results: Array<{ ok: true } | { conflict: true; current: SyncFile | null }> = [];
+      for (const op of list as Array<Record<string, unknown>>) {
+        if (op?.op === "delete" && typeof op.baseSha256 === "string") {
+          const file = fileOf(folder, op.path);
+          const current = await store.current(folder, op.path as string);
+          if (!current) { results.push({ ok: true }); continue; }
+          if (current.sha256 !== op.baseSha256) { results.push({ conflict: true, current }); continue; }
+          store.toTrash(folder, op.path as string, file);
+          removeEmptyParents(folder, file);
+          results.push({ ok: true });
+        } else if (op?.op === "move" && typeof op.sha256 === "string") {
+          const from = fileOf(folder, op.from), to = fileOf(folder, op.to);
+          const current = await store.current(folder, op.from as string);
+          if (!current || current.sha256 !== op.sha256 || existsSync(to)) { results.push({ conflict: true, current }); continue; }
+          mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+          renameSync(from, to);
+          store.forget(folder, op.from as string);
+          const stat = lstatSync(to);
+          store.remember(folder, { path: op.to as string, size: stat.size, mtimeMs: stat.mtimeMs, sha256: current.sha256 });
+          removeEmptyParents(folder, from);
+          results.push({ ok: true });
+        } else {
+          throw new SyncError(400, { error: "invalid op" });
+        }
+      }
+      noteChange(folder.id);
+      return { results };
+    },
+    async restore(entryId: unknown): Promise<{ folderId: string; path: string }> {
+      const found = typeof entryId === "string" ? store.trashEntry(entryId) : null;
+      if (!found) throw new SyncError(404, { error: "no such deleted file" });
+      const folder = folderOf(found.entry.folderId);
+      let path = found.entry.path;
+      if (existsSync(fileOf(folder, path))) path = clashPath(path, now(), (candidate) => existsSync(fileOf(folder, candidate)), "restored");
+      const target = fileOf(folder, path);
+      mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+      renameSync(found.file, target);
+      store.dropTrash(found.entry.id);
+      noteChange(folder.id);
+      return { folderId: folder.id, path };
     },
     trash() {
       return { entries: store.trash() };

@@ -91,3 +91,39 @@ it("answers 410 when a folder's copy is gone, and can delete a folder's copy to 
   expect(sync.trash().entries.map((entry) => entry.path)).toEqual(["b.txt"]);
   expect(sync.summary().folders).toEqual([]);
 });
+
+it("serves a file with its hash", async () => {
+  const { sync, folder } = setup();
+  await put(sync, folder.id, "a.txt", "abc", null);
+  const served = await sync.download(folder.id, "a.txt");
+  expect(served).toEqual({ file: join(folder.cloudPath, "a.txt"), size: 3, sha256: sha("abc") });
+  expect(await status(() => sync.download(folder.id, "missing.txt"))).toBe(404);
+  expect(await status(() => sync.download(folder.id, "../escape"))).toBe(400);
+});
+
+it("deletes into the trash and moves, only over the version the desktop saw", async () => {
+  const { sync, folder } = setup();
+  await put(sync, folder.id, "deep/a.txt", "one", null);
+  await put(sync, folder.id, "b.txt", "two", null);
+  const { results } = await sync.ops(folder.id, { ops: [
+    { op: "delete", path: "deep/a.txt", baseSha256: sha("stale") },
+    { op: "move", from: "b.txt", to: "moved/b.txt", sha256: sha("two") },
+  ] });
+  expect(results[0]).toMatchObject({ conflict: true, current: { sha256: sha("one") } });
+  expect(results[1]).toEqual({ ok: true });
+  expect(readFileSync(join(folder.cloudPath, "moved", "b.txt"), "utf8")).toBe("two");
+  expect((await sync.ops(folder.id, { ops: [{ op: "delete", path: "deep/a.txt", baseSha256: sha("one") }] })).results).toEqual([{ ok: true }]);
+  expect(existsSync(join(folder.cloudPath, "deep"))).toBe(false);
+  expect(sync.trash().entries.map((entry) => entry.path)).toEqual(["deep/a.txt"]);
+});
+
+it("restores a deleted file, beside the new one when its name is taken", async () => {
+  const { sync, folder } = setup({ now: () => new Date(2026, 9, 15, 12).getTime() });
+  await put(sync, folder.id, "a.txt", "old", null);
+  await sync.ops(folder.id, { ops: [{ op: "delete", path: "a.txt", baseSha256: sha("old") }] });
+  const [entry] = sync.trash().entries;
+  await put(sync, folder.id, "a.txt", "new", null);
+  expect(await sync.restore(entry!.id)).toEqual({ folderId: folder.id, path: "a (restored, 15 Oct 2026).txt" });
+  expect(readFileSync(join(folder.cloudPath, "a (restored, 15 Oct 2026).txt"), "utf8")).toBe("old");
+  expect(sync.trash().entries).toEqual([]);
+});
