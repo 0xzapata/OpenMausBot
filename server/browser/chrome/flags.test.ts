@@ -1,6 +1,7 @@
 import { userInfo } from "node:os";
 import { describe, expect, it } from "vitest";
 
+import { gateChromeFlags } from "../egress/gate.ts";
 import { accountHome, chromeArgs, chromeEnv, screenInfo, SERVER_SCREEN } from "./flags.ts";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
@@ -39,10 +40,17 @@ describe("Chrome's command line", () => {
     expect(server).not.toContain("--use-mock-keychain");
   });
 
-  it("goes only through OMB's own local gate, with WebRTC kept on it", () => {
-    const gated = chromeArgs({ userDataDir: "/p", mode: "headless", host: "desktop", proxyServer: "socks5://127.0.0.1:41234" });
+  it("goes only through OMB's own local gate, with the gate's own flags and WebRTC kept on it", () => {
+    const gated = chromeArgs({ userDataDir: "/p", mode: "headless", host: "desktop", platform: "darwin", egressPort: 41234 });
+    expect(gated).toEqual(expect.arrayContaining(gateChromeFlags(41234, "darwin")));
     expect(gated).toEqual(expect.arrayContaining(["--proxy-server=socks5://127.0.0.1:41234", "--proxy-bypass-list=<-loopback>", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"]));
-    expect(() => chromeArgs({ userDataDir: "/p", mode: "headless", host: "desktop", proxyServer: "http://proxy.example:8080" })).toThrow(/local gate/);
+    expect(gated.filter((arg) => arg === "--use-mock-keychain")).toHaveLength(1);
+    expect(() => chromeArgs({ userDataDir: "/p", mode: "headless", host: "desktop", egressPort: 0 })).toThrow(/local gate/);
+    expect(() => chromeArgs({ userDataDir: "/p", mode: "headless", host: "desktop", egressPort: 1.5 })).toThrow(/local gate/);
+  });
+
+  it("opens the window at the page size asked for", () => {
+    expect(chromeArgs({ userDataDir: "/p", mode: "headless", host: "desktop", viewport: { width: 1280, height: 800 } })).toContain("--window-size=1280,943");
   });
 
   it("turns the sandbox off only on an explicit opt-out, and reopens restored tabs without a start page", () => {

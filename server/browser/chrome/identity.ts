@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import type { Cdp } from "../../browser-sites.ts";
+import { credentialStoreFlags } from "../egress/gate.ts";
 import { pipeTransport, type CdpTransport } from "../cdp/transport.ts";
 
 export interface Brand { brand: string; version: string }
@@ -134,7 +135,7 @@ export async function calibrateIdentity(executable: string, options: { timeoutMs
   const args = [
     "--headless=new", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-default-apps", "--disable-sync",
-    ...(process.platform === "darwin" ? ["--use-mock-keychain"] : process.platform === "linux" ? ["--password-store=basic"] : []),
+    ...credentialStoreFlags(),
     ...(needsNoSandbox(options.env) ? ["--no-sandbox", "--disable-dev-shm-usage"] : []),
     url,
   ];
