@@ -84,6 +84,8 @@ const PAGE = new Set([
   "Accessibility.queryAXTree",
   "Emulation.setUserAgentOverride",
   "Emulation.setFocusEmulationEnabled",
+  "Emulation.setDeviceMetricsOverride",
+  "Emulation.clearDeviceMetricsOverride",
   "Network.enable",
   "Network.disable",
   "Network.getCookies",

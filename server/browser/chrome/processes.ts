@@ -183,7 +183,7 @@ export function staleSingletonLock(dir: string, { host = hostname(), alive = pro
   return match[1] !== host || !alive(Number(match[2]));
 }
 
-function clearSingleton(dir: string): void {
+export function clearSingleton(dir: string): void {
   for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
     try { unlinkSync(join(dir, name)); } catch {}
   }
