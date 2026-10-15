@@ -1,12 +1,12 @@
 // The Cloud side of folder sync's records: which PC folders sync (folders.json), what each synced folder holds with
 // hashes cached by size and modified time (index.db), and the trash. Bot output folders are not stored: they are the
 // conversation folders under task-workspaces that hold a file.
-import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { writeFileAtomic } from "./atomic.ts";
-import { foldKey, safeFolderName, skipped, validWirePath } from "../electron/cloud-sync-rules.mjs";
+import { TRASH_DAYS, foldKey, safeFolderName, skipped, validWirePath } from "../electron/cloud-sync-rules.mjs";
 import { syncRoot } from "./cloud-sync-paths.ts";
 
 export interface SyncFolder {
@@ -20,6 +20,20 @@ export interface SyncFolder {
   threadId?: string;
   createdAt?: number;
 }
+
+export interface SyncFile { path: string; size: number; mtimeMs: number; sha256: string }
+export interface TrashEntry { id: string; folderId: string; path: string; size: number; deletedAt: number }
+
+export function sha256File(path: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    createReadStream(path).on("error", reject).on("data", (chunk) => hash.update(chunk)).on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+type FileRow = { path: string; size: number; mtime: number; sha256: string };
+type TrashRow = { id: string; folder: string; path: string; size: number; deleted_at: number };
+const trashEntryOf = (row: TrashRow): TrashEntry => ({ id: row.id, folderId: row.folder, path: row.path, size: row.size, deletedAt: row.deleted_at });
 
 const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -124,5 +138,85 @@ export class CloudSyncStore {
 
   saveFolders(folders: SyncFolder[]): void {
     writeFileAtomic(join(this.syncDir(), "folders.json"), JSON.stringify(folders), { mode: 0o600 });
+  }
+
+  /** What a folder holds now. Rescans, and hashes only files whose size or modified time changed since last time. */
+  async list(folder: SyncFolder): Promise<SyncFile[]> {
+    const cached = new Map<string, SyncFile>();
+    for (const row of this.db.prepare("SELECT path, size, mtime, sha256 FROM files WHERE folder = ?").all(folder.id) as FileRow[]) {
+      cached.set(row.path, { path: row.path, size: row.size, mtimeMs: row.mtime, sha256: row.sha256 });
+    }
+    const files: SyncFile[] = [];
+    for (const entry of walk(folder.cloudPath)) {
+      const hit = cached.get(entry.path);
+      cached.delete(entry.path);
+      if (hit && hit.size === entry.size && hit.mtimeMs === entry.mtimeMs) { files.push(hit); continue; }
+      let sha256: string;
+      try { sha256 = await sha256File(join(folder.cloudPath, ...entry.path.split("/"))); } catch { continue; }
+      const file = { ...entry, sha256 };
+      this.remember(folder, file);
+      files.push(file);
+    }
+    for (const path of cached.keys()) this.forget(folder, path);
+    return files;
+  }
+
+  /** The file at `path` now, hashed through the cache; null when there is none. */
+  async current(folder: SyncFolder, path: string): Promise<SyncFile | null> {
+    const file = join(folder.cloudPath, ...path.split("/"));
+    const stat = lstatSync(file, { throwIfNoEntry: false });
+    if (!stat?.isFile() || stat.nlink !== 1) return null;
+    const row = this.db.prepare("SELECT path, size, mtime, sha256 FROM files WHERE folder = ? AND path = ?").get(folder.id, path) as FileRow | undefined;
+    if (row && row.size === stat.size && row.mtime === stat.mtimeMs) return { path, size: stat.size, mtimeMs: stat.mtimeMs, sha256: row.sha256 };
+    const current = { path, size: stat.size, mtimeMs: stat.mtimeMs, sha256: await sha256File(file) };
+    this.remember(folder, current);
+    return current;
+  }
+
+  remember(folder: SyncFolder, file: SyncFile): void {
+    this.db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?)").run(folder.id, file.path, file.size, file.mtimeMs, file.sha256);
+  }
+
+  forget(folder: SyncFolder, path: string): void {
+    this.db.prepare("DELETE FROM files WHERE folder = ? AND path = ?").run(folder.id, path);
+  }
+
+  bytesByKind(): { pc: number; bot: number } {
+    let pc = 0, bot = 0;
+    for (const row of this.db.prepare("SELECT folder, SUM(size) AS bytes FROM files GROUP BY folder").all() as Array<{ folder: string; bytes: number }>) {
+      if (row.folder.startsWith("bot-")) bot += row.bytes; else pc += row.bytes;
+    }
+    return { pc, bot };
+  }
+
+  toTrash(folder: SyncFolder, path: string, file: string): TrashEntry {
+    const entry: TrashEntry = { id: randomUUID(), folderId: folder.id, path, size: lstatSync(file).size, deletedAt: this.now() };
+    renameSync(file, join(this.syncDir(), "trash", entry.id));
+    this.db.prepare("INSERT INTO trash VALUES (?, ?, ?, ?, ?)").run(entry.id, entry.folderId, entry.path, entry.size, entry.deletedAt);
+    this.forget(folder, path);
+    return entry;
+  }
+
+  trash(): TrashEntry[] {
+    return (this.db.prepare("SELECT * FROM trash ORDER BY deleted_at DESC LIMIT 200").all() as TrashRow[]).map(trashEntryOf);
+  }
+
+  trashEntry(id: string): { entry: TrashEntry; file: string } | null {
+    const row = this.db.prepare("SELECT * FROM trash WHERE id = ?").get(id) as TrashRow | undefined;
+    return row ? { entry: trashEntryOf(row), file: join(this.syncDir(), "trash", row.id) } : null;
+  }
+
+  dropTrash(id: string): void {
+    this.db.prepare("DELETE FROM trash WHERE id = ?").run(id);
+    rmSync(join(this.syncDir(), "trash", id), { force: true });
+  }
+
+  sweepTrash(): void {
+    const cutoff = this.now() - TRASH_DAYS * 86_400_000;
+    for (const row of this.db.prepare("SELECT id FROM trash WHERE deleted_at < ?").all(cutoff) as Array<{ id: string }>) this.dropTrash(row.id);
+  }
+
+  trashBytes(): number {
+    return (this.db.prepare("SELECT COALESCE(SUM(size), 0) AS bytes FROM trash").get() as { bytes: number }).bytes;
   }
 }

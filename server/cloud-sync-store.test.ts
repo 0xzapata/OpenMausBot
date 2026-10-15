@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -65,4 +65,47 @@ it("resolves a path only inside its folder, never through a link", () => {
   symlinkSync(home, join(folder, "link"));
   expect(insideFolder(folder, "real/a.txt")).toBe(join(folder, "real", "a.txt"));
   for (const bad of ["../x", "/etc/passwd", "a\\b", "link/a.txt"]) expect(() => insideFolder(folder, bad)).toThrow(SyncPathError);
+});
+
+it("lists a folder with hashes, hashing again only what changed", async () => {
+  const { store } = setup();
+  const folder = store.register({ computerId: PC, computerName: "Ash-PC", pcPath: "/Users/ash/PA", name: "PA" });
+  mkdirSync(join(folder.cloudPath, "sub"));
+  const file = join(folder.cloudPath, "sub", "a.txt");
+  writeFileSync(file, "one");
+  utimesSync(file, new Date(1_000), new Date(1_000));
+  writeFileSync(join(folder.cloudPath, "Thumbs.db"), "litter");
+  symlinkSync("/etc/hosts", join(folder.cloudPath, "link.txt"));
+  const [first] = await store.list(folder);
+  expect(first).toMatchObject({ path: "sub/a.txt", size: 3, sha256: "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed" });
+  writeFileSync(file, "two");
+  utimesSync(file, new Date(1_000), new Date(1_000));
+  expect((await store.list(folder))[0]!.sha256).toBe(first!.sha256);
+  utimesSync(file, new Date(5_000), new Date(5_000));
+  expect((await store.list(folder))[0]!.sha256).not.toBe(first!.sha256);
+  expect(store.bytesByKind()).toEqual({ pc: 3, bot: 0 });
+});
+
+it("keeps a removed file in the trash for 30 days", async () => {
+  let now = 1_000;
+  const home = mkdtempSync(join(tmpdir(), "omb-sync-trash-"));
+  scratch.push(home);
+  const store = new CloudSyncStore({ dataDir: join(home, ".openmausbot"), now: () => now });
+  stores.push(store);
+  const folder = store.register({ computerId: PC, computerName: "PC", pcPath: "/p", name: "P" });
+  writeFileSync(join(folder.cloudPath, "a.txt"), "hello");
+  await store.list(folder);
+  const entry = store.toTrash(folder, "a.txt", join(folder.cloudPath, "a.txt"));
+  expect(existsSync(join(folder.cloudPath, "a.txt"))).toBe(false);
+  expect(store.trash()).toEqual([{ id: entry.id, folderId: folder.id, path: "a.txt", size: 5, deletedAt: 1_000 }]);
+  expect(store.trashBytes()).toBe(5);
+  expect(readFileSync(store.trashEntry(entry.id)!.file, "utf8")).toBe("hello");
+  expect(await store.current(folder, "a.txt")).toBeNull();
+  now += 29 * 86_400_000;
+  store.sweepTrash();
+  expect(store.trash()).toHaveLength(1);
+  now += 2 * 86_400_000;
+  store.sweepTrash();
+  expect(store.trash()).toEqual([]);
+  expect(store.trashBytes()).toBe(0);
 });
