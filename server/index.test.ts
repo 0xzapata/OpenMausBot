@@ -11522,6 +11522,7 @@ describe("harness HTTP API", () => {
       try {
         expect((await api("PATCH", `/api/bots/${legacy.id}`, {
           composio: true,
+          approvalMode: "ask",
           outbound: { policy: "allow", dailyCap: 10 },
         })).status).toBe(200);
         const legacyToken = await mintTestCapability(BASE, legacy.id, legacy.threadId, { kind: "connectors" });

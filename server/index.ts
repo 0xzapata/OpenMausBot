@@ -78,6 +78,7 @@ import {
   saveImage,
 } from "./attachments.ts";
 import {
+  messageAttachmentName,
   messageFileRoots,
 } from "./message-file.ts";
 import {
@@ -429,13 +430,14 @@ import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
-import { BROWSER_CONTROL_REFUSAL, BrowserRuntime, attachesToChrome, browserRuntimeEnv, formatBrowserTiming } from "./browser-runtime.ts";
+import { BROWSER_CONTROL_REFUSAL, BROWSER_UPLOAD_TOOL, BrowserRuntime, TransportError, attachesToChrome, browserRuntimeEnv, formatBrowserTiming } from "./browser-runtime.ts";
+import { namedUploadPaths, uploadableFiles } from "./browser-upload.ts";
 import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { HeldSecrets, LoginStore } from "./login-store.ts";
 import { OnePasswordLogins, sdkOnePasswordClient, type OnePasswordSdk } from "./onepassword.ts";
 import { nativeRequire } from "./data/engine.ts";
 import { fillLogin, type FillCandidate } from "./login-fill.ts";
-import { relayFrame, relayInsertText } from "./browser-relay.ts";
+import { RelayTimeout, relayCommand, relayFrame, relayInsertText } from "./browser-relay.ts";
 import { browserEvidence, browserSteps, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
@@ -468,7 +470,7 @@ import { BOT_PACKAGE_MAX_SKILLS } from "./bot-package.ts";
 import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
 import { describeTool } from "./activity.ts";
 import { OutboundCounts } from "./outbound-counts.ts";
-import { OutboundRequestService } from "./outbound-requests.ts";
+import { OutboundRequestService, outboundCard } from "./outbound-requests.ts";
 import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, outboundCallsIn } from "../shared/outbound.ts";
 import { connectorAccessDecision, describeConnectorScopes } from "../shared/connector-scopes.ts";
 import { bindThreadLogCapProvider } from "./thread-log-rotation.ts";
@@ -518,6 +520,7 @@ import { environmentDescriptor, loadEnvironmentId, serverVersion } from "./envir
 import { WorkspaceBackupMaintenance } from "./workspace-backup-maintenance.ts";
 import { createWorkspaceBackupRoutes, isWorkspaceBackupSessionControl } from "./workspace-backup-http.ts";
 import { applyPendingWorkspaceRestore, readLastWorkspaceRestore, type WorkspaceRestoreResult } from "./workspace-backup.ts";
+import { repairMovedWorkspacePaths } from "./moved-paths-repair.ts";
 import { createCustomDomainVerifier, customDomainIpv4, normalizeCustomDomain } from "./custom-domain.ts";
 import { allowedScopes, createEmailSignIn, parseAllowList } from "./account-signin.ts";
 import { ProviderAuthSessions } from "./provider-auth-sessions.ts";
@@ -660,9 +663,7 @@ let restoredAtStart: string | undefined;
 if (existsSync(join(DATA_DIR, ".backups"))) {
   workspaceRestore = applyPendingWorkspaceRestore(DATA_DIR);
   if (workspaceRestore.restored) restoredAtStart = workspaceRestore.id;
-  if (!workspaceRestore.restored && !workspaceRestore.rolledBack) {
-    workspaceRestore = readLastWorkspaceRestore(DATA_DIR) ?? workspaceRestore;
-  }
+  if (!workspaceRestore.restored && !workspaceRestore.rolledBack) workspaceRestore = readLastWorkspaceRestore(DATA_DIR) ?? workspaceRestore;
 }
 const workspaceMaintenance = new WorkspaceBackupMaintenance();
 // Only after ensureDirs(), whose one-time legacy data-dir rename must not find ~/.openmausbot already there.
@@ -684,6 +685,7 @@ const sharedComputers = new SharedComputers(id => sessions.isLive(id));
 const CLOUD_SECRETS = BOOT_CLOUD_SECRETS;
 const CLOUD_ENV: NodeJS.ProcessEnv = { ...process.env, ...CLOUD_SECRETS };
 const CLOUD_HOME = cloudHomeConfiguration(CLOUD_ENV);
+if (CLOUD_HOME) repairMovedWorkspacePaths(DATA_DIR);
 if (CLOUD_HOME) sessions.requireAdmin(CLOUD_PERSONAL_REFUSAL);
 const lendingEnabled = () => sharedComputersEnabled(cfg) || CLOUD_HOME !== null;
 const CLOUD_HOME_LENDER = "cloud-home";
@@ -2658,6 +2660,9 @@ const browserRuntime = new BrowserRuntime({
     return closed;
   },
   applyViewport: (spec) => setBrowserViewport(spec.command, spec.env),
+  relayCommand: (spec, session, command, timeoutMs) => relayCommand(spec, session, command, timeoutMs).catch((error: unknown) => {
+    throw error instanceof RelayTimeout ? new TransportError(error.message) : error;
+  }),
   steps: browserSteps,
   onTiming: process.env.OMB_BROWSER_TIMING === "1" ? (timing) => console.info(formatBrowserTiming(timing)) : undefined,
 });
@@ -3603,6 +3608,7 @@ function sourceApprovalMode(botId: string, threadId: string): ApprovalMode {
 function fullAccessForSource(botId: string, threadId: string): boolean {
   return sourceApprovalMode(botId, threadId) === "full";
 }
+
 
 function selfApplyBlocked(threadId: string): boolean {
   return cloudGuestDriven(threadId);
@@ -12437,6 +12443,17 @@ function resolveReplyTarget(threadId: string, value: unknown): Message | undefin
 
 const CONNECTOR_SLUG = /^[a-z0-9][a-z0-9_-]{0,80}$/;
 
+/** The name the person gave an attachment, from the newest of this thread's messages that carries its exact tag. */
+function attachmentNameInThread(threadId: string, path: string): string | null {
+  const messages = store.messagesFor(threadId);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const text = messages[i]!.text;
+    const name = text ? messageAttachmentName(text, path) : null;
+    if (name) return name;
+  }
+  return null;
+}
+
 function messageFileRootsForThread(senderId: string, threadId: string): string[] {
   const directBot = store.botByThread(threadId);
   const group = directBot ? undefined : store.groupByThread(threadId);
@@ -14785,7 +14802,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (body?.method !== "tools/list" && body?.method !== "tools/call") {
           return json(res, 400, { error: "unsupported browser method" });
         }
-        const result = await browserRuntime.agentRpc(browser.session, browser.spec, body.method, body.params, () => {
+        let params = body.params;
+        if (body.method === "tools/call" && params?.name === BROWSER_UPLOAD_TOOL) {
+          const upload = uploadableFiles(params.arguments?.files, messageFileRootsForThread(bot.id, internalCapability.threadId));
+          if ("error" in upload) return json(res, 200, { result: { isError: true, content: [{ type: "text", text: upload.error }] } });
+          const requested = params.arguments.files as string[];
+          const files = namedUploadPaths(upload.files.map((file, i) => ({ file, name: attachmentNameInThread(internalCapability.threadId, requested[i]!) })), join(DATA_DIR, "browser-uploads"));
+          params = { ...params, arguments: { ...params.arguments, files } };
+        }
+        const result = await browserRuntime.agentRpc(browser.session, browser.spec, body.method, params, () => {
           requireActiveInternalCapability();
           const current = store.bot(bot.id);
           if (!current || current.browser === false || current.computer === "off" || !builtInBrowserEnabled(cfg) ||
@@ -16254,7 +16279,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             rule: verdict.rule,
           });
         }
-        // A tools/call that sends something waits on a card or spends the daily allowance in every approval mode, Full included.
+        // Below Full access, a tools/call that sends something waits on a card or spends the daily allowance.
         const rpc = body && typeof body === "object" && !Array.isArray(body)
           ? (body as { id?: unknown; method?: unknown; params?: unknown })
           : null;
@@ -16285,20 +16310,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         const opaque = connectorCalls.some(call => call.slug === "COMPOSIO_PROXY_EXECUTE");
         if (opaque && currentSender.connectorTools !== undefined) return refuseOutbound("OpenMausBot cannot verify this code against this bot's tool grants. Use a direct app tool.");
+        // A room turn can run at a Chief's delegated level, which only the room handoff carries.
+        const sendsFreely = () => roomTurnLevels.forRequest(internalCapability.threadId, internalCapability.botId,
+          () => sourceApprovalMode(internalCapability.botId, internalCapability.threadId)) === "full";
+        const fullAccess = outboundTool !== null && sendsFreely();
         let outboundApproved = false;
-        if (outboundTool) {
+        if (outboundTool && !fullAccess) {
           const policy = currentSender.outbound ?? DEFAULT_OUTBOUND_POLICY;
           const threadId = internalCapability.threadId;
-          const { app } = describeTool(outboundTool);
-          const calls = outboundCalls.map((call) => {
-            const described = describeTool(call.slug);
-            return { app: described.app, label: described.label };
-          });
-          const summary = outboundCalls.map((call, index) => {
-            const described = calls[index];
-            const argsText = call.arguments === undefined ? "" : JSON.stringify(call.arguments);
-            return `${described.app ? `${described.app} · ` : ""}${described.label}${argsText ? `\n${argsText.slice(0, 400)}${argsText.length > 400 ? "… [arguments truncated]" : ""}` : ""}`;
-          }).join("\n\n");
+          const { app, calls, summary } = outboundCard(outboundCalls);
           const capNote = (count: number) =>
             `OpenMausBot did not send this. ${currentSender.name} has reached its daily limit of ${count} outbound action${count === 1 ? "" : "s"}. Ask the user to raise the limit under the bot's Permissions before trying again.`;
           if (policy.policy === "allow" && !opaque) {
@@ -16387,7 +16407,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 (call.kind === "unrecognized" && fresh.connectorTools !== undefined)) {
               refuseDispatch("This bot's connected-app permissions changed. The call was not run.");
             }
-            if (outboundTool) {
+            if (outboundTool && fullAccess && sendsFreely()) {
+              appendDecision(DATA_DIR, { threadId: internalCapability.threadId, botId: fresh.id, botName: fresh.name,
+                tool: outboundTool, decision: "auto-approved", source: "outbound", rule: "full-access" });
+            } else if (outboundTool) {
               const policy = fresh.outbound ?? DEFAULT_OUTBOUND_POLICY;
               if (policy.policy === "allow" && !opaque) {
                 let reserved: number | null;
