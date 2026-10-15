@@ -1,8 +1,8 @@
 // Folder sync on a Cloud home: what the /api/sync routes do. The desktop drives every pass; this side lists, takes whole
 // files in resumable parts, serves them back, and keeps what it replaces or removes in the trash.
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statfsSync, writeSync } from "node:fs";
-import { dirname, join, posix, sep, win32 } from "node:path";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statfsSync, watch, writeSync, type FSWatcher } from "node:fs";
+import { dirname, join, posix, relative, sep, win32 } from "node:path";
 import { writeFileAtomic } from "./atomic.ts";
 import { RESERVE_BYTES, clashPath, validWirePath } from "../electron/cloud-sync-rules.mjs";
 import { SyncPathError, insideFolder } from "./cloud-sync-paths.ts";
@@ -36,6 +36,7 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
   let cursor = now();
   const changes: Array<{ seq: number; folderId: string }> = [];
   const waiters = new Set<() => void>();
+  let watchers: FSWatcher[] | null = null;
 
   const folderOf = (id: string): SyncFolder => {
     const folder = store.folder(id);
@@ -73,6 +74,27 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
       try { found.push(readUpload(name.slice(0, -5))); } catch { rmSync(join(uploadsDir, name), { force: true }); }
     }
     return found;
+  };
+  const startWatching = () => {
+    if (watchers) return;
+    const started: FSWatcher[] = [];
+    watchers = started;
+    const watchTree = (dir: string, folderFor: (path: string) => string | null) => {
+      try {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const watcher = watch(dir, { recursive: true }, (_event, name) => {
+          const folderId = name ? folderFor(String(name).split(sep).join("/")) : null;
+          if (folderId) noteChange(folderId);
+        });
+        watcher.on("error", () => {});
+        started.push(watcher);
+      } catch {}
+    };
+    watchTree(store.root, (path) => store.pcFolders().find((folder) => `${path}/`.startsWith(`${relative(store.root, folder.cloudPath).split(sep).join("/")}/`))?.id ?? null);
+    watchTree(join(options.dataDir, "task-workspaces"), (path) => {
+      const [botId, threadId] = path.split("/");
+      return botId && threadId ? `bot-${botId}-${threadId}` : null;
+    });
   };
   const removeEmptyParents = (folder: SyncFolder, file: string) => {
     for (let dir = dirname(file); dir.startsWith(folder.cloudPath + sep); dir = dirname(dir)) {
@@ -218,7 +240,26 @@ export function createCloudSync(options: { dataDir: string; root?: string; now?:
     trash() {
       return { entries: store.trash() };
     },
+    async changes(since: number, waitMs: number, signal: AbortSignal): Promise<{ cursor: number; folderIds: string[] }> {
+      startWatching();
+      const pick = () => {
+        const issued = since === cursor || changes.some((change) => change.seq === since) || (changes.length > 0 && since === changes[0]!.seq - 1);
+        if (!issued) return { cursor, folderIds: store.folders().map((folder) => folder.id) };
+        return { cursor, folderIds: [...new Set(changes.filter((change) => change.seq > since).map((change) => change.folderId))] };
+      };
+      const ready = pick();
+      if (ready.folderIds.length || signal.aborted) return ready;
+      await new Promise<void>((resolve) => {
+        const done = () => { clearTimeout(timer); waiters.delete(done); signal.removeEventListener("abort", done); resolve(); };
+        const timer = setTimeout(done, Math.min(Math.max(waitMs, 0), 60_000));
+        waiters.add(done);
+        signal.addEventListener("abort", done, { once: true });
+      });
+      return pick();
+    },
     close() {
+      for (const watcher of watchers ?? []) watcher.close();
+      watchers = null;
       for (const wake of waiters) wake();
       store.close();
     },

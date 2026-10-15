@@ -127,3 +127,29 @@ it("restores a deleted file, beside the new one when its name is taken", async (
   expect(readFileSync(join(folder.cloudPath, "a (restored, 15 Oct 2026).txt"), "utf8")).toBe("old");
   expect(sync.trash().entries).toEqual([]);
 });
+
+it("answers a long poll as soon as a folder changes, and every folder for a cursor it did not issue", async () => {
+  const { sync, folder } = setup();
+  const signal = new AbortController().signal;
+  const all = await sync.changes(0, 60_000, signal);
+  expect(all.folderIds).toEqual([folder.id]);
+  const waiting = sync.changes(all.cursor, 60_000, signal);
+  await put(sync, folder.id, "a.txt", "x", null);
+  const woke = await waiting;
+  expect(woke.folderIds).toEqual([folder.id]);
+  expect(woke.cursor).toBeGreaterThan(all.cursor);
+  // The watcher also reports the commit's own rename a moment later; let it land before checking for quiet.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const settled = await sync.changes(woke.cursor, 0, signal);
+  const quiet = await sync.changes(settled.cursor, 20, signal);
+  expect(quiet).toEqual({ cursor: settled.cursor, folderIds: [] });
+});
+
+it("notices a file a bot writes straight into a synced folder", async () => {
+  const { sync, folder } = setup();
+  const signal = new AbortController().signal;
+  const { cursor } = await sync.changes(0, 60_000, signal);
+  const waiting = sync.changes(cursor, 5_000, signal);
+  writeFileSync(join(folder.cloudPath, "from-a-bot.md"), "written by a bot");
+  expect((await waiting).folderIds).toContain(folder.id);
+});
