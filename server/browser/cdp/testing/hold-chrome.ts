@@ -10,6 +10,7 @@ const chrome = await launchChrome({
   mode: "headless",
   host: host === "container" || host === "server" ? host : "desktop",
   sandbox: sandbox !== "0",
+  handshakeTimeoutMs: 120_000,
 });
 process.stdout.write(`${JSON.stringify({ pid: chrome.pid })}\n`);
 setInterval(() => {}, 60_000);

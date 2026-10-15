@@ -36,6 +36,9 @@ export function chromeForTests(): string | null {
 export const CHROME = chromeForTests();
 if (!CHROME) console.log("skipping omb-cdp real-Chrome suites: set OMB_CDP_CHROME to a Chrome executable, or OMB_CDP_E2E=1 to use the installed Google Chrome");
 
+/** A runner's first Chrome launch builds caches (and on Windows waits for a scan of the binary): over 30 s on GitHub's runners. */
+export const FIRST_LAUNCH_MS = 120_000;
+
 /** Linux CI on containers and some runners needs the operator opt-out; never set by the driver itself. */
 const sandbox = !sandboxDisabled(process.env);
 
@@ -98,6 +101,7 @@ export async function startChrome(label: string, { launch = {}, browser: browser
     mode: "headless",
     host: HOST,
     sandbox,
+    handshakeTimeoutMs: FIRST_LAUNCH_MS,
     ...launch,
   });
   const trace: TracedCommand[] = [];

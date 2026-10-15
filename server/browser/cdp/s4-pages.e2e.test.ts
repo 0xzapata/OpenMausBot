@@ -39,7 +39,7 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
     fx = await FixtureServer.start();
     run = await startChrome("pages");
     page = await run.browser.waitForPage();
-  }, hostTimeout(60_000));
+  }, hostTimeout(180_000));
 
   afterAll(async () => {
     for (const other of extra) await other.close();
@@ -60,14 +60,14 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
   const read = <T = unknown>(expression: string, on: CdpPage = page) => on.evaluate(expression) as Promise<T>;
 
   it("waits for the readiness asked for and reports the document's status", async () => {
-    fx.route("/slow.png", { body: Buffer.from("not really a png"), type: "image/png", delayMs: 700 });
+    fx.route("/slow.png", { body: Buffer.from("not really a png"), type: "image/png", delayMs: 2_000 });
     const url = serve(`<p>early</p><img src="/slow.png">`);
-    let started = Date.now();
     expect(await page.navigate(url, { readiness: "domcontentloaded" })).toEqual({ url, status: 200 });
-    expect(Date.now() - started).toBeLessThan(600);
-    started = Date.now();
+    expect(await read("document.readyState")).toBe("interactive");
+    const started = Date.now();
     await page.navigate(url, { readiness: "load" });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(600);
+    expect(await read("document.readyState")).toBe("complete");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
     await page.navigate(url, { readiness: "networkidle", timeoutMs: 10_000 });
     expect(page.lifecycle.reached("networkidle")).toBe(true);
     fx.route("/gone", { body: "<p>missing</p>", status: 404 });
@@ -268,11 +268,13 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
 
   it("takes pictures at most 1280 pixels wide: the viewport, an element and the whole page", async () => {
     await open(`<div id="box" style="margin:40px;width:200px;height:100px;background:red"></div><div style="height:3000px"></div>`);
+    expect(await read("[innerWidth, innerHeight]")).toEqual([1280, 720]);
     expect(pngSize((await page.screenshot()).data)).toEqual({ width: 1280, height: 720 });
     const element = await page.screenshot({ target: { selector: "#box" } });
     expect(pngSize(element.data)).toEqual({ width: 200, height: 100 });
     const full = await page.screenshot({ fullPage: true });
-    expect(pngSize(full.data).width).toBe(1280);
+    // The document's width: 1280 where scrollbars overlay the page (macOS), less a classic scrollbar elsewhere.
+    expect(pngSize(full.data).width).toBe(await read("document.documentElement.scrollWidth"));
     expect(pngSize(full.data).height).toBeGreaterThan(3000);
     const retina = await startChrome("retina", { launch: { screen: { width: 1512, height: 982, deviceScaleFactor: 2 } } });
     extra.push(retina);
@@ -283,6 +285,16 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
     const shot = await sharp.screenshot();
     expect(pngSize(shot.data)).toEqual({ width: 1280, height: 720 });
     expect(pngSize((await sharp.screenshot({ maxWidth: 2560 })).data)).toEqual({ width: 2560, height: 1440 });
+  });
+
+  it("fits each headless window so its page is exactly the viewport asked for", async () => {
+    const fitted = await startChrome("fit", { browser: { viewport: { width: 1024, height: 640 } } });
+    extra.push(fitted);
+    const first = await fitted.browser.waitForPage();
+    await first.navigate(serve("<p>fitted</p>"));
+    expect(await first.evaluate("[innerWidth, innerHeight]")).toEqual([1024, 640]);
+    const second = await fitted.browser.newPage(serve("<p>second tab</p>"));
+    expect(await second.evaluate("[innerWidth, innerHeight]")).toEqual([1024, 640]);
   });
 
   it("streams screencast frames with paced acks, and stops", async () => {

@@ -17,7 +17,7 @@ import { processAlive } from "../chrome/processes.ts";
 import { CdpBrowser } from "./browser.ts";
 import { IDENTITY_PROBE, identityDifferences, identityFromProbe, type IdentityProbe } from "./identity.ts";
 import { FixtureServer } from "./testing/fixtures.ts";
-import { CHROME, forbiddenCommands, HOST, startChrome, testRoot, type RunningChrome } from "./testing/real-chrome.ts";
+import { CHROME, FIRST_LAUNCH_MS, forbiddenCommands, HOST, startChrome, testRoot, type RunningChrome } from "./testing/real-chrome.ts";
 
 const suite = CHROME ? describe : describe.skip;
 const sandbox = !sandboxDisabled(process.env);
@@ -78,8 +78,8 @@ suite("S4 identity, quietness, exit and speed on real Chrome", () => {
       record(`/id-headers?from=${url.searchParams.get("from")}`)(request);
       return { type: "application/json", body: JSON.stringify(request.headers) };
     });
-    calibrated = await calibrateIdentity({ executablePath: CHROME!, host: HOST, tmpRoot: testRoot(), sandbox });
-  }, hostTimeout(90_000));
+    calibrated = await calibrateIdentity({ executablePath: CHROME!, host: HOST, tmpRoot: testRoot(), sandbox, handshakeTimeoutMs: FIRST_LAUNCH_MS });
+  }, hostTimeout(180_000));
 
   afterAll(async () => {
     for (const run of running) await run.close();
@@ -108,7 +108,7 @@ suite("S4 identity, quietness, exit and speed on real Chrome", () => {
 
   it.runIf(canShowWindow)("matches what the same binary reports in a window, byte for byte", async () => {
     const dir = mkdtempSync(join(testRoot(), "omb-cdp-headed-"));
-    const chrome = await launchChrome({ executablePath: CHROME!, userDataDir: join(dir, "profile"), mode: "window", host: HOST, sandbox, windowPosition: { x: -2400, y: -2400 } });
+    const chrome = await launchChrome({ executablePath: CHROME!, userDataDir: join(dir, "profile"), mode: "window", host: HOST, sandbox, windowPosition: { x: -2400, y: -2400 }, handshakeTimeoutMs: FIRST_LAUNCH_MS });
     try {
       const browser = await CdpBrowser.connect(chrome.transport, { identity: null, headless: false, permissions: false });
       const tab = await browser.waitForPage();
@@ -121,7 +121,7 @@ suite("S4 identity, quietness, exit and speed on real Chrome", () => {
       await chrome.close(3_000);
       await removeTempDir(dir);
     }
-  }, hostTimeout(60_000));
+  }, hostTimeout(150_000));
 
   it("tells the same identity on the page, a worker, a service worker, a cross-site frame and in request headers", async () => {
     const run = await startChrome("identity", {

@@ -26,7 +26,7 @@ suite("S4 snapshot, refs and actions on real Chrome", () => {
     run = await startChrome("actions");
     page = await run.browser.waitForPage();
     files = mkdtempSync(join(testRoot(), "omb-cdp-files-"));
-  }, hostTimeout(60_000));
+  }, hostTimeout(180_000));
 
   afterAll(async () => {
     await run?.close();

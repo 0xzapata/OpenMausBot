@@ -568,8 +568,9 @@ jobs:
         # Chrome for Testing has no setuid sandbox helper yet, so this leg
         # runs with the operator opt-out; the host legs keep the sandbox.
         # Vitest writes its bundled config beside it and its cache under
-        # node_modules/.vite, so those two places are opened to maus.
-        if: runner.os == 'Linux'
+        # node_modules/.vite, so those two places are opened to maus. It runs
+        # even when the host leg failed: they test different Chromes.
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: |
           docker build --target runtime -t omb-runtime:s4 .
           mkdir -p node_modules/.vite && chmod a+w . node_modules/.vite
