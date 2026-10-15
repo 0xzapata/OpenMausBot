@@ -1363,6 +1363,7 @@ export function ComputerPanel({
               aria-selected={panelView === "computer"}
               aria-controls={panelTabPanelId("computer")}
               tabIndex={tabIndexFor("computer")}
+              title={t("computer.tab.computer")}
               onClick={() => selectPanelView("computer")}
               className={tabClass(panelView === "computer")}
             >
@@ -1377,6 +1378,7 @@ export function ComputerPanel({
               aria-selected={panelView === "routines"}
               aria-controls={panelTabPanelId("routines")}
               tabIndex={tabIndexFor("routines")}
+              title={t("computer.tab.routines")}
               onClick={() => selectPanelView("routines")}
               className={tabClass(panelView === "routines")}
             ><CalendarClock size={13} />{t("computer.tab.routines")}</button>
@@ -1388,6 +1390,7 @@ export function ComputerPanel({
               aria-selected={panelView === "android"}
               aria-controls={panelTabPanelId("android")}
               tabIndex={tabIndexFor("android")}
+              title={t("computer.tab.android")}
               onClick={() => selectPanelView("android")}
               className={tabClass(panelView === "android")}
             >
@@ -1402,6 +1405,7 @@ export function ComputerPanel({
               aria-selected={panelView === "browser"}
               aria-controls={panelTabPanelId("browser")}
               tabIndex={tabIndexFor("browser")}
+              title={t("computer.tab.browser")}
               onClick={() => {
                 setError(null);
                 selectPanelView("browser");
@@ -1420,6 +1424,7 @@ export function ComputerPanel({
               aria-selected={panelView === "data"}
               aria-controls={panelTabPanelId("data")}
               tabIndex={tabIndexFor("data")}
+              title={t("computer.tab.data")}
               onClick={() => selectPanelView("data")}
               className={tabClass(panelView === "data")}
             >
@@ -1433,6 +1438,7 @@ export function ComputerPanel({
               aria-selected={panelView === "files"}
               aria-controls={panelTabPanelId("files")}
               tabIndex={tabIndexFor("files")}
+              title={t("computer.tab.files")}
               onClick={() => selectPanelView("files")}
               className={tabClass(panelView === "files")}
             >
