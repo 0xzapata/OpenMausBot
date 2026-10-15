@@ -32,7 +32,7 @@ const STATE = /^[A-Za-z0-9_-]{43}$/;
 const CODE = /^[\x21-\x7e]{1,1024}$/;
 const REFRESH_TOKEN = /^[\x21-\x7e]{1,8192}$/;
 const CLIENT_ID = /^[\x21-\x7e]{1,256}$/;
-const SCOPES = /^[A-Za-z0-9_.\/-]+(?: [A-Za-z0-9_.\/-]+)*$/;
+const SCOPES = /^[A-Za-z0-9_./-]+(?: [A-Za-z0-9_./-]+)*$/;
 const HKDF_SALT = "openmausbot-highlevel-relay-v1";
 const encoder = new TextEncoder();
 

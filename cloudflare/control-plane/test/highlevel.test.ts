@@ -175,7 +175,7 @@ describe("HighLevel OAuth relay", () => {
     // the authorization code and the tokens.
     const allowed = new Set<string>();
     for (const body of bodies) {
-      if (/^\{"accessToken":/.test(body)) allowed.add(body);
+      if (body.startsWith('{"accessToken":')) allowed.add(body);
     }
     for (const body of bodies) {
       if (allowed.has(body)) continue;
