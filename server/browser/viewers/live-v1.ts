@@ -299,6 +299,10 @@ export class LiveV1 {
     }
   }
 
+  has(viewerId: string): boolean {
+    return this.#viewers.has(viewerId);
+  }
+
   handBack(session: string): void {
     void this.#service.handBack(session).then(() => this.#controlAll(session), () => undefined);
   }

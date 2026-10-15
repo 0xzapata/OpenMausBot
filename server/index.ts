@@ -443,13 +443,13 @@ import { OnePasswordLogins, sdkOnePasswordClient, type OnePasswordSdk } from "./
 import { nativeRequire } from "./data/engine.ts";
 import { fillLogin } from "./login-fill.ts";
 import { BotLogins, cardLoginPlace, cardSignInElsewhere, observeSignInPage, type ObservedPage } from "./bot-logins.ts";
-import { relayFrame, relayInput } from "./browser-relay.ts";
+import { relayFrame } from "./browser-relay.ts";
 import { browserEvidence, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { loginSite, savedLoginResumePrompt } from "../shared/logins.ts";
 import { browserRestartRefusal } from "./browser-live.ts";
 import { browserEgress } from "./browser/egress/registry.ts";
-import { browserEngineEncryptionKey, clearBrowserSessionState, browserEngineStatus, browserSessionId, BUILT_IN_BROWSER_SYSTEM_PROMPT, inRunningBrowser } from "./browser-engine.ts";
+import { browserEngineEncryptionKey, clearBrowserSessionState, browserEngineStatus, browserSessionId } from "./browser-engine.ts";
 import { chromeLauncher } from "./browser/chrome/launcher.ts";
 import { createBrowserHost } from "./host/browser.ts";
 import { createScreenFrameSource, type ScreenCapture } from "./screen-frame-source.ts";
@@ -1659,13 +1659,12 @@ const browserCleanup: BrowserCleanupCoordinator = new BrowserCleanupCoordinator(
         ? [browserSessionId("", request.partitionId)]
         : [];
     // Never acknowledge an erase that did not happen: a failure leaves the intent pending for retry.
-    const work = status.kind === "ready" && sessions.length
-      ? Promise.all(sessions.map(async (session) => {
+    const work = Promise.all([eraseChromeBrowser(request), ...sessions.map(async (session) => {
+          if (status.kind !== "ready") return true;
           const ok = await clearBrowserSessionState(status.binaryPath, session, { encryptionKey: browserEngineEncryptionKey() });
           if (!ok) console.warn(`browser cleanup: could not clear saved state for session ${session}; restart OpenMausBot to retry this profile's cleanup. Do not use state clear --all: it erases other profiles too.`);
           return ok;
-        }))
-      : Promise.resolve([true]);
+        })]);
     void work.then((results) => results.every(Boolean), (error) => {
       console.warn("browser cleanup: could not clear saved session state", error);
       return false;
@@ -2652,7 +2651,8 @@ function cancelDirectTurnDispatch(botId: string, expectedThreadId?: string): Dir
 
 const {
   browserRuntime, browserLive, usedBrowserSessions, browserSweep, temporaryBrowserSessions,
-  currentBrowserSession, forgetTemporaryBrowser, myChromeAvailable, usesMyChrome, browserSessionSpec, browserIntegration,
+  currentBrowserSession, forgetTemporaryBrowser, myChromeAvailable, browserSessionSpec, browserIntegration,
+  browserReady, currentBrowserSpec, loginInput, browserSystemPrompt, signedInSitesRefusal, closeBrowser, browserEngineSwitched, eraseChromeBrowser, engineSummary,
 } = createBrowserHost({ cfg, store: () => store, turnResources, activeInternalGenerationByThread, mintInternalCapability, DESKTOP_MANAGED, CLOUD_HOME, PORT });
 
 const dataSheets = new DataSheetRegistry({
@@ -2690,12 +2690,12 @@ function highlevelIntegration(bot: BotRecord, turn: { threadId: string; generati
 
 let browserEngineInstall: Promise<void> | null = null;
 let browserEngineInstallError: string | null = null;
-export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; chrome?: string; installing?: boolean; installError?: string; myChrome: boolean } {
+export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; chrome?: string; installing?: boolean; installError?: string; myChrome: boolean; engine: "agent-browser" | "chrome" } {
   const status = browserEngineStatus();
   const progress = { myChrome: myChromeAvailable(), ...(browserEngineInstall ? { installing: true } : {}), ...(browserEngineInstallError ? { installError: browserEngineInstallError } : {}) };
-  return status.kind === "ready"
-    ? { kind: "engine", version: status.version, chrome: chromeLauncher.describe(), ...progress }
-    : { kind: "unavailable", reason: status.reason, installable: status.installable, ...progress };
+  return engineSummary(status.kind === "ready"
+    ? { kind: "engine" as const, version: status.version, chrome: chromeLauncher.describe(), ...progress }
+    : { kind: "unavailable" as const, reason: status.reason, installable: status.installable, ...progress });
 }
 
 function phoneIntegration(botId: string, threadId: string, generation: string) {
@@ -3174,7 +3174,7 @@ const highlevelHost = createHighLevelHost({ service: highlevel, dataDir: DATA_DI
 const cloudHealth = CLOUD_HOME ? createCloudHealth({ store, bus, dataDir: DATA_DIR, eventsDir: EVENTS_DIR, version: serverVersion(), image: process.env.OMB_CLOUD_IMAGE,
   engines: () => registry.instances().map((instance) => ({ instanceId: instance.instanceId, driverKind: instance.driverKind, snapshot: registry.lastSnapshot(instance.instanceId) })),
   connectors: () => highlevelHost.health(composio.configured(cfg) ? composio.connectedServices(cfg) : null),
-  browser: () => ({ available: browserEngineStatus().kind === "ready", installing: Boolean(browserEngineInstall), interrupted: browserRuntime.interruptedCount() }) }) : null;
+  browser: () => ({ available: browserReady(undefined), installing: Boolean(browserEngineInstall), interrupted: browserRuntime.interruptedCount() }) }) : null;
 const cloudSigned = CLOUD_HOME && cloudHealth ? createCloudSignedRoutes({ secret: CLOUD_HOME.bootstrapSecret, sessions, health: cloudHealth }) : null;
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
@@ -3315,7 +3315,7 @@ function previewSystemPrompt(bot: BotRecord) {
     { id: "composio", label: "Connected apps", text: caps?.composioMcp && bot.composio !== false && composio.configured(cfg) ? composioSystemPrompt(bot.connectorTools) + describeConnectorScopes(bot.connectorScopes) : "" },
     { id: "highlevel", label: "HighLevel", text: caps?.highlevelMcp === true && highlevelHost.mounts(bot) ? highlevelHost.prompt(bot) : "" },
     { id: "mcp", label: "MCP servers", text: caps?.customMcp ? customMcpPrompt(Object.keys(engineMcpServers(bot))) : "" },
-    { id: "browser", label: "Browser", text: previewPlan.browser ? browserPromptFor(bot.id, agentsMounted) : "" },
+    { id: "browser", label: "Browser", text: previewPlan.browser ? browserPromptFor(bot, agentsMounted) : "" },
     { id: "coordination", label: "Team", text: agentsMounted && coordination ? ` ${coordination}` : "" },
     { id: "credential", label: "Credentials", text: agentsMounted ? CREDENTIAL_PROMPT : "" },
     { id: "routine", label: "Routines", text: agentsMounted ? ROUTINE_PROMPT : "" },
@@ -6645,7 +6645,7 @@ async function selectableComputers(bot: BotRecord) {
         ready = shouldMountLocalComputer({ requested: "local", hostPlatform: process.platform,
           providerSupportsLocal: caps?.localComputerMcp === true }) && Boolean(readCuaConnection());
       } else if (surface === "browser") {
-        ready = caps?.browserMcp === true && builtInBrowserEnabled(cfg) && bot.browser !== false && browserEngineStatus().kind === "ready";
+        ready = caps?.browserMcp === true && builtInBrowserEnabled(cfg) && bot.browser !== false && browserReady(bot.browserProfile);
         reason = "The built-in browser is disabled, not installed, or unsupported by this model.";
       }
     } catch (error) { reason = error instanceof Error ? error.message : String(error); }
@@ -9062,7 +9062,7 @@ async function startTurn(
           browserCapture = async () => {
             const owner = turnResourceOwners.get(threadId);
             if (!owner || !claimTurnResource(owner, `browser:${session}`)) throw new Error("another thread is using this browser");
-            return browserRuntime.previewFrame(session, () => relayFrame(spec, session));
+            return browserRuntime.previewFrame(session, () => relayFrame(spec, session), spec);
           };
         }
       }
@@ -9106,7 +9106,7 @@ async function startTurn(
         { id: "cloud-home", label: "My Cloud", text: CLOUD_HOME ? cloudHomePrompt(Boolean(integrations.agents) && lendingEnabled(), syncedFolders(DATA_DIR)) : "" },
         { id: "composio", label: "Connected apps", text: integrations.composio ? composioSystemPrompt(liveBot?.connectorTools ?? bot.connectorTools) + describeConnectorScopes((liveBot ?? bot).connectorScopes) : "" },
         { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) },
-        { id: "browser", label: "Browser", text: integrations.browser ? browserPromptFor(bot.id, Boolean(integrations.agents)) : "" },
+        { id: "browser", label: "Browser", text: integrations.browser ? browserPromptFor(bot, Boolean(integrations.agents)) : "" },
         { id: "data", label: "Data", text: integrations.data ? BUILT_IN_DATA_SYSTEM_PROMPT : "" },
         { id: "highlevel", label: "HighLevel", text: integrations.highlevel ? highlevelHost.prompt(liveBot ?? bot) : "" },
         { id: "coordination", label: "Team", text: coordinationPrompt ? ` ${coordinationPrompt}` : "" },
@@ -11132,7 +11132,7 @@ async function runClaimedGroupMemberTurn(
     { id: "team-computer", label: "Team computer", text: teamComputerPrompt(roomTeamComputer) },
     { id: "plan", label: "Surface", text: surfacePrompt({ computer: roomTeamComputer ? "cloud" : roomVmTarget ? "vm" : surfaceOfComputerKind(roomComputerKind), browser: Boolean(integrations.browser) }, { note: roomPlan.note, cloudHome: Boolean(CLOUD_HOME) }) },
     { id: "cloud-home", label: "My Cloud", text: CLOUD_HOME ? cloudHomePrompt(Boolean(integrations.agents) && lendingEnabled(), syncedFolders(DATA_DIR)) : "" },
-    { id: "browser", label: "Browser", text: integrations.browser ? browserPromptFor(bot.id, Boolean(integrations.agents)) : "" },
+    { id: "browser", label: "Browser", text: integrations.browser ? browserPromptFor(bot, Boolean(integrations.agents)) : "" },
     { id: "data", label: "Data", text: integrations.data ? BUILT_IN_DATA_SYSTEM_PROMPT : "" },
     { id: "highlevel", label: "HighLevel", text: integrations.highlevel ? highlevelHost.prompt(readyBot) : "" },
     { id: "recall", label: "Recall", text: integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "" },
@@ -12948,7 +12948,7 @@ async function signInCardPage(botId: string, threadId: string, messageId: string
   try { cardHost = new URL(card.url).hostname.toLowerCase(); }
   catch { return { status: 409, body: { error: "this sign-in request has no page address to save a login for" } }; }
   const browser = card.place === "browser" ? await botBrowserTarget(botForThread(botId, threadId) ?? bot).catch(() => null) : null;
-  const observed = browser ? await observeSignInPage((args) => inRunningBrowser(browser.spec.command, browser.env, args)).catch(() => null) : null;
+  const observed = browser ? await observeSignInPage(loginInput(browser.session, browser.spec, browser.env).engine).catch(() => null) : null;
   return { card, cardHost, observed };
 }
 
@@ -12977,18 +12977,14 @@ async function saveLoginFromCard(botId: string, threadId: string, messageId: str
 }
 
 /** Saved logins appear by site and username only. */
-function browserPromptFor(botId: string, agentsMounted: boolean): string {
-  return BUILT_IN_BROWSER_SYSTEM_PROMPT + (agentsMounted ? savedLoginsPrompt(botLogins.sitesFor(botId)) : "");
+function browserPromptFor(bot: { id: string; browserProfile?: string }, agentsMounted: boolean): string {
+  return browserSystemPrompt(bot.browserProfile) + (agentsMounted ? savedLoginsPrompt(botLogins.sitesFor(bot.id)) : "");
 }
 
 /** Null while the browser engine is not installed. */
 async function botBrowserTarget(bot: BotRecord): Promise<{ session: string; spec: { command: string; env: Record<string, string> }; env: NodeJS.ProcessEnv } | null> {
-  const engine = browserEngineStatus();
-  if (engine.kind !== "ready") return null;
-  const session = currentBrowserSession(bot.id, bot.browserProfile);
-  const profileTarget = bot.browserProfile && bot.browserProfile !== "guest" ? browserProfilePartitionTarget(cfg, bot.browserProfile) : null;
-  const spec = usedBrowserSessions.get(session) ?? browserSessionSpec(engine.binaryPath, session, profileTarget?.profileId ?? bot.browserProfile, await browserEgress.open(session));
-  return { session, spec, env: browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }) };
+  const target = await currentBrowserSpec(bot.id, bot.browserProfile);
+  return target && { ...target, env: browserRuntimeEnv({ ...target.spec.env, AGENT_BROWSER_SESSION: target.session }) };
 }
 
 const FILL_LOGIN_ELSEWHERE: Record<Surface, string> = { browser: "your built-in browser", local: "this computer", vm: "the Local VM", cloud: "the cloud computer" };
@@ -13020,8 +13016,7 @@ async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, 
       candidates: (host) => botLogins.candidates(bot.id, host),
       available: async () => botLogins.sitesFor(bot.id),
     }, {
-      engine: (args) => inRunningBrowser(spec.command, env, args),
-      ...relayInput(spec, session),
+      ...loginInput(session, spec, env),
       remember: (value, kind) => heldSecrets.remember(value, kind),
     }), stepContext(current, capability, () => liveTurnByThread.get(threadId) ?? null));
     if (outcome.ok && outcome.loginId) botLogins.markUsed(outcome.loginId);
@@ -13799,7 +13794,8 @@ ROUTES.push(createBrowserSiteRoutes({
       session = currentBrowserSession(bot.id, bot.browserProfile);
       profile = bot.browserProfile;
     }
-    if (usesMyChrome(profile)) return { status: 409, error: "This profile uses your own Chrome. Sign in and out of sites there." };
+    const refusal = signedInSitesRefusal(profile);
+    if (refusal) return { status: 409, error: refusal };
     return { binaryPath: engine.binaryPath, session, env: browserSessionSpec(engine.binaryPath, session, profile, await browserEgress.open(session)).env, encryptionKey: browserEngineEncryptionKey() };
   },
   list: (target) => listSignedInSites(target),
@@ -13842,7 +13838,7 @@ ROUTES.push(createAntigravityAccountRoutes({
 }));
 ROUTES.push(createConfigRoutes({
   store, cfg, registry, sessions, browserCleanup, browserLive, browserRuntime, usedBrowserSessions, decider,
-  sharedComputers, sharedComputerControl,
+  sharedComputers, sharedComputerControl, closeBrowser, browserEngineSwitched,
   hostedModels: Boolean(hostedModels),
   cloudHome: Boolean(CLOUD_HOME),
   lendingEnabled, providerConfigs, localVmIdleMs, localVmIdles, localVmActiveThreads, localVmLifecycleBusy,
