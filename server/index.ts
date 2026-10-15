@@ -505,6 +505,7 @@ import { environmentDescriptor, loadEnvironmentId, serverVersion } from "./envir
 import { WorkspaceBackupMaintenance } from "./workspace-backup-maintenance.ts";
 import { createWorkspaceBackupRoutes, isWorkspaceBackupSessionControl } from "./workspace-backup-http.ts";
 import { applyPendingWorkspaceRestore, readLastWorkspaceRestore, type WorkspaceRestoreResult } from "./workspace-backup.ts";
+import { repairMovedWorkspacePaths } from "./moved-paths-repair.ts";
 import { createCustomDomainVerifier, customDomainIpv4, normalizeCustomDomain } from "./custom-domain.ts";
 import { allowedScopes, createEmailSignIn, parseAllowList } from "./account-signin.ts";
 import { ProviderAuthSessions } from "./provider-auth-sessions.ts";
@@ -642,9 +643,7 @@ let restoredAtStart: string | undefined;
 if (existsSync(join(DATA_DIR, ".backups"))) {
   workspaceRestore = applyPendingWorkspaceRestore(DATA_DIR);
   if (workspaceRestore.restored) restoredAtStart = workspaceRestore.id;
-  if (!workspaceRestore.restored && !workspaceRestore.rolledBack) {
-    workspaceRestore = readLastWorkspaceRestore(DATA_DIR) ?? workspaceRestore;
-  }
+  if (!workspaceRestore.restored && !workspaceRestore.rolledBack) workspaceRestore = readLastWorkspaceRestore(DATA_DIR) ?? workspaceRestore;
 }
 const workspaceMaintenance = new WorkspaceBackupMaintenance();
 // Only after ensureDirs(), whose one-time legacy data-dir rename must not find ~/.openmausbot already there.
@@ -666,6 +665,7 @@ const sharedComputers = new SharedComputers(id => sessions.isLive(id));
 const CLOUD_SECRETS = BOOT_CLOUD_SECRETS;
 const CLOUD_ENV: NodeJS.ProcessEnv = { ...process.env, ...CLOUD_SECRETS };
 const CLOUD_HOME = cloudHomeConfiguration(CLOUD_ENV);
+if (CLOUD_HOME) repairMovedWorkspacePaths(DATA_DIR);
 if (CLOUD_HOME) sessions.requireAdmin(CLOUD_PERSONAL_REFUSAL);
 const lendingEnabled = () => sharedComputersEnabled(cfg) || CLOUD_HOME !== null;
 const CLOUD_HOME_LENDER = "cloud-home";

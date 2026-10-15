@@ -277,6 +277,7 @@ describe("encrypted full workspace backups", () => {
     const leftBehind = { bots: 1, paths: [site, "C:\\Users\\Ada\\Shared", "C:\\Users\\Ada\\.openmausbot-old\\notes.md", "C:\\Users\\Ada\\Desktop\\x.docx"] };
     expect(result.leftBehind).toEqual(leftBehind);
     expect(readLastWorkspaceRestore(target)!.leftBehind).toEqual(leftBehind);
+    expect(readLastWorkspaceRestore(target)!.pathsRewritten).toBe(true);
   });
 
   it("lists nothing left behind, and keeps outside folders, when both computers write paths the same way", async () => {
