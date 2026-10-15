@@ -1,0 +1,109 @@
+// Chrome's command line for a bot browser. Pages see only what this binary
+// shows when headed: no --enable-automation, AutomationControlled off, the
+// headed user agent, the real display, the person's language.
+
+export type BrowserMode = "headless" | "window";
+export type HostKind = "desktop" | "server" | "container";
+
+export interface ScreenSpec {
+  /** CSS pixels, as the display reports them. */
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
+  colorDepth?: number;
+  /** CSS pixels the system keeps for itself at each edge (menu bar, taskbar). */
+  workArea?: { left?: number; top?: number; right?: number; bottom?: number };
+}
+
+/** Servers declare a display the way Xvfb's -screen does. */
+export const SERVER_SCREEN: ScreenSpec = { width: 1920, height: 1080, deviceScaleFactor: 1 };
+
+/** A 1280x720 page: new headless reserves 143 px of window chrome (measured on Chrome 153). */
+export const WINDOW_SIZE = "1280,863";
+export const VIEWPORT = { width: 1280, height: 720 } as const;
+
+export interface ChromeFlagsInput {
+  userDataDir: string;
+  mode: BrowserMode;
+  host: HostKind;
+  platform?: NodeJS.Platform;
+  /** The calibrated headed user agent; headless only. */
+  userAgent?: string | null;
+  /** The display pages see; headless only (a window has the real one). */
+  screen?: ScreenSpec | null;
+  locale?: string | null;
+  /** The egress gate, e.g. socks5://127.0.0.1:41234. */
+  proxyServer?: string | null;
+  /** False only when an operator explicitly turned Chrome's sandbox off. */
+  sandbox?: boolean;
+  /** Null when session restore reopens the profile's tabs. */
+  startUrl?: string | null;
+  /** A window only: where it opens, e.g. parked off-screen. */
+  windowPosition?: { x: number; y: number } | null;
+}
+
+const LOCALE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
+const LOCAL_PROXY = /^socks5:\/\/(?:127\.0\.0\.1|\[::1\]):\d{1,5}$/;
+
+/** Headless takes the display in device pixels: --screen-info={3024x1964 devicePixelRatio=2 colorDepth=30} is a 1512x982 Retina screen. */
+export function screenInfo(screen: ScreenSpec): string {
+  const device = (css: number) => Math.round(css * screen.deviceScaleFactor);
+  const parts = [`${device(screen.width)}x${device(screen.height)}`, `devicePixelRatio=${screen.deviceScaleFactor}`];
+  if (screen.colorDepth) parts.push(`colorDepth=${screen.colorDepth}`);
+  const area = screen.workArea ?? {};
+  for (const [edge, inset] of [["Left", area.left], ["Top", area.top], ["Right", area.right], ["Bottom", area.bottom]] as const) {
+    if (inset) parts.push(`workArea${edge}=${device(inset)}`);
+  }
+  return `{${parts.join(" ")}}`;
+}
+
+export function chromeArgs(input: ChromeFlagsInput): string[] {
+  const platform = input.platform ?? process.platform;
+  const headless = input.mode === "headless";
+  const args = [
+    "--remote-debugging-pipe",
+    `--user-data-dir=${input.userDataDir}`,
+    ...(headless ? ["--headless=new"] : []),
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-blink-features=AutomationControlled",
+    `--window-size=${WINDOW_SIZE}`,
+  ];
+  if (headless && input.userAgent) {
+    if (/[\r\n\0]/.test(input.userAgent)) throw new Error("The user agent holds a line break.");
+    args.push(`--user-agent=${input.userAgent}`);
+  }
+  if (headless) args.push(`--screen-info=${screenInfo(input.screen ?? SERVER_SCREEN)}`);
+  else if (input.windowPosition) args.push(`--window-position=${Math.round(input.windowPosition.x)},${Math.round(input.windowPosition.y)}`);
+  if (input.locale && LOCALE.test(input.locale)) args.push(`--lang=${input.locale}`);
+  if (input.proxyServer) {
+    if (!LOCAL_PROXY.test(input.proxyServer)) throw new Error("The browser only goes through OMB's own local gate.");
+    args.push(`--proxy-server=${input.proxyServer}`, "--proxy-bypass-list=<-loopback>", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+  }
+  if (platform === "darwin") args.push("--use-mock-keychain");
+  if (platform === "linux") args.push("--password-store=basic");
+  if (headless) args.push("--mute-audio");
+  if (input.host !== "desktop") args.push("--disk-cache-size=52428800");
+  if (input.host === "container") args.push("--disable-dev-shm-usage");
+  if (input.sandbox === false) args.push("--no-sandbox");
+  if (input.startUrl !== null) args.push(input.startUrl ?? "about:blank");
+  return args;
+}
+
+export interface ChromeEnvInput {
+  host: HostKind;
+  /** The person's time zone; servers only, a desktop already has it. */
+  timezone?: string | null;
+  /** The setuid sandbox helper in containers. */
+  sandboxHelper?: string | null;
+  /** Marks the process for the boot sweep. */
+  profileMarker?: string | null;
+}
+
+export function chromeEnv(base: NodeJS.ProcessEnv, input: ChromeEnvInput): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  if (input.host !== "desktop" && input.timezone) env.TZ = input.timezone;
+  if (input.sandboxHelper) env.CHROME_DEVEL_SANDBOX = input.sandboxHelper;
+  if (input.profileMarker) env.OMB_BROWSER_PROFILE = input.profileMarker;
+  return env;
+}
