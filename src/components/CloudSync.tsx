@@ -48,7 +48,7 @@ export function CloudSync({ bridge }: { bridge: CloudSyncBridge }) {
   const status = syncStatusKey(state);
   const disk = state?.disk ?? null;
   const waitingBytes = (state?.waiting ?? []).reduce((sum, item) => sum + item.size, 0);
-  return <section className="flex w-full flex-col gap-2 border-t border-line pt-3" aria-label={t("cloudSync.title")}>
+  return <section className="flex w-full flex-col gap-2 border-t border-hairline/40 pt-3" aria-label={t("cloudSync.title")}>
     <div className="flex items-start justify-between gap-3">
       <div className="flex flex-col gap-1">
         <span className="text-[14px] text-ink">{t("cloudSync.title")}</span>
