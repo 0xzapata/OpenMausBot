@@ -327,7 +327,7 @@ import { turnStartLogLine } from "./turn-log.ts";
 import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./turn-outcome.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, replaysNatively } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
-import { extractTurnImages } from "./turn-images.ts";
+import { extractReplayImages, extractTurnImages } from "./turn-images.ts";
 import { callTitleExcerpt, threadTitlePrompt, type ThreadTitleSource } from "./thread-title.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import { TurnResources, type TurnOwner } from "./turn-resources.ts";
@@ -392,6 +392,7 @@ import { connectedAppsForSetup, expandSetupTurnText, setupModeActive, setupSyste
 import type { SkillRequestCardData } from "../shared/skill-request.ts";
 import { checkSoulDrift, readSoulDrift, soulFile, writeSoulMirror } from "./bot-folder.ts";
 import {
+  botPersona,
   buildSystemPrompt,
   userProfileSystemPrompt,
   cloudHomePrompt,
@@ -3357,13 +3358,7 @@ const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) 
 };
 
 function previewSystemPrompt(bot: BotRecord) {
-  const persona = [
-    `You are ${bot.name}, a personal bot in OpenMausBot.`,
-    bot.title && `Role: ${bot.title}.`,
-    bot.description && `About: ${bot.description}`,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const persona = botPersona(bot);
   const instance = registry.get(bot.modelSelection.instanceId);
   const caps = instance?.adapter.capabilities;
   const teamComputer = inheritedTeamComputer(bot);
@@ -8684,6 +8679,9 @@ async function startTurn(
         opts?.replyTo,
         cfg.profile?.name?.trim() || "User",
       );
+      const replay = usesNativeImageInput
+        ? extractReplayImages(selection.inline, turnImages)
+        : { transcript: selection.inline, images: [] };
       const decideContext = (config: string) => {
         // A Codex thread keeps the last effort it was sent and no turn can clear it, so one holding a level is rebuilt, not resumed.
         const effortHeld = !effort && typeof handed?.effort === "string";
@@ -8691,7 +8689,7 @@ async function startTurn(
         const { block: unseenBlock, placed } = unseen && !handedStale ? renderUnseen(unseen) : { block: "", placed: [] };
         const { turnText: contextTurnText, resume } = buildTurnContext({
           text: userTurnText,
-          transcript: selection.inline,
+          transcript: replay.transcript,
           rewound,
           fresh: fresh || contextReset,
           externallyUpdated: Boolean(externalContextMarker) || handedStale,
@@ -8708,6 +8706,7 @@ async function startTurn(
         const windowIds = selection.representedIds;
         return {
           turnText: withUnseenMessages(unseenBlock, contextTurnText),
+          images: contextTurnText !== userTurnText ? [...replay.images, ...turnImages] : turnImages,
           resumeCursor, sessionReset: !resume, recoveryText,
           handoff: strictResume ? {
             botId: bot.id, instanceId, config, resumeCursor: typeof resumeCursor === "string" ? resumeCursor : undefined,
@@ -8721,13 +8720,7 @@ async function startTurn(
       };
       let dispatchContext = decideContext(plannedConfig);
 
-      const persona = [
-        `You are ${bot.name}, a personal bot in OpenMausBot.`,
-        bot.title && `Role: ${bot.title}.`,
-        bot.description && `About: ${bot.description}`,
-      ]
-        .filter(Boolean)
-        .join(" ");
+      const persona = botPersona(bot);
 
       {
         const drift = checkSoulDrift(bot.id, bot.soul ?? "", bot.soulHash ?? "");
@@ -9243,7 +9236,7 @@ async function startTurn(
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
         text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
-        images: turnImages,
+        images: dispatchContext.images,
         approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
         toolScope,
         ...(guestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
