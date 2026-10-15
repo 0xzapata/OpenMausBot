@@ -8,10 +8,13 @@ import {
   withCitationComment,
   type CitationAttachment,
 } from "@/lib/citations";
-import { captureCitationSelection, citationTabShortcut } from "@/lib/citations-dom";
 import { sendsMessage, useSendKey } from "@/lib/send-key";
+import { addToPromptChord, captureCitationSelection, citationTabShortcut, isAddToPromptShortcut } from "@/lib/citations-dom";
+import { isMacPlatform } from "@/lib/keyboard-shortcuts";
+import { t } from "@/lib/i18n";
 
 type Point = { left: number; top: number };
+type Anchor = { left: number; top: number; bottom: number };
 
 function place(element: HTMLElement, point: Point): void {
   const rect = element.getBoundingClientRect();
@@ -19,8 +22,19 @@ function place(element: HTMLElement, point: Point): void {
   element.style.top = `${Math.max(8, Math.min(point.top, window.innerHeight - rect.height - 8))}px`;
 }
 
+function placeAbove(element: HTMLElement, anchor: Anchor): void {
+  const rect = element.getBoundingClientRect();
+  const above = anchor.top - rect.height - 8;
+  place(element, { left: anchor.left - rect.width / 2, top: above >= 8 ? above : anchor.bottom + 8 });
+}
+
 function focusComposer(): void {
-  requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-tour="composer"] textarea')?.focus());
+  requestAnimationFrame(() => {
+    const input = document.querySelector<HTMLTextAreaElement>('[data-tour="composer"] textarea');
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
 }
 
 function CitationEditor({
@@ -110,23 +124,33 @@ export function CitationSelectionToolbar({
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const tabShortcut = useRef(citationTabShortcut()).current;
+  const isMac = useRef(isMacPlatform()).current;
   const [captured, setCaptured] = useState<{
     citation: CitationAttachment;
-    point: Point;
+    anchor: Anchor;
   } | null>(null);
-  const [editing, setEditing] = useState(false);
+
+  const add = (current: typeof captured) => {
+    if (!current || current.citation.quote.length > CITATION_MAX_QUOTE_LENGTH) return;
+    onAdd(current.citation);
+    window.getSelection()?.removeAllRanges();
+    setCaptured(null);
+    focusComposer();
+  };
+  const addRef = useRef(add);
+  useLayoutEffect(() => { addRef.current = add; });
 
   useEffect(() => {
     if (!captured) tabShortcut.reset();
     const update = () => {
-      if (editing) return;
       const viewport = viewportRef.current;
       const selection = viewport ? captureCitationSelection(viewport, window.getSelection()) : null;
       if (!selection) { setCaptured(null); return; }
       const { citationSource: messageId, citationOwnerType: ownerType, citationOwner: ownerId, citationThread: threadId } = selection.source.dataset;
       if (!messageId || !ownerId || !threadId || (ownerType !== "bot" && ownerType !== "group")) { setCaptured(null); return; }
       const rects = selection.range.getClientRects();
-      const rect = rects.item(rects.length - 1) ?? selection.range.getBoundingClientRect();
+      const box = selection.range.getBoundingClientRect();
+      const first = rects.item(0) ?? box;
       setCaptured({
         citation: selection.selector.text.length <= CITATION_MAX_QUOTE_LENGTH
           ? citationAttachment({ ownerType, ownerId, threadId, messageId }, selection.selector)
@@ -138,62 +162,62 @@ export function CitationSelectionToolbar({
               source: { ownerType, ownerId, threadId, messageId, ...selection.selector },
               size: selection.selector.text.length,
             },
-        point: { left: rect.left, top: rect.bottom + 8 },
+        anchor: { left: box.left + box.width / 2, top: first.top, bottom: (rects.item(rects.length - 1) ?? box).bottom },
       });
     };
     document.addEventListener("selectionchange", update);
     viewportRef.current?.addEventListener("pointerup", update);
     viewportRef.current?.addEventListener("keyup", update);
-    const focusAction = (event: KeyboardEvent) => {
-      if (captured && !editing) tabShortcut.handle(event, buttonRef.current);
+    const onKey = (event: KeyboardEvent) => {
+      if (!captured) return;
+      if (isAddToPromptShortcut(event, isMac) && captured.citation.quote.length <= CITATION_MAX_QUOTE_LENGTH) {
+        event.preventDefault();
+        event.stopPropagation();
+        addRef.current(captured);
+        return;
+      }
+      tabShortcut.handle(event, buttonRef.current);
     };
-    document.addEventListener("keydown", focusAction, true);
+    document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("selectionchange", update);
       viewportRef.current?.removeEventListener("pointerup", update);
       viewportRef.current?.removeEventListener("keyup", update);
-      document.removeEventListener("keydown", focusAction, true);
+      document.removeEventListener("keydown", onKey, true);
     };
-  }, [captured, editing, tabShortcut, viewportRef]);
+  }, [captured, isMac, tabShortcut, viewportRef]);
 
   useLayoutEffect(() => {
-    if (!captured || editing) return;
-    const update = () => { if (buttonRef.current) place(buttonRef.current, captured.point); };
+    if (!captured) return;
+    const update = () => { if (buttonRef.current) placeAbove(buttonRef.current, captured.anchor); };
     update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
-  }, [captured, editing]);
+  }, [captured]);
   if (!captured) return null;
-  if (editing) {
-    return <CitationEditor
-      citation={captured.citation}
-      point={captured.point}
-      onCancel={() => { setEditing(false); setCaptured(null); focusComposer(); }}
-      onSave={(citation) => {
-        onAdd(citation);
-        window.getSelection()?.removeAllRanges();
-        setEditing(false);
-        setCaptured(null);
-        focusComposer();
-      }}
-    />;
-  }
   const tooLong = captured.citation.quote.length > CITATION_MAX_QUOTE_LENGTH;
+  const chord = addToPromptChord(isMac);
+  // Dark in every skin, like a tooltip.
   return createPortal(
     <button
       ref={buttonRef}
       type="button"
+      data-add-to-prompt
       disabled={tooLong}
-      aria-label={tooLong ? "Selection is too long to cite" : "Cite selected text"}
+      aria-label={tooLong ? t("citation.tooLong") : t("citation.addToPrompt")}
+      aria-keyshortcuts={tooLong ? undefined : chord.aria}
       onPointerDown={(event) => event.preventDefault()}
-      onClick={() => setEditing(true)}
+      onClick={() => add(captured)}
       onKeyDown={(event) => {
         if (event.key === "Escape") { event.preventDefault(); setCaptured(null); }
       }}
-      className="fixed z-50 flex items-center gap-1.5 rounded-full border border-hairline/50 bg-panel px-3 py-1.5 text-[12px] font-medium text-ink shadow-lg disabled:text-danger"
-      style={captured.point}
+      className="fixed z-50 flex items-center gap-2 rounded-xl border border-white/10 bg-[#1c1c1e] py-1.5 pe-1.5 ps-3 text-[13px] font-medium text-[#f2f2f2] shadow-xl shadow-black/30 transition-colors hover:bg-[#2a2a2c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus/60 disabled:text-[#ff9b9b]"
+      style={{ left: captured.anchor.left, top: captured.anchor.top }}
     >
-      <Quote size={13} aria-hidden="true" /> {tooLong ? "Shorten selection" : "Cite"}
+      <span>{tooLong ? t("citation.shorten") : t("citation.addToPrompt")}</span>
+      {!tooLong && (
+        <kbd dir="ltr" className="rounded-md border border-white/10 bg-white/[0.06] px-1.5 py-0.5 font-sans text-[11px] font-normal text-[#a1a1a6]">{chord.text}</kbd>
+      )}
     </button>,
     document.body,
   );

@@ -72,6 +72,23 @@ describe("TurnWatchdog", () => {
     expect(stalls).toHaveLength(0);
   });
 
+  it("says a turn is waiting exactly while the sweep would spare it", () => {
+    const { dog } = rig();
+    expect(dog.waiting("t1")).toBe(false);
+    dog.watch("t1", "bot1");
+    expect(dog.waiting("t1")).toBe(false);
+    dog.setWaitingOnHuman("t1", true);
+    expect(dog.waiting("t1")).toBe(true);
+    dog.setWaitingOnComputer("t1", true);
+    dog.setWaitingOnHuman("t1", false);
+    expect(dog.waiting("t1")).toBe(true);
+    dog.setWaitingOnComputer("t1", false);
+    expect(dog.waiting("t1")).toBe(false);
+    dog.setWaitingOnHuman("t1", true);
+    dog.settle("t1");
+    expect(dog.waiting("t1")).toBe(false);
+  });
+
   it("lets the computer wait's own deadline govern, then restarts the stall clock", () => {
     const { dog, stalls, tick } = rig();
     dog.watch("t1", "bot1");

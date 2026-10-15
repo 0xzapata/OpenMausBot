@@ -39,6 +39,8 @@
 //   FAKE_CODEX_TEXT_LOG  `codex exec`: append {argv, cwd, prompt, env} per call
 //   FAKE_CODEX_TEXT_MODE  `codex exec`: ok (default) | fail | exit | hang | tool | noisy
 //   FAKE_CODEX_LUNA  "1": model/list also offers gpt-6-luna
+//   FAKE_CODEX_UPDATED_FILE  while this file exists, the CLI was updated in place: --version answers codex-cli 0.162.1
+//     and model/list also offers gpt-6.1-sol
 //   FAKE_CODEX_MCP_START  "1": on thread/start, start each `-c mcp_servers.*` mount as codex-cli 0.160.1 does
 //     (its initialize, or FAKE_CODEX_MCP_HANDSHAKE) and dump mcpStartup[name]
 import { spawn } from "node:child_process";
@@ -71,8 +73,10 @@ const waitForGate = (path: string | undefined, timeoutMs = 15_000): Promise<void
     }, 2);
   });
 
+const updated = Boolean(process.env.FAKE_CODEX_UPDATED_FILE && existsSync(process.env.FAKE_CODEX_UPDATED_FILE));
+
 if (process.argv[2] === "--version") {
-  process.stdout.write(`${process.env.FAKE_CODEX_VERSION ?? "codex-cli 0.147.0"}\n`);
+  process.stdout.write(`${updated ? "codex-cli 0.162.1" : process.env.FAKE_CODEX_VERSION ?? "codex-cli 0.147.0"}\n`);
   process.exit(0);
 }
 if (process.argv[2] === "login" && process.argv[3] === "status") {
@@ -449,6 +453,7 @@ process.stdin.on("data", (chunk) => {
                 ...(process.env.FAKE_CODEX_LUNA === "1"
                   ? [{ id: "gpt-6-luna", displayName: "GPT-6 Luna", hidden: false, isDefault: false }]
                   : []),
+                ...(updated ? [{ id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", hidden: false, isDefault: false }] : []),
               ],
               nextCursor: "page-2",
             },

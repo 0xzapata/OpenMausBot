@@ -6,13 +6,19 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DATA_DIR } from "./config.ts";
 import { closeMessageDb,
   deleteThread,
+  deleteThreads,
   indexMemoryFile,
   indexedMemoryFiles,
   insertMessage,
+  insertNotificationLog,
   latestPersonLineAts,
+  logNotification,
   latestSaidByBot,
+  markAllNotificationLogRead,
+  markNotificationLogRead,
   readMessageText,
   recentMessages,
+  recentNotificationLog,
   recallMemory,
   removeMemoryFile,
   readThread,
@@ -21,6 +27,7 @@ import { closeMessageDb,
   searchMessages,
   setActiveLeaf,
   updateMessage, describeMissingFts5 } from "./message-db.ts";
+import type { NotificationLogEntry } from "../shared/notification.ts";
 import { withPeerProvenance } from "./peer-provenance.ts";
 import { Store, type Message } from "./store.ts";
 import type { ModelSelection } from "./contracts.ts";
@@ -103,6 +110,36 @@ describe("message-db", () => {
     const thread = readThread("t4", legacy("t4"));
     expect(thread.messages).toEqual([]);
     expect(thread.activeLeafId).toBeNull();
+  });
+
+  it("deleteThreads removes every listed thread's rows, state and followups in one transaction and leaves the rest", () => {
+    for (const id of ["b1", "b2", "keep"]) {
+      insertMessage(id, msg("m1", `text of ${id}`));
+      setActiveLeaf(id, "m1");
+    }
+    deleteThreads(["b1", "b2", "never-existed"]);
+    for (const id of ["b1", "b2"]) {
+      const thread = readThread(id, legacy(id));
+      expect(thread.messages).toEqual([]);
+      expect(thread.activeLeafId).toBeNull();
+    }
+    expect(readThread("keep", legacy("keep")).messages).toHaveLength(1);
+    expect(() => deleteThreads([])).not.toThrow();
+  });
+
+  it("deleteThreads rolls the whole batch back when any statement fails", () => {
+    for (const id of ["r1", "r2"]) {
+      insertMessage(id, msg("m1", `text of ${id}`));
+      setActiveLeaf(id, "m1");
+    }
+    // A second connection makes the last statement for r2 fail, after r1 was fully deleted.
+    const breaker = new DatabaseSync(join(DATA_DIR, "messages.db"));
+    breaker.exec(`CREATE TRIGGER boom BEFORE DELETE ON thread_state WHEN old.thread_id = 'r2'
+      BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    expect(() => deleteThreads(["r1", "r2"])).toThrow("boom");
+    const counts = breaker.prepare("SELECT thread_id, count(*) AS n FROM messages GROUP BY thread_id ORDER BY thread_id").all();
+    breaker.close();
+    expect(counts.map((row) => ({ ...row }))).toEqual([{ thread_id: "r1", n: 1 }, { thread_id: "r2", n: 1 }]);
   });
 
   it("recall ranks by relevance, scopes to the given threads, and survives updates and deletes", () => {
@@ -420,5 +457,64 @@ describe("recall of digest rows", () => {
     expect(hits.map((h) => h.messageId)).toEqual(["m1", "d1"]);
     expect(hits[1]?.kind).toBe("digest");
     for (const hit of hits) expect(readMessageText(hit.threadId, hit.messageId)).toMatchObject({ messageId: hit.messageId });
+  });
+});
+
+describe("notification_log", () => {
+  beforeEach(() => {
+    closeMessageDb();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    mkdirSync(DATA_DIR, { recursive: true });
+  });
+
+  const entry = (id: string, at: number, extra: Partial<NotificationLogEntry> = {}): NotificationLogEntry => ({
+    id, at, kind: "done", botId: "bot-1", botName: "Scout", threadId: "thread-1", title: `${id} finished`, body: "", read: false, ...extra,
+  });
+
+  it("reads rows back newest first, read defaulting to false", () => {
+    insertNotificationLog(entry("n1", 1000));
+    insertNotificationLog(entry("n2", 2000, { groupId: "room-1" }));
+    const rows = recentNotificationLog();
+    expect(rows.map((r) => r.id)).toEqual(["n2", "n1"]);
+    expect(rows.every((r) => r.read === false)).toBe(true);
+    expect(rows.find((r) => r.id === "n2")?.groupId).toBe("room-1");
+  });
+
+  it("stamps a notification once and returns the stored entry", () => {
+    const logged = logNotification({ kind: "question", botId: "bot-1", botName: "Scout", threadId: "thread-1", title: "Scout asks", body: "Which?" });
+    expect(logged).toMatchObject({ kind: "question", read: false });
+    expect(recentNotificationLog()).toEqual([logged]);
+  });
+
+  it("forgets a thread's notifications when the thread is deleted", () => {
+    insertNotificationLog(entry("n1", 1000));
+    insertNotificationLog(entry("n2", 2000, { threadId: "thread-2" }));
+    deleteThread("thread-1");
+    expect(recentNotificationLog().map((r) => r.id)).toEqual(["n2"]);
+  });
+
+  it("marking read never deletes a row: read-one and read-all only flip the flag", () => {
+    insertNotificationLog(entry("n1", 1000));
+    insertNotificationLog(entry("n2", 2000));
+    markNotificationLogRead("n1");
+    let rows = recentNotificationLog();
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.id === "n1")?.read).toBe(true);
+    expect(rows.find((r) => r.id === "n2")?.read).toBe(false);
+
+    markAllNotificationLogRead();
+    rows = recentNotificationLog();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.read)).toBe(true);
+  });
+
+  it("keeps only the newest 500 rows, FIFO", () => {
+    for (let i = 0; i < 503; i++) insertNotificationLog(entry(`n${i}`, i));
+    const rows = recentNotificationLog(1000);
+    expect(rows).toHaveLength(500);
+    expect(rows.map((r) => r.id)).not.toContain("n0");
+    expect(rows.map((r) => r.id)).not.toContain("n2");
+    expect(rows[0]?.id).toBe("n502");
+    expect(rows.map((r) => r.id)).toContain("n3");
   });
 });

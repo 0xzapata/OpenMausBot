@@ -22,6 +22,7 @@ export type BotUpdatePatch = Partial<
     | "outbound"
     | "fallback"
     | "speakReplies"
+    | "replyStyle"
     | "voice"
     | "voiceNotes"
     | "pinned"

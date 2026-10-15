@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { activeLocale, t } from "@/lib/i18n";
 import { useShowThreads } from "@/lib/thread-preferences";
-import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pause, Pin, Plus, Search, Square, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pause, Pin, Plus, Search, Square, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -89,6 +89,8 @@ import { DataResultChip } from "./DataResultChip";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { dayLabel, localDay } from "@/lib/transcript-derivations";
 import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
+import { RoomQueueList, RoutedByLine, roomMemberQueueTitle } from "./RoomQueueList";
+import { JumpToLatestButton } from "./JumpToLatestButton";
 
 export function RoomToolChip({ message, roomId }: { message: Message; roomId?: string }) {
   const { state, dispatch } = useStore();
@@ -237,7 +239,7 @@ function RoomTextMessage({
         <div
           data-chat-bubble
           className={cn(
-            "w-fit max-w-[min(42rem,78%)] rounded-2xl text-[15px] leading-relaxed",
+            "w-fit max-w-[min(var(--chat-bubble-max),var(--chat-bubble-pct))] rounded-2xl text-[15px] leading-relaxed",
             !user && emerging && "turn-answer",
             !user && !m.text?.trim() && !m.replyToId && m.attachments?.length
               ? "text-ink"
@@ -566,15 +568,6 @@ export function RoomHoldsBanner({ group, members }: { group: Group; members: Bot
           </button>
         ))}
       </div>
-    </div>
-  );
-}
-
-export function RoutedByLine({ routedBy }: { routedBy: NonNullable<Message["routedBy"]> }) {
-  const percent = Math.round(Math.min(1, Math.max(0, routedBy.probability)) * 100);
-  return (
-    <div data-testid="routed-by" className="mt-1 px-1 text-[11px] text-ink-secondary">
-      {t(routedBy.provider === "openrouter" ? "room.routedBy.openrouter" : "room.routedBy", { percent: String(percent) })}
     </div>
   );
 }
@@ -1263,6 +1256,7 @@ export function GroupView({ group }: { group: Group }) {
   const contextWarnings = roomContextWarnings(group, members);
   const memberMauses = members.map((b) => {
     const busy = group.busyBotId === b.id;
+    const queueTitle = busy ? undefined : roomMemberQueueTitle(group, members, b);
     const contextWarning = contextWarnings.find((warning) => warning.bot.id === b.id);
     const busyElsewhere = !busy && speakersElsewhere.has(b.id);
     const held = !group.dm && Boolean(group.holds?.[b.id]);
@@ -1276,14 +1270,15 @@ export function GroupView({ group }: { group: Group }) {
         title={
           held
             ? t("room.holds.avatarHeld", { name: b.name })
-            : busyElsewhere
+            : queueTitle ?? (busyElsewhere
               ? t("room.memberWorkingElsewhere", { name: b.name })
-              : `${b.name}${busy ? " — working…" : ""}${contextWarning ? ` — ${t("contextWarning.short", { percent: contextWarning.percent })}` : ""}`
+              : `${b.name}${busy ? " — working…" : ""}${contextWarning ? ` — ${t("contextWarning.short", { percent: contextWarning.percent })}` : ""}`)
         }
         className={cn(
           "relative inline-flex rounded-full",
           busy && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
           busyElsewhere && "ring-1 ring-hairline ring-offset-1 ring-offset-app",
+          queueTitle && !busyElsewhere && "ring-1 ring-accent/30 ring-offset-1 ring-offset-app",
         )}
       >
         <span className={cn("inline-flex", held && "opacity-50 grayscale")}>
@@ -1576,6 +1571,7 @@ export function GroupView({ group }: { group: Group }) {
               since={speaker ? group.turnStartedAt ?? null : null}
             />
           )}
+          <RoomQueueList group={group} members={members} />
           {threadSpeaker && !group.dm && members.length > 1 && !group.holds?.[threadSpeaker.id] && (
             <div className="flex justify-start pl-12">
               <button
@@ -1597,14 +1593,7 @@ export function GroupView({ group }: { group: Group }) {
       <TranscriptAnnouncer threadKey={transcriptKey} snapshot={announcement} />
 
       {!following && (
-        <button
-          onClick={jumpToLatest}
-          aria-label={t("chat.jumpToLatestAria")}
-          className="animate-pop-in absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
-          style={{ bottom: composerDock.height }}
-        >
-          <ArrowDown size={13} /> {t("chat.jumpToLatest")}
-        </button>
+        <JumpToLatestButton onClick={jumpToLatest} style={{ bottom: composerDock.height }} />
       )}
 
       <div ref={composerDockRef} className="absolute inset-x-0 bottom-0 z-[2]">

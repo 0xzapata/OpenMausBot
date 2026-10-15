@@ -842,6 +842,23 @@ curl -H "Authorization: Bearer $TOKEN" -o usage.csv \
 Dates are inclusive, UTC, at most a year apart; without them you get the
 current month to date.
 
+### When an engine runs out
+
+When a person's turn ends on its engine's quota or usage limit (a
+subscription's weekly limit, an API key out of credit), the conversation gets
+one card offering up to three other engines that can take over, and "Not
+now". An engine is offered only if it can run a turn now (installed, signed
+in, allowed by your organisation), has the tools and the working folder the
+current one has, and can run the conversation's approval level as it stands.
+Nothing changes until the person picks one: that conversation alone moves to
+the engine's default model, the bot's own model and its other conversations
+stay where they are, and their message is sent again. Turns nobody typed
+(routines, webhooks, a teammate's work) get no card.
+
+The offer is on by default. To switch it off, start the server with
+`OMB_QUOTA_SWITCH=0`; any other value, or none, leaves it on. It has no
+setting in `config.json` yet.
+
 ### The decision log
 
 Every approval decision — a rule that let a tool call through, a card that
@@ -864,6 +881,61 @@ curl -H "Authorization: Bearer $TOKEN" -o decisions.csv \
 The CSV has one line per decision (time, decision, source, bot, tool,
 summary, rule, unattended, answered by, thread, request); cells that would
 start a spreadsheet formula are prefixed with `'`.
+
+### The safety floor
+
+Full access answers every permission request for a bot, and a saved command
+answers one. The safety floor is a short never-list that neither can answer:
+a recursive delete of the filesystem root, of the home directory or of a
+top-level system directory (`rm -rf /`, `rm -rf ~`, `rm -rf /etc`);
+formatting or overwriting a disk (`mkfs` on a device, `diskutil eraseDisk`,
+`dd of=/dev/sda`, a redirection into a disk device); and a fork bomb. Making
+a filesystem in an image file or on a loop device is not on it.
+
+It is off unless you switch it on: set `safetyFloor.enabled` to `true` in
+`config.json` (or through `PUT /api/config`), or start the server with
+`OMB_SAFETY_FLOOR=1`, which turns it on whatever the file says.
+`GET /api/config` reports whether it is in force as `safetyFloor.enabled`.
+
+**It is not applied on a Windows server yet.** There the setting is accepted
+and does nothing: no command is checked, denied or held, and every approval
+behaves as it does with the setting off. The server says so once at startup
+(`[safety-floor] … not applied on a Windows server yet`), and
+`GET /api/config` reports `safetyFloor.enabled: false`. Telling cmd,
+PowerShell and Git Bash apart needs to know which shell a request is for,
+which the server does not know yet.
+
+With it on, on macOS or Linux, a command on the list that a grant was about
+to allow is denied instead. The bot is told why, the conversation shows
+`Blocked by the safety floor: …`, and the decision log gets an `auto-denied`
+row with source `safety-floor`. A card you answer yourself is not overridden:
+at "Ask for approval" the request still reaches you, and your Allow stands.
+
+A command the floor cannot read is not approved automatically either: one
+with a quote or heredoc that never closes, or longer than 32 KB. The request
+comes to you as a card instead, and the server log says so once, without the
+command. An API-key bot at Full access has no card to show, so there the call
+is refused.
+
+It reads a command as a POSIX shell line. cmd commands (`rd /s /q`,
+`format C:`) are not evaluated: a Mac or Linux machine does not run them, so
+a server there that drives a Windows machine gets no protection for what
+runs on it. PowerShell is the exception, because PowerShell 7 runs on macOS
+and Linux: what follows `pwsh -c` or `powershell -Command` is read too, both
+as a POSIX line and as PowerShell, so `pwsh -c 'rm -rf /'` and
+`pwsh -c 'Remove-Item -Recurse -Force $HOME'` are blocked.
+
+It holds wherever the engine asks the server, and only there. API-key models
+(the chat runtime) are covered in full, at Full access and under "Always
+allow this session". So is any shell request Claude Code, Codex, Muse Code or
+an ACP agent sends, whether a saved command, a kept session allow or Full
+access would have answered it: the engine's command line travels with the
+request, so it is read even when its working directory is not known. An
+engine running its own no-ask mode never sends a request, so the floor does
+not see the command: at Full access that is Claude Code
+(`bypassPermissions`), Codex (approvals off) and the ACP agents started in
+their own yolo mode. Treat it as a net under saved commands and API-key bots,
+not as a sandbox.
 
 ### Admin activity
 
@@ -1006,6 +1078,31 @@ in chat or source control. Everything else the server offers still needs the
 owner's session or a per-turn capability.
 
 Verification: [external runtime fixture](verification/external-runtime.md).
+
+## A bot stuck on a failing command
+
+Every server shows a chat notice when a bot repeats the same tool call 5, 10
+and 20 times in one turn. That notice only tells you. The loop guard, which is
+off by default, also tells the bot:
+
+- Set `loopGuard.enabled` to `true` in `config.json` (or through
+  `PUT /api/config`), or start the server with `OMB_LOOP_GUARD=1`. When the
+  same whole shell command fails the same way five times in a row
+  (`loopGuard.steerAt`, 2-1000), the server puts one short note into the
+  running turn saying so. A command that succeeds, or that fails differently,
+  ends the count, so a turn that re-runs its tests after each edit or polls a
+  build is left alone.
+- Stopping the turn is a separate choice. Set `loopGuard.stopAt` (2-1000), or
+  `OMB_LOOP_GUARD_STOP_AT`, and the turn is stopped at that many identical
+  failures in a row, with a line in the chat that names the command and offers
+  Retry. Leave it unset and the guard never stops a turn. A wait that fails
+  until something is ready (`curl -f` against a server that is still starting)
+  counts as a failing command, which is why the stop is not on by default.
+
+The note needs an engine that accepts a message in the middle of a turn
+(Claude Code, Codex, Pi, Muse Code). ACP agents cannot take one, so they get
+only the stop, and only if you set it. Bots on API models and turns in a room
+are not covered yet.
 
 ## Updating
 

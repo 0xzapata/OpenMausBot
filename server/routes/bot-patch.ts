@@ -25,7 +25,8 @@ import { recordProfileChange } from "../profile-versions.ts";
 import { clientBotPatchViolation, requestSource } from "../request-auth.ts";
 import type { RoutineManager } from "../routines.ts";
 import type { SessionRegistry } from "../sessions.ts";
-import { parseConnectorTools, sectionKey, type BotRecord, type GroupRecord, type Store } from "../store.ts";
+import { parseConnectorTools } from "../connector-tools.ts";
+import { sectionKey, type BotRecord, type GroupRecord, type Store } from "../store.ts";
 import { pinnedClientThreadGuard } from "./pinned-client-thread.ts";
 import type { ModelSelectionCheck } from "./bots-create.ts";
 import { PASS, type RouteHandler } from "./table.ts";
@@ -279,6 +280,10 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       if (body.cacheKeepWarm !== undefined) {
         if (body.cacheKeepWarm !== null && typeof body.cacheKeepWarm !== "boolean") return json(res, 400, { error: "cacheKeepWarm must be true, false or null" });
         patch.cacheKeepWarm = body.cacheKeepWarm ?? undefined;
+      }
+      if (body.helperModel !== undefined) {
+        if (typeof body.helperModel !== "boolean") return json(res, 400, { error: "helperModel must be true or false" });
+        patch.helperModel = body.helperModel;
       }
       if (body.browser !== undefined) {
         if (typeof body.browser !== "boolean") return json(res, 400, { error: "browser must be true or false" });

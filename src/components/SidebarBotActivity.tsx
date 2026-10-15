@@ -4,10 +4,10 @@ import type { Action, AppState, Bot, Group, Task } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 import { t } from "@/lib/i18n";
-import { orderedSidebarThreads, orderedThreadList, threadRecency, threadUpdatedLabel } from "./SidebarThreadRow";
+import { isArchived, orderedSidebarThreads, orderedThreadList, threadRecency, threadUpdatedLabel } from "./SidebarThreadRow";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 
-export function sidebarBotActivityTasks(bot: Bot, queued: Record<string, unknown[]>): Array<Task & { queued: boolean }> {
+export function sidebarBotActivityTasks(bot: Bot, queued: Record<string, unknown[]>, archivedApprovals = false): Array<Task & { queued: boolean }> {
   const tasks = bot.tasks ?? [{
     threadId: bot.threadId, title: t("task.newShort"), createdAt: 0,
     busy: bot.busy, activity: bot.activity, unread: bot.unread,
@@ -15,6 +15,7 @@ export function sidebarBotActivityTasks(bot: Bot, queued: Record<string, unknown
   }];
   return tasks.map((task) => ({ ...task, queued: Boolean(queued[task.threadId]?.length) }))
     .filter((task) => !task.routineRunId)
+    .filter((task) => !isArchived(task) || (archivedApprovals && task.activity === "waiting-on-you"))
     .filter((task) => task.activity === "waiting-on-you" || task.activity === "working" || task.busy || task.waitingForTeammates === true || task.queued || task.unread);
 }
 
@@ -97,7 +98,7 @@ export function crossBotAttentionThreads(
   const flat: FlatAttentionEntry[] = [
     ...bots
       .filter((bot) => bot.id !== exceptBotId && !bot.hidden)
-      .flatMap((bot): FlatAttentionEntry[] => sidebarBotActivityTasks(bot, queued)
+      .flatMap((bot): FlatAttentionEntry[] => sidebarBotActivityTasks(bot, queued, true)
         .map((task) => ({ ...task, botId: bot.id, botName: bot.name }))),
     ...groups
       .flatMap((group): FlatAttentionEntry[] => sidebarGroupActivityTasks(group, bots, queued)

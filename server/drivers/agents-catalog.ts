@@ -15,6 +15,8 @@ export interface CatalogProfile {
   chief: boolean;
   /** Written into start_thread's schema: the only bot_id it accepts. */
   botId: string;
+  /** features.chiefEscalations: raise_escalation is mounted. */
+  escalations?: boolean;
 }
 
 /** Everything is off unless the harness says "1". */
@@ -27,6 +29,7 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     memoryEnabled: env.OMB_MEMORY_ENABLED !== "0",
     chief: env.OMB_CHIEF_OF_STAFF === "1",
     botId: env.OMB_BOT_ID ?? "",
+    escalations: env.OMB_ESCALATIONS === "1",
   };
 }
 
@@ -245,6 +248,13 @@ const TOOL_DEFINITIONS = [
     } },
   },
   {
+    name: "raise_escalation",
+    description: "Flag a gate only the person can lift — a permission or decision your work is parked on and you cannot proceed without. One reason line, the person's own words where possible; the Chief of Staff (or the person directly) is told at once. Then end your turn and wait: the gate lifting resumes nothing on its own, so say plainly that you stopped and why. Not for failures (those report themselves), not for a credential or sign-in (use request_credential or request_sign_in, which resume you), and not to ask the person a question you could ask by ending your turn on it.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      reason: { type: "string", minLength: 1, maxLength: 500, description: "One line: what you need from the person and why your work is parked on it." },
+    }, required: ["reason"] },
+  },
+  {
     name: "list_bots",
     description:
       "List the other bots (agents) you may contact in your own team and any additional teams the owner has explicitly allowed you to coordinate, with their team, model and current status. Call this to discover exact teammate IDs before assigning work or asking advice with coordinate_bots.",
@@ -268,7 +278,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "list_threads",
     description:
-      "See your own threads and the threads you opened on teammates, newest first: each with its bot, title, state (running, waiting on the person, queued, idle, or closed), whether the person has unread there, and the delegation id if it was a handoff. Use it to check how the threads you started are going before reporting to the person; write a thread's title as #Title when you mention it. A teammate's other threads are never listed — only the ones you opened. This is a read: it starts nothing and changes nothing.",
+      "See your own threads and the threads you opened on teammates, newest first: each with its bot, title, state (running, waiting on the person, queued, idle, or closed), whether the person has unread there, and the delegation id if it was a handoff. Use it to check how the threads you started are going before reporting to the person; write a thread's title as #Title when you mention it. A Chief of Staff also sees threads teammates opened on each other. This is a read: it starts nothing and changes nothing.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
   {
@@ -767,9 +777,28 @@ const TOOL_DEFINITIONS = [
           description:
             "The full SKILL.md including YAML frontmatter. Example: ---\\nname: file-expense\\ndescription: Files an expense in the company portal.\\n---\\n\\n# File expense\\n",
         },
+        references: {
+          type: "array",
+          maxItems: 8,
+          description:
+            "Optional detail files (32KB each) for when SKILL.md would pass 32KB: keep the core steps in SKILL.md, move long rules or examples here, and link each from SKILL.md. On update, omitted references stay; empty content removes one.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              path: { type: "string", description: "references/<topic>.md; <topic> uses lowercase letters, digits, and hyphens." },
+              content: { type: "string", description: "The full Markdown file; empty removes it on update." },
+            },
+            required: ["path", "content"],
+          },
+        },
         gist: {
           type: "string",
           description: "Optional one-line summary of the skill change, included in its applied result or pending review.",
+        },
+        base_revision: {
+          type: "string",
+          description: "Required to update a skill shared with your team: the revision skills_list shows for it, listed before you read the skill. A teammate's newer change makes the update fail; list and read it again.",
         },
         source: {
           type: "string",
@@ -879,7 +908,8 @@ export function availableTools(profile: CatalogProfile) {
 function catalogTools(profile: CatalogProfile) {
   const BOT_SCOPED_TOOLS = TOOL_DEFINITIONS.filter((tool) =>
     (profile.botId === WATCHER_OPTIONS_CARD_BOT_ID || !WATCHER_TOOL_NAMES.has(tool.name)) &&
-    (profile.memoryEnabled !== false || (tool.name !== "memory_update" && tool.name !== "memory_log")));
+    (profile.memoryEnabled !== false || (tool.name !== "memory_update" && tool.name !== "memory_log")) &&
+    (profile.escalations === true || tool.name !== "raise_escalation"));
   const AUTHORING_TOOLS = profile.skillAuthoring
     ? BOT_SCOPED_TOOLS
     : BOT_SCOPED_TOOLS.filter((tool) => !SKILL_TOOL_NAMES.has(tool.name));

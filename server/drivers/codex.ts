@@ -39,7 +39,7 @@ import { codexBackgroundModel, runCodexOneShot } from "./codex-background-text.t
 import { augmentedPath, splitCliString } from "../env-path.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { appendNative } from "./native.ts";
-import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
+import { answersAlone, permissionLaunchCwd, shellRequest } from "./permission-command.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { codexDeveloperInstructions, syncCodexInstructions } from "./codex-instructions.ts";
 import { volatileContextNote, withContextNote } from "./prompt-split.ts";
@@ -612,6 +612,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       }
       try { writeStartupModelCache(instanceId, models); } catch {}
     };
+    // Codex's model list ships with the CLI: updating 0.155.1 to 0.162.1 in place adds gpt-6.1-sol.
+    let modelsCliVersion: string | null = null;
     let startupModelRefresh: Promise<void> | null = null;
     if (config.managed) {
       await refreshModels();
@@ -1111,7 +1113,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             : isAdditionalPermission
               ? { permissions: allow ? grantedPermissions(params.permissions) : {}, scope: "turn" }
               : { decision: allow ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" };
-        if (autoAcceptPermissions && isPermission) {
+        const shell = method === "execCommandApproval" || method === "item/commandExecution/requestApproval" ? params.command : undefined;
+        if (autoAcceptPermissions && isPermission && answersAlone(shell)) {
           return send({
             jsonrpc: "2.0",
             id: msg.id,
@@ -1171,10 +1174,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           requestType: isQuestion ? "question" : "permission",
           tool,
           summary,
-          command: method === "execCommandApproval" || method === "item/commandExecution/requestApproval"
-            ? permissionCommand(params.command, params.cwd ?? (
-              !params.threadId || params.threadId === codexThreadId ? commandCwd : undefined
-            )) : undefined,
+          ...shellRequest(shell, params.cwd ?? (
+            !params.threadId || params.threadId === codexThreadId ? commandCwd : undefined
+          )),
           choices,
           ...(protocolQuestions ? { questions: protocolQuestions.map((pair) => pair.question) } : {}),
           approvalScope: controlsHost ? "local-computer" : undefined,
@@ -1750,6 +1752,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     if (planAuth) return { state: "available", version, chatgptPlan: true, billing: "subscription", ...await planAuth.snapshot(), update: await codexReleaseUpdate(version, config.cli),
       ...(planWarning ? { warning: { title: "Check ChatGPT connection", message: planWarning } } : {}) };
     if (config.managed) return { state: "available", version, authenticated: Boolean(input.environment.OPENMAUSBOT_COMPANY_API_KEY && input.environment.CODEX_HOME), billing: "metered" };
+    const previousCliVersion = modelsCliVersion;
+    modelsCliVersion = version;
+    if (previousCliVersion !== null && previousCliVersion !== version) await refreshModels();
     const authenticated = await codexLoginStatus(config.cli, env) === "signed-in";
     if (authenticated && loginRejected()) {
       return { state: "available", version, authenticated: false, reason: CODEX_SIGN_IN_EXPIRED,

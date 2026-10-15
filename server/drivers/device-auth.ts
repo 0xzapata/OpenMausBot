@@ -72,6 +72,7 @@ export interface DeviceAuthOptions {
 export class DeviceAuthController {
   private flow: Flow | null = null;
   private command: ChildProcess | null = null;
+  private signingOut: Promise<void> | null = null;
   private disposed = false;
   private readonly spec: DeviceSignIn;
   private readonly options: DeviceAuthOptions;
@@ -158,11 +159,24 @@ export class DeviceAuthController {
   async dispose(): Promise<void> {
     this.disposed = true;
     await this.cancel();
+    // A stopped sign-out frees the account's lock once its pipes close, which can come after the exit cancel() waits for.
+    const signingOut = this.signingOut;
+    if (signingOut) await Promise.race([signingOut.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 1_500).unref())]);
     this.flow = null;
   }
 
   /** A sign-in in progress is never pulled away underneath the browser completing it. */
   async signOut(): Promise<void> {
+    const run = this.signOutNow();
+    this.signingOut = run;
+    try {
+      await run;
+    } finally {
+      if (this.signingOut === run) this.signingOut = null;
+    }
+  }
+
+  private async signOutNow(): Promise<void> {
     const { product, account, status, logoutArgs } = this.spec;
     if (!status || !logoutArgs) throw new Error(`Signing out of ${account} is not available from here.`);
     if (this.disposed) throw new Error("This provider was removed. Refresh Settings before signing out.");

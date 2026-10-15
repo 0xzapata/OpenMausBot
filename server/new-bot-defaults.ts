@@ -42,6 +42,8 @@ export const botDefaultsProfileSchema = profilePatchSchema.extend({
   toolScope: z.custom<ToolScope>((value) => value !== undefined && parseToolScope(value).ok, "Invalid tool selection")
     .transform((value) => { const parsed = parseToolScope(value); return parsed.ok ? parsed.scope! : value; }).nullable().optional(),
   parkDirectMessages: z.boolean().optional(),
+  /** At creation, so a copy of a bot kept off the helper model is off it from its first moment. */
+  helperModel: z.boolean().optional(),
 }).strict();
 
 const scheduleSchema = z.discriminatedUnion("type", [

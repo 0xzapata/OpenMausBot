@@ -303,3 +303,28 @@ describe("a url server's sign-in app", () => {
     expect(parseStoredMcpServer("docs", { url, oauth: { clientId: "a", callbackPort: 8080 } })).toMatchObject({ ok: false });
   });
 });
+
+describe("a server's result size limit", () => {
+  it("is stored, listed, and optional", () => {
+    expect(parseMcpServerMutation("motion", { command: "effectcraft-mcp", resultBudget: 40_000 })).toEqual({
+      ok: true,
+      server: { command: "effectcraft-mcp", args: [], env: {}, enabled: false, resultBudget: 40_000 },
+    });
+    expect(parseMcpServerMutation("docs", { url: "https://docs.example/mcp", resultBudget: 0 })).toMatchObject({ ok: true, server: { resultBudget: 0 } });
+    const plain = parseMcpServerMutation("notes", { command: "notes-mcp" });
+    expect(plain.ok && "resultBudget" in plain.server).toBe(false);
+    const listings = listMcpServers({ motion: { command: "effectcraft-mcp", resultBudget: 40_000 }, docs: { url: "https://docs.example/mcp", resultBudget: 0 }, notes: { command: "notes-mcp" } });
+    expect(listings.map((l) => l.resultBudget)).toEqual([40_000, 0, undefined]);
+  });
+
+  it("refuses a negative, fractional, oversized or non-numeric limit", () => {
+    for (const resultBudget of [-1, 1.5, 3_000_000, "40000"]) {
+      expect(parseMcpServerMutation("motion", { command: "effectcraft-mcp", resultBudget })).toMatchObject({ ok: false, error: expect.stringMatching(/result size limit/i) });
+    }
+  });
+
+  it("survives a pasted config block", () => {
+    const parsed = parseMcpServersImport(JSON.stringify({ mcpServers: { motion: { command: "effectcraft-mcp", resultBudget: 40_000 } } }));
+    expect(parsed).toMatchObject({ ok: true, servers: { motion: { resultBudget: 40_000 } } });
+  });
+});

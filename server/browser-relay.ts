@@ -144,21 +144,33 @@ export class RelayPorts {
 }
 
 /** Real input into the focused field; the text travels only in this request's body, never on a command line, and only into a running browser. */
-export async function typeText(ports: RelayPorts, target: RelayTarget, text: string): Promise<void> {
-  let port = await ports.port(target);
-  if (port === null) {
-    let status = await inRunningBrowser(target.binaryPath, target.env, ["stream", "status"]);
-    if (status && status.enabled !== true) status = await inRunningBrowser(target.binaryPath, target.env, ["stream", "enable"]);
-    const value = status?.port;
-    if (status?.enabled !== true || typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 65_535) {
-      throw new Error("The browser did not open its local input channel. Restart the browser and try again.");
-    }
-    port = value;
+async function openPort(ports: RelayPorts, target: RelayTarget): Promise<number> {
+  const port = await ports.port(target);
+  if (port !== null) return port;
+  let status = await inRunningBrowser(target.binaryPath, target.env, ["stream", "status"]);
+  if (status && status.enabled !== true) status = await inRunningBrowser(target.binaryPath, target.env, ["stream", "enable"]);
+  const value = status?.port;
+  if (status?.enabled !== true || typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 65_535) {
+    throw new Error("The browser did not open its local input channel. Restart the browser and try again.");
   }
+  return value;
+}
+
+export async function typeText(ports: RelayPorts, target: RelayTarget, text: string): Promise<void> {
+  const port = await openPort(ports, target);
   let answer: RelayAnswer | null = null;
   try { answer = await relay(port, { action: "keyboard", subaction: "insertText", text }, { timeoutMs: 30_000, maxBytes: 65_536 }); }
   catch {}
   if (answer?.success !== true) throw new Error("The browser did not take the typing.");
+}
+
+export async function runCommand(ports: RelayPorts, target: RelayTarget, command: Record<string, unknown>, timeoutMs: number): Promise<RelayAnswer> {
+  const port = await openPort(ports, target);
+  try { return await relay(port, command, { timeoutMs, maxBytes: 65_536 }); }
+  catch (error) {
+    if (error instanceof RelayTimeout) ports.trip(target.session);
+    throw error;
+  }
 }
 
 /** A photo-heavy page was ~400 KB as PNG and ~110 KB as JPEG at quality 80, in 30-70 ms, with text still legible. */
@@ -197,3 +209,5 @@ export function relayTarget(spec: Pick<BrowserSpawnSpec, "command" | "env">, ses
 
 export const relayFrame = (spec: Pick<BrowserSpawnSpec, "command" | "env">, session: string) => captureFrame(relayPorts, relayTarget(spec, session));
 export const relayInsertText = (spec: Pick<BrowserSpawnSpec, "command" | "env">, session: string, text: string) => typeText(relayPorts, relayTarget(spec, session), text);
+export const relayCommand = (spec: Pick<BrowserSpawnSpec, "command" | "env">, session: string, command: Record<string, unknown>, timeoutMs: number) =>
+  runCommand(relayPorts, relayTarget(spec, session), command, timeoutMs);

@@ -107,7 +107,7 @@ const scriptedReplies = (() => {
     return [];
   }
 })();
-type ScriptedToolCall = { name: string; id?: string; input: Record<string, unknown>; ok: boolean; output?: unknown };
+type ScriptedToolCall = { name: string; id?: string; input: Record<string, unknown>; ok: boolean; output?: unknown; server?: string };
 const scriptedToolCalls: ScriptedToolCall[] | null = (() => {
   const raw = process.env.FAKE_CLAUDE_TOOL_CALLS;
   if (raw === undefined) return null;
@@ -115,13 +115,14 @@ const scriptedToolCalls: ScriptedToolCall[] | null = (() => {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return null;
     return parsed
-      .filter((call): call is { name: string; id?: unknown; input?: unknown; ok?: unknown; output?: unknown } => typeof call?.name === "string")
+      .filter((call): call is { name: string; id?: unknown; input?: unknown; ok?: unknown; output?: unknown; server?: unknown } => typeof call?.name === "string")
       .map((call) => ({
         name: call.name,
         ...(typeof call.id === "string" ? { id: call.id } : {}),
         input: call.input && typeof call.input === "object" && !Array.isArray(call.input) ? call.input as Record<string, unknown> : {},
         ok: call.ok !== false,
         output: call.output,
+        ...(typeof call.server === "string" ? { server: call.server } : {}),
       }));
   } catch {
     return null;
@@ -523,6 +524,22 @@ child.on("exit", () => process.exit(1));
 child.stdin.write(JSON.stringify(request) + "\\n");
 `;
 
+const mcpToolCall = (serverName: string, name: string, input: Record<string, unknown>): { ok: boolean; content: unknown } => {
+  launchFiles ??= readLaunchFiles();
+  const server = (launchFiles.mcpConfig as { mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }> } | null)
+    ?.mcpServers?.[serverName];
+  if (!server?.command) return { ok: false, content: `no ${serverName} MCP server was launched for this turn` };
+  const request = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: input } };
+  const ran = spawnSync(process.execPath, ["-e", MCP_CALL_PROGRAM, JSON.stringify({ command: server.command, args: server.args ?? [], env: server.env ?? {}, request })], {
+    encoding: "utf8", timeout: 120_000,
+  });
+  let reply: { result?: { isError?: boolean; content?: unknown }; error?: { message?: string } } = {};
+  try { reply = JSON.parse(ran.stdout.trim().split("\n")[0] ?? ""); } catch { reply = { error: { message: ran.stderr || "no answer" } }; }
+  return { ok: !reply.error && !reply.result?.isError, content: reply.result?.content ?? reply.error?.message ?? "" };
+};
+
+/** COMPOSIO_MANAGE_CONNECTIONS through the launched connected-apps server, if
+ * this turn has one: the bridge turns it into a Connect card in the chat. */
 const connectApps = (toolkits: string[]) => {
   launchFiles ??= readLaunchFiles();
   const server = (launchFiles.mcpConfig as { mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }> } | null)
@@ -738,16 +755,18 @@ const playTurn = (prompt: JsonValue, late = false) => {
     for (const call of scriptedToolCalls) {
       const id = call.id ?? `tu-${process.pid}-${++toolUseCount}`;
       out({ type: "assistant", message: { content: [{ type: "tool_use", id, name: call.name, input: call.input }], usage } });
-      out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: !call.ok, content: call.output }] } });
-      if (!call.ok) {
+      const reply = call.server ? mcpToolCall(call.server, call.name, call.input)
+        : { ok: call.ok, content: call.output };
+      out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: !reply.ok, content: reply.content }] } });
+      if (!reply.ok) {
         // Claude Code 2.1.296 runs only PostToolUseFailure for a failed call, with the result text as `error`.
-        const printed = runHooks("PostToolUseFailure", { tool_name: call.name, tool_input: call.input, error: call.output, tool_use_id: id });
+        const printed = runHooks("PostToolUseFailure", { tool_name: call.name, tool_input: call.input, error: reply.content, tool_use_id: id });
         try {
           const context = JSON.parse(printed)?.hookSpecificOutput?.additionalContext;
           if (typeof context === "string" && context) failureContext.push(context);
         } catch {}
       } else {
-        runHooks("PostToolUse", { tool_name: call.name, tool_input: call.input, tool_response: call.output, tool_use_id: id });
+        runHooks("PostToolUse", { tool_name: call.name, tool_input: call.input, tool_response: reply.content, tool_use_id: id });
       }
     }
     if (failureContext.length) replyParts = [`${failureContext.join("\n")}\n\n${replyParts[0] ?? ""}`, ...replyParts.slice(1)];
