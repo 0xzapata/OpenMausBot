@@ -192,6 +192,7 @@ export class BrowserService {
       const tab = known ?? profile.tabs.add(page, opener ? "page" : origin, opener?.id ?? null);
       if (known) return;
       profile.control.adopt(tab);
+      page.auth.answerable = () => profile.hub.answersAuth();
       run.offs.push(page.auth.onChange((challenge) => {
         if (challenge) profile.hub.broadcast({ type: "authPrompt", origin: challenge.origin, realm: challenge.realm }, { holderOnly: true });
         else profile.hub.broadcast({ type: "authPromptClosed" }, { holderOnly: true });
@@ -281,8 +282,14 @@ export class BrowserService {
   }
 
   #erase(profile: ProfileState): void {
-    removeProfile(profileDir(this.#options.dataDir, profile.key));
-    rmSync(profile.downloadDir, { recursive: true, force: true });
+    this.#eraseFiles(profile.key);
+  }
+
+  #eraseFiles(key: string): void {
+    const root = browserRoot(this.#options.dataDir);
+    const hash = profileHash(workspaceId(this.#options.dataDir), key);
+    removeProfile(profileDir(this.#options.dataDir, key));
+    for (const folder of ["downloads", "screenshots"]) rmSync(join(root, folder, hash), { recursive: true, force: true });
   }
 
   #idle(profile: ProfileState, idleMs: number): boolean {
@@ -332,8 +339,7 @@ export class BrowserService {
       this.#profiles.delete(key);
       this.#holds.drop(profile.session);
     } else {
-      removeProfile(profileDir(this.#options.dataDir, key));
-      rmSync(join(browserRoot(this.#options.dataDir), "downloads", profileHash(workspaceId(this.#options.dataDir), key)), { recursive: true, force: true });
+      this.#eraseFiles(key);
     }
   }
 

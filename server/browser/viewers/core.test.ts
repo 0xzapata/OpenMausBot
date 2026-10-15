@@ -25,9 +25,9 @@ async function setup() {
   services.push(service);
   const target = { session: "bot-a", key: "bot:a" };
   await service.agentRpc(target, "tools/call", { name: "agent_browser_open", arguments: { url: "https://example.com/" } });
-  const watch = async (options: { size?: { width: number; height: number }; maxWidth?: number; maxHeight?: number; pace?: "hi" | "lo"; ack?: boolean } = {}) => {
+  const watch = async (options: { size?: { width: number; height: number }; maxWidth?: number; maxHeight?: number; pace?: "hi" | "lo"; ack?: boolean; authPrompts?: boolean } = {}) => {
     const outputs: ViewerOutput[] = [];
-    const viewer = await service.attachViewer(target, { owner: "local-owner", canOperate: true, maxWidth: options.maxWidth ?? 3200, maxHeight: options.maxHeight ?? 2000, pace: options.pace ?? "hi", ...(options.size ? { size: options.size } : {}) }, (output) => {
+    const viewer = await service.attachViewer(target, { owner: "local-owner", canOperate: true, maxWidth: options.maxWidth ?? 3200, maxHeight: options.maxHeight ?? 2000, pace: options.pace ?? "hi", authPrompts: options.authPrompts === true, ...(options.size ? { size: options.size } : {}) }, (output) => {
       outputs.push(output);
       if (output.type === "frame" && options.ack !== false) output.ack();
     });
@@ -162,7 +162,7 @@ describe("viewers of one browser", () => {
 
   it("asks the person holding the browser for an HTTP sign-in, and answers the page with what they typed", async () => {
     const { service, target, watch, chrome, page } = await setup();
-    const { viewer, outputs } = await watch();
+    const { viewer, outputs } = await watch({ authPrompts: true });
     await viewer.input({ type: "takeControl" });
     const session = chrome().sent.find((sent) => sent.method === "Fetch.enable")?.sessionId;
     expect(session).toBeTruthy();
@@ -172,6 +172,16 @@ describe("viewers of one browser", () => {
     await viewer.input({ type: "authAnswer", username: "ada", password: "secret" });
     expect(chrome().sentTo(page())).toContainEqual(expect.objectContaining({ method: "Fetch.continueWithAuth", params: { requestId: "auth-1", authChallengeResponse: { response: "ProvideCredentials", username: "ada", password: "secret" } } }));
     expect(service.heldBy(target.session)).toBe(viewer.id);
+  });
+
+  it("cancels an HTTP sign-in at once when no one watching can answer it, so the site's refusal shows", async () => {
+    const { watch, chrome, page } = await setup();
+    const { outputs } = await watch();
+    const session = chrome().sent.find((sent) => sent.method === "Fetch.enable")?.sessionId;
+    chrome().event("Fetch.authRequired", { requestId: "auth-2", authChallenge: { source: "Server", origin: "https://intranet.example", scheme: "basic", realm: "Staff" } }, session!);
+    await sleep(10);
+    expect(outputs.some((output) => output.type === "authPrompt")).toBe(false);
+    expect(chrome().sentTo(page())).toContainEqual(expect.objectContaining({ method: "Fetch.continueWithAuth", params: { requestId: "auth-2", authChallengeResponse: { response: "CancelAuth" } } }));
   });
 
   it("takes only web addresses from a person, never credentials or other schemes", () => {

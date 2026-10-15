@@ -114,6 +114,12 @@ export function markCleanExit(dir: string): void {
   mergePreferences(dir, { profile: { exit_type: "Normal", exited_cleanly: true } });
 }
 
+/** The tabs Chrome would reopen, so a restart comes back on one blank tab; sign-ins stay. Chrome 153 keeps them in
+ * Default/Sessions and Default/Sessions_Encrypted. */
+export function forgetOpenTabs(dir: string): void {
+  for (const folder of ["Sessions", "Sessions_Encrypted"]) rmSync(join(dir, "Default", folder), { recursive: true, force: true });
+}
+
 export interface EnsuredProfile {
   dir: string;
   record: ProfileRecord;

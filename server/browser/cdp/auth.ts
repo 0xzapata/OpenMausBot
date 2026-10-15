@@ -20,6 +20,8 @@ export const AUTH_PATTERNS = [{ urlPattern: "*", resourceType: "Document", reque
  * here for a person or a saved login to answer; a proxy's challenge is never answered.
  */
 export class AuthChallenges {
+  /** Whether someone could answer a challenge now; when not, it is cancelled at once and the site's refusal shows. */
+  answerable: () => boolean = () => true;
   readonly #listeners = new Set<(challenge: AuthChallenge | null) => void>();
   #pending: { challenge: AuthChallenge; session: CdpSession; timer: ReturnType<typeof setTimeout> } | null = null;
 
@@ -60,7 +62,7 @@ export class AuthChallenges {
 
   #required(session: CdpSession, params: Params): void {
     const challenge = params.authChallenge as { origin?: string; realm?: string; scheme?: string; source?: string } | undefined;
-    if (challenge?.source === "Proxy") {
+    if (challenge?.source === "Proxy" || !this.answerable()) {
       void session.send("Fetch.continueWithAuth", { requestId: params.requestId, authChallengeResponse: { response: "CancelAuth" } }).catch(() => {});
       return;
     }

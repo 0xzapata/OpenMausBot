@@ -6,7 +6,7 @@ import { webSocketTransport } from "./cdp/transport.ts";
 import type { BrowserMode, HostKind, ScreenSpec } from "./chrome/flags.ts";
 import { launchChrome, type ChromeProcess } from "./chrome/launch.ts";
 import { clearSingleton, staleSingletonLock, type ProcessRegistry } from "./chrome/processes.ts";
-import { downgradeRefusal, ensureProfile, markCleanExit, profileHash, recordOpenedBy, versionOf, workspaceId } from "./chrome/profile.ts";
+import { downgradeRefusal, ensureProfile, forgetOpenTabs, markCleanExit, profileHash, recordOpenedBy, versionOf, workspaceId } from "./chrome/profile.ts";
 
 export type BackendKind = "local" | "my-chrome" | "cdp-url";
 
@@ -94,6 +94,7 @@ export class LocalBackend implements Backend {
     if (refusal) throw new Error(refusal);
     if (staleSingletonLock(dir)) clearSingleton(dir);
     markCleanExit(dir);
+    if (request.fresh) forgetOpenTabs(dir);
     const headless = request.mode === "headless";
     const locale = options.locale?.() ?? null;
     const egressPort = await options.egressPort(request.key);

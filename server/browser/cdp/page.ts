@@ -1,7 +1,7 @@
 import * as actions from "./actions.ts";
 import type { ActionContext, Target } from "./actions.ts";
 import { sessionKindOf, type CdpSession, type Params } from "./connection.ts";
-import { AuthChallenges } from "./auth.ts";
+import { AuthChallenges, type AuthChallenge } from "./auth.ts";
 import { Dialogs, type PendingDialog } from "./dialogs.ts";
 import { DriverError, parseNetError } from "./errors.ts";
 import { evaluate, valueInWorld, type EvaluateOptions } from "./evaluate.ts";
@@ -46,6 +46,8 @@ export interface NavigationResult {
   url: string;
   /** The main document's HTTP status, when one arrived. */
   status: number | null;
+  /** The site asked for an HTTP sign-in, which now waits for an answer; the navigation goes on once it has one. */
+  signInPrompt?: { origin: string; realm: string };
 }
 
 export interface PageSnapshot extends Snapshot {
@@ -203,7 +205,15 @@ export class CdpPage implements ActionContext, WaitContext {
     return this.dialogs.acceptingBeforeUnload(async () => {
       const sameDocument = this.session.waitFor("Page.navigatedWithinDocument", { match: (params) => params.frameId === this.targetId, timeoutMs });
       sameDocument.catch(() => {});
-      const result = await this.session.send<{ loaderId?: string; errorText?: string; isDownload?: boolean }>("Page.navigate", { url }, { timeoutMs });
+      const navigating = this.session.send<{ loaderId?: string; errorText?: string; isDownload?: boolean }>("Page.navigate", { url }, { timeoutMs });
+      navigating.catch(() => {});
+      let stopAsking = () => {};
+      const asked = new Promise<AuthChallenge>((resolve) => {
+        stopAsking = this.auth.onChange((challenge) => { if (challenge) resolve(challenge); });
+      });
+      const first = await Promise.race([navigating, asked]).finally(() => stopAsking());
+      if ("origin" in first) return { url, status: 401, signInPrompt: { origin: first.origin, realm: first.realm } };
+      const result = first;
       if (result.isDownload) {
         throw new DriverError("navigation", `${url} is a file this browser cannot show, so it was downloaded instead. The tab's downloads list it.`, { download: true });
       }

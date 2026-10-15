@@ -87,6 +87,8 @@ export interface ViewerOptions {
   pace?: keyof typeof ACK_PACE_MS;
   /** The panel's size in CSS pixels, which the page fills. */
   size?: { width: number; height: number } | null;
+  /** The viewer can show a site's HTTP sign-in prompt to its person; the v1 view cannot. */
+  authPrompts?: boolean;
 }
 
 /** What a hub needs from the browser service. */
@@ -182,6 +184,7 @@ export class Viewer {
       maxHeight: Math.max(1, Math.round(options.maxHeight)),
       quality: Math.min(100, Math.max(1, Math.round(options.quality ?? 70))),
       pace: options.pace ?? "hi",
+      authPrompts: options.authPrompts === true,
     };
   }
 
@@ -427,6 +430,11 @@ export class ViewerHub {
     return this.viewers.size;
   }
 
+  /** Someone watching could answer a site's HTTP sign-in. */
+  answersAuth(): boolean {
+    return [...this.viewers].some((viewer) => viewer.options.canOperate && viewer.options.authPrompts);
+  }
+
   /** The page size now: the setting's, or in fill mode the size the latest viewer still watching asked for. */
   viewport(): { width: number; height: number } {
     const latest = [...this.viewers].map((viewer) => viewer.requested).filter((size) => size !== null).sort((a, b) => b.order - a.order)[0] ?? null;
@@ -448,17 +456,18 @@ export class ViewerHub {
     const active = this.host.active();
     if (this.#applied === key && browser.viewport?.width === Math.max(size.width, MIN_WINDOW_WIDTH)) return;
     this.#applied = key;
+    // The window is fitted by measuring the page, which an emulated size would misreport.
+    if (this.#emulated) {
+      for (const tab of this.host.tabs()) await tab.page.session.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+      this.#emulated = false;
+    }
     await browser.setViewport({ width: Math.max(size.width, MIN_WINDOW_WIDTH), height: size.height }).catch(() => {});
-    if (emulated || this.#emulated) {
+    if (emulated) {
       for (const tab of this.host.tabs()) {
-        if (emulated) {
-          const ratio = await tab.page.devicePixelRatio().catch(() => 1);
-          await tab.page.session.send("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: ratio, mobile: false }).catch(() => {});
-        } else {
-          await tab.page.session.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
-        }
+        const ratio = await tab.page.devicePixelRatio().catch(() => 1);
+        await tab.page.session.send("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: ratio, mobile: false }).catch(() => {});
       }
-      this.#emulated = emulated;
+      this.#emulated = true;
     }
     if (active) this.broadcast({ type: "viewport", ...size, setting: this.setting });
     this.broadcastStatus();

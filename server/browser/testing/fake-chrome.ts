@@ -34,6 +34,8 @@ export interface FakePage {
   index: number;
   openerId?: string;
   focused: number | null;
+  /** Emulation.setDeviceMetricsOverride's size, which the page then reports instead of its window's. */
+  emulated?: { width: number; height: number } | null;
   screencasts: Map<string, { params: Record<string, unknown>; acked: number; sent: number }>;
 }
 
@@ -228,7 +230,7 @@ export class FakeChrome implements CdpTransport {
   }
 
   #evaluate(page: FakePage, expression: string): unknown {
-    const viewport = this.viewport;
+    const viewport = page.emulated ?? this.viewport;
     if (expression === "[innerWidth, innerHeight]") return [viewport.width, viewport.height];
     if (expression === "devicePixelRatio") return this.dpr;
     if (expression === "document.readyState") return "complete";
@@ -251,6 +253,12 @@ export class FakeChrome implements CdpTransport {
     switch (method) {
       case "Page.getFrameTree":
         return { frameTree: { frame: { id: page.targetId, url: page.url, loaderId: page.loaderId } } };
+      case "Emulation.setDeviceMetricsOverride":
+        page.emulated = { width: Number(params.width), height: Number(params.height) };
+        return {};
+      case "Emulation.clearDeviceMetricsOverride":
+        page.emulated = null;
+        return {};
       case "Page.createIsolatedWorld":
         return { executionContextId: this.#next++ };
       case "Page.navigate": {

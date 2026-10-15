@@ -124,6 +124,10 @@ export function statusOf(context: Pick<ToolContext, "tabs" | "control" | "active
   };
 }
 
+function signInWait(tab: Tab, url: string, prompt: { origin: string; realm: string }): string {
+  return `${tab.id} is waiting at ${sanitizeUrl(url) || url}: the site asks for a user name and password (HTTP sign-in for ${prompt.origin}${prompt.realm ? `, "${prompt.realm.slice(0, 100)}"` : ""}). The person watching this browser can answer it, and the page loads once they do; agent_browser_status shows the prompt until then. Do not try to answer it yourself.`;
+}
+
 /** A dialog the action opened ends its answer: nothing else runs on the tab until it is answered. */
 function dialogNote(tab: Tab): string | null {
   const dialog = tab.page.dialogs.pending;
@@ -151,7 +155,8 @@ async function act(context: ToolContext, tab: Tab | null, run: () => Promise<Too
     const before = observeChange && tab ? await observe(tab) : null;
     const result = await run();
     if (!tab || result.isError) return result;
-    const after = before ? await observe(tab) : null;
+    // An open dialog blocks the page's scripts, so the page is read again only once it is answered.
+    const after = before && !tab.page.dialogs.pending ? await observe(tab) : null;
     const opened = observeChange ? await openedNote(context, tab, known) : null;
     return withParts(result, before && after ? describePageChange(before, after) : null, opened, dialogNote(tab), context.health(tab));
   });
@@ -213,6 +218,7 @@ export async function executeTool(context: ToolContext, call: ToolCall): Promise
       return context.control.agent(tab, async () => {
         await tab.page.bringToFront();
         const opened = address ? await tab.page.navigate(address, { readiness: "load", timeoutMs: remaining(context) }) : null;
+        if (opened?.signInPrompt) return textResult(signInWait(tab, opened.url, opened.signInPrompt));
         const lead = opened
           ? `Opened ${sanitizeUrl(opened.url) || opened.url} in ${tab.id}${opened.status && opened.status >= 400 ? `; the site answered HTTP ${opened.status}` : ""}.`
           : `${tab.id} is open at ${sanitizeUrl(tab.page.url()) || tab.page.url()}.`;
@@ -229,6 +235,7 @@ export async function executeTool(context: ToolContext, call: ToolCall): Promise
         const result = url !== undefined
           ? await tab.page.navigate(agentUrl(url), options)
           : action === "back" ? await tab.page.back(options) : action === "forward" ? await tab.page.forward(options) : await tab.page.reload(options);
+        if (result.signInPrompt) return textResult(signInWait(tab, result.url, result.signInPrompt));
         return textResult(`${tab.id} is now at ${sanitizeUrl(result.url) || result.url}${result.status && result.status >= 400 ? ` (HTTP ${result.status})` : ""}. Refs from earlier snapshots do not apply to it; take a snapshot before acting on refs.`);
       });
     }
