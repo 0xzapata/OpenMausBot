@@ -8,6 +8,7 @@ import { useCloudOffer } from "@/lib/use-cloud-offer";
 import type { LocaleKey } from "@/locales";
 import { Card } from "./SettingsPrimitives";
 import { CloudLending } from "./CloudLending";
+import { CloudSync } from "./CloudSync";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 
 export { cloudPlanLabel };
@@ -49,7 +50,7 @@ function trialLines(trial: CloudTrial | undefined, credit: CloudCredit | undefin
 /**
  * Security: status and address come only from the verified native snapshot; the pairing code never reaches this page.
  */
-function cloudHomeCard({ machine, busy, failed, onConnect, lending, trial = false }: { machine: CloudMachine; busy: boolean; failed: boolean; onConnect: () => void; lending?: CloudAccountBridge["lending"]; trial?: boolean }) {
+function cloudHomeCard({ machine, busy, failed, onConnect, lending, sync, trial = false }: { machine: CloudMachine; busy: boolean; failed: boolean; onConnect: () => void; lending?: CloudAccountBridge["lending"]; sync?: CloudAccountBridge["sync"]; trial?: boolean }) {
   const connectable = machine.status === "ready";
   const text = trial && (machine.status === "stopped" || machine.status === "payment-problem") ? t("cloudHome.stoppedTrial")
     : machine.status === "failed" && machine.retryAt ? t("cloudHome.failedRetry", { time: time(machine.retryAt) })
@@ -64,6 +65,7 @@ function cloudHomeCard({ machine, busy, failed, onConnect, lending, trial = fals
       </>}
       {failed && <p role="alert" className="text-[13px] text-danger">{t("cloudHome.connectFailed")}</p>}
       {lending && <CloudLending bridge={lending} />}
+      {sync && <CloudSync bridge={sync} />}
     </div>
   </Card>;
 }
@@ -273,7 +275,7 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, onCon
       {error && <p role="alert" className="mt-3 text-[13px] text-danger">{t("cloudAccount.actionFailed")}</p>}
       {!account && <button type="button" disabled={busy} className="ui-button mt-3" onClick={() => void perform(() => bridge.state())}>{t("organization.refresh")}</button>}
     </Card>
-    {machine && cloudHomeCard({ machine, busy, failed: homeFailed, onConnect: connectHome, lending: bridge.lending, trial: Boolean(account?.trial) })}
+    {machine && cloudHomeCard({ machine, busy, failed: homeFailed, onConnect: connectHome, lending: bridge.lending, sync: bridge.sync, trial: Boolean(account?.trial) })}
     {signed && view.kind === "paid" && cloudPhoneCard({ ready: machine?.status === "ready", busy, failed: phoneFailed, onUse: openOnPhone })}
     {machine?.status === "ready" && <CloudMoveSettings destination="cloud" />}
   </>;
