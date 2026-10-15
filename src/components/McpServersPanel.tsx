@@ -17,15 +17,15 @@ import {
 
 import { openExternalLink } from "@/lib/app-links";
 import { cn } from "@/lib/cn";
-import { claudeUserMcpEnabled } from "@/lib/feature-flags";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { updateMcpServers } from "@/lib/mcp-servers";
 import { completeMcpSignIn, mcpSignInLink, runMcpSignIn, type McpSignInStatus } from "@/lib/mcp-sign-in";
-import { api, useStore, type ConfigStatus } from "@/state/store";
+import { api, useStore } from "@/state/store";
 
 import { Select } from "./Select";
 import { Switch } from "./SettingsPrimitives";
+import { ClaudeCodeSwitches } from "./ClaudeCodeSwitches";
 import { WhopIcon } from "./WhopIcon";
 import { McpResultBudgetField, resultBudgetDraft, withResultBudget, type McpMessage, type McpResultBudgetDraft, type McpResultBudgetListing } from "./McpResultBudgetField";
 import { WHOP_MCP_URL, isWhopServer, whopServerName } from "@/lib/whop-integration";
@@ -668,7 +668,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
         </div>
 
         {restricted && policy && <p role="status" className="mt-3 text-[12.5px] leading-relaxed text-ink-secondary">{t("policy.mcpRestricted", { organization: policy.organizationName })}</p>}
-        <ClaudeMcpSwitch />
+        <ClaudeCodeSwitches />
 
         {importOpen && (
           <div className="mt-4 rounded-2xl border border-hairline/60 bg-card p-4 sm:p-5">
@@ -975,46 +975,5 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
         )}
       </div>
     </section>
-  );
-}
-
-function ClaudeMcpSwitch() {
-  const { state, dispatch } = useStore();
-  const enabled = claudeUserMcpEnabled(state.config);
-  const [saving, setSaving] = useState(false);
-  const [failed, setFailed] = useState(false);
-
-  const toggle = async () => {
-    if (saving) return;
-    setSaving(true);
-    setFailed(false);
-    try {
-      const config: ConfigStatus = await api("/api/config", {
-        method: "PATCH",
-        body: JSON.stringify({ features: { claudeUserMcp: !enabled } }),
-      });
-      dispatch({ type: "configStatus", config });
-    } catch {
-      setFailed(true);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="mt-4 flex items-start justify-between gap-4 rounded-2xl border border-hairline/50 bg-card px-4 py-4 sm:px-5">
-      <div className="min-w-0">
-        <div className="text-[14px] font-medium text-ink">{t("mcp.claude.title")}</div>
-        <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary">{t("mcp.claude.desc")}</p>
-        {failed && <p role="alert" className="mt-1 text-[12px] text-danger">{t("mcp.claude.error")}</p>}
-      </div>
-      <Switch
-        checked={enabled}
-        aria-label={t("mcp.claude.aria")}
-        disabled={saving}
-        onClick={() => void toggle()}
-        className="mt-0.5 shrink-0 disabled:cursor-wait disabled:opacity-50"
-      />
-    </div>
   );
 }
