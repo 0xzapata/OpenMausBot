@@ -76,6 +76,17 @@ jobs:
           test "$(docker exec omb id -un)" = maus
           timeout 45 docker exec omb agent-browser --session ci-browser open 'data:text/html,<title>OMB browser smoke</title><h1>Browser ready</h1>'
           timeout 15 docker exec omb agent-browser --session ci-browser get title | grep -Fx 'OMB browser smoke'
+          # Chrome for Testing's page is 1280x577 until sized; the harness sizes
+          # it to 1280x720 so pictures, boxes and clicks agree.
+          timeout 15 docker exec omb agent-browser --session ci-browser set viewport 1280 720
+          test "$(timeout 15 docker exec omb agent-browser --session ci-browser eval "innerWidth+'x'+innerHeight")" = '"1280x720"'
+          # The harness reads and pictures a bot's browser over the engine's
+          # loopback relay (server/browser-relay.ts); the daemon writes the file.
+          port=$(timeout 15 docker exec omb agent-browser --session ci-browser stream status --json | jq -r .data.port)
+          answer=$(docker exec omb curl -sf -X POST -H 'content-type: application/json' -H "origin: http://127.0.0.1:$port" \
+            --data '{"action":"screenshot","path":"/tmp/relay.jpg","format":"jpeg","quality":70}' "http://127.0.0.1:$port/api/command")
+          grep -q '"success":true' <<<"$answer"
+          docker exec omb test -s /tmp/relay.jpg
           timeout 15 docker exec omb agent-browser --session ci-browser close
       - name: Prove the server never binds a public interface
         # The loopback-trust model is the auth model, so the image must keep

@@ -1,9 +1,3 @@
-// The places at the foot of the sidebar, as direct rows: Routines (the
-// Automations page) and Triggers, then Team map in Advanced mode. They used
-// to hide behind a hover "Tools" menu; a row each is one click instead of a
-// hover and a click. Simple mode keeps none of them: scheduling and webhooks
-// are builder tools. Apps sits beside the profile (SidebarAppsButton), except
-// on the avatars-only rail, where it stays a row just above the avatar.
 import { CalendarDays, Network, Puzzle, Zap } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -13,6 +7,8 @@ import { useAdvancedMode } from "@/lib/interface-mode";
 import { isRoutineProblemRun } from "@/lib/routines";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 import { useStore } from "@/state/store";
+
+import { SidebarSectionHeader } from "./SidebarSectionHeader";
 
 
 function NavRow({
@@ -44,13 +40,13 @@ function NavRow({
       title={iconsOnly ? label : undefined}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "relative flex w-full items-center rounded-xl text-left transition-colors",
-        iconsOnly ? "min-h-10 justify-center px-2 py-2" : "min-h-9 gap-3 px-3 py-1.5",
+        "relative flex items-center rounded-xl transition-colors",
+        iconsOnly ? "mx-auto size-[46px] shrink-0 justify-center" : "w-full min-h-9 gap-3 px-3 py-1.5 text-left",
         active ? "bg-raised text-ink" : "text-ink hover:bg-raised/50",
       )}
     >
       {icon(active)}
-      {!iconsOnly && <span className="flex-1 truncate text-[14px]">{label}</span>}
+      {!iconsOnly && <span className="flex-1 truncate text-[14px] font-medium leading-5">{label}</span>}
       {attention && (
         <span
           data-testid="routines-attention"
@@ -61,7 +57,6 @@ function NavRow({
   );
 }
 
-/** Apps, as a round icon button at the end of the profile row. */
 export function SidebarAppsButton() {
   const { state, dispatch } = useStore();
   const label = t("sidebar.nav.apps");
@@ -75,7 +70,7 @@ export function SidebarAppsButton() {
       title={label}
       aria-pressed={state.pluginsOpen}
       className={cn(
-        "flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors",
+        "flex size-[46px] shrink-0 items-center justify-center rounded-xl transition-colors",
         state.pluginsOpen ? "bg-raised text-accent" : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
       )}
     >
@@ -84,20 +79,25 @@ export function SidebarAppsButton() {
   );
 }
 
-export function SidebarFooterNav({ density }: { density: SidebarDensity }) {
+export function SidebarFooterNav({
+  density,
+  collapsed = false,
+  onToggleCollapsed,
+}: {
+  density: SidebarDensity;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+}) {
   const { state, dispatch } = useStore();
   const advanced = useAdvancedMode();
   const iconsOnly = density === "icons";
   const iconSize = iconsOnly ? 20 : 18;
   const tone = (active: boolean) => (active ? "text-accent" : "text-ink-secondary");
   const routinesNeedYou = state.routineRuns.some((run) => isRoutineProblemRun(run) && !run.seenAt);
-  // Simple mode on a full-width sidebar has no rows left: draw nothing, so
-  // the profile row is the foot's first line.
   if (!advanced && !iconsOnly) return null;
 
-  return (
-    // `tools` is the guided tour's anchor for "the places down here".
-    <nav data-tour="tools" aria-label={t("sidebar.tools")} className="flex flex-col gap-0.5">
+  const rows = (
+    <>
       {advanced && <NavRow
         id="routines"
         label={t("sidebar.nav.routines")}
@@ -136,6 +136,23 @@ export function SidebarFooterNav({ density }: { density: SidebarDensity }) {
           onClick={() => dispatch({ type: "showTeamMap" })}
         />
       )}
-    </nav>
+    </>
+  );
+
+  if (iconsOnly) {
+    return <nav data-tour="tools" aria-label={t("sidebar.tools")} className="flex flex-col items-center gap-1">{rows}</nav>;
+  }
+  return (
+    <div data-tour="tools">
+      <SidebarSectionHeader
+        name={t("sidebar.tools")}
+        collapsed={collapsed}
+        alert={collapsed && routinesNeedYou}
+        onToggle={onToggleCollapsed}
+        reorderable={false}
+        dragging={false}
+      />
+      {!collapsed && <nav aria-label={t("sidebar.tools")} className="flex flex-col gap-0.5">{rows}</nav>}
+    </div>
   );
 }

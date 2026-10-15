@@ -11,7 +11,8 @@ vi.mock("@/state/store", async (original) => ({
 }));
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({}) }));
 
-import { DefaultResponderSelect, RoutedByLine, Transcript } from "./GroupView";
+import { DefaultResponderSelect, Transcript } from "./GroupView";
+import { RoutedByLine } from "./RoomQueueList";
 
 const members = [
   { id: "maya", name: "Maya" },
@@ -59,6 +60,10 @@ describe("room responder selector", () => {
 describe("routed-by line", () => {
   it("says Jev picked the speaker, with how sure it was", () => {
     expect(renderToStaticMarkup(createElement(RoutedByLine, { routedBy: { provider: "jev", probability: 0.94 } }))).toContain("Picked by Jev · 94%");
+  });
+
+  it("names OpenRouter when that provider picked the speaker", () => {
+    expect(renderToStaticMarkup(createElement(RoutedByLine, { routedBy: { provider: "openrouter", probability: 0.81 } }))).toContain("Picked by OpenRouter · 81%");
   });
 
   it("appears under a Jev-routed reply only", () => {
