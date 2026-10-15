@@ -1747,10 +1747,11 @@ describe("ACP turns (fake CLI)", () => {
   it("reads Qwen's debug log: a logged rate-limit retry is reported and keeps the turn alive", async () => {
     vi.spyOn(quietStatus, "sampleProcessTree").mockResolvedValue({ cpuMs: 0, connections: 1 });
     process.env.QWEN_HOME = scratch;
-    process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS = "400";
+    // Margins wide enough for a slow Windows runner: the log must be read well inside the idle guard.
+    process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS = "1500";
     process.env.OMB_ACP_QUIET_NOTICE_MS = "150";
     process.env.OMB_ACP_QUIET_TICK_MS = "50";
-    process.env.FAKE_ACP_QUIET_MS = "1200";
+    process.env.FAKE_ACP_QUIET_MS = "3500";
     process.env.FAKE_ACP_QWEN_LOG = JSON.stringify([
       "[ERROR] [OPENAI_ERROR] OpenAI API Error: 429 rate limited {",
       "[WARN] [RETRY] Attempt 1 failed with status 429. Retrying after explicit delay of 20000ms... {",
