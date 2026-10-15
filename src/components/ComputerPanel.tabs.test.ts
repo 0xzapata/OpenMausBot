@@ -188,6 +188,19 @@ describe("Computer panel tab", () => {
     expect(selected()).toBe("Android");
   });
 
+  it("keeps one selected tab when Android disconnects", async () => {
+    fixture.android = true;
+    await open(makeBot());
+    flushSync(() => tab("Android").click());
+    await settle();
+    expect(selected()).toBe("Android");
+
+    fixture.android = false;
+    await open(makeBot());
+    expect(tabLabels()).not.toContain("Android");
+    expect(selected()).toBe("Computer");
+  });
+
   it("stops on the Files tab in Simple mode", async () => {
     fixture.advanced = false;
     await open(makeBot());

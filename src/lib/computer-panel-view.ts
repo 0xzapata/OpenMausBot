@@ -1,5 +1,15 @@
 export type ComputerPanelView = "computer" | "android" | "browser" | "routines" | "files" | "data";
 
+/** The tab a stored selection resolves to once the mode and connected devices
+ * decide which triggers exist; it never resolves to a view without a trigger. */
+export function resolveComputerPanelView(
+  view: ComputerPanelView,
+  { advanced, androidConnected }: { advanced: boolean; androidConnected: boolean },
+): ComputerPanelView {
+  if (!advanced) return view === "routines" || view === "android" ? "computer" : view;
+  return view === "files" || (view === "android" && !androidConnected) ? "computer" : view;
+}
+
 const STORAGE_PREFIX = "omb-computer-panel-view";
 
 function storageKey(botId: string): string {
