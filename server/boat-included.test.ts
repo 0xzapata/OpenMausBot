@@ -21,6 +21,8 @@ let state = "ready";
 let wakeOnResume = true;
 /** When set, every request is refused as an invalid credential. */
 let rejectCredentials = false;
+/** When set, every request fails as an outage would. */
+let serverError = false;
 /** This many listings are cut off before any answer, as a dropped connection is. */
 let dropLists = 0;
 /** Replies to POST /resume in order; the last one repeats. A 2xx wakes the computer. */
@@ -46,6 +48,7 @@ beforeAll(async () => {
         res.end(JSON.stringify(body));
       };
       if (rejectCredentials) return send(401, { ok: false, code: "unauthorized", message: "This cloud computer key is not valid." });
+      if (serverError) return send(500, { ok: false, message: "internal error" });
       // Boat speaks its public API v1; the Admin relay at /api/box/v1 still speaks the old box dialect, and at /api/v1, v1.
       const [, base = "", rest = ""] = /^(\/boat\/api\/v1|\/relay\/api\/box\/v1|\/relay\/api\/v1)(\/.*)$/.exec(url.pathname) ?? [];
       const legacy = base === "/relay/api/box/v1";
@@ -80,6 +83,7 @@ beforeEach(async () => {
   state = "ready";
   resumeReplies = [];
   rejectCredentials = false;
+  serverError = false;
   dropLists = 0;
   wakeOnResume = true;
   vi.stubEnv("BOX_TOKEN", undefined);
@@ -171,10 +175,15 @@ describe("included Boat computers", () => {
 
   it("tells a revoked Boat key (boat_, or box_ from before v1) from something that is no Boat key", async () => {
     rejectCredentials = true;
-    const revoked = { ok: false, message: "boat.dev rejected that key — it may have been revoked or expired. Copy a fresh one from your boat.dev account." };
+    const revoked = { ok: false, rejected: true, message: "boat.dev rejected that key — it may have been revoked or expired. Copy a fresh one from your boat.dev account." };
     expect(await boat.verifyToken("boat_revoked")).toEqual(revoked);
     expect(await boat.verifyToken("box_revoked")).toEqual(revoked);
-    expect(await boat.verifyToken("sk-ant-not-a-boat-key")).toEqual({ ok: false, message: expect.stringMatching(/^That doesn't look like a Boat API key: they start with boat_/) });
+    expect(await boat.verifyToken("sk-ant-not-a-boat-key")).toEqual({ ok: false, rejected: true, message: expect.stringMatching(/^That doesn't look like a Boat API key: they start with boat_/) });
+  });
+
+  it("does not call a key rejected when boat.dev could not check it", async () => {
+    serverError = true;
+    expect(await boat.verifyToken("boat_maybe")).toEqual({ ok: false, message: "boat.dev returned 500 for that token — try again in a moment." });
   });
 
   it("lists the computers with the included wording when the relay rejects its token", async () => {

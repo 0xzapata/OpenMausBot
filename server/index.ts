@@ -107,7 +107,7 @@ import { createDataRoutes } from "./data/routes.ts";
 import { DataSheetRegistry } from "./data/sheet.ts";
 import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
-import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
+import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SignInRequestCardData, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, shouldSettleRequestCard } from "../shared/ask-question.ts";
 import { parseToolScope } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
@@ -442,11 +442,12 @@ import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
 import { HeldSecrets, LoginStore } from "./login-store.ts";
 import { OnePasswordLogins, sdkOnePasswordClient, type OnePasswordSdk } from "./onepassword.ts";
 import { nativeRequire } from "./data/engine.ts";
-import { fillLogin, type FillCandidate } from "./login-fill.ts";
-import { RelayTimeout, relayCommand, relayFrame, relayInsertText } from "./browser-relay.ts";
+import { fillLogin } from "./login-fill.ts";
+import { BotLogins, cardLoginPlace, cardSignInElsewhere, observeSignInPage, type ObservedPage } from "./bot-logins.ts";
+import { RelayTimeout, relayCommand, relayFrame, relayInput } from "./browser-relay.ts";
 import { browserEvidence, browserSteps, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
-import { savedLoginResumePrompt } from "../shared/logins.ts";
+import { loginSite, savedLoginResumePrompt } from "../shared/logins.ts";
 import { BrowserLive, browserRestartRefusal } from "./browser-live.ts";
 import { browserEgress } from "./browser/egress/registry.ts";
 import {
@@ -457,10 +458,11 @@ import {
   closeBrowserSession,
   browserEngineStatus,
   browserSessionId, isTemporaryBrowserSession, BUILT_IN_BROWSER_SYSTEM_PROMPT,
-  describeBrowserEngine,
   inRunningBrowser,
+  noteBrowserEngineUnavailable,
   setBrowserViewport,
 } from "./browser-engine.ts";
+import { chromeLauncher } from "./browser/chrome/launcher.ts";
 import { createScreenFrameSource, type ScreenCapture } from "./screen-frame-source.ts";
 import { screenFrameHash, screenSurfaceForTool, screenTouchingTool, settledFrameIsNews } from "./screen-frame-gate.ts";
 import { asSchedule, RoutineRequestService } from "./routine-requests.ts";
@@ -734,6 +736,7 @@ const heldSecrets = new HeldSecrets(logins);
 addHeldSecretScrubber((text) => heldSecrets.scrub(text));
 const onePassword = new OnePasswordLogins({
   token: () => logins.onePasswordToken(),
+  grants: () => logins.onePasswordGrants(),
   connect: async (token) => {
     let sdk: OnePasswordSdk;
     try { sdk = nativeRequire()("@1password/sdk") as OnePasswordSdk; }
@@ -742,6 +745,7 @@ const onePassword = new OnePasswordLogins({
   },
 });
 if (logins.onePasswordToken()) void onePassword.refresh();
+const botLogins = new BotLogins(logins, onePassword);
 const SESSION_COOKIE = sessionCookieName(PORT, ENVIRONMENT_ID);
 const HOSTED_WORKSPACE = hostedWorkspaceConfigured();
 let workspaceAccess: WorkspaceAccess | null = null;
@@ -2664,6 +2668,7 @@ const browserRuntime = new BrowserRuntime({
     return closed;
   },
   applyViewport: (spec) => setBrowserViewport(spec.command, spec.env),
+  launch: chromeLauncher,
   relayCommand: (spec, session, command, timeoutMs) => relayCommand(spec, session, command, timeoutMs).catch((error: unknown) => {
     throw error instanceof RelayTimeout ? new TransportError(error.message) : error;
   }),
@@ -2721,16 +2726,14 @@ function browserSessionSpec(binaryPath: string, session: string, profile: string
   return agentBrowserIntegration({
     binaryPath, session, encryptionKey: browserEngineEncryptionKey(), persistent: profile !== "guest", egressPort,
     env: { ...process.env, PATH: augmentedPath() },
+    launcher: chromeLauncher.env(),
     ...(usesMyChrome(profile) ? { attach: attachCdpUrl ? { cdpUrl: attachCdpUrl } : {} } : {}),
   });
 }
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
   const status = browserEngineStatus();
   if (status.kind !== "ready") {
-    if (!engineUnavailableLogged) {
-      engineUnavailableLogged = true;
-      console.warn(`${describeBrowserEngine(status)}; bots get no browser tools until it is installed`);
-    }
+    noteBrowserEngineUnavailable(status);
     return null;
   }
   const profileTarget = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
@@ -2754,7 +2757,6 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
     },
   } };
 }
-let engineUnavailableLogged = false;
 
 const dataSheets = new DataSheetRegistry({
   broadcast: (frame) => broadcast({ ...frame }),
@@ -2791,11 +2793,11 @@ function highlevelIntegration(bot: BotRecord, turn: { threadId: string; generati
 
 let browserEngineInstall: Promise<void> | null = null;
 let browserEngineInstallError: string | null = null;
-export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; installing?: boolean; installError?: string; myChrome: boolean } {
+export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; chrome?: string; installing?: boolean; installError?: string; myChrome: boolean } {
   const status = browserEngineStatus();
   const progress = { myChrome: myChromeAvailable(), ...(browserEngineInstall ? { installing: true } : {}), ...(browserEngineInstallError ? { installError: browserEngineInstallError } : {}) };
   return status.kind === "ready"
-    ? { kind: "engine", version: status.version, ...progress }
+    ? { kind: "engine", version: status.version, chrome: chromeLauncher.describe(), ...progress }
     : { kind: "unavailable", reason: status.reason, installable: status.installable, ...progress };
 }
 
@@ -13011,7 +13013,7 @@ function signInMessage(botId: string, threadId: string, messageId: string): Mess
   return message?.kind === "signin" && message.signIn ? message : null;
 }
 
-function settleSignIn(botId: string, threadId: string, messageId: string, outcome: "done" | "cancelled", saved?: { host: string }):
+function settleSignIn(botId: string, threadId: string, messageId: string, outcome: "done" | "cancelled", saved?: { site: string }):
   { status: number; body: Record<string, unknown> } {
   const bot = store.bot(botId);
   const message = signInMessage(botId, threadId, messageId);
@@ -13028,63 +13030,74 @@ function settleSignIn(botId: string, threadId: string, messageId: string, outcom
     if (card.place === "browser") browserLive.handBack(currentBrowserSession(bot.id, bot.browserProfile));
     else for (const key of pleaded.length ? pleaded : [botComputerControlKey(bot)]) computerControl.release(key);
   }
-  const savedLogin = saved?.host ?? card.savedLogin;
+  const savedLogin = saved?.site ?? card.savedLogin;
   const resumed = answerCardNode(threadId, message.id, savedLogin ? savedLoginResumePrompt(savedLogin) : signInResumePrompt(card.site, outcome));
   store.patchMessage(threadId, message.id, {
     signIn: { ...card, ...(outcome === "done" ? { done: true } : { cancelled: true }), ...(savedLogin ? { savedLogin } : {}), ...(resumed ? { resumed: true, error: undefined } : {}) },
   });
-  return { status: 200, body: { [outcome]: true, resumed, ...(savedLogin ? { saved: true, host: savedLogin } : {}) } };
+  return { status: 200, body: { [outcome]: true, resumed, ...(savedLogin ? { saved: true, site: savedLogin } : {}) } };
 }
 
-/** The login is saved before the card settles, so a refused or failed save leaves the card open. */
-function saveLoginFromCard(botId: string, threadId: string, messageId: string, body: Record<string, unknown>):
-  { status: number; body: Record<string, unknown> } {
+/** The open sign-in card the person is answering, and the page its bot's browser shows (null when none a login could fill). */
+async function signInCardPage(botId: string, threadId: string, messageId: string):
+  Promise<{ card: SignInRequestCardData; cardHost: string; observed: ObservedPage | null } | { status: number; body: Record<string, unknown> }> {
   const message = signInMessage(botId, threadId, messageId);
-  if (!store.bot(botId) || !message?.signIn) return { status: 404, body: { error: "no such sign-in request" } };
+  const bot = store.bot(botId);
+  if (!bot || !message?.signIn) return { status: 404, body: { error: "no such sign-in request" } };
   const card = message.signIn;
   if (card.superseded) return { status: 409, body: { error: "this sign-in request was superseded by a newer one" } };
   if (signInOutcome(card)) return { status: 409, body: { error: "this sign-in request was already answered" } };
-  let host: string;
-  try { host = new URL(card.url).hostname.toLowerCase(); }
+  let cardHost: string;
+  try { cardHost = new URL(card.url).hostname.toLowerCase(); }
   catch { return { status: 409, body: { error: "this sign-in request has no page address to save a login for" } }; }
+  const browser = card.place === "browser" ? await botBrowserTarget(botForThread(botId, threadId) ?? bot).catch(() => null) : null;
+  const observed = browser ? await observeSignInPage((args) => inRunningBrowser(browser.spec.command, browser.env, args)).catch(() => null) : null;
+  return { card, cardHost, observed };
+}
+
+async function signInSaveTarget(botId: string, threadId: string, messageId: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  const page = await signInCardPage(botId, threadId, messageId);
+  if ("status" in page) return page;
+  const elsewhere = cardSignInElsewhere(page.cardHost, page.observed);
+  return { status: 200, body: { site: loginSite(page.cardHost), ...(elsewhere ? { signInHost: elsewhere } : {}) } };
+}
+
+/** The login is saved before the card settles, so a refused or failed save leaves the card open. */
+async function saveLoginFromCard(botId: string, threadId: string, messageId: string, body: Record<string, unknown>):
+  Promise<{ status: number; body: Record<string, unknown> }> {
   const fields = parseLoginFields(body, { passwordRequired: true });
   if (!fields.ok) return { status: 400, body: { error: fields.error } };
   const totp = parseTotpField(body.totp);
   if (!totp.ok) return { status: 400, body: { error: totp.error } };
-  logins.create({ host, username: fields.value.username ?? "", password: fields.value.password!, totp: totp.value ?? null, source: "card", bots: [botId] });
-  return settleSignIn(botId, threadId, messageId, "done", { host });
+  const page = await signInCardPage(botId, threadId, messageId);
+  if ("status" in page) return page;
+  const current = signInMessage(botId, threadId, messageId)?.signIn;
+  if (!current || current.superseded || signInOutcome(current)) return { status: 409, body: { error: "this sign-in request was answered or replaced while the login was being saved" } };
+  const place = cardLoginPlace(page.cardHost, page.observed, body.signInHost);
+  logins.create({ ...place, username: fields.value.username ?? "", password: fields.value.password!, totp: totp.value ?? null, source: "card", bots: [botId] });
+  const elsewhere = place.hosts.filter((host) => loginSite(host) !== place.site);
+  return settleSignIn(botId, threadId, messageId, "done", { site: [place.site, ...elsewhere].join(" and ") });
 }
 
-/** Saved logins appear by host and username only. */
+/** Saved logins appear by site and username only. */
 function browserPromptFor(botId: string, agentsMounted: boolean): string {
-  return BUILT_IN_BROWSER_SYSTEM_PROMPT + (agentsMounted ? savedLoginsPrompt(availableLogins(botId)) : "");
+  return BUILT_IN_BROWSER_SYSTEM_PROMPT + (agentsMounted ? savedLoginsPrompt(botLogins.sitesFor(botId)) : "");
 }
 
-function availableLogins(botId: string): Array<{ host: string; username: string }> {
-  return [...logins.hostsFor(botId), ...onePassword.hosts()];
+/** Null while the browser engine is not installed. */
+async function botBrowserTarget(bot: BotRecord): Promise<{ session: string; spec: { command: string; env: Record<string, string> }; env: NodeJS.ProcessEnv } | null> {
+  const engine = browserEngineStatus();
+  if (engine.kind !== "ready") return null;
+  const session = currentBrowserSession(bot.id, bot.browserProfile);
+  const profileTarget = bot.browserProfile && bot.browserProfile !== "guest" ? browserProfilePartitionTarget(cfg, bot.browserProfile) : null;
+  const spec = usedBrowserSessions.get(session) ?? browserSessionSpec(engine.binaryPath, session, profileTarget?.profileId ?? bot.browserProfile, await browserEgress.open(session));
+  return { session, spec, env: browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session }) };
 }
 
-/** Secrets are read only when one is filled. */
-async function loginCandidates(botId: string, host: string): Promise<FillCandidate[]> {
-  await onePassword.fresh();
-  return [
-    ...logins.usableFor(host, botId).map((login): FillCandidate => ({
-      id: login.id, host: login.host, username: login.username, source: login.source,
-      secrets: async () => ({ password: login.password, totp: login.totp ?? null }),
-    })),
-    ...onePassword.candidates(host),
-  ];
-}
-
-const FILL_LOGIN_ELSEWHERE: Record<Surface, string> = {
-  browser: "your built-in browser",
-  local: "this computer",
-  vm: "the Local VM",
-  cloud: "the cloud computer",
-};
+const FILL_LOGIN_ELSEWHERE: Record<Surface, string> = { browser: "your built-in browser", local: "this computer", vm: "the Local VM", cloud: "the cloud computer" };
 
 /** Filled by the server as one browser action; the answer is a status in words, never a value. */
-async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, rawUsername: unknown): Promise<{ ok: boolean; text: string }> {
+async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, rawUsername: unknown, rawSubmit: unknown): Promise<{ ok: boolean; text: string }> {
   const threadId = capability.threadId;
   const place = signInPlace(bot, threadId);
   if (place !== "browser") {
@@ -13096,30 +13109,25 @@ async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, 
   if (current.browser === false || current.computer === "off" || !builtInBrowserEnabled(cfg)) {
     return { ok: false, text: "The built-in browser is off for you here, so fill_login has nothing to fill. Call request_sign_in instead." };
   }
-  const engine = browserEngineStatus();
-  if (engine.kind !== "ready") return { ok: false, text: "The browser is not available on this computer right now. Call request_sign_in instead." };
-  const session = currentBrowserSession(current.id, current.browserProfile);
-  const profileTarget = current.browserProfile && current.browserProfile !== "guest" ? browserProfilePartitionTarget(cfg, current.browserProfile) : null;
-  const spec = usedBrowserSessions.get(session) ?? browserSessionSpec(engine.binaryPath, session, profileTarget?.profileId ?? current.browserProfile, await browserEgress.open(session));
+  const browser = await botBrowserTarget(current);
+  if (!browser) return { ok: false, text: "The browser is not available on this computer right now. Call request_sign_in instead." };
+  const { session, spec, env } = browser;
   if (!claimTurnResource(capability, `browser:${session}`)) {
     return { ok: false, text: "Another conversation is using this browser. Wait until it finishes, then call fill_login again." };
   }
-  const env = browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session });
   const username = typeof rawUsername === "string" ? rawUsername.slice(0, 512) : undefined;
   try {
     const outcome = await browserRuntime.withSecretInput(session, spec, () => fillLogin({
       username,
-      candidates: (host) => loginCandidates(bot.id, host),
-      available: async () => availableLogins(bot.id),
+      submit: rawSubmit !== false,
+      candidates: (host) => botLogins.candidates(bot.id, host),
+      available: async () => botLogins.sitesFor(bot.id),
     }, {
       engine: (args) => inRunningBrowser(spec.command, env, args),
-      insertText: (text) => relayInsertText(spec, session, text),
+      ...relayInput(spec, session),
       remember: (value, kind) => heldSecrets.remember(value, kind),
     }), stepContext(current, capability, () => liveTurnByThread.get(threadId) ?? null));
-    if (outcome.ok && outcome.loginId) {
-      logins.markUsed(outcome.loginId);
-      onePassword.markUsed(outcome.loginId);
-    }
+    if (outcome.ok && outcome.loginId) botLogins.markUsed(outcome.loginId);
     return { ok: outcome.ok, text: outcome.text };
   } catch (error) {
     if (error instanceof Error && error.message === BROWSER_CONTROL_REFUSAL) {
@@ -13768,7 +13776,7 @@ ROUTES.push(createBotMemoryRoutes({
   },
 }));
 ROUTES.push(createDeciderRoutes({ decider, config: () => cfg }), createNotificationRoutes(), createUpdateCheckRoutes({ check: serverUpdateChecker({ desktopManaged: DESKTOP_MANAGED, managed: Boolean(CLOUD_HOME || HOSTED_WORKSPACE) }) }));
-ROUTES.push(createSignInCardRoutes({ settle: settleSignIn, saveLogin: saveLoginFromCard }));
+ROUTES.push(createSignInCardRoutes({ settle: settleSignIn, saveLogin: saveLoginFromCard, saveTarget: signInSaveTarget, threadVisible: (auth, threadId) => visibleTo(viewerFor(auth)).thread(threadId) }));
 ROUTES.push(createRoomHoldRoutes({
   group: (id) => store.group(id),
   setHold: (groupId, botId, held) => {
@@ -13901,28 +13909,7 @@ ROUTES.push(createBrowserSiteRoutes({
   signOut: (target, site) => signOutOfSites(target, site),
 }));
 ROUTES.push(createBrowserEvidenceRoutes({ evidence: browserEvidence.attach({ onChange: (listener) => store.onChange(listener), threadExists: (id) => Boolean(threadOwner(id)) }), threadExists: (id) => Boolean(threadOwner(id)) }));
-ROUTES.push(createLoginRoutes({
-  list: () => logins.list(),
-  create: (input) => logins.create(input),
-  update: (id, patch) => logins.update(id, patch),
-  remove: (id) => logins.remove(id),
-  botExists: (id) => Boolean(store.bot(id)),
-  onePassword: {
-    status: () => onePassword.status(),
-    list: () => { void onePassword.fresh(); return onePassword.list(); },
-    connect: async (token) => {
-      const status = await onePassword.refresh(token);
-      logins.setOnePasswordToken(token);
-      return status;
-    },
-    refresh: () => onePassword.refresh(),
-    disconnect: () => {
-      logins.setOnePasswordToken(null);
-      onePassword.clear();
-      return onePassword.status();
-    },
-  },
-}));
+ROUTES.push(createLoginRoutes(botLogins.routes((id) => Boolean(store.bot(id)))));
 ROUTES.push(createUsageRoutes({
   dataDir: DATA_DIR,
   prices: operatorPrices,
@@ -16094,7 +16081,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       })], { req, res, url, path, method, auth, json, readBody })) return;
       if (method === "POST" && path === "/api/internal/fill-login") {
         const body = await readInternalBody();
-        const outcome = await fillLoginForTurn(internalSender, internalCapability, body.username);
+        const outcome = await fillLoginForTurn(internalSender, internalCapability, body.username, body.submit);
         // A turn stopped while the page was filled receives no answer.
         requireActiveInternalCapability();
         return json(res, 200, outcome);
@@ -17583,6 +17570,7 @@ server.listen(PORT, "127.0.0.1", async () => {
   companyRuntimeReady();
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
   browserSweep.start();
+  if (builtInBrowserEnabled(cfg)) chromeLauncher.start();
   followupsReady = true;
   drainQueuedSends();
   drainQueuedChannelSends();

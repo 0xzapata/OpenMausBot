@@ -23,7 +23,7 @@ import { LiveKeySetup } from "./LiveKeySetup";
 import { LiveProPrompt } from "./ProIntroduction";
 import { liveLineHeldElsewhere } from "./LiveCallBar";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
-import { track } from "@/lib/analytics";
+import { callStarted } from "@/lib/product-events";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { callCapabilityHelp, type CallCapabilityHelp } from "@/lib/call-capability";
 import { VoiceSetupDialog } from "./VoiceSetupDialog";
@@ -34,6 +34,7 @@ const CALL_ENDPOINT_MS = 850;
 export type CallButtonPlacement = "header" | "composer";
 
 export function CallButton({ bot, placement = "header" }: { bot: Bot; placement?: CallButtonPlacement }) {
+  const { state } = useStore();
   return (
     <CallTargetButton
       placement={placement}
@@ -44,7 +45,7 @@ export function CallButton({ bot, placement = "header" }: { bot: Bot; placement?
       setupBotId={bot.id}
       requireExplicitVoices={false}
       liveCapable
-      onStart={(mode) => track("call_started", { driver: bot.modelSelection?.instanceId, mode })}
+      onStart={(mode) => callStarted(state.instances, bot.modelSelection?.instanceId, mode)}
     />
   );
 }

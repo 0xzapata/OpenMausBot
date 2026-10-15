@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Archive, CircleUser, Coins, FlaskConical, KeyRound, LockKeyhole, Monitor, Palette, ScrollText, Search, Sparkles, TabletSmartphone, Terminal, User, Users, X, Building2, Zap, BookOpen } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
-import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { browserAvailable, browserUnavailableReason, builtInBrowserEnabled, routinesInConversationEnabled, showToolCallsEnabled, skillAuthoringEnabled, skillsLibraryEnabled } from "@/lib/feature-flags";
 import { localeChoices, type LocaleKey } from "@/locales";
 import { t } from "@/lib/i18n";
 import { withTourReset } from "@/lib/guided-tour";
 import { completionPatch } from "@/lib/onboarding";
 import { AnthropicEveryClaudeBot, ApiKeyRow, OpenCodeProviderKeys, VpsConnection } from "./ApiKeys";
+import { AnalyticsRow } from "./AnalyticsRow";
 import { OtherOpenAiCompatServers } from "./OpenAiCompatServers";
 import { DecisionModelSettings } from "./DecisionModelSettings";
 import { useUpdaterState } from "@/lib/updater";
@@ -295,23 +295,6 @@ function NewBotEffortRow() {
           </option>
         ))}
       </Select>
-    </SettingRow>
-  );
-}
-
-function AnalyticsRow() {
-  const [on, setOn] = useState(analyticsEnabled);
-  return (
-    <SettingRow title={t("settings.analytics.title")} subtitle={t("settings.analytics.subtitle")}>
-      <Switch
-        checked={on}
-        aria-label={t("settings.analytics.aria")}
-        onClick={() => {
-          const next = !on;
-          setAnalyticsEnabled(next);
-          setOn(next);
-        }}
-      />
     </SettingRow>
   );
 }

@@ -1,6 +1,6 @@
 // The phc_ token is a write-only public key, safe to ship in the client.
 // posthog-js loads on demand: a static import would put ~240 kB into the startup bundle.
-import type { PostHog } from "posthog-js";
+import type { CaptureResult, PostHog } from "posthog-js";
 import { appVersion } from "@/lib/app-links";
 
 const TOKEN = "phc_m2hP39w8y2gLPvHgDvSXAu6xcZ3agjf4ruL56rGcMZEe";
@@ -42,7 +42,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
       client?.opt_out_capturing();
       break;
     case "opt-in":
-      client?.opt_in_capturing();
+      client?.opt_in_capturing({ captureEventName: false });
       break;
     case "init":
       void initAnalytics();
@@ -78,9 +78,19 @@ function start(posthog: PostHog) {
     persistence: "localStorage",
     // PostHog's remote config `surveys: false` still fetches surveys.js.
     disable_surveys: true,
+    save_referrer: false,
+    save_campaign_params: false,
+    disable_capture_url_hashes: true,
+    before_send: withoutLocation,
+    // Security: posthog-js 1.415 posts /flags on load and every 5 minutes, even after opt_out_capturing(), with the stored
+    // person properties (the first page's URL and referrer), and before_send never sees it. The app reads no flags.
+    advanced_disable_flags: true,
   });
+  // Security: posthog-js 1.415 stores the first page's URL and referrer under these keys while save_referrer or
+  // save_campaign_params is on, and keeps them after both are turned off.
+  for (const key of ["$initial_person_info", "$initial_referrer_info", "$initial_campaign_params"]) posthog.unregister(key);
   // opt_out_capturing() persists in PostHog's own storage, so a later opt-in would boot opted out.
-  if (posthog.has_opted_out_capturing()) posthog.opt_in_capturing();
+  if (posthog.has_opted_out_capturing()) posthog.opt_in_capturing({ captureEventName: false });
   client = posthog;
   posthog.register({ app_version: appVersion(), surface: analyticsSurface() });
   const platform = navigator.userAgent.includes("Electron") ? "desktop" : "browser";
@@ -90,6 +100,31 @@ function start(posthog: PostHog) {
   }
   posthog.capture("app_opened", { platform });
   for (const call of pending.splice(0)) call(posthog);
+}
+
+// Security: posthog-js 1.415 adds the page's address to every event and person update: URL, host, path, referrer and
+// campaign parameters, again as $initial_* and $session_entry_* copies. On a Cloud page that is the tenant's host, and
+// query strings carry ids, so none of it may leave.
+const LOCATION = new Set([
+  "current_url", "url", "host", "pathname", "prev_pageview_pathname", "referrer", "referring_domain", "search_engine",
+  "ph_keyword", "gad_source", "mc_cid", "gclid", "gclsrc", "dclid", "gbraid", "wbraid", "fbclid", "msclkid", "twclid",
+  "li_fat_id", "igshid", "ttclid", "rdt_cid", "epik", "qclid", "sccid", "irclid", "_kx",
+]);
+
+export function locationProperty(key: string): boolean {
+  const base = key.replace(/^\$/, "").replace(/^(?:initial_|session_entry_)/, "");
+  return base.startsWith("utm_") || LOCATION.has(base);
+}
+
+function dropLocation(record: unknown) {
+  if (!record || typeof record !== "object") return;
+  for (const key of Object.keys(record)) if (locationProperty(key)) delete (record as Record<string, unknown>)[key];
+}
+
+export function withoutLocation(event: CaptureResult | null): CaptureResult | null {
+  if (!event) return event;
+  for (const part of [event.properties, event.$set, event.$set_once, event.properties?.$set, event.properties?.$set_once]) dropLocation(part);
+  return event;
 }
 
 export function analyticsSurface(): "local" | "server" {

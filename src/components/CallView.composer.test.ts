@@ -19,7 +19,7 @@ const fixture = vi.hoisted(() => ({
 
 vi.mock("@/state/store", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/state/store")>();
-  return { ...original, useStore: () => ({ state: { ...original.initialState, config: fixture.config, bots: fixture.bots }, dispatch: fixture.dispatch }) };
+  return { ...original, useStore: () => ({ state: { ...original.initialState, config: fixture.config, bots: fixture.bots, instances: [{ instanceId: "codex", driverKind: "codex" }, { instanceId: "claude-3f0c2b1e-9d1a-4c55-8a51-0a3a6f1e2b7c", driverKind: "claudeAgent" }] }, dispatch: fixture.dispatch }) };
 });
 vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   ...await importOriginal<typeof import("./DesktopCapabilities")>(),
@@ -113,6 +113,19 @@ describe("composer call button", () => {
     expect(fixture.track).toHaveBeenCalledWith("call_started", { driver: "codex", mode: "turns" });
     expect(fixture.startCall).toHaveBeenCalledWith("pepper");
     expect(fixture.endCall).not.toHaveBeenCalled();
+  });
+
+  it("names the engine, never the instance id, for an added account", () => {
+    const added = { ...bot, modelSelection: { instanceId: "claude-3f0c2b1e-9d1a-4c55-8a51-0a3a6f1e2b7c", model: "m" } };
+    let tree: ReactNode = null;
+    function Capture() {
+      const element = CallButton({ bot: added }) as ReactElement<Parameters<typeof CallTargetButton>[0]>;
+      tree = CallTargetButton(element.props);
+      return tree;
+    }
+    renderToStaticMarkup(createElement(Capture));
+    findButton(tree)!.props.onClick!();
+    expect(fixture.track.mock.calls).toEqual([["call_started", { driver: "claude", mode: "turns" }]]);
   });
 
   it("shows a hang-up state during the call and hangs up", () => {

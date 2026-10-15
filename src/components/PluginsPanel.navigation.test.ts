@@ -9,6 +9,7 @@ import { api } from "@/state/store";
 const fixture = vi.hoisted(() => ({
   surface: "apps" as "apps" | "mcp",
   dispatch: vi.fn(),
+  track: vi.fn(),
   bots: [] as unknown[],
   instances: [] as unknown[],
   overrides: new Map<number, unknown>(),
@@ -44,6 +45,7 @@ vi.mock("./McpServersPanel", () => ({
     ? createElement("div", { "data-whop-card": true }, "Connect Whop")
     : createElement("div", { "data-embedded": String(Boolean(embedded)) }, "MCP inventory"),
 }));
+vi.mock("@/lib/analytics", () => ({ track: fixture.track }));
 vi.mock("./Avatar", () => ({ BotAvatar: ({ bot }: { bot: Bot }) => createElement("span", { "data-avatar": bot.id }) }));
 // The native HighLevel card has its own DOM suite; here it is a marker so tile counts stay the catalog's.
 vi.mock("./HighLevelCard", () => ({
@@ -87,6 +89,7 @@ beforeEach(() => {
   vi.stubGlobal("window", {});
   fixture.surface = "apps";
   fixture.dispatch.mockReset();
+  fixture.track.mockReset();
   fixture.effects = [];
   fixture.bots = [];
   fixture.instances = [];
@@ -237,6 +240,71 @@ describe("Apps pop-up", () => {
       ["/api/connectors/gmail/accounts/ca_old", { method: "DELETE" }],
       ["/api/connectors/gmail/authorize", { method: "POST", body: JSON.stringify({ alias: "work" }) }],
     ]);
+  });
+
+  it("reports how a Connect ended once, by its curated app, and nothing after the panel closes", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = { opener: {}, closed: false, location: { replace: vi.fn() }, close: vi.fn() };
+      vi.stubGlobal("window", { open: () => page });
+      const connectApp = async (slug: string) => {
+        fixture.overrides.set(CARDS, [card(slug)]);
+        fixture.overrides.set(9, slug);
+        fixture.overrides.set(10, "work");
+        vi.mocked(api).mockReset();
+        vi.mocked(api).mockResolvedValueOnce({ url: `https://auth.example.test/${slug}` });
+        const form = render().nodes.find((node) => node.type === "form")!;
+        (form.props.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(page.location.replace).toHaveBeenLastCalledWith(`https://auth.example.test/${slug}`);
+        vi.mocked(api).mockResolvedValue({ services: { [slug]: { connected: true, pending: false, status: "ACTIVE" } } });
+      };
+      await connectApp("gmail");
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(fixture.track.mock.calls).toEqual([["connector_connect", { app: "gmail", result: "connected" }]]);
+
+      fixture.track.mockReset();
+      await connectApp("acme-internal-crm");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(fixture.track.mock.calls).toEqual([["connector_connect", { app: "other", result: "connected" }]]);
+
+      fixture.track.mockReset();
+      fixture.effects = [];
+      await connectApp("notion");
+      const cleanup = fixture.effects.find(({ deps }) => deps?.length === 0)!.effect();
+      if (typeof cleanup === "function") cleanup();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fixture.track).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(api).mockReset();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports an Add account connected once the new account works, not when the app's other account already does", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = { opener: {}, closed: false, location: { replace: vi.fn() }, close: vi.fn() };
+      vi.stubGlobal("window", { open: () => page });
+      fixture.overrides.set(CARDS, [card("slack")]);
+      fixture.overrides.set(9, "slack");
+      fixture.overrides.set(10, "home");
+      vi.mocked(api).mockReset();
+      vi.mocked(api).mockResolvedValueOnce({ url: "https://auth.example.test/slack" });
+      const form = render().nodes.find((node) => node.type === "form")!;
+      (form.props.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} });
+      await vi.advanceTimersByTimeAsync(0);
+      const working = { id: "ca_1", status: "ACTIVE" };
+      vi.mocked(api).mockResolvedValue({ services: { slack: { connected: true, pending: true, status: "ACTIVE", accounts: [working, { id: "ca_2", status: "INITIATED" }] } } });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(fixture.track).not.toHaveBeenCalled();
+      vi.mocked(api).mockResolvedValue({ services: { slack: { connected: true, pending: false, status: "ACTIVE", accounts: [working, { id: "ca_2", status: "ACTIVE" }] } } });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(fixture.track.mock.calls).toEqual([["connector_connect", { app: "slack", result: "connected" }]]);
+    } finally {
+      vi.mocked(api).mockReset();
+      vi.useRealTimers();
+    }
   });
 
   it("offers Reconnect on a dead account beside a working one", () => {

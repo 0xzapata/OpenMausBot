@@ -42,6 +42,15 @@ https://github.com/anomalyco/opencode, Copyright (c) 2025 opencode, used under
 the MIT License. The full license texts are in third_party/models-dev/LICENSE
 and third_party/opencode/LICENSE.
 
+The browser driver's US keyboard layout and key-event rules
+(server/browser/cdp/keyboard.ts) come from Puppeteer, Copyright 2017 Google
+Inc., used under the Apache License, Version 2.0 (third_party/puppeteer).
+
+The browser driver's action semantics, error messages, limits and test cases,
+its copy capture and its browser host diagnosis adapt T3 Code's server
+browser (apps/server/src/preview), Copyright 2026 T3 Tools Inc., used under
+the MIT License (third_party/t3-code/LICENSE).
+
 The browser desktop viewer bundles the unmodified noVNC 1.7.0 library,
 Copyright the noVNC authors, under MPL-2.0 and its accompanying licenses.
 Attribution, license terms and the corresponding source location are in

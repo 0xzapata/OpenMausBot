@@ -27,7 +27,7 @@ const HEADER_BYTES = MAGIC.length + 16 + 12;
 const TAG_BYTES = 16;
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const EXCLUDED = new Set([
-  ".backups", "tools", "cache", ".cache", "tmp", ".tmp", "dist-native", "tunnel-runtime", "evidence",
+  ".backups", "tools", "browser", "cache", ".cache", "tmp", ".tmp", "dist-native", "tunnel-runtime", "evidence",
   ".openmausbot-server-child", "environment-id", "sessions.json", "tunnel-account.json",
   "team-computers.json",
   "openmausbot-server.lease", "box-create-requests.lock", "messages.db-wal", "messages.db-shm",

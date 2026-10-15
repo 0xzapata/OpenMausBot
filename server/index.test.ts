@@ -1146,6 +1146,10 @@ beforeAll(async () => {
       }
       return res.end(JSON.stringify({ ok: true }));
     }
+    if (req.headers.authorization === "Bearer box_unavailable") {
+      res.writeHead(500, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, message: "fixture outage" }));
+    }
     const ok = req.headers.authorization === "Bearer box_good" || req.headers.authorization === "Bearer box_slow";
     const directBoatRead = /^\/sandboxes\/bx_[23456789abcdefghjkmnpqrstuvwxyz]{8}$/.test(req.url ?? "");
     res.writeHead(ok && directBoatRead ? 404 : ok ? 200 : 401, { "content-type": "application/json" });
@@ -6355,7 +6359,7 @@ describe("harness HTTP API", () => {
     }
   }, 60_000);
 
-  it("saves a login from the sign-in card for its exact host, resumes the bot to fill it, and never hands the password back", async () => {
+  it("saves a login from the sign-in card for its site, resumes the bot to fill it, and never hands the password back", async () => {
     // Obvious fakes only.
     const password = "fake-card-Passw0rd!";
     const twoFactorKey = "JBSWY3DPEHPK3PXP";
@@ -6398,16 +6402,16 @@ describe("harness HTTP API", () => {
 
       rmSync(fakeClaudeDump, { force: true });
       expect(await save({ threadId: bot.threadId, username: "alice@example.com", password, totp: twoFactorKey }))
-        .toMatchObject({ status: 200, body: { done: true, resumed: true, saved: true, host: "accounts.example.com" } });
+        .toMatchObject({ status: 200, body: { done: true, resumed: true, saved: true, site: "example.com" } });
       const resumed = await readJsonFileWhenReady<{ prompt: unknown }>(fakeClaudeDump);
-      expect(JSON.stringify(resumed.prompt)).toContain("the person saved a login for accounts.example.com. Open its login page in your browser and call fill_login there");
-      expect((await card()).signIn).toMatchObject({ done: true, savedLogin: "accounts.example.com", resumed: true });
+      expect(JSON.stringify(resumed.prompt)).toContain("the person saved a login for example.com. Open its login page in your browser and call fill_login there");
+      expect((await card()).signIn).toMatchObject({ done: true, savedLogin: "example.com", resumed: true });
       expect((await save({ threadId: bot.threadId, username: "bob", password: "fake-other-pass" })).status).toBe(409);
 
       const listed = await api("GET", "/api/logins");
       answers.push(JSON.stringify(listed.body));
       expect(listed.body.logins).toEqual([expect.objectContaining({
-        host: "accounts.example.com", username: "alice@example.com", hasTotp: true, source: "card", bots: [bot.id],
+        site: "example.com", hosts: ["accounts.example.com"], exactHost: false, username: "alice@example.com", hasTotp: true, source: "card", bots: [bot.id],
       })]);
       loginId = listed.body.logins[0].id;
       expect(listed.body.onePassword).toEqual({ connected: false });
@@ -7821,11 +7825,46 @@ describe("harness HTTP API", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("answers the daily snapshot's computer counts from the real server, without and with a Boat account", async () => {
+    let botId = "";
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
+      const teams = (await api("GET", "/api/team-computers")).body.computers.length;
+      boatRouteCalls.length = 0;
+      const none = await fetch(`${BASE}/api/computers/usage`);
+      expect(none.status).toBe(200);
+      expect(none.headers.get("cache-control")).toBe("private, no-store");
+      expect(await none.json()).toEqual({ cloudComputers: 0, teamComputers: teams });
+
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      botId = (await api("POST", "/api/bots")).body.bot.id;
+      managedBoatRows = [
+        { id: "bx_23456789", name: managedBoatNameForFixture(botId), state: "idle" },
+        { id: "bx_jkmnpqrs", name: "someone-elses-box", state: "idle" },
+      ];
+      boatRouteCalls.length = 0;
+      const counted = await fetch(`${BASE}/api/computers/usage`);
+      expect(counted.status).toBe(200);
+      expect(counted.headers.get("cache-control")).toBe("private, no-store");
+      expect(await counted.json()).toEqual({ cloudComputers: 1, teamComputers: teams });
+      expect(boatRouteCalls).toEqual([{ method: "GET", path: "/sandboxes?limit=200" }]);
+    } finally {
+      managedBoatRows = [];
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } });
+      boatRouteCalls.length = 0;
+    }
+  });
+
   it("refuses a box token the provider rejects, at the point of pasting", async () => {
     // the stub answers 401 for anything but the good token
     const bad = await api("PUT", "/api/config", { box: { token: "box_wrong" } });
     expect(bad.status).toBe(400);
     expect(String(bad.body.error)).toMatch(/rejected/i);
+    expect(bad.body.code).toBe("key_rejected");
+    const unchecked = await api("PUT", "/api/config", { box: { token: "box_unavailable" } });
+    expect(unchecked.status).toBe(400);
+    expect(unchecked.body).toEqual({ error: "boat.dev returned 500 for that token — try again in a moment." });
     const after = await api("GET", "/api/config");
     expect(after.body.box).toEqual({ configured: false });
   });

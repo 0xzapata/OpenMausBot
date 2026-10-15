@@ -108,6 +108,7 @@ describe("scopes", () => {
       ["GET", "/api/auth/session"], ["POST", "/api/auth/stream-ticket"], ["POST", "/api/auth/logout"],
       ["GET", "/api/bots/x/slack-management"],
       ["POST", "/api/bots/x/sign-in-cards/m/done"], ["POST", "/api/bots/x/sign-in-cards/m/cancel"], ["POST", "/api/bots/x/sign-in-cards/m/save-login"],
+      ["GET", "/api/bots/x/sign-in-cards/m/save-login"],
       ["GET", "/api/bots/x/browser/live"], ["POST", "/api/bots/x/browser/action"],
     ] as const) expect(requiredScope(method, path), `${method} ${path}`).toBe("client");
     for (const [method, path] of [
@@ -128,6 +129,7 @@ describe("scopes", () => {
       ["POST", "/api/bots/x/sign-in-cards/m/provide"], ["POST", "/api/browser-engine/install"],
       ["GET", "/api/logins"], ["POST", "/api/logins"], ["PATCH", "/api/logins/l1"], ["DELETE", "/api/logins/l1"],
       ["POST", "/api/logins/1password"], ["POST", "/api/logins/1password/refresh"], ["DELETE", "/api/logins/1password"],
+      ["PATCH", "/api/logins/1password/vaults/v1"], ["GET", "/api/bots/x/sign-in-cards/m/done"],
     ] as const) expect(requiredScope(method, path), `${method} ${path}`).toBe("admin");
   });
 
@@ -405,6 +407,7 @@ describe("resolveRequestAuth", () => {
     ["DELETE", "/api/fleet/workspaces/acme"],
     ["POST", "/api/fleet/upgrade"],
     ["POST", "/api/instances/antigravity/auth/complete"],
+    ["GET", "/api/computers/usage"],
   ])("requires admin for server Settings: %s %s", (method, path) => {
     expect(requiredScope(method, path.split("?")[0]!)).toBe("admin");
     const client = pairedToken(["client"]);

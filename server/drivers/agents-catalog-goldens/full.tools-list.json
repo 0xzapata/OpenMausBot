@@ -796,7 +796,7 @@
     },
     {
       "name": "fill_login",
-      "description": "Sign in with a login the person saved in OpenMausBot. Call it on the login page open in your browser: OpenMausBot types the username, password and any one-time code into the page itself, and you never see them. The page's host must be exactly the saved login's. On a two-step login it fills what is visible; go on to the next step and call it again. Then submit the form yourself. With no saved login for the site, call request_sign_in.",
+      "description": "Sign in with a login the person saved in OpenMausBot. Call it on the login page open in your browser: OpenMausBot types the username, password and any one-time code itself, submits each step, and says where the page went; you never see the password. A login fills on its own site, such as any page of example.com. With no saved login for the site, call request_sign_in.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -805,6 +805,10 @@
             "type": "string",
             "maxLength": 512,
             "description": "Which saved login to use when the site has more than one."
+          },
+          "submit": {
+            "type": "boolean",
+            "description": "false: fill only, you submit."
           }
         }
       }

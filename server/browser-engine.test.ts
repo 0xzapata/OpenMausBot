@@ -657,7 +657,37 @@ describe("finding the browser engine", () => {
     files.add(override);
     expect(resolveAgentBrowserBinary({ dataDir, env: { ...env, OMB_AGENT_BROWSER_PATH: override }, exists })).toBe(override);
     expect(resolveAgentBrowserBinary({ dataDir, env: { ...env, OMB_AGENT_BROWSER_PATH: join(dataDir, "missing", name) }, exists })).toBeNull();
-    expect(browserEngineStatus({ dataDir, env, exists })).toMatchObject({ kind: "ready", binaryPath: pinned, version: agentBrowserReleaseVersion(resolveAgentBrowserReleaseAsset()) });
+    expect(browserEngineStatus({ dataDir, env, exists })).toMatchObject({ kind: "ready", binaryPath: pinned, version: agentBrowserReleaseVersion(resolveAgentBrowserReleaseAsset()), managed: true });
+    expect(browserEngineStatus({ dataDir, env: { ...env, OMB_AGENT_BROWSER_PATH: override }, exists, versionOf: () => AGENT_BROWSER_VERSION })).toMatchObject({ kind: "ready", binaryPath: override, managed: false });
+    files.delete(pinned);
+    expect(browserEngineStatus({ dataDir, env, exists, versionOf: () => AGENT_BROWSER_VERSION })).toMatchObject({ kind: "ready", binaryPath: pathBinary, managed: false });
+  });
+
+  it("hands agent-browser the Chrome OMB prepared instead of the bundled shell, never when it attaches to the person's Chrome", () => {
+    const resources = mkdtempSync(join(tmpdir(), "omb-browser-resources-"));
+    scratch.push(resources);
+    const host = { platform: "darwin" as const, arch: "arm64" };
+    const env = { OMB_RESOURCES_PATH: resources, PATH: "" };
+    const bundle = browserBundlePaths(join(resources, "browser-engine"), "darwin-arm64");
+    mkdirSync(bundle.licenses, { recursive: true });
+    for (const file of [bundle.engine, bundle.chrome, bundle.manifest]) {
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, "fixture");
+    }
+    expect(browserEngineStatus({ env, ...host })).toMatchObject({ kind: "ready", binaryPath: bundle.engine, managed: true });
+    const launcher = { AGENT_BROWSER_EXECUTABLE_PATH: "/data/browser/chrome-launcher.sh", AGENT_BROWSER_HIDE_SCROLLBARS: "0" };
+    const spec = agentBrowserIntegration({ binaryPath: bundle.engine, session: "bot-1", encryptionKey: "key", env, launcher, ...host });
+    expect(spec.env).toMatchObject(launcher);
+    expect(agentBrowserIntegration({ binaryPath: bundle.engine, session: "bot-1", encryptionKey: "key", env, launcher: {}, ...host }).env.AGENT_BROWSER_EXECUTABLE_PATH).toBe(bundle.chrome);
+    const mine = agentBrowserIntegration({ binaryPath: bundle.engine, session: "mine", encryptionKey: "key", env, launcher, attach: {}, ...host });
+    expect(mine.env.AGENT_BROWSER_EXECUTABLE_PATH).toBe(bundle.chrome);
+    expect(mine.env).not.toHaveProperty("AGENT_BROWSER_HIDE_SCROLLBARS");
+  });
+
+  it("names the browser the engine starts in its status line", () => {
+    const ready = { kind: "ready" as const, binaryPath: "/e/agent-browser", version: AGENT_BROWSER_VERSION, managed: true };
+    expect(describeBrowserEngine(ready, "Google Chrome 153 (installed)")).toBe(`browser engine: agent-browser ${AGENT_BROWSER_VERSION} at /e/agent-browser; browser: Google Chrome 153 (installed)`);
+    expect(describeBrowserEngine(ready)).toBe(`browser engine: agent-browser ${AGENT_BROWSER_VERSION} at /e/agent-browser`);
   });
 
   it("reports an unmanaged agent-browser's real version and warns when it is not the pin", () => {
@@ -681,13 +711,13 @@ describe("finding the browser engine", () => {
       expect(warn).toHaveBeenCalledOnce();
       warn.mockClear();
       const matched = browserEngineStatus({ dataDir, env, exists, versionOf: () => AGENT_BROWSER_VERSION });
-      expect(matched).toEqual({ kind: "ready", binaryPath: binary, version: AGENT_BROWSER_VERSION });
+      expect(matched).toEqual({ kind: "ready", binaryPath: binary, version: AGENT_BROWSER_VERSION, managed: false });
       expect(warn).not.toHaveBeenCalled();
       const unknown = browserEngineStatus({ dataDir, env, exists, versionOf: () => null });
       expect(unknown).toMatchObject({ kind: "ready", version: "unknown", warning: expect.stringContaining("unknown") });
       warn.mockClear();
       const probing = browserEngineStatus({ dataDir, env, exists, versionOf: () => undefined });
-      expect(probing).toEqual({ kind: "ready", binaryPath: binary, version: "unknown" });
+      expect(probing).toEqual({ kind: "ready", binaryPath: binary, version: "unknown", managed: false });
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();

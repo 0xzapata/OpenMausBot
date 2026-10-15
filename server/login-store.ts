@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { HELD_SECRET_MASK } from "../shared/redact.ts";
-import { LOGIN_FIELD_MAX, type LoginBots, type LoginSummary } from "../shared/logins.ts";
+import { LOGIN_FIELD_MAX, LOGIN_HOSTS_MAX, loginMatchesHost, loginSite, loginUsableBy, type LoginBots, type LoginPlace, type LoginSummary } from "../shared/logins.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import { decryptBrowserState, encryptBrowserState } from "./browser-sites.ts";
 import type { TotpKey } from "./totp.ts";
@@ -21,14 +21,21 @@ const totpSchema = z.object({
   period: z.number().int().min(10).max(300),
 });
 
-const loginSchema = z.object({
+const botsSchema = z.union([z.literal("all"), z.array(z.string())]);
+
+// The previous release reads `version: 1` records by `host` alone and replaces a file it cannot parse, so every record
+// keeps `host` (its first sign-in host) and the version stays 1: going back a release never loses a saved login.
+const diskLoginSchema = z.object({
   id: z.string().min(1),
   host: z.string().min(1),
+  site: z.string().min(1).optional(),
+  hosts: z.array(z.string().min(1)).min(1).max(LOGIN_HOSTS_MAX).optional(),
+  exactHost: z.boolean().optional(),
   username: z.string().max(LOGIN_FIELD_MAX),
   password: z.string().min(1).max(LOGIN_FIELD_MAX),
   totp: totpSchema.optional(),
   source: z.enum(["card", "settings"]),
-  bots: z.union([z.literal("all"), z.array(z.string())]),
+  bots: botsSchema,
   createdAt: z.number(),
   updatedAt: z.number(),
   lastUsedAt: z.number().optional(),
@@ -36,16 +43,20 @@ const loginSchema = z.object({
 
 const fileSchema = z.object({
   version: z.literal(1),
-  logins: z.array(loginSchema),
+  logins: z.array(diskLoginSchema),
   onePassword: z.object({ token: z.string().min(1), connectedAt: z.number() }).optional(),
+  /** Vault id → the bots that may use its logins; a vault not named here is for every bot. Kept across reconnects. */
+  onePasswordGrants: z.record(z.string(), botsSchema).optional(),
 });
 
-/** One saved login with its secrets. Server-only: no route returns this. */
-export type StoredLogin = z.infer<typeof loginSchema>;
-type StoreFile = z.infer<typeof fileSchema>;
+type DiskLogin = z.infer<typeof diskLoginSchema>;
+type DiskFile = z.infer<typeof fileSchema>;
 
-export interface NewLogin {
-  host: string;
+/** One saved login with its secrets. Server-only: no route returns this. */
+export type StoredLogin = Omit<DiskLogin, "host" | "site" | "hosts" | "exactHost"> & LoginPlace;
+type StoreFile = Omit<DiskFile, "logins"> & { logins: StoredLogin[] };
+
+export interface NewLogin extends LoginPlace {
   username: string;
   password: string;
   totp?: TotpKey | null;
@@ -58,16 +69,32 @@ export interface LoginPatch {
   password?: string;
   totp?: TotpKey | null;
   bots?: LoginBots;
+  exactHost?: boolean;
 }
 
 const EMPTY: StoreFile = { version: 1, logins: [] };
 
+/** A record written before logins had a site: its one host becomes its sign-in host, and its site the host's. */
+function fromDisk({ host, site, hosts, exactHost, ...rest }: DiskLogin): StoredLogin {
+  return { ...rest, site: site ?? loginSite(host), hosts: hosts ?? [host], exactHost: exactHost ?? false };
+}
+
+function toDisk(login: StoredLogin): DiskLogin {
+  return { ...login, host: login.hosts[0]! };
+}
+
 export function summarizeLogin(login: StoredLogin): LoginSummary {
   return {
-    id: login.id, host: login.host, username: login.username, hasTotp: Boolean(login.totp),
+    id: login.id, site: login.site, hosts: [...login.hosts], exactHost: login.exactHost, username: login.username, hasTotp: Boolean(login.totp),
     source: login.source, bots: login.bots, createdAt: login.createdAt,
     ...(login.lastUsedAt === undefined ? {} : { lastUsedAt: login.lastUsedAt }),
   };
+}
+
+/** The same account: one username on one site, unless either is kept to hosts the other does not share. */
+function sameAccount(login: StoredLogin, input: NewLogin): boolean {
+  if (login.username.toLowerCase() !== input.username.toLowerCase() || login.site !== input.site) return false;
+  return (!login.exactHost && !input.exactHost) || login.hosts.some((host) => input.hosts.includes(host));
 }
 
 export class LoginStore {
@@ -104,7 +131,8 @@ export class LoginStore {
       const key = this.key(false);
       try {
         if (!key) throw new Error("missing key");
-        data = fileSchema.parse(JSON.parse(decryptBrowserState(readFileSync(this.file), key)));
+        const disk = fileSchema.parse(JSON.parse(decryptBrowserState(readFileSync(this.file), key)));
+        data = { ...disk, logins: disk.logins.map(fromDisk) };
       } catch {
         // Never log an unreadable file's contents.
         if (!this.unreadableWarned) console.warn("saved logins: the saved logins file could not be opened; it will be replaced on the next save");
@@ -118,35 +146,39 @@ export class LoginStore {
   }
 
   private write(data: StoreFile): void {
-    const parsed = fileSchema.parse(data);
+    const parsed = fileSchema.parse({ ...data, logins: data.logins.map(toDisk) });
     const key = this.key(true)!;
     mkdirSync(join(this.file, ".."), { recursive: true });
     writeFileAtomic(this.file, encryptBrowserState(JSON.stringify(parsed), key), { mode: 0o600 });
-    this.cache = parsed;
+    this.cache = { ...parsed, logins: parsed.logins.map(fromDisk) };
     this.version++;
   }
 
   list(): LoginSummary[] {
-    return this.read().logins.map(summarizeLogin).sort((a, b) => a.host.localeCompare(b.host) || a.username.localeCompare(b.username));
+    return this.read().logins.map(summarizeLogin).sort((a, b) => a.site.localeCompare(b.site) || a.username.localeCompare(b.username));
   }
 
   get(id: string): StoredLogin | null {
     return this.read().logins.find((login) => login.id === id) ?? null;
   }
 
+  /** The same account saved again replaces its password, adds its sign-in hosts and widens who may use it; being kept
+   * to exact hosts is never undone here. */
   create(input: NewLogin): LoginSummary {
     const data = this.read();
     const at = this.now();
-    const same = data.logins.find((login) => login.host === input.host && login.username.toLowerCase() === input.username.toLowerCase());
+    const same = data.logins.find((login) => sameAccount(login, input));
     if (same) {
       const bots: LoginBots = same.bots === "all" || input.bots === "all" ? "all" : [...new Set([...same.bots, ...input.bots])];
       const updated: StoredLogin = { ...same, username: input.username, password: input.password, bots, updatedAt: at,
+        hosts: [...new Set([...same.hosts, ...input.hosts])].slice(0, LOGIN_HOSTS_MAX), exactHost: same.exactHost || input.exactHost,
         ...(input.totp ? { totp: input.totp } : {}) };
       this.write({ ...data, logins: data.logins.map((login) => login.id === same.id ? updated : login) });
       return summarizeLogin(updated);
     }
     const login: StoredLogin = {
-      id: randomUUID(), host: input.host, username: input.username, password: input.password,
+      id: randomUUID(), site: input.site, hosts: input.hosts.slice(0, LOGIN_HOSTS_MAX), exactHost: input.exactHost,
+      username: input.username, password: input.password,
       ...(input.totp ? { totp: input.totp } : {}),
       source: input.source, bots: input.bots, createdAt: at, updatedAt: at,
     };
@@ -163,6 +195,7 @@ export class LoginStore {
       ...(patch.username === undefined ? {} : { username: patch.username }),
       ...(patch.password === undefined ? {} : { password: patch.password }),
       ...(patch.bots === undefined ? {} : { bots: patch.bots }),
+      ...(patch.exactHost === undefined ? {} : { exactHost: patch.exactHost }),
       updatedAt: this.now(),
     };
     if (patch.totp === null) delete next.totp;
@@ -178,14 +211,15 @@ export class LoginStore {
     return true;
   }
 
-  usableFor(host: string, botId: string): StoredLogin[] {
-    return this.read().logins.filter((login) => login.host === host && (login.bots === "all" || login.bots.includes(botId)));
+  usableFor(pageHost: string, botId: string): StoredLogin[] {
+    return this.read().logins.filter((login) => loginMatchesHost(login, pageHost) && loginUsableBy(login, botId));
   }
 
-  hostsFor(botId: string): Array<{ host: string; username: string }> {
-    return this.read().logins.filter((login) => login.bots === "all" || login.bots.includes(botId))
-      .map((login) => ({ host: login.host, username: login.username }))
-      .sort((a, b) => a.host.localeCompare(b.host) || a.username.localeCompare(b.username));
+  /** Where each login a bot may use fills, and its username, for the bot's prompt. */
+  sitesFor(botId: string): Array<LoginPlace & { username: string }> {
+    return this.read().logins.filter((login) => loginUsableBy(login, botId))
+      .map((login) => ({ site: login.site, hosts: [...login.hosts], exactHost: login.exactHost, username: login.username }))
+      .sort((a, b) => a.site.localeCompare(b.site) || a.username.localeCompare(b.username));
   }
 
   markUsed(id: string): void {
@@ -203,6 +237,19 @@ export class LoginStore {
     const data = this.read();
     const { onePassword: _previous, ...rest } = data;
     this.write(token ? { ...rest, onePassword: { token, connectedAt: this.now() } } : rest);
+  }
+
+  onePasswordGrants(): Record<string, LoginBots> {
+    return this.read().onePasswordGrants ?? {};
+  }
+
+  /** "all" opens a vault to every bot again. */
+  setOnePasswordGrant(vaultId: string, bots: LoginBots): void {
+    const data = this.read();
+    const { [vaultId]: _previous, ...others } = data.onePasswordGrants ?? {};
+    const grants = bots === "all" ? others : { ...others, [vaultId]: bots };
+    const { onePasswordGrants: _grants, ...rest } = data;
+    this.write(Object.keys(grants).length ? { ...rest, onePasswordGrants: grants } : rest);
   }
 
   secretValues(): string[] {

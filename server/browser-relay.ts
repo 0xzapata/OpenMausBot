@@ -208,6 +208,19 @@ export function relayTarget(spec: Pick<BrowserSpawnSpec, "command" | "env">, ses
 }
 
 export const relayFrame = (spec: Pick<BrowserSpawnSpec, "command" | "env">, session: string) => captureFrame(relayPorts, relayTarget(spec, session));
-export const relayInsertText = (spec: Pick<BrowserSpawnSpec, "command" | "env">, session: string, text: string) => typeText(relayPorts, relayTarget(spec, session), text);
+/** Typing, a key and a click as real input, for filling a login; each throws when the browser did not take it. */
+export function relayInput(spec: Pick<BrowserSpawnSpec, "command" | "env">, session: string) {
+  const target = relayTarget(spec, session);
+  const act = async (command: Record<string, unknown>, refused: string) => {
+    let answer: RelayAnswer | null = null;
+    try { answer = await runCommand(relayPorts, target, command, 15_000); } catch {}
+    if (answer?.success !== true) throw new Error(refused);
+  };
+  return {
+    insertText: (text: string) => typeText(relayPorts, target, text),
+    press: (key: string) => act({ action: "press", key }, "The browser did not take the key."),
+    click: (selector: string) => act({ action: "click", selector }, "The browser did not take the click."),
+  };
+}
 export const relayCommand = (spec: Pick<BrowserSpawnSpec, "command" | "env">, session: string, command: Record<string, unknown>, timeoutMs: number) =>
   runCommand(relayPorts, relayTarget(spec, session), command, timeoutMs);

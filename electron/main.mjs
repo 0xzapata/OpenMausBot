@@ -516,7 +516,7 @@ import {
   stopCompanion,
 } from "./companion.mjs";
 import { createRoutineWakeHold, rememberRoutineWake, routineWakeSettings } from "./routine-wake.mjs";
-import { CREDENTIAL_PATCH } from "./credential-patch.mjs";
+import { CREDENTIAL_PATCH, credentialSaveError } from "./credential-patch.mjs";
 
 /** Second wall after preload's reduced bridge: computer-controlling IPC answers only the local server's UI.
  * Declared before any handler registration (temporal dead zone). */
@@ -3099,7 +3099,7 @@ async function saveWorkspaceCredential(name, value) {
       body: JSON.stringify(patchFor(secret)),
     });
     const body = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(body?.error || `Could not save credential (HTTP ${response.status})`);
+    if (!response.ok) throw credentialSaveError(response.status, body);
     return body;
   };
   if (!app.isPackaged) return applyToHarness();

@@ -344,7 +344,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
       const newBoatToken = patch.box?.token;
       if (newBoatToken?.trim()) {
         const check = await boat.verifyToken(newBoatToken);
-        if (!check.ok) return json(res, 400, { error: check.message });
+        if (!check.ok) return json(res, 400, { error: check.message, ...(check.rejected ? { code: "key_rejected" } : {}) });
       }
       if (replacingRejectedBoatToken) {
         // An expired credential cannot authorize its own replacement: probe without adopting or retiring identities.

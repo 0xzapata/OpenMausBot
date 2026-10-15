@@ -19,6 +19,7 @@ export class BotCreationDraft {
   consent: Pick<BotUpdatePatch, "acknowledgeLocalAuto"> & { acknowledgePeerScope?: boolean } = {};
   routines: Routine[];
   preset?: ChosenPreset;
+  role?: string;
   avatarFile?: File;
   private avatarObjectUrl?: string;
 
@@ -52,6 +53,11 @@ export class BotCreationDraft {
 
   choosePreset(preset: ChosenPreset | undefined) {
     this.preset = preset;
+    this.changed();
+  }
+
+  chooseRole(role: string | undefined) {
+    this.role = role;
     this.changed();
   }
 

@@ -254,7 +254,8 @@ export async function prepareBrowserSessionState(
 }
 
 export type BrowserEngineStatus =
-  | { kind: "ready"; binaryPath: string; version: string; warning?: string }
+  /** `managed`: the engine OMB installed (bundled or pinned), not one named by OMB_AGENT_BROWSER_PATH or found on PATH. */
+  | { kind: "ready"; binaryPath: string; version: string; managed: boolean; warning?: string }
   | { kind: "unavailable"; reason: string; installable: boolean };
 
 export type AgentBrowserVersionRunner = (binaryPath: string) => Promise<string>;
@@ -500,14 +501,14 @@ export function browserEngineStatus(options: BrowserLookupOptions = {}): Browser
     const managed = binaryPath === bundle?.engine || binaryPath === pinnedBinaryPath(options.dataDir, platform, options.arch);
     if (managed) {
       const version = agentBrowserReleaseVersion(resolveAgentBrowserReleaseAsset(platform, options.arch));
-      return { kind: "ready", binaryPath, version };
+      return { kind: "ready", binaryPath, version, managed };
     }
     const actual = options.versionOf ? options.versionOf(binaryPath) : cachedAgentBrowserVersion(binaryPath);
-    if (actual === undefined) return { kind: "ready", binaryPath, version: "unknown" };
+    if (actual === undefined) return { kind: "ready", binaryPath, version: "unknown", managed };
     const version = actual ?? "unknown";
     const warning = versionWarning(version);
     warnVersionOnce(binaryPath, version, warning);
-    return { kind: "ready", binaryPath, version, ...(warning ? { warning } : {}) };
+    return { kind: "ready", binaryPath, version, managed, ...(warning ? { warning } : {}) };
   }
   if (bundle && (options.exists ?? existsSync)(bundle.directory)) {
     return { kind: "unavailable", reason: "The desktop browser bundle is incomplete. Reinstall or update OpenMausBot to repair it.", installable: false };
@@ -547,6 +548,8 @@ export function agentBrowserIntegration(input: {
   /** The person's own Chrome: agent-browser auto-connects (DevToolsActivePort, then ports 9222/9229) or uses `cdpUrl`, which
    * comes only from workspace config, never the ambient environment. */
   attach?: { cdpUrl?: string };
+  /** The Chrome OMB prepared for the engine to start (server/browser/chrome/launcher.ts); unused when attaching. */
+  launcher?: Record<string, string>;
 }): { command: string; args: string[]; env: Record<string, string> } {
   const sourceEnv = input.env ?? process.env;
   const env: Record<string, string> = {
@@ -585,6 +588,7 @@ export function agentBrowserIntegration(input: {
   if (!env.AGENT_BROWSER_EXECUTABLE_PATH && bundle && resolve(input.binaryPath) === bundle.engine && completePackage(bundle, existsSync)) {
     env.AGENT_BROWSER_EXECUTABLE_PATH = bundle.chrome;
   }
+  if (!input.attach) Object.assign(env, input.launcher);
   return { command: input.binaryPath, args: ["mcp", "--tools", "core", "--no-webmcp"], env };
 }
 
@@ -624,10 +628,18 @@ export function browserSessionId(botId: string, partitionId: string, dataDir = D
   return raw.replace(/[^A-Za-z0-9_.-]/gu, "_").slice(0, 96);
 }
 
-export function describeBrowserEngine(status: BrowserEngineStatus): string {
+/** `chrome` names the browser the engine starts, e.g. "Google Chrome 153 (installed)". */
+export function describeBrowserEngine(status: BrowserEngineStatus, chrome?: string): string {
   return status.kind === "ready"
-    ? `browser engine: agent-browser ${status.version} at ${status.binaryPath}${status.warning ? ` (${status.warning})` : ""}`
+    ? `browser engine: agent-browser ${status.version} at ${status.binaryPath}${status.warning ? ` (${status.warning})` : ""}${chrome ? `; browser: ${chrome}` : ""}`
     : `browser engine: unavailable (${status.reason})`;
+}
+
+let unavailableNoted = false;
+export function noteBrowserEngineUnavailable(status: Extract<BrowserEngineStatus, { kind: "unavailable" }>): void {
+  if (unavailableNoted) return;
+  unavailableNoted = true;
+  console.warn(`${describeBrowserEngine(status)}; bots get no browser tools until it is installed`);
 }
 
 export function agentBrowserBinaryExists(dataDir = DATA_DIR): boolean {

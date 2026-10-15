@@ -6,6 +6,8 @@ import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
+import { SECTION_PROVIDER, type KeyResult, type KeyVia } from "@/lib/analytics-allowlist";
+import { keyRemoved, keySaved, keySaveFailure, keyTestResult, savedKeyResult } from "@/lib/product-events";
 
 export type ConfigSection = "composio" | "box" | "opencodeGo" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
 export type TestableProvider = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras" | "groq" | "meta";
@@ -16,11 +18,13 @@ const SECTIONS: Record<
     body: (value: string, firstKey: boolean) => unknown;
     flag: (config: ConfigStatus) => boolean;
     included?: (config: ConfigStatus) => boolean;
+    ownKey?: (config: ConfigStatus) => boolean;
   }
 > = {
   composio: {
     body: (v) => ({ composio: { apiKey: v } }),
     flag: (c) => c.composio.configured,
+    ownKey: (c) => c.composio.mode === "self-hosted",
   },
   box: {
     body: (v) => ({ box: { token: v } }),
@@ -250,10 +254,12 @@ export function ApiKeyRow({
   section,
   onSaved,
   testProvider,
+  via = "settings",
 }: {
   section: ConfigSection;
   onSaved?: (configured: boolean) => void;
   testProvider?: TestableProvider;
+  via?: KeyVia;
 }) {
   const { state, dispatch } = useStore();
   const [value, setValue] = useState("");
@@ -268,17 +274,18 @@ export function ApiKeyRow({
 
   const configured = state.config ? SECTIONS[section].flag(state.config) : false;
   const included = state.config ? SECTIONS[section].included?.(state.config) === true : false;
+  const ownKey = state.config ? (SECTIONS[section].ownKey ?? SECTIONS[section].flag)(state.config) : false;
   const clearing = !value.trim() && configured;
   const credential = credentialCopy(section);
 
-  const test = async () => {
-    if (!testProvider) return;
+  const test = async (): Promise<KeyResult> => {
+    if (!testProvider) return "unverified";
     setTesting(true);
     setVerdict(null);
     const generation = ++testGeneration.current;
     try {
       const result = await api("/api/keys/test", { method: "POST", body: JSON.stringify({ provider: testProvider }) });
-      if (generation !== testGeneration.current) return;
+      if (generation !== testGeneration.current) return keyTestResult(result);
       const outcome = result.ok
         ? result.check === "authentication" ? t("keys.testAuthenticated")
           : result.models?.length ? t("keys.testCatalog", { models: result.models.join(", ") }) : t("keys.testCatalogNoModels")
@@ -286,8 +293,10 @@ export function ApiKeyRow({
           : result.reason === "unreachable" ? t("keys.testUnreachable")
             : t("keys.testUnexpected", { status: String(result.status ?? "?") });
       setVerdict(`${t("keys.testSaved")} ${outcome}`);
+      return keyTestResult(result);
     } catch (cause) {
       if (generation === testGeneration.current) setVerdict(cause instanceof Error ? cause.message : String(cause));
+      return keyTestResult(null);
     } finally {
       if (generation === testGeneration.current) setTesting(false);
     }
@@ -318,9 +327,16 @@ export function ApiKeyRow({
         setValue("");
         const nowConfigured = SECTIONS[section].flag(status);
         onSaved?.(nowConfigured);
-        if (next && nowConfigured) void test();
+        const provider = SECTION_PROVIDER[section];
+        if (!next) {
+          if (ownKey) keyRemoved(provider, via);
+        } else if (testProvider && nowConfigured) void test().then((result) => keySaved(provider, via, result));
+        else keySaved(provider, via, savedKeyResult(provider));
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        setError(e.message);
+        if (next) keySaved(SECTION_PROVIDER[section], via, keySaveFailure(e));
+      })
       .finally(() => { savingRef.current = false; setSaving(false); });
   };
 
