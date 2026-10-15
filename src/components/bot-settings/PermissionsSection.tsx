@@ -1,17 +1,4 @@
-// Permissions: how autonomously this bot acts — the approval level (ask /
-// auto / full / custom), review-routine approvals, whether it asks before
-// contacting other bots, and whether it holds the section's Chief of Staff
-// role. Moved from SettingsPanel.tsx (Chief of Staff ~720-755,
-// Ask-before-contacting ~757-776, Approval level ~990-1010, Review routine
-// approvals ~1013-1050).
-//
-// The Auto branch of LocalComputerAutoWarning (choosing Auto while
-// bot.computer === "local") lives here with its trigger; the Works-on-picker
-// branch (turning computer to "local" while already on Auto) stays with
-// AccessSection, next to that picker. The warning remembers which bot it was
-// opened for, so a bot switch while it is up never applies the choice to the
-// newly selected bot. Full access has no warning: it applies at once, to the
-// bot and every thread (owner decision, Oct 12).
+// LocalComputerAutoWarning remembers its bot, so a bot switch while it is up never applies the choice to the new bot.
 import { useEffect, useState } from "react";
 import { Crown } from "lucide-react";
 
@@ -182,10 +169,6 @@ export function PermissionsSection({
   );
 }
 
-/** Sending on the person's behalf. Separate from the approval level on
- * purpose: Full access does not bypass it, so it cannot live inside that
- * selector without implying it does. Today's count comes from the harness,
- * which is the only thing that knows what actually went out. */
 function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: OutboundPolicy) => void }) {
   const policy = bot.outbound ?? DEFAULT_OUTBOUND_POLICY;
   const [today, setToday] = useState<number | null>(null);
@@ -222,7 +205,7 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
       <div className="text-[15px] font-medium text-ink">Sending on your behalf</div>
       <div className="mt-0.5 text-[13px] text-ink-secondary">
         Emails, messages, posts, invites, and payments through connected apps. Reading and drafting never count.
-        This applies at every approval level, including Full access.
+        Full access sends without asking.
       </div>
       <div className="mt-3 flex gap-1 rounded-lg bg-inset p-0.5">
         {(

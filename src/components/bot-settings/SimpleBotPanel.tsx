@@ -1,12 +1,3 @@
-// The bot settings panel in Simple mode: the bot's face, then six tabs.
-// Details is a list of plain rows, one fact about the bot per row with its
-// control on the same line (how it looks, who it is, its instructions, its model, how hard
-// it thinks, how much it decides alone, where it works, what it may use),
-// then its routines with an on/off switch each. Memory, Skills, Routines and
-// Vault each give one of the full view's sections a tab of its own; Library
-// lists what the bot has made in this chat. Every control writes through the
-// same path the full fold-out sections use, and "All settings" opens that
-// full view.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronRight, FileText, Image as ImageIcon, Slack, Smartphone, X } from "lucide-react";
 
@@ -51,7 +42,6 @@ const labelCls = "mb-1.5 block text-[12px] text-ink-secondary";
 
 export type SimpleBotTab = "details" | "memory" | "library" | "skills" | "routines" | "vault";
 
-/** In the order the tab bar shows them. */
 const TABS = [
   ["details", "botSettings.simple.details"],
   ["memory", "botSettings.simple.memory"],
@@ -61,18 +51,14 @@ const TABS = [
   ["vault", "botSettings.simple.vault"],
 ] as const;
 
-/** The places the Where it works row offers beside Auto, in its order. */
 const SIMPLE_PLACES: readonly Place[] = ["local", "cloud"];
 
-/** How many of a bot's apps the Uses row names before it counts the rest. */
 const USES_SHOWN = 4;
 
 const rowsCls = "divide-y divide-hairline/40 border-y border-hairline/40";
 const sectionTitleCls = "text-[12px] text-ink-secondary";
-// A row's text action: Edit, Open, the place a bot works.
 const rowActionCls = "flex shrink-0 items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[13px] font-medium text-ink hover:bg-raised";
 const linkCls = "rounded-md px-1.5 py-0.5 text-[12px] font-medium text-accent-text hover:bg-raised";
-// A short either/or on the row itself, in the model picker's effort-band look.
 const segmentCls = "inline-flex shrink-0 rounded-full bg-inset p-0.5";
 const segmentItemCls = (on: boolean) =>
   cn(
@@ -80,8 +66,6 @@ const segmentItemCls = (on: boolean) =>
     on ? "bg-raised text-ink shadow-sm" : "text-ink-secondary enabled:hover:text-ink",
   );
 
-/** One fact about the bot: what it is on the left, its control on the right.
- * The control wraps under the text where the panel is too narrow for both. */
 function Row({ title, hint, badge, children, ...rest }: {
   title: ReactNode;
   hint?: ReactNode;
@@ -111,9 +95,6 @@ export interface LibraryItem {
   messageId: string;
 }
 
-/** What the bot has made in its open conversation: images and files it
- * attached, plus local files its replies link to — the same set the chat's
- * attachment gallery shows under each message. Newest first. */
 export function botLibraryItems(bot: Bot): LibraryItem[] {
   const groups: LibraryItem[][] = [];
   const seen = new Set<string>();
@@ -134,7 +115,6 @@ export function botLibraryItems(bot: Bot): LibraryItem[] {
     for (const image of attached.images) add(image, attachmentBasename(image), "image");
     for (const file of files) add(file.path, file.name || attachmentBasename(file.path), "file");
   }
-  // Newest message first; a message's own files keep the order it gave them.
   return groups.flat();
 }
 
@@ -149,9 +129,7 @@ export function SimpleBotPanel({
 }: {
   bot: Bot;
   derived: ReturnType<typeof useBotSettingsDerived>;
-  /** The caption-button inset the full panel's header uses on Windows. */
   headerClassName?: string;
-  /** The organization's Admin page for this bot's Slack, where there is one. */
   slackUrl?: string | null;
   onClose: () => void;
   onAllSettings: () => void;
@@ -160,23 +138,15 @@ export function SimpleBotPanel({
   const { state, dispatch } = useStore();
   const { dragProps } = useCaptionChrome();
   const [tab, setTab] = useState<SimpleBotTab>("details");
-  // Deciding alone on this computer is confirmed first, whichever of the two
-  // was chosen second: the change waits here until the warning is answered.
   const [localAutoWarning, setLocalAutoWarning] = useState<{ botId: string; patch: BotPatch } | null>(null);
-  // A link that names a row this panel answers (Edit profile, "Read all" on
-  // the instructions) opens that row, so what was asked for is on screen.
   const linked = state.botSettingsExpandAccordion && !state.botSettingsExpandRemembered
     && (state.botSettingsSection === "identity" || state.botSettingsSection === "soul") ? state.botSettingsSection : null;
-  // One row at a time opens into its fields; the rest stay one line each.
   const [editing, setEditing] = useState<"look" | "identity" | "soul" | null>(linked);
-  // The same link can arrive while the panel is already open.
   useEffect(() => {
     if (!linked) return;
     setTab("details");
     setEditing(linked);
   }, [linked]);
-  // Memory has a Save button: once its tab has been opened it stays mounted,
-  // so an unsaved draft survives a look at another tab.
   const [memoryShown, setMemoryShown] = useState(false);
   const [phoneAppOpen, setPhoneAppOpen] = useState(false);
   const skills = useManagedSkills(bot);
@@ -185,18 +155,12 @@ export function SimpleBotPanel({
   const platform = capabilities.host?.platform ?? "other";
   const placeSeat = usePlaceSeat(state.config, platform);
   const { patch, approvalMode, engine, trustedModesAvailable } = derived;
-  // Match the full selector: old Antigravity Auto still executes as Ask.
-  // Display that behavior without changing the saved mode or granting Full.
+  // Antigravity's old Auto still executes as Ask: show that without changing the saved mode or granting Full.
   const displayedApprovalMode = engine?.driverKind === "antigravityAgent" && approvalMode === "auto" ? "ask" : approvalMode;
 
-  // Ask and Full access, the default level, are always offered; "Decide for
-  // me" is the provider's own Auto, which a few engines do not have.
   const autoOffered = approvalModeOptionsFor(engine?.driverKind ?? "", trustedModesAvailable)
     .some((option) => option.mode === "auto");
   const chooseMode = (mode: Extract<ApprovalMode, "ask" | "auto" | "full">) => {
-    // The same rules as the Permissions section's selector: no change while
-    // a turn runs, Auto on this computer needs its warning first, and Full
-    // reaches every thread at once.
     if (bot.busy || mode === approvalMode) return;
     if (mode === "full") {
       dispatch({ type: "updateBot", botId: bot.id, patch: { approvalMode: "full", applyToAllThreads: true } });
@@ -210,21 +174,13 @@ export function SimpleBotPanel({
   };
   const customMode = displayedApprovalMode === "edits" || displayedApprovalMode === "custom";
 
-  // The same steps the model picker's plain-words pane offers, on the row.
-  // An engine whose reasoning is a provider variant keeps that in the picker.
   const effortLevels = engine?.capabilities?.modelVariants ? [] : engine?.capabilities?.effortLevels ?? [];
   const thinkingLevels = effortLevels.length > 0 ? simpleEffortLevels(effortLevels, bot.modelSelection.effort) : [];
   const chooseEffort = (level: EffortLevel) => {
     if (bot.busy || level === bot.modelSelection.effort) return;
-    // No thread: like a pick in the picker below, this is the bot's own model.
     dispatch({ type: "setModel", botId: bot.id, selection: { ...bot.modelSelection, effort: level } });
   };
 
-  // Where it works, as three plain choices: let it decide, this computer, or
-  // a cloud computer. They carry the Computer panel's words and rules
-  // (shared/place-view.ts and its selectPlace); the rarer places (Local VM,
-  // browser only, off) stay in that panel, and one of those in effect is
-  // named on the row with none of the three pressed.
   const worksOn = placeViewFor(placeFacts({
     bot, place: bot.computer ?? "auto", seat: placeSeat, config: state.config, instances: state.instances,
   }));
@@ -234,7 +190,6 @@ export function SimpleBotPanel({
     { value: "auto", label: worksOnSimpleLabel(undefined, platform), disabled: false },
     ...SIMPLE_PLACES.filter((place) => placeViews[place].policy).map((place) => {
       const { view, reachable } = placeViews[place];
-      // A place that cannot be picked, or has a problem, says why on hover.
       return { value: place, label: worksOnSimpleLabel(place, platform), disabled: !reachable, title: !reachable || placeHasIssue(view) ? view.line : undefined };
     }),
   ];
@@ -247,19 +202,14 @@ export function SimpleBotPanel({
     }
     patch({ computer: value === "auto" ? null : value });
   };
-  // Signing in to a site happens in the bot's own browser, in the Computer panel.
   const openBrowser = () => {
-    // The panel reads its view when it opens, so name it first.
     writeComputerPanelView(bot.id, "browser");
     dispatch({ type: "toggleComputer", open: true });
   };
 
   const usedApps = apps.apps.filter((app) => app.scope !== null);
-  // Enabled first, then by next run: the order the Routines page lists them.
   const routines = [...derived.botRoutines].sort((a, b) =>
     Number(b.enabled) - Number(a.enabled) || (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) || a.name.localeCompare(b.name));
-  // A file on disk that changed outside the app has to be answered in the
-  // instructions box itself, so the row opens by itself while that is pending.
   const soulOpen = editing === "soul" || Boolean(bot.soulDrift);
 
   const library = useMemo(() => (tab === "library" ? botLibraryItems(bot) : []), [tab, bot]);
@@ -268,8 +218,6 @@ export function SimpleBotPanel({
     if (next === "memory") setMemoryShown(true);
     setTab(next);
   };
-  // The mascot's own face is the obvious thing to press to change it, from
-  // whichever tab is showing.
   const changeLook = () => {
     setTab("details");
     setEditing("look");
@@ -334,8 +282,6 @@ export function SimpleBotPanel({
         {tab === "details" && (
           <div role="tabpanel" className="mt-5 flex flex-col gap-6">
             <div className={rowsCls}>
-              {/* The same editor Identity has under All settings: color, body,
-                  expression, or a picture of the person's own. */}
               {editing === "look" ? (
                 <div className="py-3.5" data-simple-row="look">
                   <BotProfileAvatarCard bot={bot} activeState={derived.activeState} mascotMotion={derived.mascotMotion ?? null} onPatch={patch} />
@@ -432,7 +378,6 @@ export function SimpleBotPanel({
                 <Row
                   data-simple-row="soul"
                   title={t("botSettings.simple.instructions")}
-                  // One line of a long first sentence is enough to recognise it by.
                   hint={<span className="line-clamp-2">{firstSentence(bot.soul ?? "") || t("botSettings.simple.noInstructions")}</span>}
                 >
                   <button
@@ -448,16 +393,6 @@ export function SimpleBotPanel({
                 </Row>
               )}
 
-              {/* The bot's model, in the same plain-words picker as the chat
-                  header, shown in place (a floating popover would be clipped by
-                  this scrolling panel). A pick is the bot's model: groups and
-                  every thread without its own model move with it, like the full
-                  Model section, and the line below counts the threads that don't. */}
-              {/* The Thinking row below carries the effort steps, so the picker's
-                  own copy of that band is hidden while the row is shown: two
-                  copies of one control in one view read as a bug. The picker is
-                  not asked to leave it out because its file is at its size
-                  ceiling (scripts/testing/file-size-ratchet.test.ts). */}
               <div
                 className={cn("py-3.5", thinkingLevels.length > 0 && "[&_[data-simple-effort]]:hidden")}
                 data-simple-default-model
@@ -474,7 +409,6 @@ export function SimpleBotPanel({
                 <Row
                   data-simple-row="thinking"
                   title={t("botSettings.simple.thinking")}
-                  // No step saved means nothing is sent: the model uses its own.
                   hint={t(bot.modelSelection.effort === undefined ? "botSettings.simple.thinkingDefault" : "botSettings.simple.thinkingHint")}
                 >
                   <div role="group" aria-label={t("botSettings.simple.thinkingAria", { name: bot.name })} className={segmentCls}>
@@ -531,8 +465,6 @@ export function SimpleBotPanel({
               <Row
                 data-simple-row="computer"
                 title={t("computer.simple.whereWorks", { name: bot.name })}
-                // Auto's full line lists every place it may use; beside three
-                // buttons its short form says enough.
                 hint={currentPlace === "auto" ? t("place.autoDetail")
                   : placeListed ? worksOn.line : `${worksOnSimpleLabel(bot.computer, platform)}: ${worksOn.line}`}
               >
@@ -561,7 +493,6 @@ export function SimpleBotPanel({
                   <span className="mt-1 flex flex-wrap gap-1">
                     {usedApps.slice(0, USES_SHOWN).map((app) => (
                       <span key={app.slug} data-simple-uses={app.slug} className="inline-flex max-w-full items-center gap-1 rounded-full bg-control py-0.5 pl-1 pr-2 text-[11.5px] text-ink">
-                        {/* Keyed by its mark: the catalog can arrive after the list. */}
                         <ServiceIcon key={`${app.card.logo}:${app.card.domain}`} card={app.card} className="size-3.5 shrink-0 text-[8px]" />
                         <span className="truncate">{app.label}</span>
                       </span>
@@ -586,8 +517,6 @@ export function SimpleBotPanel({
                 </button>
               </Row>
 
-              {/* A bot's own number and inbox are on their way; the rows say so
-                  rather than appear one day with no warning. */}
               <Row data-simple-row="phone" title={t("botSettings.simple.phone")} badge={soon} hint={t("botSettings.simple.phoneHint")} />
               <Row data-simple-row="email" title={t("botSettings.simple.email")} badge={soon} hint={t("botSettings.simple.emailHint")} />
             </div>
@@ -617,7 +546,6 @@ export function SimpleBotPanel({
                           {scheduleLabel(routine.schedule)} · {routineNextLabel(routine)}
                         </div>
                       </div>
-                      {/* A finished one-shot has nothing left to switch on. */}
                       {!routineFinished(routine) && (
                         <Switch
                           checked={routine.enabled}
@@ -783,7 +711,6 @@ export function SimpleBotPanel({
           dispatch({ type: "updateBot", botId: target.botId, patch: target.patch });
         }}
       />
-      {/* Where the phone apps are. Pairing a phone stays in the profile menu. */}
       <PhoneAppDialog open={phoneAppOpen} onClose={() => setPhoneAppOpen(false)} />
     </>
   );

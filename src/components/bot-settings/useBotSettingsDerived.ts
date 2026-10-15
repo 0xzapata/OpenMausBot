@@ -1,8 +1,3 @@
-// Every value the old SettingsPanel derived from state before rendering,
-// lifted verbatim (SettingsPanel.tsx:541-611) so the section files that
-// consume them (Identity, Soul, and — in later commits — the rest) can
-// stay pure prop-takers. This hook is the one place in the bot settings
-// dialog that still reaches into useStore.
 import { useDesktopCapabilities } from "../DesktopCapabilities";
 import { browserAvailable, builtInBrowserEnabled } from "@/lib/feature-flags";
 import { stateForBot } from "@/lib/mascot";
@@ -34,6 +29,7 @@ export type BotPatch = Partial<
     | "outbound"
     | "fallback"
     | "speakReplies"
+    | "replyStyle"
     | "memoryEnabled"
     | "voice"
     | "chiefOfStaff"
@@ -47,8 +43,6 @@ export type BotPatch = Partial<
   >
 > & {
   computer?: Bot["computer"] | null;
-  /** null drops the explicit record and returns the bot to the legacy
-   * all-tools boolean. */
   connectorTools?: Bot["connectorTools"] | null;
   connectorScopes?: Bot["connectorScopes"] | null;
   acknowledgeLocalAuto?: boolean;
@@ -62,10 +56,6 @@ export function useBotSettingsDerived(bot: Bot) {
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
-  // The approval level (ask / auto / full / custom) as the shared rule reads
-  // it from the record — bots saved before approvalMode existed still carry
-  // only autoApprove. Custom needs the packaged desktop's trusted channel;
-  // Full is offered everywhere (owner decision, Oct 12).
   const approvalMode = approvalModeFor(bot);
   const trustedModesAvailable = Boolean(window.ogb?.approvals && capabilities.host.packaged);
   const canCoordinate = engine?.capabilities?.agentsMcp === true;

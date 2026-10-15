@@ -1,6 +1,4 @@
-// The cloud computer's tools as the harness serves them to every engine with
-// computer tools (POST /api/internal/computer/mcp). A loopback Boat stands in
-// for the provider; the server's own account is the only credential used.
+// A loopback Boat stands in for the provider; the server's own account is the only credential used.
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "./config.ts";
@@ -104,7 +102,6 @@ describe("cloud computer tools", () => {
     expect(result.content[0].text).toMatch(/input schema|Unknown cloud computer tool/);
     expect(call.gated()).toBe(0);
     expect(calls).toHaveLength(0);
-    // The direct entry point refuses the same calls on its own.
     await expect(tools.runCloudComputerTool(cfg, "bx_23456789", name, args as never, new AbortController().signal))
       .resolves.toMatchObject({ isError: true });
     expect(calls).toHaveLength(0);
@@ -113,7 +110,6 @@ describe("cloud computer tools", () => {
   it.each([
     ["a person holds control", { held: true, reason: "person" as const }, "A person has taken control of this computer"],
     ["another thread owns the seat", { held: true, blockedReason: "Another thread is using this computer." }, "Another thread is using this computer."],
-    // A hold the harness gave no words for is never blamed on a person.
     ["the hold has no reason", { held: true }, "could not confirm that this computer is free"],
   ])("performs nothing on the Boat when %s", async (_label, gate, text) => {
     const call = rpc({ method: "tools/call", params: { name: "click", arguments: { x: 3, y: 4 } } }, gate);
@@ -164,6 +160,20 @@ describe("cloud computer tools", () => {
     await started;
     abort.abort();
     await rejected;
+    expect(calls.filter(entry => entry.path.endsWith("/commands"))).toHaveLength(1);
+    server.closeAllConnections();
+  });
+
+  it("answers within its call budget, the gate's wait included, when the Boat holds a command", async () => {
+    holdCommand = true;
+    const started = Date.now();
+    const result = await tools.cloudComputerRpc({ method: "tools/call", params: { name: "exec", arguments: { command: "sleep 600" } } }, {
+      cfg, boxId: () => "bx_23456789", signal: new AbortController().signal, budgetMs: 600, assertActive: () => {},
+      gate: async () => { await new Promise(resolve => setTimeout(resolve, 300)); return { held: false }; },
+    });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: tools.CLOUD_COMPUTER_LATE }] });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(550);
+    expect(Date.now() - started).toBeLessThan(1_500);
     expect(calls.filter(entry => entry.path.endsWith("/commands"))).toHaveLength(1);
     server.closeAllConnections();
   });

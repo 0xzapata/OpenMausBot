@@ -1,10 +1,3 @@
-// The allowlist.
-//
-// The proxy tests prove the app's own calls reach a real harness. These prove
-// the other half, which no end-to-end test can: that everything else does
-// not. The case worth caring about is the last one — a route nobody here has
-// heard of is denied, because that is the property the whole file exists for
-// and the one that quietly stopped being true once before.
 import { describe, expect, it } from "vitest";
 
 import { denyReason, isBrowserControlAccess, isCloudDesktopAccess, isCompanionNotice } from "../src/routes.ts";
@@ -26,15 +19,13 @@ describe("credentials", () => {
 
   it("lets anyone curl liveness — it is the unauthenticated smoke test", () => {
     expect(ask("GET", "/api/health", false)).toBeNull();
-    // the bypass is one method on one path, not a family
     expect(ask("POST", "/api/health", false)?.status).toBe(401);
     expect(ask("GET", "/api/healthz", false)?.status).toBe(401);
   });
 });
 
 describe("what the app may do", () => {
-  // Every request the phone apps make. If one of these
-  // fails, a screen on the phone is broken.
+  // Every request the phone apps make: if one fails, a phone screen is broken.
   const calls: Array<[string, string]> = [
     ["GET", "/api/health"],
     ["GET", "/api/config"],
@@ -56,10 +47,7 @@ describe("what the app may do", () => {
     ["POST", "/api/bots/bot_123/always-allow"],
     ["POST", "/api/bots/bot_123/messages/msg_2/edit"],
     ["GET", "/api/bots/bot_123/overview"],
-    // Read-only: what the bot did, with the outcome (server/activity.ts).
     ["GET", "/api/bots/bot_123/activity"],
-    // The section's shared team memory: read it, add an entry, answer or
-    // edit one, remove one. Content, not execution policy.
     ["GET", "/api/team-memory"],
     ["POST", "/api/team-memory"],
     ["PATCH", "/api/team-memory/entry_1"],
@@ -98,6 +86,7 @@ describe("what the app may do", () => {
     ["POST", "/api/attachments"],
     ["GET", "/api/attachments/avatar-123.webp"],
     ["GET", "/api/attachments/voice-note-1.mp3"],
+    ["GET", "/api/attachments/voice-note-1.wav"],
     ["POST", "/api/files"],
     ["GET", "/api/tts/voices"],
     ["POST", "/api/tts/prepare"],
@@ -183,9 +172,6 @@ describe("what it may not", () => {
     expect(ask("POST", "/api/routines/routine_1/run")).toBeNull();
   });
 
-  // The companion tells the harness itself when it unpaired a phone, so the
-  // call that phone holds ends. That notice is the companion's, never a
-  // phone's: no paired device may send it, even about itself.
   it("keeps the unpaired-phone notice for the companion alone", () => {
     expect(ask("POST", "/api/live/device-revoked")?.status).toBe(404);
     expect(ask("POST", "/api/live/device-revoked", false)?.status).toBe(401);
@@ -243,8 +229,6 @@ describe("what it may not", () => {
     expect(allowed("POST", "/api/bots/bot_123/secret-cards/message_1/provide/extra")).toBe(false);
   });
 
-  // The method is part of the allowance, not decoration: reading the fleet
-  // and deleting a bot are the same path.
   it("allows a path only for the methods it was allowed for", () => {
     expect(allowed("GET", "/api/bots")).toBe(true);
     expect(allowed("DELETE", "/api/bots/bot_123")).toBe(false);
@@ -270,8 +254,6 @@ describe("what it may not", () => {
     expect(allowed("POST", "/api/routine-runs/run_1/retry")).toBe(false);
     expect(allowed("DELETE", "/api/connectors/slack")).toBe(false);
     expect(allowed("GET", "/api/connectors/connected/all")).toBe(false);
-    // per-account removal is allowed (the server proves ownership before
-    // revoking); removing the whole service binding stays host-only
     expect(allowed("DELETE", "/api/connectors/slack/accounts/ca_123")).toBe(true);
     expect(allowed("DELETE", "/api/connectors/slack/accounts/../gmail")).toBe(false);
     expect(allowed("POST", "/api/bots/bot_123/secret-cards/msg_2/provided")).toBe(false);
@@ -280,8 +262,6 @@ describe("what it may not", () => {
     expect(allowed("PATCH", "/api/groups/room-1")).toBe(false);
   });
 
-  // Patterns are anchored, so a path that merely starts right is still a
-  // path nobody allowed.
   it("lets a phone update Claude Code and change nothing else about engines", () => {
     for (const [method, path] of [
       ["GET", "/api/instances/claude/claude-update"],
@@ -294,8 +274,6 @@ describe("what it may not", () => {
     }
   });
 
-  // A phone may start, end and follow a Live call and change its voice and
-  // timing, never the OpenAI key it runs on, and nothing else under /api/live.
   it("allows only the four Live call routes, never the key", () => {
     expect(ask("POST", "/api/live/summary")?.status).toBe(404);
     expect(ask("PUT", "/api/config")?.status).toBe(403);
@@ -314,9 +292,6 @@ describe("what it may not", () => {
     expect(allowed("GET", "/api/bots%2f..%2fwebhooks")).toBe(false);
   });
 
-  // The one that matters. Upstream adds routes on its own schedule, and the
-  // sidecar must not carry them to a phone because nobody wrote a rule
-  // against a thing that did not exist yet.
   it("denies a route it has never heard of", () => {
     for (const path of [
       "/api/whatever-ships-next",
@@ -334,11 +309,8 @@ describe("browser control", () => {
   it("allows the live stream and the action channel, and nothing else under browser/", () => {
     expect(allowed("GET", "/api/bots/b1/browser/live")).toBe(true);
     expect(allowed("POST", "/api/bots/b1/browser/action")).toBe(true);
-    // The two verbs are not interchangeable: the stream is a GET and the
-    // action channel is a POST, and neither route answers the other's method.
     expect(allowed("POST", "/api/bots/b1/browser/live")).toBe(false);
     expect(allowed("GET", "/api/bots/b1/browser/action")).toBe(false);
-    // Anything else the harness may grow under this prefix stays closed.
     expect(allowed("POST", "/api/bots/b1/browser/restart")).toBe(false);
     expect(allowed("GET", "/api/bots/b1/browser")).toBe(false);
   });
@@ -347,8 +319,6 @@ describe("browser control", () => {
     expect(isBrowserControlAccess("GET", "/api/bots/b1/browser/live")).toBe(true);
     expect(isBrowserControlAccess("POST", "/api/bots/b1/browser/action")).toBe(true);
     expect(isBrowserControlAccess("GET", "/api/bots/b1/messages")).toBe(false);
-    // Driving a bot's signed-in browser is not the same permission as a
-    // throwaway cloud desktop, so the classifiers must not overlap.
     expect(isBrowserControlAccess("POST", "/api/bots/b1/computer/join")).toBe(false);
     expect(isCloudDesktopAccess("GET", "/api/bots/b1/browser/live")).toBe(false);
   });

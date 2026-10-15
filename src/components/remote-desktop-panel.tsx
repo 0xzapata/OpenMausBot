@@ -61,7 +61,6 @@ function nextRunLabel(at: number | null) {
 
 export function RemoteDesktopPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
-  // Docked flush under the Windows caption corner: drop the header 16px.
   const { padClass, dragProps } = useCaptionChrome();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,8 +72,6 @@ export function RemoteDesktopPanel({ bot }: { bot: Bot }) {
   const previewBusy = useRef(bot.busy);
   useEffect(() => { previewBusy.current = bot.busy; }, [bot.busy]);
   const [creatingRoutine, setCreatingRoutine] = useState(false);
-  // A desktop paired to another host watches the bot's desktop, or — to sign
-  // in where the bot works — its built-in browser, through the same relay.
   const [view, setView] = useState<"desktop" | "browser">("desktop");
   const [signIn, setSignIn] = useState<BrowserSignIn>();
   const help = state.computerControl[bot.id]?.help ?? null;

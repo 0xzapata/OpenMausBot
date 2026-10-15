@@ -21,7 +21,7 @@ const posix = process.platform !== "win32";
 const groups: number[] = [];
 const homes: string[] = [];
 afterEach(async () => {
-  for (const group of groups.splice(0)) { try { process.kill(-group, "SIGKILL"); } catch { /* already stopped */ } }
+  for (const group of groups.splice(0)) { try { process.kill(-group, "SIGKILL"); } catch {} }
   for (const home of homes.splice(0)) await removeTempDir(home);
 });
 
@@ -74,8 +74,6 @@ describe.skipIf(!posix)("browsers whose engine was killed under them", () => {
     expect(gone(orphan.pid!)).toBe(true);
     expect(await browserProcessesRunning(found!.tree)).toBe(false);
     for (const other of [daemon.pid!, served, elsewhere.pid!, lookalike.pid!]) expect(gone(other)).toBe(false);
-    // Its daemon would have removed its profile folder on close; nothing else
-    // is removed, not even a folder of a similar name.
     expect(existsSync(profile)).toBe(false);
     expect(existsSync(lookalikeProfile)).toBe(true);
   });
@@ -97,9 +95,6 @@ describe.skipIf(!posix)("browsers whose engine was killed under them", () => {
     expect(existsSync(kept)).toBe(true);
   });
 
-  // A pid the system gave to another program once the browser's process
-  // exited is matched by its start time: neither counted nor signalled, and
-  // nor is the group it leads.
   it("never counts or stops a process that took the number of one of the browser's", async () => {
     const stranger = start("sleep", ["30"], { PATH: process.env.PATH });
     const tree = { daemon: stranger.pid!, members: new Map([[stranger.pid!, "an earlier process"]]), groups: [stranger.pid!] };
@@ -108,14 +103,15 @@ describe.skipIf(!posix)("browsers whose engine was killed under them", () => {
     expect(gone(stranger.pid!)).toBe(false);
   });
 
-  // Chrome may start a helper while it shuts down, after anything here read
-  // its processes: one left in its group once Chrome itself has exited is
-  // still stopped by that group.
   it("stops a helper the browser starts while it exits, once the browser is gone", async () => {
     const home = mkdtempSync(join(tmpdir(), "omb-orphan-"));
     homes.push(home);
     const latePid = join(home, "late.pid");
-    const orphan = start(process.execPath, ["-e", `process.on("SIGTERM", () => { const late = require("node:child_process").spawn("sleep", ["30"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(latePid)}, String(late.pid)); process.exit(0); }); ${IDLE}`, "--", "--remote-debugging-port=0", `--user-data-dir=${profileFolder(home)}`], daemonEnv(home, "bot-late"));
+    const ready = join(home, "ready");
+    const orphan = start(process.execPath, ["-e", `process.on("SIGTERM", () => { const late = require("node:child_process").spawn("sleep", ["30"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(latePid)}, String(late.pid)); process.exit(0); }); require("node:fs").writeFileSync(${JSON.stringify(ready)}, ""); ${IDLE}`, "--", "--remote-debugging-port=0", `--user-data-dir=${profileFolder(home)}`], daemonEnv(home, "bot-late"));
+    // Its command line and environment, which find it, exist from the start;
+    // a SIGTERM before node has run the script above would simply kill it.
+    await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 5_000 });
     await vi.waitFor(async () => expect((await orphanedBrowsers(home)).map((found) => found.session)).toEqual(["bot-late"]), { timeout: 5_000 });
     const [found] = await orphanedBrowsers(home);
     expect(await stopBrowserProcesses(found!.tree)).toBe(true);

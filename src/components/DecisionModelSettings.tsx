@@ -1,12 +1,4 @@
-// Settings → Decision model. A provider (TypeSafe Jev, or OpenRouter with a
-// model picked from a list), one master switch, that provider's key
-// (write-only: the server reports configured-or-not, never the value), and
-// one switch per thing it decides. Saving a key turns it on; there is no
-// confirm step. The packaged desktop keeps the key in its OS-encrypted store;
-// elsewhere it goes to the server's own 0600 config, like every other
-// workspace key. On a Cloud Pro home Jev is included: it works with no key,
-// there is nothing to clear, and a key pasted here replaces it. OpenRouter is
-// never included.
+// Security: the key is write-only; the server reports configured-or-not, never the value.
 import { useEffect, useState } from "react";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
@@ -16,8 +8,7 @@ import type { LocaleKey } from "@/locales";
 import { Card, SettingRow, Switch } from "./SettingsPrimitives";
 
 const KEY_URL = { jev: "https://typesafe.ai", openrouter: "https://openrouter.ai/keys" } as const;
-/** What a room decision may take (server/decider/room-routing.ts): a slower
- * model is not wrong, but rooms would fall back to the lead. */
+/** The room decision budget in server/decider/room-routing.ts; slower falls back to the lead. */
 const ROOM_BUDGET_MS = 1_500;
 
 type Provider = "jev" | "openrouter";
@@ -35,9 +26,7 @@ const FAILURES: Record<string, LocaleKey> = {
   misconfigured: "decider.error.misconfigured",
 };
 
-/** A test of Cloud Pro's included decisions has no key to check at
- * typesafe.ai: its relay refuses a subscription that is not active (402) and
- * a month's decisions that are used up (429). */
+/** Cloud Pro's relay refuses an inactive subscription (402) and a used-up month of decisions (429). */
 const INCLUDED_FAILURES: Record<string, LocaleKey> = {
   rejected: "decider.included.error.rejected",
   rate_limited: "decider.included.error.limited",
@@ -56,7 +45,7 @@ const OPENROUTER_FAILURES: Record<string, LocaleKey> = {
 /** A fixed sentence per failure: the vendor's own body never reaches the UI. */
 export function deciderFailureText(result: { reason: string; status?: number }, included = false, provider: Provider = "jev"): string {
   if (provider === "openrouter") {
-    // 402: OpenRouter's own answer for an account with no credits left.
+    // 402 is OpenRouter's answer for an account with no credits left.
     if (result.reason === "http_error" && result.status === 402) return t("decider.openrouter.error.credits");
     if (result.reason === "http_error") return t("decider.openrouter.error.http", { status: String(result.status ?? "?") });
     const key = OPENROUTER_FAILURES[result.reason];
@@ -69,8 +58,6 @@ export function deciderFailureText(result: { reason: string; status?: number }, 
   return key ? t(key) : t("decider.error.other");
 }
 
-/** Jobs that are not built yet: listed so people know what is coming, with
- * no switch, because a switch that does nothing would be a lie. */
 const COMING_SOON: LocaleKey[] = ["decider.jobs.browserClicks", "decider.jobs.toolSelection", "decider.jobs.placement"];
 
 export function DecisionModelSettings() {
@@ -79,7 +66,6 @@ export function DecisionModelSettings() {
   const provider: Provider = decider?.provider === "openrouter" ? "openrouter" : "jev";
   const openrouter = provider === "openrouter";
   const configured = decider?.configured ?? false;
-  // Cloud Pro's decisions, with no key saved: nothing to clear or replace.
   const included = configured && decider?.included === true;
   const ownKey = configured && !included;
   const enabled = decider?.enabled ?? false;
@@ -109,8 +95,6 @@ export function DecisionModelSettings() {
     }
   };
 
-  // The model list is only needed while OpenRouter is the provider. If it
-  // cannot be loaded the picker shows just the model in use.
   useEffect(() => {
     if (!openrouter || models) return;
     let cancelled = false;
@@ -150,8 +134,6 @@ export function DecisionModelSettings() {
     setTesting(true);
     setVerdict(null);
     setError(null);
-    // With no draft, the server tests what is in use: Cloud Pro's included
-    // decisions go through the Admin's relay, never to Jev directly.
     const testingIncluded = !draft && included;
     try {
       const result = await api<TestResult>("/api/decider/test", { method: "POST", body: JSON.stringify(draft ? { key: draft } : {}) });
@@ -204,7 +186,6 @@ export function DecisionModelSettings() {
             aria-label={t("decider.model.label")}
             className="w-64 max-w-full cursor-pointer rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:outline-none disabled:opacity-50"
           >
-            {/* A saved model the list does not carry (newer, or off-list) stays selectable. */}
             {decider?.model && !models?.models.some((model) => model.id === decider.model) && (
               <option value={decider.model}>{decider.model}</option>
             )}

@@ -1,5 +1,3 @@
-// Stall-watchdog contract: activity keeps a turn alive indefinitely, human
-// approvals pause the clock, silence past the ceiling stalls exactly once.
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
@@ -56,7 +54,6 @@ describe("TurnWatchdog", () => {
     tick(STALL * 100);
     dog.sweep();
     expect(stalls).toHaveLength(0);
-    // the answer restarts the clock rather than inheriting the wait
     dog.setWaitingOnHuman("t1", false);
     tick(STALL - 1);
     dog.sweep();
@@ -75,6 +72,23 @@ describe("TurnWatchdog", () => {
     expect(stalls).toHaveLength(0);
   });
 
+  it("says a turn is waiting exactly while the sweep would spare it", () => {
+    const { dog } = rig();
+    expect(dog.waiting("t1")).toBe(false);
+    dog.watch("t1", "bot1");
+    expect(dog.waiting("t1")).toBe(false);
+    dog.setWaitingOnHuman("t1", true);
+    expect(dog.waiting("t1")).toBe(true);
+    dog.setWaitingOnComputer("t1", true);
+    dog.setWaitingOnHuman("t1", false);
+    expect(dog.waiting("t1")).toBe(true);
+    dog.setWaitingOnComputer("t1", false);
+    expect(dog.waiting("t1")).toBe(false);
+    dog.setWaitingOnHuman("t1", true);
+    dog.settle("t1");
+    expect(dog.waiting("t1")).toBe(false);
+  });
+
   it("lets the computer wait's own deadline govern, then restarts the stall clock", () => {
     const { dog, stalls, tick } = rig();
     dog.watch("t1", "bot1");
@@ -82,7 +96,6 @@ describe("TurnWatchdog", () => {
     tick(STALL * 100);
     dog.sweep();
     expect(stalls).toHaveLength(0);
-    // Resolving an unrelated human ask cannot clear the resource wait.
     dog.setWaitingOnHuman("t1", false);
     tick(STALL * 100);
     dog.sweep();
@@ -110,9 +123,7 @@ describe("TurnWatchdog", () => {
   });
 });
 
-// The harness's stall handler (index.ts), run without starting a server: the
-// requester of a stalled teammate hears the stall and what the turn did, never
-// a bare "The coordinated turn was interrupted".
+// The harness's stall handler (index.ts), run without starting a server.
 describe("the stall handler", () => {
   function load() {
     const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -149,15 +160,10 @@ describe("the stall handler", () => {
     const { context, settled, delegations } = load();
     context.watchdog.options.onStall({ threadId: "t1", botId: "eli" });
     const told = 'No activity for 20 minutes — the turn was stopped. Before it stopped it made 1 tool call: Bash ×1.\nIts last message, quoted: "Exporting the second half now."';
-    // delegate_bot rides the job runtime now (#2702): its requester hears a
-    // stall through the same settle as every assignment, no separate watch.
     expect(settled).toEqual([{ generation: "gen-1", text: told }]);
     expect(delegations).toEqual([]);
   });
 
-  // A harness stop that leaves its engine attached (a Company change) notes
-  // its cause first: the turn's own end, settling the requester before the
-  // harness's teardown does, reports that cause instead of "interrupted".
   it("gives a stopped turn's own end the cause the harness noted before interrupting it", () => {
     const { context } = load();
     expect(context.stoppedTurnText("t1", "turn-1", undefined, "interrupted")).toMatch(/^The turn did not complete \(interrupted\)\. /);

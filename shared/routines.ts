@@ -1,8 +1,5 @@
-/** Routine wire shapes — the routine and run records as they ride the REST
- * snapshot and the `routine` / `routine.run` live frames. Moved verbatim
- * from the client's hand-maintained mirrors (src/lib/routines.ts) so the
- * frame union and every client consumer share one home; the client file
- * re-exports these under the same names. */
+/** Routine wire shapes: the routine and run records as they ride the REST
+ * snapshot and the `routine` / `routine.run` live frames. */
 import type { RoutineCronSchedule } from "./routine-schedule.ts";
 
 export interface RoutineIntervalWindow {
@@ -72,8 +69,7 @@ export type RoutineRunStatus =
   | "missed";
 
 /** The statuses both failure indicators count: a run that went wrong and has
- * not been acknowledged. One home so the sidebar dot, the errors pill, the
- * logs filter and the bulk-seen sweep cannot drift apart. */
+ * not been acknowledged. */
 export const ROUTINE_PROBLEM_STATUSES: readonly RoutineRunStatus[] = ["failed", "missed"];
 
 export function isRoutineProblemRun(run: { status: RoutineRunStatus }): boolean {
@@ -105,6 +101,8 @@ export interface Routine {
   skippedRuns?: number;
   lastSkippedAt?: number;
   failureStreak?: number;
+  /** A plain sentence when the routine names a path that cannot exist on the computer that runs it. */
+  warning?: string;
   attachments?: RoutineContextAttachment[];
   sourceThreadId?: string;
   resultsThreadId?: string;

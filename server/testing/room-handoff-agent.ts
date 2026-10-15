@@ -1,5 +1,4 @@
 // Scripted provider fixture that exercises the REAL injected agents MCP proxy.
-// The plan and evidence are confined to the isolated launcher's temporary home.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,14 +7,10 @@ import { waitForExit } from "./cleanup.ts";
 
 type AgentsIntegration = { command: string; args: string[]; env: Record<string, string> };
 
-/** One entry of a `script` plan: the turn whose own text holds every `match`
- * string runs it, once (or every time, with `repeat`). The other fields are a
- * plan's. */
+/** A `script` entry runs on the turn whose own text holds every `match` string, once or, with `repeat`, every time. */
 type ScriptEntry = { key: string; match: string[]; repeat?: boolean; [field: string]: unknown };
 
-// Claude reads its MCP config and system prompt files once, at launch. The
-// harness removes both when the first turn settles, so a process kept warm
-// for later turns must not read them again.
+// Claude reads its MCP config and system prompt once at launch; the harness deletes both after the first turn.
 const launchFiles = new Map<string, string>();
 const readAtLaunch = (path: string) => {
   if (!launchFiles.has(path)) launchFiles.set(path, readFileSync(path, "utf8"));
@@ -24,9 +19,7 @@ const readAtLaunch = (path: string) => {
 
 const REPLAYED_HISTORY_END = "[Now reply to the user's latest message:]";
 
-/** What a turn itself was asked: the text after any history the harness
- * replayed, with recalled passages cut, since both can quote another
- * conversation's words. */
+/** A turn's own text: replayed history and recalled passages can quote other conversations. */
 export function ownTurnText(prompt: unknown): string {
   const content = (prompt as any)?.message?.content;
   const text = typeof content === "string" ? content
@@ -36,10 +29,6 @@ export function ownTurnText(prompt: unknown): string {
     .replace(/Recalled for this message[\s\S]*?\[end of recalled passages[^\]]*\]/g, "");
 }
 
-/** A permission request made the way Claude Code makes one for a tool its
- * permission mode will not run unasked: through the permission-prompt tool
- * the harness mounts for it (server/permission-proxy.ts). Resolves with the
- * answer — the person's, the engine's timer's, or a shutdown's. */
 async function askPermission(server: AgentsIntegration, ask: { tool_name: string; input: Record<string, unknown> }): Promise<{ behavior: string; message?: string }> {
   const child = spawn(server.command, server.args, { env: { ...process.env, ...server.env }, stdio: ["pipe", "pipe", "pipe"] });
   child.stderr.resume();
@@ -65,9 +54,6 @@ async function askPermission(server: AgentsIntegration, ask: { tool_name: string
   }
 }
 
-/** One call on the turn's built-in browser tools (the harness browser proxy
- * Claude mounted, server/harness-mcp-proxy.ts), for a plan step that names
- * `server: "browser"`: the same path a model's browser call takes. */
 async function browserToolCall(server: AgentsIntegration, name: string, args: unknown): Promise<any> {
   const child = spawn(server.command, server.args, { env: { ...process.env, ...server.env }, stdio: ["pipe", "pipe", "pipe"] });
   child.stderr.resume();
@@ -91,10 +77,6 @@ async function browserToolCall(server: AgentsIntegration, name: string, args: un
   }
 }
 
-/** Screen calls as the bridge of a mounted computer makes them: each one
- * first asks the harness whether this turn may act (control-client.ts), and
- * the harness may hold that check open while the computer is busy. Each
- * answer is kept with how long it took. */
 async function screenCalls(server: AgentsIntegration, count: number): Promise<Array<{ ms: number; state: unknown }>> {
   const calls: Array<{ ms: number; state: unknown }> = [];
   for (let call = 0; call < count; call += 1) {
@@ -105,37 +87,22 @@ async function screenCalls(server: AgentsIntegration, count: number): Promise<Ar
   return calls;
 }
 
-/** `launch` replaces Claude's argv files for another fake engine: the agents
- * server it mounted, its instructions, and extra evidence fields. `progress`
- * streams a plan's `progress` text before the turn waits on its gate, and its
- * `progressAfterGate` text once the gate opens. Before that, a plan's
- * `approve` asks the person through Claude's permission-prompt tool (an
- * answer that is not an allow replies `replyIfDenied`), and its
- * `screenCalls` makes that many calls on the computer the turn mounted. */
+/** Plan fields: `launch` replaces Claude's argv files; `progress`/`progressAfterGate` stream around the
+ * gate; `approve` asks through Claude's permission-prompt tool (`replyIfDenied` otherwise);
+ * `screenCalls` calls the mounted computer that many times. */
 export async function runRoomHandoffAgent(argv: string[], planPath: string, prompt?: unknown,
   launch?: { integration: AgentsIntegration; system: string; evidence?: Record<string, unknown> },
   progress?: (text: string) => void): Promise<string> {
   const arg = (flag: string) => argv[argv.indexOf(flag) + 1];
-  // The agents server, by the token only it carries: a connected-apps bridge
-  // mounted beside it names the same bot (OMB_BOT_ID) and relays to Composio.
   const mounted = launch ? [] : Object.values(JSON.parse(readAtLaunch(arg("--mcp-config"))).mcpServers as Record<string, AgentsIntegration>);
-  // A turn with a tool selection mounts every server behind the gate
-  // (server/mcp-gate.ts), which names the server it starts in
-  // OMB_GATE_UPSTREAM: the agents server is found through it, and the
-  // fixture talks to the gate, as the engine does.
+  // With a tool selection every server sits behind the gate, which names its upstream in OMB_GATE_UPSTREAM.
   const agentEnv = (server: AgentsIntegration): Record<string, string> => {
     if (server.env?.OMB_COMMS_TOKEN || server.env?.OMB_BOT_ID) return server.env;
     try { return (JSON.parse(server.env?.OMB_GATE_UPSTREAM ?? "") as AgentsIntegration).env ?? {}; } catch { return {}; }
   };
   const integration = launch?.integration ?? mounted.find(s => agentEnv(s).OMB_COMMS_TOKEN) ?? mounted.find(s => agentEnv(s).OMB_BOT_ID);
-  // A depth-capped delegated turn mounts no agents server: answer from the prompt alone.
   if (!integration) {
-    // Nothing in such a launch's argv says which bot it is — only the task
-    // text does. A test that needs a delegated reply to land at an exact
-    // point (a wake it must follow) holds it here on a gate file, named by a
-    // substring of the task text: `${planPath}.gates.json`, a JSON array of
-    // { promptIncludes, gateFile }. The wait is unbounded like any plan
-    // gate: the test that set it owns when it opens.
+    // `${planPath}.gates.json` [{ promptIncludes, gateFile }] holds a delegated reply until its gate exists.
     const gatesPath = `${planPath}.gates.json`;
     const taskText = String((prompt as any)?.message?.content ?? "");
     for (const rule of existsSync(gatesPath) ? JSON.parse(readFileSync(gatesPath, "utf8")) as Array<{ promptIncludes: string; gateFile: string }> : []) {
@@ -153,24 +120,16 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
   const agent = agentEnv(integration);
   const botId = agent.OMB_BOT_ID;
   const system = launch?.system ?? readAtLaunch(arg("--append-system-prompt-file"));
-  // Claude snapshots the launch-time system prompt for a session. A retained
-  // process or --resume launch receives changed turn-scoped instructions in
-  // the user message, so inspect both surfaces just as the model does.
+  // Claude snapshots the launch-time system prompt; later instructions arrive in the user message.
   const turnContext = `${system}\n${JSON.stringify(prompt)}`;
   const resumed = turnContext.includes("Your downstream room requests have settled.");
-  // `byPrompt` picks a bot's plan by what its turn was sent, for turns whose
-  // order no index can pin (a thread the bot opened on itself runs beside
-  // the turn that opened it): [{ promptIncludes, plan }], first match wins.
+  // `byPrompt` [{ promptIncludes, plan }] picks a plan by what the turn was sent; first match wins.
   const botPlan = JSON.parse(readFileSync(planPath, "utf8"))[botId] ?? {};
   const basePlan = (botPlan.byPrompt as Array<{ promptIncludes: string; plan: any }> | undefined)
     ?.find(rule => turnContext.includes(rule.promptIncludes))?.plan ?? botPlan;
   const previous = existsSync(`${planPath}.evidence.jsonl`) ? readFileSync(`${planPath}.evidence.jsonl`, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
   const turnIndex = previous.filter(p => p.botId === botId).length;
-  // `script` picks a turn's entry by what that turn itself was asked, so a
-  // turn nobody scripted (an unplanned resume, a duplicate dispatch) fails
-  // loudly instead of quietly taking the next entry. One-shot entries win
-  // over `repeat` ones, so a loop entry never swallows a later, more
-  // specific turn.
+  // `script`: an unscripted turn fails loudly, and one-shot entries win over `repeat` ones.
   const script = botPlan.script as ScriptEntry[] | undefined;
   const own = script ? ownTurnText(prompt) : "";
   const used = new Set(previous.filter(p => p.botId === botId && p.planKey).map(p => p.planKey as string));
@@ -235,10 +194,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
         evidence.push({ step, response });
         if (Boolean(response.error || response.result?.isError) !== Boolean(step.expectError)) throw new Error(`Unexpected tool outcome: ${JSON.stringify(response)}`);
       }
-      // All MCP calls have completed. A person's answer, like an explicit
-      // test gate, is owned by the parent test's timeout, not the transport
-      // deadline: long conversation fixtures may deliberately keep a
-      // teammate waiting across many turns.
+      // A person's answer, like a test gate, is owned by the parent test's timeout.
       if (plan.gateFile || plan.approve || plan.screenCalls) clearTimeout(timer);
       const mounted = launch ? {} : JSON.parse(readAtLaunch(arg("--mcp-config"))).mcpServers as Record<string, AgentsIntegration>;
       if (plan.approve) {
@@ -250,8 +206,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
         screen = await screenCalls(mounted.computer, plan.screenCalls);
       }
       if (typeof plan.progress === "string") progress?.(plan.progress);
-      // `writeFiles`: files the turn writes in its working folder, as a bot
-      // saves its report or screenshots ({ name: content }, names relative).
+      // `writeFiles` { name: content }: files the turn writes in its working folder.
       for (const [name, content] of Object.entries((plan.writeFiles ?? {}) as Record<string, string>)) writeFileSync(join(process.cwd(), name), content);
       if (plan.readyFile) writeFileSync(plan.readyFile, "ready");
       if (plan.gateFile && !existsSync(plan.gateFile)) await new Promise<void>(resolve => {
@@ -273,8 +228,6 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
     closing = true;
     clearTimeout(timer); clearTimeout(delayTimer); clearInterval(gateTimer); lines.close(); child.stdin.destroy();
     await waitForExit(child, { signal: "SIGTERM", graceMs: 500 });
-    // pid: which provider process ran the turn, so a fixture can tell a
-    // retained session from a fresh one.
     appendFileSync(`${planPath}.evidence.jsonl`, JSON.stringify({ botId, turnIndex, threadId: agent.OMB_THREAD_ID, pid: process.pid,
       model: argv.includes("--model") ? arg("--model") : undefined,
       permissionMode: argv.includes("--permission-mode") ? arg("--permission-mode") : undefined,

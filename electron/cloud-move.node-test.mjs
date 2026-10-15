@@ -1,9 +1,3 @@
-// Copy this computer here, the desktop's half (docs/copy-workspace.md),
-// against in-memory fakes of this computer's server and the destination (the
-// Cloud, or any server the person added): resuming a dropped upload, refusing
-// a full server, refusing before anything is exported, stopping before
-// anything is replaced, and the bridge and IPC guards. The whole copy between
-// real servers is server/cloud-move.e2e.test.ts.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -13,7 +7,7 @@ import test from "node:test";
 import vm from "node:vm";
 import environments from "./environments.cjs";
 import localOrigin from "./local-origin.cjs";
-import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, olderVersion, parseMoveEstimate } from "./cloud-move.mjs";
+import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, olderVersion, parseCloudMoveStatus, parseMoveEstimate } from "./cloud-move.mjs";
 import { cloudPlanSnapshot } from "./cloud-account.mjs";
 import { cloudPlanDisk, isCloudHomeEntry, myCloudOrigin } from "./cloud-home.mjs";
 
@@ -22,7 +16,6 @@ const MAGIC = Buffer.from("OMB-WORKSPACE-1\n");
 const UUID = () => "3f9c2a4e-8b1d-4c6e-9a7f-" + randomBytes(6).toString("hex");
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-/** This computer's server: an estimate, an export and its download. */
 function desktop({ bytes = 5000, busy = false, exportError = null, routines, identity = {} } = {}) {
   const archive = Buffer.concat([MAGIC, randomBytes(bytes - MAGIC.length)]), calls = [];
   const id = UUID();
@@ -42,9 +35,8 @@ function desktop({ bytes = 5000, busy = false, exportError = null, routines, ide
   };
 }
 
-/** The destination: pairing, the upload slot, jobs, and a restart. */
 function cloudFake({ freeBytes = 1024 ** 4, volumeBytes, empty = true, failPut = () => false, dropAnswer = () => false, loseAt = 0, busyRestores = 0, storedPart = 0, previewBots = 3, identity = {}, refuse = null,
-  partBytes = 1024, proxyLimit = Infinity } = {}) {
+  partBytes = 1024, proxyLimit = Infinity, leftBehind = null } = {}) {
   const state = { freeBytes, upload: storedPart ? { sha256: "e".repeat(64), bytes: storedPart } : null, received: Buffer.alloc(storedPart), job: null, lastRestoreId: null, restarting: 0,
       previous: null, contents: { bots: 1, rooms: 0, chats: 0 }, empty, discards: 0, restoreAsks: [] },
     log = [], tokens = new Set();
@@ -65,7 +57,7 @@ function cloudFake({ freeBytes = 1024 ** 4, volumeBytes, empty = true, failPut =
     if (refuse && pathname.startsWith("/api/cloud-move")) return json(refuse.status, refuse.body);
     if (pathname === "/api/cloud-move" && (init.method ?? "GET") === "GET") {
       return json(200, { ...identity, contents: state.contents, empty: state.empty, freeBytes: state.freeBytes, ...(volumeBytes ? { volumeBytes } : {}), previous: state.previous, job: state.job, pendingRestore: false, busy: false,
-        lastRestoreId: state.lastRestoreId, rolledBackId: null, partBytes: 1024,
+        lastRestoreId: state.lastRestoreId, leftBehind: state.lastRestoreId ? leftBehind : null, rolledBackId: null, partBytes: 1024,
         upload: state.upload && { ...state.upload, received: state.received.length } });
     }
     const body = init.body && !(init.body instanceof Uint8Array) ? JSON.parse(init.body) : undefined;
@@ -113,7 +105,6 @@ function cloudFake({ freeBytes = 1024 ** 4, volumeBytes, empty = true, failPut =
 }
 
 const CLOUD = { id: "cloud", name: "My Cloud", origin: ORIGIN, kind: "cloud" };
-/** The person's Cloud, as main describes it: the Admin's grant, the plan's disk. */
 function cloudDestination(options = {}) {
   return { ...CLOUD, grant: options.pairHome ?? (async () => ({ origin: ORIGIN, code: "ABCD-EFGH-JKLM", expiresAt: Date.now() + 60_000 })),
     disk: options.cloudDisk ?? (() => null), grow: options.growCloud ?? (async () => ({ supported: false })) };
@@ -140,13 +131,28 @@ test("moves this computer's archive in parts, waits out the restart, signs its s
     assert.ok(f.cloud.state.received.equals(f.local.archive));
     assert.deepEqual([...new Set(f.states.map(state => state.phase))], ["preparing", "exporting", "uploading", "checking", "replacing", "restarting", "done"]);
     assert.equal(f.cloud.log.filter(([method, path]) => method === "PUT" && path.startsWith("/api/cloud-move/upload/")).length, 5);
-    // The export carried no drafts or window state, and a random password.
     const exported = f.local.calls.find(([, route]) => route === "/api/workspace-backup/export")[2];
     assert.deepEqual(exported.clientState, {});
     assert.ok(exported.password.length >= 40);
     assert.equal(f.cloud.tokens.size, 0, "the move's session was signed out");
     assert.deepEqual(readdirSync(join(f.temp, "move")), []);
   } finally { f.done(); }
+});
+
+test("after a move from another kind of computer, says which of its folders and files did not come over", async () => {
+  const leftBehind = { bots: 2, paths: ["C:\\Users\\Ada\\Projects\\site", "C:\\Users\\Ada\\Desktop\\x.docx"] };
+  const f = harness({ cloud: { leftBehind } });
+  try {
+    const result = await f.move.move();
+    assert.equal(result.phase, "done", JSON.stringify(result));
+    assert.deepEqual(result.leftBehind, leftBehind);
+  } finally { f.done(); }
+  const status = { contents: { bots: 1, rooms: 0, chats: 0 }, empty: false, freeBytes: 1 };
+  assert.equal(parseCloudMoveStatus(status).leftBehind, null);
+  assert.equal(parseCloudMoveStatus({ ...status, leftBehind: { bots: -1, paths: [] } }).leftBehind, null);
+  assert.equal(parseCloudMoveStatus({ ...status, leftBehind: { bots: 0, paths: [7, ""] } }).leftBehind, null);
+  assert.deepEqual(parseCloudMoveStatus({ ...status, leftBehind: { bots: 0, paths: ["C:\\a\nb", ...Array(30).fill("D:\\x")] } }).leftBehind,
+    { bots: 0, paths: ["C:\\a b", ...Array(19).fill("D:\\x")] });
 });
 
 const puts = f => f.cloud.log.filter(([method, path]) => method === "PUT" && path.startsWith("/api/cloud-move/upload/")).length;
@@ -157,7 +163,7 @@ test("continues a dropped upload: a part whose answer was lost is sent again wit
     const result = await f.move.move();
     assert.equal(result.phase, "done", JSON.stringify(result));
     assert.ok(f.cloud.state.received.equals(f.local.archive));
-    assert.equal(puts(f), 6); // 0, 1024, 2048 (answer lost), 2048 again, 3072, 4096
+    assert.equal(puts(f), 6);
   } finally { f.done(); }
 });
 
@@ -167,7 +173,7 @@ test("continues from where the Cloud stands when it lost a part", async () => {
     const result = await f.move.move();
     assert.equal(result.phase, "done", JSON.stringify(result));
     assert.ok(f.cloud.state.received.equals(f.local.archive));
-    assert.equal(puts(f), 7); // 0, 1024 (then lost), 2048 refused at 1024, 1024, 2048, 3072, 4096
+    assert.equal(puts(f), 7);
   } finally { f.done(); }
 });
 
@@ -200,7 +206,6 @@ test("a proxy that refuses large parts gets smaller ones; one that refuses even 
     assert.deepEqual(behind.cloud.state.puts.slice(0, 3), [4 * MB, 2 * MB, MB]);
     assert.ok(behind.cloud.state.puts.slice(2).every(size => size <= MB), "every later part fits");
   } finally { behind.done(); }
-  // A proxy allowing 256 KB: parts halve to 512 KB at the least, then the copy says what refused it.
   const tight = harness({ desktop: { bytes: 4 * MB }, cloud: { partBytes: 3 * MB, proxyLimit: 256 * 1024 } });
   try {
     const result = await tight.move.move();
@@ -209,12 +214,10 @@ test("a proxy that refuses large parts gets smaller ones; one that refuses even 
     assert.equal(result.error.partBytes, 512 * 1024);
     assert.match(result.error.message, /^A proxy in front of My Cloud refused a 512 KB upload\. Raise its request size limit \(nginx: client_max_body_size 64m\), then copy again\.$/);
     assert.deepEqual(tight.cloud.state.puts, [3 * MB, 1.5 * MB, 768 * 1024, 512 * 1024]);
-    // Nothing was replaced, and the prepared archive waits: copying again (limit raised) continues without a second export.
     assert.equal(result.resumable, true);
     assert.equal(tight.cloud.state.restoreAsks.length, 0);
     assert.equal(tight.cloud.tokens.size, 0);
   } finally { tight.done(); }
-  // The server's own 413 to the declaration (over 10 GB) stays "too large".
   const declared = harness({ cloud: { refuse: null } });
   try {
     const fetchImpl = declared.cloud.fetchImpl;
@@ -239,31 +242,24 @@ test("refuses a Cloud without room before anything is uploaded, saying how much 
 
 const GB = 1024 ** 3, MARGIN = 256 * 1024 ** 2;
 test("a move is measured against the plan's largest disk when the disk grows, and against today's when it cannot", () => {
-  // The audit's case: about 3.4 GB here, 8.9 GB free on a new 10 GB Cloud.
   const local = 3.4 * GB, free = 8.9 * GB;
   assert.deepEqual(moveFit({ localBytes: 1 * GB, freeBytes: free }), { fit: "now", neededBytes: 3 * GB + MARGIN, freeBytes: free });
   const grow = moveFit({ localBytes: local, freeBytes: free, disk: { maxBytes: 100 * GB, startBytes: 10 * GB } });
   assert.equal(grow.fit, "grow"); assert.equal(grow.sizeGb, 20); assert.equal(grow.maxBytes, 100 * GB);
-  // Personal's disk does not grow: it truly cannot fit, and says the plan's size.
   assert.deepEqual(moveFit({ localBytes: local, freeBytes: free, disk: { maxBytes: 10 * GB, startBytes: 10 * GB } }),
     { fit: "never", neededBytes: 3 * local + MARGIN, freeBytes: free, maxBytes: 10 * GB });
-  // The top plan says so, so nobody is pointed at a larger one.
   assert.equal(moveFit({ localBytes: 40 * GB, freeBytes: 5 * GB, volumeBytes: 10 * GB, disk: { maxBytes: 100 * GB, volumeBytes: 10 * GB, largest: true } }).largest, true);
-  // No plan known: today's free space is all there is; the Cloud's own disk size says why.
   assert.deepEqual(moveFit({ localBytes: local, freeBytes: free }), { fit: "never", neededBytes: 3 * local + MARGIN, freeBytes: free });
   assert.deepEqual(moveFit({ localBytes: local, freeBytes: free, volumeBytes: 10 * GB }), { fit: "never", neededBytes: 3 * local + MARGIN, freeBytes: free, volumeBytes: 10 * GB });
-  // The Cloud's own volume size wins over the plan's starting size; the ask never passes the plan.
   assert.equal(moveFit({ localBytes: 10 * GB, freeBytes: 15 * GB, volumeBytes: 40 * GB, disk: { maxBytes: 100 * GB, startBytes: 10 * GB } }).sizeGb, 60);
   assert.equal(moveFit({ localBytes: 28 * GB, freeBytes: 15 * GB, volumeBytes: 20 * GB, disk: { maxBytes: 100 * GB, startBytes: 10 * GB } }).sizeGb, 90);
   assert.equal(moveFit({ localBytes: 40 * GB, freeBytes: 5 * GB, volumeBytes: 10 * GB, disk: { maxBytes: 100 * GB } }).fit, "never");
-  // A stored part of an earlier upload counts as room.
   assert.equal(moveFit({ localBytes: 1 * GB, freeBytes: 2 * GB, uploadReceived: 2 * GB }).fit, "now");
   assert.deepEqual(parseMoveEstimate({ bots: 1, rooms: 0, chats: 2, bytes: 10, files: 1, routines: 4 }).routines, 4);
   assert.equal(parseMoveEstimate({ bots: 1, rooms: 0, chats: 2, bytes: 10, files: 1, routines: -1 }).routines, undefined);
 });
 
 const OVERVIEW_START = "async function cloudMoveOverview(", IPC_START = "// ── Who asks, and where to", IPC_END = "// ── end Copy this computer here ──";
-/** main's cloudMoveOverview, run against fakes of what it asks. */
 async function mainOverview({ dest, peek, local = { bots: 3, rooms: 1, chats: 12, bytes: 3.4 * GB, files: 100 }, state = { phase: "idle" }, running = false, onServerPage = true }) {
   const source = readFileSync(new URL("./main.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const start = source.indexOf(OVERVIEW_START), end = source.indexOf(IPC_START, start);
@@ -275,25 +271,20 @@ async function mainOverview({ dest, peek, local = { bots: 3, rooms: 1, chats: 12
   return JSON.parse(JSON.stringify(await context.cloudMoveOverview(dest, onServerPage)));
 }
 test("a server's card offers a copy only when it can fit and nothing blocks it: Cloud growth counts only when the Admin says the disk grows", async () => {
-  // The audit's case: 3.4 GB here, 8.9 GB free on a new 10 GB Max Cloud.
   const max = machine => ({ status: "connected", account: { id: "a1", email: "p@example.test" },
     entitlement: { plan: "pro", tier: "max", status: "active", expiresAt: 1, version: 1 }, machine });
   const peek = { status: { empty: true, freeBytes: 8.9 * GB, uploadReceived: 0, volumeBytes: 10 * GB, contents: { bots: 0, rooms: 0, chats: 0 }, previous: null }, refusal: null };
   const cloud = machine => ({ ...CLOUD, disk: () => cloudPlanDisk(max(machine)) });
-  // Today's Admin says nothing about the disk: today's free space decides, so no card offers a copy it would refuse.
   let result = await mainOverview({ dest: cloud({ status: "ready", origin: ORIGIN }), peek });
   assert.equal(result.fit.fit, "never"); assert.equal(result.fit.volumeBytes, 10 * GB); assert.equal(result.suggest, false);
-  // An Admin that says the disk grows to 100 GB: the copy fits once it grows, and the card offers it.
   result = await mainOverview({ dest: cloud({ status: "ready", origin: ORIGIN, disk: { gb: 10, maxGb: 100 } }), peek });
   assert.equal(result.fit.fit, "grow"); assert.equal(result.suggest, true); assert.deepEqual(result.destination, CLOUD); assert.equal(result.blocked, null);
-  // A server's disk never grows, whatever it is asked: its own free space decides.
   const roomy = { ...peek, status: { ...peek.status, freeBytes: 50 * GB } };
   const server = { ...VPS_ENTRY, disk: () => { throw new Error("a server has no plan"); } };
   result = await mainOverview({ dest: server, peek });
   assert.equal(result.fit.fit, "never"); assert.equal(result.suggest, false);
   result = await mainOverview({ dest: server, peek: roomy });
   assert.equal(result.suggest, true); assert.deepEqual(result.destination, VPS_ENTRY);
-  // Each reason a copy cannot start blocks the card, and says which.
   for (const [blocked, input] of [
     ["owner_needed", { peek: { status: null, refusal: "owner_needed" } }],
     ["shared_workspace", { peek: { status: null, refusal: "shared_workspace" } }],
@@ -303,19 +294,14 @@ test("a server's card offers a copy only when it can fit and nothing blocks it: 
   ]) {
     result = await mainOverview({ dest: server, ...input });
     assert.equal(result.blocked, blocked); assert.equal(result.suggest, false);
-    // A server's page learns nothing that identifies this computer.
     assert.equal(JSON.stringify(result).includes("env-1"), false);
   }
-  // A copy running to the Cloud: this server waits, and is not shown the Cloud's progress.
   result = await mainOverview({ dest: server, peek: roomy, running: true, state: { phase: "uploading", action: "move", destination: CLOUD } });
   assert.equal(result.blocked, "busy_elsewhere"); assert.equal(result.busyWith, "My Cloud"); assert.equal(result.phase, "idle"); assert.equal(result.suggest, false);
-  // A finished copy to the Cloud does not keep this server's card away.
   result = await mainOverview({ dest: server, peek: roomy, state: { phase: "done", action: "move", destination: CLOUD } });
   assert.equal(result.phase, "idle"); assert.equal(result.suggest, true);
-  // No session on the Cloud in this window yet is no block: the Admin opens one.
   result = await mainOverview({ dest: cloud({ status: "ready", origin: ORIGIN }), peek: { status: null, refusal: "owner_needed" }, onServerPage: false });
   assert.equal(result.blocked, null); assert.equal(result.cloud, null);
-  // This computer's own page, without a server named: what is here, nothing more.
   result = await mainOverview({ dest: null, peek });
   assert.deepEqual([result.destination, result.blocked, result.suggest], [null, null, false]);
 });
@@ -336,7 +322,6 @@ test("a Cloud whose plan's disk grows makes room first, then the move continues"
 
 test("when the disk cannot grow for the move (an Admin without it, too slow, or over the plan), it says so and moves nothing", async () => {
   const cases = [
-    // An Admin that cannot grow a disk: its own code, so the text never says "try again".
     ["cloud_grow_unsupported", async () => ({ supported: false })],
     ["cloud_grow_unavailable", async () => { throw new Error("offline"); }],
     ["cloud_full", async () => ({ supported: true, refused: true })],
@@ -459,10 +444,8 @@ test("reports a replaced Cloud's backup", async () => {
   } finally { f.done(); }
 });
 
-// ── Any server the person added, through the same engine ──────────────
 const VPS = "https://bots.example.test";
 const VPS_ENTRY = { id: "vps", name: "bots.example.test", origin: VPS, kind: "server" };
-/** This window's own session on a self-hosted server (Chromium's cookie jar, session.defaultSession.fetch). */
 function windowSession({ session = { kind: "session", id: "s1", scopes: ["admin", "client"] }, status = 200, pairing = null } = {}) {
   const calls = [];
   const fetch = async (url, init = {}) => {
@@ -486,11 +469,9 @@ test("a self-hosted server receives the copy through the same engine: the window
     assert.equal(result.routines, 2);
     assert.ok(f.cloud.state.received.equals(f.local.archive));
     assert.ok(f.states.every(state => state.destination?.origin === VPS), "every state names where it goes");
-    // The cookie only asked who it is and minted one admin code, from this origin.
     assert.deepEqual(cookie.calls.map(call => `${call.method} ${call.pathname}`), ["GET /api/auth/session", "POST /api/auth/pairing"]);
     assert.ok(cookie.calls.every(call => call.credentials === "include" && call.origin === VPS));
     assert.deepEqual(cookie.calls[1].body.scopes, ["admin", "client"]);
-    // The copy's bearer session was signed out; the window's session was never touched.
     assert.equal(f.cloud.tokens.size, 0);
     assert.ok(f.cloud.log.some(([method, path]) => method === "POST" && path === "/api/auth/logout"));
     assert.equal(cookie.calls.some(call => call.pathname === "/api/auth/logout"), false);
@@ -525,7 +506,6 @@ test("refuses before exporting anything: another origin's grant, an old server, 
     assert.deepEqual([result.error.destVersion, result.error.localVersion], ["0.1.95", "0.1.96"]);
     assert.match(result.error.message, /^bots\.example\.test runs 0\.1\.95; this computer runs 0\.1\.96/);
   } finally { older.done(); }
-  // The same versions, an empty server from its own page: it copies.
   const same = harness({ dest: serverDestination(windowSession()), desktop: { identity: { appVersion: "0.1.96", environmentId: "env-1" } }, cloud: { identity: { appVersion: "0.1.96", environmentId: "env-2" } } });
   try { assert.equal((await same.move.move({ requireEmpty: true })).phase, "done"); } finally { same.done(); }
 });
@@ -581,7 +561,6 @@ test("says why a server cannot receive a copy before one starts, one reason each
   assert.equal(moveBlocked({ kind: "server", local, cloud: { appVersion: "0.1.90", environmentId: "env-2" } }), "outdated");
   assert.equal(moveBlocked({ kind: "server", refusal: "owner_needed", local }), "owner_needed");
   assert.equal(moveBlocked({ kind: "server", refusal: "unreachable", local }), "unreachable");
-  // The Cloud's Admin opens the session itself: no session in this window yet is not a block there.
   assert.equal(moveBlocked({ kind: "cloud", refusal: "owner_needed", local }), null);
   assert.equal(moveBlocked({ kind: "cloud", refusal: "unreachable", local }), null);
   assert.equal(moveBlocked({ kind: "cloud", refusal: "shared_workspace", local }), "shared_workspace");
@@ -597,12 +576,10 @@ test("where a copy goes comes from main: this computer's page names a saved serv
   const local = { sender: localContents, senderFrame: localFrame };
   assert.deepEqual(ask(local, { id: "vps" }), { entry: saved[0], remote: false });
   assert.deepEqual(ask(local, {}), { entry: null, remote: false });
-  // "cloud": the Cloud's saved entry when there is one, else the verified Cloud by name.
   assert.deepEqual(ask(local, { id: "cloud" }), { entry: { ...saved[1], cloud: true }, remote: false });
   assert.deepEqual(ask(local, { id: "cloud", environments: { environments: [saved[0]], activeId: "local" } }), { entry: { id: "cloud", name: "My Cloud", origin: ORIGIN, cloud: true }, remote: false });
   assert.equal(ask(local, { id: "nope" }), null, "an unknown id");
   assert.equal(ask(local, { id: { origin: "https://evil.example.test" } }), null, "not an id");
-  // The server open in this window asks about itself, and names nothing.
   const vpsFrame = { url: `${VPS}/` }, vpsContents = { mainFrame: vpsFrame };
   const onVps = { environments: saved, activeId: "vps" };
   const page = { sender: vpsContents, senderFrame: vpsFrame };
@@ -657,14 +634,12 @@ test("the bridge forwards only a saved server's id, only from this computer's pa
   const clicked = preload({ remote: true, activation: true });
   await clicked.bridge.cloudMove.start("cloud");
   assert.deepEqual(clicked.invoked, [["cloud-move:start"]]);
-  // Main opens Settings → Servers on a server's copy panel: only "copy" is a panel name.
   const seen = [];
   local.bridge.environments.onOpenSettings((id, panel) => seen.push([id, panel]));
   for (const panel of ["copy", "evil", undefined]) local.listeners.get("workspaces:open-settings")({}, "vps", panel);
   assert.deepEqual(seen, [["vps", "copy"], ["vps", undefined], ["vps", undefined]]);
 });
 
-/** main's copy IPC, run against fakes of what it calls. */
 function mainIpc(extra = {}) {
   const source = readFileSync(new URL("./main.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const start = source.indexOf(IPC_START), end = source.indexOf(IPC_END, start);
@@ -718,7 +693,6 @@ test("production IPC: this computer's page names a saved server or the Cloud, an
     ["overview", VPS_DEST, false], ["move", VPS_DEST, { requireEmpty: false }], ["move", CLOUD_DEST, { requireEmpty: false }], ["restorePrevious", VPS_DEST],
     ["dismiss", VPS_DEST.origin], ["overview", VPS_DEST, false], ["cancel"], ["overview", null, false],
   ]);
-  // A copy needs a server; an id must be one of this app's saved servers.
   assert.throws(() => handlers.get("cloud-move:start")(local), /Choose a server/);
   for (const id of ["nope", { origin: "https://evil.example.test" }]) assert.throws(() => handlers.get("cloud-move:start")(local, id), /only available/);
 });
@@ -726,12 +700,10 @@ test("production IPC: this computer's page names a saved server or the Cloud, an
 test("production IPC: the Cloud is the Cloud even before its address is known, and nothing is local until this computer's origin is", async () => {
   const { context, handlers, calls } = mainIpc();
   const local = { sender: localContents, senderFrame: localFrame };
-  // Signed out of OMB Cloud, or not ready: still the Admin's way in, which then says why it cannot.
   context.cloudAccount = { homeTarget: () => null };
   context.environmentsState = { environments: [SAVED[0]], activeId: "local" };
   await handlers.get("cloud-move:start")(local, "cloud");
   assert.deepEqual(calls, [["move", { id: "cloud", name: "My Cloud", origin: null, kind: "cloud", grant: "function", grows: true }, { requireEmpty: false }]]);
-  // Until main knows this computer's own origin, its page is not this computer's: fail closed.
   context.senderIsLocal = () => false;
   for (const channel of ["cloud-move:state", "cloud-move:start", "cloud-move:restore-previous"]) assert.throws(() => handlers.get(channel)(local, "vps"), /only available/);
   assert.throws(() => handlers.get("cloud-move:state")(local), /only available/);
@@ -743,12 +715,9 @@ test("production IPC: a server's own page gets only itself, never starts a copy 
   context.environmentsState = { environments: SAVED, activeId: "vps" };
   const page = { sender: vpsContents, senderFrame: vpsFrame };
   await handlers.get("cloud-move:state")(page);
-  // What it says about itself (owner, empty) is its own word: its Copy opens
-  // this computer's Settings → Servers on its copy, and sends nothing.
   assert.deepEqual(JSON.parse(JSON.stringify(await handlers.get("cloud-move:start")(page))), { phase: "idle" });
   await handlers.get("cloud-move:dismiss")(page);
   assert.deepEqual(calls, [["overview", VPS_DEST, true], ["openSettings", "vps", "copy"], ["dismiss", VPS_DEST.origin], ["overview", VPS_DEST, true]]);
-  // A server at the Cloud's address that this app has not verified (signed out of OMB Cloud): the same.
   calls.length = 0;
   context.mainWindow.webContents = cloudContents;
   context.environmentsState = { environments: SAVED, activeId: "cloud-entry" };
@@ -756,7 +725,6 @@ test("production IPC: a server's own page gets only itself, never starts a copy 
   await handlers.get("cloud-move:start")({ sender: cloudContents, senderFrame: cloudFrame });
   assert.deepEqual(calls, [["openSettings", "cloud-entry", "copy"]]);
   context.cloudAccount = { homeTarget: () => ({ origin: ORIGIN }) };
-  // Even were a server taken for the Cloud, its page starts nothing unless it is the verified Cloud's page.
   calls.length = 0;
   context.mainWindow.webContents = vpsContents;
   context.environmentsState = { environments: SAVED, activeId: "vps" };
@@ -766,23 +734,19 @@ test("production IPC: a server's own page gets only itself, never starts a copy 
   context.isCloudHomeEntry = isCloudHomeEntry;
   context.mainWindow.webContents = vpsContents;
   context.environmentsState = { environments: SAVED, activeId: "vps" };
-  // It names no destination, and never swaps back.
   assert.throws(() => handlers.get("cloud-move:start")(page, "cloud-entry"), /only available/);
   assert.throws(() => handlers.get("cloud-move:restore-previous")(page), /only available/);
-  // It stops only a copy to itself.
   calls.length = 0;
   setState({ phase: "uploading", destination: { origin: ORIGIN } });
   await handlers.get("cloud-move:cancel")(page);
   setState({ phase: "uploading", destination: { origin: "https://bots.example.test" } });
   await handlers.get("cloud-move:cancel")(page);
   assert.deepEqual(calls, [["cancel"]]);
-  // The person's Cloud, open in this window: the Cloud's way in, the same rule.
   calls.length = 0;
   context.mainWindow.webContents = cloudContents;
   context.environmentsState = { environments: SAVED, activeId: "cloud-entry" };
   await handlers.get("cloud-move:start")({ sender: cloudContents, senderFrame: cloudFrame });
   assert.deepEqual(calls, [["move", CLOUD_DEST, { requireEmpty: true }]]);
-  // A subframe, another window, a page that is not the active server, or a companion: nothing.
   for (const event of [{ sender: cloudContents, senderFrame: { url: `${ORIGIN}/` } }, { sender: {}, senderFrame: cloudFrame }, { sender: cloudContents, senderFrame: { url: "https://evil.example.test/" } }]) {
     for (const channel of ["cloud-move:state", "cloud-move:start", "cloud-move:cancel", "cloud-move:dismiss", "cloud-move:restore-previous"]) assert.throws(() => handlers.get(channel)(event), /only available/);
   }
@@ -795,10 +759,8 @@ test("production IPC: a finished copy opens the server it went to", async () => 
   context.result = { phase: "done", action: "move" };
   const local = { sender: localContents, senderFrame: localFrame };
   await handlers.get("cloud-move:start")(local, "vps");
-  // The Cloud without a saved entry yet: the Cloud's own connection adds and opens it.
   context.environmentsState = { environments: [SAVED[0]], activeId: "local" };
   await handlers.get("cloud-move:start")(local, "cloud");
-  // Already open (the verified Cloud's own page started it): it reloads.
   context.mainWindow.webContents = cloudContents;
   context.environmentsState = { environments: SAVED, activeId: "cloud-entry" };
   const cloudPage = { sender: cloudContents, senderFrame: cloudFrame };
@@ -820,12 +782,10 @@ test("a server's Copy opens this computer's Settings → Servers on that server'
     navigateMainWindow: url => calls.push(["navigate", url]), senderIsLocal: ({ sender }) => sender === localContents,
     mainWindow: { isDestroyed: () => false, webContents: { ...vpsContents, send: (...args) => calls.push(["send", ...args]) } } });
   vm.runInContext(`${source.slice(start, end)}\nglobalThis.openWorkspaceSettings = openWorkspaceSettings;`, context);
-  // On a server's page: this window switches to this computer, on that server's copy panel.
   context.openWorkspaceSettings("vps", "copy");
   context.openWorkspaceSettings("vps");
   assert.deepEqual(calls, [["persist", "local"], ["navigate", `${LOCAL}/?desktop-settings=workspaces&copy-to=vps`],
     ["persist", "local"], ["navigate", `${LOCAL}/?desktop-settings=workspaces&share-computer=vps`]]);
-  // Already on this computer's page: one message names the server and the panel.
   calls.length = 0;
   const send = (...args) => calls.push(["send", ...args]);
   context.mainWindow = { isDestroyed: () => false, webContents: localContents };
@@ -838,15 +798,12 @@ test("a server's Copy opens this computer's Settings → Servers on that server'
 });
 
 test("the Cloud's setup checklist can open the lending switch here, and nothing else can", async () => {
-  // The bridge carries no arguments, and the Cloud's own page gets it.
   const local = preload();
   await local.bridge.cloudLending.open({ origin: "https://evil.example.test", folders: ["/"] });
   assert.deepEqual(local.invoked, [["cloud-lending:open"]]);
   const page = preload({ remote: true });
   assert.ok(page.bridge.cloudLending);
   assert.deepEqual(Object.keys(page.bridge.cloudLending), ["open"]);
-  // Main opens Settings → OMB Cloud for this window's local page or the
-  // person's verified Cloud in it, and refuses any other page.
   const source = readFileSync(new URL("./main.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const start = source.indexOf(IPC_START), end = source.indexOf(IPC_END, start);
   const handlers = new Map(), opened = [];
@@ -884,7 +841,6 @@ test("Settings on the person's own Cloud shows the plan read only, and can only 
   await page.bridge.cloudPlan.state({ origin: "https://evil.example.test" });
   await assert.rejects(page.bridge.cloudPlan.manage(), /Choose Manage/);
   await assert.rejects(page.bridge.cloudPlan.useThisComputer(), /Choose Use this computer/);
-  // The trial's popup says it was shown with no click and no argument: main knows which notice was due.
   await page.bridge.cloudPlan.noticeSeen("ended", { day: "2099-01-01" });
   assert.deepEqual(page.invoked, [["cloud-plan:state"], ["cloud-plan:notice-seen"]]);
   const clicked = preload({ remote: true, activation: true });
@@ -919,20 +875,16 @@ test("Settings on the person's own Cloud shows the plan read only, and can only 
   for (const sender of [{ sender: cloudContents, senderFrame: { url: "https://other.example.test/" } }, { sender: {}, senderFrame: cloudFrame }]) {
     for (const channel of ["cloud-plan:state", "cloud-plan:manage", "cloud-plan:local", "cloud-plan:notice-seen"]) assert.throws(() => handlers.get(channel)(sender), /only available/);
   }
-  // The trial's popup: main records the notice due for this account's own state, never what the page sends.
   calls.length = 0;
   await handlers.get("cloud-plan:notice-seen")(event, "ended");
   assert.deepEqual(calls, [["notice-seen", account]]);
   calls.length = 0;
-  // ...and says which notice is due, with the trial it is about.
   const trial = { state: "ending", tier: "max", endsAt: 1_900_000_000_000, amount: 9900, chargeAt: null, holdUntil: null, deleteAt: 1_900_259_200_000, keep: "portal" };
   const onTrial = { ...account, trial };
   context.cloudAccount = { homeTarget: () => ({ origin: ORIGIN }), state: () => onTrial };
   context.cloudTrialNotices = () => ({ due: state => state === onTrial ? "ending" : null, seen: () => {} });
   assert.deepEqual(await handlers.get("cloud-plan:state")(event), { status: "paid", tier: "max", trial, notice: "ending" });
   context.cloudAccount = { homeTarget: () => ({ origin: ORIGIN }), state: () => account };
-  // The sign-in is being checked, or has ended: there is no verified Cloud to
-  // connect to, but the one this account last verified still answers, never an error.
   let current = { status: "reauth-required", message: "expired", account: account.account, lastPlan: { tier: "max", active: true } };
   context.cloudAccount = { homeTarget: () => null, state: () => current };
   assert.throws(() => handlers.get("cloud-plan:state")(event), /only available/);
@@ -942,15 +894,11 @@ test("Settings on the person's own Cloud shows the plan read only, and can only 
   assert.deepEqual(await handlers.get("cloud-plan:state")(event), { status: "checking", tier: "max" });
   await handlers.get("cloud-plan:local")(event);
   assert.deepEqual(calls.at(-1), ["switch", environments.LOCAL_ID]);
-  // Only this account's Cloud, and only on that Cloud's own page.
   context.rememberedHome = { accountId: "someone-else", origin: ORIGIN };
   assert.throws(() => handlers.get("cloud-plan:state")(event), /only available/);
   assert.throws(() => handlers.get("cloud-lending:open")(event), /only available/);
   context.rememberedHome = { accountId: "a1", origin: ORIGIN };
   assert.throws(() => handlers.get("cloud-plan:state")({ sender: cloudContents, senderFrame: { url: "https://other.example.test/" } }), /only available/);
-  // One rule for "this page is my Cloud" (cloud-home.mjs myCloudOrigin), as for
-  // its microphone: the checklist's lending switch opens here too. Lending
-  // itself still waits for a verified sign-in (computer-sharing.mjs cloudLendingVerdict).
   await handlers.get("cloud-lending:open")(event);
   assert.deepEqual(calls.at(-1), ["lending"]);
   context.cloudAccount = { homeTarget: () => ({ origin: ORIGIN }), state: () => account };

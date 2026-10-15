@@ -16,7 +16,7 @@ import { toolDetailPreview } from "../tool-summary.ts";
 import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
 import { assertImageTransport, chatImageBudget, chatToolImages, chatUserContent, type ChatContentPart } from "./chat-images.ts";
 import { promptHalves, volatileContextNote, withContextNote } from "./prompt-split.ts";
-import { createChatToolApproval } from "./chat-tool-approval.ts";
+import { createChatToolApproval, refusal } from "./chat-tool-approval.ts";
 import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, object, type ChatToolCall } from "./openai-chat-protocol.ts";
 import { appendNative } from "./native.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
@@ -63,8 +63,7 @@ interface CompletionJson {
   x_groq?: { usage?: CompletionJson["usage"] };
 }
 
-/** The message of a JSON error body a provider returned with HTTP 200.
- *  MiniMax reports auth, balance, and parameter failures as `base_resp`. */
+/** MiniMax reports auth, balance and parameter failures as `base_resp` with HTTP 200. */
 function providerError(json: CompletionJson): string | null {
   if (typeof json.error === "string") return json.error;
   const error = object(json.error);
@@ -77,13 +76,9 @@ function providerError(json: CompletionJson): string | null {
   return null;
 }
 
-/** An error envelope's machine code ("invalid_api_key"), never a sentence. */
 const MACHINE_CODE = /^[a-z][a-z0-9_]*$/;
 
-/** What a failed HTTP response says, for the person: a JSON error envelope's
- *  own message ("Your team has used all available credits…") instead of the
- *  envelope, or the raw body when it carries none. The envelope's machine
- *  code follows the message, after the cut, because trial-credit.ts reads it. */
+/** A failed response's own error message, then its machine code (trial-credit.ts parses it), else the raw body. */
 function httpErrorDetail(body: string, limit = 500): string {
   let json: CompletionJson | undefined;
   try { json = object(JSON.parse(body)); } catch { json = undefined; }
@@ -115,25 +110,18 @@ interface RuntimeOptions<Config> {
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
   reasoning?: boolean;
-  /** Field the provider reads replayed reasoning from; Cerebras rejects
-   * `reasoning_content` and takes `reasoning`. */
+  /** Cerebras rejects `reasoning_content` and takes `reasoning`. */
   reasoningReplayField?: "reasoning_content" | "reasoning";
   contentText?: (content: unknown) => string;
   billing?: "metered";
   includeUsageInCompleted?: boolean;
   noBodyError?: string;
   retryScale?: number;
-  /** Explicit text-only mode for endpoints/models that cannot accept tools. */
   tools?: boolean;
-  /** Opt-in structured images and harness-authorized computer/browser MCP. */
   computerUse?: boolean;
-  /** Whether a model accepts image parts (default: every model does). A
-   * text-only model keeps the computer and browser tools, whose snapshots
-   * and page reads are text, but never receives a screenshot or attachment. */
+  /** A text-only model keeps the computer and browser tools but never receives a screenshot or attachment. */
   imageInput?: (model: string) => boolean;
-  /** Smaller models sometimes announce a step ("Checking the page first —")
-   * and end the turn without calling a tool. When set, such a reply gets one
-   * nudge per turn to act; a question, or anything longer, ends the turn. */
+  /** Smaller models announce a step and end the turn without calling a tool; such a reply gets one nudge. */
   nudgeAnnouncedAction?: boolean;
 }
 
@@ -149,47 +137,23 @@ const asError = (value: unknown): Error =>
 
 class UnsupportedChatToolsError extends Error {}
 
-/** One turn's safety stops: model steps, and tool calls across all of them.
- * Tool-heavy models (a memory server, a browser) take dozens of steps, and
- * a stopped turn cannot simply be continued — the next turn is rebuilt from
- * the text transcript, which holds none of these tool results. The calls
- * that ran have taken effect, so the stop asks only for what is left: a
- * retry of the whole task would repeat them. */
 const MAX_CHAT_ROUNDS = 64;
 const MAX_TURN_TOOL_CALLS = 200;
 const stoppedAfter = (count: string) =>
   `Stopped after ${count} without a final answer. The steps so far already ran, so ask only for what's left.`;
 
 interface DeliveredUserMessage {
-  /** The turn text the harness passed, recall left out, before any note. */
   text: string;
-  /** That text as it went to the provider, which is how it is replayed. */
   sent: string;
-  /** The trimmed volatile half, when this message carried its note. */
   volatile?: string;
-  /** Fingerprint of the message just before it when it was sent ("" for
-   * none), so an identical text sent elsewhere later is not mistaken for it. */
   after: string;
 }
 
-/** Bytes replaying messages as sent may add to the stored transcript, which
- * the harness already bounds. Spent oldest first: an earlier message keeps
- * its replayed form for as long as it stays in the window, so a request
- * that runs out of budget changes only at the end of the previous one. */
 const MAX_REPLAY_EXTRA_BYTES = 24_000;
-/** Threads remembered at once; the least recently sent is forgotten first. */
 const MAX_DELIVERED_THREADS = 256;
 
 const fingerprint = (text: string) => createHash("sha256").update(text).digest("base64url");
 
-/** Line a stored transcript up with what its user messages carried. The
- * stored text is what the person typed, which the turn text ends with after
- * whatever the harness put in front (the clock), so a record matches a
- * message that is its whole text or its last paragraph, and follows the
- * same message it followed when sent. The first message of the window
- * matches on text alone, since what came before it may have been dropped.
- * Matching runs newest first, because the window drops the oldest
- * messages; a message no record matches is replayed as stored. */
 function replayDelivered(
   transcript: ReadonlyArray<{ role: "user" | "assistant"; text: string }>,
   records: readonly DeliveredUserMessage[],
@@ -224,7 +188,6 @@ function replayDelivered(
 
 const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
 
-/** A short reply that only announces a next step, with nothing to answer. */
 export function announcesAction(text: string): boolean {
   const reply = text.trim();
   if (!reply || reply.length > 400 || reply.includes("?")) return false;
@@ -251,8 +214,7 @@ function rejectsToolsParameter(status: number, body: string): boolean {
 
 class UnsupportedReasoningReplayError extends Error {}
 
-/** DeepSeek-style providers need `reasoning_content` echoed on a tool-call
- *  assistant message; strict endpoints such as Groq reject the property. */
+/** DeepSeek-style providers need `reasoning_content` echoed on a tool-call message; Groq rejects it. */
 function rejectsReasoningReplay(status: number, body: string): boolean {
   if (status !== 400 && status !== 422) return false;
   let envelope: Record<string, unknown> | undefined;
@@ -262,11 +224,8 @@ function rejectsReasoningReplay(status: number, body: string): boolean {
     /\b(?:unsupported|not supported|unknown|unrecognized|unexpected|not permitted|not allowed)\b/i.test(message);
 }
 
-/** Groq checks each generated tool call against the request and fails the
- *  completion with `tool_use_failed` when the call is invalid: most often a
- *  tool it was not offered (gpt-oss inventing a "json" tool to answer in
- *  JSON), sometimes arguments that miss the schema. `refusal` is the
- *  provider's whole error object, `failed_generation` included. */
+/** Groq fails a completion with `tool_use_failed` when a generated tool call is invalid: usually a
+ *  tool it was not offered (gpt-oss inventing a "json" tool), sometimes arguments missing the schema. */
 class RejectedToolCallError extends ChatProtocolError {
   readonly refusal: Record<string, unknown>;
   constructor(message: string, refusal: Record<string, unknown>) {
@@ -293,10 +252,6 @@ function completionError(json: CompletionJson, label: string): ChatProtocolError
   return refusal ? new RejectedToolCallError(text, refusal) : new ChatProtocolError(text);
 }
 
-/** What a failed turn says once the provider refused every attempt: what
- *  happened, the next step, then the provider's words. The refused call ran
- *  nothing, but tool calls from earlier steps of the turn did, and a Retry
- *  of the whole request would repeat them. */
 function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
   const words = typeof error.refusal.message === "string" ? error.refusal.message : error.message;
   const tool = /attempted to call tool '([^']+)'/.exec(words)?.[1];
@@ -307,7 +262,6 @@ function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: bool
   return `The model ${what}. ${next} Provider: ${words.slice(0, 200)}`;
 }
 
-/** Shared runtime for the three providers that speak OpenAI chat completions. */
 export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>): ProviderInstance {
   const { input } = options;
   const listeners = new Set<RuntimeEventListener>();
@@ -316,29 +270,12 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     turnId: string;
     done: Promise<void>;
     approval: ReturnType<typeof createChatToolApproval>;
-    /** Mid-turn user input parked by adapter.steer. Spliced into the
-     * request array at the top of the next loop round — the one place the
-     * array is between rounds, never mid-tool-batch — so the model reads
-     * it before its next completion. Kept out of messages[] until then:
-     * a parked item must never look like delivered input. */
+    /** Mid-turn input parked by adapter.steer, spliced in at the next round, never mid-tool-batch. */
     asides: string[];
   }>();
-  /** Models whose endpoint rejected an echoed `reasoning_content`. In memory
-   * only: later rounds and turns omit the field instead of failing again. */
   const reasoningReplayRejected = new Set<string>();
-  /** What each user message of a thread actually carried, oldest first. The
-   * stored transcript holds only what the person typed, while the request
-   * carried the turn text (the clock) and maybe a context note; replaying
-   * the stored text would rewrite history the provider has cached. In memory
-   * only: after a restart a thread replays as stored, as it always did. */
   const delivered = new Map<string, DeliveredUserMessage[]>();
-  /** "Always allow this session" grants by thread and bot: the exact tools a
-   * person allowed one bot for the rest of the conversation. A room runs
-   * every member on the room's thread, and one bot's allow is not another's.
-   * This runtime has no native session, so the conversation's lives as long
-   * as this instance does, as an ACP agent's does with its process; none
-   * survives a restart. Not cleared on `sessionReset`: with no cursor to
-   * resume, the harness sends that on nearly every turn of this runtime. */
+  /** Not cleared on `sessionReset`: with no cursor the harness sends it on nearly every turn. */
   const sessionGrants = new Map<string, Set<string>>();
 
   const emit = (event: RuntimeEvent) => {
@@ -361,7 +298,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     tools: ChatToolDefinition[] = [],
     onUsage?: TextGenerationOptions["onUsage"],
   ): Promise<Completion> => {
-    // Idle timer that is renewed on every received chunk during streaming
     const timeoutController = new AbortController();
     let idleTimer: NodeJS.Timeout | null = null;
     const resetIdleTimer = () => {
@@ -466,12 +402,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         try {
           chunk = JSON.parse(data) as CompletionJson;
         } catch {
-          // A tail left in the buffer when the socket closed is an INCOMPLETE
-          // frame, not a bad one: a stop, an abort or a dropped connection all
-          // end mid-frame. Only a properly newline-terminated frame that will
-          // not parse means the provider actually sent something malformed.
-          // Counting the tail here turned a stopped turn into a hard,
-          // non-retryable failure (`calls.finish(finishReason, malformedFrame)`).
+          // A tail left when the socket closed is an incomplete frame (stop, abort, drop), not a malformed one.
           if (!atEof) malformedFrame = true;
           return false;
         }
@@ -544,15 +475,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
   const seesImages = (turn: SendTurnInput) =>
     options.imageInput?.(turn.model || options.models().default) ?? true;
   const messagesFor = (turn: SendTurnInput): OpenAIChatMessage[] => {
-    // The system message is the head of the resent prefix, so only the
-    // stable half belongs there: a volatile edit must not re-price the
-    // tools, instructions and transcript the provider already cached.
-    // The volatile half rides a user message instead. Earlier user messages
-    // are replayed as they were sent, notes included, so the previous
-    // request stays a prefix of this one and a note the model already has
-    // is not repeated; the newest message carries one only when the replayed
-    // history does not already end on the current copy. Automatic recall
-    // informed its own turn only and is not replayed.
     const halves = promptHalves(turn);
     const transcript = turn.transcript ?? [];
     const replay = replayDelivered(transcript, delivered.get(turn.threadId) ?? []);
@@ -623,8 +545,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     if (sessionGrants.size > MAX_DELIVERED_THREADS) sessionGrants.delete(sessionGrants.keys().next().value!);
     const approval = createChatToolApproval({
       signal: abort.signal,
-      // A guest's turn neither uses the owner's grants nor keeps one: its
-      // cards offer allow once only (index.ts request.opened).
       granted: turn.guestConfined ? undefined : granted,
       open: (ask) => emit({
         ...base(turn.threadId, turnId), type: "request.opened", requestType: "permission",
@@ -670,22 +590,18 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         if (!parsed.ok) throw new Error(parsed.error);
         const scope = parsed.scope;
         tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal, options.computerUse, scope, turn.mcpCallTimeoutMs);
+        for (const { server, reason } of tools.skipped) {
+          emit({ ...base(turn.threadId, turnId), type: "runtime.notice", message: `MCP server "${server}" was skipped for this turn: ${safeText(reason)}` });
+        }
         const questionAllowed = options.tools !== false && allowsTool(scope, { kind: "native", name: ASK_USER_TOOL });
         let optionalQuestionOnly = questionAllowed && tools.definitions.length === 0;
-        // The runtime's one built-in tool rides the same list: ask_user is
-        // how a chat-completions engine reaches a person. An MCP server that
-        // squats the name cannot shadow it — dispatch intercepts the name
-        // before validate — but the definition is then skipped so the list
-        // never advertises two.
+          // An MCP server squatting ask_user cannot shadow it (dispatch intercepts the name); skip its definition.
         if (questionAllowed && !tools.definitions.some((definition) => definition.function.name === ASK_USER_TOOL)) {
           tools.definitions.push(ASK_USER_TOOL_DEFINITION);
         }
         for (let round = 0; round < MAX_CHAT_ROUNDS; round++) {
           abort.signal.throwIfAborted();
-          // Drain parked mid-turn input here, before the next completion
-          // request: the previous round's tool results are complete, so a
-          // user message lands on a consistent array (never inside a tool
-          // batch) and the provider sees it as the newest input.
+            // Between rounds, never inside a tool batch.
           const parked = turnEntry.asides.splice(0);
           if (parked.length) messages.push({ role: "user", content: parked.join("\n\n") });
           native("out", options.nativeLog.outgoing(turn, messages, model, tools.definitions));
@@ -697,12 +613,10 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             const pending = { assistant_text: "", reasoning_text: "" };
             const delta = (text: string, streamKind: keyof typeof pending, flush = false) => {
               let combined = pending[streamKind] + text;
-              // Mask complete matches before holding a suffix: otherwise a key
-              // such as "abab" could be split at its own repeated prefix.
+              // Mask whole matches before holding a suffix, or "abab" could split at its own repeated prefix.
               for (const secret of secrets) if (secret) combined = combined.split(secret).join("[redacted]");
               let hold = 0;
-              // A configured credential can straddle chunks. Hold any suffix
-              // that could be its prefix until the next chunk disambiguates it.
+              // A configured credential can straddle chunks: hold any suffix that could be its prefix.
               if (!flush) for (const secret of secrets) {
                 for (let length = Math.min(secret.length - 1, combined.length); length > hold; length--) {
                   if (combined.endsWith(secret.slice(0, length))) { hold = length; break; }
@@ -724,20 +638,13 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             } catch (value) {
               const error = asError(value);
               const verdict = classifyError(error);
-              // A schema rejection of the echoed reasoning executed nothing
-              // upstream, so the same transcript without that one property
-              // repeats no operation. The error needs the field in the
-              // request, so the stripped resend cannot loop.
+              // A rejected reasoning echo executed nothing upstream, so the stripped resend repeats nothing.
               if (error instanceof UnsupportedReasoningReplayError && !streamed && !abort.signal.aborted) {
                 reasoningReplayRejected.add(model);
                 for (const message of messages) delete message.reasoning_content;
                 continue;
               }
-              // A refused tool call ran nothing, so the same request goes
-              // again; the model usually answers properly next time. Not once
-              // answer text streamed: the phones' live bubble would join it to
-              // the next attempt's. Streamed thinking stays thinking. Each
-              // refusal, failed_generation included, goes to the native log.
+              // A refused tool call ran nothing, so the request goes again, but not once answer text streamed.
               if (error instanceof RejectedToolCallError) {
                 native("in", { refused: "tool_use_failed", attempt: attempt + 1, error: error.refusal });
                 if (!answerStreamed && !abort.signal.aborted && attempt < RETRY_MAX_ATTEMPTS - 1) {
@@ -746,9 +653,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 }
                 if (!abort.signal.aborted) throw new ChatProtocolError(refusedToolCallFailure(error, seenCalls.size > 0));
               }
-              // Only our optional question changed a previously plain request.
-              // A structured parameter rejection has executed nothing; never
-              // downgrade mounted tools, streamed output or a handled call.
+              // A structured parameter rejection executed nothing; never downgrade mounted tools or a handled call.
               if (optionalQuestionOnly && round === 0 && !streamed && !seenCalls.size && !abort.signal.aborted &&
                   error instanceof UnsupportedChatToolsError && verdict.reason === "invalid_request") {
                 optionalQuestionOnly = false;
@@ -786,9 +691,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               continue;
             }
             if (toolFailed) {
-              // A failed or denied tool op ends the turn: the final answer is
-              // not an execution receipt, and a person's "no" must never be
-              // answered with a prompt to run the same thing again.
+              // A failed or denied tool op ends the turn: a person's "no" is never answered with another attempt.
               stopReason = "tool_error";
               throw new ChatProtocolError("One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.");
             }
@@ -801,7 +704,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             if (seenCalls.has(call.id)) throw new ChatProtocolError("provider reused a tool-call ID; refusing to repeat an operation");
             seenCalls.add(call.id);
           }
-          // The whole batch is refused before any of it runs.
           if (seenCalls.size > MAX_TURN_TOOL_CALLS) throw new ChatProtocolError(stoppedAfter(`${MAX_TURN_TOOL_CALLS} tool calls`));
           messages.push({ role: "assistant", content: completion.text || null, tool_calls: completion.toolCalls,
             ...(completion.protocolReasoning && !reasoningReplayRejected.has(model) ? { [options.reasoningReplayField ?? "reasoning_content"]: completion.protocolReasoning } : {}),
@@ -821,10 +723,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               const inputPreview = preview(args);
               if (call.function.name === ASK_USER_TOOL) {
                 if (!questionAllowed || !allowsTool(scope, { kind: "native", name: ASK_USER_TOOL })) throw new Error("Tool selection excludes this tool");
-                // A question is the person's card, not a permission, so it is
-                // handled before the gate below: under Full access that gate
-                // would auto-run an unanswered ask, and under Ask it would
-                // render Allow/Deny over a question nobody can answer that way.
+                // A question goes before the gate: Full would auto-run an unanswered ask, Ask would show Allow/Deny.
                 const questions = parseAskQuestions(args);
                 abort.signal.throwIfAborted();
                 emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
@@ -835,16 +734,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                   denials.push(ASK_USER_TOOL);
                   result = { ok: false, text: "The ask_user arguments are malformed: pass a JSON object with a questions array of one to six questions, each with a question string and at most twelve options carrying a label. Ask again with valid arguments." };
                 } else {
-                  // The tool result is the card's Q:/A: reply verbatim — never
-                  // a summary, and never words the person did not send.
                   const answer = await approval.question(ASK_USER_TOOL, askQuestionSummary(questions), questions);
                   abort.signal.throwIfAborted();
                   if (answer === null) {
-                    // An unanswered question is absence, not a "no": the card
-                    // timed out or the person closed it. Keep the turn alive so
-                    // the model's final response stands; it is told not to
-                    // guess and may ask again later. An explicit deny of a
-                    // permission stays terminal.
                     result = { ok: true, text: "The person did not answer this question. Do not guess an answer; ask again later or proceed without it." };
                   } else {
                     result = { ok: true, text: answer };
@@ -852,17 +744,12 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 }
               } else {
                 tools.validate(call.function.name, args);
-                // A searched server's call_tool is shown as the tool it runs;
-                // its catalog reads ask nothing, as listing tools never did.
                 const shown = tools.view(call.function.name, args as Record<string, unknown>);
                 const shownPreview = shown.input === args ? inputPreview : preview(shown.input);
-                // Full access is the person's explicit grant to answer every
-                // prompt. This runtime has no provider reviewer to hand it to,
-                // so it is honoured here: without it every single tool call on
-                // an OpenAI-compatible engine stops for a card, and a Chief's
-                // delegated Full access cannot help either.
-                const allowed = turn.approvalMode === "full" || !shown.ask
-                  || await approval.ask(shown.title, shownPreview ?? "This tool has no arguments.", shown.grant);
+                // This runtime has no provider reviewer, so Full access is honoured here.
+                const floored = approval.floored({ full: turn.approvalMode === "full", threadId: turn.threadId, botId: turn.botId, shown, summary: shownPreview });
+                const allowed = !floored && (turn.approvalMode === "full" || !shown.ask
+                  || await approval.ask(shown.title, shownPreview ?? "This tool has no arguments.", shown.grant));
                 abort.signal.throwIfAborted();
                 emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
                   title: shown.title, ...(shownPreview ? { input: shownPreview } : {}),
@@ -884,7 +771,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                   }
                 } else {
                   denials.push(shown.title);
-                  result = { ok: false, text: "Permission denied or expired; the tool was not executed." };
+                  result = { ok: false, text: refusal(floored, (message) => emit({ ...base(turn.threadId, turnId), type: "runtime.notice", message })) };
                 }
               }
             } catch (error) {
@@ -923,11 +810,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         if (failure && (!abort.signal.aborted || cleanupFailed)) {
           emit({ ...base(turn.threadId, turnId), type: "runtime.error", message: failure, terminal: !abort.signal.aborted });
         }
-        // Automatic continuity: a resumable terminal (the step or tool-call
-        // cap) persists a handoff and raises cap.exhausted so the harness
-        // can start a `Continue:` thread. Interruptions, tool errors and
-        // provider errors (a rate limit included) are excluded by
-        // classifyContinuable.
         if (!ok && !abort.signal.aborted) {
           const continuable = classifyContinuable(stopReason, failure);
           if (continuable) {
@@ -976,14 +858,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         browserMcp: options.tools !== false, nativeImageInput: true, images: true } : {}),
         sessionModelSwitch: "in-session", customMcp: options.tools !== false, agentsMcp: options.tools !== false, composioMcp: options.tools !== false,
         dataMcp: options.tools !== false,
-        // The runtime owns the whole tool loop, so it can always take a
-        // user message mid-turn: park it, deliver before the next completion.
         queueing: true,
-        // No shell and no file tool on the host at all: only MCP tools, each
-        // call a card in Ask unless "Always allow this session" covers it,
-        // and the harness's own agents tools none, as on Claude and Codex
-        // (the Boat's `exec` runs on the Boat). A guest's turn is as confined
-        // as it gets.
         guestTurns: "confined" },
       sendTurn,
       interruptTurn: async (threadId, turnId) => {
@@ -995,12 +870,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       respondToRequest: async (threadId, requestId, decision) =>
         active.get(threadId)?.approval.answer(requestId, decision.behavior, decision.message, decision.always) ?? "unavailable",
       steer: async (threadId, text) => {
-        // This engine has no external session to respect — parking the
-        // words in the live turn's entry IS delivery into the loop, so a
-        // successful park is "steered" and a missing turn is the only
-        // refusal. The words ride the array at the next round boundary;
-        // if the turn settles first, the harness's transcript record
-        // keeps them for the next turn (they are never re-sent here).
         const running = active.get(threadId);
         if (!running) return "refused";
         running.asides.push(text);
@@ -1017,8 +886,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         return () => listeners.delete(listener);
       },
     },
-    generateText: async (prompt, { signal, onUsage } = {}) => {
-      const model = options.generateModel?.() ?? options.models().default;
+    generateText: async (prompt, { signal, onUsage, model: named } = {}) => {
+      const model = named ?? options.generateModel?.() ?? options.models().default;
       const { text, reasoning, toolCalls } = await complete([{ role: "user", content: prompt }], model, false, signal, undefined, [], onUsage);
       if (toolCalls.length) throw new ChatProtocolError("provider returned tool calls to a text-only helper");
       return text.trim() ? text : reasoning;

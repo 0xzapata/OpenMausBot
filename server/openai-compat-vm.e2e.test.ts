@@ -1,8 +1,4 @@
-// Parity check for #1856: an openai-compat bot on a Local VM must receive the
-// same computer/browser tools a claudeAgent bot receives on the same surface.
-// The container boundary is the group-local-vm fixture (a state file plus a
-// fake `podman` binary that speaks MCP over stdio); the provider is an
-// in-process OpenAI-compatible stub that records the tool list per request.
+// The container boundary is the group-local-vm fixture; the provider is an in-process stub recording the tool list per request.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -75,9 +71,7 @@ async function until<T>(read: () => T | Promise<T>, accept: (value: T) => boolea
   }
 }
 const toolNames = (request: ChatRequest | undefined) => (request?.tools ?? []).map(tool => tool.function.name);
-// The native tee (<data>/native/<thread>.ndjson) is what a person pastes into
-// a bug report; the openai-compat "out" line must carry the request's tool
-// names so a dropped-tool report can be localized to the proxy hop.
+// The native tee is what a person pastes into a bug report, so its "out" line must carry the request's tool names.
 const nativeToolNames = (threadId: string): string[] => {
   const file = join(nativeDir, `${threadId}.ndjson`);
   if (!existsSync(file)) return [];
@@ -131,10 +125,7 @@ beforeAll(async () => {
   writeFileSync(join(ui, "index.html"), "<title>openai-compat VM tools</title>");
   writeFileSync(join(ui, "assets", "test.css"), "body{}");
   writeFileSync(join(data, "config.json"), JSON.stringify({
-    // Per-bot isolation, matching the #1856 report: each bot gets its own
-    // derived container target, so a fresh bot's VM is unseen until the
-    // computer panel or a turn touches it — the strict pin cannot hide
-    // behind a warm shared-VM cache entry.
+    // Per-bot isolation: a fresh bot's VM is unseen until touched, so the strict pin cannot hide behind a warm cache entry.
     localVm: { mode: "per-bot" },
     instances: { claude: {
       driver: "claudeAgent",
@@ -190,9 +181,6 @@ describe("openai-compat Local VM tools", () => {
     await idle(bot.id);
     expect(toolNames(requests[0])).toContain("computer_screenshot");
     expect(toolNames(requests[0])).toContain("agents_select_computer");
-    // The same list must land in the native tee: #1856 could not be
-    // diagnosed because the openai-compat driver's outgoing record held
-    // only the model and a message count — never the mounted tools.
     await until(() => nativeToolNames(bot.threadId), names => names.length > 0);
     expect(nativeToolNames(bot.threadId)).toContain("computer_screenshot");
   }, 60_000);
@@ -205,10 +193,6 @@ describe("openai-compat Local VM tools", () => {
     await api("PATCH", `/api/bots/${bot.id}/model`, { instanceId: "openaiCompat", model: "fixture-model" });
     pendingSelect = { surface: "vm" };
     await api("POST", `/api/bots/${bot.id}/messages`, { text: "Open a browser on my Local VM." });
-    // Turn 1: the model picks the Local VM through select_computer. Even
-    // under the default Ask approval the harness's own agents tools ask
-    // nothing, as on Claude and Codex: the turn ends after the tool result,
-    // and the continuation reconnects on the VM.
     try {
       await until(() => requests.length, count => count >= 3);
     } catch (error) {

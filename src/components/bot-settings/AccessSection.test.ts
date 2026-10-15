@@ -15,18 +15,14 @@ vi.mock("@/lib/mcp-servers", async (importOriginal) => ({
   useMcpServers: () => ({ servers: fixture.servers, error: fixture.mcpError, refresh: vi.fn() }),
 }));
 
-// DesktopCapabilities reads `window.ogb` at module scope for its context
-// default; the src test suite runs under vitest's "node" environment (no
-// window), so it must be stubbed the same way SidebarBotListItem.test.ts does.
+// DesktopCapabilities reads window.ogb at module scope, and this suite runs in the node environment.
 vi.mock("../DesktopCapabilities", () => ({
   useDesktopCapabilities: () => ({ capabilities: { host: { homeDir: undefined } } }),
 }));
 
 const { AccessSection } = await import("./AccessSection");
 
-// WorkingFolder (moved into this file) reads window.ogb?.pickFolder directly
-// at render time, same "node" environment gap as above — stub per test, the
-// way desktop.test.ts and EngineUpdateNotice.test.ts do.
+// WorkingFolder reads window.ogb?.pickFolder at render time, so window is stubbed per test.
 beforeEach(() => { vi.stubGlobal("window", {}); fixture.dispatch.mockReset(); fixture.mcpError = false; fixture.servers = null; fixture.config = null; });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -180,7 +176,6 @@ describe("AccessSection Works on", () => {
     const markup = render(makeBot());
     expect(markup).toContain("Where Scout works: Chooses for you");
     expect(markup).toContain("Open Computer panel");
-    // No second picker here: the six places live in the Computer panel only.
     expect([...markup.matchAll(/>(Auto|Cloud|Local VM|This computer|Browser|Off)<\/button>/g)]).toEqual([]);
     expect(render(makeBot({ computer: "off" }))).toContain("Where Scout works: No screen");
 

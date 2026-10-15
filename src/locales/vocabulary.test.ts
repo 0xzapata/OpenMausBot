@@ -8,19 +8,9 @@ import { describe, expect, it } from "vitest";
 import en from "./en.json";
 import { locales } from "./index";
 
-// One name per thing, in every word a person reads:
-// - MausBot Cloud: the paid plan, and its sign-in in Settings.
-// - My Cloud: the person's always-on home in the cloud.
-// - Cloud computer: a desktop in the cloud that a bot uses.
-// - This computer: the device the app runs on.
-// - Plan page: the web page with the plan, payments and use.
-// "Local VM" keeps its name. "Cloud" alone never names a Works on choice,
-// "OMB" is never shown, and "Boat" names only the provider behind a person's
-// own key (Settings → API keys). The app itself is still OpenMausBot.
 const RETIRED: ReadonlyArray<readonly [string, RegExp, string]> = [
   ["OMB Cloud", /OMB Cloud/i, "MausBot Cloud"],
   ["OpenMausBot Cloud", /OpenMausBot Cloud/i, "MausBot Cloud"],
-  // Pro is one of its plans, never the product ("OpenMausBot Pro" too).
   ["MausBot Pro", /MausBot Pro\b/, "MausBot Cloud"],
   // \b before "_" fails, so environment names such as OMB_PUBLIC_IPV4 pass.
   ["OMB", /\bOMB\b/, "OpenMausBot"],
@@ -37,18 +27,15 @@ const RETIRED: ReadonlyArray<readonly [string, RegExp, string]> = [
   ["T3", /\bT3\b/, "no other app's name"],
 ];
 
-/** "Boat" inside these phrases names the provider of a person's own key. */
 const OWN_KEY = /Boat (?:API key|account|key|token|plan|provider|credentials|setup|is not configured|is not connected|is a paid service)|boat\.dev|\b(?:Connect|Configure) Boat\b/g;
 const BOAT = /\bBoats?\b/;
 
-/** What a piece of copy still says that the vocabulary retired. */
 function retiredIn(text: string, boat: RegExp = BOAT): string[] {
   const found = RETIRED.filter(([, pattern]) => pattern.test(text)).map(([word, , use]) => `"${word}" (say ${use})`);
   if (boat.test(text.replace(OWN_KEY, ""))) found.push(`"Boat" (say cloud computer; Boat only names a person's own key)`);
   return found;
 }
 
-// Keys another branch rewrites with its own wording go here until it lands.
 const PENDING_KEY_PREFIXES: string[] = [];
 const EN_ALLOWED: Record<string, string> = {};
 
@@ -58,8 +45,7 @@ const SCANNED = ["src", "server", "electron", "shared"];
 const SKIPPED_DIRS = new Set(["node_modules", "resources", "testing", "dist"]);
 const isSource = (name: string) => /\.(?:ts|tsx|mjs|cjs|js)$/.test(name) && !/\.test\.|\.node-test\.|\.d\.ts$/.test(name);
 
-/** Hard-coded strings that keep a retired word on purpose. A file with no
- * snippet keeps it everywhere; otherwise only literals containing a snippet. */
+/** No snippet keeps the word file-wide; otherwise only literals containing the snippet. */
 const ALLOWED: ReadonlyArray<{ file: string; snippet?: string; why: string }> = [
   { file: "src/components/CloudBackendPicker.tsx", why: "the own-key provider picker names its two providers, Boat and a VPS" },
   { file: "shared/credential-request.ts", snippet: "when Boat is selected", why: "the card that asks for a person's own Boat key" },
@@ -80,8 +66,6 @@ function* sources(dir: string): Generator<string> {
   }
 }
 
-/** Every string a source file could show: literals, template text and JSX
- * text, never comments or identifiers. */
 function literals(path: string): Array<{ line: number; text: string }> {
   const kind = path.endsWith(".tsx") ? ts.ScriptKind.TSX : /\.(?:mjs|cjs|js)$/.test(path) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
   const file = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, false, kind);
@@ -96,7 +80,6 @@ function literals(path: string): Array<{ line: number; text: string }> {
   return found;
 }
 
-/** Every hard-coded string that says a retired word, before the allow-list. */
 function hardcodedFindings(): Array<{ file: string; line: number; text: string; what: string[] }> {
   const found: Array<{ file: string; line: number; text: string; what: string[] }> = [];
   for (const top of SCANNED) {
@@ -123,8 +106,6 @@ describe("one name per thing", () => {
     expect(offending).toEqual([]);
   });
 
-  // The product's name is never translated: a pack says "MausBot Cloud" where
-  // the English does, and never an old name for it.
   const productNames = RETIRED.filter(([, , use]) => use === "MausBot Cloud");
   it("translations never show OMB, T3 or an old name for MausBot Cloud, keep its name as it is, and say Boat only where the English does", () => {
     const offending = Object.entries(locales).filter(([code]) => code !== "en").flatMap(([code, pack]) =>
@@ -143,7 +124,6 @@ describe("one name per thing", () => {
       .filter((finding) => !ALLOWED.some((entry) => allows(entry, finding)))
       .flatMap(({ file, line, text, what }) => what.map((one) => `${file}:${line}: ${one}: ${JSON.stringify(text.trim().slice(0, 120))}`));
     expect(offending).toEqual([]);
-    // An entry that no longer matches anything has outlived its reason.
     const stale = ALLOWED.filter((entry) => !findings.some((finding) => allows(entry, finding)))
       .map((entry) => `${entry.file}${entry.snippet ? ` (${entry.snippet})` : ""}`);
     expect(stale).toEqual([]);
@@ -151,9 +131,6 @@ describe("one name per thing", () => {
     expect(staleKeys).toEqual([]);
   });
 
-  // The public guide (apps/docs, published from main) calls the person's
-  // Cloud and the plan what the app calls them. Only those names are checked
-  // there: its Boat and Works on pages wait for their own rewrite.
   it("the public docs name My Cloud and MausBot Cloud as the app does", () => {
     const cloudNames = RETIRED.filter(([, , use]) => /My Cloud|MausBot Cloud/.test(use));
     const pages = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
@@ -171,7 +148,6 @@ describe("one name per thing", () => {
     const e = en as Record<string, string>;
     const source = (file: string) => readFileSync(join(ROOT, file), "utf8");
     const settings = `Settings → ${e["settings.section.cloudAccount"]}`;
-    // The menus' own names for the two places: the Server menu and the sidebar switcher.
     const myCloud = /CLOUD_HOME_NAME = "([^"]+)"/.exec(source("electron/cloud-home.mjs"))?.[1];
     const thisComputer = /id: "workspace-local", label: "([^"]+)"/.exec(source("electron/environments.cjs"))?.[1];
     const serverMenuLocal = /\{ label: "([^"]+)", type: "radio", checked: !active/.exec(source("electron/menu.mjs"))?.[1];
@@ -181,6 +157,7 @@ describe("one name per thing", () => {
       ["cloudPhone.step1", [myCloud!]],
       ["lending.status.connectFirst", [e["cloudHome.connect"]!]],
       ["computer.worksOnHintCloudHome", [e["lending.title"]!, settings]],
+      ["cloudMove.leftBehindLend", [e["lending.title"]!, settings]],
       ["cloudAccount.onCloudSignIn", [e["cloudAccount.signInAgain"]!, settings]],
       ["cloudAccount.storageFailed", [e["cloudAccount.signOut"]!]],
       ["cloudAccount.codeExpired", [e["cloudAccount.signIn"]!]],

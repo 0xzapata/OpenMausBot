@@ -1,11 +1,8 @@
-// Per-turn MCP entry point for the tools the harness serves itself: the
-// built-in browser, the cloud computer and the Data tools. argv[2] names
-// which one. Only a turn-scoped capability crosses into the agent process;
-// engine commands, session names, and provider credentials (the Boat token)
-// stay in OMB.
+// Only a turn-scoped capability crosses into the agent process; engine commands, session names and provider credentials stay in OMB.
 import { pathToFileURL } from "node:url";
 
 import { DATA_INSTRUCTIONS } from "./data/instructions.ts";
+import { HARNESS_PROXY_TIMEOUT_MS } from "./harness-budget.ts";
 import { harnessMcpTokenEnv } from "./harness-mcp-token.ts";
 
 const MAX_INPUT_BYTES = 1_048_576;
@@ -15,10 +12,7 @@ type RpcId = string | number | null;
 export type HarnessMcpKind = "browser" | "computer" | "data";
 
 const NAMES: Record<HarnessMcpKind, string> = { browser: "Browser", computer: "Cloud computer", data: "Data" };
-/** Server instructions sent with initialize, for a family that has them. */
 const INSTRUCTIONS: Partial<Record<HarnessMcpKind, string>> = { data: DATA_INSTRUCTIONS };
-/** What a model needs after a failed call, per tool family: the failure is
- * about this one connection, and an uncertain action must be checked first. */
 const RECOVERY: Record<HarnessMcpKind, string> = {
   browser: " This failure does not establish that all browsers are unavailable. Inspect available connections with select_computer if that tool is present. Keep the requested computer and account; do not bypass a permission refusal or human takeover, and do not repeat an uncertain action without checking its result.",
   computer: " Keep working on the assigned cloud computer only; do not bypass a person's control of it, and take a fresh screenshot before repeating an action whose result is uncertain.",
@@ -27,6 +21,19 @@ const RECOVERY: Record<HarnessMcpKind, string> = {
 
 function parseHarnessMcpKind(value: unknown): HarnessMcpKind | null {
   return value === "browser" || value === "computer" || value === "data" ? value : null;
+}
+
+/** Node's fetch (undici) rejects with the socket error as its `cause`: refused before anything was sent, reset or closed after. */
+function unansweredText(error: unknown, name: string): string {
+  const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+  const call = `this ${name.toLowerCase()} call`;
+  if (code === "ECONNREFUSED") return `OpenMausBot is restarting, so ${call} did not reach it and did not run. Wait a few seconds, then make it again.`;
+  if (code === "ECONNRESET" || code === "UND_ERR_SOCKET") return `OpenMausBot restarted while ${call} was running, so it may or may not have taken effect. Check its result before repeating it.`;
+  if ((error as { name?: unknown } | null)?.name === "TimeoutError") {
+    return `OpenMausBot did not answer ${call} within ${HARNESS_PROXY_TIMEOUT_MS / 1_000} seconds. It may still be running, or it may already have taken effect. Do not repeat it until its result is checked.`;
+  }
+  return error instanceof Error && !/fetch failed|abort|timeout|terminated/i.test(error.message)
+    ? error.message : `${name} connection was interrupted. Do not repeat the action until its state is checked.`;
 }
 
 function failure(id: RpcId, method: unknown, message: string, code = -32603): unknown {
@@ -81,7 +88,7 @@ export async function harnessMcpRequest(
     const response = await fetch(new URL(`/api/internal/${connection.kind}/mcp`, url), {
       method: "POST", redirect: "error",
       headers: { "content-type": "application/json", authorization: `Bearer ${connection.token}` },
-      body, signal: AbortSignal.timeout(130_000),
+      body, signal: AbortSignal.timeout(HARNESS_PROXY_TIMEOUT_MS),
     });
     const payload = await boundedJson(response, name) as { result?: unknown; error?: unknown };
     if (!response.ok || !payload || typeof payload !== "object" || !Object.hasOwn(payload, "result")) {
@@ -89,9 +96,7 @@ export async function harnessMcpRequest(
     }
     return { jsonrpc: "2.0", id, result: payload.result };
   } catch (error) {
-    const detail = error instanceof Error && !/fetch failed|abort|timeout/i.test(error.message)
-      ? error.message : `${name} connection was interrupted. Do not repeat the action until its state is checked.`;
-    return failure(id, message.method, detail + RECOVERY[connection.kind]);
+    return failure(id, message.method, unansweredText(error, name) + RECOVERY[connection.kind]);
   }
 }
 

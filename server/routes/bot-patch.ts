@@ -1,10 +1,3 @@
-// PATCH /api/bots/:id, the broad settings endpoint the desktop and the team
-// dialog use, moved out of server/index.ts's inline routes into the route
-// table (server/routes/README.md). The table runs after the auth gate;
-// scope rules stay keyed by path in server/request-auth.ts, and a member
-// session is held to how a bot looks by clientBotPatchViolation. The
-// narrower bot settings routes are in bot-settings.ts, which also lends
-// the pinned-thread guard.
 import { z } from "zod";
 
 import { approvalModeFor, isApprovalMode, type ApprovalMode } from "../../shared/approval-mode.ts";
@@ -32,7 +25,8 @@ import { recordProfileChange } from "../profile-versions.ts";
 import { clientBotPatchViolation, requestSource } from "../request-auth.ts";
 import type { RoutineManager } from "../routines.ts";
 import type { SessionRegistry } from "../sessions.ts";
-import { parseConnectorTools, sectionKey, type BotRecord, type GroupRecord, type Store } from "../store.ts";
+import { parseConnectorTools } from "../connector-tools.ts";
+import { sectionKey, type BotRecord, type GroupRecord, type Store } from "../store.ts";
 import { pinnedClientThreadGuard } from "./pinned-client-thread.ts";
 import type { ModelSelectionCheck } from "./bots-create.ts";
 import { PASS, type RouteHandler } from "./table.ts";
@@ -48,38 +42,29 @@ export interface BotPatchRouteDeps {
   cacheKeepWarm: Pick<CacheKeepWarm, "refresh">;
   hostedModels: ReturnType<typeof hostedModelPolicy>;
   supportsApprovalMode: ReturnType<typeof createApprovalModeSupport>;
-  /** The routine manager, assigned at boot after the routes are built. */
   routines(): RoutineManager | null;
-  /** The bots with a VPS turn in flight, by bot id. */
   activeVpsThreads: { has(botId: string): boolean };
-  /** A hosted (company) workspace: Full access comes only from its policy. */
+  /** Full access comes only from the workspace policy. */
   hostedWorkspace: boolean;
   hostedFullAccessRefusal: string;
-  /** The packaged desktop is the parent process. */
   desktopManaged: boolean;
   maxWorkspaceBots: number;
   broadcast(payload: Record<string, unknown>): void;
-  /** The bot as HTTP replies carry it. */
   wireBot(bot: BotRecord): WireBot;
-  /** The room as its members see it. */
   publicGroupState(group: GroupRecord): WireGroup;
-  /** A bot's audience changed: members' live streams start over. */
   audienceChanged(): void;
   storedAvatarExists(avatarUrl: string): boolean;
-  /** The bot as its selected thread sees it, or a thrown 404. */
   requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord;
   threadBusy(botId: string, threadId: string): boolean;
   activeGroupTurnForBot(botId: string): { group: GroupRecord; threadId: string } | null;
   checkedModelSelection(raw: unknown, current?: { selection: ModelSelection; busy: boolean }, requireAvailableModel?: boolean): ModelSelectionCheck;
   engineSwitchNeedsAsk(mode: ApprovalMode, from: ModelSelection, to: ModelSelection): boolean;
-  /** The browser session a bot uses for a profile (its temporary one for "guest"). */
   currentBrowserSession(botId: string, profile: string | undefined): string;
   interruptAllDirectThreads(botId: string): Promise<void>;
   cancelGroupTurnOperations(groupId: string, threadId: string): void;
   revokeInternalCapabilitiesForThread(threadId: string): void;
   runningTurnInstance(bot: BotRecord | null | undefined, threadId: string): ReturnType<ProviderRegistry["get"]>;
   closeOpenApprovals(threadId: string): void;
-  /** Throws when a team-computer change would land mid-turn. */
   assertTeamComputerChangeIdle(before: BotRecord, after: BotRecord): void;
   forgetTemporaryBrowser(botId: string): Promise<void>;
 }
@@ -94,7 +79,6 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
   } = deps;
   const pinnedClientThread = pinnedClientThreadGuard(store);
   return async ({ req, res, path, method, auth, json, readBody }) => {
-    /** scratch for the route match, as index.ts's shared `m` */
     let m: RegExpMatchArray | null = null;
     const routines = deps.routines();
     const requirePinnedClientThread = pinnedClientThread(auth, req);
@@ -109,7 +93,12 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         if (field) return json(res, 403, { error: `forbidden: this session may change how a bot looks, not "${field}" (needs the admin scope)` });
       }
       const existingBot = store.bot(m[1]);
-      const selectedTask = existingBot ? requestedTaskBot(existingBot.id, undefined) : null;
+      const rawSelection = (body as Record<string, unknown>).modelSelection;
+      if (body.threadId !== undefined && rawSelection === undefined) {
+        return json(res, 400, { error: "threadId goes with modelSelection" });
+      }
+      if (rawSelection !== undefined) requirePinnedClientThread(m[1], body.threadId);
+      const selectedTask = existingBot ? requestedTaskBot(existingBot.id, body.threadId) : null;
       const beforeProfile = existingBot ? profileSnapshot(existingBot) : undefined;
       const beforeVisibility = existingBot?.visibility;
       if (body.requireAvailableModel !== undefined && typeof body.requireAvailableModel !== "boolean") {
@@ -117,29 +106,12 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       }
       const beforeBrowserProfile = existingBot?.browserProfile;
       const beforeBrowserEnabled = existingBot?.browser;
-      // Neither Codex (free-form string field) nor Grok (lazy, logs-only)
-      // rejects an unknown effort level at their own boundary — this is the
-      // only real gate, so it stays. But it fires only when the target
-      // instance actually resolves. An instance that isn't there declares no
-      // levels, and rejecting against that empty list would 400 the *whole*
-      // request: this is the app's general-purpose bot endpoint, and
-      // duplicateBot re-sends the source bot's entire modelSelection beside
-      // its name, title and description, so a source engine that happens to
-      // be offline would cost the copy all of them. Letting it through is
-      // safe — startTurn refuses to run a turn on an unavailable instance
-      // anyway, so an unverifiable level never reaches a CLI.
-      const rawSelection = (body as Record<string, unknown>).modelSelection;
-      if (rawSelection !== undefined) requirePinnedClientThread(m[1], undefined);
+      // Codex and Grok accept any effort string, so this is the only gate on it; an unresolved
+      // instance declares no levels and is let through (startTurn refuses an unavailable instance).
       if (body.keepThreadModels !== undefined) {
         if (typeof body.keepThreadModels !== "boolean") return json(res, 400, { error: "keepThreadModels must be true or false" });
         if (body.keepThreadModels && rawSelection === undefined) return json(res, 400, { error: "keepThreadModels goes with modelSelection" });
       }
-      // The thread a new bot model moves besides those that follow the bot.
-      // From the bot's own panel that is the selected thread, whatever model
-      // it had: it follows the bot from now on, as if picked there (#2401).
-      // A bulk change (keepThreadModels: the team dialog) is about the bots,
-      // not the thread each one last had open, so a thread with a model of
-      // its own keeps it there, selected or not, and only followers move.
       const movedTask = selectedTask && !(body.keepThreadModels === true &&
         store.taskByThread(selectedTask.id, selectedTask.threadId)?.modelSelection !== undefined) ? selectedTask : null;
       if (
@@ -165,9 +137,6 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
           if (!groupChecked.ok) return json(res, groupChecked.status, { error: groupChecked.error });
         }
       }
-      // Persona/profile fields reach prompts and paired clients. Both this
-      // broad desktop endpoint and the paired-safe profile endpoint pass
-      // through the same validation and clear-value normalization.
       const profile = parseBotProfilePatch(body);
       if (!profile.ok) return json(res, 400, { error: profile.error });
       if (profile.patch.avatarUrl && !storedAvatarExists(profile.patch.avatarUrl)) {
@@ -193,8 +162,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       let requestedComputer = existingBot?.computer;
       if (computerSpecified) {
         if (body.computer === null) {
-          // Auto is represented by an absent durable field. JSON needs a
-          // concrete clear value, so clients send null at the PATCH boundary.
+          // Clients send null for Auto; the durable field is then absent.
           requestedComputer = undefined;
           patch.computer = undefined;
         } else if (
@@ -208,9 +176,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
       }
       if (normalizedSelection) patch.modelSelection = normalizedSelection;
-      // one pinned message per thread; null/"" clears. The id is not
-      // validated against the transcript here — a pin whose message was
-      // edited to another branch or deleted simply resolves to nothing.
+      // null/"" clears; the id is not checked against the transcript.
       if (body.pinnedMessageId !== undefined) {
         if (body.pinnedMessageId === null || body.pinnedMessageId === "") patch.pinnedMessageId = undefined;
         else if (typeof body.pinnedMessageId === "string" && /^[\w-]+$/.test(body.pinnedMessageId)) {
@@ -219,7 +185,6 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       }
       if (section !== undefined) patch.section = section ?? undefined;
       if (body.chiefOfStaff === false) patch.chiefOfStaff = false;
-      // where a task carries on when this engine is unavailable, in order
       if (body.fallback !== undefined) {
         if (!Array.isArray(body.fallback) || body.fallback.length > 5) {
           return json(res, 400, { error: "fallback must be a list of up to five { instanceId, model } entries" });
@@ -236,7 +201,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
         patch.fallback = chain;
       }
-      // which connected apps this bot may use; null clears back to all of them
+      // null clears back to every connected app.
       if (body.connectorScopes !== undefined) {
         if (body.connectorScopes === null) patch.connectorScopes = undefined;
         else {
@@ -245,20 +210,16 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
           patch.connectorScopes = scopes;
         }
       }
-      // sending on the person's behalf: ask every time, or a daily allowance
       if (body.outbound !== undefined) {
         const policy = normalizeOutboundPolicy(body.outbound);
         if (!policy) return json(res, 400, { error: "outbound must be { policy: ask | allow, dailyCap: 1..1000 }" });
         patch.outbound = policy;
       }
-      // per-bot gate on the workspace's connected apps (Composio)
       if (body.composio !== undefined) {
         if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
         patch.composio = body.composio;
       }
-      // per-bot gate on sending voice notes: the toggle is about what this
-      // bot may do (an admin decision), not how it looks, so it lives here
-      // rather than the client-writable profile surface.
+      // An admin decision, so not on the client-writable profile surface.
       if (body.voiceNotes !== undefined) {
         if (typeof body.voiceNotes !== "boolean") return json(res, 400, { error: "voiceNotes must be true or false" });
         patch.voiceNotes = body.voiceNotes;
@@ -271,32 +232,24 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
         patch.memoryEnabled = body.memoryEnabled;
       }
-      // which of those apps' tools this bot may call (connector grants 1/5:
-      // data model only — enforcement lands with slice 2). null returns the
-      // bot to boolean-only legacy behavior; {} means no tools.
+      // null drops the per-tool grants; {} means no tools.
       if (body.connectorTools !== undefined) {
         if (body.connectorTools === null) {
           patch.connectorTools = undefined;
         } else {
           const parsed = parseConnectorTools(body.connectorTools);
           if (!parsed.ok) return json(res, 400, { error: parsed.error });
-          // Connector grants 3/5: past the shape checks, slugs must name
-          // connected services and tool names must carry their service
-          // prefix. Unreachable backends never block the patch — the
-          // call-time verdict from slice 2 stays the authority.
+          // An unreachable backend never blocks the patch: the call-time check stays the authority.
           const semantic = await composio.validateConnectorGrants(cfg, parsed.grants);
           if (semantic) return json(res, 400, { error: semantic });
           patch.connectorTools = parsed.grants;
         }
       }
-      // Queue this bot's direct messages behind outstanding delegated work
-      // instead of steering the conversation immediately (#1194).
       if (body.parkDirectMessages !== undefined) {
         if (typeof body.parkDirectMessages !== "boolean") return json(res, 400, { error: "parkDirectMessages must be true or false" });
         patch.parkDirectMessages = body.parkDirectMessages;
       }
-      // Per-bot selection of app-wide MCP servers. Omitted keeps the current
-      // selection; null restores all enabled servers; [] explicitly mounts none.
+      // Omitted keeps the selection; null restores all enabled servers; [] mounts none.
       let requestedMcpServers = existingBot?.mcpServers;
       if (Object.hasOwn(body, "toolScope")) {
         const parsed = parseToolScope(body.toolScope === null ? undefined : body.toolScope);
@@ -323,12 +276,15 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         if (typeof body.memoryUpkeep !== "boolean") return json(res, 400, { error: "memoryUpkeep must be true or false" });
         patch.memoryUpkeep = body.memoryUpkeep;
       }
-      // Prompt-cache keep-warm: true/false overrides the workspace, null follows it.
+      // true/false overrides the workspace, null follows it.
       if (body.cacheKeepWarm !== undefined) {
         if (body.cacheKeepWarm !== null && typeof body.cacheKeepWarm !== "boolean") return json(res, 400, { error: "cacheKeepWarm must be true, false or null" });
         patch.cacheKeepWarm = body.cacheKeepWarm ?? undefined;
       }
-      // per-bot gate on the app's built-in browser
+      if (body.helperModel !== undefined) {
+        if (typeof body.helperModel !== "boolean") return json(res, 400, { error: "helperModel must be true or false" });
+        patch.helperModel = body.helperModel;
+      }
       if (body.browser !== undefined) {
         if (typeof body.browser !== "boolean") return json(res, 400, { error: "browser must be true or false" });
         if (existingBot?.busy && body.browser !== (existingBot.browser !== false)) {
@@ -336,13 +292,11 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
         patch.browser = body.browser;
       }
-      // Record browser steps (server/browser-steps.ts): read on every browser
-      // call, so it applies from the next one, with no turn to stop first.
       if (body.recordBrowserSteps !== undefined) {
         if (typeof body.recordBrowserSteps !== "boolean") return json(res, 400, { error: "recordBrowserSteps must be true or false" });
         patch.recordBrowserSteps = body.recordBrowserSteps;
       }
-      // which named browser session this bot uses; null/"" = its own
+      // null/"" = the bot's own session.
       if (body.browserProfile !== undefined) {
         const requestedProfile = body.browserProfile === null || body.browserProfile === ""
           ? undefined
@@ -384,9 +338,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       if (body.hidden === true && existingBot?.chiefOfStaff && body.chiefOfStaff !== false) {
         return json(res, 400, { error: "choose another Chief of Staff before hiding this bot" });
       }
-      // the permission fields decide what runs unattended, so they are
-      // type-checked rather than copied through: a string alwaysAllow would
-      // still answer .includes() — with substring matches, not tool names
+      // Type-checked, not copied: a string alwaysAllow would answer .includes() with substring matches.
       if (body.autoApprove !== undefined) {
         if (typeof body.autoApprove !== "boolean") return json(res, 400, { error: "autoApprove must be true or false" });
       }
@@ -399,9 +351,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
         requestedApprovalMode = body.approvalMode;
       } else if (body.autoApprove !== undefined) {
-        // Compatibility for desktop/mobile builds that predate the four-level
-        // selector. Their boolean can choose only safe Auto or Ask; it can
-        // never silently create Full access.
+        // Older clients' boolean can choose only Auto or Ask, never Full access.
         requestedApprovalMode = body.autoApprove ? "auto" : "ask";
       } else {
         requestedApprovalMode = approvalModeFor(existingBot ?? {});
@@ -415,8 +365,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       }
       if (body.approvalMode !== undefined || body.autoApprove !== undefined) {
         patch.approvalMode = requestedApprovalMode;
-        // Keep the old wire field truthful for older paired apps. It means
-        // specifically safe Auto, not "some mode that approves things".
+        // Older paired apps read autoApprove as exactly Auto.
         patch.autoApprove = requestedApprovalMode === "auto";
       }
       const targetSelection = normalizedSelection ?? existingBot?.modelSelection;
@@ -437,10 +386,8 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
           error: "This provider does not support the selected approval level, or changing providers requires choosing Ask first",
         });
       }
-      // Full access applies at once from any client that can reach this API
-      // (owner decision, Oct 12): no desktop channel, no consent field.
-      // Custom keeps the packaged desktop's private channel, into it and out
-      // of it, because it holds restrictions the person wrote themselves.
+      // Full access applies from any client that can reach this API; Custom moves only through the
+      // desktop's private channel because it holds restrictions the person wrote.
       const requiresPrivateApprovalTransition =
         (requestedApprovalMode === "custom" && currentApprovalMode !== "custom") ||
         (currentApprovalMode === "custom" && requestedApprovalMode !== "custom");
@@ -453,11 +400,6 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         (currentApprovalMode !== "full" || body.applyToAllThreads === true)) {
         return json(res, 403, { error: HOSTED_FULL_ACCESS_REFUSAL });
       }
-      // One level for the bot and every one of its conversations, the same
-      // way for every level but Custom: bot settings sends it with Full, a
-      // team-wide change with each level it sets. Without it only the default
-      // (and the threads that follow it) changes. A thread on Custom leaves
-      // it only through the desktop's private channel, as the bot does.
       if (body.applyToAllThreads !== undefined) {
         if (typeof body.applyToAllThreads !== "boolean") return json(res, 400, { error: "applyToAllThreads must be true or false" });
         if (body.applyToAllThreads && (body.approvalMode === undefined || requestedApprovalMode === "custom")) {
@@ -476,16 +418,10 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
           return json(res, 400, { error: "Every thread's provider must support this approval level" });
         }
       }
-      // "Auto on this Mac" hands a bot the user's real session, so the grant
-      // must prove a human saw the warning. The desktop dialog is the only
-      // caller that sends acknowledgeLocalAuto; without it a PATCH that would
-      // create the combination — a bot curling the loopback API from a tool
-      // call, a script, a stale client — is refused. The renderer dialog
-      // alone is not a boundary; this check is.
+      // Auto on this Mac hands a bot the user's real session: only the desktop's warning dialog sends
+      // acknowledgeLocalAuto, so a bot curling the loopback API is refused.
       const wantsComputer = computerSpecified ? requestedComputer : existingBot?.computer;
       const wantsAuto = requestedApprovalMode === "auto";
-      // Every thread counts when the level goes to all of them: one still
-      // on another level gets Auto on this computer for the first time.
       const alreadyGranted =
         existingBot?.computer === "local" && approvalModeFor(existingBot) === "auto" &&
         (body.applyToAllThreads !== true || store.tasks(existingBot.id).every((task) =>
@@ -501,19 +437,8 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
         patch.approvePeerComms = body.approvePeerComms;
       }
-      // Who this bot may contact. null clears the list back to "everyone
-      // visible in my section"; an array — including an empty one — is the
-      // explicit wiring, so a bot can be given exactly one correspondent.
-      //
-      // Narrowing is free, widening is not. The bot this field constrains
-      // can reach this endpoint: resolveRequestAuth hands admin+client to
-      // any loopback caller, so a bot holding Bash is one curl from
-      // deleting its own leash — the same adversary the acknowledgeLocalAuto
-      // block above is written against, and the exact bot the allow-list
-      // exists to contain. So cutting reach needs nothing (an operator, a
-      // script, even the bot itself may only ever make it smaller), while
-      // clearing the list or adding an id needs the proof of a human the
-      // desktop dialog sends and a tool call cannot forge.
+      // null: everyone visible in the section; an array (even empty) is the explicit wiring. Narrowing is free;
+      // widening needs acknowledgePeerScope, since any loopback caller (a bot with Bash) gets admin.
       if (body.peers !== undefined) {
         let nextPeers: string[] | undefined;
         if (body.peers === null) nextPeers = undefined;
@@ -525,8 +450,6 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         } else {
           nextPeers = [...new Set<string>(body.peers)].slice(0, MAX_WORKSPACE_BOTS);
         }
-        // A bot with no list is already at its widest, so the first list it
-        // is ever given can only narrow it.
         const currentPeers = existingBot?.peers;
         const widensReach =
           Array.isArray(currentPeers) &&
@@ -554,13 +477,9 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
         patch.managedSections = sections;
       }
-      // Removing the role revokes its grants, rather than leaving dormant
-      // authority to return if this bot is elected Chief again later.
+      // Losing the role revokes its grants: no dormant authority returns if it is elected again.
       if (body.chiefOfStaff === false) patch.managedSections = [];
-      // Who may see this bot on a workspace several people share
-      // (bot-visibility.ts): "everyone" (the default), "admins", or
-      // { people: [...] }. Access control, applied at once; members' PATCHes
-      // never get here (clientBotPatchViolation).
+      // "everyone" (default), "admins" or { people: [...] }; members' PATCHes never get here.
       if (Object.hasOwn(body, "visibility")) {
         const parsed = parseVisibility(body.visibility);
         if (!parsed.ok) return json(res, 400, { error: parsed.error });
@@ -572,24 +491,9 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         }
         patch.alwaysAllow = [...new Set(body.alwaysAllow as string[])].slice(0, 200);
       }
-      // What "the proof of a human" above actually rests on. In the packaged
-      // desktop it is real: every mutation here already carried the owner
-      // capability a tool call cannot forge. Outside it — `pnpm dev`, the
-      // CLI, the Docker stack — loopback is the owner by design, so the
-      // acknowledgement flag and the settings that loosen a bot's leash
-      // (a wider peer list, the peer-approval gate switched off, a section
-      // move that changes who is in reach, a standing always-allow grant)
-      // are one curl away from the bot they constrain. What such a request
-      // does NOT have is a paired session or a browser origin; and the one
-      // moment a bot's shell can send it is while a turn is running. So an
-      // originless, session-less loopback caller may loosen a bot only
-      // while every bot is idle — and is logged when it does — while the
-      // served UI (a browser, with its origin) and a paired device keep
-      // working mid-turn as before. A bar, not a wall: the wall is the
-      // desktop capability or a paired session, which is what the refusal
-      // points at.
+      // Known gap: outside the packaged desktop, loopback is the owner, so these loosenings are one curl from
+      // the bot they constrain. An originless, session-less loopback caller may loosen only while every bot is idle.
       const loosened: string[] = [];
-      // These three fields were validated above before joining the broad patch.
       const trustPatch = patch as Pick<Partial<BotRecord>, "outbound" | "connectorScopes" | "fallback">;
       if (body.outbound !== undefined && trustPatch.outbound?.policy === "allow" &&
           (existingBot?.outbound?.policy !== "allow" || trustPatch.outbound.dailyCap > existingBot.outbound.dailyCap)) loosened.push("outbound");
@@ -601,9 +505,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       if (Array.isArray(patch.managedSections) && patch.managedSections.some(section => !(existingBot?.managedSections ?? []).includes(section))) {
         loosened.push("managedSections");
       }
-      // A shell can forge an Origin header. New cross-team authority may
-      // come from local scripts only when all bots are idle; paired owners
-      // and the packaged desktop's private capability can grant it mid-turn.
+      // A shell can forge an Origin header: new cross-team authority from local scripts only while every bot is idle.
       if (loosened.includes("managedSections") && auth.kind === "loopback" && !DESKTOP_MANAGED && store.bots.some(bot => bot.busy)) {
         return json(res, 409, { error: "Stop running bots before granting access to another team, or use the desktop app or a paired Full-access session." });
       }
@@ -651,8 +553,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         sectionKey(existingBot?.section) !== sectionKey(section);
       let bot: BotRecord | null;
       const freshBrowserBot = store.bot(m[1]);
-      // Connector validation and runtime revocation can yield after the first
-      // memory check. Keep the same idle-only transition at the final commit.
+      // Rechecked: the awaits above can yield after the first memory check.
       if (freshBrowserBot && body.memoryEnabled !== undefined &&
           body.memoryEnabled !== (freshBrowserBot.memoryEnabled !== false) &&
           (freshBrowserBot.busy || activeGroupTurnForBot(freshBrowserBot.id))) {
@@ -670,8 +571,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
           return json(res, 409, { error: "Stop this bot's turns before changing its tool selection." });
         }
       }
-      // Custom servers are process configuration: a running turn cannot
-      // unmount them. Recheck after any awaited runtime revocation above.
+      // A running turn cannot unmount custom servers; rechecked after the awaits above.
       if (body.mcpServers !== undefined) {
         if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
           return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
@@ -704,9 +604,7 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       }
       if (profile.patch.soul !== undefined) {
         if (freshBrowserBot) assertTeamComputerChangeIdle(freshBrowserBot, { ...freshBrowserBot, ...patch } as BotRecord);
-        // A mixed settings request must not turn a runtime revocation into
-        // a persist-first edit. Apply runtime fields with their existing
-        // fail-closed semantics; atomically commit only the profile fields.
+      // Runtime fields keep their fail-closed order; only the profile fields commit atomically.
         const runtimePatch = { ...patch };
         for (const field of Object.keys(profile.patch)) delete runtimePatch[field];
         if (Object.keys(runtimePatch).length) store.patchBot(m[1], runtimePatch);
@@ -716,17 +614,10 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         bot = store.patchBot(m[1], patch);
       }
       if (!bot) return json(res, 404, { error: "no such bot" });
-      // The same one durable write the desktop's all-threads grant commits.
       if (body.applyToAllThreads === true && requestedApprovalMode !== "custom") store.setAllThreadApprovalMode(bot.id, requestedApprovalMode);
       if (body.memoryUpkeep === false || body.memoryEnabled === false) memoryUpkeep.dropBot(bot.id);
       if (body.cacheKeepWarm !== undefined) cacheKeepWarm.refresh();
-      // A defined Works on is the newest explicit choice: this bot's
-      // auto-recorded pins that now point elsewhere give way immediately, so
-      // the next turn on each thread follows the new setting. Person-set pins
-      // and pins that already match stay; returning to Auto sweeps nothing.
       if (computerSpecified && requestedComputer !== undefined) store.clearAutoSurfacePins(m[1], requestedComputer);
-      // A new bot model moves every thread that follows the bot, and the
-      // moved thread (movedTask above) follows it from now on too.
       if (normalizedSelection && movedTask) store.patchTask(bot.id, movedTask.threadId, { modelSelection: undefined,
         ...hostedModels?.resetTask(movedTask.modelSelection, normalizedSelection) });
       if (existingBot && (bot.browserProfile !== beforeBrowserProfile || bot.browser !== beforeBrowserEnabled)) {
@@ -744,8 +635,6 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
         const now = store.bot(bot.id)!;
         recordProfileChange(bot.id, "user", "api", beforeProfile, profileSnapshot(now));
       }
-      // A new audience changes who may see this bot's rooms and teams too:
-      // re-announce them so every member's stream gains or withdraws them.
       if (Object.hasOwn(patch, "visibility") && JSON.stringify(beforeVisibility ?? "everyone") !== JSON.stringify(bot.visibility ?? "everyone")) {
         for (const group of store.groups.filter((candidate) => candidate.memberIds.includes(bot!.id))) {
           broadcast({ kind: "group", group: publicGroupState(group) });

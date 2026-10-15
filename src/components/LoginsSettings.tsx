@@ -10,10 +10,7 @@ import { useStore } from "@/state/store";
 import { LoginBotPicker, LoginForm } from "./LoginForm";
 import { Card } from "./SettingsPrimitives";
 
-// Settings → Logins: the website logins bots sign in with through
-// fill_login. One list per workspace. A row says where the login works,
-// as whom, whether it fills a 2FA code, where it came from, who may use it
-// and when it was last used — never the password, which no route returns.
+// Security: a row never shows the password, which no route returns.
 
 const SOURCE_KEYS = {
   card: "settings.logins.source.card",
@@ -163,8 +160,6 @@ export function LoginsSettings() {
   );
 }
 
-/** Connect 1Password with a service account token, limited in 1Password to
- * the vault bots may use. Its logins join the list above, read-only. */
 function OnePasswordConnection({ status, disabled, onChange }: {
   status: OnePasswordStatus;
   disabled: boolean;

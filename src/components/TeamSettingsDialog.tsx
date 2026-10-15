@@ -1,8 +1,3 @@
-// "Set for all bots in this team…" from a team's sidebar menu: one approval
-// level, or one model and effort, for every bot in the team. Choose, read
-// what each bot will get (and which ones are skipped, and why), apply, then
-// read the result. Each bot is saved through its own settings panel's request
-// (lib/team-bulk-settings.ts explains why there is no bulk route).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
@@ -33,7 +28,6 @@ type Tab = "approval" | "model";
 const KEEP = "";
 const ENGINE_DEFAULT = "default";
 
-/** The per-bot preview or result list. Pure, for a markup test. */
 export function TeamSettingsRows({ rows }: { rows: ReadonlyArray<TeamPlanRow | TeamResultRow> }) {
   return (
     <ul className="flex flex-col gap-1" data-testid="team-settings-rows">
@@ -76,8 +70,6 @@ export function TeamSettingsDialog({ team, onClose }: { team: string; onClose: (
         ...(model === KEEP ? {} : { model }),
         ...(effort === KEEP ? {} : { effort: effort === ENGINE_DEFAULT ? null : effort as EffortLevel }),
       };
-  // Re-planned on every render: a bot that starts or finishes a turn while
-  // the dialog is open moves between "will change" and "skipped: busy".
   const plan = change ? planTeamChange(bots, state.instances, change) : [];
   const applying = plan.filter((row) => row.status === "apply").length;
 

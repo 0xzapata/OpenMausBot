@@ -1,12 +1,4 @@
-// Chat widgets on the server
-// (docs/superpowers/specs/2026-10-13-chat-widgets-design.md): the two agents
-// tools that post and replace a widget message, and the press that answers
-// one. A bot's tree is normalised, scrubbed of secrets and given its text
-// fallback here, once; everything after that reads the stored message.
-//
-// Both tools arrive on the internal options-card route, whose handler calls
-// createAgentCard: a body with `tool` is a widget call, a body without one is
-// the Watcher's legacy options card, unchanged.
+// A bot's widget tree is normalised, scrubbed of secrets and given its text fallback here, once; everything after reads the stored message.
 import {
   parseWidgetInput, resolveWidgetAction, widgetActions, widgetFields, widgetToText, WIDGET_LIMITS,
   type WidgetAction, type WidgetNode, type WidgetPayload, type WidgetRoot, type WidgetSettled,
@@ -16,7 +8,6 @@ import { createOptionsCard } from "./options-card.ts";
 import { isSecretName, mask, redactSecretsInText } from "./redact.ts";
 import type { Message } from "./store.ts";
 
-/** What these calls need of the store (server/store.ts Store satisfies it). */
 export interface AgentCardStore {
   groupByThread(threadId: string): unknown;
   messagesFor(threadId: string): Message[];
@@ -31,22 +22,14 @@ export type AgentCardResult =
 
 const ROOM_REFUSAL = "Widgets are not available in rooms yet. Answer in text.";
 const NO_SUCH_WIDGET = "No widget with that id in this conversation.";
-/** What a widget with nothing readable in it (a lone spacer) is called, so
- * the row still has words to preview, replay and reply to. */
 const EMPTY_FALLBACK = "[widget]";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Everything below a node's own props. Every string loses its secrets. Keys
- * are this app's (label, action, dataKey) except under an action's `payload`
- * and in a chart's `data` rows, where the bot chose them. There a key is
- * scrubbed too, and a key that names a secret (api_key, db_password: the
- * test server/redact.ts redactSecrets uses) masks its string value whatever
- * that value looks like, as does a {name, value} entry so named. A chart's
- * series and axis name the same keys as strings, and the same string always
- * scrubs to the same result, so they still line up. */
+/** Every string loses its secrets. Under an action's `payload` and a chart's `data` rows the keys are the bot's, so they are
+ * scrubbed too, and a key naming a secret (api_key, db_password) masks its value whatever it looks like. */
 function redactValue(value: unknown, botKeys: boolean): unknown {
   if (typeof value === "string") return redactSecretsInText(value);
   if (Array.isArray(value)) return value.map((item) => redactValue(item, botKeys));
@@ -60,10 +43,7 @@ function redactValue(value: unknown, botKeys: boolean): unknown {
   ]));
 }
 
-/** One canonical node with every string in it scrubbed. `type` and `id` are
- * the server's own (a node name, "n12") and can hold nothing of the bot's:
- * they stay as written, so a held secret that happens to spell part of one
- * can never rename a node or break the ref a press names it by. */
+/** `type` and `id` stay as written, so a held secret spelling part of one can never rename a node or break a press's ref. */
 function redactNode(node: WidgetNode): WidgetNode {
   const out: WidgetNode = { type: node.type, id: node.id };
   for (const [key, value] of Object.entries(node)) {
@@ -75,17 +55,13 @@ function redactNode(node: WidgetNode): WidgetNode {
   return out;
 }
 
-/** parseWidgetInput made every action label and field name distinct. Two
- * that held different secrets of one length now read the same; a press could
- * no longer say which it meant. */
+/** Two labels that held different secrets of one length now read the same, and a press could no longer say which it meant. */
 function stillDistinct(root: WidgetRoot): boolean {
   const labels = widgetActions(root).filter((entry) => !entry.client).map((entry) => entry.label);
   const names = widgetFields(root).map((field) => field.name);
   return new Set(labels).size === labels.length && new Set(names).size === names.length;
 }
 
-/** JSON with every object's keys in one order, so two trees that hold the
- * same things compare equal however they were built. */
 function stable(value: unknown): string {
   return JSON.stringify(value, (_key, inner: unknown) => (isRecord(inner)
     ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
@@ -100,8 +76,7 @@ type CanonicalWidget =
   | { ok: true; root: WidgetRoot; text: string; masked: boolean }
   | { ok: false; status: 400; error: string };
 
-/** The tree as it is stored and the text that stands in for it. Scrubbed
- * before clipped: half a key no longer looks like one. */
+/** Scrubbed before clipped: half a key no longer looks like one. */
 function canonicalWidget(input: Record<string, unknown>): CanonicalWidget {
   const parsed = parseWidgetInput(input.widget);
   if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
@@ -118,17 +93,13 @@ function canonicalWidget(input: Record<string, unknown>): CanonicalWidget {
   return { ok: true, root, text: text || EMPTY_FALLBACK, masked: stable(root) !== stable(parsed.value) };
 }
 
-/** One call on the internal card route: show_widget, update_widget, or (no
- * `tool`) the legacy options card. The route has already checked that the
- * conversation is the calling bot's own. */
+/** The route has already checked that the conversation is the calling bot's own. */
 export function createAgentCard(args: {
   store: AgentCardStore;
   bot: { id: string; name: string; color: MausColor };
   threadId: string;
   input: unknown;
-  /** Told the row a widget call wrote. The calling turn's own session made
-   * it, so it must not be offered back to that session as a message it has
-   * not seen (server/delta-context.ts Handoffs.authored). */
+  /** The row a widget call wrote: the calling session made it, so it is never offered back to it as unseen. */
   authored?(messageId: string): void;
 }): AgentCardResult {
   const { store, bot, threadId, input } = args;
@@ -141,8 +112,7 @@ export function createAgentCard(args: {
   if (input.tool === "show_widget") {
     const widget = canonicalWidget(input);
     if (!widget.ok) return widget;
-    // No `from`: in a direct thread a bot-authored row that carries one is
-    // replayed as another bot's line (directContext in server/index.ts).
+    // No `from`: in a direct thread a bot-authored row carrying one is replayed as another bot's line.
     const message = store.appendMessage(threadId, { role: "bot", kind: "widget", text: widget.text, widget: { v: 1, root: widget.root } });
     args.authored?.(message.id);
     return { ok: true, messageId: message.id, ...(widget.masked ? { masked: true as const } : {}) };
@@ -155,8 +125,7 @@ export function createAgentCard(args: {
   if (existing.widget.settled) return { ok: false, status: 409, error: "The person already answered that widget. Show a new one." };
   const widget = canonicalWidget(input);
   if (!widget.ok) return widget;
-  // A new tree renumbers its nodes: the revision lets a press made on the old
-  // one be told apart (prepareWidgetPress).
+  // A new tree renumbers its nodes: the revision tells a press on the old one apart.
   const rev = (existing.widget.rev ?? 0) + 1;
   const patched = store.patchMessage(threadId, existing.id, { text: widget.text, widget: { v: 1, root: widget.root, rev } });
   if (!patched) return { ok: false, status: 404, error: NO_SUCH_WIDGET };
@@ -164,7 +133,6 @@ export function createAgentCard(args: {
   return { ok: true, messageId: patched.id, ...(widget.masked ? { masked: true as const } : {}) };
 }
 
-/** The widget's stored payload, when the row is a widget of this thread. */
 function storedWidget(store: Pick<AgentCardStore, "messagesFor">, threadId: string, messageId: string): WidgetPayload | undefined {
   return store.messagesFor(threadId).find((message) => message.id === messageId && message.kind === "widget")?.widget;
 }
@@ -173,16 +141,12 @@ export type WidgetPress =
   | {
       ok: true;
       messageId: string;
-      /** The person's message: the label, then one line per filled field. */
       text: string;
-      /** The control that was pressed and the action the bot attached to it:
-       * what the model is told was pressed (server/replies.ts ReplyTarget). */
       label: string;
       action: WidgetAction;
       /** This press folds the widget (confirm, cancel, submit) and has not yet. */
       settles: boolean;
-      /** Call once the message is accepted, with its `queueId` when it was
-       * queued rather than started or steered. */
+      /** Call once the message is accepted, with its `queueId` when it was queued. */
       settle(queueId?: string): void;
     }
   | { ok: false; status: 400 | 404 | 409; error: string };
@@ -195,24 +159,12 @@ function isValues(value: unknown): value is Record<string, string | boolean> | u
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string" || typeof entry === "boolean");
 }
 
-/** Absent (or null) is revision 0: a client that does not send one. */
 function isRevision(value: unknown): value is number | undefined | null {
   return value === undefined || value === null || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
 }
 
-/** A press on a widget, checked against the stored tree and turned into the
- * message it sends (POST /api/bots/:id/messages with `widgetAction`). Writes
- * nothing until `settle()`.
- *
- * `rev` names the revision of the tree the press was made on (absent: 0, a
- * tree update_widget never replaced). A press made on an older tree is
- * refused: its ref may now be another button.
- *
- * A retry carries the `sendId` of the press that settled the widget: it is
- * resolved as if the widget were still live, so the same text comes back for
- * the send path to match to the message it already has, and its `settle()`
- * does nothing. A settled widget cannot be replaced, so that tree is still
- * the one the press was made on. */
+/** Writes nothing until `settle()`. A press on an older `rev` is refused (its ref may now be another button); a retry with
+ * the settling press's `sendId` resolves as if still live, and its `settle()` does nothing. */
 export function prepareWidgetPress(
   store: Pick<AgentCardStore, "messagesFor" | "patchMessage">,
   threadId: string,
@@ -229,13 +181,10 @@ export function prepareWidgetPress(
   const payload = stored();
   if (!payload?.root) return { ok: false, status: 404, error: "That widget is not in this conversation." };
   const retry = sendId !== undefined && payload.settled?.sendId === sendId;
-  // An answered widget says so (below) whichever tree the press was made on.
   if (!retry && !payload.settled && (rev ?? 0) !== (payload.rev ?? 0)) return { ok: false, status: 409, error: STALE_PRESS };
   const resolved = resolveWidgetAction(retry ? { v: 1, root: payload.root } : payload, ref, values ?? undefined);
   if (!resolved.ok) return resolved;
   const { label, action, tone } = resolved;
-  // What the person had in the fields, kept for the read-only Details view.
-  // Cancel sends none, and a widget with no fields has none to keep.
   const sent = Object.keys(resolved.values).length > 0 ? { values: resolved.values } : {};
   return {
     ok: true,
@@ -245,8 +194,7 @@ export function prepareWidgetPress(
     action,
     settles: Boolean(tone) && !retry,
     settle: (queueId) => {
-      // Read again: two requests for one press can both get here, and the
-      // bot may have replaced the tree while the message was on its way.
+      // Read again: two requests for one press can both get here, and the bot may have replaced the tree meanwhile.
       const current = stored();
       if (retry || !tone || !current || current.settled) return;
       const settled: WidgetSettled = { ref, label, tone, at: Date.now(), ...(sendId ? { sendId } : {}), ...sent, ...(queueId ? { queueId } : {}) };
@@ -255,10 +203,7 @@ export function prepareWidgetPress(
   };
 }
 
-/** A queued send was cancelled before it was delivered. If it was the press
- * that answered a widget, the person's answer never reached the bot: the
- * widget is live again. A press that was delivered (drained, or steered in)
- * is no longer in the queue, so its cancel fails and this is never called. */
+/** A cancelled queued press never reached the bot, so the widget is live again. */
 export function reopenCancelledPress(store: Pick<AgentCardStore, "messagesFor" | "patchMessage">, threadId: string, queueId: string): void {
   const waiting = store.messagesFor(threadId).filter((message) =>
     message.kind === "widget" && message.widget?.settled?.queueId === queueId);
