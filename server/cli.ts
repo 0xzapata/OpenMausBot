@@ -651,7 +651,7 @@ export async function runBrowser(options: CliOptions, io: CliIo = defaultIo()): 
   const { browserEngineStatus, describeBrowserEngine, ensureChrome, installAgentBrowserBinary, resolveAgentBrowserBinary } = await import("./browser-engine.ts");
   const status = browserEngineStatus({ dataDir: options.dataDir });
   if (options.browserAction === "status") {
-    io.log(describeBrowserEngine(status));
+    io.log(describeBrowserEngine(status, status.kind === "ready" ? new (await import("./browser/chrome/launcher.ts")).ChromeLauncher({ dataDir: options.dataDir }).describe() : undefined));
     if (status.kind !== "ready" && status.installable) io.log("install it with:  openmausbot browser install");
     return status.kind === "ready" ? 0 : 1;
   }

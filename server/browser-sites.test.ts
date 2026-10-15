@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 
 import { browserRestoreKey } from "./browser-engine.ts";
-import { decryptBrowserState, encryptBrowserState, listSignedInSites, signOutOfSites, signedInSites, type BrowserSitesTarget } from "./browser-sites.ts";
+import { connectCdp, decryptBrowserState, encryptBrowserState, listSignedInSites, signOutOfSites, signedInSites, type BrowserSitesTarget, type CdpEvent } from "./browser-sites.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
 
 const KEY = "a".repeat(64);
@@ -225,5 +225,27 @@ describe("signing a running browser out", () => {
       args[0] === "get" ? { cdpUrl: "ws://browser.example.net:9222/devtools/browser/x" } : chrome.engine(_target, args);
     await expect(signOutOfSites(target, null, { engine })).rejects.toThrow("DevTools address");
     expect(chrome.calls).toEqual([]);
+  });
+});
+
+describe("the DevTools connection", () => {
+  it("hands events to its listener, answers to their callers, and says when the browser closes it", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    servers.push(server);
+    server.on("connection", (socket) => socket.on("message", (data) => {
+      const { id, sessionId } = JSON.parse(String(data));
+      socket.send(JSON.stringify({ method: "Target.attachedToTarget", params: { sessionId: "child", targetInfo: { type: "iframe" } }, sessionId }));
+      socket.send(JSON.stringify({ id, result: { ok: true } }));
+      setTimeout(() => socket.close(), 10);
+    }));
+    await new Promise((ready) => server.on("listening", ready));
+    const events: CdpEvent[] = [];
+    let closed!: () => void;
+    const gone = new Promise<void>((resolve) => { closed = resolve; });
+    const cdp = await connectCdp(`ws://127.0.0.1:${(server.address() as { port: number }).port}/devtools/browser/x`, 2_000, { event: (event) => events.push(event), closed });
+    await expect(cdp.send("Target.setAutoAttach", {}, "page")).resolves.toEqual({ ok: true });
+    await gone;
+    expect(events).toEqual([{ method: "Target.attachedToTarget", params: { sessionId: "child", targetInfo: { type: "iframe" } }, sessionId: "page" }]);
+    await expect(cdp.send("Browser.getVersion")).rejects.toThrow();
   });
 });

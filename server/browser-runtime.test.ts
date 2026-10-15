@@ -732,6 +732,51 @@ describe("server-owned browser MCP runtime", () => {
     expect(applyViewport).toHaveBeenCalledTimes(2);
   });
 
+  it("prepares the browser before the engine may start it, and gives it its identity before the bot's command runs", async () => {
+    const order: string[] = [];
+    const launch = {
+      ready: vi.fn(async () => { order.push("ready"); }),
+      started: vi.fn(async () => { order.push("started"); }),
+      stopped: vi.fn(),
+    };
+    const value = runtime({ launch, applyViewport: async () => { order.push("viewport"); } });
+    await value.agentRpc("s", spec(), "tools/list", {});
+    expect(order).toEqual([]);
+    const result = await value.agentRpc("s", spec(), "tools/call", { name: "echo", arguments: { text: "go" } }) as { content: Array<{ text: string }> };
+    order.push(result.content[0]!.text.includes("go") ? "command" : "?");
+    expect(order).toEqual(["ready", "viewport", "started", "command"]);
+    expect(launch.started).toHaveBeenCalledWith("s", spec());
+    await value.agentRpc("s", spec(), "tools/call", { name: "agent_browser_close", arguments: {} });
+    expect(launch.started).toHaveBeenCalledOnce();
+    expect(launch.ready).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers a call with the launcher's reason while the browser cannot start yet, without starting the engine", async () => {
+    const launch = { ready: vi.fn(async () => { throw new Error("Getting the browser ready (52 of 182 MB). Try again in a minute."); }), started: vi.fn(), stopped: vi.fn() };
+    const value = runtime({ launch });
+    const missing: BrowserSpawnSpec = { command: join(tmpdir(), "no-such-engine"), args: [], env: {} };
+    await expect(value.agentRpc("s", missing, "tools/call", { name: "agent_browser_open", arguments: { url: "https://example.com" } }))
+      .rejects.toThrow("Getting the browser ready (52 of 182 MB). Try again in a minute.");
+    expect(value.interrupted("s")).toBe(false);
+    expect(launch.started).not.toHaveBeenCalled();
+  });
+
+  it("still runs the bot's command when the browser's identity cannot be attached", async () => {
+    const launch = { ready: async () => {}, started: async () => { throw new Error("no DevTools address"); }, stopped: vi.fn() };
+    await expect(runtime({ launch }).agentRpc("s", spec(), "tools/call", { name: "echo", arguments: { text: "works" } })).resolves.toMatchObject({ content: [{ type: "text" }] });
+  });
+
+  it("lets the launcher drop a browser's identity connection whenever the browser is closed", async () => {
+    const stopped = vi.fn();
+    const value = runtime({ launch: { ready: async () => {}, started: async () => {}, stopped }, closeBrowser: async () => true });
+    await value.agentRpc("s", spec(), "tools/call", { name: "echo" });
+    await value.agentRpc("s", spec(), "tools/call", { name: "restart_browser" });
+    expect(stopped).toHaveBeenLastCalledWith("s");
+    await value.restart("s", "person", async () => {});
+    await value.close("s");
+    expect(stopped).toHaveBeenCalledTimes(3);
+  });
+
   it("times each bot call by phase, and the preview frame that held the engine", async () => {
     const timings: BrowserTiming[] = [];
     const value = runtime({ onTiming: (timing) => timings.push(timing), applyViewport: async () => true });

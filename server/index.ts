@@ -456,10 +456,11 @@ import {
   closeBrowserSession,
   browserEngineStatus,
   browserSessionId, isTemporaryBrowserSession, BUILT_IN_BROWSER_SYSTEM_PROMPT,
-  describeBrowserEngine,
   inRunningBrowser,
+  noteBrowserEngineUnavailable,
   setBrowserViewport,
 } from "./browser-engine.ts";
+import { chromeLauncher } from "./browser/chrome/launcher.ts";
 import { createScreenFrameSource, type ScreenCapture } from "./screen-frame-source.ts";
 import { screenFrameHash, screenSurfaceForTool, screenTouchingTool, settledFrameIsNews } from "./screen-frame-gate.ts";
 import { asSchedule, RoutineRequestService } from "./routine-requests.ts";
@@ -2663,6 +2664,7 @@ const browserRuntime = new BrowserRuntime({
     return closed;
   },
   applyViewport: (spec) => setBrowserViewport(spec.command, spec.env),
+  launch: chromeLauncher,
   relayCommand: (spec, session, command, timeoutMs) => relayCommand(spec, session, command, timeoutMs).catch((error: unknown) => {
     throw error instanceof RelayTimeout ? new TransportError(error.message) : error;
   }),
@@ -2722,16 +2724,14 @@ function browserSessionSpec(binaryPath: string, session: string, profile: string
     encryptionKey: browserEngineEncryptionKey(),
     persistent: profile !== "guest",
     env: { ...process.env, PATH: augmentedPath() },
+    launcher: chromeLauncher.env(),
     ...(usesMyChrome(profile) ? { attach: attachCdpUrl ? { cdpUrl: attachCdpUrl } : {} } : {}),
   });
 }
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
   const status = browserEngineStatus();
   if (status.kind !== "ready") {
-    if (!engineUnavailableLogged) {
-      engineUnavailableLogged = true;
-      console.warn(`${describeBrowserEngine(status)}; bots get no browser tools until it is installed`);
-    }
+    noteBrowserEngineUnavailable(status);
     return null;
   }
   const profileTarget = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
@@ -2754,7 +2754,6 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
     },
   } };
 }
-let engineUnavailableLogged = false;
 
 const dataSheets = new DataSheetRegistry({
   broadcast: (frame) => broadcast({ ...frame }),
@@ -2791,11 +2790,11 @@ function highlevelIntegration(bot: BotRecord, turn: { threadId: string; generati
 
 let browserEngineInstall: Promise<void> | null = null;
 let browserEngineInstallError: string | null = null;
-export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; installing?: boolean; installError?: string; myChrome: boolean } {
+export function browserEngineSummary(): { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; version?: string; chrome?: string; installing?: boolean; installError?: string; myChrome: boolean } {
   const status = browserEngineStatus();
   const progress = { myChrome: myChromeAvailable(), ...(browserEngineInstall ? { installing: true } : {}), ...(browserEngineInstallError ? { installError: browserEngineInstallError } : {}) };
   return status.kind === "ready"
-    ? { kind: "engine", version: status.version, ...progress }
+    ? { kind: "engine", version: status.version, chrome: chromeLauncher.describe(), ...progress }
     : { kind: "unavailable", reason: status.reason, installable: status.installable, ...progress };
 }
 
@@ -17583,6 +17582,7 @@ server.listen(PORT, "127.0.0.1", async () => {
   companyRuntimeReady();
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
   browserSweep.start();
+  if (builtInBrowserEnabled(cfg)) chromeLauncher.start();
   followupsReady = true;
   drainQueuedSends();
   drainQueuedChannelSends();

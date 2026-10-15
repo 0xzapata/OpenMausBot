@@ -33,6 +33,9 @@ export interface Cdp {
   close(): void;
 }
 
+export interface CdpEvent { method: string; params?: Record<string, unknown>; sessionId?: string }
+export interface CdpListeners { event?(message: CdpEvent): void; closed?(): void }
+
 export interface BrowserSitesDeps {
   engine?: (target: BrowserSitesTarget, args: string[]) => Promise<Record<string, unknown> | null>;
   connect?: (url: string) => Promise<Cdp>;
@@ -185,7 +188,7 @@ function rewriteSavedState(directory: string, session: string, key: string, site
   }
 }
 
-export function connectCdp(url: string, timeoutMs = 10_000): Promise<Cdp> {
+export function connectCdp(url: string, timeoutMs = 10_000, listeners: CdpListeners = {}): Promise<Cdp> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url);
     const pending = new Map<number, { done: (value: Record<string, unknown>) => void; fail: (error: Error) => void }>();
@@ -197,10 +200,17 @@ export function connectCdp(url: string, timeoutMs = 10_000): Promise<Cdp> {
       reject(new Error("Could not reach the running browser."));
       failAll(new Error("The browser connection failed."));
     });
-    socket.addEventListener("close", () => failAll(new Error("The browser connection closed.")));
+    socket.addEventListener("close", () => {
+      failAll(new Error("The browser connection closed."));
+      listeners.closed?.();
+    });
     socket.addEventListener("message", (event) => {
-      let message: { id?: number; result?: Record<string, unknown>; error?: { message?: string } };
+      let message: { id?: number; method?: unknown; params?: Record<string, unknown>; sessionId?: string; result?: Record<string, unknown>; error?: { message?: string } };
       try { message = JSON.parse(String(event.data)); } catch { return; }
+      if (message.id === undefined && typeof message.method === "string") {
+        listeners.event?.({ method: message.method, params: message.params, sessionId: message.sessionId });
+        return;
+      }
       const call = typeof message.id === "number" ? pending.get(message.id) : undefined;
       if (!call) return;
       pending.delete(message.id!);
@@ -211,6 +221,7 @@ export function connectCdp(url: string, timeoutMs = 10_000): Promise<Cdp> {
       clearTimeout(opening);
       resolve({
         send: (method, params = {}, sessionId) => new Promise((done, fail) => {
+          if (socket.readyState !== WebSocket.OPEN) return fail(new Error("The browser connection closed."));
           const id = next++;
           const timer = setTimeout(() => { pending.delete(id); fail(new Error("The running browser did not answer.")); }, timeoutMs);
           pending.set(id, {
