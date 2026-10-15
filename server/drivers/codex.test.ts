@@ -2853,6 +2853,17 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
     expect((await instance.snapshot()).update?.title).toBe("Update Codex to 0.156.1");
   });
 
+  it("reads the model list again when the Codex CLI is updated in place", async () => {
+    const updatedFile = join(scratch, "updated");
+    await create({ environment: { FAKE_CODEX_VERSION: "codex-cli 0.155.1", FAKE_CODEX_UPDATED_FILE: updatedFile } });
+    expect((await instance.snapshot()).version).toBe("codex-cli 0.155.1");
+    expect(instance.models.options.map((model) => model.id)).not.toContain("gpt-6.1-sol");
+
+    writeFileSync(updatedFile, "");
+    expect((await instance.snapshot()).version).toBe("codex-cli 0.162.1");
+    expect(instance.models.options.map((model) => model.id)).toContain("gpt-6.1-sol");
+  });
+
   it("updates the selected Codex executable instead of installing a second copy", () => {
     expect(codexUpdateCommand("codex", "darwin")).toBe("codex update");
     expect(codexUpdateCommand("'/Applications/My Codex/codex'", "darwin")).toBe(

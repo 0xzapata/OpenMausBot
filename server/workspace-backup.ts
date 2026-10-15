@@ -13,7 +13,7 @@ import { Worker } from "node:worker_threads";
 import * as tar from "tar";
 import { writeFileAtomic } from "./atomic.ts";
 import { WORKSPACE_BACKUP_CLIENT_KEYS } from "../shared/workspace-backup-client.ts";
-import { restorePaths, validRelative } from "./workspace-backup-paths.ts";
+import { INSTRUCTION_FILE, restorePaths, validRelative } from "./workspace-backup-paths.ts";
 import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, liveDataEnginePath, managedTaskSkillLink, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
 import type { WorkspaceBackupClientState, WorkspaceBackupPrivateMetadata, WorkspaceBackupSummary, WorkspaceLeftBehind } from "../shared/workspace-backup.ts";
 
@@ -43,7 +43,6 @@ const EXCLUSION_NOTES = [
   "External project folders, CLI login homes, browser session homes, OS keychains, companion devices and other servers.",
   "VM/container disk layers and remote cloud data; durable files inside this workspace are included.",
 ];
-const INSTRUCTION_FILE = /^(?:bots\/[^/]+\/SOUL\.md|workspaces\/[^/]+\/(?:MEMORY\.md|memory\/.+\.md))$/;
 const RESTORE_WARNING = "Restoring pauses routines, webhooks and calendar calls, and does not resume pending delegations, queued chat messages or queued runs. Definitions and historical receipts are retained; review before enabling them again.";
 
 type Entry = { path: string; type: "file" | "directory"; size: number; mode: number; sha256?: string };
@@ -72,7 +71,8 @@ export interface WorkspaceRestoreResult {
   leftBehind?: WorkspaceLeftBehind;
   clientState?: WorkspaceBackupClientState;
 }
-export type LastWorkspaceRestore = WorkspaceRestoreResult & { restored: true; id: string };
+/** `pathsRewritten`: the source data folder was rewritten in text too, by the restore or by repairMovedWorkspacePaths. */
+export type LastWorkspaceRestore = WorkspaceRestoreResult & { restored: true; id: string; pathsRewritten?: true };
 
 function excluded(name: string): boolean {
   return EXCLUDED.has(name) || excludedWorkspaceAuthPath(name) || name.startsWith("openmausbot-server.lease.") || name.startsWith("box-create-requests.lock.") || /^perm-[A-Za-z0-9_-]+\.sock$/.test(name);
@@ -823,7 +823,7 @@ function finishRestore(dataDir: string, id: string, consumePending = true): Last
     } catch {}
   }
   const leftBehind = join(jobPath(dataDir, id), "left-behind.json");
-  const result: LastWorkspaceRestore = { restored: true, id, safetyCopyPath: join(root, `safety-${id}`), summary, clientState,
+  const result: LastWorkspaceRestore = { restored: true, id, safetyCopyPath: join(root, `safety-${id}`), summary, clientState, pathsRewritten: true,
     ...(existsSync(leftBehind) ? { leftBehind: privateJson(leftBehind) as WorkspaceLeftBehind } : {}) };
   writeJson(join(root, "last-restore.json"), result);
   if (consumePending) rmSync(join(root, "pending-restore.json"), { force: true });
