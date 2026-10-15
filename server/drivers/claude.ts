@@ -1166,6 +1166,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.data = { ...turn.integrations.data };
         allowed.push("mcp__data");
       }
+      if (turn.integrations?.highlevel) {
+        mcpServers.highlevel = { ...turn.integrations.highlevel };
+        allowed.push("mcp__highlevel");
+      }
       if (turn.integrations?.dweb) {
         mcpServers.dweb = {
           command: process.execPath,
@@ -2098,6 +2102,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           phoneMcp: true,
           browserMcp: true,
           dataMcp: true,
+          highlevelMcp: true,
           images: true,
           nativeImageInput: true,
           effortLevels: ["low", "medium", "high", "xhigh", "max"],

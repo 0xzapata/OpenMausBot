@@ -121,6 +121,7 @@ export function buildMcpServers(turn: SendTurnInput): Record<string, unknown> | 
   }
   if (turn.integrations?.browser) servers.browser = { ...turn.integrations.browser };
   if (turn.integrations?.data) servers.data = { ...turn.integrations.data };
+  if (turn.integrations?.highlevel) servers.highlevel = { ...turn.integrations.highlevel };
   for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) servers[name] = { ...server, scope: "custom" };
   for (const [name, server] of Object.entries(servers)) {
     if (parsed.scope !== undefined && !canUseMcpServer(parsed.scope, name)) { delete servers[name]; continue; }
@@ -1104,6 +1105,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           customMcp: true,
           browserMcp: true,
           dataMcp: true,
+          highlevelMcp: true,
           localComputerMcp: true,
           images: true,
           nativeImageInput: true,

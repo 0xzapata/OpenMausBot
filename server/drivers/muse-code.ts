@@ -603,6 +603,7 @@ export const MuseCodeDriver: ProviderDriver<MuseConfig> = {
         composioMcp: true,
         browserMcp: true,
         dataMcp: true,
+        highlevelMcp: true,
         images: true,
         nativeImageInput: true,
         effortLevels: EFFORT_LEVELS,
