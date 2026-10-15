@@ -273,8 +273,9 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
     const element = await page.screenshot({ target: { selector: "#box" } });
     expect(pngSize(element.data)).toEqual({ width: 200, height: 100 });
     const full = await page.screenshot({ fullPage: true });
-    // The document's width: 1280 where scrollbars overlay the page (macOS), less a classic scrollbar elsewhere.
-    expect(pngSize(full.data).width).toBe(await read("document.documentElement.clientWidth"));
+    // The document's width: 1280 where scrollbars overlay the page (macOS), less a 15-16 px classic scrollbar elsewhere.
+    expect(pngSize(full.data).width).toBeGreaterThanOrEqual(1_260);
+    expect(pngSize(full.data).width).toBeLessThanOrEqual(1_280);
     expect(pngSize(full.data).height).toBeGreaterThan(3000);
     const retina = await startChrome("retina", { launch: { screen: { width: 1512, height: 982, deviceScaleFactor: 2 } } });
     extra.push(retina);
@@ -295,6 +296,8 @@ suite("S4 pages, tabs and page state on real Chrome", () => {
     expect(await first.evaluate("[innerWidth, innerHeight]")).toEqual([1366, 768]);
     const second = await fitted.browser.newPage(serve("<p>second tab</p>"));
     expect(await second.evaluate("[innerWidth, innerHeight]")).toEqual([1366, 768]);
+    await first.bringToFront();
+    expect(await first.evaluate("[innerWidth, innerHeight]")).toEqual([1366, 768]);
   });
 
   it("streams screencast frames with paced acks, and stops", async () => {
