@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -104,4 +104,44 @@ test("Choose on this PC adds a folder and answers its Cloud copy; a too-broad fo
   mkdirSync(extra);
   assert.deepEqual(await s.service.linkFolder(extra), { cloudPath: "/data/Synced/PC/Notes" });
   await assert.rejects(s.service.linkFolder(join(s.dir, "home")), /too broad/);
+});
+
+test("a folder that fails is listed and the others still sync", async (t) => {
+  const s = setup(t);
+  s.cloud.addFolder({ id: "bot-x-y", kind: "bot", botId: "x", threadId: "y", cloudPath: "/x" });
+  const files = s.cloud.client.files;
+  s.cloud.client.files = async (id) => { if (id === "bot-x-y") throw Object.assign(new Error("My Cloud answered 500"), { status: 500 }); return files(id); };
+  await s.service.setEnabled(true);
+  await s.service.pass();
+  const folder = [...s.cloud.folders.values()].find((entry) => entry.folder.kind === "pc").folder;
+  assert.equal(s.cloud.get(folder.id, "brief.md"), "the brief");
+  assert.equal(s.service.state().phase, "synced");
+  assert.deepEqual(s.service.state().problems.filter((problem) => problem.folderId === "bot-x-y").map((problem) => problem.error), ["My Cloud answered 500"]);
+});
+
+test("a link to the home folder is as broad as the home folder, and a folder inside a synced one folds into it", async (t) => {
+  const s = setup(t);
+  await s.service.setEnabled(true);
+  await s.service.pass();
+  const link = join(s.dir, "points-home");
+  symlinkSync(join(s.dir, "home"), link);
+  await assert.rejects(s.service.linkFolder(link), /too broad/);
+  mkdirSync(join(s.project, "Drafts"));
+  const registered = s.cloud.calls.filter(([kind]) => kind === "register").length;
+  assert.deepEqual(await s.service.linkFolder(join(s.project, "Drafts")), { cloudPath: "/data/Synced/PC/Acme/Drafts" });
+  assert.equal(s.cloud.calls.filter(([kind]) => kind === "register").length, registered);
+});
+
+test("turning sync off and on again keeps the same folders on this computer", async (t) => {
+  const s = setup(t);
+  s.cloud.addFolder({ id: "bot-owl-t9", kind: "bot", botId: "owl", threadId: "t9", cloudPath: "/data/.openmausbot/task-workspaces/owl/t9" });
+  s.cloud.put("bot-owl-t9", "report.md", "made on My Cloud");
+  await s.service.setEnabled(true);
+  await s.service.pass();
+  await s.service.setEnabled(false);
+  await s.service.setEnabled(true);
+  await s.service.pass();
+  assert.deepEqual(readdirSync(join(s.dir, "Documents", "MausBot")), ["Owl"]);
+  assert.deepEqual(readdirSync(join(s.dir, "Documents", "MausBot", "Owl")), ["Q3- plan-"]);
+  assert.equal(s.cloud.calls.filter(([kind]) => kind === "upload").length, 1, "nothing became a clash");
 });

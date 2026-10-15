@@ -58,3 +58,26 @@ test("a download resumes a partial file with a range", async (t) => {
   assert.equal(range, "bytes=6-");
   assert.equal(readFileSync(temporary, "utf8"), "hello world");
 });
+
+test("a part that times out is sent again smaller, and a timed-out download fails that file, not the whole pass", async (t) => {
+  const file = join(dir(t), "a.bin");
+  writeFileSync(file, Buffer.alloc(32, 1));
+  const puts = [];
+  let received = 0;
+  const client = createSyncClient({ origin: ORIGIN, chunkBytes: 32, minChunkBytes: 8, fetch: async (url, init) => {
+    if (url.endsWith("/uploads")) return reply(200, { uploadId: "11111111-1111-4111-8111-111111111111", received: 0 });
+    if (init.method === "PUT") {
+      puts.push(init.body.length);
+      if (init.body.length > 8) throw new DOMException("The operation timed out.", "TimeoutError");
+      received += init.body.length;
+      return reply(200, { received });
+    }
+    return reply(200, { sha256: "s" });
+  } });
+  assert.deepEqual(await client.upload({ folderId: "f", path: "a.bin", file, size: 32, sha256: "s", baseSha256: null }), { ok: true });
+  assert.deepEqual(puts, [32, 16, 8, 8, 8, 8]);
+  const slow = createSyncClient({ origin: ORIGIN, fetch: async () => { throw new DOMException("The operation timed out.", "TimeoutError"); } });
+  const error = await slow.download("f", "a.txt", join(dir(t), ".a.txt.omb-sync-1a2b3c4d")).catch((caught) => caught);
+  assert.notEqual(error.name, "TimeoutError");
+  assert.match(error.message, /too slow/);
+});

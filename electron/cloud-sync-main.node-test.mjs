@@ -34,4 +34,7 @@ test("registers Settings channels as local-only and Choose on this PC for the My
   assert.equal(login.openAtLogin, true, "turning sync on opens the app at login");
   assert.equal((await handlers.get("sync:set")({}, { openAtLogin: false })).openAtLogin, false);
   assert.equal(await handlers.get("cloud-sync:link-folder")({}), null, "a cancelled picker links nothing");
+  // before-quit runs twice when quitting: closing again must not throw.
+  installed.close();
+  assert.doesNotThrow(() => installed.close());
 });

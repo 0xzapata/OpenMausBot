@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -142,4 +142,65 @@ test("says when a Cloud bot changed instructions coding tools on this PC read", 
   const s = setup(t);
   s.cloud.put("f1", "CLAUDE.md", "be terse");
   assert.deepEqual((await s.run()).notices, [{ folderId: "f1", path: "CLAUDE.md" }]);
+});
+
+test("a folder this computer cannot read stops the pass for that folder; nothing on My Cloud is deleted", async (t) => {
+  const s = setup(t);
+  s.write("sub/a.txt", "one");
+  await s.run();
+  chmodSync(join(s.local, "sub"), 0o000);
+  try { await assert.rejects(s.run()); } finally { chmodSync(join(s.local, "sub"), 0o700); }
+  assert.equal(s.cloud.get("f1", "sub/a.txt"), "one");
+  assert.equal(s.cloud.calls.some(([kind]) => kind === "delete"), false);
+});
+
+test("a side that lost everything at once gets it back instead of passing the loss on", async (t) => {
+  const s = setup(t);
+  for (const name of ["a.txt", "b.txt", "c.txt"]) s.write(name, name);
+  await s.run();
+  s.cloud.folders.get("f1").files.clear();
+  const report = await s.run();
+  assert.deepEqual(s.trashed, []);
+  assert.equal(s.cloud.get("f1", "a.txt"), "a.txt");
+  assert.match(report.problems[0].error, /disappeared on My Cloud/);
+  for (const name of ["a.txt", "b.txt", "c.txt"]) rmSync(join(s.local, name));
+  await s.run();
+  assert.equal(s.cloud.calls.some(([kind]) => kind === "delete"), false);
+  assert.equal(s.read("a.txt"), "a.txt");
+});
+
+test("a file edited on this computer during the pass is neither moved nor thrown away", async (t) => {
+  const s = setup(t);
+  s.write("a.txt", "v1");
+  s.write("old.txt", "same");
+  await s.run();
+  const files = s.cloud.folders.get("f1").files;
+  files.delete("a.txt");
+  files.set("new.txt", files.get("old.txt"));
+  files.delete("old.txt");
+  s.cloud.put("f1", "0.txt", "first");
+  const download = s.cloud.client.download;
+  s.cloud.client.download = async (...args) => {
+    writeFileSync(join(s.local, "a.txt"), "edited during the pass!");
+    writeFileSync(join(s.local, "old.txt"), "edited too!!");
+    return download(...args);
+  };
+  await s.run();
+  assert.deepEqual(s.trashed, []);
+  assert.equal(s.read("a.txt"), "edited during the pass!");
+  assert.equal(s.read("old.txt"), "edited too!!");
+});
+
+test("a path from My Cloud that would leave the folder, or go through a link, is never written", async (t) => {
+  const s = setup(t);
+  const outside = join(s.dir, "outside");
+  mkdirSync(outside);
+  symlinkSync(outside, join(s.local, "linked"));
+  s.cloud.put("f1", "../escape.txt", "outside");
+  s.cloud.put("f1", "linked/x.txt", "through a link");
+  s.cloud.put("f1", "ok.txt", "fine");
+  await s.run();
+  assert.equal(existsSync(join(s.dir, "escape.txt")), false);
+  assert.equal(existsSync(join(outside, "x.txt")), false);
+  assert.equal(s.read("ok.txt"), "fine");
 });

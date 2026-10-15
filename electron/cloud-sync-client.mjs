@@ -5,6 +5,10 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { CHUNK_BYTES, MIN_CHUNK_BYTES } from "./cloud-sync-rules.mjs";
 
+// Slowest connection a transfer is given time for, in bytes per millisecond (32 KB/s).
+const SLOWEST = 32;
+const tooSlow = () => new Error("The connection to My Cloud is too slow for this file right now; it will carry on next time.");
+
 export class SyncAuthError extends Error {}
 export class SyncHttpError extends Error {
   constructor(status, body) {
@@ -63,7 +67,16 @@ export function createSyncClient({ origin, fetch: fetchImpl, chunkBytes = CHUNK_
           const length = Math.min(chunk, size - received);
           const buffer = Buffer.alloc(length);
           if (readSync(fd, buffer, 0, length, received) !== length) throw new Error("The file changed while it was being sent.");
-          const response = await call("PUT", `/api/sync/uploads/${begun.uploadId}?offset=${received}`, { raw: buffer, timeoutMs: 120_000 });
+          let response;
+          try {
+            response = await call("PUT", `/api/sync/uploads/${begun.uploadId}?offset=${received}`, { raw: buffer, timeoutMs: 30_000 + Math.ceil(length / SLOWEST) });
+          } catch (error) {
+            // A part that timed out goes again smaller; at the smallest it is this file's failure, not the whole pass's.
+            if (error?.name !== "TimeoutError") throw error;
+            if (chunk <= minChunkBytes) throw tooSlow();
+            chunk = Math.max(minChunkBytes, Math.floor(chunk / 2));
+            continue;
+          }
           if (response.status === 413 && chunk > minChunkBytes) { chunk = Math.max(minChunkBytes, Math.floor(chunk / 2)); continue; }
           const body = await response.json().catch(() => null);
           if (response.status === 409 && Number.isSafeInteger(body?.received)) { received = body.received; continue; }
@@ -79,12 +92,18 @@ export function createSyncClient({ origin, fetch: fetchImpl, chunkBytes = CHUNK_
         throw error;
       }
     },
-    async download(folderId, path, temporary) {
+    /** What arrived stays in `temporary`, so a download that timed out carries on from there next time. */
+    async download(folderId, path, temporary, size = 0) {
       const have = statSync(temporary, { throwIfNoEntry: false })?.size ?? 0;
-      const response = await call("GET", `/api/sync/folders/${id(folderId)}/file?path=${encodeURIComponent(path)}`, { headers: have ? { range: `bytes=${have}-` } : {}, timeoutMs: 600_000 });
-      if (!response.ok) throw new SyncHttpError(response.status, await response.json().catch(() => null));
-      await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary, { flags: response.status === 206 ? "a" : "w", mode: 0o600 }));
-      return { sha256: response.headers.get("x-omb-sha256") };
+      try {
+        const response = await call("GET", `/api/sync/folders/${id(folderId)}/file?path=${encodeURIComponent(path)}`, { headers: have ? { range: `bytes=${have}-` } : {}, timeoutMs: 60_000 + Math.ceil(Math.max(0, size - have) / SLOWEST) });
+        if (!response.ok) throw new SyncHttpError(response.status, await response.json().catch(() => null));
+        await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary, { flags: response.status === 206 ? "a" : "w", mode: 0o600 }));
+        return { sha256: response.headers.get("x-omb-sha256") };
+      } catch (error) {
+        if (error?.name === "TimeoutError") throw tooSlow();
+        throw error;
+      }
     },
   };
 }

@@ -9,11 +9,24 @@ export function planFolder({ base, pc, cloud, windows = false, caseInsensitive =
   const localSpelling = new Map();
   if (caseInsensitive) for (const path of [...base.keys(), ...pc.keys()]) localSpelling.set(foldKey(path), path);
   const seen = new Set();
+  const keepLocal = new Set();
+  const renames = [];
   for (const path of [...cloud.keys()].sort()) {
     if (windows && windowsProblem(path)) { held.push({ path, reason: "windows-name" }); continue; }
     if (caseInsensitive) {
       const key = foldKey(path);
       const local = localSpelling.get(key);
+      // Renamed on My Cloud in capitals only: this PC's spelling is not deleted; with the same bytes it is renamed.
+      if (local !== undefined && local !== path && !cloud.has(local) && !seen.has(key)) {
+        keepLocal.add(local);
+        const mine = pc.get(local) ?? base.get(local);
+        const theirs = cloud.get(path);
+        if (mine && !mine.unsettled && mine.sha256 === theirs.sha256) {
+          seen.add(key);
+          renames.push({ type: "movePc", from: local, to: path, sha256: theirs.sha256, size: theirs.size });
+          continue;
+        }
+      }
       if (seen.has(key) || (local !== undefined && local !== path)) { held.push({ path, reason: "case-clash" }); continue; }
       seen.add(key);
     }
@@ -22,7 +35,7 @@ export function planFolder({ base, pc, cloud, windows = false, caseInsensitive =
   const taken = (path) => pc.has(path) || cloud.has(path);
   const actions = [];
   for (const path of [...new Set([...base.keys(), ...pc.keys(), ...visible.keys()])].sort()) {
-    if (cloud.has(path) && !visible.has(path)) continue;
+    if ((cloud.has(path) && !visible.has(path)) || keepLocal.has(path)) continue;
     const b = base.get(path), l = pc.get(path), c = visible.get(path);
     if (l?.unsettled) continue;
     const local = !l ? (b ? "deleted" : "absent") : !b ? "new" : l.sha256 === b.sha256 ? "same" : "changed";
@@ -58,7 +71,7 @@ export function planFolder({ base, pc, cloud, windows = false, caseInsensitive =
         break;
     }
   }
-  return { actions: pairRenames(actions), held };
+  return { actions: [...renames, ...pairRenames(actions)], held };
 }
 
 // A delete on one side and a new file with the same bytes on that side is a rename: move it on the other side.

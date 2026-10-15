@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { keepFoldersInSync, noteMovePhase, setKeepFoldersInSync } from "./cloud-move-sync";
+import { keepFoldersInSync, noteMovePhase, noteMoveStart, setKeepFoldersInSync } from "./cloud-move-sync";
 import type { CloudMoveBridge, CloudMoveOverview, CloudMoveState } from "../../electron/cloud-move.mjs";
 import type { LocaleKey } from "@/locales";
 import { activeLocale, t } from "@/lib/i18n";
@@ -208,7 +208,7 @@ function moveButton(view: MoveView, move: CloudMoveHandle, onStart?: () => void)
   const action = view.action;
   if (!action) return null;
   const button = <button type="button" disabled={move.pending && action.kind !== "cancel"} className="ui-button"
-    onClick={() => { if (action.kind === "start") onStart?.(); move.run(action.kind); }}>{action.label}</button>;
+    onClick={() => { if (action.kind === "start") { noteMoveStart(); onStart?.(); } move.run(action.kind); }}>{action.label}</button>;
   const toCloud = (move.state.destination ?? move.overview?.destination)?.kind === "cloud";
   if (action.kind !== "start" || !toCloud || !window.ogb?.cloudAccount?.sync) return button;
   return <>

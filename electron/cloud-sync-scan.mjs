@@ -14,7 +14,11 @@ export function sha256File(file) {
 
 function* walkPc(root, wire = "", real = []) {
   let entries;
-  try { entries = readdirSync(join(root, ...real), { withFileTypes: true }); } catch { return; }
+  // Only a folder that is not there reads as empty; anything else stops the scan, so nothing reads as deleted unproven.
+  try { entries = readdirSync(join(root, ...real), { withFileTypes: true }); } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
   const names = entries.map((entry) => entry.name);
   for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
     const file = join(root, ...real, entry.name);

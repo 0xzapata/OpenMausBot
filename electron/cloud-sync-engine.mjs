@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { RESERVE_BYTES, clashPath } from "./cloud-sync-rules.mjs";
+import { RESERVE_BYTES, clashPath, foldKey, validWirePath } from "./cloud-sync-rules.mjs";
 import { planFolder } from "./cloud-sync-plan.mjs";
 import { caseInsensitive, scanPc, sha256File } from "./cloud-sync-scan.mjs";
 import { SyncAuthError } from "./cloud-sync-client.mjs";
@@ -13,6 +13,8 @@ const TEMP_TAG = ".omb-sync-";
 const TEMP_STALE_MS = 24 * 60 * 60_000;
 const AGENT_CONFIG = /(?:^|\/)(?:CLAUDE\.md|AGENTS\.md|\.claude\/.+)$/;
 const CONCURRENCY = 2;
+// This many files or more vanishing from one side at once reads as a lost folder, not as that many deletes.
+const LOST_AT_ONCE = 3;
 
 export function newReport() {
   return { waiting: [], clashes: [], held: [], problems: [], notices: [], missing: [], uploaded: 0, downloaded: 0 };
@@ -37,10 +39,20 @@ export async function syncFolder({ client, state, folder, local, platform = proc
     return;
   }
   fs.mkdirSync(local, { recursive: true });
-  const base = state.base(folder.id);
+  let base = state.base(folder.id);
   const { entries: pc, temps } = await scanPc(local, base, { now });
   for (const temp of temps) if (now() - temp.mtimeMs > TEMP_STALE_MS) fs.rmSync(temp.file, { force: true });
-  const cloud = new Map(listed.map((file) => [file.path, file]));
+  // Never trust a path My Cloud sends: one that cannot travel is dropped here, and localFile checks the rest.
+  const cloud = new Map(listed.filter((file) => validWirePath(file.path)).map((file) => [file.path, file]));
+  const lostOn = base.size >= LOST_AT_ONCE && cloud.size === 0 ? "My Cloud" : base.size >= LOST_AT_ONCE && pc.size === 0 ? "this computer" : null;
+  if (lostOn) {
+    // Without the record a pass is a first sync: whatever is left on either side is copied, nothing is deleted.
+    state.dropFolder(folder.id);
+    base = new Map();
+    report.problems.push({ folderId: folder.id, path: "", error: lostOn === "My Cloud"
+      ? "Everything in this folder disappeared on My Cloud at once, so it is being copied back from this computer instead of deleted here."
+      : "Everything in this folder disappeared from this computer at once, so it is being copied back from My Cloud instead of deleted there." });
+  }
   const { actions, held } = planFolder({ base, pc, cloud, windows: platform === "win32", caseInsensitive: caseInsensitive(local, platform), now: now() });
   report.held.push(...held.map((item) => ({ folderId: folder.id, ...item })));
   const ctx = { client, state, folder, local, pc, cloud, now, trashItem, grow, freeBytes, report, grew: false };
@@ -72,7 +84,27 @@ async function inPool(items, size, work) {
   if (stop) throw stop;
 }
 
-const localFile = (ctx, wire) => path.join(ctx.local, ...wire.split("/"));
+/** Where a wire path lives in this folder: never outside it, and never through a link or a file in the way. */
+function localFile(ctx, wire) {
+  if (!validWirePath(wire)) throw new Error("My Cloud sent a path this app will not write.");
+  const parts = wire.split("/");
+  let current = ctx.local;
+  for (const part of parts.slice(0, -1)) {
+    current = path.join(current, part);
+    const stat = fs.lstatSync(current, { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) throw new Error(`${wire} goes through a link or a file on this computer.`);
+  }
+  const file = path.join(ctx.local, ...parts);
+  if (!file.startsWith(ctx.local + path.sep)) throw new Error("My Cloud sent a path outside this folder.");
+  return file;
+}
+
+/** True when the file is still exactly as the scan saw it: nothing is moved or thrown away over a newer edit. */
+function untouched(ctx, wire) {
+  const seen = ctx.pc.get(wire);
+  const now = fs.lstatSync(localFile(ctx, wire), { throwIfNoEntry: false });
+  return Boolean(seen && !seen.unsettled && now?.isFile() && now.size === seen.size && now.mtimeMs === seen.mtimeMs);
+}
 
 function removeEmptyDirs(root, file) {
   for (let dir = path.dirname(file); dir.startsWith(root + path.sep); dir = path.dirname(dir)) {
@@ -101,7 +133,7 @@ async function apply(ctx, action) {
     }
     case "deletePc": {
       const seen = pc.get(action.path);
-      if (!seen || seen.unsettled || seen.sha256 !== action.sha256) return;
+      if (!seen || seen.unsettled || seen.sha256 !== action.sha256 || !untouched(ctx, action.path)) return;
       const file = localFile(ctx, action.path);
       await ctx.trashItem(file);
       removeEmptyDirs(ctx.local, file);
@@ -123,13 +155,16 @@ async function apply(ctx, action) {
     }
     case "movePc": {
       const from = localFile(ctx, action.from), to = localFile(ctx, action.to);
-      if (pc.get(action.from)?.sha256 === action.sha256 && !fs.existsSync(to)) {
+      const seen = pc.get(action.from);
+      // A rename in capitals only is the same file on a case-insensitive disk, so the target "exists".
+      const caseOnly = foldKey(action.from) === foldKey(action.to);
+      if (seen?.sha256 === action.sha256 && untouched(ctx, action.from) && (caseOnly || !fs.existsSync(to))) {
         fs.mkdirSync(path.dirname(to), { recursive: true });
         fs.renameSync(from, to);
-        removeEmptyDirs(ctx.local, from);
-        const stat = fs.statSync(to);
+        if (!caseOnly) removeEmptyDirs(ctx.local, from);
         state.dropBase(folder.id, action.from);
-        state.setBase(folder.id, action.to, { sha256: action.sha256, size: stat.size, mtimeMs: stat.mtimeMs });
+        // A rename keeps the modified time: the scan's size and time are this file's.
+        state.setBase(folder.id, action.to, { sha256: action.sha256, size: seen.size, mtimeMs: seen.mtimeMs });
         return;
       }
       await download(ctx, action.to, action.size, pc.get(action.to) ?? null);
@@ -170,7 +205,7 @@ async function download(ctx, wire, size, expected) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tag = createHash("sha256").update(`${folder.id}\n${wire}`).digest("hex").slice(0, 8);
   const temporary = path.join(path.dirname(target), `.${path.basename(target)}${TEMP_TAG}${tag}`);
-  const sent = await client.download(folder.id, wire, temporary);
+  const sent = await client.download(folder.id, wire, temporary, size);
   const got = await sha256File(temporary);
   if (sent.sha256 && got !== sent.sha256) { fs.rmSync(temporary, { force: true }); throw new Error("The download was damaged; it will be fetched again."); }
   const now = fs.lstatSync(target, { throwIfNoEntry: false });

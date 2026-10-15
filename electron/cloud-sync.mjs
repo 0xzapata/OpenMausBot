@@ -17,14 +17,17 @@ const BACKOFF_MS = [1_000, 3_000, 8_000, 15_000, 30_000];
 const GB = 1024 ** 3;
 const OFF = { enabled: false, phase: "off", lastSyncedAt: null, disk: null, folders: [], waiting: [], clashes: [], held: [], problems: [], notices: [], missing: [] };
 
+const pathKey = (value, platform) => {
+  const slashed = value.replaceAll("\\", "/").replace(/\/+$/, "");
+  return platform === "win32" || platform === "darwin" ? slashed.toLowerCase() : slashed;
+};
+const contains = (parent, child, platform) => pathKey(child, platform) === pathKey(parent, platform) || pathKey(child, platform).startsWith(`${pathKey(parent, platform)}/`);
+
 /** Absolute folders local bots, their tasks and rooms work in, outside the data folder; a nested one folds into its outer. */
 export function linkedFolders({ bots = [], groups = [], localDataDir, homeDir, platform = process.platform }) {
   const p = platform === "win32" ? path.win32 : path.posix;
-  const key = (value) => {
-    const slashed = value.replaceAll("\\", "/").replace(/\/+$/, "");
-    return platform === "win32" || platform === "darwin" ? slashed.toLowerCase() : slashed;
-  };
-  const within = (child, parent) => key(child) === key(parent) || key(child).startsWith(`${key(parent)}/`);
+  const key = (value) => pathKey(value, platform);
+  const within = (child, parent) => contains(parent, child, platform);
   const users = new Map();
   const add = (folder, kind, id) => {
     if (typeof folder !== "string" || !p.isAbsolute(folder)) return;
@@ -86,6 +89,17 @@ export function createCloudSyncService({
   const pcKey = (value) => (platform === "win32" ? value.replaceAll("\\", "/").toLowerCase() : value);
 
   const save = (next) => { settings = next; writeSettings(settingsFile, next); };
+  /** The lending rule on the real folder: not a volume root, not the home folder or above it, not a mount point. */
+  const tooBroad = (pcPath) => {
+    let real;
+    try { real = fs.realpathSync(pcPath); } catch { return false; }
+    const p = platform === "win32" ? path.win32 : path.posix;
+    if (real === p.parse(real).root) return true;
+    let home = homeDir;
+    try { home = fs.realpathSync(homeDir); } catch {}
+    if (contains(real, home, platform)) return true;
+    try { return fs.statSync(real).dev !== fs.statSync(path.dirname(real)).dev; } catch { return false; }
+  };
   const publish = (next) => { status = next; onChange(api.state()); };
   const client = () => {
     const origin = cloudOrigin();
@@ -97,7 +111,8 @@ export function createCloudSyncService({
     const mine = folders.filter((folder) => folder.kind === "pc" && folder.computerId === settings.computerId);
     let listed = null;
     for (const link of links) {
-      if (!fs.lstatSync(link.pcPath, { throwIfNoEntry: false })?.isDirectory()) continue;
+      if (tooBroad(link.pcPath)) { refused.push({ pcPath: link.pcPath, reason: "too-broad" }); continue; }
+      if (!fs.statSync(link.pcPath, { throwIfNoEntry: false })?.isDirectory()) continue;
       let folder = mine.find((entry) => pcKey(entry.pcPath) === pcKey(link.pcPath));
       if (!folder) {
         folder = await cloud.register({ computerId: settings.computerId, computerName: hostname, pcPath: link.pcPath, name: path.basename(link.pcPath) || "Folder" });
@@ -203,7 +218,13 @@ export function createCloudSyncService({
       };
       for (const folder of mine) {
         if (only && !only.has(folder.id)) continue;
-        await syncFolder({ client: cloud, state, folder, local: localOf(folder), platform, now, trashItem, grow, ...(freeBytes ? { freeBytes } : {}), report });
+        // One folder's trouble is that folder's problem; only a signed-out or unreachable Cloud stops the pass.
+        try {
+          await syncFolder({ client: cloud, state, folder, local: localOf(folder), platform, now, trashItem, grow, ...(freeBytes ? { freeBytes } : {}), report });
+        } catch (error) {
+          if (error instanceof SyncAuthError || passStopper(error)) throw error;
+          report.problems.push({ folderId: folder.id, path: "", error: String(error?.message ?? error) });
+        }
       }
       watchAll(mine, localOf);
       const plan = planDisk();
@@ -293,19 +314,26 @@ export function createCloudSyncService({
           await cloud.unregister(folder.id, false);
         }
       }
-      state.reset();
+      // Kept copies keep their record and their folders here, so turning on again carries on where it left off.
+      if (!keepCloudCopy) state.reset();
       save({ ...settings, enabled: false });
       publish({ ...OFF });
       return api.state();
     },
     async linkFolder(pcPath) {
       if (!settings.enabled) throw new Error("Turn on Sync with My Cloud first.");
-      if (!fs.lstatSync(pcPath, { throwIfNoEntry: false })?.isDirectory()) throw new Error("Choose a folder.");
+      if (!fs.statSync(pcPath, { throwIfNoEntry: false })?.isDirectory()) throw new Error("Choose a folder.");
       const { links, refused } = linkedFolders({ bots: [{ id: "chosen", cwd: pcPath }], localDataDir, homeDir, platform });
-      if (refused.length) throw new Error("This folder is too broad to sync. Choose a folder inside your home folder.");
+      if (refused.length || tooBroad(pcPath)) throw new Error("This folder is too broad to sync. Choose a folder inside your home folder.");
       if (!links.length) throw new Error("MausBot's own data folder does not sync this way.");
       const cloud = client();
       if (!cloud) throw new Error("Open My Cloud from Settings → MausBot Cloud first.");
+      // A folder inside one already synced folds into it: its Cloud copy is the matching folder inside that copy.
+      const outer = (await cloud.summary()).folders.find((folder) => folder.kind === "pc" && folder.computerId === settings.computerId && contains(folder.pcPath, pcPath, platform));
+      if (outer) {
+        const inner = path.relative(outer.pcPath, pcPath).split(path.sep).filter(Boolean);
+        return { cloudPath: path.posix.join(outer.cloudPath, ...inner) };
+      }
       const folder = await cloud.register({ computerId: settings.computerId, computerName: hostname, pcPath, name: path.basename(pcPath) || "Folder" });
       state.setMeta(`relinked:${folder.id}`, "1");
       void pass(new Set([folder.id]));
@@ -328,6 +356,7 @@ export function createCloudSyncService({
     },
     wake: () => void pass(),
     close() {
+      if (closed) return;
       closed = true;
       stop();
       state.close();

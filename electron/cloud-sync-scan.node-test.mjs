@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -58,4 +58,12 @@ test("a burst of changes is reported once, after it goes quiet", async () => {
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(calls.length, 1);
   close();
+});
+
+test("a folder it cannot read stops the scan instead of reading as empty", async (t) => {
+  const dir = folder(t);
+  mkdirSync(join(dir, "sub"));
+  writeFileSync(join(dir, "sub", "a.txt"), "one");
+  chmodSync(join(dir, "sub"), 0o000);
+  try { await assert.rejects(scanPc(dir, new Map(), { now: LATER }), /EACCES|EPERM/); } finally { chmodSync(join(dir, "sub"), 0o700); }
 });

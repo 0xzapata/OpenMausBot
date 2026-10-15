@@ -53,3 +53,11 @@ test("a Cloud name this PC cannot hold is held back, never read as deleted", () 
   assert.deepEqual(types(cased), []);
   assert.deepEqual(cased.held, [{ path: "Notes.txt", reason: "case-clash" }]);
 });
+
+test("a case-only rename on My Cloud renames on a case-insensitive PC instead of deleting", () => {
+  const renamed = plan({ base: { "report.docx": f("1") }, pc: { "report.docx": f("1") }, cloud: { "Report.docx": f("1") }, caseInsensitive: true });
+  assert.deepEqual(types(renamed), ["movePc:report.docx->Report.docx"]);
+  assert.deepEqual(renamed.held, []);
+  const changed = plan({ base: { "report.docx": f("1") }, pc: { "report.docx": f("1") }, cloud: { "Report.docx": f("2") }, caseInsensitive: true });
+  assert.equal(changed.actions.some((action) => action.type === "deletePc"), false);
+});

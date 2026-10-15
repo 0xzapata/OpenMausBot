@@ -17,6 +17,7 @@ export function openSyncState(file) {
     },
     setBase(folder, path, row) { db.prepare("INSERT OR REPLACE INTO base VALUES (?, ?, ?, ?, ?)").run(folder, path, row.sha256, row.size, row.mtimeMs); },
     dropBase(folder, path) { db.prepare("DELETE FROM base WHERE folder = ? AND path = ?").run(folder, path); },
+    dropFolder(folder) { db.prepare("DELETE FROM base WHERE folder = ?").run(folder); },
     place(folder) { return db.prepare("SELECT local FROM places WHERE folder = ?").get(folder)?.local ?? null; },
     setPlace(folder, local) { db.prepare("INSERT OR REPLACE INTO places VALUES (?, ?)").run(folder, local); },
     places() { return db.prepare("SELECT folder, local FROM places").all().map((row) => ({ folder: row.folder, local: row.local })); },
