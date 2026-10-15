@@ -1635,6 +1635,7 @@
   "task.waiting": "待機中",
   "task.waitingOnTeammate": "チームメイト待ち",
   "task.openedBy": "{name} が開きました",
+  "task.helperGroup": "ボットが開いたスレッド",
   "task.closedBy": "{name} が閉じました",
   "task.closed": "終了",
   "task.archive": "アーカイブ",
