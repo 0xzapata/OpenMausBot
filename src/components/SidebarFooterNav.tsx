@@ -6,7 +6,7 @@ import { useCloudFilesReady } from "@/lib/cloud-files";
 import { t } from "@/lib/i18n";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import { isRoutineProblemRun } from "@/lib/routines";
-import type { SidebarDensity } from "@/lib/sidebar-preferences";
+import { useSidebarToolsLayout, type SidebarDensity } from "@/lib/sidebar-preferences";
 import { useStore } from "@/state/store";
 
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
@@ -92,6 +92,8 @@ export function SidebarFooterNav({
   const { state, dispatch } = useStore();
   const advanced = useAdvancedMode();
   const iconsOnly = density === "icons";
+  const toolsLayout = useSidebarToolsLayout();
+  const toolbar = !iconsOnly && toolsLayout === "toolbar";
   const iconSize = iconsOnly ? 20 : 18;
   const tone = (active: boolean) => (active ? "text-accent" : "text-ink-secondary");
   const routinesNeedYou = state.routineRuns.some((run) => isRoutineProblemRun(run) && !run.seenAt);
@@ -112,7 +114,7 @@ export function SidebarFooterNav({
         id="routines"
         label={t("sidebar.nav.routines")}
         tourId="nav-automations"
-        iconsOnly={iconsOnly}
+        iconsOnly={iconsOnly || toolbar}
         active={state.activeView === "routines"}
         attention={routinesNeedYou}
         icon={(active) => <CalendarDays size={iconSize} className={tone(active)} />}
@@ -121,7 +123,7 @@ export function SidebarFooterNav({
       {advanced && <NavRow
         id="triggers"
         label={t("sidebar.nav.triggers")}
-        iconsOnly={iconsOnly}
+        iconsOnly={iconsOnly || toolbar}
         active={state.triggersOpen}
         icon={(active) => <Zap size={iconSize} className={tone(active)} />}
         onClick={() => dispatch({ type: "toggleTriggers", open: true })}
@@ -140,7 +142,7 @@ export function SidebarFooterNav({
           id="team-map"
           label={t("sidebar.nav.teamMap")}
           tourId="team-tools"
-          iconsOnly={iconsOnly}
+          iconsOnly={iconsOnly || toolbar}
           active={state.activeView === "team-map"}
           icon={(active) => <Network size={iconSize} className={tone(active)} />}
           onClick={() => dispatch({ type: "showTeamMap" })}
@@ -163,7 +165,7 @@ export function SidebarFooterNav({
         reorderable={false}
         dragging={false}
       />
-      {!collapsed && <nav aria-label={t("sidebar.tools")} className="flex flex-col gap-0.5">{rows}</nav>}
+      {!collapsed && <nav aria-label={t("sidebar.tools")} className={toolbar ? "flex flex-row gap-1" : "flex flex-col gap-0.5"}>{rows}</nav>}
     </div>
   );
 }

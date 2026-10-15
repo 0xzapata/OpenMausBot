@@ -22,7 +22,8 @@ import { PhoneAppDialog } from "./PhoneAppDialog";
 import { SidebarPopoverMenu, type SidebarMenuItem } from "./SidebarPopoverMenu";
 import { ShortcutHint } from "./ShortcutHint";
 import { useSidebarPhoneStatus } from "./SidebarPhoneButton";
-import { useStore, type Action } from "@/state/store";
+import { api, useStore, type Action } from "@/state/store";
+import { serverUpdateRow, type ServerUpdateCheck, type ServerUpdatePhase } from "@/lib/server-update";
 import type { CloudAccountBridge, CloudAccountState } from "../../electron/cloud-account.mjs";
 import { useUpdaterState, type UpdaterState } from "@/lib/updater";
 import { brand } from "../lib/brand";
@@ -61,7 +62,9 @@ export function profileLabel(profile?: { name?: string; email?: string }): strin
 
 export type UpdatePhase =
   | UpdaterState["status"]
-  | "up-to-date";
+  | "up-to-date"
+  // only a self-hosted server's check reports a release it cannot install itself
+  | "available";
 
 export function updatePhase(state: UpdaterState | null, upToDate: boolean): UpdatePhase {
   const status = state?.status ?? "idle";
@@ -168,6 +171,46 @@ export function useUpdateItem(): UpdateEntry | null {
         }
         setCheckedAt(Date.now());
         void updater.check();
+      },
+    },
+  };
+}
+
+/** Without the packaged app's updater the server cannot replace itself, so the row says whether a newer release exists and how to install it. */
+function useServerUpdateItem(enabled: boolean): UpdateEntry | null {
+  const [phase, setPhase] = useState<ServerUpdatePhase>("idle");
+  const [check, setCheck] = useState<ServerUpdateCheck | null>(null);
+
+  useEffect(() => {
+    if (phase !== "up-to-date") return;
+    const timer = setTimeout(() => setPhase("idle"), 3000);
+    return () => clearTimeout(timer);
+  }, [phase]);
+
+  if (!enabled) return null;
+  const row = serverUpdateRow(phase, check);
+  return {
+    phase,
+    pending: false,
+    label: row.label,
+    item: {
+      key: "update",
+      label: row.label,
+      subtitle: row.subtitle,
+      icon: <UpdateIcon phase={phase} pending={false} />,
+      disabled: phase === "checking",
+      keepOpen: true,
+      attention: phase === "available" || phase === "error",
+      attentionTone: phase === "error" ? "danger" : "accent",
+      onSelect: () => {
+        if (phase === "available" && check?.releaseUrl) return void openExternalLink(check.releaseUrl);
+        setPhase("checking");
+        void api<ServerUpdateCheck>("/api/updates/check", { timeoutMs: 20_000 })
+          .then((next) => {
+            setCheck(next);
+            setPhase(next.available ? "available" : "up-to-date");
+          })
+          .catch(() => setPhase("error"));
       },
     },
   };
@@ -298,7 +341,9 @@ export function SidebarProfileMenu({ iconOnly = false }: { iconOnly?: boolean } 
   const connectPhone = useConnectPhoneEntry(state.config?.cloudHome === true);
   const cloudPhone = useCloudPhoneDestination(connectPhone?.target === "computer");
   const destinations = phoneDestinations(connectPhone, cloudPhone.cloud);
-  const update = useUpdateItem();
+  const desktopUpdate = useUpdateItem();
+  const serverUpdate = useServerUpdateItem(!window.ogb?.updater);
+  const update = desktopUpdate ?? serverUpdate;
   const [aboutOpen, setAboutOpen] = useState(false);
   const [phoneAppOpen, setPhoneAppOpen] = useState(false);
   const triggerRef = useRef<HTMLSpanElement>(null);

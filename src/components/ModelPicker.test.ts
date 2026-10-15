@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AppState, Bot, InstanceInfo } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
+import { Select } from "./Select";
 
 // The store module touches window and localStorage at import time, so it is stubbed to render under the node
 // environment.
@@ -72,7 +73,7 @@ describe("EffortRow", () => {
     fixture.instances = [engine(["none", "low", "high"])];
     const row = EffortRow({ bot: bot("high"), threadId: "independent-thread", updateBotDefault: true, compact: true })!;
     const select = Children.toArray(row.props.children).at(-1) as ReactElement<{ value: string; onChange: (event: ChangeEvent<HTMLSelectElement>) => void }>;
-    expect(select.type).toBe("select");
+    expect(select.type).toBe(Select);
     expect(select.props.value).toBe("high");
     for (const value of ["none", ""]) {
       select.props.onChange({ target: { value } } as ChangeEvent<HTMLSelectElement>);

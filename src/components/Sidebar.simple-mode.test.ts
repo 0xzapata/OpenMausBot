@@ -120,6 +120,24 @@ describe("bot-first sidebar", () => {
     });
   }
 
+  it("keeps the queued dot small", () => {
+    const queuedBot: Bot = {
+      ...bot,
+      unread: false,
+      projects: [],
+      tasks: [{ threadId: "queued", title: "Next job", createdAt: 5 }],
+    };
+    const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", queuedBot)));
+    const queuedDot = markup.match(/<span[^>]*data-testid="queued-dot"[^>]*>/)?.[0] ?? "";
+    expect(queuedDot).toContain("size-2.5");
+    expect(queuedDot).toContain("bg-ink-secondary");
+    expect(queuedDot).not.toContain("size-4");
+    expect(queuedDot).not.toContain("size-5");
+    expect(markup).toContain('class="truncate">Queued</span>');
+    expect(markup).not.toContain("font-semibold text-warning");
+    expect(markup).not.toContain("waiting-dot");
+  });
+
   it.each(densities)("opens the thread the person last wrote in when threads are hidden, %s density", (density) => {
     const used = { ...bot, mainThreadId: "idle-history" };
     for (const enabled of [false, true]) {

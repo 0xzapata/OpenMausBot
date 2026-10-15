@@ -16,6 +16,8 @@ const fixture = vi.hoisted(() => ({
   setShowRunCard: vi.fn(),
   sidebarDensity: "comfortable" as "comfortable" | "compact" | "icons",
   setSidebarDensity: vi.fn(),
+  toolsLayout: "rows" as "rows" | "toolbar",
+  setSidebarToolsLayout: vi.fn(),
   notificationSounds: true,
   setNotificationSounds: vi.fn(),
   setNotificationFeed: vi.fn(),
@@ -50,12 +52,16 @@ vi.mock("@/lib/sidebar-preferences", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/sidebar-preferences")>(),
   useSidebarDensity: () => fixture.sidebarDensity,
   setSidebarDensity: fixture.setSidebarDensity,
+  useSidebarToolsLayout: () => fixture.toolsLayout,
+  setSidebarToolsLayout: fixture.setSidebarToolsLayout,
 }));
 vi.mock("@/lib/notification-preferences", () => ({
   useNotificationSounds: () => fixture.notificationSounds,
   setNotificationSounds: fixture.setNotificationSounds,
   useNotificationFeed: () => false,
   setNotificationFeed: fixture.setNotificationFeed,
+  useFinishedNotifications: () => true,
+  setFinishedNotifications: vi.fn(),
 }));
 vi.mock("@/lib/send-key", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/send-key")>(),
@@ -88,6 +94,7 @@ beforeEach(() => {
   fixture.showThreads = true;
   fixture.showRunCard = true;
   fixture.sidebarDensity = "comfortable";
+  fixture.toolsLayout = "rows";
   fixture.notificationSounds = true;
   fixture.sendKey = "enter";
   fixture.colorUserBubbles = false;
@@ -188,6 +195,26 @@ describe("Settings → Appearance", () => {
     expect(fixture.setSidebarDensity).not.toHaveBeenCalled();
     expect(fixture.api).not.toHaveBeenCalled();
     expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("offers the tools layout row right under the density row", () => {
+    const html = render();
+    expect(html).toContain('aria-label="Choose tools layout"');
+    expect(html).toContain("Tools layout");
+    expect(html).toContain("Icons density always shows icons");
+    expect(html).toContain('<option value="rows" selected="">Rows</option>');
+    expect(html).toContain('<option value="toolbar">Toolbar</option>');
+    expect(html.indexOf('aria-label="Choose sidebar density"')).toBeLessThan(
+      html.indexOf('aria-label="Choose tools layout"'),
+    );
+    expect(fixture.setSidebarToolsLayout).not.toHaveBeenCalled();
+  });
+
+  it("appearance search finds the tools layout row via toolbar", () => {
+    const appearance = SECTIONS.find((entry) => entry.id === "appearance")!;
+    for (const query of ["toolbar", "tools layout", "footer", "routines", "triggers", "team map"]) {
+      expect(sectionMatches(appearance, query)).toBe(true);
+    }
   });
 
   it.each([

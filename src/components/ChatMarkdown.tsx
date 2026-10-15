@@ -16,7 +16,9 @@ import {
   formatLineCount,
   getLanguageDisplayName,
   getSnippetFileName,
+  parseFenceInfo,
 } from "../lib/code-block";
+import { markdownImageName, markdownImageOpenUrl } from "../lib/markdown-image";
 import { repairMarkdownTables } from "../lib/markdown-tables";
 import { TRANSCRIPT_WINDOW_SIZE } from "../lib/transcript-window";
 import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
@@ -293,15 +295,19 @@ interface BlockProps {
 export interface CodeBlockProps {
   code: string;
   lang: string;
+  initialWrap?: boolean;
 }
 
-export function CodeBlock({ code, lang }: CodeBlockProps) {
+export function CodeBlock({ code, lang, initialWrap = false }: CodeBlockProps) {
   const highlightable = code.length <= HIGHLIGHT_MAX_CHARS;
   const [html, setHtml] = useState<string | null>(() => highlightable ? highlightCache.get(highlightKey(lang, code)) ?? null : null);
   // React compares dangerouslySetInnerHTML by identity: a fresh object each render rebuilds the highlighted DOM.
   const markup = useMemo(() => (html ? { __html: html } : null), [html]);
   const { state: copied, copy } = useCopyFeedback(code);
-  const [wrapLines, setWrapLines] = useState(false);
+  const [wrapLines, setWrapLines] = useState(initialWrap);
+  useEffect(() => {
+    setWrapLines(initialWrap);
+  }, [initialWrap]);
 
   useEffect(() => {
     if (!highlightable) return setHtml(null);
@@ -617,27 +623,6 @@ function LocalFileLink({ filePath, name, children, message }: { filePath: string
   );
 }
 
-export function markdownImageName(src: string, alt?: string): string {
-  const supplied = alt?.trim();
-  if (supplied) return supplied;
-  try {
-    const path = decodeURIComponent(new URL(src, "https://openmausbot.invalid").pathname);
-    const name = path.split(/[\\/]/).filter(Boolean).at(-1)?.trim();
-    if (name) return name;
-  } catch {
-  }
-  return "Image";
-}
-
-export function markdownImageOpenUrl(src: string): string | undefined {
-  try {
-    const url = new URL(src.startsWith("//") ? `https:${src}` : src);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function Spoiler({ children }: { children?: ReactNode }) {
   const [revealed, setRevealed] = useState(false);
   if (!revealed) {
@@ -840,17 +825,17 @@ const fileName = (path: string) => path.split(/[\\/]/).at(-1) ?? path;
 
 const MessageScopeContext = createContext<MessageScope>({ threads: [] });
 
-function MarkdownCode({ children }: { children?: ReactNode }) {
+function MarkdownCode({ node, children }: BlockProps) {
   const child: any = Array.isArray(children) ? children[0] : children;
   const className: string = child?.props?.className ?? "";
-  const lang = /language-([^\s]+)/.exec(className)?.[1] ?? "";
+  const { lang, wrap } = parseFenceInfo(/language-([^\s]+)/.exec(className)?.[1] ?? "", (node as { children?: { data?: { meta?: unknown } }[] })?.children?.[0]?.data?.meta);
   const flat = (n: any): string =>
     typeof n === "string" ? n : Array.isArray(n) ? n.map(flat).join("") : (n?.props?.children ? flat(n.props.children) : "");
   const code = flat(child?.props?.children).replace(/\n$/, "");
   if (lang.trim().toLowerCase() === "mermaid") {
     return <MermaidDiagram code={code} />;
   }
-  return <CodeBlock code={code} lang={lang} />;
+  return <CodeBlock code={code} lang={lang} initialWrap={wrap} />;
 }
 
 function MarkdownImage(props: ComponentProps<"img"> & ExtraProps) {

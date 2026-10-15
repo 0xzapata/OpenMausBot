@@ -43,8 +43,9 @@ function movedFromWindows(dataDir: string): void {
 }
 afterEach(() => { for (const root of scratch.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
+// The repair runs on Cloud homes, which are Linux; on Windows the data folder is itself a drive path.
 describe("repairing paths a move to My Cloud left behind", () => {
-  it("rewrites a Windows PC's data folder wherever it is still written, and keeps each routine on or off", () => {
+  it.skipIf(process.platform === "win32")("rewrites a Windows PC's data folder wherever it is still written, and keeps each routine on or off", () => {
     const dataDir = directory();
     receipt(dataDir);
     movedFromWindows(dataDir);
@@ -95,7 +96,7 @@ describe("repairing paths a move to My Cloud left behind", () => {
     expect(text(join(dataDir, "workspaces", "bot", "MEMORY.md"))).toBe(later);
   });
 
-  it("rewrites a Mac's data folder too", () => {
+  it.skipIf(process.platform === "win32")("rewrites a Mac's data folder too", () => {
     const dataDir = directory();
     receipt(dataDir);
     json(join(dataDir, "routines.json"), { version: 1, routines: [{ id: "r", botId: "bot", enabled: true, prompt: "Read /Users/ada/.openmausbot/files/brief.md." }], runs: [] });

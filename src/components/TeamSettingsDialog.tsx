@@ -23,6 +23,7 @@ import { EFFORT_LEVELS, type EffortLevel } from "../../shared/wire";
 import { approvalModeOptions } from "./ApprovalModeSelector";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { effortLabel } from "./ModelPicker";
+import { Select } from "./Select";
 
 type Tab = "approval" | "model";
 const KEEP = "";
@@ -98,7 +99,6 @@ export function TeamSettingsDialog({ team, onClose }: { team: string; onClose: (
   const counts = results ? teamResultCounts(results) : null;
   const tabClass = (active: boolean) => cn("flex-1 rounded-md px-2.5 py-1.5 text-[13px] font-medium",
     active ? "bg-raised text-ink" : "text-ink-secondary hover:text-ink");
-  const select = "mt-1 w-full rounded-lg border border-hairline/50 bg-inset px-2 py-1.5 text-[13px] text-ink";
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(event) => {
@@ -146,17 +146,17 @@ export function TeamSettingsDialog({ team, onClose }: { team: string; onClose: (
             ) : (
               <fieldset disabled={running} className="flex flex-col gap-3">
                 <label className="text-[13px] text-ink-secondary">{t("teamSettings.model")}
-                  <select aria-label={t("teamSettings.model")} value={model} onChange={(event) => setModel(event.target.value)} className={select}>
+                  <Select className="mt-1 w-full" aria-label={t("teamSettings.model")} value={model} onChange={(event) => setModel(event.target.value)}>
                     <option value={KEEP}>{t("teamSettings.keepModel")}</option>
                     {models.map((choice) => <option key={choice.id} value={choice.id}>{`${choice.label} · ${choice.engines.join(", ")}`}</option>)}
-                  </select>
+                  </Select>
                 </label>
                 <label className="text-[13px] text-ink-secondary">{t("teamSettings.effort")}
-                  <select aria-label={t("teamSettings.effort")} value={effort} onChange={(event) => setEffort(event.target.value)} className={select}>
+                  <Select className="mt-1 w-full" aria-label={t("teamSettings.effort")} value={effort} onChange={(event) => setEffort(event.target.value)}>
                     <option value={KEEP}>{t("teamSettings.keepEffort")}</option>
                     <option value={ENGINE_DEFAULT}>{t("teamSettings.engineDefaultEffort")}</option>
                     {efforts.map((level) => <option key={level} value={level}>{effortLabel(level)}</option>)}
-                  </select>
+                  </Select>
                 </label>
                 <p className="text-[12px] text-ink-secondary">{t("teamSettings.threadModels")}</p>
               </fieldset>

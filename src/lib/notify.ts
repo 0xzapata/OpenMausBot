@@ -1,14 +1,18 @@
 import type { Notification } from "../../shared/notification";
-import { notificationSoundsEnabled } from "./notification-preferences";
+import { finishedNotificationsEnabled, notificationSoundsEnabled } from "./notification-preferences";
 
 export type NotifyFrame = Notification;
 
 export type NotificationTarget = Pick<NotifyFrame, "botId" | "threadId">;
 
-/** Call from the click: browsers may reject a permission request made later from an SSE frame. */
-export function requestNotificationPermission(): Promise<NotificationPermission> | null {
-  if (typeof Notification === "undefined" || Notification.permission !== "default") return null;
-  return Notification.requestPermission();
+/** Call from the click: browsers may reject a permission request made later from an SSE frame. Resolves to the permission now in force. */
+export async function requestNotificationPermission(): Promise<NotificationPermission | null> {
+  if (typeof Notification === "undefined") return null;
+  try {
+    return Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
+  } catch {
+    return Notification.permission;
+  }
 }
 
 export interface NotificationBotIdentity {
@@ -27,6 +31,7 @@ export function showNotification(
   visibleThreadId?: string | null,
 ) {
   if (typeof Notification === "undefined") return;
+  if (frame.kind === "done" && !finishedNotificationsEnabled()) return;
   const spend = frame.kind === "spend";
   if (!spend && document.hasFocus() && visibleThreadId === frame.threadId) return;
 

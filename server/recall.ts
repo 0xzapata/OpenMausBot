@@ -185,3 +185,7 @@ export function selectMemoryPassages(matches: readonly RecallPassage[], topics: 
   const namedFiles = new Set(named.map(passage => passage.label));
   return [...named, ...matches.filter(passage => !namedFiles.has(passage.label))].slice(0, MEMORY_HITS);
 }
+
+export function withRecalled(recalled: string, text: string): string {
+  return recalled ? `${recalled}\n\n${text}` : text;
+}

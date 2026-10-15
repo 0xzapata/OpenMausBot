@@ -116,7 +116,7 @@ import * as composio from "./composio.ts";
 import { connectorCallFromFrame, connectorRefusalText, connectorScopeRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
 import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { buildRecall, recallRooms, recallThreadIds } from "./recall.ts";
+import { buildRecall, recallRooms, recallThreadIds, withRecalled } from "./recall.ts";
 import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./turn-clock.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { createCacheKeepWarm, type KeepWarmStatus, type KeepWarmTarget } from "./cache-keepwarm.ts";
@@ -328,7 +328,7 @@ import { turnStartLogLine } from "./turn-log.ts";
 import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./turn-outcome.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, replaysNatively } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
-import { extractTurnImages } from "./turn-images.ts";
+import { extractReplayImages, extractTurnImages } from "./turn-images.ts";
 import { callTitleExcerpt, threadTitlePrompt, type ThreadTitleSource } from "./thread-title.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import { TurnResources, type TurnOwner } from "./turn-resources.ts";
@@ -393,6 +393,7 @@ import { connectedAppsForSetup, expandSetupTurnText, setupModeActive, setupSyste
 import type { SkillRequestCardData } from "../shared/skill-request.ts";
 import { checkSoulDrift, readSoulDrift, soulFile, writeSoulMirror } from "./bot-folder.ts";
 import {
+  botPersona,
   buildSystemPrompt,
   userProfileSystemPrompt,
   cloudHomePrompt, syncedFolders,
@@ -425,12 +426,11 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
+import { correctiveRounds, createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
-import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BROWSER_CONTROL_REFUSAL, BROWSER_UPLOAD_TOOL, BrowserRuntime, TransportError, attachesToChrome, browserRuntimeEnv, formatBrowserTiming } from "./browser-runtime.ts";
 import { namedUploadPaths, uploadableFiles } from "./browser-upload.ts";
 import { listSignedInSites, signOutOfSites } from "./browser-sites.ts";
@@ -450,7 +450,7 @@ import {
   clearBrowserSessionState,
   closeBrowserSession,
   browserEngineStatus,
-  browserSessionId, isTemporaryBrowserSession,
+  browserSessionId, isTemporaryBrowserSession, BUILT_IN_BROWSER_SYSTEM_PROMPT,
   describeBrowserEngine,
   inRunningBrowser,
   setBrowserViewport,
@@ -596,6 +596,7 @@ import { createBotSkillsRoutes } from "./routes/bot-skills.ts";
 import { createSkillShareRoutes } from "./routes/skill-share.ts";
 import { createTeamContextRoutes } from "./routes/team-context.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
+import { createUpdateCheckRoutes, serverUpdateChecker } from "./routes/update-check.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
 import { createInternalSignInRoutes } from "./routes/sign-in.ts";
 import { createInternalThreadRoutes } from "./routes/internal-threads.ts";
@@ -1322,10 +1323,6 @@ function autoRecallPrompt(bot: BotRecord, threadId: string, message: string, opt
     console.warn(`auto-recall failed for ${bot.id}: ${(err as Error).message}`);
     return "";
   }
-}
-
-function withRecalled(recalled: string, text: string): string {
-  return recalled ? `${recalled}\n\n${text}` : text;
 }
 
 /** A room is one transcript: a restricted bot's words would otherwise feed a teammate everyone can see. */
@@ -3362,13 +3359,7 @@ const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) 
 };
 
 function previewSystemPrompt(bot: BotRecord) {
-  const persona = [
-    `You are ${bot.name}, a personal bot in OpenMausBot.`,
-    bot.title && `Role: ${bot.title}.`,
-    bot.description && `About: ${bot.description}`,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const persona = botPersona(bot);
   const instance = registry.get(bot.modelSelection.instanceId);
   const caps = instance?.adapter.capabilities;
   const teamComputer = inheritedTeamComputer(bot);
@@ -8497,7 +8488,7 @@ async function startTurn(
   const turnLineIds = new Set(opts?.excludeMessageIds ?? []);
   const spoken = opts?.via === "call" || opts?.userMessage?.via === "call" ||
     (turnLineIds.size > 0 && store.messagesFor(threadId).some((message) => turnLineIds.has(message.id) && message.via === "call"));
-  console.error(turnStartLogLine({
+  console.log(turnStartLogLine({
     botId, text: resolvedImages.text, images: turnImages.length, depth: commsDepth, card: Boolean(opts?.cardContinuation), spoken,
   }));
   const instanceId = instance.instanceId;
@@ -8691,6 +8682,9 @@ async function startTurn(
         opts?.replyTo,
         cfg.profile?.name?.trim() || "User",
       );
+      const replay = usesNativeImageInput
+        ? extractReplayImages(selection.inline, turnImages)
+        : { transcript: selection.inline, images: [] };
       const decideContext = (config: string) => {
         // A Codex thread keeps the last effort it was sent and no turn can clear it, so one holding a level is rebuilt, not resumed.
         const effortHeld = !effort && typeof handed?.effort === "string";
@@ -8698,7 +8692,7 @@ async function startTurn(
         const { block: unseenBlock, placed } = unseen && !handedStale ? renderUnseen(unseen) : { block: "", placed: [] };
         const { turnText: contextTurnText, resume } = buildTurnContext({
           text: userTurnText,
-          transcript: selection.inline,
+          transcript: replay.transcript,
           rewound,
           fresh: fresh || contextReset,
           externallyUpdated: Boolean(externalContextMarker) || handedStale,
@@ -8715,6 +8709,7 @@ async function startTurn(
         const windowIds = selection.representedIds;
         return {
           turnText: withUnseenMessages(unseenBlock, contextTurnText),
+          images: contextTurnText !== userTurnText ? [...replay.images, ...turnImages] : turnImages,
           resumeCursor, sessionReset: !resume, recoveryText,
           handoff: strictResume ? {
             botId: bot.id, instanceId, config, resumeCursor: typeof resumeCursor === "string" ? resumeCursor : undefined,
@@ -8728,13 +8723,7 @@ async function startTurn(
       };
       let dispatchContext = decideContext(plannedConfig);
 
-      const persona = [
-        `You are ${bot.name}, a personal bot in OpenMausBot.`,
-        bot.title && `Role: ${bot.title}.`,
-        bot.description && `About: ${bot.description}`,
-      ]
-        .filter(Boolean)
-        .join(" ");
+      const persona = botPersona(bot);
 
       {
         const drift = checkSoulDrift(bot.id, bot.soul ?? "", bot.soulHash ?? "");
@@ -9250,7 +9239,7 @@ async function startTurn(
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
         text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
-        images: turnImages,
+        images: dispatchContext.images,
         approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
         toolScope,
         ...(guestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
@@ -9269,6 +9258,7 @@ async function startTurn(
         ...(integrations.browser && browserIsThePlace(plan) ? { preloadBrowserTools: true } : {}),
         mcpFromUserConfig: claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp(),
         mcpCallTimeoutMs: mcpCallTimeoutMinutes(cfg) * 60_000,
+        toolErrorCorrectiveRounds: correctiveRounds(cfg),
         cwd,
       })), () => !directTurnClaimExists(bot.id, dispatchClaimId, threadId), async () => {
         await instance.adapter.interruptTurn(threadId).catch(() => {});
@@ -11391,6 +11381,7 @@ async function runClaimedGroupMemberTurn(
         ...(integrations.browser && browserIsThePlace(roomPlan) ? { preloadBrowserTools: true } : {}),
         mcpFromUserConfig: roomUserMcp,
         mcpCallTimeoutMs: mcpCallTimeoutMinutes(cfg) * 60_000,
+        toolErrorCorrectiveRounds: correctiveRounds(cfg),
         ...(instance.instanceId === readyBot.modelSelection.instanceId
           ? memberTurnSelection(readyBot.modelSelection)
           : { model: instance.models.default }),
@@ -13761,7 +13752,7 @@ ROUTES.push(createBotMemoryRoutes({
     broadcast({ kind: "config", ...configStatus() });
   },
 }));
-ROUTES.push(createDeciderRoutes({ decider, config: () => cfg }), createNotificationRoutes());
+ROUTES.push(createDeciderRoutes({ decider, config: () => cfg }), createNotificationRoutes(), createUpdateCheckRoutes({ check: serverUpdateChecker({ desktopManaged: DESKTOP_MANAGED, managed: Boolean(CLOUD_HOME || HOSTED_WORKSPACE) }) }));
 ROUTES.push(createSignInCardRoutes({ settle: settleSignIn, saveLogin: saveLoginFromCard }));
 ROUTES.push(createRoomHoldRoutes({
   group: (id) => store.group(id),

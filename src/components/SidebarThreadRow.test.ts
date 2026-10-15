@@ -2,7 +2,7 @@ import { createElement, type ComponentProps, type MemoExoticComponent, type Reac
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLocale } from "@/lib/i18n";
-import { formatUpdatedAt, nextSnoozeExpiry, orderedSidebarThreads, orderedThreadList, SidebarThreadRow, stampClock, threadByline, threadOpenerLabel, threadUpdatedLabel, visibleSidebarThreads } from "./SidebarThreadRow";
+import { formatUpdatedAt, nextSnoozeExpiry, orderedSidebarThreads, orderedThreadList, partitionHelperThreads, SidebarThreadRow, stampClock, threadByline, threadOpenerLabel, threadUpdatedLabel, visibleSidebarThreads } from "./SidebarThreadRow";
 
 type ThreadRowProps = ComponentProps<typeof SidebarThreadRow>;
 
@@ -343,21 +343,21 @@ describe("orderedThreadList", () => {
     ...over,
   });
 
-  it("pins first, then newest update, and keeps equal stamps in stored order", () => {
+  it("pins first, then newest ordering message, and keeps equal stamps in stored order", () => {
     const ordered = orderedThreadList([
-      task("old", { updatedAt: 10 }),
-      task("pinned-old", { pinned: true, updatedAt: 5 }),
-      task("new", { updatedAt: 30 }),
-      task("pinned-new", { pinned: true, updatedAt: 20 }),
-      task("tie-b", { updatedAt: 10 }),
+      task("old", { lastThreadOrderAt: 10 }),
+      task("pinned-old", { pinned: true, lastThreadOrderAt: 5 }),
+      task("new", { lastThreadOrderAt: 30 }),
+      task("pinned-new", { pinned: true, lastThreadOrderAt: 20 }),
+      task("tie-b", { lastThreadOrderAt: 10 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["pinned-new", "pinned-old", "new", "old", "tie-b"]);
   });
 
   it("does not let waiting or working outrank a newer idle thread", () => {
     const ordered = orderedThreadList([
-      task("waiting", { updatedAt: 1, activity: "waiting-on-you" }),
-      task("fresh", { updatedAt: 5 }),
+      task("waiting", { lastThreadOrderAt: 1, activity: "waiting-on-you" }),
+      task("fresh", { lastThreadOrderAt: 5 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["fresh", "waiting"]);
   });
@@ -368,6 +368,23 @@ describe("orderedThreadList", () => {
       task("created-late", { createdAt: 4 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["created-late", "created-early"]);
+  });
+
+  it("ignores running activity when sorting threads", () => {
+    const ordered = orderedThreadList([
+      task("bot-active", { updatedAt: 100, lastThreadOrderAt: 10 }),
+      task("user-active", { updatedAt: 80, lastThreadOrderAt: 50 }),
+    ]);
+    expect(ordered.map((item) => item.threadId)).toEqual(["user-active", "bot-active"]);
+  });
+
+  it("orders a reply completed at 120 above a person message at 110, retaining its display time of 100", () => {
+    const ordered = orderedThreadList([
+      task("person", { updatedAt: 110, lastThreadOrderAt: 110 }),
+      task("reply", { updatedAt: 100, lastThreadOrderAt: 120 }),
+    ]);
+    expect(ordered.map((item) => item.threadId)).toEqual(["reply", "person"]);
+    expect(ordered[0]).toMatchObject({ updatedAt: 100 });
   });
 });
 
@@ -433,13 +450,13 @@ describe("archived threads", () => {
   }));
   it("keeps the six newest open threads, and does not spend those slots on a pin", () => {
     const rows = [
-      { threadId: "old-open", title: "Old", createdAt: 1, updatedAt: 1 },
-      { threadId: "newer", title: "Newer", createdAt: 2, updatedAt: 50 },
-      { threadId: "mid", title: "Mid", createdAt: 3, updatedAt: 40 },
-      { threadId: "also", title: "Also", createdAt: 4, updatedAt: 30 },
-      { threadId: "fourth", title: "Fourth", createdAt: 5, updatedAt: 20 },
-      { threadId: "fifth", title: "Fifth", createdAt: 6, updatedAt: 15 },
-      { threadId: "sixth", title: "Sixth", createdAt: 7, updatedAt: 12 },
+      { threadId: "old-open", title: "Old", createdAt: 1, lastThreadOrderAt: 1 },
+      { threadId: "newer", title: "Newer", createdAt: 2, lastThreadOrderAt: 50 },
+      { threadId: "mid", title: "Mid", createdAt: 3, lastThreadOrderAt: 40 },
+      { threadId: "also", title: "Also", createdAt: 4, lastThreadOrderAt: 30 },
+      { threadId: "fourth", title: "Fourth", createdAt: 5, lastThreadOrderAt: 20 },
+      { threadId: "fifth", title: "Fifth", createdAt: 6, lastThreadOrderAt: 15 },
+      { threadId: "sixth", title: "Sixth", createdAt: 7, lastThreadOrderAt: 12 },
       { threadId: "pinned-closed", title: "Pinned", createdAt: 8, updatedAt: 2, pinned: true, closedBy: { botId: "b", name: "Scout", at: 2 } },
     ];
     expect(visibleSidebarThreads(rows, "none").map((task) => task.threadId)).toEqual([
@@ -668,5 +685,46 @@ describe("Thread link", () => {
     }));
     expect(markup.indexOf("</button>")).toBeLessThan(markup.indexOf(">#42</a>"));
     expect(markup.indexOf(">#42</a>")).toBeLessThan(markup.indexOf("<time"));
+  });
+});
+
+describe("helper threads a bot opened", () => {
+  const opener = { botId: "pepper", name: "Pepper", at: 1 };
+  const thread = (threadId: string, patch: Record<string, unknown> = {}) =>
+    ({ threadId, title: threadId, createdAt: 1, updatedAt: 1, ...patch }) as any;
+
+  it("folds open bot-opened threads into a group and keeps the person's own threads", () => {
+    const tasks = [thread("mine"), thread("email", { openedBy: opener, busy: true }), thread("pricing", { openedBy: opener })];
+    const { own, helpers } = partitionHelperThreads(tasks, "mine");
+    expect(own.map((task) => task.threadId)).toEqual(["mine"]);
+    expect(helpers.map((task) => task.threadId)).toEqual(["email", "pricing"]);
+  });
+
+  it("keeps a helper thread in view while it needs the person", () => {
+    const tasks = [
+      thread("open-now", { openedBy: opener }),
+      thread("approval", { openedBy: opener, activity: "waiting-on-you" }),
+      thread("reply", { openedBy: opener, unread: true }),
+      thread("pinned", { openedBy: opener, pinned: true }),
+    ];
+    const { own, helpers } = partitionHelperThreads(tasks, "open-now");
+    expect(own.map((task) => task.threadId)).toEqual(["open-now", "approval", "reply", "pinned"]);
+    expect(helpers).toEqual([]);
+  });
+
+  it("leaves filed, closed, archived and snoozed helper threads where they already go", () => {
+    const tasks = [
+      thread("filed", { openedBy: opener, projectId: "launch" }),
+      thread("closed", { openedBy: opener, closedBy: opener }),
+      thread("archived", { openedBy: opener, archivedAt: 1 }),
+      thread("snoozed", { openedBy: opener, snoozedUntil: Date.now() + 60_000 }),
+    ];
+    const { helpers } = partitionHelperThreads(tasks, "mine", "", [{ id: "launch", name: "Launch" } as any]);
+    expect(helpers).toEqual([]);
+  });
+
+  it("does not group search results", () => {
+    const tasks = [thread("email", { openedBy: opener })];
+    expect(partitionHelperThreads(tasks, "mine", "email")).toEqual({ own: tasks, helpers: [] });
   });
 });

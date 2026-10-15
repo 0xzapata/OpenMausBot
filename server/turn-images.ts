@@ -147,3 +147,27 @@ export function extractSteerImages(
   if (images.reduce((total, image) => total + image.bytes, 0) > maxBytes) return null;
   return { texts: resolved, images };
 }
+
+export function extractReplayImages<T extends { role: "user" | "assistant"; text: string }>(
+  transcript: readonly T[],
+  current: readonly TurnImageInput[],
+  options: ExtractTurnImagesOptions = {},
+): { transcript: T[]; images: TurnImageInput[] } {
+  let maxCount = (options.maxCount ?? TURN_IMAGE_MAX_COUNT) - current.length;
+  let maxBytes = (options.maxBytes ?? TURN_IMAGE_MAX_BYTES) - current.reduce((total, image) => total + image.bytes, 0);
+  const replayed = [...transcript];
+  const images: TurnImageInput[] = [];
+  for (let index = replayed.length - 1; index >= 0 && maxCount > 0; index -= 1) {
+    const entry = replayed[index]!;
+    if (entry.role !== "user") continue;
+    const item = extractTurnImages(entry.text, { ...options, maxCount: Infinity, maxBytes: Infinity });
+    if (!item.images.length) continue;
+    const bytes = item.images.reduce((total, image) => total + image.bytes, 0);
+    if (item.images.length > maxCount || bytes > maxBytes) break;
+    replayed[index] = { ...entry, text: item.text };
+    images.unshift(...item.images);
+    maxCount -= item.images.length;
+    maxBytes -= bytes;
+  }
+  return { transcript: replayed, images };
+}

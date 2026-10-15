@@ -12,6 +12,7 @@ import { writeFileAtomic, writeFileAtomicIfChanged } from "../atomic.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { claudeAuthStatus } from "./claude-auth-status.ts";
+import { claudeModelExtras } from "./claude-model-extras.ts";
 import { classifyResumeFailure, mayReplay, rebuiltSessionNotice, recoveryPromptFor } from "../resume-recovery.ts";
 import { ClaudeLoginController } from "./claude-login-auth.ts";
 
@@ -314,9 +315,6 @@ export const STATIC_CLAUDE_MODELS: ModelCatalog = {
   ],
 };
 
-const CLAUDE_MODEL_ID = /^[a-z0-9][a-z0-9._:/-]*$/i;
-const OFFICIAL_CLAUDE_ID = /^claude-[a-z0-9.-]+$/;
-
 /** Maps an API slug a local host serves to `host::model`, so the turn injects instead of asking
  *  for /login. */
 async function resolveClaudeTurnModel(
@@ -329,21 +327,6 @@ async function resolveClaudeTurnModel(
   return resolveInjectId(model, await probeLocalInjects(env)) ?? model;
 }
 
-function extrasFromUnknown(value: unknown): Array<{ id: string; label: string }> {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (typeof item === "string") {
-      return CLAUDE_MODEL_ID.test(item) ? [{ id: item, label: item }] : [];
-    }
-    if (!item || typeof item !== "object") return [];
-    const row = item as { id?: unknown; model?: unknown; slug?: unknown; name?: unknown; displayName?: unknown; label?: unknown };
-    const id = [row.id, row.model, row.slug].find((candidate): candidate is string => typeof candidate === "string");
-    if (!id || !CLAUDE_MODEL_ID.test(id)) return [];
-    const label = [row.name, row.displayName, row.label].find((candidate): candidate is string => typeof candidate === "string");
-    return [{ id, label: label || id }];
-  });
-}
-
 /** Extra ids from ~/.claude/settings.json's extraModels. Its `model` is Claude Code's last-used
  *  slug, not a catalog entry. */
 export function readClaudeModelCatalog(env: Record<string, string | undefined> = process.env) {
@@ -354,15 +337,7 @@ export function readClaudeModelCatalog(env: Record<string, string | undefined> =
     settings = {};
   }
 
-  const extras = [
-    ...extrasFromUnknown(settings.availableModels).map((extra) => ({ ...extra, custom: true })),
-    ...extrasFromUnknown(settings.customModels).map((extra) => ({ ...extra, custom: true })),
-    ...extrasFromUnknown(settings.extraModels).map((extra) => ({ ...extra, custom: !OFFICIAL_CLAUDE_ID.test(extra.id) })),
-  ];
-  const nestedEnv = settings.env && typeof settings.env === "object" ? (settings.env as Record<string, unknown>) : {};
-  const envModel = nestedEnv.ANTHROPIC_MODEL ?? env.ANTHROPIC_MODEL;
-  if (typeof envModel === "string") extras.push(...extrasFromUnknown([envModel]).map((extra) => ({ ...extra, custom: true })));
-
+  const { extras, envModel } = claudeModelExtras(settings, env);
   const options = STATIC_CLAUDE_MODELS.options.map((option) => ({ ...option }));
   const seen = new Set(options.map((option) => option.id));
   for (const extra of extras) {
