@@ -76,7 +76,7 @@ export function isChromeIdentity(value: unknown): value is ChromeIdentity {
   }
 }
 
-const READ_IDENTITY = `(async () => ({ userAgent: navigator.userAgent, hints: navigator.userAgentData ? await navigator.userAgentData.getHighEntropyValues(${JSON.stringify(HIGH_ENTROPY_HINTS)}) : null }))()`;
+const READ_IDENTITY = `(async () => ({ href: location.href, secure: isSecureContext, userAgent: navigator.userAgent, hints: navigator.userAgentData ? await navigator.userAgentData.getHighEntropyValues(${JSON.stringify(HIGH_ENTROPY_HINTS)}) : null }))()`;
 
 async function waitFor<T>(read: () => T | null, deadline: number, what: string): Promise<T> {
   for (;;) {
@@ -130,10 +130,17 @@ export async function calibrateIdentity(executable: string, options: { timeoutMs
     cdp = await (options.connect ?? connectCdp)(`ws://127.0.0.1:${port!.trim()}${path!.trim()}`, Math.max(1_000, deadline - Date.now()));
     const target = await waitForPage(cdp, url, deadline);
     const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: target, flatten: true }) as { sessionId: string };
-    const answer = await cdp.send("Runtime.evaluate", { expression: READ_IDENTITY, awaitPromise: true, returnByValue: true }, sessionId) as {
-      result?: { value?: { userAgent?: unknown; hints?: Record<string, unknown> | null } };
-    };
-    return headedIdentity({ userAgent: answer.result?.value?.userAgent, hints: answer.result?.value?.hints });
+    // A tab reports the URL it is opening before that page replaces its first, blank document, which has no client hints.
+    let read: { href?: unknown; secure?: unknown; userAgent?: unknown; hints?: Record<string, unknown> | null } | undefined;
+    while (!read?.hints && Date.now() < deadline) {
+      try {
+        const answer = await cdp.send("Runtime.evaluate", { expression: READ_IDENTITY, awaitPromise: true, returnByValue: true }, sessionId) as { result?: { value?: typeof read } };
+        read = answer.result?.value;
+      } catch {}
+      if (!read?.hints) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!read?.hints) throw new Error(`the browser reported no client hints on ${String(read?.href ?? "its page")} (secure context: ${String(read?.secure ?? "unknown")})`);
+    return headedIdentity({ userAgent: read.userAgent, hints: read.hints });
   } finally {
     await cdp?.send("Browser.close").catch(() => undefined);
     cdp?.close();

@@ -37,6 +37,7 @@ describe.skipIf(!enabled)("a bot's browser on a real Chrome", () => {
     const browser = engine ? { binary: engine, chrome: picked } : await ensureUiBrowser(process.env, () => {}, UI_TOOLS_DIR);
     const chrome = picked || browser.chrome || installedGoogleChrome(chromeHost({ dataDir: out, env: machineEnv }));
     if (!chrome || isHeadlessShell(chrome)) throw new Error(`a full Chrome is needed, not ${chrome ?? "nothing"}: set OMB_CHROME_PATH`);
+    console.log(`browser identity e2e: agent-browser ${browser.binary}, Chrome ${chrome}`);
     const { readout } = await verifyBrowserIdentity({ engine: browser.binary, chrome, out, sessionPrefix: "omb-id-e2e" });
     const failed = readout.checks.filter((check) => !check.pass).map((check) => `${check.check}: ${check.detail}`);
     expect(failed).toEqual([]);
