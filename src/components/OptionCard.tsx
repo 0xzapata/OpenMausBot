@@ -115,7 +115,7 @@ export function OptionCard({
         </div>
       )}
 
-      {!card.answered && !card.tool && (
+      {!card.answered && !card.tool && !card.fixedOptions && (
         <input
           dir="auto"
           value={custom}

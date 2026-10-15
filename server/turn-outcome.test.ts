@@ -34,6 +34,19 @@ describe("TurnStops", () => {
     expect(stops.read("t1", "turn-1")).toEqual({ turnId: "turn-1", error: limit });
   });
 
+  it("says why a settled turn failed: its own last error, else the provider's stop token, and nothing for a turn that worked", () => {
+    const stops = new TurnStops();
+    const limit = "You've hit your weekly limit · resets Oct 12 at 2:30pm (Asia/Calcutta)";
+    stops.note(event({ type: "turn.started", turnId: "turn-1" }));
+    stops.note(event({ type: "runtime.error", turnId: "turn-1", message: limit }));
+    expect(stops.failureCause({ threadId: "t1", turnId: "turn-1", ok: false, stopReason: "quota" })).toBe(limit);
+    // a turn that left no error has only its stop token; a blank one says nothing
+    expect(stops.failureCause({ threadId: "t1", turnId: "turn-2", ok: false, stopReason: " quota " })).toBe("quota");
+    expect(stops.failureCause({ threadId: "t2", ok: false, stopReason: " " })).toBeUndefined();
+    expect(stops.failureCause({ threadId: "t2", ok: false, stopReason: null })).toBeUndefined();
+    expect(stops.failureCause({ threadId: "t1", turnId: "turn-1", ok: true, stopReason: "end_turn" })).toBeUndefined();
+  });
+
   it("keeps a step cap's handoff for the turn that continues from it", () => {
     const stops = new TurnStops();
     stops.note(event({ type: "cap.exhausted", turnId: "turn-1", handoffPath: "/data/handoffs/cap-1.md", reason: "cap" }));

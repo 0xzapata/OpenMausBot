@@ -11,7 +11,8 @@ vi.mock("@/state/store", async (original) => ({
 }));
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({}) }));
 
-import { DefaultResponderSelect, RoutedByLine, Transcript } from "./GroupView";
+import { DefaultResponderSelect, Transcript } from "./GroupView";
+import { RoutedByLine } from "./RoomQueueList";
 
 const members = [
   { id: "maya", name: "Maya" },

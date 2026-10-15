@@ -76,6 +76,41 @@ describe("additive portable team backups", () => {
     expect(() => parseTeamBackup(invalid)).toThrow();
   });
 
+  it("carries a bot's never-use-the-helper switch through backup and import, so its restored notes and chats stay off the helper", () => {
+    const { store, routines, chief, scout } = fixture();
+    store.patchBot(chief.id, { helperModel: false });
+    store.patchBot(scout.id, { helperModel: true });
+    // part of the bot's saved record: a restart reads it back
+    expect(new Store(selection).bot(chief.id)).toHaveProperty("helperModel", false);
+    const backup = createTeamBackup(store, routines.listRoutines(), "Private bots");
+    // only "never" travels: allowed is what a bot without the field already is
+    expect(backup.bots.find((bot) => bot.key === chief.id)).toHaveProperty("helperModel", false);
+    expect(backup.bots.find((bot) => bot.key === scout.id)).not.toHaveProperty("helperModel");
+    // through the file, as an import reads it
+    const restored = importTeamBackup(store, routines, parseTeamBackup(JSON.parse(JSON.stringify(backup))), selection());
+    expect(restored.bots.find((bot) => bot.name === "Mira 2")).toHaveProperty("helperModel", false);
+    expect(restored.bots.find((bot) => bot.name === "Scout 2")).not.toHaveProperty("helperModel");
+    // a file that says true imports like any other, and changes nothing: allowed is what a new bot already is
+    const saysTrue = structuredClone(backup) as unknown as { bots: Array<{ key: string; helperModel?: unknown }> };
+    for (const entry of saysTrue.bots) entry.helperModel = true;
+    const again = importTeamBackup(store, routines, parseTeamBackup(saysTrue), selection());
+    expect(again.bots).toHaveLength(backup.bots.length);
+    for (const restoredBot of again.bots) expect(restoredBot, restoredBot.name).not.toHaveProperty("helperModel");
+    // anything that is not true or false is still a malformed file
+    const malformed = structuredClone(backup) as unknown as { bots: Array<{ helperModel?: unknown }> };
+    malformed.bots[0]!.helperModel = "false";
+    expect(() => parseTeamBackup(malformed)).toThrow();
+  });
+
+  it("writes a hand-edited switch as never: what is not an absent switch or a strict true does not become allowed in a backup", () => {
+    const { store, routines, chief, scout } = fixture();
+    store.patchBot(chief.id, { helperModel: "false" } as never);
+    store.patchBot(scout.id, { helperModel: 0 } as never);
+    const backup = createTeamBackup(store, routines.listRoutines(), "Hand-edited");
+    expect(backup.bots.find((bot) => bot.key === chief.id)).toHaveProperty("helperModel", false);
+    expect(backup.bots.find((bot) => bot.key === scout.id)).toHaveProperty("helperModel", false);
+  });
+
   it("carries each bot's memory, topic notes and daily logs, scrubbed on the way out and private on the way in", () => {
     const { store, routines, chief, scout } = fixture();
     const now = new Date(2026, 8, 10, 12);

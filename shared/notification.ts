@@ -39,3 +39,9 @@ export interface Notification {
   groupId?: string;
 }
 
+/** A `Notification` as the feed stores it: the live `notify` frame and `GET /api/notifications` carry the same entry. */
+export interface NotificationLogEntry extends Notification {
+  id: string;
+  at: number;
+  read: boolean;
+}

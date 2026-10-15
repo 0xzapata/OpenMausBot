@@ -18,7 +18,7 @@ export function SkillRequestPreview({ request }: { request: SkillRequestCardData
     <div className="mt-3 rounded-lg border border-hairline/40 bg-inset p-3">
       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-secondary">
         <span>
-          Review the complete SKILL.md before {request.action === "update" ? "replacing the current version" : "enabling"}
+          Review the complete SKILL.md{request.references?.length ? " and its reference files" : ""} before {request.action === "update" ? "replacing the current version" : "enabling"}
         </span>
         <span className="font-mono" title={`sha256 ${reviewedSha256}`}>
           sha256 {reviewedSha256.slice(0, 8)}
@@ -32,6 +32,18 @@ export function SkillRequestPreview({ request }: { request: SkillRequestCardData
       >
         {request.preview}
       </pre>
+      {request.references?.map((file) => (
+        <div key={file.path} className="mt-3 border-t border-hairline/40 pt-2">
+          <div className="font-mono text-[11px] text-ink-secondary">{file.path}</div>
+          <pre
+            tabIndex={0}
+            aria-label={`Full ${file.path} for ${request.name}`}
+            className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-ink"
+          >
+            {file.content}
+          </pre>
+        </div>
+      ))}
     </div>
   );
 }

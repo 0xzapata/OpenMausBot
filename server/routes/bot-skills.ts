@@ -1,10 +1,10 @@
 import { z } from "zod";
 
 import type { SkillsLibrarySkillWire } from "../../shared/wire.ts";
-import { skillsLibraryEnabled, type AppConfig } from "../config.ts";
+import type { AppConfig } from "../config.ts";
 import { botSkillTemplateSchema } from "../new-bot-defaults.ts";
 import { fetchSkillFromSource } from "../skill-fetch.ts";
-import { installLibrarySkill, listLibrarySkills, readLibrarySkillFile, readSkillLibraryIndex, setLibrarySkillReviewState } from "../skill-library.ts";
+import { installLibrarySkill, listLibrarySkills, readLibrarySkillFile, readSkillLibraryIndex, setLibrarySkillReviewState, skillsLibraryEnabled } from "../skill-library.ts";
 import {
   installSkill, listBotSkillsWithOrigin, listStagedSkillWrites, parseSkillMd, removeSkill, scanSkillText, setSkillEnabled,
   type SkillListing, type StagedSkillWrite,

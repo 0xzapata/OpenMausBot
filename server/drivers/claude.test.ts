@@ -1711,6 +1711,45 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.mcpConfig.mcpServers.shop).toMatchObject({ command: "npx", args: ["shop"] });
   });
 
+  it("gives each bot server its own result budget, over the app-wide one", async () => {
+    const dump = join(scratch, "gate-own.json");
+    await create(undefined, { FAKE_CLAUDE_DUMP: dump, OMB_MCP_RESULT_BUDGET: "0" });
+
+    await instance.adapter.sendTurn({
+      threadId: "t-gate-own",
+      text: "hi",
+      integrations: {
+        custom: { motion: { command: "effectcraft-mcp", args: [], env: {} }, shop: { command: "npx", args: ["shop"], env: {} } },
+        customResultBudgets: { motion: 40_000 },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.mcpConfig.mcpServers.motion.env.OMB_GATE_BUDGET).toBe("40000");
+    // the others keep the app-wide setting (here: off)
+    expect(seen.mcpConfig.mcpServers.shop).toMatchObject({ command: "npx", args: ["shop"] });
+  });
+
+  it("gates a URL server with its own result limit; other URL servers keep their native connection", async () => {
+    const dump = join(scratch, "gate-own-url.json");
+    await create(undefined, { FAKE_CLAUDE_DUMP: dump });
+
+    await instance.adapter.sendTurn({
+      threadId: "t-gate-own-url",
+      text: "hi",
+      integrations: {
+        custom: { motion: { type: "http", url: "https://motion.example.test/mcp", headers: {} }, docs: { type: "http", url: "https://docs.example.test/mcp", headers: {} } },
+        customResultBudgets: { motion: 40_000 },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.mcpConfig.mcpServers.motion.env.OMB_GATE_BUDGET).toBe("40000");
+    expect(seen.mcpConfig.mcpServers.docs).toEqual({ type: "http", url: "https://docs.example.test/mcp", headers: {} });
+  });
+
   it("leaves an http project server unmounted by the gate rather than mangling it", async () => {
     await create();
     const dump = join(scratch, "gate-http.json");
@@ -3510,6 +3549,23 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const onUsage = vi.fn();
     await expect(instance.generateText!("summarize", { onUsage })).rejects.toThrow("synthetic billed failure");
     expect(onUsage.mock.calls).toEqual([[{ model: "claude-haiku-4-5", input: undefined, output: undefined, cachedInput: undefined, costUsd: 0.01 }]]);
+  });
+
+  it("writes a one-shot with the model a caller names, while permission review keeps its own", async () => {
+    await create();
+    const dump = join(scratch, "named-model.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const model = () => {
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      return seen.argv[seen.argv.indexOf("--model") + 1];
+    };
+    await expect(instance.generateText!("summarize", { model: "claude-haiku-5-5" })).resolves.toBe("fake generated text");
+    expect(model()).toBe("claude-haiku-5-5");
+    await expect(instance.generateText!("summarize")).resolves.toBe("fake generated text");
+    expect(model()).toBe("claude-haiku-4-5");
+    // the contract gives permission review no way to name a model
+    await expect(instance.reviewPermission!("review this request")).resolves.toBe("fake generated text");
+    expect(model()).toBe("claude-haiku-4-5");
   });
 
   it.each(["not JSON", '{"type":"assistant"}'])("rejects malformed one-shot output without invented usage (%s)", async result => {

@@ -10,7 +10,7 @@ import { execCli, killCliTree, spawnCli } from "./procs.ts";
 
 const MAX_OUTPUT = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
-const PROBE_TIMEOUT_MS = 30_000;
+export const PROBE_TIMEOUT_MS = 30_000;
 
 export function enginesPrefix(baseDir = DATA_DIR): string {
   return join(baseDir, "tools", "npm");

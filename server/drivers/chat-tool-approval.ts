@@ -1,6 +1,8 @@
 // Per-turn ask gate. Register before publishing: a harness listener may answer synchronously.
 import { newId, type RequestOutcome } from "../contracts.ts";
+import { floorBlockForToolCall, type FloorBlock } from "../safety-floor-gate.ts";
 import type { AskQuestion } from "../../shared/ask-question.ts";
+import type { ChatToolCallView } from "./chat-mcp-tools.ts";
 
 /** `grant`: what "Always allow this session" would keep allowed; absent when the card can only allow once. */
 interface Ask { id: string; tool: string; summary: string; grant?: string }
@@ -11,6 +13,13 @@ interface Card {
   ask: Ask;
   /** Exactly-once: a second finish is a no-op because the card left the map. */
   finish(source: Source, decision?: { allowed?: boolean; always?: boolean; message?: string }): void;
+}
+
+/** The text a refused call hands the model; a floor block also raises its line through `notice`. */
+export function refusal(block: FloorBlock | null, notice: (line: string) => void): string {
+  if (!block) return "Permission denied or expired; the tool was not executed.";
+  notice(block.line);
+  return block.reason;
 }
 
 export function createChatToolApproval(options: {
@@ -25,10 +34,19 @@ export function createChatToolApproval(options: {
 }) {
   const pending = new Map<string, Card>();
   let closed = false;
+  /** Whether a kept "Always allow this session" answers this ask with no card. */
+  const covered = (grant?: string): boolean => grant !== undefined && options.granted?.has(grant) === true;
   return {
+    covered,
+    /** The floor's block, already logged, for a call this gate would answer itself (Full access or a kept session
+     * allow), or null. A card a person answers is never touched. */
+    floored(call: { full: boolean; threadId: string; botId?: string; shown: ChatToolCallView; summary?: string }): FloorBlock | null {
+      if (!call.shown.ask || !(call.full || covered(call.shown.grant))) return null;
+      return floorBlockForToolCall({ threadId: call.threadId, botId: call.botId, tool: call.shown.title, summary: call.summary, input: call.shown.input });
+    },
     ask(tool: string, summary: string, grant?: string): Promise<boolean> {
       if (closed || options.signal.aborted) return Promise.resolve(false);
-      if (grant !== undefined && options.granted?.has(grant)) return Promise.resolve(true);
+      if (covered(grant)) return Promise.resolve(true);
       const ask: Ask = { id: newId(), tool, summary, ...(grant !== undefined && options.granted ? { grant } : {}) };
       return new Promise((resolve) => {
         let timer: ReturnType<typeof setTimeout>;

@@ -568,7 +568,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (!threads.length) return { text: "No threads yet: you have none of your own beyond this one, and you have not opened any on a teammate." };
     const stateWord: Record<string, string> = { running: "running", "waiting-on-you": "waiting on the person", queued: "queued", idle: "idle" };
     const lines = threads.map((thread) => {
-      const where = thread.own === true ? "yours" : `on @${String(thread.botName)}`;
+      const where = thread.own === true ? "yours" : `on @${String(thread.botName)}${typeof thread.openedBy === "string" && thread.openedBy ? `, opened by @${thread.openedBy}` : ""}`;
       const state = stateWord[String(thread.state)] ?? String(thread.state);
       const unread = thread.unread === true ? ", unread for the person" : "";
       const handoff = typeof thread.delegationId === "string" && thread.delegationId ? ` [delegation id: ${thread.delegationId}]` : "";
@@ -1054,9 +1054,8 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       ? skills.map((skill) => {
         const row = skill as Json;
         // Unreviewed imports: a hostile description is still prompt content, so only names and status.
-        const editable = row.editable === true;
-        const status = row.enabled ? "enabled" : "disabled";
-        return `- ${row.name} (${status}, ${editable ? "learned/editable" : "imported"})`;
+        const revision = typeof row.revision === "string" ? `, shared with your team, revision ${row.revision}` : "";
+        return `- ${row.name} (${row.enabled ? "enabled" : "disabled"}, ${row.editable === true ? "learned/editable" : "imported"}${revision})`;
       }).join("\n")
       : "(none)";
     const pending = staged.length
@@ -1087,12 +1086,13 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const r = await api("/api/internal/skills/stage", {
       method: "POST",
       body: JSON.stringify({
-        fromBotId: BOT_ID,
-        fromThreadId: THREAD_ID,
+        fromBotId: BOT_ID, fromThreadId: THREAD_ID,
         action: args.action,
         skill_name: skillName || undefined,
         skill_md: skillMd,
+        ...(Array.isArray(args.references) ? { references: args.references } : {}),
         gist: typeof args.gist === "string" ? args.gist : undefined,
+        base_revision: typeof args.base_revision === "string" ? args.base_revision : undefined,
         source,
       }),
     });

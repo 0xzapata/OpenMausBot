@@ -5,6 +5,7 @@ import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import {
   longCommandsPrompt,
   buildSystemPrompt,
+  CONVERSATIONAL_STYLE_PROMPT,
   CLOUD_HOME_PLACE,
   cloudHomePrompt,
   userProfileSystemPrompt,
@@ -297,5 +298,27 @@ describe("longCommandsPrompt", () => {
     for (const kind of ["vm-private", "vm-shared"] as const) {
       expect(longCommandsPrompt(kind)).toContain("vm_exec takes `timeout_seconds` instead (default 60, at most 300)");
     }
+  });
+});
+
+describe("reply style", () => {
+  it("adds nothing for the default style, so existing prompts are unchanged", () => {
+    const plain = buildSystemPrompt("persona", "soul", [{ id: "x", label: "X", text: " tail" }]);
+    expect(buildSystemPrompt("persona", "soul", [{ id: "x", label: "X", text: " tail" }], undefined, { replyStyle: "default" })).toEqual(plain);
+    expect(plain.sections.map((s) => s.id)).not.toContain("reply-style");
+  });
+
+  it("puts the conversational guidance right after the soul, in the stable half", () => {
+    const built = buildSystemPrompt("persona", "soul", [
+      { id: "memory", label: "Memory", text: " memory" },
+      { id: "x", label: "X", text: " tail" },
+    ], undefined, { replyStyle: "conversational" });
+    expect(built.sections.map((s) => s.id)).toEqual(["persona", "soul", "reply-style", "memory", "x"]);
+    expect(built.stable).toContain(CONVERSATIONAL_STYLE_PROMPT);
+    expect(built.volatile).not.toContain("Reply style");
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/short/i);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/blank line/);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/code block/);
+    expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/language/);
   });
 });
