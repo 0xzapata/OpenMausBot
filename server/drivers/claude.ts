@@ -1108,10 +1108,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         throw new Error("Claude cannot confirm a restricted MCP configuration for this account. Disable inherited Claude MCP servers and use a current, identifiable Claude CLI before using tool selection.");
       }
       if (isolated) {
-        // Without these the CLI adds this machine's MCP servers, claude.ai connectors, skills,
-        // agents, hooks and CLAUDE.md to every bot's turn (one desktop: 407 extra tools, ~10k tokens).
+        // Without these every turn gets this machine's MCP servers, connectors, skills, hooks and CLAUDE.md (one desktop: 407 tools, ~10k tokens).
         if (!turn.mcpFromUserConfig && claudeCliSupports(cliVersion, "--strict-mcp-config")) args.push("--strict-mcp-config");
         if (claudeCliSupports(cliVersion, "--setting-sources")) args.push("--setting-sources", "project");
+        if (turn.userSkillsDir) args.push("--add-dir", turn.userSkillsDir);
       }
       const compactWindow = autoCompactWindow(turnEnvironment);
       if (compactWindow && cliHasAutocompact === true) {
