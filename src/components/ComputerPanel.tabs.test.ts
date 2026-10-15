@@ -92,6 +92,13 @@ beforeAll(() => {
   vi.stubGlobal("ogb", undefined);
 });
 beforeEach(() => {
+  // The panel remembers each conversation's tab, so one test's click must not choose the next test's tab.
+  const saved = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => saved.get(key) ?? null,
+    setItem: (key: string, value: string) => void saved.set(key, value),
+    removeItem: (key: string) => void saved.delete(key),
+  });
   fixture.advanced = true;
   fixture.android = false;
 });

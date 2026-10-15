@@ -1,7 +1,7 @@
 // A native <select> keeps the platform arrow, whose inset padding cannot move (about 6px on Linux Chrome, wider on macOS).
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const src = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,7 +47,7 @@ describe("dropdowns", () => {
       // An invisible <select> laid over a custom button shows no arrow to align.
       && !/\bopacity-0\b/.test(text)
       // Bot-built widgets draw their own fields and chevron in the widget kit's style.
-      && !file.startsWith(join("components", "widget") + "/"));
+      && !file.startsWith(join("components", "widget") + sep));
     expect(raw.map(({ at }) => at)).toEqual([]);
   });
 
