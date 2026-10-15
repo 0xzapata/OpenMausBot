@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const {
+  appendDesktopCrashRecord,
   buildDiagnosticsReport,
   decodeLogTail,
   diagnosticsFileName,
@@ -429,4 +430,17 @@ describe("diagnosticsFileName", () => {
       "openmausbot-diagnostics-20260822-160509.txt",
     );
   });
+});
+
+it("appends a crash line, truncates a full log, and refuses a hard-linked one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "omb-crash-"));
+  const file = join(dir, "logs", "desktop-crashes.log");
+  appendDesktopCrashRecord(file, 64, "first crash");
+  expect(readFileSync(file, "utf8")).toMatch(/^\[.+\] first crash\n$/);
+  appendDesktopCrashRecord(file, 10, "second crash");
+  expect(readFileSync(file, "utf8")).toMatch(/^\[.+\] second crash\n$/);
+  linkSync(file, join(dir, "other"));
+  appendDesktopCrashRecord(file, 1_000, "third crash");
+  expect(readFileSync(file, "utf8")).not.toContain("third crash");
+  rmSync(dir, { recursive: true, force: true });
 });

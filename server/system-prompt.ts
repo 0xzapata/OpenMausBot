@@ -113,11 +113,24 @@ export function computerPrompt(kind: ComputerPromptKind | null): string {
 
 export const CLOUD_HOME_PLACE = "the user's My Cloud, their always-on OpenMausBot in the cloud, not on their own computer";
 
-export function cloudHomePrompt(sharedComputerTools: boolean): string {
+// The Cloud prompt names the synced folders; index.ts reads the registry through here.
+export { syncedFolders } from "./cloud-sync-store.ts";
+
+export function cloudHomePrompt(sharedComputerTools: boolean, synced: ReadonlyArray<{ computerName: string; pcPath: string; cloudPath: string }> = []): string {
   return ` You run on ${CLOUD_HOME_PLACE}.` + (sharedComputerTools
     ? " If they ask for something on their own Mac or PC, check list_shared_computers: a computer they lend to My Cloud is reachable through shared_computer, within the folders and apps it allows. If none is lent and online, say so in one sentence: they can turn on Let My Cloud use this computer under Settings → MausBot Cloud in the desktop app on that computer."
     : " You cannot see or use their Mac or PC, its screen or its files from here. If they ask for something on it, say so in one sentence.")
-    + " Offer what works here: the built-in browser and their cloud computer, a desktop in the cloud. Call it their cloud computer, as the app does. Never ask them to set up this computer or a Local VM; neither exists here.";
+    + " Offer what works here: the built-in browser and their cloud computer, a desktop in the cloud. Call it their cloud computer, as the app does. Never ask them to set up this computer or a Local VM; neither exists here."
+    + syncedFoldersPrompt(synced);
+}
+
+function syncedFoldersPrompt(synced: ReadonlyArray<{ computerName: string; pcPath: string; cloudPath: string }>): string {
+  if (!synced.length) return "";
+  // eslint-disable-next-line no-control-regex
+  const clean = (value: string, max: number) => value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ").slice(0, max);
+  const shown = synced.slice(0, 20).map((folder) => `${clean(folder.pcPath, 300)} on ${clean(folder.computerName, 80)} → ${clean(folder.cloudPath, 300)}`).join("; ");
+  return ` Folders the person shares from their computer, as read-only copies kept up to date here: ${shown}${synced.length > 20 ? `; and ${synced.length - 20} more` : ""}.`
+    + " A path on that computer inside one of these means its copy here. Read from these copies, never change or delete files in them: save your work in your own working folder; the person gets it on their computer in Documents › MausBot.";
 }
 
 export const COMPOSIO_PROMPT =

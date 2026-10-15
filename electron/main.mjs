@@ -12,6 +12,7 @@ import { openBlankTerminal } from "./terminal-launch.mjs";
 import { pasteMenuItem } from "./paste-menu-item.mjs";
 import { attachUpdaterWindow, startUpdater, registerUpdaterIpc, sendUpdaterState } from "./updater.mjs";
 import {
+  appendDesktopCrashRecord,
   buildDiagnosticsReport,
   diagnosticsFileName,
   formatDesktopCrashRecord,
@@ -88,6 +89,7 @@ import { CHECKOUT_SOURCES, cloudMenuSublabel, cloudPlanSnapshot, createCloudAcco
 import { createTrialNotices } from "./cloud-trial-notice.mjs";
 import { createProPlanRelay } from "./pro-plan.mjs";
 import { cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome } from "./cloud-home.mjs";
+import { installCloudFiles } from "./cloud-sync-main.mjs";
 import { createCloudEntry } from "./cloud-entry.mjs";
 import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, parseCloudMoveStatus } from "./cloud-move.mjs";
 import { createOrgLibrary } from "./org-library.mjs";
@@ -559,58 +561,11 @@ function slog(line) {
 }
 
 // Synchronous: a fatal exception can end Electron before an async write flushes.
-function recordDesktopCrash(event) {
-  let handle = null;
-  try {
-    const record = formatDesktopCrashRecord(event);
-    if (!record) return;
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-
-    const flags =
-      fs.constants.O_WRONLY |
-      fs.constants.O_APPEND |
-      (process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW);
-    let before = null;
-    try {
-      before = fs.lstatSync(DESKTOP_CRASH_LOG);
-      if (!before.isFile() || before.nlink !== 1) return;
-      handle = fs.openSync(DESKTOP_CRASH_LOG, flags);
-    } catch (error) {
-      if (error?.code !== "ENOENT") return;
-      // O_EXCL makes first creation race-safe on Windows, which has no O_NOFOLLOW.
-      try {
-        handle = fs.openSync(
-          DESKTOP_CRASH_LOG,
-          flags | fs.constants.O_CREAT | fs.constants.O_EXCL,
-          0o600,
-        );
-      } catch {
-        return;
-      }
-    }
-
-    const stats = fs.fstatSync(handle);
-    // A hard-linked or non-regular target is not an app-owned crash log.
-    if (!stats.isFile() || stats.nlink !== 1) return;
-    if (before && (before.dev !== stats.dev || before.ino !== stats.ino)) return;
-    if (stats.size >= DESKTOP_CRASH_LOG_MAX_BYTES) fs.ftruncateSync(handle, 0);
-    if (process.platform !== "win32") fs.fchmodSync(handle, 0o600);
-    fs.writeFileSync(handle, `[${new Date().toISOString()}] ${record}\n`, "utf8");
-  } catch {
-  } finally {
-    if (handle !== null) {
-      try {
-        fs.closeSync(handle);
-      } catch {}
-    }
-  }
-}
-
 // uncaughtExceptionMonitor observes Node's fatal path without handling it, so the process still exits.
 installDesktopCrashListeners({
   appTarget: app,
   processTarget: process,
-  record: recordDesktopCrash,
+  record: (event) => appendDesktopCrashRecord(DESKTOP_CRASH_LOG, DESKTOP_CRASH_LOG_MAX_BYTES, formatDesktopCrashRecord(event)),
   isShuttingDown: () => desktopShutdownStarted,
   mainWebContents: () => mainWindow?.webContents ?? null,
 });
@@ -3070,6 +3025,12 @@ ipcMain.handle("lending:stop", localWorkspaceOnly("lending:stop", async () => {
   stopLending();
   return lendingSnapshot();
 }));
+const cloudSync = installCloudFiles({
+  app, ipcMain, dialog, shell, powerMonitor, localWorkspaceOnly, localDataDir: desktopDataDir(),
+  fetch: (...args) => session.defaultSession.fetch(...args),
+  send: (channel, value) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, value); },
+  cloudOrigin: () => myCloud(), cloudAccount: () => ensureCloudAccount(),
+});
 
 // window.confirm() has no parent window, so (tiling) window managers cannot center it over the app.
 ipcMain.handle("dialog:confirm", localWorkspaceOnly("dialog:confirm", async (_event, message) => {
@@ -3443,6 +3404,7 @@ app.whenReady().then(async () => {
   // Maintainer grants never start while computer sharing is off; Cloud lending waits for a verified sign-in.
   void refreshSharedComputersAllowed().then((allowed) => {
     sharingController().start({ maintainer: allowed });
+    cloudSync.start();
     void cloudAccountStarted.then(() => computerSharing?.cloudChanged());
   });
   let restoredOrganizationEntry = false;
@@ -3510,6 +3472,7 @@ app.on("before-quit", (e) => {
   void cloudMove?.close();
   companyBackupController?.abort();
   computerSharing?.close();
+  cloudSync.close();
   lendingTray?.destroy();
   if (cuaCleanedUp) return;
   e.preventDefault();

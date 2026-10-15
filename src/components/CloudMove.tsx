@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { CloudMoveBridge, CloudMoveOverview, CloudMoveState } from "../../electron/cloud-move.mjs";
 import type { LocaleKey } from "@/locales";
+import { cloudFilesBridge } from "@/lib/cloud-files";
 import { activeLocale, t } from "@/lib/i18n";
+import { OpenFilesButton } from "./OpenFilesButton";
 import { Card } from "./SettingsPrimitives";
 
 const RUNNING = new Set<CloudMoveState["phase"]>(["preparing", "growing", "exporting", "uploading", "checking", "replacing", "restarting"]);
@@ -89,6 +91,12 @@ function leftBehindStep(state: CloudMoveState, server: string): string[] {
   if (!left || !path) return [];
   const line = t(left.bots === 1 ? "cloudMove.leftBehindFolderOne" : left.bots ? "cloudMove.leftBehindFolders" : "cloudMove.leftBehindFiles", { count: left.bots, path, server });
   return [state.destination?.kind === "cloud" ? `${line} ${t("cloudMove.leftBehindLend")}` : line];
+}
+
+/** What a finished move to My Cloud left on this computer, for Files to offer sharing; null for none, or without Files. */
+export function leftBehindToShare(state: CloudMoveState): string[] | null {
+  const paths = state.leftBehind?.paths ?? [];
+  return state.phase === "done" && state.action !== "restore" && state.destination?.kind === "cloud" && paths.length > 0 && cloudFilesBridge() ? paths : null;
 }
 
 export function moveNextSteps(state: CloudMoveState): string[] {
@@ -192,12 +200,13 @@ function MoveProgress({ state }: { state: CloudMoveState }) {
 }
 
 function moveStatus(view: MoveView, state: CloudMoveState) {
-  const message = view.message;
+  const message = view.message, share = leftBehindToShare(state);
   return <>
     {message && <p role={message.tone === "error" ? "alert" : message.tone === "note" ? "note" : "status"}
       className={message.tone === "error" ? "text-[13px] text-danger" : message.tone === "status" ? "text-[13px] text-ink-secondary" : "text-[13px] text-ink"}>{message.text}</p>}
     {view.running && <MoveProgress state={state} />}
     {view.next.map(line => <p key={line} className="text-[12px] text-ink-secondary">{line}</p>)}
+    {share && <OpenFilesButton label={t("cloudMove.shareLeftBehind")} suggest={share} />}
     {view.resumable && <p className="text-[12px] text-ink-secondary">{t("cloudMove.resumeNote", { server: view.server })}</p>}
   </>;
 }

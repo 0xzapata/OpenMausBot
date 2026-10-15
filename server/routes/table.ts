@@ -2,6 +2,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { json, readBody } from "../harness/http.ts";
 import type { RequestAuth } from "../request-auth.ts";
+import { cloudSyncRoutes } from "./cloud-sync.ts";
 
 export const PASS: unique symbol = Symbol("route.pass");
 
@@ -19,7 +20,8 @@ export interface RouteContext {
 /** Resolve with PASS to decline; anything else means the request was answered. */
 export type RouteHandler = (ctx: RouteContext) => Promise<typeof PASS | void>;
 
-export const ROUTES: RouteHandler[] = [];
+/** Modules with no wiring from index.ts are listed here; index.ts pushes the rest. */
+export const ROUTES: RouteHandler[] = [cloudSyncRoutes];
 
 /** True means stop routing. A handler that wrote a response but returned PASS still counts as answered. */
 export async function dispatchRoutes(routes: readonly RouteHandler[], ctx: RouteContext): Promise<boolean> {

@@ -34,6 +34,7 @@ const EXCLUDED = new Set([
   "runtime.db-wal", "runtime.db-shm",
   "decider-log",
   "cloud-owner.json",
+  "sync",
 ]);
 const EXCLUSION_NOTES = [
   "Device pairing, server identity, live leases and runtime files (existing destination identities are preserved).",

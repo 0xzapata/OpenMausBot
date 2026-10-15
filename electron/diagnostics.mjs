@@ -1,5 +1,6 @@
 // The bundle is pasted into public issues: the collector never reads secrets, and everything is scrubbed again here.
 import fs from "node:fs";
+import path from "node:path";
 
 // Mirrors WORKSPACE_CREDENTIAL_ENV in server/config.ts; a test asserts the two lists never drift apart.
 export const CREDENTIAL_ENV_NAMES = [
@@ -317,4 +318,33 @@ export function diagnosticsFileName(date = new Date()) {
     `openmausbot-diagnostics-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
     `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.txt`
   );
+}
+
+/** One line in the desktop crash log: refuses a link or a hard-linked target, starts over past maxBytes, owner-only. */
+export function appendDesktopCrashRecord(file, maxBytes, record) {
+  if (!record) return;
+  let handle = null;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | (process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW);
+    let before = null;
+    try {
+      before = fs.lstatSync(file);
+      if (!before.isFile() || before.nlink !== 1) return;
+      handle = fs.openSync(file, flags);
+    } catch (error) {
+      if (error?.code !== "ENOENT") return;
+      // O_EXCL makes first creation race-safe on Windows, which has no O_NOFOLLOW.
+      try { handle = fs.openSync(file, flags | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600); } catch { return; }
+    }
+    const stats = fs.fstatSync(handle);
+    if (!stats.isFile() || stats.nlink !== 1) return;
+    if (before && (before.dev !== stats.dev || before.ino !== stats.ino)) return;
+    if (stats.size >= maxBytes) fs.ftruncateSync(handle, 0);
+    if (process.platform !== "win32") fs.fchmodSync(handle, 0o600);
+    fs.writeFileSync(handle, `[${new Date().toISOString()}] ${record}\n`, "utf8");
+  } catch {
+  } finally {
+    if (handle !== null) { try { fs.closeSync(handle); } catch {} }
+  }
 }
