@@ -1,11 +1,12 @@
+import { t } from "@/lib/i18n";
+
 type Input = Record<string, unknown>;
 const movement = (body: Input) => body.type === "input_mouse" && ["mouseMoved", "mouseWheel"].includes(String(body.eventType));
 const release = (body: Input) => (body.type === "input_mouse" && body.eventType === "mouseReleased") || (body.type === "input_keyboard" && body.eventType === "keyUp");
 const delta = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : 0;
 const clamp = (value: number) => Math.max(-10_000, Math.min(10_000, value));
 
-/** One request at a time, with replaceable movement coalesced behind it.
- * Keyboard/button order is preserved; reconnect never replays old input. */
+/** One request at a time: key/button order is kept, movement coalesced, and reconnect never replays old input. */
 export function createBrowserInputQueue(send: (body: Input) => Promise<void>, onError: (cause: unknown) => void) {
   let queue: Input[] = [];
   let active: Promise<void> | null = null;
@@ -36,14 +37,12 @@ export function createBrowserInputQueue(send: (body: Input) => Promise<void>, on
           : { ...body };
         return;
       }
-      // ponytail: fixed 32-item ceiling; do not let a slow VPS accumulate
-      // minutes of input. Overload halts new presses until the view reconnects.
       if (queue.length >= 32) {
         if (movement(body)) return;
         const replaceable = queue.findIndex(movement);
         if (replaceable >= 0) queue.splice(replaceable, 1);
         else {
-          halt(new Error("Browser input stopped because the connection is too slow. Release control and reconnect before typing again."));
+          halt(new Error(t("browser.input.tooSlow")));
           if (!release(body) || queue.length >= 32) return;
         }
       }
@@ -51,12 +50,12 @@ export function createBrowserInputQueue(send: (body: Input) => Promise<void>, on
       run();
     },
     async drain() {
-      // Hand-back waits for keys/buttons, not stale cursor/scroll movement.
       queue = queue.filter((body) => !movement(body));
       while (active || queue.length) { run(); await active; }
     },
+    async settle() { while (active || queue.length) { run(); await active; } },
+    size() { return queue.length + (active ? 1 : 0); },
     clear() { generation++; queue = []; stopped = false; },
-    /** Halted queues drop input silently; callers keep the halt banner up. */
     stopped() { return stopped; },
   };
 }

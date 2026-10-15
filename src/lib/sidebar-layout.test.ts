@@ -10,7 +10,9 @@ import {
   orderedSidebarSections,
   partitionSidebarBots,
   partitionSidebarGroups,
+  pinnedCircleThreadListVisible,
   placeSection,
+  sidebarConnectorPreview,
   sidebarLayoutInteractive,
   sidebarGoalRunPreview,
   sidebarSectionCollapsed,
@@ -81,6 +83,32 @@ describe("sidebar virtual sections", () => {
     expect(parts.pinnedBots).toEqual([]);
   });
 
+  it("lifts pinned bots from every group when pins are universal", () => {
+    const workChief = { id: "work-chief", chiefOfStaff: true, section: "Work", pinned: true };
+    const home = { id: "home", section: "Home", pinned: true };
+    const looseChief = { id: "loose", chiefOfStaff: true, pinned: true };
+    const stay = { id: "stay", section: "Work" };
+    const hidden = { id: "hidden", section: "Home", pinned: true, hidden: true };
+    const parts = partitionSidebarBots(
+      [workChief, home, looseChief, stay, hidden],
+      { universalPins: true },
+    );
+    expect(parts.pinnedBots.map((bot) => bot.id)).toEqual(["work-chief", "home", "loose"]);
+    expect(parts.sectionChiefs).toEqual([]);
+    expect(parts.unsectionedChief).toBeNull();
+    expect(parts.sectionedBots).toEqual([stay]);
+    expect(workChief.section).toBe("Work");
+    expect(home.section).toBe("Home");
+  });
+
+  it("shows pinned-circle thread rows only while the circle grid is showing", () => {
+    expect(pinnedCircleThreadListVisible(true, "comfortable", 1)).toBe(true);
+    expect(pinnedCircleThreadListVisible(true, "compact", 2)).toBe(true);
+    expect(pinnedCircleThreadListVisible(false, "comfortable", 1)).toBe(false);
+    expect(pinnedCircleThreadListVisible(true, "icons", 1)).toBe(false);
+    expect(pinnedCircleThreadListVisible(true, "comfortable", 0)).toBe(false);
+  });
+
   it("forces filtered and icon-only views open and non-reorderable", () => {
     expect(sidebarLayoutInteractive("comfortable", "")).toBe(true);
     expect(sidebarLayoutInteractive("comfortable", "writer")).toBe(false);
@@ -103,6 +131,20 @@ describe("sidebar virtual sections", () => {
       startedAt: 1,
       finishedAt: 2,
     })).toBe("Completed: Drafted and verified.");
+  });
+
+  it("previews a connection card by its app and state, not the phone fallback line", () => {
+    const say = (key: string) => ({
+      "connectors.card.connected": "Connected",
+      "connectors.card.waiting": "Waiting for sign-in…",
+      "connectors.card.connectSecurely": "Connect securely",
+    })[key] ?? key;
+    const card = { label: "GitHub", status: "required" as const };
+    expect(sidebarConnectorPreview(card, say)).toBe("GitHub · Connect securely");
+    expect(sidebarConnectorPreview({ ...card, status: "failed" }, say)).toBe("GitHub · Connect securely");
+    expect(sidebarConnectorPreview({ ...card, status: "authorizing" }, say)).toBe("GitHub · Waiting for sign-in…");
+    expect(sidebarConnectorPreview({ ...card, status: "connected" }, say)).toBe("GitHub · Connected");
+    expect(sidebarConnectorPreview({ ...card, dismissed: true }, say)).toBe("GitHub");
   });
 });
 

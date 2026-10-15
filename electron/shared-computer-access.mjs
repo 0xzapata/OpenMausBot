@@ -1,23 +1,17 @@
-// Local authority boundary. The server sends requests, never paths to grant,
-// commands to install, or permission changes. Only the desktop's saved grant
-// decides which operations reach this computer.
+// The server sends requests, never paths to grant, commands to install or permission changes: only the saved grant decides.
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
+import { lentScreenArguments, lentScreenToolListing } from "./lent-screen-tools.mjs";
 
 const LIMIT = 256 * 1024;
 const PROTECTED = "Desktop credentials and sharing settings cannot be accessed through a shared folder";
 const GIT_INTERNALS = "Files inside .git cannot be changed through a shared folder: git runs commands from its configuration and hooks";
 
-/** Where a person keeps the keys that open a shell or an account (SSH, cloud
- * and package CLIs, the coding engines, keychains and browser cookie stores)
- * and the places that run code by themselves (login items, git and shell
- * configuration, ~/.local/bin). No folder grant reaches these, read-only or
- * not, however the shared folder around them was chosen. Relative to home;
- * entries that do not exist on this machine protect nothing. */
+/** Keys that open a shell or an account, and places that run code by themselves: no folder grant reaches these. Relative to home. */
 const PERSONAL_SECRETS = [
   ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".netrc", ".git-credentials", ".npmrc", ".pypirc",
   ".claude", ".claude.json", ".codex", ".mozilla", ".local/share/keyrings", ".local/bin",
@@ -32,36 +26,16 @@ export function personalSecretPaths(home) {
   return typeof home === "string" && home ? PERSONAL_SECRETS.map(entry => path.join(home, ...entry.split("/"))) : [];
 }
 
-/** The computer-control tools a lent screen offers: observing windows and
- * operating apps the way a person at the keyboard would. Everything else the
- * local driver can do (upload an arbitrary local file into a page, record or
- * replay to a chosen path, change or update its own configuration, install a
- * binary, open a DevTools port, kill any process) works outside the screen
- * and outside every folder scope, so it is not lent. Unknown tools are
- * refused, so a newer driver lends nothing new until listed here. */
-export const LENT_SCREEN_TOOLS = Object.freeze(new Set([
-  "bring_to_front", "click", "double_click", "right_click", "drag", "scroll", "move_cursor", "hotkey", "press_key",
-  "type_text", "set_value", "launch_app", "list_apps", "list_windows", "get_window_state", "get_accessibility_tree",
-  "get_desktop_state", "get_screen_size", "get_cursor_position", "zoom", "screenshot", "check_permissions",
-  "start_session", "end_session", "get_session_state", "escalate_session",
-  "get_agent_cursor_state", "set_agent_cursor_enabled", "set_agent_cursor_motion", "set_agent_cursor_style",
-  "browser_click", "browser_type", "browser_navigate", "browser_pointer", "browser_dialog", "get_browser_state",
-]));
+export { LENT_SCREEN_TOOLS } from "./lent-screen-tools.mjs";
 
-/** Any component named .git, compared the way a case-folding, Unicode-
- * normalizing filesystem compares it: in the requested path, or in the
- * shared folder itself (someone may have picked a .git directory). */
+/** Compared the way a case-folding, Unicode-normalizing filesystem compares it. */
 const gitComponent = part => part.normalize("NFC").toLowerCase() === ".git";
 const insideGitInternals = (root, relative) => root.split(path.sep).some(gitComponent) || relative.split("/").some(gitComponent);
 const hash = data => createHash("sha256").update(data).digest("hex");
 const absent = error => error.code === "ENOENT" || error.code === "ENOTDIR";
 const identify = async candidate => { const info = await fs.stat(candidate, { bigint: true }); return `${info.dev}:${info.ino}`; };
 
-/** Protected roots as filesystem identities. A case-insensitive volume, a
- * Unicode normalization, a macOS firmlink and a Windows 8.3 or UNC name all
- * spell one directory several ways, so containment is decided by {dev, ino}
- * and never by comparing path text. A root a fresh install has not created
- * yet protects nothing, so a missing path is skipped rather than thrown. */
+/** {dev, ino}, never path text; a root a fresh install has not created yet is skipped. */
 async function protectedIdentities(roots) {
   const identities = new Set();
   for (const root of roots ?? []) {
@@ -72,9 +46,7 @@ async function protectedIdentities(roots) {
   return identities;
 }
 
-/** Refuse anything the operating system resolves inside a protected root. A
- * write may create a file that does not exist yet, so fall back to the nearest
- * existing ancestor, then walk that resolved chain comparing identities. */
+/** A write may create a file that does not exist yet, so walk from the nearest existing ancestor. */
 async function assertOutsideProtected(identities, target) {
   if (!identities.size) return;
   let current = path.resolve(target);
@@ -100,9 +72,7 @@ async function assertOutsideProtected(identities, target) {
 
 const text = value => ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }] });
 
-/** Job error text crosses to a remote workspace, so absolute paths collapse
- * to their basename. The original is warned first so debugging information is
- * preserved on this machine. */
+/** Job error text crosses to a remote workspace, so absolute paths collapse to their basename (the original is logged here). */
 const basenameMessage = message => {
   const original = String(message);
   if (!original.match(/(?:\/[^/\s]+)+/g)) return original;
@@ -134,19 +104,14 @@ function killTree(child) {
   }
 }
 
-/** No inherited API keys, model-provider credentials or shell startup files.
- * This is still UNRESTRICTED host execution when the user enables terminal. */
+/** No inherited API keys, provider credentials or shell startup files, but still UNRESTRICTED host execution once terminal is on. */
 export function sharedCommand(command, cwd, signal) {
   if (typeof command !== "string" || !command.trim() || command.length > 8000) throw new Error("Give a command of at most 8000 characters");
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const windows = process.platform === "win32";
-    // Windows PowerShell searches registered third-party modules before its
-    // own cmdlets. On a cold machine even `echo` can spend the entire deadline
-    // discovering Write-Output. Prioritize built-ins after startup constructs
-    // the path, preserving every existing module location. A child CLI executes
-    // the original text unchanged: a ScriptBlock wrapper loses native failure
-    // status. The existing process-tree cancellation covers both shells.
+    // PowerShell searches third-party modules before its own cmdlets, so a cold `echo` can exhaust the deadline: prefer built-ins.
+    // A ScriptBlock wrapper would lose native failure status, so a child CLI runs the original text.
     const script = windows
       ? `$env:PSModulePath = "$PSHOME\\Modules;$env:PSModulePath"; & "$PSHOME\\powershell.exe" -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand '${Buffer.from(command, "utf16le").toString("base64")}'; exit $LASTEXITCODE`
       : command;
@@ -170,8 +135,7 @@ export function sharedCommand(command, cwd, signal) {
   });
 }
 
-/** Persistent official Cua MCP transport: observation references survive the
- * next call. Ending sharing closes this transport, not the app's own daemon. */
+/** Persistent transport: Cua observation references survive to the next call. Ending sharing closes this, not the app's daemon. */
 export function createSharedCua(connection) {
   const child = spawn(connection.mcpCommand, connection.mcpArgs, {
     stdio: ["pipe", "pipe", "ignore"], windowsHide: true,
@@ -209,12 +173,13 @@ export function createSharedCua(connection) {
       await ready; signal.throwIfAborted();
       if (operation.action === "computer_tools") {
         const listed = await request("tools/list", {}, signal);
-        const tools = Array.isArray(listed?.tools) ? listed.tools.filter(tool => LENT_SCREEN_TOOLS.has(tool?.name)) : [];
-        return text({ ...listed, tools });
+        return text({ ...listed, tools: lentScreenToolListing(listed?.tools) });
       }
       if (typeof operation.tool_name !== "string" || !operation.tool_name) throw new Error("Choose a tool from computer_tools first");
-      if (!LENT_SCREEN_TOOLS.has(operation.tool_name)) throw new Error(`${operation.tool_name.slice(0, 100)} is not part of lent apps and screen`);
-      return request("tools/call", { name: operation.tool_name, arguments: operation.arguments ?? {} }, signal);
+      // Every tool and argument is checked here: nothing the server sends reaches the driver unless a lent screen accepts it.
+      const lent = lentScreenArguments(operation.tool_name, operation.arguments);
+      if (lent.error) throw new Error(lent.error);
+      return request("tools/call", { name: operation.tool_name, arguments: lent.arguments }, signal);
     },
     close() { lines.close(); fail(new Error("Computer sharing stopped")); },
   };
@@ -243,7 +208,7 @@ export async function executeSharedOperation(grant, operation, signal, cua) {
     const shown = await Promise.all(entries.slice(0, 200).map(async entry => {
       if (entry.isSymbolicLink()) return { name: entry.name, type: "blocked-link" };
       let identity;
-      try { identity = await identify(path.join(target, entry.name)); } catch { /* vanished meanwhile */ }
+      try { identity = await identify(path.join(target, entry.name)); } catch {}
       if (identity !== undefined && protectedRoots.has(identity)) return { name: entry.name, type: "protected" };
       return { name: entry.name, type: entry.isDirectory() ? "directory" : "file" };
     }));
@@ -266,8 +231,7 @@ export async function executeSharedOperation(grant, operation, signal, cua) {
     await sharedPath(folder, operation.path);
     const named = await fs.lstat(target, { bigint: true });
     if (named.ino !== stat.ino || named.dev !== stat.dev || named.isSymbolicLink()) throw new Error("The file changed while opening it; retry after inspecting the folder");
-    // The descriptor, not the spelling, is what the rest of this call reads and
-    // writes, so re-decide containment against its own identity and ancestry.
+    // Re-decide containment against the opened descriptor's own identity, not the spelling.
     if (protectedRoots.has(`${stat.dev}:${stat.ino}`)) throw new Error(PROTECTED);
     await assertOutsideProtected(protectedRoots, target);
     let current = Buffer.alloc(0);

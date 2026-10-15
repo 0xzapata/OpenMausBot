@@ -47,8 +47,16 @@ afterEach(() => vi.unstubAllGlobals());
 function render(x = 990, y = 795) {
   return renderToStaticMarkup(createElement(BotContextMenu, {
     menu: { botId: bot.id, x, y }, onClose: vi.fn(), onArchive: vi.fn(), onDelete: vi.fn(),
-    onMoveToSection: vi.fn(), onNewFolder: vi.fn(),
+    onMoveToSection: vi.fn(), onNewFolder: vi.fn(), onNewTaskFolder: vi.fn(),
   }));
+}
+/**
+ * Runs this render's layout effects in order, as React does after a commit: the pop motion registers one ahead of
+ * placement.
+ */
+function layoutEffects() {
+  const cleanups = fixture.effects.map((effect) => effect());
+  return () => cleanups.forEach((cleanup) => cleanup?.());
 }
 function measuredMenu(width: number, height: number) {
   const element = { style: { top: "", left: "" }, getBoundingClientRect: () => ({ width, height }) };
@@ -60,13 +68,13 @@ describe("bot actions menu viewport placement", () => {
   it("measures the complete menu so bottom-row Archive stays inside the viewport", () => {
     const html = render();
     const element = measuredMenu(228, 468);
-    const cleanup = fixture.effects[0]!();
+    const cleanup = layoutEffects();
     expect(element.style).toEqual({ top: "324px", left: "764px" });
     expect(html).toContain(">Archive</button>");
     expect(fixture.portal?.target).toBe(document.body);
     expect(html).toContain("data-sidebar");
     expect(listeners.has("resize")).toBe(true);
-    cleanup?.();
+    cleanup();
     expect(listeners.has("resize")).toBe(false);
   });
 
@@ -75,7 +83,7 @@ describe("bot actions menu viewport placement", () => {
     window.innerHeight = 300;
     const html = render();
     const element = measuredMenu(204, 284);
-    fixture.effects[0]!();
+    layoutEffects();
     expect(element.style).toEqual({ top: "8px", left: "8px" });
     expect(html).toContain("max-h-[calc(100dvh-16px)]");
     expect(html).toContain("max-w-[calc(100vw-16px)]");
@@ -87,14 +95,14 @@ describe("bot actions menu viewport placement", () => {
   it("repositions after resizing and clamps negative context-menu anchors", () => {
     render();
     const element = measuredMenu(228, 468);
-    fixture.effects[0]!();
+    layoutEffects();
     window.innerHeight = 600;
     listeners.get("resize")!();
     expect(element.style.top).toBe("124px");
     fixture.effects = [];
     render(-20, -10);
     const negative = measuredMenu(228, 468);
-    fixture.effects[0]!();
+    layoutEffects();
     expect(negative.style).toEqual({ top: "8px", left: "8px" });
   });
 });

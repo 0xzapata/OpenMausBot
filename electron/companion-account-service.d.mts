@@ -19,6 +19,9 @@ export declare function resolveCompanionControlPlaneURL(options?: {
   environment?: NodeJS.ProcessEnv;
 }): string;
 export declare function companionAccountCleanupPending(credentials: CredentialDocument): boolean;
+/** true while a device is paired or a pairing window is open, false only for
+ * a cleanly read empty device list, null when that cannot be told. */
+export declare function managedEndpointNeed(state: unknown): boolean | null;
 export declare function friendlyCompanionAccountError(error: unknown): string;
 
 export interface CompanionAccountState {
@@ -34,8 +37,12 @@ export interface CompanionAccountService {
   requestCode(email: string): Promise<CompanionAccountState>;
   verifyCode(email: string, code: string): Promise<CompanionAccountState>;
   retry(): Promise<CompanionAccountState>;
+  /** On demand: create or repair the address because a person is pairing. */
+  prepare(): Promise<CompanionAccountState>;
   signOut(): Promise<CompanionAccountState>;
   restore(): Promise<CompanionAccountState>;
+  /** Cancels background recovery timers (autoRecover only). */
+  dispose(): void;
 }
 
 export declare function createCompanionAccountService(options: {
@@ -53,4 +60,19 @@ export declare function createCompanionAccountService(options: {
   companionIsOn?: () => boolean;
   now?: () => number;
   healthCacheMs?: number;
+  autoRecover?: boolean;
+  setTimer?: (callback: () => void, milliseconds: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+  random?: () => number;
+  autoRetryBaseMs?: number;
+  autoRetryMaxMs?: number;
+  endpointCheckIntervalMs?: number;
+  firstEndpointCheckMs?: number;
+  /** Hold the address only while something needs it (the desktop app). */
+  onDemand?: boolean;
+  managedEndpointNeeded?: () => Promise<boolean | null>;
+  releaseGraceMs?: number;
+  releaseJitterMs?: number;
+  /** One line per failed setup step: code, HTTP status, request id, retry delay. */
+  log?: (line: string) => void;
 }): CompanionAccountService;

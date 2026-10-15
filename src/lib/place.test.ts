@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { effectivePlace, isComputerPlace, placeLabelKey, toolPlace } from "./place";
+import { effectivePlace, isComputerPlace, PLACES, placeLabelKey, placeOffered, toolPlace } from "./place";
 import { toolSurfaceKind } from "../../shared/tool-surface";
 
 describe("where a conversation works", () => {
@@ -10,6 +10,13 @@ describe("where a conversation works", () => {
     expect(effectivePlace({ computer: "off" }, { surface: "browser" })).toBe("off");
     expect(effectivePlace({ computer: "cloud" }, null)).toBe("cloud");
     expect(effectivePlace({ computer: undefined }, undefined)).toBe("auto");
+  });
+
+  it("offers every place on a desktop or self-hosted server, and no this computer or Local VM on an OMB Cloud home", () => {
+    for (const config of [null, undefined, {}, { cloudHome: false }]) {
+      expect(PLACES.filter((place) => placeOffered(place, config))).toEqual(["cloud", "vm", "local", "browser"]);
+    }
+    expect(PLACES.filter((place) => placeOffered(place, { cloudHome: true }))).toEqual(["cloud", "browser"]);
   });
 
   it("names places with one label key each", () => {
@@ -26,9 +33,7 @@ describe("where a conversation works", () => {
     expect(toolPlace("mcp__computer__screenshot", "cloud")).toBe("cloud");
     expect(toolPlace("click", "local")).toBe("local");
     expect(toolPlace("computer_exec", "vm")).toBe("vm");
-    // the computer server's browser_click acts inside the desktop
     expect(toolPlace("browser_click", "cloud")).toBe("cloud");
-    // an unpinned Auto conversation has no known computer yet
     expect(toolPlace("screenshot", "auto")).toBeNull();
     expect(toolPlace("screenshot", "browser")).toBeNull();
     for (const name of ["Bash", "Read", "list_bots", "recall", "propose_routine", "mcp__agents__ask_bot"]) {

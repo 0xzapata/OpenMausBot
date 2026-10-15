@@ -1,5 +1,3 @@
-// Decision model is its own top-level Settings item, findable by what people
-// would type for it.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -11,6 +9,8 @@ beforeAll(() => {
   (globalThis as { document?: unknown }).document ??= { documentElement: { dataset: {} } };
 });
 
+// Pinned to Advanced: these cover the Advanced rail; Simple has its own suite.
+vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true, setAdvancedMode: () => {} }));
 vi.mock("@/lib/analytics", () => ({
   analyticsEnabled: () => false,
   setAnalyticsEnabled: () => {},

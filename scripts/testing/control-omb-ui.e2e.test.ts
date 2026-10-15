@@ -1,11 +1,7 @@
-// The first asserted renderer recipe: docs/verification/chat-ui.md, run by a
-// machine. It spawns the real `control-omb ui launch` (a child it can Ctrl-C),
-// drives the real <App/> through the ui verbs, and reads the outcome back from
-// the accessibility tree — the same evidence a person would collect by hand.
-//
-// Needs the pinned agent-browser binary. It runs when one resolves (the tools
-// directory, OMB_AGENT_BROWSER_PATH or PATH) or when OMB_UI_E2E=1 asks for the
-// verified download; otherwise it is skipped with a printed reason.
+// Drives the real <App/> through `control-omb ui` and reads outcomes from the
+// accessibility tree. Needs the pinned agent-browser binary: runs when one
+// resolves (tools directory, OMB_AGENT_BROWSER_PATH or PATH) or OMB_UI_E2E=1
+// asks for the verified download; otherwise skipped.
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,9 +24,8 @@ if (!enabled) {
   console.log(`skipping control-omb ui e2e: no agent-browser binary resolves (looked in ${UI_TOOLS_DIR}, OMB_AGENT_BROWSER_PATH and PATH); set OMB_UI_E2E=1 to install the pinned release`);
 }
 const run = enabled ? it : it.skip;
-// A cold run downloads the binary and Chrome; a warm one launches in seconds.
-// A forced run may still have Chrome for Testing to download (agent-browser can
-// be cached while Chrome is not), so give every forced run the long budget.
+// A forced run may still have Chrome for Testing to download even when
+// agent-browser is cached.
 const LAUNCH_TIMEOUT_MS = forced ? 600_000 : 180_000;
 
 // Synthetic provider outcomes exercise the UI, not the commands themselves.
@@ -51,11 +46,9 @@ interface Launched {
   stderr: () => string;
 }
 
-/** Start `ui launch` as a real foreground process and wait for its handle. */
 function launch(args: string[]): Promise<Launched> {
   return new Promise((done, fail) => {
-    // Own process group: a timeout must take the launch AND whatever it is
-    // running (an `agent-browser install` mid-download) down with it.
+    // Own process group: a timeout must also take down whatever it is running.
     const child = spawn(process.execPath, ["--experimental-strip-types", CLI, "ui", "launch", ...args], {
       cwd: ROOT, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32",
     });
@@ -79,9 +72,8 @@ function launch(args: string[]): Promise<Launched> {
     child.stdout!.on("data", (chunk: Buffer) => {
       stdout += String(chunk);
       if (settled) return;
-      // The handle is the pretty-printed object at the start of a line; any
-      // earlier line would be a tool printing on stdout, which the launch
-      // is meant to prevent, so a parse from there still recovers.
+      // A tool printing on stdout before the handle still parses from the
+      // first line that starts the object.
       const start = stdout.startsWith("{") ? 0 : stdout.indexOf("\n{") + 1;
       if (start <= 0 && !stdout.startsWith("{")) return;
       try {
@@ -90,7 +82,6 @@ function launch(args: string[]): Promise<Launched> {
         clearTimeout(timer);
         done({ child, info, stderr: () => stderr });
       } catch {
-        // the pretty-printed handle is still arriving
       }
     });
     child.once("close", (code) => {
@@ -121,7 +112,47 @@ describe("control-omb ui drives the real renderer", () => {
     if (ownsEvidenceDir) await removeTempDir(evidenceDir);
   });
 
-  run("tests saved keys only from an untouched field and blocks erased drafts", async () => {
+  run("shows the matched text inside a searched message", async () => {
+    launched = await launch([]);
+    const { info } = launched;
+    await ui("type", info.ui, "--name", "Message Pepper", "--text", "Find the striped zebra");
+    await ui("press", info.ui, "--keys", "Enter");
+    await ui("wait-settle", info.ui, "--timeout", "60");
+    await ui("click", info.ui, "--name", "More");
+    await ui("click", info.ui, "--name", "Find in conversation");
+    await ui("type", info.ui, "--name", "Find in this conversation", "--text", "zebra");
+    const highlighted = async () => (await ui("eval", info.ui, "--js", "[...CSS.highlights.get('search-result-text') ?? []][0]?.toString() ?? null")).result;
+    await expect.poll(async () => (await ui("snapshot", info.ui)).snapshot, { timeout: 10_000 }).toContain("1 of 1");
+    expect((await ui("snapshot", info.ui)).snapshot).not.toContain("Show less");
+    mkdirSync(evidenceDir, { recursive: true });
+    await ui("screenshot", info.ui, "--out", join(evidenceDir, "search-result.png"));
+    await expect.poll(async () => (await ui("eval", info.ui, "--js", "(() => { const row = [...document.querySelectorAll('[data-mid]')].find(el => el.textContent.includes('Find the striped zebra')); const bubble = row?.querySelector('[data-chat-bubble]'); return !!bubble && row.querySelector('.ring-2') === bubble && bubble.getBoundingClientRect().width < row.lastElementChild.getBoundingClientRect().width; })()")).result, { timeout: 10_000 }).toBe(true);
+    await expect.poll(highlighted, { timeout: 10_000 }).toBe("zebra");
+    await ui("type", info.ui, "--name", "Message Pepper", "--text", `${"hay ".repeat(160)}saffron`);
+    await ui("press", info.ui, "--keys", "Enter");
+    await ui("wait-settle", info.ui, "--timeout", "60");
+    await ui("click", info.ui, "--name", "Find in this conversation");
+    await ui("eval", info.ui, "--js", "document.querySelector('input[aria-label=\"Find in this conversation\"]').select(); true");
+    await ui("press", info.ui, "--keys", "Backspace");
+    await ui("type", info.ui, "--name", "Find in this conversation", "--text", "saffron");
+    await expect.poll(highlighted, { timeout: 10_000 }).toBe("saffron");
+    expect((await ui("eval", info.ui, "--js", "[...document.querySelectorAll('.chat-text')].find(el => el.textContent.includes('saffron'))?.classList.contains('max-h-40')")).result).toBe(false);
+    await expect.poll(async () => (await ui("eval", info.ui, "--js", "(() => { const range = [...CSS.highlights.get('search-result-text')][0]; const bounds = range.startContainer.parentElement.closest('.overflow-y-auto').getBoundingClientRect(); const match = range.getBoundingClientRect(); return match.top >= bounds.top && match.bottom <= bounds.bottom; })()")).result).toBe(true);
+    await ui("click", info.ui, "--name", "Find in this conversation");
+    await ui("eval", info.ui, "--js", "document.querySelector('input[aria-label=\"Find in this conversation\"]').select(); true");
+    await ui("press", info.ui, "--keys", "Backspace");
+    await ui("type", info.ui, "--name", "Find in this conversation", "--text", "fake claude");
+    await expect.poll(highlighted, { timeout: 10_000 }).toBe("fake claude");
+    await ui("press", info.ui, "--keys", "Escape");
+    await ui("type", info.ui, "--name", "Search bots and messages", "--text", "zebra");
+    await expect.poll(async () => (await ui("eval", info.ui, "--js", "[...document.querySelectorAll('mark')].some(mark => mark.textContent === 'zebra')")).result, { timeout: 10_000 }).toBe(true);
+    await ui("eval", info.ui, "--js", "[...document.querySelectorAll('mark')].find(mark => mark.textContent === 'zebra').closest('button').click(); true");
+    await expect.poll(highlighted, { timeout: 10_000 }).toBe("zebra");
+    await waitForExit(launched.child, { signal: "SIGINT", graceMs: 30_000 });
+    expect(launched.child.exitCode).toBe(0);
+  }, LAUNCH_TIMEOUT_MS + 90_000);
+
+  run("saves a key on Enter, checks it once saved, and keeps a refused or failed draft", async () => {
     launched = await launch([]);
     const { info } = launched;
     await fixtureApi(info.url)("PUT", "/api/config", {
@@ -130,26 +161,29 @@ describe("control-omb ui drives the real renderer", () => {
     const evaluate = async (js: string) => (await ui("eval", info.ui, "--js", js)).result;
     const click = (name: string) => ui("click", info.ui, "--name", name);
     const input = `document.querySelector('input[aria-label="OpenAI-compatible API key"]')`;
-    const testButton = `[...${input}.parentElement.querySelectorAll('button')].find(b => b.textContent === 'Test')`;
-    const verdict = () => evaluate(`${input}.parentElement.parentElement.querySelector('[role="status"]')?.textContent`);
-    const save = () => evaluate(`[...${input}.parentElement.querySelectorAll('button')].find(b => b.textContent === 'Save').click(); true`);
+    const testButton = `[...${input}.closest('[data-api-key-row]').querySelectorAll('button')].find(b => b.textContent === 'Test')`;
+    const verdict = () => evaluate(`${input}.closest('[data-api-key-row]').querySelector('[role="status"]')?.textContent`);
+    const rowText = () => evaluate(`${input}.closest('[data-api-key-row]').textContent`);
     const type = async (text: string) => {
       await click("OpenAI-compatible API key");
       await evaluate(`${input}.select(); true`);
       await ui("press", info.ui, "--keys", "Backspace");
       if (text) await ui("type", info.ui, "--name", "OpenAI-compatible API key", "--text", text);
     };
+    const enter = () => ui("press", info.ui, "--keys", "Enter");
     await evaluate(`(() => {
       const original = window.fetch.bind(window);
       window.keyTests = [];
+      window.keySaves = 0;
       window.rejectKeySave = false;
       window.fetch = (url, init = {}) => {
         if (String(url) === '/api/keys/test') {
           window.keyTests.push(JSON.parse(init.body));
           return Promise.resolve(Response.json({ ok: true, check: 'models', models: ['fixture-model'] }));
         }
-        if (String(url) === '/api/config' && init.method === 'PUT' && window.rejectKeySave) {
-          return Promise.resolve(Response.json({ error: 'Fixture save rejected' }, { status: 503 }));
+        if (String(url) === '/api/config' && init.method === 'PUT' && String(init.body).includes('"openaiCompat"')) {
+          window.keySaves++;
+          if (window.rejectKeySave) return Promise.resolve(Response.json({ error: 'Fixture save rejected' }, { status: 503 }));
         }
         return original(url, init);
       };
@@ -157,53 +191,44 @@ describe("control-omb ui drives the real renderer", () => {
     })()`);
     await click("You");
     await click("Settings");
-    await click("Connections");
-    await type("fixture-saved-key");
-    await save();
-    // The Connections panel re-renders after navigation and keystrokes, so a
-    // loaded runner can briefly detach the key field or its Test button; poll
-    // for the settled state with a budget that outlasts a re-render.
-    await expect.poll(() => evaluate(`${input}?.value ?? null`), { timeout: 10_000 }).toBe("");
-    await click("Appearance");
-    await click("Connections");
+    // Settings is a lazy chunk: it paints once the chunk arrives.
+    await expect.poll(() => evaluate(`(() => {
+      const tab = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'API keys');
+      tab?.click();
+      return Boolean(tab);
+    })()`), { timeout: 10_000 }).toBe(true);
+    // The shared OpenAI-compatible key lives under "Other", open once a key is saved.
+    await expect.poll(() => evaluate(`document.querySelector('[data-api-key-row="openaiCompat"]') !== null`), { timeout: 10_000 }).toBe(true);
+    await evaluate(`document.querySelector('[data-api-keys-other]').open = true; true`);
+
     await expect.poll(() => evaluate(`${testButton}?.disabled ?? null`), { timeout: 10_000 }).toBe(false);
     await click("Test");
     await expect.poll(() => evaluate("window.keyTests")).toEqual([{ provider: "openaiCompat" }]);
     await expect.poll(verdict).toBe("Saved key: Model catalog reachable: fixture-model. Authentication and chat not verified.");
-    await type("  fixture-draft-key  ");
-    await click("Test");
-    await expect.poll(() => evaluate("window.keyTests")).toEqual([
-      { provider: "openaiCompat" }, { provider: "openaiCompat", key: "fixture-draft-key" },
-    ]);
-    await expect.poll(verdict).toBe("Unsaved key — save it to use it. Model catalog reachable: fixture-model. Authentication and chat not verified.");
-    for (const erased of ["", "   "]) {
-      await type(erased);
-      await expect.poll(() => evaluate(`${input}?.value ?? null`), { timeout: 10_000 }).toBe(erased);
-      await expect.poll(() => evaluate(`${testButton}?.disabled ?? null`), { timeout: 10_000 }).toBe(true);
-      await evaluate(`${testButton}.click(); true`);
-      expect(await evaluate("window.keyTests.length")).toBe(2);
-    }
-    mkdirSync(evidenceDir, { recursive: true });
-    await ui("screenshot", info.ui, "--out", join(evidenceDir, "provider-key-erased-draft.png"));
 
-    // A failed save must retain draft state; only success returns to testing
-    // the saved credential from the now-empty, untouched field.
+    await type("  fixture-draft-key  ");
+    await enter();
+    await expect.poll(() => evaluate(`${input}?.value ?? null`), { timeout: 10_000 }).toBe("");
+    await expect.poll(() => evaluate("window.keyTests")).toEqual([{ provider: "openaiCompat" }, { provider: "openaiCompat" }]);
+    expect(await evaluate("window.keySaves")).toBe(1);
+
+    await type("not a key at all");
+    await enter();
+    await expect.poll(rowText, { timeout: 10_000 }).toContain("That doesn't look like an API key");
+    expect(await evaluate("window.keySaves")).toBe(1);
+    mkdirSync(evidenceDir, { recursive: true });
+    await ui("screenshot", info.ui, "--out", join(evidenceDir, "provider-key-refused.png"));
+
     await type("fixture-replacement-key");
     await evaluate("window.rejectKeySave = true");
-    await save();
-    await expect.poll(async () => (await ui("snapshot", info.ui)).snapshot).toContain("Fixture save rejected");
+    await enter();
+    await expect.poll(rowText, { timeout: 10_000 }).toContain("Fixture save rejected");
     await expect.poll(() => evaluate(`${input}?.value ?? null`), { timeout: 10_000 }).toBe("fixture-replacement-key");
-    await type("");
-    await expect.poll(() => evaluate(`${testButton}?.disabled ?? null`), { timeout: 10_000 }).toBe(true);
-    await type("fixture-replacement-key");
     await evaluate("window.rejectKeySave = false");
-    await save();
+    await click("OpenAI-compatible API key");
+    await enter();
     await expect.poll(() => evaluate(`${input}?.value ?? null`), { timeout: 10_000 }).toBe("");
-    await expect.poll(() => evaluate(`${testButton}?.disabled ?? null`), { timeout: 10_000 }).toBe(false);
-    await click("Test");
-    await expect.poll(() => evaluate("window.keyTests")).toEqual([
-      { provider: "openaiCompat" }, { provider: "openaiCompat", key: "fixture-draft-key" }, { provider: "openaiCompat" },
-    ]);
+    await expect.poll(() => evaluate("window.keyTests.length")).toBe(3);
     await expect.poll(verdict).toBe("Saved key: Model catalog reachable: fixture-model. Authentication and chat not verified.");
     await waitForExit(launched.child, { signal: "SIGINT", graceMs: 30_000 });
     expect(launched.child.exitCode).toBe(0);
@@ -219,17 +244,12 @@ describe("control-omb ui drives the real renderer", () => {
     expect(handle).toMatchObject({ url: info.url, previewUrl: info.previewUrl, botId: info.botId, home: info.dataDir, session: `omb-ui-${new URL(info.url).port}` });
     expect(existsSync(handle.binary)).toBe(true);
 
-    // The flag flips on the server; the renderer picks it up over SSE.
     const dry = await ui("flag", info.ui, "--set", "features.showToolCalls=true", "--dry-run");
     expect(dry).toMatchObject({ ok: true, dryRun: true, patch: { features: { showToolCalls: true } } });
     const flagged = await ui("flag", info.ui, "--set", "features.showToolCalls=true");
     expect(flagged).toMatchObject({ ok: true, features: { showToolCalls: true } });
-    // Skill authoring is on by default, so the run card's Save as skill
-    // needs no flag; the fixture's default config is what a fresh install has.
     expect(flagged.features).toMatchObject({ skillAuthoring: true });
 
-    // The header defaults to the conversation. Updating the bot default is
-    // explicit, and same-provider model changes preserve permissions.
     const savedBot = async () => (await fetch(`${info.url}/api/bots`).then((response) => response.json())).bots.find((bot: any) => bot.id === info.botId);
     const originalBot = await savedBot();
     const originalModel = originalBot.modelSelection.model;
@@ -249,7 +269,6 @@ describe("control-omb ui drives the real renderer", () => {
     expect((await savedBot()).tasks.find((task: any) => task.threadId === originalBot.threadId).modelSelection.model).toBe(nextModel.id);
     await ui("click", info.ui, "--name", nextModel.label);
     await ui("click", info.ui, "--name", "Only this thread");
-    // The provider-default badge is part of the accessible model-row name.
     const modelSnapshot = await ui("snapshot", info.ui, "--interactive");
     const originalRow = Object.entries(modelSnapshot.refs as Record<string, { name: string; role: string }>)
       .find(([, value]) => value.role === "button" && value.name.startsWith(originalLabel));
@@ -284,14 +303,11 @@ describe("control-omb ui drives the real renderer", () => {
     expect(transcriptStart).toBeGreaterThan(-1);
     const transcript = tree.slice(transcriptStart);
     expect(transcript).toContain('StaticText "hello"'); // the sent turn
-    // (a) the fake engine's reply text, as a transcript row
     expect(transcript).toContain(`StaticText "${REPLY}"`);
-    // (b) the scripted Bash call rendered as a tool chip, named by its tool
     expect(transcript).toMatch(/StaticText "Bash"/);
     expect(tree).not.toContain("Not logged in");
     expect(tree).not.toContain("Execution timeline");
-    // The run card: the three scripted commands all go through the control
-    // CLI, so all three are verified; one failed and one was a dry run.
+    // All three scripted commands go through the control CLI, so all are verified.
     expect(tree).toContain("3 steps · 3 verified · 1 failed · 1 dry run");
 
     // Hit-test the actual layout, not just the Tailwind class strings: the
@@ -314,16 +330,11 @@ describe("control-omb ui drives the real renderer", () => {
     })()`);
     expect(hitTest).toMatchObject({ result: { blankReachesTranscript: true, cardInteractive: true, composerInteractive: true } });
 
-    // These are real control operations: the fixture health check succeeds
-    // and a deliberately missing UI target rejects instead of reporting green.
     expect(await runControlOmb(["doctor", "--url", info.url])).toMatchObject({ ok: true });
     await expect(ui("click", info.ui, "--name", "Deliberately missing QA control")).rejects.toThrow("no element is named");
 
-    // A control the app paints after its data arrives must still be
-    // clickable. Resolving --name used to take one snapshot, so a lookup
-    // that landed a tick early failed as "no element is named" — the smoke's
-    // own model row, and ~1 run in 8 red on four unrelated branches. The
-    // button below is planted with the same delay the real one has.
+    // Planted with the same delay the real control has: a --name lookup that
+    // lands a tick early must still click it.
     await ui("eval", info.ui, "--js", `(() => {
       const late = document.createElement("button");
       late.textContent = "Late QA control";
@@ -346,10 +357,6 @@ describe("control-omb ui drives the real renderer", () => {
     expect(png.length).toBeGreaterThan(1_000);
     expect(png.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 
-    // Save as skill fills the composer with the run — the trigger phrase (a
-    // verified step is in it), the typed "hello" as the goal, and each step's
-    // command tagged verified — for the person to annotate and send. It sends
-    // nothing itself: the transcript is unchanged and the caret is in the box.
     const rowsBefore = await ui("eval", info.ui, "--js", "document.querySelectorAll('[data-mid]').length");
     await ui("click", info.ui, "--name", "Save as skill");
     const drafted = await ui("eval", info.ui, "--js", `${COMPOSER}.value`);
@@ -374,6 +381,7 @@ describe("control-omb ui drives the real renderer", () => {
     expect(collapsed.snapshot).toContain("Expand the run");
     expect(collapsed.snapshot).not.toContain('list "Run steps"');
 
+    await ui("click", info.ui, "--name", "More");
     await ui("click", info.ui, "--name", "Inspector");
     const inspected = await ui("snapshot", info.ui);
     const runLog = (inspected.snapshot as string).slice((inspected.snapshot as string).indexOf('complementary "Inspector"'));
@@ -384,7 +392,6 @@ describe("control-omb ui drives the real renderer", () => {
     expect(runLog).toContain("Copy redacted run log");
     await ui("screenshot", info.ui, "--out", join(evidenceDir, "run-log.png"));
 
-    // Existing technical views remain reachable by accessible tab references.
     const [eventsTab] = refsNamed(inspected, "Events", "tab");
     expect(eventsTab).toBeDefined();
     await ui("click", info.ui, "--ref", eventsTab);
@@ -402,7 +409,6 @@ describe("control-omb ui drives the real renderer", () => {
     const title = await ui("eval", info.ui, "--js", "document.title");
     expect(title).toMatchObject({ ok: true, result: "Isolated OpenMaus Chat" });
 
-    // Ctrl-C: browser, preview and fixture close; only the fixture's data goes.
     await waitForExit(launched.child, { signal: "SIGINT", graceMs: 30_000 });
     expect(launched.child.exitCode).toBe(0);
     expect(existsSync(info.dataDir)).toBe(false);

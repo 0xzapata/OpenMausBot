@@ -1,40 +1,28 @@
-// The decision model: a fast classifier that picks among options OpenMausBot
-// already knows (which bot answers a room message, and later which element
-// to click or which tools to mount) in a few hundred milliseconds, before
-// any engine turn starts. It never does the work itself.
-//
-// Modelled on server/tts/index.ts: a key-free status for Settings, a key
-// check, and one module per vendor behind a common shape, so another backend
-// (a local Jev-compatible server through `baseUrl`, an LLM) plugs in here
-// without touching a caller.
-//
-// The contract every caller relies on: it NEVER throws into a turn. No key,
-// the switch off, the job off, a timeout, an HTTP error, an overloaded
-// vendor, a malformed answer: each comes back as { ok: false, reason } and
-// the caller does exactly what it did before this module existed.
+// Never throws into a turn: every failure comes back as { ok: false, reason }. The included relay
+// token goes only to the relay's URL, and only with requests the relay accepts.
 import type { AppConfig } from "../config.ts";
+import { deciderCredential, type ServiceCredential } from "../included-services.ts";
 import { jevBackend } from "./jev.ts";
 import { appendDeciderLog, stateHash } from "./log.ts";
+import { OPENROUTER_DEFAULT_API, OPENROUTER_DEFAULT_BASE_URL, OPENROUTER_DEFAULT_MODEL, openrouterBackend } from "./openrouter.ts";
+import { KEY_CHECK_QUESTION, KEY_CHECK_STATE, relayAccepts, relaySeam } from "./relay.ts";
 import type {
   Answers, AskOptions, BackendResult, ChoiceAnswer, ChoiceQuestion, DeciderBackend, DeciderFailure, DeciderJob,
-  DeciderProvider, DeciderQuestion, DeciderResult, DeciderSeam, ScoreAnswer, YesNoAnswer,
+  DeciderProvider, DeciderQuestion, DeciderResult, DeciderSeam, OpenRouterApi, ScoreAnswer, YesNoAnswer,
 } from "./types.ts";
 
 export { DECIDER_JOBS } from "./types.ts";
 
-/** Used when a caller passes no timeout. Room routing passes its own. */
 export const DEFAULT_DECIDER_TIMEOUT_MS = 1_500;
-/** The Settings key check is one tiny call a person is waiting on. */
 export const KEY_CHECK_TIMEOUT_MS = 10_000;
 const MIN_TIMEOUT_MS = 50;
 const MAX_TIMEOUT_MS = 30_000;
 
-/** A request the switches never let through. */
 const offBackend: { id: "off"; decide(): Promise<BackendResult> } = {
   id: "off",
   decide: async () => ({ ok: false, reason: "disabled" }),
 };
-const BACKENDS: Record<DeciderProvider, DeciderBackend> = { jev: jevBackend };
+const BACKENDS: Record<DeciderProvider, DeciderBackend> = { jev: jevBackend, openrouter: openrouterBackend };
 
 type DeciderConfig = NonNullable<AppConfig["decider"]>;
 
@@ -43,75 +31,125 @@ export function deciderProvider(cfg: AppConfig): DeciderProvider | "off" {
   return provider in BACKENDS ? (provider as DeciderProvider) : "off";
 }
 
-/** A key is on file (the config value, or the desktop's encrypted store
- * handed over as env). */
+export function deciderModel(cfg: AppConfig): string {
+  return cfg.decider?.openrouterModel?.trim() || OPENROUTER_DEFAULT_MODEL;
+}
+
+export function deciderApi(cfg: AppConfig): OpenRouterApi {
+  if (!cfg.decider?.openrouterModel?.trim()) return OPENROUTER_DEFAULT_API;
+  return cfg.decider.openrouterApi === "decisions" ? "decisions" : "chat";
+}
+
+/** An own key goes to its provider (or the operator base URL); else Cloud Pro's included token goes to the
+ * Admin's relay, Jev only, and only for seams the relay accepts. */
+function deciderAccount(
+  cfg: AppConfig,
+  seam?: DeciderSeam,
+  draft?: string,
+  provider: DeciderProvider | "off" = deciderProvider(cfg),
+): ServiceCredential | null {
+  if (provider === "openrouter") {
+    const token = draft?.trim() || cfg.decider?.openrouterKey?.trim();
+    return token ? { token, api: cfg.decider?.openrouterBaseUrl?.trim() || OPENROUTER_DEFAULT_BASE_URL, included: false } : null;
+  }
+  const account = deciderCredential(draft?.trim() || cfg.decider?.key, cfg.decider?.baseUrl);
+  return account?.included && seam && !relaySeam(seam) ? null : account;
+}
+
 export function deciderConfigured(cfg: AppConfig): boolean {
-  return Boolean(cfg.decider?.key?.trim());
+  return Boolean(deciderAccount(cfg));
 }
 
-/** The master switch as it takes effect: off while no key is saved. */
+export function deciderIncludedHere(): boolean {
+  return deciderCredential(undefined, undefined)?.included === true;
+}
+
 export function deciderEnabled(cfg: AppConfig): boolean {
-  return cfg.decider?.enabled === true && deciderConfigured(cfg) && deciderProvider(cfg) !== "off";
+  const account = deciderAccount(cfg);
+  if (!account || deciderProvider(cfg) === "off") return false;
+  return account.included ? cfg.decider?.enabled !== false : cfg.decider?.enabled === true;
 }
 
-/** One job's own switch. Absent means on: turning the decider on turns on
- * what it decides unless a job was switched off by hand. */
+/** Absent means on. */
 export function deciderJobOn(cfg: AppConfig, job: DeciderJob): boolean {
   return cfg.decider?.jobs?.[job] !== false;
 }
 
-/** Whether a job would be asked right now. Callers check this before they
- * spend any effort building a request. */
 export function deciderReady(cfg: AppConfig, job: DeciderJob): boolean {
-  return deciderEnabled(cfg) && deciderJobOn(cfg, job);
+  return deciderEnabled(cfg) && deciderJobOn(cfg, job) && Boolean(deciderAccount(cfg, job));
 }
 
-/** What Settings needs. Never the key, and not the base URL either: that is
- * an operator setting with no UI. */
+/** Never the key, nor the base URL (an operator setting with no UI). */
 export function describeDecider(cfg: AppConfig) {
+  const account = deciderAccount(cfg);
+  const provider = deciderProvider(cfg);
   return {
-    provider: "jev" as const,
-    configured: deciderConfigured(cfg),
+    provider: provider === "off" ? "jev" as const : provider,
+    ...(provider === "openrouter" ? { model: deciderModel(cfg), api: deciderApi(cfg) } : {}),
+    configured: Boolean(account),
+    ...(account?.included ? { included: true as const } : {}),
     enabled: deciderEnabled(cfg),
     jobs: { roomRouting: deciderJobOn(cfg, "roomRouting") },
   };
 }
 
-/** The config write a Settings save becomes.
- *
- * Owner rule: the switch is off while no key is saved, and saving a key is
- * the "turn it on" — it switches the decider and its room job on, with no
- * extra step. Clearing the key switches it off. Explicit values in the same
- * patch win. Jobs merge per job, because saveConfig replaces a section's
- * nested objects whole. Returns an error for a switch-on with no key. */
+/** Jobs merge per job, because saveConfig replaces a section's nested objects whole. */
 export function deciderSavePatch(
   patch: Partial<DeciderConfig>,
   current: DeciderConfig | undefined,
+  included = false,
 ): { ok: true; patch: Partial<DeciderConfig> } | { ok: false; error: string } {
   const next: Partial<DeciderConfig> = { ...patch };
-  const savingKey = typeof patch.key === "string" && Boolean(patch.key.trim());
-  const clearingKey = typeof patch.key === "string" && !patch.key.trim();
+  const provider = patch.provider ?? current?.provider ?? "jev";
+  const field = provider === "openrouter" ? "openrouterKey" : "key";
+  const includedHere = included && field === "key";
+  const activeKey = patch[field];
+  const savingKey = typeof activeKey === "string" && Boolean(activeKey.trim());
+  const clearingKey = typeof activeKey === "string" && !activeKey.trim();
+  if (patch.openrouterModel !== undefined && patch.openrouterApi === undefined) next.openrouterApi = "chat";
   if (typeof patch.key === "string") next.key = patch.key.trim();
+  if (typeof patch.openrouterKey === "string") next.openrouterKey = patch.openrouterKey.trim();
   if (savingKey) {
     next.enabled = patch.enabled ?? true;
     next.jobs = { ...current?.jobs, roomRouting: true, ...patch.jobs };
   } else if (clearingKey) {
-    next.enabled = false;
+    if (!includedHere) next.enabled = false;
   } else if (patch.jobs) {
     next.jobs = { ...current?.jobs, ...patch.jobs };
   }
-  if (next.enabled === true && !savingKey && !current?.key?.trim()) {
-    return { ok: false, error: "Save a Jev API key before turning on fast decisions." };
+  if (next.enabled === true && !savingKey && !current?.[field]?.trim() && !includedHere) {
+    const key = field === "key" ? "a Jev API key" : "an OpenRouter API key";
+    return { ok: false, error: `Save ${key} before turning on fast decisions.` };
   }
   return { ok: true, patch: next };
 }
 
+export function deciderPatchKey(
+  patch: Partial<DeciderConfig>,
+  current: DeciderConfig | undefined,
+): { provider: DeciderProvider; check: { key: string; provider: DeciderProvider; model?: string; api?: OpenRouterApi } } | null {
+  const jevKey = patch.key?.trim();
+  const openrouterKey = patch.openrouterKey?.trim();
+  const jev = jevKey ? { provider: "jev" as const, check: { key: jevKey, provider: "jev" as const } } : null;
+  const savedModel = (patch.openrouterModel ?? current?.openrouterModel)?.trim();
+  const api = patch.openrouterModel !== undefined ? patch.openrouterApi : patch.openrouterApi ?? current?.openrouterApi;
+  const openrouter = openrouterKey
+    ? {
+      provider: "openrouter" as const,
+      check: {
+        key: openrouterKey,
+        provider: "openrouter" as const,
+        model: savedModel || OPENROUTER_DEFAULT_MODEL,
+        api: savedModel ? (api === "decisions" ? "decisions" as const : "chat" as const) : OPENROUTER_DEFAULT_API,
+      },
+    }
+    : null;
+  return (patch.provider ?? current?.provider) === "openrouter" ? openrouter ?? jev : jev ?? openrouter;
+}
+
 export interface DeciderDeps {
-  /** Read on every call, so a Settings change applies to the next decision. */
   config(): AppConfig;
-  /** Tests pass a mock; production uses the global fetch. */
   fetch?: typeof fetch;
-  /** Where the decision log goes. Omitted: nothing is logged. */
   dataDir?: string;
   now?: () => number;
 }
@@ -136,30 +174,28 @@ export interface Decider {
     options?: AskOptions,
   ): Promise<DeciderResult<ScoreAnswer>>;
   yesNo(seam: DeciderSeam, state: unknown, instructions: string, options?: AskOptions): Promise<DeciderResult<YesNoAnswer>>;
-  /** One tiny yes/no call with a draft key or the saved one, whatever the
-   * switches say: the Settings Test button, and the check on save. */
-  testKey(input?: { key?: string }, options?: AskOptions): Promise<DeciderResult<YesNoAnswer>>;
+  /** One tiny yes/no call, whatever the switches say: the Settings Test button and the check on save. */
+  testKey(input?: { key?: string; provider?: DeciderProvider; model?: string; api?: OpenRouterApi }, options?: AskOptions): Promise<DeciderResult<YesNoAnswer>>;
 }
-
-const KEY_CHECK_STATE = { purpose: "OpenMausBot is checking that a decision-model key works." };
-const KEY_CHECK_QUESTION = "Is this a connection check?";
 
 export function createDecider(deps: DeciderDeps): Decider {
   const fetchImpl = deps.fetch ?? fetch;
   const now = deps.now ?? (() => performance.now());
 
   function gate(cfg: AppConfig, seam: DeciderSeam): DeciderFailure | null {
-    if (seam === "keyCheck") return deciderProvider(cfg) === "off" ? "disabled" : null;
-    if (cfg.decider?.enabled !== true || deciderProvider(cfg) === "off") return "disabled";
-    if (!deciderConfigured(cfg)) return "no_key";
+    if (deciderProvider(cfg) === "off") return "disabled";
+    if (seam === "keyCheck") return null;
+    if (!deciderConfigured(cfg)) return cfg.decider?.enabled === true ? "no_key" : "disabled";
+    if (!deciderEnabled(cfg)) return "disabled";
     if (!deciderJobOn(cfg, seam)) return "job_off";
+    if (!deciderAccount(cfg, seam)) return "no_key";
     return null;
   }
 
   async function call<Qs extends Record<string, DeciderQuestion>>(
     seam: DeciderSeam,
     backend: DeciderBackend | typeof offBackend,
-    request: { key: string; baseUrl?: string; state: unknown; questions: Qs },
+    request: { key: string; baseUrl?: string; model?: string; state: unknown; questions: Qs },
     options: AskOptions,
   ): Promise<DeciderResult<Answers<Qs>>> {
     const provider = backend.id === "off" ? undefined : backend.id;
@@ -169,8 +205,7 @@ export function createDecider(deps: DeciderDeps): Decider {
     const onAbort = () => controller.abort();
     options.signal?.addEventListener("abort", onAbort, { once: true });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // The race, not only the abort, bounds the call: a body that stalls
-    // after its headers must not hold a room turn past the budget.
+    // The race, not only the abort, bounds the call: a body that stalls after its headers must not hold a turn.
     const timedOut = new Promise<BackendResult>((resolve) => {
       timer = setTimeout(() => {
         controller.abort();
@@ -196,6 +231,7 @@ export function createDecider(deps: DeciderDeps): Decider {
         at: new Date().toISOString(),
         seam,
         provider,
+        ...(request.model ? { model: request.model } : {}),
         ok: outcome.ok,
         ...(!outcome.ok ? { reason: outcome.reason, ...(outcome.status ? { status: outcome.status } : {}) } : {}),
         ...(first ? { choice: first.choice } : {}),
@@ -229,7 +265,16 @@ export function createDecider(deps: DeciderDeps): Decider {
       if (refused) return { ok: false, reason: refused };
       const provider = deciderProvider(cfg);
       const backend = provider === "off" ? offBackend : BACKENDS[provider];
-      return await call(seam, backend, { key: cfg.decider!.key!.trim(), baseUrl: cfg.decider?.baseUrl, state, questions }, options);
+      const account = deciderAccount(cfg, seam)!;
+      // Through the included token, only the exact requests the relay takes.
+      if (account.included && !relayAccepts(seam, state, questions)) return { ok: false, reason: "misconfigured" };
+      return await call(seam, backend, {
+        key: account.token,
+        baseUrl: account.api,
+        ...(provider === "openrouter" ? { model: deciderModel(cfg), api: deciderApi(cfg) } : {}),
+        state,
+        questions,
+      }, options);
     } catch {
       return { ok: false, reason: "malformed" };
     }
@@ -258,15 +303,22 @@ export function createDecider(deps: DeciderDeps): Decider {
     async testKey(input = {}, options = {}) {
       try {
         const cfg = deps.config();
-        const key = input.key?.trim() || cfg.decider?.key?.trim() || "";
-        if (!key) return { ok: false, reason: "no_key" };
-        const provider = deciderProvider(cfg);
+        const provider = input.provider ?? deciderProvider(cfg);
+        const account = deciderAccount(cfg, "keyCheck", input.key, provider);
+        if (!account) return { ok: false, reason: "no_key" };
         const backend = provider === "off" ? offBackend : BACKENDS[provider];
+        const questions = { answer: { type: "yesno" as const, instructions: KEY_CHECK_QUESTION } };
+        if (account.included && !relayAccepts("keyCheck", KEY_CHECK_STATE, questions)) return { ok: false, reason: "misconfigured" };
         return single(await call("keyCheck", backend, {
-          key,
-          baseUrl: cfg.decider?.baseUrl,
+          key: account.token,
+          baseUrl: account.api,
+          ...(provider === "openrouter"
+            ? input.model?.trim()
+              ? { model: input.model.trim(), api: input.api ?? "chat" }
+              : { model: deciderModel(cfg), api: deciderApi(cfg) }
+            : {}),
           state: KEY_CHECK_STATE,
-          questions: { answer: { type: "yesno", instructions: KEY_CHECK_QUESTION } },
+          questions,
         }, { timeoutMs: KEY_CHECK_TIMEOUT_MS, ...options }));
       } catch {
         return { ok: false, reason: "malformed" };

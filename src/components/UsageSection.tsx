@@ -1,13 +1,10 @@
-// App settings → Usage: what every bot has spent, so "which of my bots is
-// costing me money" is answerable without a provider dashboard. Figures are
-// banked per settled turn on each task (server/store.ts addTaskUsage) and
-// summed here; nothing is fetched.
 import { useStore } from "@/state/store";
 import { BotAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { t } from "@/lib/i18n";
 import { botUsage, cachedUsageNote, costCaption, formatTokens, formatUsd, hasFiniteCost, headlineTokens, sumUsage, tokensColumnLabel, usageDetail } from "@/lib/usage";
 import { UsageHistory } from "./UsageHistory";
+import { PlanUsage } from "./PlanUsage";
 
 export function UsageSection() {
   const { state } = useStore();
@@ -19,7 +16,6 @@ export function UsageSection() {
       return { bot, usage, billing: instance?.snapshot.billing };
     })
     .filter((r) => r.usage.turns > 0)
-    // money first, then volume. Non-finite/missing costs sort last.
     .sort((a, b) => {
       const costOf = (value: number | null | undefined) =>
         hasFiniteCost(value) ? value : Number.NEGATIVE_INFINITY;
@@ -31,6 +27,7 @@ export function UsageSection() {
 
   return (
     <>
+    <PlanUsage />
     <Card title={t("usage.title")} subtitle={t("usage.subtitle")}>
       {rows.length === 0 ? (
         <div className="text-[13px] text-ink-secondary">{t("usage.empty")}</div>

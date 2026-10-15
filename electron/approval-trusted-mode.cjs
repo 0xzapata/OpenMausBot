@@ -8,7 +8,7 @@ function plainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
 
-function trustedApprovalModeRequest(requestId, botId, mode, acknowledgeLocalAuto = false, threadId, modelSelection, updateBotDefault, threadOnly = false, allThreads = false) {
+function trustedApprovalModeRequest(requestId, botId, mode, acknowledgeLocalAuto = false, threadId, modelSelection, updateBotDefault, threadOnly = false, allThreads = false, refreshPermissions = false) {
   if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) {
     throw new Error("invalid trusted approval-mode request id");
   }
@@ -17,7 +17,7 @@ function trustedApprovalModeRequest(requestId, botId, mode, acknowledgeLocalAuto
   }
   if (!APPROVAL_MODES.has(mode)) throw new Error("invalid trusted approval mode");
   if (typeof allThreads !== "boolean" || (allThreads && (threadId !== undefined || threadOnly ||
-    modelSelection !== undefined || updateBotDefault !== undefined || (mode !== "full" && mode !== "ask")))) {
+    modelSelection !== undefined || updateBotDefault !== undefined || mode === "custom"))) {
     throw new Error("invalid all-threads approval selection");
   }
   if (typeof threadOnly !== "boolean" || (threadOnly && (threadId === undefined || modelSelection !== undefined || updateBotDefault !== undefined))) {
@@ -35,6 +35,10 @@ function trustedApprovalModeRequest(requestId, botId, mode, acknowledgeLocalAuto
     (!threadOnly && mode !== "full" && mode !== "custom" && modelSelection === undefined))) {
     throw new Error("invalid thread for trusted approval mode");
   }
+  // Thread-scoped, so a lost reply cannot downgrade the bot default.
+  if (typeof refreshPermissions !== "boolean" || (refreshPermissions && (!threadOnly || threadId === undefined || allThreads || modelSelection !== undefined))) {
+    throw new Error("invalid permission refresh");
+  }
   return {
     type: "approval-trusted-mode-set",
     requestId,
@@ -44,6 +48,7 @@ function trustedApprovalModeRequest(requestId, botId, mode, acknowledgeLocalAuto
     ...(threadId !== undefined ? { threadId } : {}),
     ...(threadOnly ? { threadOnly: true } : {}),
     ...(allThreads ? { allThreads: true } : {}),
+    ...(refreshPermissions ? { refreshPermissions: true } : {}),
     ...(modelSelection !== undefined ? { modelSelection, updateBotDefault } : {}),
   };
 }
@@ -110,11 +115,7 @@ function decodeTrustedApprovalModeResult(rawMessage) {
   };
 }
 
-/**
- * One-shot request/response coordinator for the private Electron -> embedded
- * server utilityProcess port. The process object is part of the correlation
- * key, so a stale or replacement child cannot answer another child's grant.
- */
+/** The process object is part of the correlation key, so a stale or replacement child cannot answer another child's grant. */
 function createTrustedApprovalModeCoordinator({ randomId, timeoutMs = 10_000 } = {}) {
   if (typeof randomId !== "function") throw new Error("trusted approval-mode request id generator is unavailable");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
@@ -124,8 +125,8 @@ function createTrustedApprovalModeCoordinator({ randomId, timeoutMs = 10_000 } =
   const usedRequestIds = new Set();
   const latestRequestByBot = new Map();
 
-  function nextMessage(botId, mode, acknowledgeLocalAuto = false, threadId, modelSelection, updateBotDefault, threadOnly = false, allThreads = false) {
-    const message = trustedApprovalModeRequest(randomId(), botId, mode, acknowledgeLocalAuto, threadId, modelSelection, updateBotDefault, threadOnly, allThreads);
+  function nextMessage(botId, mode, acknowledgeLocalAuto = false, threadId, modelSelection, updateBotDefault, threadOnly = false, allThreads = false, refreshPermissions = false) {
+    const message = trustedApprovalModeRequest(randomId(), botId, mode, acknowledgeLocalAuto, threadId, modelSelection, updateBotDefault, threadOnly, allThreads, refreshPermissions);
     if (usedRequestIds.has(message.requestId)) {
       throw new Error("Trusted approval-mode request id was reused");
     }
@@ -148,7 +149,7 @@ function createTrustedApprovalModeCoordinator({ randomId, timeoutMs = 10_000 } =
     }
     let message;
     try {
-      message = nextMessage(botId, mode, options.acknowledgeLocalAuto ?? false, options.threadId, options.modelSelection, options.updateBotDefault, options.threadOnly ?? false, options.allThreads ?? false);
+      message = nextMessage(botId, mode, options.acknowledgeLocalAuto ?? false, options.threadId, options.modelSelection, options.updateBotDefault, options.threadOnly ?? false, options.allThreads ?? false, options.refreshPermissions ?? false);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -192,10 +193,7 @@ function createTrustedApprovalModeCoordinator({ randomId, timeoutMs = 10_000 } =
     });
   }
 
-  /** A Full/Custom request that crossed postMessage may already be durable
-   * even when its reply is lost or corrupt. Revoke it in-order on the same
-   * private port before surfacing the original failure. A later explicit
-   * selection wins and therefore suppresses this older compensation. */
+  /** A Full/Custom request may be durable though its reply was lost: revoke it in order on the same port before failing. */
   function failAmbiguously(requestId, error) {
     settle(requestId, (waiting) => {
       const elevated = waiting.mode === "full" || waiting.mode === "custom";
@@ -275,11 +273,7 @@ function createTrustedApprovalModeCoordinator({ randomId, timeoutMs = 10_000 } =
         return true;
       }
       if (!step.nextMessage || !step.nextPhase) {
-        // The server ACKs while a durable `committed` journal still keeps the
-        // mode inert. Only after this client-visible commit point do we send
-        // the exact one-way release. If the child dies before handling it,
-        // startup revokes the surviving journal to Ask; a reported failure
-        // can therefore never leave the bot elevated.
+        // The ACK leaves a durable `committed` journal inert; startup revokes a surviving journal to Ask, so a failure never leaves the bot elevated.
         try {
           if (waiting.threadOnly || waiting.allThreads) waiting.phase = "committing";
           proc.postMessage(trustedApprovalModeCommit(
@@ -319,8 +313,7 @@ function createTrustedApprovalModeCoordinator({ randomId, timeoutMs = 10_000 } =
     }
 
     const waiting = pending.get(result.requestId);
-    // It is still our protocol even when the answer is late, duplicated, or
-    // belongs to another child. Consume it, but never let it cross processes.
+    // Consume late, duplicated or foreign answers, but never let one cross processes.
     if (!waiting || waiting.proc !== proc || waiting.phase !== "setting") return true;
     if (!result.ok) {
       settle(result.requestId, ({ reject }) => reject(new Error(result.error)));
@@ -338,9 +331,7 @@ function createTrustedApprovalModeCoordinator({ randomId, timeoutMs = 10_000 } =
     }
     if (waiting.mode === "full" || waiting.mode === "custom") {
       try {
-        // The server keeps this selection executable as Ask while it records
-        // confirmation. Do not resolve until its correlated acknowledgement
-        // arrives and activation has been queued on this same ordered port.
+        // Resolve only after the correlated acknowledgement, once activation is queued on this ordered port.
         waiting.phase = "confirming";
         waiting.resultBot = result.bot;
         proc.postMessage(trustedApprovalModeConfirmation(

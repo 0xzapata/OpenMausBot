@@ -1,8 +1,3 @@
-// The work digest (Phase 0, item 0.1): one durable, bounded record of what a
-// turn DID — tools, files, memory edits, the gist of the reply — built from
-// rows the harness already has for every engine, and rendered both as a
-// transcript row (indexed by FTS) and as one bracketed line for context
-// rebuilds.
 import { describe, expect, it } from "vitest";
 
 import { buildTurnDigest, digestPromptLine, renderDigest, type TurnDigest } from "./digest.ts";
@@ -50,6 +45,42 @@ describe("buildTurnDigest", () => {
       { name: "Read", count: 1, failed: 0, sample: "src/a.ts" },
       { name: "Edit", count: 1, failed: 0, sample: "src/a.ts" },
     ]);
+  });
+
+  // Codex titles a commandExecution chip with the whole command line and ACP prefers rawInput.command, so a chip title is a
+  // command, not a tool identity: keyed on it, the digest leaked the command into an FTS-indexed, replayed row.
+  it("buckets command-titled chips under one shell tool instead of the command line", () => {
+    const d = buildTurnDigest({
+      ...base,
+      activities: [
+        activity('/bin/zsh -lc "jq \'.routines[]?\' ~/.openmausbot/bots/main/routines.json"', true, "jq '.routines[]?' routines.json"),
+        activity('/bin/zsh -lc "rg -n todo src/"', true, "rg -n todo src/"),
+        activity("list_routines", true),
+      ],
+      memory: [],
+    });
+    expect(d.tools).toEqual([
+      { name: "shell", count: 2, failed: 0, sample: "jq '.routines[]?' routines.json" },
+      { name: "list_routines", count: 1, failed: 0 },
+    ]);
+  });
+
+  // The phones split the tools part after "×N" / "(N failed)", so nothing may follow the count.
+  it("renders command-titled chips as a bare shell count with no command text", () => {
+    const d = buildTurnDigest({
+      ...base,
+      activities: [
+        activity('cp "/Users/someone/.openmausbot/task-workspaces/9d6ab24f-15b8-45e2/out.png" ~/Desktop/', true, "cp out.png ~/Desktop/"),
+        activity("swift -e 'import AppKit\n// Target 1080 × 1080\nlet size = NSSize(width: 1080, height: 1080)'", true, "swift -e …"),
+        activity("swift -e 'import AppKit\nlet canvas = NSImage()'", true, "swift -e …"),
+        activity("memory_update", true),
+      ],
+      memory: [],
+    });
+    const line = renderDigest(d);
+    expect(line).toContain("tools: shell ×3, memory_update ×1");
+    expect(line).not.toContain("/Users/");
+    expect(line).not.toContain("swift");
   });
 
   it("ignores activity rows from other turns and rows that are not tool calls", () => {
@@ -168,14 +199,13 @@ describe("coverageForDriver", () => {
     expect(coverageForDriver("openai-compat", false, true)).toBe("preview");
     expect(coverageForDriver("grok", false, true)).toBe("preview");
     expect(coverageForDriver("minimax", false, true)).toBe("preview");
-    expect(coverageForDriver("boxAgent")).toBe("none");
+    expect(coverageForDriver("claudeAgent")).toBe("none");
     expect(coverageForDriver("claudeAgent", false, true)).toBe("preview");
     expect(coverageForDriver("codex", false, true)).toBe("preview");
     expect(coverageForDriver("grokAgent", false, true)).toBe("preview");
     expect(coverageForDriver("piAgent", false, true)).toBe("preview");
     expect(coverageForDriver("claudeAgent", true)).toBe("full");
     expect(coverageForDriver("grok", true)).toBe("full");
-    expect(coverageForDriver("boxAgent", false, true)).toBe("preview");
     expect(coverageForDriver(undefined)).toBe("none");
   });
 });

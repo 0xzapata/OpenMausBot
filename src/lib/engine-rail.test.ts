@@ -4,15 +4,16 @@ import type { InstanceInfo } from "@/state/store";
 import { configuredModelInstances, splitEngineRail } from "./engine-rail";
 
 describe("splitEngineRail", () => {
-  it("keeps Cloud engines above Local engines", () => {
-    const { subscription, custom } = splitEngineRail([
+  it("groups sign-in plans, pasted provider keys and Local engines", () => {
+    const { subscription, api, custom } = splitEngineRail([
       { access: "subscription", instanceId: "claude" },
       { access: "custom", instanceId: "hermes" },
       { instanceId: "grok" },
       { access: "api", instanceId: "mistral" },
       { access: "custom", instanceId: "qwen" },
     ]);
-    expect(subscription.map((row) => row.instanceId)).toEqual(["claude", "grok", "mistral"]);
+    expect(subscription.map((row) => row.instanceId)).toEqual(["claude", "grok"]);
+    expect(api.map((row) => row.instanceId)).toEqual(["mistral"]);
     expect(custom.map((row) => row.instanceId)).toEqual(["hermes", "qwen"]);
   });
 
@@ -77,7 +78,6 @@ describe("configuredModelInstances", () => {
 
     expect(configuredModelInstances([missing, ready, empty], "missing")).toEqual([missing, ready]);
     expect(configuredModelInstances([missing, ready, empty], "empty")).toEqual([ready, empty]);
-    // An empty selection (a bot sent to setup) keeps nothing extra.
     expect(configuredModelInstances([missing, ready, empty], "")).toEqual([ready]);
   });
 
@@ -120,9 +120,6 @@ describe("configuredModelInstances", () => {
   });
 });
 
-// The Discord report: a person could no longer pick Claude at all. Claude
-// vanished from every picker when `claude auth status` did not answer
-// loggedIn:true in time, or when `claude --version` failed.
 describe("Claude in the picker when Claude Code is signed out or not found", () => {
   const official = [{ id: "claude-opus-5-5", label: "Opus 5.5" }, { id: "claude-sonnet-5", label: "Sonnet 5" }];
   const ollama = { id: "ollama:qwen3", label: "qwen3", custom: true, provider: "Ollama" };

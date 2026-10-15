@@ -18,7 +18,10 @@ function harness() {
   const queued: Array<Record<string, unknown>> = [];
   const cancelled: Array<{ id: string; message: string }> = [];
   const emitted: unknown[] = [];
-  const posted: Array<{ botId: string; text: string }> = [];
+  const posted: Array<{ botId: string; threadId: string; text: string }> = [];
+  // Mirrors index.ts's resolvePostThread (create on first use, then reuse); postThreadCreations records only new allocations.
+  const postThreads = new Map<string, string>();
+  const postThreadCreations: string[] = [];
   const options: WebhookManagerOptions = {
     file,
     now: () => now,
@@ -30,7 +33,17 @@ function harness() {
     },
     cancelQueued: (id, message) => cancelled.push({ id, message }),
     pendingRuns: () => pending,
-    post: (botId, text) => posted.push({ botId, text }),
+    post: (botId, threadId, text) => posted.push({ botId, threadId, text }),
+    resolvePostThread: (trigger, forceNew) => {
+      if (!forceNew) {
+        const existing = postThreads.get(trigger.id);
+        if (existing) return existing;
+      }
+      const threadId = `post-thread-${postThreadCreations.length + 1}`;
+      postThreads.set(trigger.id, threadId);
+      postThreadCreations.push(threadId);
+      return threadId;
+    },
   };
   const manager = new WebhookManager(options);
   return {
@@ -41,6 +54,7 @@ function harness() {
     cancelled,
     emitted,
     posted,
+    postThreadCreations,
     setNow: (value: number) => (now = value),
     setBot: (value: typeof bot) => (bot = value),
     setPending: (value: number) => (pending = value),
@@ -75,6 +89,31 @@ describe("WebhookManager", () => {
     const reloaded = new WebhookManager(h.options);
     expect(reloaded.list()).toEqual([]);
     expect(reloaded.listAttempts()).toEqual([]);
+  });
+
+  it("refuses to overwrite a webhooks file it could not read", () => {
+    const h = harness();
+    create(h.manager);
+    const corrupt = readFileSync(h.file, "utf8").slice(0, 100);
+    writeFileSync(h.file, corrupt);
+    const reloaded = new WebhookManager(h.options);
+    expect(reloaded.list()).toEqual([]);
+    expect(() => create(reloaded)).toThrow(expect.objectContaining({ status: 503 }));
+    expect(readFileSync(h.file, "utf8")).toBe(corrupt);
+  });
+
+  it("refuses to overwrite a webhooks file with a row the schema rejects", () => {
+    const h = harness();
+    create(h.manager);
+    create(h.manager);
+    const disk = JSON.parse(readFileSync(h.file, "utf8")) as { webhooks: Array<Record<string, unknown>> };
+    disk.webhooks[0].runOn = "future-engine";
+    const damaged = JSON.stringify(disk);
+    writeFileSync(h.file, damaged);
+    const reloaded = new WebhookManager(h.options);
+    expect(reloaded.list()).toEqual([]);
+    expect(() => create(reloaded)).toThrow(expect.objectContaining({ status: 503 }));
+    expect(readFileSync(h.file, "utf8")).toBe(damaged);
   });
 
   it("stores only a secret digest and exposes the secret once", () => {
@@ -127,7 +166,7 @@ describe("WebhookManager", () => {
     expect(h.manager.list()[0]).toMatchObject({ lastRunId: "run-1", deliveryCount: 1 });
   });
 
-  it("posts the payload text to the bot's chat instead of queuing a task when delivery is \"post\"", () => {
+  it("posts the payload text to the bot's chat in a stable dedicated thread when delivery is \"post\"", () => {
     const h = harness();
     const { webhook, secret } = h.manager.create({ name: "Brief", prompt: "", botId: "maus-1", delivery: "post" });
     const result = h.manager.receive(webhook.endpointId, secret, {
@@ -138,9 +177,8 @@ describe("WebhookManager", () => {
 
     expect(result).toEqual({ deliveryId: "evt-post-1", duplicate: false });
     expect(h.queued).toHaveLength(0);
-    expect(h.posted).toEqual([{ botId: "maus-1", text: "Morning brief: two calls today." }]);
-    expect(h.manager.list()[0]).toMatchObject({ delivery: "post", deliveryCount: 1 });
-    // a repeat of the same delivery id is deduplicated like any other webhook
+    expect(h.posted).toEqual([{ botId: "maus-1", threadId: "post-thread-1", text: "Morning brief: two calls today." }]);
+    expect(h.manager.list()[0]).toMatchObject({ delivery: "post", deliveryCount: 1, resultsThreadId: "post-thread-1" });
     expect(h.manager.receive(webhook.endpointId, secret, { payload: { text: "again" }, deliveryId: "evt-post-1" })).toMatchObject({ duplicate: true });
     expect(h.posted).toHaveLength(1);
   });
@@ -153,6 +191,35 @@ describe("WebhookManager", () => {
       .toThrow("cannot post");
     expect(h.queued).toHaveLength(0);
     expect(h.posted).toHaveLength(0);
+  });
+
+  it("rejects a post delivery instead of falling back to a shared thread when the server cannot resolve a destination", () => {
+    const h = harness();
+    const { webhook, secret } = h.manager.create({ name: "Brief", prompt: "", botId: "maus-1", delivery: "post" });
+    const without = new WebhookManager({ ...h.options, resolvePostThread: undefined });
+    expect(() => without.receive(webhook.endpointId, secret, { payload: { text: "hello" }, deliveryId: "evt-post-3" }))
+      .toThrow("could not resolve a destination thread");
+    expect(h.queued).toHaveLength(0);
+    expect(h.posted).toHaveLength(0);
+  });
+
+  it("gives a delivery:\"post\" webhook one stable dedicated thread, independent of the bot's live selection, and it survives a restart (OpenMausBot#2071)", () => {
+    const h = harness();
+    const { webhook, secret } = h.manager.create({ name: "Brief", prompt: "", botId: "maus-1", delivery: "post" });
+
+    h.manager.receive(webhook.endpointId, secret, { payload: { text: "first" }, deliveryId: "evt-a" });
+    h.manager.receive(webhook.endpointId, secret, { payload: { text: "second" }, deliveryId: "evt-b" });
+
+    expect(h.postThreadCreations).toEqual(["post-thread-1"]);
+    expect(h.posted).toEqual([
+      { botId: "maus-1", threadId: "post-thread-1", text: "first" },
+      { botId: "maus-1", threadId: "post-thread-1", text: "second" },
+    ]);
+
+    const reloaded = new WebhookManager(h.options);
+    reloaded.receive(webhook.endpointId, secret, { payload: { text: "third" }, deliveryId: "evt-c" });
+    expect(h.postThreadCreations).toEqual(["post-thread-1"]);
+    expect(h.posted[2]).toEqual({ botId: "maus-1", threadId: "post-thread-1", text: "third" });
   });
 
   it("uses an authenticated task from the payload when default instructions are empty", () => {
@@ -213,8 +280,6 @@ describe("WebhookManager", () => {
     expect(h.manager.list()).toHaveLength(0);
   });
 
-  // MOCA-93: three was a code constant; a webhook fanning out a project
-  // manager's events got 429 from the fourth unfinished task on.
   it("lets a webhook set how many unfinished tasks it may hold", () => {
     const h = harness();
     const { webhook, secret } = h.manager.create({ name: "PM events", prompt: "Handle it", botId: "maus-1", maxPendingRuns: 5 });
@@ -228,11 +293,9 @@ describe("WebhookManager", () => {
       expect((error as { status?: number }).status).toBe(429);
     }
 
-    // Editing other settings keeps it; null goes back to the default of 3.
     expect(h.manager.update(webhook.id, { name: "Renamed" })?.maxPendingRuns).toBe(5);
     const reset = h.manager.update(webhook.id, { maxPendingRuns: null });
     expect(reset).not.toHaveProperty("maxPendingRuns");
-    // Lowered below what is already unfinished: say both numbers.
     expect(() => h.manager.receive(webhook.endpointId, secret, { payload: {}, deliveryId: "default" })).toThrow("already has 5 unfinished tasks (its limit is 3)");
     h.setPending(3);
     expect(() => h.manager.receive(webhook.endpointId, secret, { payload: {}, deliveryId: "default" })).toThrow("already has 3 unfinished tasks (its limit is 3)");
@@ -240,7 +303,6 @@ describe("WebhookManager", () => {
     h.setPending(1);
     expect(() => h.manager.receive(webhook.endpointId, secret, { payload: {}, deliveryId: "one" })).toThrow("already has 1 unfinished task (its limit is 1)");
 
-    // Survives a restart.
     expect(new WebhookManager(h.options).list().find((candidate) => candidate.id === webhook.id)?.maxPendingRuns).toBe(1);
   });
 

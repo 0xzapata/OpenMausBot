@@ -1,9 +1,13 @@
 import type { GroupGoalRunCardData } from "../../shared/group-goal-run";
+import type { ConnectorCardData } from "../../shared/wire";
 
 export const PINNED_SECTION_ID = "builtin:pinned";
 export const CHANNELS_SECTION_ID = "builtin:channels";
 export const BOT_CHATS_SECTION_ID = "builtin:bot-chats";
 export const BOTS_SECTION_ID = "builtin:bots";
+export const ATTENTION_SECTION_ID = "builtin:attention";
+export const PINNED_THREADS_SECTION_ID = "builtin:pinned-threads";
+export const TOOLS_SECTION_ID = "builtin:tools";
 
 const USER_SECTION_PREFIX = "section:";
 
@@ -65,6 +69,19 @@ export function sidebarGoalRunPreview(run: GroupGoalRunCardData): string {
   return summary ? `${label}: ${summary}` : label;
 }
 
+export type SidebarConnectorPreviewKey = "connectors.card.connected" | "connectors.card.waiting" | "connectors.card.connectSecurely";
+
+export function sidebarConnectorPreview(
+  connector: Pick<ConnectorCardData, "label" | "status" | "dismissed">,
+  say: (key: SidebarConnectorPreviewKey) => string,
+): string {
+  if (connector.dismissed) return connector.label;
+  const key: SidebarConnectorPreviewKey = connector.status === "connected"
+    ? "connectors.card.connected"
+    : connector.status === "authorizing" ? "connectors.card.waiting" : "connectors.card.connectSecurely";
+  return `${connector.label} · ${say(key)}`;
+}
+
 export function sidebarLayoutInteractive(density: SidebarDensityMode, query: string): boolean {
   return density !== "icons" && query.trim().length === 0;
 }
@@ -78,14 +95,24 @@ export function sidebarSectionCollapsed(
   return sidebarLayoutInteractive(density, query) && collapsedIds.includes(id);
 }
 
-/** Pinned bots are a virtual view. Their saved section is left untouched so
- * unpinning returns them to the context they came from. */
-export function partitionSidebarBots<T extends SidebarBot>(bots: T[]) {
+export function pinnedCircleThreadListVisible(
+  circles: boolean,
+  density: SidebarDensityMode,
+  pinnedCount: number,
+): boolean {
+  return circles && density !== "icons" && pinnedCount > 0;
+}
+
+export function partitionSidebarBots<T extends SidebarBot>(
+  bots: T[],
+  options?: { universalPins?: boolean },
+) {
+  const universalPins = options?.universalPins === true;
   const visible = bots.filter((bot) => !bot.hidden);
-  const unsectionedChief = visible.find((bot) => bot.chiefOfStaff && !bot.section) ?? null;
-  const pinnedBots = visible.filter((bot) => !bot.chiefOfStaff && Boolean(bot.pinned));
+  const pinnedBots = visible.filter((bot) => Boolean(bot.pinned) && (universalPins || !bot.chiefOfStaff));
   const pinnedIds = new Set(pinnedBots.map((bot) => bot.id));
-  const sectionChiefs = visible.filter((bot) => bot.chiefOfStaff && Boolean(bot.section));
+  const unsectionedChief = visible.find((bot) => bot.chiefOfStaff && !bot.section && !pinnedIds.has(bot.id)) ?? null;
+  const sectionChiefs = visible.filter((bot) => bot.chiefOfStaff && Boolean(bot.section) && !pinnedIds.has(bot.id));
   const sectionedBots = visible.filter(
     (bot) => !bot.chiefOfStaff && Boolean(bot.section) && !pinnedIds.has(bot.id),
   );
@@ -95,8 +122,6 @@ export function partitionSidebarBots<T extends SidebarBot>(bots: T[]) {
   return { unsectionedChief, pinnedBots, sectionChiefs, sectionedBots, unsectionedBots };
 }
 
-/** Bot-to-bot DMs are also a virtual view. We do not rewrite their persisted
- * context, because that context still participates in comms visibility. */
 export function partitionSidebarGroups<T extends SidebarGroup>(groups: T[]) {
   const botChats = groups.filter((group) => Boolean(group.dm));
   const rooms = groups.filter((group) => !group.dm);
@@ -105,8 +130,6 @@ export function partitionSidebarGroups<T extends SidebarGroup>(groups: T[]) {
   return { botChats, sectionedRooms, unsectionedRooms };
 }
 
-/** Restore saved positions while inserting newly visible buckets at their
- * natural position instead of always appending them. */
 export function orderedSidebarSections(
   present: SidebarSectionId[],
   savedOrder: SidebarSectionId[],
@@ -165,8 +188,6 @@ export function placeSection(
   return result;
 }
 
-/** Preserve temporarily empty sections in the saved order so their position
- * returns when a bot or channel is later assigned to them again. */
 export function mergeSectionOrder(
   savedOrder: SidebarSectionId[],
   visibleOrder: SidebarSectionId[],

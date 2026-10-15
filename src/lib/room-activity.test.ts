@@ -18,13 +18,17 @@ describe("roomActivityVisible", () => {
     expect(roomActivityVisible(chip({}), true)).toBe(true);
   });
 
+  it("always shows a stopped turn, a model notice and a recovery row", () => {
+    expect(roomActivityVisible(chip({ tool: { name: "stopped: Stopped", ok: true } }), false)).toBe(true);
+    expect(roomActivityVisible(chip({ tool: { name: "notice: OpenCode no longer offers a, so this conversation uses b.", ok: true } }), false)).toBe(true);
+    expect(roomActivityVisible(chip({ tool: { name: "recovery: Automatic recovery: trying a backup once.", ok: true } }), false)).toBe(true);
+  });
+
   it("always shows a failure", () => {
     expect(roomActivityVisible(chip({ tool: { name: "Ran a command", ok: false } }), false)).toBe(true);
     expect(roomActivityVisible(chip({ tool: { name: "error: engine missing" } }), false)).toBe(true);
   });
 
-  // the trace that a teammate was consulted must not depend on a developer
-  // flag that is off for everyone
   it("always shows an opened-thread chip, the only trace a bot started a thread", () => {
     const opened = chip({
       tool: { name: "Opened thread #QA PR 245 on Scout", ok: true },

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { t } from "@/lib/i18n";
 
 export interface BrowserFrame {
   seq: number; data: string; format?: "jpeg" | "png";
@@ -7,14 +8,20 @@ export interface BrowserFrame {
 export type BrowserInput = (body: Record<string, unknown>) => void;
 const modifiers = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) =>
   Number(e.altKey) + Number(e.ctrlKey) * 2 + Number(e.metaKey) * 4 + Number(e.shiftKey) * 8;
+const MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "Shift"]);
 
-/** Map only the contained image, not its letterboxing, into the frame's CSS
- * coordinate space. Status events can describe a newer viewport than these pixels. */
+/** Frame metadata can describe the window, not the page: headless Chrome reports 1280×720 for a 1280×577 page. */
+export function browserFrameSize(imageWidth: number, imageHeight: number, width: number, height: number) {
+  const depicted = imageHeight * width / imageWidth;
+  return Math.abs(depicted - height) <= Math.max(1, width / imageWidth) ? { width, height } : { width, height: Math.round(depicted) };
+}
+
 export function browserViewportPoint(rect: { left: number; top: number; width: number; height: number },
-  imageWidth: number, imageHeight: number, width: number, height: number,
+  imageWidth: number, imageHeight: number, reportedWidth: number, reportedHeight: number,
   clientX: number, clientY: number, captured = false) {
-  if (![rect.width, rect.height, imageWidth, imageHeight, width, height].every((n) => Number.isFinite(n) && n > 0)) return null;
+  if (![rect.width, rect.height, imageWidth, imageHeight, reportedWidth, reportedHeight].every((n) => Number.isFinite(n) && n > 0)) return null;
   if (![clientX, clientY].every(Number.isFinite)) return null;
+  const { width, height } = browserFrameSize(imageWidth, imageHeight, reportedWidth, reportedHeight);
   const scale = Math.min(rect.width / imageWidth, rect.height / imageHeight);
   const visibleWidth = imageWidth * scale, visibleHeight = imageHeight * scale;
   const x = clientX - rect.left - (rect.width - visibleWidth) / 2;
@@ -23,8 +30,10 @@ export function browserViewportPoint(rect: { left: number; top: number; width: n
   return { x: Math.max(0, Math.min(width - 1, x * width / visibleWidth)), y: Math.max(0, Math.min(height - 1, y * height / visibleHeight)) };
 }
 
-/** Focus can move to the toolbar before the matching key/pointer-up arrives.
- * Flush releases only; never replay typed text or a click on hand-back. */
+/**
+ * Focus can move to the toolbar before the matching key or pointer-up arrives. Flush releases only; never replay typed
+ * text or a click on hand-back.
+ */
 export function createBrowserPressedInputs(input: BrowserInput) {
   const held = new Map<string, Record<string, unknown>>();
   return {
@@ -60,6 +69,7 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
   const src = `data:image/${frame.format === "png" ? "png" : "jpeg"};base64,${frame.data}`;
   const pressed = useMemo(() => createBrowserPressedInputs(sendInput), [sendInput]);
   const input = pressed.send;
+  const engaged = useRef(false);
   useLayoutEffect(() => {
     if (!driving) pressed.release();
     return pressed.release;
@@ -70,22 +80,18 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
   }, [pressed]);
   const rendered = () => {
     if (screen.current?.complete && screen.current.naturalWidth > 0 && screen.current.currentSrc === src) {
-      // onLoad and the rAF effect can both fire for one frame; ACK once per
-      // (src, seq). The seq half still ACKs identical-pixel re-encodes, which
-      // reuse the src and so fire no load event of their own.
+      // onLoad and the rAF effect can both fire for one frame, so ACK once per (src, seq); an identical-pixel re-encode
+      // reuses the src and fires no load event.
       if (screen.current.currentSrc === lastAckedSrc.current && frame.seq === lastAckedSeq.current) return;
       lastAckedSrc.current = screen.current.currentSrc;
       lastAckedSeq.current = frame.seq;
       acknowledge(frame.seq);
     }
   };
-  // The engine can emit a new sequence with identical pixels. React then
-  // keeps the same src, so there is no load event to ACK that next frame.
   useEffect(() => { const tick = requestAnimationFrame(rendered); return () => cancelAnimationFrame(tick); }, [frame]);
   const point = (clientX: number, clientY: number, captured = false) => {
     const image = screen.current;
-    // While a new src is decoding the old picture can still be painted. Do
-    // not aim input using new metadata until that exact image is available.
+    // While a new src decodes, the old picture can still be painted.
     if (!image?.complete || image.currentSrc !== src) return null;
     return browserViewportPoint(image.getBoundingClientRect(), image.naturalWidth, image.naturalHeight,
       frameWidth, frameHeight, clientX, clientY, captured);
@@ -97,7 +103,8 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
       e.preventDefault();
       const at = point(e.clientX, e.clientY);
       if (!at) return;
-      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? frameHeight : 1;
+      const page = e.deltaMode === 2 ? browserFrameSize(image.naturalWidth, image.naturalHeight, frameWidth, frameHeight).height : 0;
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? page : 1;
       const delta = (value: number) => Math.max(-10_000, Math.min(10_000, value * unit));
       input({ type: "input_mouse", eventType: "mouseWheel", ...at, deltaX: delta(e.deltaX), deltaY: delta(e.deltaY), modifiers: modifiers(e) });
     };
@@ -107,17 +114,18 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
   return <>
     <img ref={screen} src={src} alt="Live bot browser" draggable={false} tabIndex={driving ? 0 : -1}
       title={driving ? "Shift+Escape returns to the browser address bar." : undefined}
-      aria-description={driving ? "Keyboard input goes to the remote page. Press Shift+Escape to return to the browser address bar." : undefined}
+      aria-description={driving ? t("browser.viewport.keysHint") : undefined}
       aria-keyshortcuts={driving ? "Shift+Escape" : undefined}
       className={`block h-full w-full object-contain select-none outline-none focus:ring-2 focus:ring-inset focus:ring-accent ${driving ? "cursor-default touch-none" : "cursor-not-allowed"}`}
       onLoad={rendered} onError={onDecodeError}
-      onBlur={pressed.release}
+      onBlur={() => { engaged.current = false; pressed.release(); }}
       onContextMenu={(e) => { if (driving) e.preventDefault(); }}
       onPointerDown={(e) => {
         if (!driving) return;
         const at = point(e.clientX, e.clientY);
         if (!at) return;
         e.preventDefault(); e.currentTarget.focus(); e.currentTarget.setPointerCapture(e.pointerId);
+        engaged.current = true;
         input({ type: "input_mouse", eventType: "mousePressed", ...at, button: e.button === 2 ? "right" : e.button === 1 ? "middle" : "left", clickCount: Math.min(3, e.detail || 1), modifiers: modifiers(e) });
       }}
       onPointerUp={(e) => {
@@ -138,7 +146,8 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
         if (e.key === "Escape" && e.shiftKey) {
           e.preventDefault(); e.stopPropagation(); pressed.release(); onReturnToToolbar(); return;
         }
-        // Native paste supplies actual clipboard text via onPaste below.
+        if (e.key === "Tab" && !engaged.current) return;
+        if (!MODIFIER_KEYS.has(e.key)) engaged.current = true;
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") return;
         e.preventDefault();
         input({ type: "input_keyboard", eventType: "keyDown", key: e.key, code: e.code, windowsVirtualKeyCode: e.keyCode, modifiers: modifiers(e), ...(e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey ? { text: e.key } : {}) });
@@ -146,9 +155,10 @@ export function BrowserViewport({ frame, width, height, driving, input: sendInpu
       onKeyUp={(e) => {
         if (!driving || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v")) return;
         if (e.key === "Escape" && e.shiftKey) { e.preventDefault(); e.stopPropagation(); return; }
+        if (e.key === "Tab" && !engaged.current) return;
         e.preventDefault(); input({ type: "input_keyboard", eventType: "keyUp", key: e.key, code: e.code, windowsVirtualKeyCode: e.keyCode, modifiers: modifiers(e) });
       }}
-      onPaste={(e) => { if (driving) { e.preventDefault(); input({ type: "input_keyboard", eventType: "char", text: e.clipboardData.getData("text/plain").slice(0, 4096) }); } }}
+      onPaste={(e) => { if (driving) { e.preventDefault(); engaged.current = true; input({ type: "input_keyboard", eventType: "char", text: e.clipboardData.getData("text/plain").slice(0, 4096) }); } }}
     />
   </>;
 }

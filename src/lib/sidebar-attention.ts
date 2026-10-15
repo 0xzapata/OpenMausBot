@@ -1,12 +1,13 @@
 export type SidebarAttentionBot = {
   unread?: boolean;
   busy?: boolean;
-  activity?: "working" | "waiting-on-you" | "idle" | "no-signal" | "dead";
+  activity?: "working" | "waiting-on-you" | "idle" | "no-signal" | "dead" | "parked.computer";
 };
 
 export type SidebarAttentionGroup = {
   unread?: boolean;
   busyBotId?: string | null;
+  tasks?: Array<{ busyBotId?: string | null }>;
 };
 
 export type SidebarSectionAttention = {
@@ -15,7 +16,6 @@ export type SidebarSectionAttention = {
   working: number;
 };
 
-/** Summarize signals that would otherwise disappear when a section closes. */
 export function sidebarSectionAttention(
   bots: SidebarAttentionBot[],
   groups: SidebarAttentionGroup[],
@@ -30,7 +30,7 @@ export function sidebarSectionAttention(
         (bot) =>
           bot.activity === "working" ||
           (Boolean(bot.busy) && bot.activity !== "waiting-on-you"),
-      ).length + groups.filter((group) => Boolean(group.busyBotId)).length,
+      ).length + groups.filter((group) => Boolean(group.busyBotId) || Boolean(group.tasks?.some((task) => task.busyBotId))).length,
   };
 }
 

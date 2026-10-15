@@ -1,10 +1,12 @@
-import { useCallback, useLayoutEffect, useRef, type RefObject, type TextareaHTMLAttributes } from "react";
+import { cn } from "@/lib/cn";
+import { useCallback, useLayoutEffect, useRef, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
 import { type MentionPeer } from "@/lib/mentions";
 import { MentionText } from "./MentionText";
 
-/** A native textarea retains selection, undo, IME and accessibility. Its
- * aria-hidden mirror paints mentions without changing wrapping or caret offsets. */
-export function MentionTextarea({ inputRef, peers, everyone = false, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement> & {
+export function MentionTextarea({ inputRef, peers, everyone = false, wrapperClassName, leading, leadingDir = "auto", ...props }: TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  leading?: ReactNode;
+  leadingDir?: "rtl" | "ltr" | "auto";
+  wrapperClassName?: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   peers: readonly MentionPeer[];
   everyone?: boolean;
@@ -32,8 +34,7 @@ export function MentionTextarea({ inputRef, peers, everyone = false, ...props }:
   useLayoutEffect(() => {
     let width = inputRef.current?.clientWidth;
     const observer = new ResizeObserver(() => {
-      // Width changes can wrap an unchanged draft onto more lines. Observe
-      // width only so setting the measured height cannot create a resize loop.
+      // Observe width only, so setting the measured height cannot create a resize loop.
       const nextWidth = inputRef.current?.clientWidth;
       if (nextWidth !== width) { width = nextWidth; resize(); }
       else sync();
@@ -41,10 +42,15 @@ export function MentionTextarea({ inputRef, peers, everyone = false, ...props }:
     if (inputRef.current) observer.observe(inputRef.current);
     return () => observer.disconnect();
   }, [inputRef, resize, sync]);
-  return <div className="mention-editor relative min-w-0 flex-1 self-center">
+  const editor = <div className={cn("mention-editor relative min-w-0 flex-1 self-center", leading ? "min-w-[6rem]" : wrapperClassName)}>
     <div ref={mirrorRef} dir={props.dir} aria-hidden="true" className="mention-editor-mirror pointer-events-none absolute inset-0 overflow-hidden">
       <MentionText text={String(props.value ?? "")} peers={peers} everyone={everyone} />{"\n"}
     </div>
     <textarea {...props} ref={inputRef} onScroll={(event) => { sync(); props.onScroll?.(event); }} />
+  </div>;
+  if (!leading) return editor;
+  return <div data-composer-line dir={leadingDir} className={cn("flex min-w-0 flex-1 flex-wrap items-center gap-x-1 self-center", wrapperClassName)}>
+    {leading}
+    {editor}
   </div>;
 }

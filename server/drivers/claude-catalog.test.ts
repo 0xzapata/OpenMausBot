@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DATA_DIR } from "../config.ts";
+import { readStartupModelCache, startupModelCachePath, writeStartupModelCache } from "../startup-model-catalog.ts";
 import { ClaudeDriver, readClaudeModelCatalog, STATIC_CLAUDE_MODELS } from "./claude.ts";
 
 const scratchDirs: string[] = [];
@@ -25,6 +27,12 @@ describe("readClaudeModelCatalog", () => {
       contextWindow: 1_000_000,
     });
     expect(ids.indexOf("claude-opus-5-5")).toBe(ids.indexOf("claude-opus-5") - 1);
+    expect(STATIC_CLAUDE_MODELS.options[ids.indexOf("claude-sonnet-5-5")]).toEqual({
+      id: "claude-sonnet-5-5",
+      label: "Claude Sonnet 5.5",
+      contextWindow: 1_000_000,
+    });
+    expect(ids.indexOf("claude-sonnet-5-5")).toBe(ids.indexOf("claude-sonnet-5") - 1);
     expect(STATIC_CLAUDE_MODELS.default).toBe("claude-sonnet-5");
   });
 
@@ -59,6 +67,57 @@ describe("readClaudeModelCatalog", () => {
     });
   });
 
+  it("lists a newer Anthropic model from extraModels with the official rows, not as custom", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-claude-catalog-"));
+    scratchDirs.push(home);
+    const dir = join(home, ".claude");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "settings.json"),
+      JSON.stringify({ extraModels: [{ id: "claude-sonnet-future-test", label: "Future Claude Sonnet" }, "omlx::local-qwen"] }),
+    );
+
+    expect(readClaudeModelCatalog({ HOME: home }).options.slice(STATIC_CLAUDE_MODELS.options.length)).toEqual([
+      { id: "claude-sonnet-future-test", label: "Future Claude Sonnet" },
+      { id: "omlx::local-qwen", label: "omlx::local-qwen", custom: true },
+    ]);
+  });
+
+  it.each(["settings", "instance"])("keeps an official-looking model override custom for a compatible endpoint in %s", (source) => {
+    const home = mkdtempSync(join(tmpdir(), "omb-claude-compatible-"));
+    scratchDirs.push(home);
+    const dir = join(home, ".claude");
+    mkdirSync(dir, { recursive: true });
+    const override = {
+      ANTHROPIC_BASE_URL: "https://compatible.example.test/anthropic",
+      ANTHROPIC_AUTH_TOKEN: "fake-compatible-key",
+      ANTHROPIC_MODEL: "claude-compatible-test",
+    };
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({
+      extraModels: [override.ANTHROPIC_MODEL],
+      ...(source === "settings" ? { env: override } : {}),
+    }));
+
+    const catalog = readClaudeModelCatalog({ HOME: home, ...(source === "instance" ? override : {}) });
+    expect(catalog.options.slice(STATIC_CLAUDE_MODELS.options.length)).toEqual([
+      { id: override.ANTHROPIC_MODEL, label: override.ANTHROPIC_MODEL, custom: true },
+    ]);
+  });
+
+  it("keeps official-looking availableModels and customModels custom", () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-claude-custom-catalog-"));
+    scratchDirs.push(home);
+    const dir = join(home, ".claude");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({
+      availableModels: ["claude-available-test"], customModels: ["claude-custom-test"],
+    }));
+    expect(readClaudeModelCatalog({ HOME: home }).options.slice(STATIC_CLAUDE_MODELS.options.length)).toEqual([
+      { id: "claude-available-test", label: "claude-available-test", custom: true },
+      { id: "claude-custom-test", label: "claude-custom-test", custom: true },
+    ]);
+  });
+
   it("does not list settings.model as a Custom leftover", () => {
     const home = mkdtempSync(join(tmpdir(), "omb-claude-leftover-"));
     scratchDirs.push(home);
@@ -74,6 +133,39 @@ describe("readClaudeModelCatalog", () => {
 });
 
 describe("ClaudeDriver catalog", () => {
+  it.each([false, true])("offers Haiku 5.5 after discovery (existing installation: %s)", async (existing) => {
+    const home = mkdtempSync(join(tmpdir(), "omb-claude-haiku-"));
+    scratchDirs.push(home);
+    const instanceId = "claude-haiku-catalog";
+    if (existing) {
+      mkdirSync(DATA_DIR, { recursive: true });
+      writeFileSync(join(DATA_DIR, "bots.json"), JSON.stringify([{ id: "existing-bot" }]));
+      writeStartupModelCache(instanceId, {
+        default: "claude-sonnet-5",
+        options: [{ id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }],
+      });
+    }
+    const instance = await ClaudeDriver.create({
+      instanceId,
+      displayName: "Claude",
+      environment: { HOME: home },
+      enabled: true,
+      config: ClaudeDriver.defaultConfig(),
+    });
+    try {
+      await instance.startupModelRefresh;
+      const haiku = instance.models.options.filter((option) => option.id === "claude-haiku-5-5");
+      expect(haiku).toEqual([{ id: "claude-haiku-5-5", label: "Claude Haiku 5.5", contextWindow: 1_000_000 }]);
+      expect(instance.models.options.some((option) => option.id === "claude-haiku-4-5")).toBe(true);
+      expect(instance.models.default).toBe("claude-sonnet-5");
+      expect(readStartupModelCache(instanceId)?.options).toContainEqual(haiku[0]);
+    } finally {
+      await instance.dispose();
+      rmSync(join(DATA_DIR, "bots.json"), { force: true });
+      rmSync(startupModelCachePath(instanceId)!, { force: true });
+    }
+  });
+
   it("loads extras when the instance is created", async () => {
     const home = mkdtempSync(join(tmpdir(), "omb-claude-instance-"));
     scratchDirs.push(home);

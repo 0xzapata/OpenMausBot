@@ -1,6 +1,6 @@
-// One-place setup for the isolated Local VM image and its shared/per-bot policy.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { t } from "@/lib/i18n";
+import { waitForLocalVmReady } from "@/lib/local-vm-readiness";
 import type { LocaleKey } from "@/locales";
 import {
   AlertTriangle,
@@ -19,6 +19,7 @@ import {
 import { Card, CommandLine } from "./SettingsPrimitives";
 import { MacLocalControl } from "./MacLocalControl";
 import { cn } from "@/lib/cn";
+import { useStore } from "@/state/store";
 
 type Action = "pull" | "run" | "start" | "stop" | "remove" | "recreate";
 
@@ -45,6 +46,7 @@ interface Status {
   workspace_guest_path: string;
   viewer_url: string;
   idle_timeout_ms: number;
+  stop_reason?: "idle" | null;
   mode: "shared" | "per-bot" | "pool";
   max_instances: number;
   commands: {
@@ -124,15 +126,13 @@ interface VpsComputerInventoryPayload {
 
 const destinationLabelKeys: Record<LocalVmInventoryInstance["destination"], LocaleKey> = {
   auto: "vm.dest.auto",
-  cloud: "vm.dest.cloud",
+  cloud: "place.cloud",
   vm: "vm.dest.vm",
   local: "vm.dest.local",
   browser: "vm.dest.browser",
   off: "vm.dest.off",
 };
 
-/** The badge's colour is decided by the kind, never by the label: a
- * translated label would silently stop matching `=== "Running"`. */
 export type ComputerStateKind =
   | "unmanaged"
   | "in-use"
@@ -181,10 +181,10 @@ export function cloudComputerInventoryStateKind(
 ): ComputerStateKind {
   if (instance.inUse) return "in-use";
   if (instance.state === "removing") return "removing";
-  if (["archived", "stopped"].includes(instance.state)) return "sleeping";
-  if (["archiving", "stopping"].includes(instance.state)) return "going-to-sleep";
+  if (instance.state === "archived") return "sleeping";
+  if (instance.state === "archiving") return "going-to-sleep";
   if (["idle", "ready", "running"].includes(instance.state)) return "running";
-  if (["init", "provisioning", "provisioned", "cloning", "starting"].includes(instance.state)) return "starting";
+  if (["init", "provisioning", "provisioned", "cloning"].includes(instance.state)) return "starting";
   return "attention";
 }
 
@@ -192,10 +192,7 @@ export function cloudComputerInventoryState(instance: CloudComputerInventoryInst
   return computerStateLabel(cloudComputerInventoryStateKind(instance));
 }
 
-/** Boat's account LIST is eventually consistent. Preserve the result of an
- * action the provider accepted instead of letting an older snapshot make a
- * confirmed deletion reappear, a pending deletion disappear, or a sleeping
- * computer look awake. */
+/** Boat's account LIST is eventually consistent: an older snapshot must not undo an action the provider accepted. */
 export function reconcileCloudInventorySnapshot(
   incoming: CloudComputerInventoryInstance[],
   previous: CloudComputerInventoryInstance[],
@@ -208,15 +205,14 @@ export function reconcileCloudInventorySnapshot(
     if (override === "deleted") return [];
     if (override === "deleting") return [{ ...instance, state: "removing" }];
     if (override !== "sleeping") return [instance];
-    if (["archived", "stopped"].includes(instance.state)) {
+    if (instance.state === "archived") {
       delete nextOverrides[instance.boxId];
       return [instance];
     }
     return [{ ...instance, state: "archived" }];
   });
 
-  // A transitioning Boat can briefly disappear from LIST. Keep the last safe
-  // row until LIST returns the terminal sleeping state.
+  // A transitioning Boat can briefly disappear from LIST.
   for (const instance of previous) {
     if (overrides[instance.boxId] !== "sleeping" || incomingIds.has(instance.boxId)) continue;
     instances.push({ ...instance, state: "archived" });
@@ -229,9 +225,7 @@ export function reconcileCloudInventorySnapshot(
   return { instances, overrides: nextOverrides };
 }
 
-/** An empty list proves deletion only when Boat says the inventory read was
- * authoritative. Provider outages and disconnected accounts must not erase
- * the last known row or settle a pending deletion as successful. */
+/** An empty list proves deletion only when Boat says the read was authoritative. */
 export function reconcileCloudInventoryPayload(
   payload: CloudComputerInventoryPayload,
   previous: CloudComputerInventoryInstance[],
@@ -286,8 +280,7 @@ const computerInventoryPaths: Record<ComputerInventoryRequest, string> = {
   vps: "/api/computers/vps",
 };
 
-/** Keep the observation-only Settings reads explicit and independently
- * testable: opening Computers must never provision or wake anything. */
+/** Observation only: opening Computers must never provision or wake anything. */
 export function computerInventoryRequest(
   inventory: ComputerInventoryRequest,
   signal?: AbortSignal,
@@ -805,6 +798,7 @@ function ActionButton({
   return (
     <button
       onClick={onClick}
+      aria-busy={pending === action}
       disabled={pending !== null}
       className={cn(
         "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium disabled:opacity-50",
@@ -817,10 +811,110 @@ function ActionButton({
   );
 }
 
+// Mirrors localVm.idleTimeoutMinutes in server/config.ts; the server is the authority.
+const MIN_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 5;
+const MAX_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 1_440;
+const DEFAULT_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 480;
+
+export function parseLocalVmIdleTimeoutMinutes(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const minutes = Number(trimmed);
+  return minutes >= MIN_LOCAL_VM_IDLE_TIMEOUT_MINUTES && minutes <= MAX_LOCAL_VM_IDLE_TIMEOUT_MINUTES ? minutes : null;
+}
+
+export function LocalVmIdleTimeoutSetting({
+  minutes,
+  disabled,
+  onSave,
+}: {
+  minutes: number;
+  disabled: boolean;
+  onSave: (minutes: number) => Promise<void>;
+}) {
+  const [value, setValue] = useState(String(minutes));
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!dirty) setValue(String(minutes));
+  }, [minutes, dirty]);
+
+  const save = async () => {
+    if (!dirty || saving) return;
+    const parsed = parseLocalVmIdleTimeoutMinutes(value);
+    if (parsed === null) {
+      setError(t("vm.idle.range"));
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(parsed);
+      setValue(String(parsed));
+      setDirty(false);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("vm.idle.error"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <label htmlFor="local-vm-idle-timeout" className="text-[13px] text-ink">{t("vm.idle.label")}</label>
+          <div id="local-vm-idle-timeout-help" className="text-[11.5px] text-ink-secondary">{t("vm.idle.detail")}</div>
+        </div>
+        <div
+          className={cn(
+            "flex w-[150px] shrink-0 items-center rounded-lg border bg-control",
+            error ? "border-danger/60" : "border-hairline/40 focus-within:border-focus",
+          )}
+        >
+          <input
+            id="local-vm-idle-timeout"
+            type="number"
+            min={MIN_LOCAL_VM_IDLE_TIMEOUT_MINUTES}
+            max={MAX_LOCAL_VM_IDLE_TIMEOUT_MINUTES}
+            step={1}
+            inputMode="numeric"
+            value={value}
+            disabled={disabled || saving}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? "local-vm-idle-timeout-error local-vm-idle-timeout-help" : "local-vm-idle-timeout-help"}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setDirty(true);
+              setError("");
+            }}
+            onBlur={() => void save()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+            className="min-w-0 flex-1 bg-transparent px-2.5 py-1.5 text-[13px] tabular-nums text-ink focus:outline-none disabled:opacity-50"
+          />
+          <span className="pr-2.5 text-[12.5px] text-ink-secondary">{t("vm.idle.minutes")}</span>
+        </div>
+      </div>
+      {error ? (
+        <p id="local-vm-idle-timeout-error" role="alert" className="mt-1.5 text-[12px] text-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function LocalComputerSection() {
+  const cloudHome = useStore().state.config?.cloudHome === true;
   const [status, setStatus] = useState<Status | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<Action | null>(null);
+  const actionController = useRef<AbortController | null>(null);
+  useEffect(() => () => actionController.current?.abort(), []);
   const [error, setError] = useState<string | null>(null);
   const [policyPending, setPolicyPending] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -853,12 +947,11 @@ export function LocalComputerSection() {
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch(...computerInventoryRequest("status", signal));
     const body = await response.json().catch(() => ({}));
-    // The poll loop can be cleaned up mid-flight; a resolved-but-stale read
-    // must never overwrite the state of whoever unmounted us.
     if (signal?.aborted) return;
     if (!response.ok) throw new Error(body.error ?? t("vm.err.status", { code: response.status }));
     setStatus(body as Status);
     setError(null);
+    return body as Status;
   }, []);
 
   const refreshInventory = useCallback(async (signal?: AbortSignal) => {
@@ -911,6 +1004,7 @@ export function LocalComputerSection() {
   }, []);
 
   useEffect(() => {
+    if (cloudHome) return;
     let active = true;
     let timer: number | undefined;
     let controller: AbortController | undefined;
@@ -936,7 +1030,7 @@ export function LocalComputerSection() {
       controller?.abort();
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [refresh, refreshKey]);
+  }, [cloudHome, refresh, refreshKey]);
 
   useEffect(() => {
     if (status?.mode !== "per-bot") {
@@ -960,9 +1054,6 @@ export function LocalComputerSection() {
     return () => controller.abort();
   }, [inventoryRefreshKey, refreshInventory, status?.mode]);
 
-  // Boat account listing is deliberately not polled. It can be expensive and
-  // Settings must remain an observation-only surface until the person clicks
-  // Sleep or Delete.
   useEffect(() => {
     const controller = new AbortController();
     setCloudLoading(true);
@@ -978,8 +1069,6 @@ export function LocalComputerSection() {
     return () => controller.abort();
   }, [cloudRefreshKey, refreshCloudInventory]);
 
-  // Docker-over-SSH inventory is also manual/mount-only. A Settings view
-  // must never become a hidden remote poller or wake a stopped container.
   useEffect(() => {
     const controller = new AbortController();
     setVpsLoading(true);
@@ -995,11 +1084,12 @@ export function LocalComputerSection() {
     return () => controller.abort();
   }, [refreshVpsInventory, vpsRefreshKey]);
 
-  const post = async (action: Exclude<Action, "recreate">) => {
+  const post = async (action: Exclude<Action, "recreate">, signal: AbortSignal) => {
     const response = await fetch(`/api/local-computer/${action}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
+      signal,
     });
     const body = await response.json().catch(() => ({}));
     const errorKeys: Record<Exclude<Action, "recreate">, LocaleKey> = {
@@ -1010,26 +1100,37 @@ export function LocalComputerSection() {
       remove: "vm.deleteError",
     };
     if (!response.ok) throw new Error(body.error ?? t(errorKeys[action]));
+    signal.throwIfAborted();
     setStatus(body as Status);
+    return body as Status;
   };
 
   const confirmAction = (message: string) => window.ogb?.confirm ? window.ogb.confirm(message) : window.confirm(message);
 
   const act = async (action: Action) => {
-    if (pending !== null) return;
+    if (pending !== null || actionController.current) return;
+    const controller = new AbortController();
+    actionController.current = controller;
     setPending(action);
     setError(null);
     try {
       if (action === "remove" && !(await confirmAction(t("vm.confirm.deleteShared")))) return;
       if (action === "recreate" && !(await confirmAction(t("vm.confirm.recreate")))) return;
+      let result: Status;
       if (action === "recreate") {
-        await post("remove");
-        await post("run");
+        await post("remove", controller.signal);
+        result = await post("run", controller.signal);
       } else {
-        await post(action);
+        result = await post(action, controller.signal);
       }
-      // The desktop starts after the container process; keep the progress
-      // state honest and let the regular poll mark it Ready a few seconds on.
+      if (action === "run" || action === "start" || action === "recreate") {
+        result = await waitForLocalVmReady(
+          result,
+          async () => (await refresh(controller.signal)) ?? result,
+          controller.signal,
+        );
+        if (!result.ready) throw new Error(result.problem ?? t("vm.err.start"));
+      }
       await refresh();
       setAnnouncement(
         action === "remove"
@@ -1039,9 +1140,11 @@ export function LocalComputerSection() {
             : t("vm.announce.updated"),
       );
     } catch (e) {
+      if (controller.signal.aborted) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setPending(null);
+      actionController.current = null;
+      if (!controller.signal.aborted) setPending(null);
     }
   };
 
@@ -1063,6 +1166,17 @@ export function LocalComputerSection() {
     } finally {
       setPolicyPending(false);
     }
+  };
+
+  const saveIdleTimeout = async (idleTimeoutMinutes: number) => {
+    const response = await fetch("/api/config", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localVm: { idleTimeoutMinutes } }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error ?? t("vm.idle.error"));
+    setStatus((current) => current ? { ...current, idle_timeout_ms: idleTimeoutMinutes * 60_000 } : current);
   };
 
   const deletePerBotVm = async (instance: LocalVmInventoryInstance) => {
@@ -1129,15 +1243,11 @@ export function LocalComputerSection() {
 
       if (deletionPending) {
         // Boat may accept a background operation before the computer is gone.
-        // Keep the row visible as Removing while we check, then drop the
-        // optimistic state if the provider still lists it so the person can
-        // refresh or retry instead of being shown a false success forever.
         for (const delayMs of PENDING_CLOUD_DELETE_REFRESH_DELAYS_MS) {
           await waitForCloudDeleteRefresh(delayMs);
           try {
             await refreshCloudInventory();
           } catch {
-            // A later bounded attempt can still establish the final state.
           }
           if (cloudOverridesRef.current[instance.boxId] !== "deleting") {
             setAnnouncement(t("vm.announce.cloudDeleted", { subject }));
@@ -1211,8 +1321,7 @@ export function LocalComputerSection() {
   const existing = status?.container !== "missing";
   const needsRecreate = Boolean(
     existing &&
-      (status?.container === "stopped" ||
-        !status?.imageMatches ||
+      (!status?.imageMatches ||
         !status?.managed ||
         status?.network === "unsafe" ||
         status?.security === "unsafe" ||
@@ -1253,6 +1362,7 @@ export function LocalComputerSection() {
 
       <MacLocalControl />
 
+      {!cloudHome && <>
       <Card
         title={t("vm.main.title")}
         subtitle={perBot
@@ -1326,7 +1436,6 @@ export function LocalComputerSection() {
             </button>
           ))}
         </div>
-        {/* The cap only applies to per-bot VMs; shared mode runs exactly one. */}
         {perBot && (
           <div className="mt-3 flex items-center justify-between gap-3">
             <div>
@@ -1344,6 +1453,11 @@ export function LocalComputerSection() {
             </select>
           </div>
         )}
+        <LocalVmIdleTimeoutSetting
+          minutes={status ? Math.round(status.idle_timeout_ms / 60_000) : DEFAULT_LOCAL_VM_IDLE_TIMEOUT_MINUTES}
+          disabled={!status || policyPending}
+          onSave={saveIdleTimeout}
+        />
         {policyPending && <div className="mt-2 flex items-center gap-1.5 text-[12px] text-ink-secondary"><Loader2 size={12} className="animate-spin" /> {t("vm.saving")}</div>}
       </Card>
 
@@ -1417,7 +1531,10 @@ export function LocalComputerSection() {
                 )}
               </>
             ) : status?.container === "stopped" ? (
-              <ActionButton action="start" pending={pending} onClick={() => void act("start")}>{t("vm.setup.start")}</ActionButton>
+              <>
+                <p className="text-[13px] text-ink-secondary">{t(status.stop_reason === "idle" ? "vm.stopped.idle" : "vm.stopped.detail")}</p>
+                <ActionButton action="start" pending={pending} onClick={() => void act("start")}>{t("vm.setup.start")}</ActionButton>
+              </>
             ) : status?.container === "running" ? (
               <div className="flex items-center gap-2 text-[13px] text-ink-secondary"><Loader2 size={13} className="animate-spin" /> {t("vm.setup.waiting")}</div>
             ) : status?.image ? (
@@ -1482,6 +1599,7 @@ export function LocalComputerSection() {
           {status?.base_image_ref ? <> · {t("vm.safety.baseImage", { image: status.base_image_ref })}</> : null}
         </div>
       </Card>
+      </>}
     </>
   );
 }

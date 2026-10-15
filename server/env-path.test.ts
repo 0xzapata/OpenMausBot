@@ -1,14 +1,12 @@
-// PATH augmentation contract (issues #8, #12): a CLI living in a
-// well-known install dir — or an nvm bin dir — must be findable even
-// when the process itself started with a bare GUI PATH.
 import { execFile } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   augmentedPath,
+  findCliCandidates,
   harnessHome,
   registerPathDir,
   resetPathCache,
@@ -113,6 +111,53 @@ describe("augmentedPath", () => {
     }
   });
 
+  posixIt("keeps a sealed fixture off machine-wide install dirs and the login shell (#2035)", async () => {
+    // Real directories on this machine: Homebrew's codex lives in one of them.
+    const machineDirs = ["/opt/homebrew/bin", "/usr/local/bin"].filter((dir) => existsSync(dir));
+    const ownBin = join(homedir(), ".local", "bin");
+    mkdirSync(ownBin, { recursive: true });
+    const shell = join(homedir(), "fake-login-shell");
+    const ran = join(homedir(), "login-shell-ran");
+    const rcOnlyBin = join(homedir(), "rc-only", "bin");
+    writeFileSync(shell, `#!/bin/sh\n: > '${ran}'\nprintf '__OMB_PATH__%s' '${rcOnlyBin}'\n`);
+    chmodSync(shell, 0o755);
+
+    const saved = { PATH: process.env.PATH, SHELL: process.env.SHELL, VITEST: process.env.VITEST };
+    const restore = (key: keyof typeof saved) => {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    };
+    try {
+      // A bare PATH, as the fixture has, so only discovery could add a dir.
+      process.env.PATH = join(homedir(), "bare-path");
+      process.env.SHELL = shell;
+      delete process.env.VITEST;
+
+      // Control: unsealed, the product scans both dirs; that is the leak.
+      delete process.env.OMB_TEST_SEALED_PATH;
+      resetPathCacheForTests();
+      expect(augmentedPath().split(delimiter)).toEqual(expect.arrayContaining(machineDirs));
+      await vi.waitFor(() => expect(augmentedPath().split(delimiter)).toContain(rcOnlyBin));
+      rmSync(ran);
+
+      process.env.OMB_TEST_SEALED_PATH = "1";
+      resetPathCacheForTests();
+      const sealed = augmentedPath().split(delimiter);
+      for (const dir of machineDirs) expect(sealed).not.toContain(dir);
+      expect(sealed).toContain(ownBin);
+      // The unsealed probe above landed well inside this; the sealed one never starts.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(existsSync(ran)).toBe(false);
+      expect(augmentedPath().split(delimiter)).not.toContain(rcOnlyBin);
+    } finally {
+      delete process.env.OMB_TEST_SEALED_PATH;
+      restore("PATH");
+      restore("SHELL");
+      restore("VITEST");
+      resetPathCacheForTests();
+    }
+  });
+
   it("skips known dirs that do not exist", () => {
     resetPathCacheForTests();
     const parts = augmentedPath().split(delimiter);
@@ -132,6 +177,73 @@ describe("augmentedPath", () => {
     } finally {
       if (previous === undefined) delete process.env.LOCALAPPDATA;
       else process.env.LOCALAPPDATA = previous;
+      resetPathCacheForTests();
+      rmSync(localAppData, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("finds Docker Desktop's bin dir (#2117)", () => {
+    const previous = process.env.ProgramFiles;
+    const programFiles = mkdtempSync(join(tmpdir(), "omb-programfiles-"));
+    try {
+      process.env.ProgramFiles = programFiles;
+      const dockerBin = join(programFiles, "Docker", "Docker", "resources", "bin");
+      mkdirSync(dockerBin, { recursive: true });
+      resetPathCacheForTests();
+      expect(augmentedPath().split(delimiter)).toContain(dockerBin);
+    } finally {
+      if (previous === undefined) delete process.env.ProgramFiles;
+      else process.env.ProgramFiles = previous;
+      resetPathCacheForTests();
+      rmSync(programFiles, { recursive: true, force: true });
+    }
+  });
+
+  it("finds a Kimi install after launch with an unchanged Windows process PATH", () => {
+    const platform = process.platform;
+    const previousExt = process.env.PATHEXT;
+    const bin = join(homedir(), ".kimi-code", "bin");
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      process.env.PATHEXT = ".cmd;.exe";
+      resetPathCacheForTests();
+      expect(findCliCandidates("kimi-fixture")).toEqual([]);
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "kimi-fixture.cmd"), "@echo off\n");
+      resetPathCache();
+      expect(findCliCandidates("kimi-fixture")).toContain(join(bin, "kimi-fixture.cmd"));
+    } finally {
+      Object.defineProperty(process, "platform", { value: platform });
+      if (previousExt === undefined) delete process.env.PATHEXT;
+      else process.env.PATHEXT = previousExt;
+      resetPathCacheForTests();
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  // Cursor's Windows install script puts cursor-agent.* (and `agent` copies) in %LOCALAPPDATA%\cursor-agent and adds it to the
+  // user PATH, which a running app never sees. Simulated so it runs on every platform.
+  it("finds Cursor installed after launch on Windows", () => {
+    const realPlatform = process.platform;
+    const previous = { LOCALAPPDATA: process.env.LOCALAPPDATA, PATHEXT: process.env.PATHEXT };
+    const localAppData = mkdtempSync(join(tmpdir(), "omb-localappdata-"));
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      process.env.LOCALAPPDATA = localAppData;
+      // The simulated Windows platform still has the host's case-sensitive filesystem.
+      process.env.PATHEXT = ".com;.exe;.bat;.cmd";
+      const cursorDir = join(localAppData, "cursor-agent");
+      mkdirSync(join(cursorDir, "versions", "2026.09.28-64d2043"), { recursive: true });
+      for (const name of ["cursor-agent.cmd", "cursor-agent.ps1", "agent.cmd", "agent.ps1"]) writeFileSync(join(cursorDir, name), "@echo off\n");
+      resetPathCacheForTests();
+      expect(augmentedPath().split(delimiter)).toContain(cursorDir);
+      expect(findCliCandidates("cursor-agent").map((path) => path.toLowerCase())).toContain(join(cursorDir, "cursor-agent.cmd").toLowerCase());
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform });
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
       resetPathCacheForTests();
       rmSync(localAppData, { recursive: true, force: true });
     }
@@ -169,9 +281,8 @@ describe("userHome / harnessHome", () => {
   });
 });
 
-// Windows CLI resolution — spawn(cli) alone finds nothing on Windows (no
-// PATHEXT in libuv, no #!, and a .cmd throws outright since Node's
-// CVE-2024-27980 fix). Fixtures are the two real npm shim shapes.
+// spawn(cli) alone finds nothing on Windows (no PATHEXT in libuv, no #!, and a .cmd throws since Node's CVE-2024-27980 fix).
+// Fixtures are the two real npm shim shapes.
 const winOnly = describe.skipIf(process.platform !== "win32");
 
 // the exact bytes npm writes for a CLI whose bin is a native binary

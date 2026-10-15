@@ -13,15 +13,23 @@ import {
   type EnvironmentDescriptor,
   type SessionState,
 } from "../lib/session";
+import { pairedDestination } from "../lib/phone-pairing";
 
 const input = "mt-1 w-full rounded-md border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink outline-none focus:border-accent-border";
 const button = "mt-5 w-full rounded-md bg-accent px-4 py-2 text-[14px] font-medium text-accent-ink disabled:opacity-50";
 const fieldLabel = "mt-4 block text-[12px] font-medium text-ink-secondary";
 
-/** The page a pairing link opens: /pair#code=XXXX-XXXX-XXXX. Also what the
- * app shows instead of itself when a remote browser has no session yet.
- * When the server has a sign-in allow-list, "sign in with your email" comes
- * first and the pairing code stays one link away. */
+/** Only the desktop app pairs from a link at once; a browser asks, so a sent link cannot sign it in unseen. */
+export function pairsAutomatically(initialCode: string | null, desktop = typeof window !== "undefined" && Boolean(window.ogb?.workspaces)): boolean {
+  return Boolean(initialCode) && desktop;
+}
+
+export function pairIntro({ mode, sent, email, cloudHome }: { mode: "email" | "code" | null; sent: boolean; email: string; cloudHome: boolean }): string {
+  if (mode === "email") return sent ? `We emailed an 8-digit code to ${email}. It works once and expires in ten minutes.` : "Enter your email and we will send you a one-time code.";
+  if (cloudHome) return "To open My Cloud, choose Open My Cloud in the OpenMausBot app on your computer (Settings → MausBot Cloud), or Use in your browser on your Plan page. Have a pairing code? Enter it below.";
+  return "Enter the pairing code shown on the server. Codes work once and expire after five minutes.";
+}
+
 export function PairPage({ initialCode, initialEmail = null, reason }: { initialCode: string | null; initialEmail?: string | null; reason?: string }) {
   const [code, setCode] = useState(initialCode ?? "");
   const [label, setLabel] = useState(defaultDeviceLabel());
@@ -29,12 +37,25 @@ export function PairPage({ initialCode, initialEmail = null, reason }: { initial
   const [session, setSession] = useState<SessionState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // one id per code typed: a retry after a lost response reuses it, a new code gets a new one
   const [attemptId, setAttemptId] = useState(() => newAttemptId());
   const [mode, setMode] = useState<"email" | "code" | null>(initialCode ? "code" : null);
   const [email, setEmail] = useState(initialEmail ?? "");
   const [otp, setOtp] = useState("");
   const [sent, setSent] = useState(false);
+  const [opening, setOpening] = useState(() => pairsAutomatically(initialCode));
+
+  useEffect(() => {
+    if (!opening || !initialCode) return;
+    let active = true;
+    void pairWithCode({ code: initialCode, label, attemptId }).then((result) => {
+      if (!active) return;
+      if (result.ok) { location.replace(pairedDestination(location.search)); return; }
+      setOpening(false);
+      setError(result.error);
+    });
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     void fetch("/.well-known/openmausbot/environment")
@@ -52,6 +73,7 @@ export function PairPage({ initialCode, initialEmail = null, reason }: { initial
 
   const connected = isConnected(session);
   const emailOffered = environment?.capabilities.emailSignIn === true;
+  const cloudHome = environment?.capabilities.cloudHome === true;
 
   async function submitCode(e: React.FormEvent) {
     e.preventDefault();
@@ -60,7 +82,7 @@ export function PairPage({ initialCode, initialEmail = null, reason }: { initial
     const result = await pairWithCode({ code, label, attemptId });
     setBusy(false);
     if (result.ok) {
-      location.replace("/");
+      location.replace(pairedDestination(location.search));
       return;
     }
     setError(result.error);
@@ -77,7 +99,7 @@ export function PairPage({ initialCode, initialEmail = null, reason }: { initial
       return;
     }
     if (sent) {
-      location.replace("/");
+      location.replace(pairedDestination(location.search));
       return;
     }
     setSent(true);
@@ -92,17 +114,18 @@ export function PairPage({ initialCode, initialEmail = null, reason }: { initial
     <main className="flex min-h-screen items-center justify-center bg-app px-6 text-ink">
       <div className="absolute left-3 top-12 max-w-[280px]"><DesktopWorkspaceSwitcher /></div>
       <div className="w-full max-w-[420px]">
-        <h1 className="text-[20px] font-semibold">{mode === "email" ? "Sign in to" : "Connect to"} {environment?.label ?? "this OpenMausBot"}</h1>
+        {opening ? (
+          <p role="status" className="text-[20px] font-semibold">{cloudHome ? "Opening My Cloud…" : `Connecting to ${environment?.label ?? "this OpenMausBot"}…`}</p>
+        ) : <>
+        <h1 className="text-[20px] font-semibold">{cloudHome ? "My Cloud" : `${mode === "email" ? "Sign in to" : "Connect to"} ${environment?.label ?? "this OpenMausBot"}`}</h1>
         <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink-secondary">
-          {environment ? `Version ${environment.version} on ${environment.platform}. ` : ""}
-          {mode === "email"
-            ? sent
-              ? `We emailed an 8-digit code to ${email}. It works once and expires in ten minutes.`
-              : "Enter your email and we will send you a one-time code."
-            : "Enter the pairing code shown on the server. Codes work once and expire after five minutes."}
+          {environment && !cloudHome ? `Version ${environment.version} on ${environment.platform}. ` : ""}
+          {pairIntro({ mode, sent, email, cloudHome })}
         </p>
         {reasonWorthShowing(reason) && !connected ? <p className="mt-3 text-[13px] text-ink-secondary">{reasonWorthShowing(reason)}</p> : null}
-        {connected ? (
+        {error && cloudHome && initialCode ? <p className="mt-3 text-[13px] text-ink-secondary">This link has expired or was already used. In the OpenMausBot app on your computer, open Settings → MausBot Cloud and choose Open My Cloud.</p> : null}
+        </>}
+        {opening ? null : connected ? (
           <p className="mt-4 text-[13.5px]">
             This browser is already connected.{" "}
             <a href="/" className="text-accent underline">

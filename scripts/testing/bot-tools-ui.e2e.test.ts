@@ -54,14 +54,16 @@ describe("bot setup and tools in the real renderer", () => {
     const bots = async (): Promise<SavedBot[]> => (await fetch(`${info.url}/api/bots`).then((response) => response.json())).bots;
     const snapshot = async () => (await ui("snapshot")).snapshot as string;
     const openTools = async () => {
-      // Composer tray Tools is gone; open bot settings (mascot) then Access.
-      // Accordion starts collapsed, so Access must be expanded explicitly.
+      // Open the profile from the chat header. A remembered section can
+      // already have the Access row expanded, so expand only when collapsed.
       const state = await ui("snapshot", "--interactive");
       const profile = Object.entries(state.refs as Record<string, { role: string; name: string }>)
         .find(([, entry]) => entry.role === "button" && /Open .+ profile/.test(entry.name));
       expect(profile).toBeDefined();
       await ui("click", "--ref", `@${profile![0]}`);
-      await click("Access");
+      const accessExpanded = () => evaluate("[...document.querySelectorAll('[role=dialog] button')].find(b => b.textContent.trim() === 'Access')?.getAttribute('aria-expanded')");
+      await expect.poll(accessExpanded, { timeout: 10_000 }).toMatch(/^(?:true|false)$/);
+      if ((await accessExpanded()) !== "true") await click("Access");
     };
     const chooseRole = async (roleId: string) => {
       await expect.poll(snapshot, { timeout: 10_000 }).toContain("Starting role");
@@ -130,9 +132,10 @@ describe("bot setup and tools in the real renderer", () => {
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("No MCP servers added yet.");
     const usageExpanded = () => evaluate("[...document.querySelectorAll('[role=dialog] button')].find(b => b.textContent.trim() === 'Usage')?.getAttribute('aria-expanded')");
     const openHeaderUsage = async () => {
+      await click("More");
       const state = await ui("snapshot", "--interactive");
       const cost = Object.entries(state.refs as Record<string, { role: string; name: string }>)
-        .filter(([, entry]) => entry.role === "button" && entry.name.includes("$0.01"));
+        .filter(([, entry]) => entry.role === "menuitem" && entry.name.includes("$0.01"));
       expect(cost).toHaveLength(1);
       await ui("click", "--ref", `@${cost[0][0]}`);
       await expect.poll(usageExpanded, { timeout: 10_000 }).toBe("true");

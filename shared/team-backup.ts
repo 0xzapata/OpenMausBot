@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { CONNECTOR_SLUG_PATTERN, CONNECTOR_TOOL_NAME_PATTERN } from "./wire.ts";
+import { parseToolScope, type ToolScope } from "./tool-scope.ts";
 
 export const MAX_TEAM_BACKUP_BYTES = 50 * 1024 * 1024;
 export const TEAM_BACKUP_CONTENTS = "Bot profiles, instructions, sections, rooms, playbooks, routines, each bot's memory (MEMORY.md, topic notes and daily logs) and conversation text (all tasks and branches).";
@@ -29,8 +30,10 @@ const task = z.object({
   titleFromFirstMessage: z.literal(true).optional(),
   openedBy: z.object({ botId: key, name, at: timestamp, kind: z.enum(["pair", "work"]).optional() }).optional(),
   closedBy: z.object({ botId: key, name, at: timestamp }).optional(),
-  /** Only true travels. Absence is unpinned, including backups from before pins. */
+  /** Only true travels; absence is unpinned. */
   pinned: z.literal(true).optional(),
+  /** A conversation's own turn ceiling. Absence keeps the group default. */
+  turnTimeoutMinutes: z.number().int().min(1).max(1_440).optional(),
   activeLeafId: key.nullable(),
   messages: z.array(message).max(100_000),
 });
@@ -105,6 +108,10 @@ const backupSchema = z.object({
     hidden: z.boolean(),
     playbooks: z.array(playbook).max(200),
     connectorTools: connectorTools.optional(),
+    toolScope: z.custom<ToolScope>((value) => value !== undefined && parseToolScope(value).ok, "Invalid tool selection")
+      .transform((value) => { const parsed = parseToolScope(value); return parsed.ok ? parsed.scope! : value; }).optional(),
+    /** Only false is written and applied: a file can keep a bot off the helper model, never put one on it. */
+    helperModel: z.boolean().optional(),
     memory: memory.optional(),
   })).min(1).max(200),
   groups: z.array(z.preprocess(knownRoomResponder, z.object({

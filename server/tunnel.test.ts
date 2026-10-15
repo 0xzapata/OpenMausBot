@@ -10,6 +10,7 @@ import { startControlPlaneStub, type ControlPlaneStub } from "./testing/control-
 import { freePortBlock } from "./testing/ports.ts";
 import {
   cleanupTunnelOrigin,
+  createTunnelAccount,
   createTunnelOrigin,
   describeTunnelAccount,
   describeTunnelState,
@@ -22,6 +23,8 @@ import {
   startTunnel,
   TUNNEL_CREDENTIALS_FILE,
   tunnelAccess,
+  type ManagedTunnelAccess,
+  type RunningTunnel,
 } from "./tunnel.ts";
 
 const posix = process.platform !== "win32";
@@ -99,7 +102,6 @@ describe("login and logout against the control plane", () => {
     expect([...stub.installations.values()][0]).toMatchObject({ platform: platformName() });
     if (posix) expect(statSync(join(dir, TUNNEL_CREDENTIALS_FILE)).mode & 0o777).toBe(0o600);
 
-    // status mentions the address without touching the network
     const status = fakeIo([]);
     await runStatus(options(dir, { command: "status" }), status.io);
     expect(status.out.join("\n")).toContain(`public address: ${stub.endpointUrl}`);
@@ -110,6 +112,65 @@ describe("login and logout against the control plane", () => {
     expect(describeTunnelAccount(openTunnelCredentials(dir).read()).email).toBeNull();
     expect(stub.calls).toContain("DELETE /v1/installations/self/endpoint");
     expect(stub.calls).toContain("POST /api/auth/sign-out");
+  });
+
+  it("a running serve --tunnel re-creates a reclaimed endpoint behind the same address and reconnects", async () => {
+    expect(await runLogin(options(dir, { email: "milind@example.test" }), fakeIo([stub.otp]).io)).toBe(0);
+    const pending = new Map<number, () => void>();
+    let nextTimer = 1;
+    let clock = 1_000_000;
+    const restarts: ManagedTunnelAccess[] = [];
+    const running: RunningTunnel = {
+      address: stub.endpointUrl,
+      state: () => ({ status: "ready", ready: true }),
+      started: Promise.resolve({ status: "ready", ready: true }),
+      restart: async (access) => {
+        restarts.push(access);
+        return { status: "ready", ready: true };
+      },
+      stop: async () => {},
+    };
+    let serving: RunningTunnel | null = null;
+    const account = createTunnelAccount({
+      dataDir: dir,
+      version: "test",
+      recovery: { running: () => serving },
+      clock: {
+        setTimer: (callback, _milliseconds) => {
+          pending.set(nextTimer, callback);
+          return nextTimer++;
+        },
+        clearTimer: (handle) => {
+          pending.delete(handle as number);
+        },
+        now: () => clock,
+      },
+    });
+    const fire = () => {
+      const due = [...pending.values()];
+      pending.clear();
+      for (const callback of due) callback();
+    };
+    try {
+      serving = running;
+      await account.service.restore();
+      expect(stub.calls.filter((call) => call === "GET /v1/installations/self/endpoint")).toHaveLength(1);
+      expect(restarts).toEqual([]);
+
+      // Weeks offline with the process alive; the control plane reclaimed the tunnel.
+      const replacement = stub.reclaim();
+      clock += 30 * 24 * 60 * 60_000;
+      fire();
+      await vi.waitFor(() => expect(restarts).toEqual([{ endpoint: stub.endpointUrl, token: replacement }]));
+      expect(tunnelAccess(openTunnelCredentials(dir).read())).toEqual({ endpoint: stub.endpointUrl, token: replacement });
+      expect(stub.calls.filter((call) => call === "POST /api/auth/email-otp/send-verification-otp")).toHaveLength(1);
+
+      serving = null;
+      account.service.dispose();
+      expect(pending.size).toBe(0);
+    } finally {
+      account.service.dispose();
+    }
   });
 
   it("an unusable control-plane override is a clear error, not a silent default", async () => {
@@ -136,7 +197,6 @@ describe("where the pieces are", () => {
     } finally {
       void removeTempDir(bundled);
     }
-    // a checkout: the source files
     expect(guardianEntry()).toMatch(/managed-companion-guardian-main\.mjs$/);
   });
 
@@ -174,7 +234,6 @@ describe.skipIf(!posix)("startTunnel: guardian, gateway and connector, verified 
       binaryPath: fake,
       guardian: guardian ?? "",
       env: { ...process.env, OMB_TUNNEL_ORIGIN_PORT: String(originPort) },
-      // the public address does not exist here; verify through the gateway instead
       fetchImpl: (input, init) => fetch(String(input).replace(endpoint, `http://127.0.0.1:${originPort}`), init),
       onState: (state) => states.push(state.status),
     });
@@ -185,12 +244,22 @@ describe.skipIf(!posix)("startTunnel: guardian, gateway and connector, verified 
       expect(viaGateway.app).toBe("openmausbot");
       expect(viaGateway.peer).toBeNull();
       // the connector is spawned right after the gateway binds; its shell writes the pid a moment later
-      let connectorPid = 0;
-      for (let tries = 0; tries < 50 && !connectorPid; tries += 1) {
-        connectorPid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
-        if (!connectorPid) await new Promise((r) => setTimeout(r, 100));
-      }
+      const connectorPidOtherThan = async (previous: number) => {
+        let pid = 0;
+        for (let tries = 0; tries < 50 && (!pid || pid === previous); tries += 1) {
+          pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
+          if (!pid || pid === previous) await new Promise((r) => setTimeout(r, 100));
+        }
+        return pid === previous ? 0 : pid;
+      };
+      const firstPid = await connectorPidOtherThan(0);
+      expect(firstPid).toBeGreaterThan(0);
+      expect((await tunnel.restart({ endpoint, token: `connector-${"t".repeat(60)}` })).status).toBe("ready");
+      expect(Number(readFileSync(pidFile, "utf8").trim())).toBe(firstPid);
+      expect((await tunnel.restart({ endpoint, token: `connector-${"u".repeat(60)}` })).status).toBe("ready");
+      const connectorPid = await connectorPidOtherThan(firstPid);
       expect(connectorPid).toBeGreaterThan(0);
+      expect(() => process.kill(firstPid, 0)).toThrow();
       await tunnel.stop();
       expect(tunnel.state().status).toBe("stopped");
       await new Promise((r) => setTimeout(r, 300));
@@ -214,9 +283,11 @@ describe("a fleet's credential in the environment", () => {
       expect(fleetCredential({ OMB_INSTALLATION_CREDENTIAL: "   " })).toBeNull();
       const credential = stub.seedInstallation("boat-1");
       expect(fleetCredential({ OMB_INSTALLATION_CREDENTIAL: ` ${credential} ` })).toBe(credential);
-      const access = await fleetAccess({ credential, env });
+      const access = await fleetAccess({ credential, env, version: "9.8.7" });
       expect(access).toEqual({ endpoint: stub.endpointUrl, token: stub.connectorToken });
       expect(stub.calls).toContain("POST /v1/installations/self/endpoint");
+      // The fleet created the installation without a version; the endpoint request reports this server's release.
+      expect([...stub.installations.values()].find((inst) => inst.credential === credential)?.appVersion).toBe("9.8.7");
       expect(stub.calls.some((call) => call.includes("/api/auth/"))).toBe(false);
       await expect(fleetAccess({ credential: `omb_install_${"x".repeat(22)}.${"y".repeat(43)}`, env })).rejects.toThrow(/rejected/);
       await expect(fleetAccess({ credential, env: { ...env, OMB_CONTROL_PLANE_URL: "ftp://nope" } })).rejects.toThrow(/OMB_CONTROL_PLANE_URL/);

@@ -15,10 +15,12 @@ type RemoteProfilePatch = Partial<
   Pick<Bot, "name" | "title" | "description" | "avatarUrl" | "avatarCrop" | "voice" | "speakReplies" | "notifications">
 >;
 
-export function RemoteAgentSettingsPanel({ bot }: { bot: Bot }) {
+export function RemoteAgentSettingsPanel({ bot, overlay = false }: {
+  bot: Bot;
+  overlay?: boolean;
+}) {
   const { dispatch } = useStore();
-  // Docked flush under the Windows caption corner: drop the header 16px.
-  const { padClass } = useCaptionChrome();
+  const { padClass, dragProps } = useCaptionChrome();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -73,8 +75,11 @@ export function RemoteAgentSettingsPanel({ bot }: { bot: Bot }) {
   };
 
   return (
-    <aside className="animate-panel-in relative z-20 flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
-      <div className={cn("flex items-center justify-between px-4 py-3", padClass)}>
+    <aside className={cn(
+      "animate-panel-in absolute inset-0 z-40 flex h-full min-w-0 flex-col border-l border-hairline/40 bg-panel",
+      overlay ? "md:left-auto md:w-[400px] md:shadow-2xl" : "md:relative md:z-20 md:w-[400px] md:shrink-0",
+    )}>
+      <div {...dragProps} className={cn("flex items-center justify-between px-4 py-3", padClass)}>
         <button
           onClick={close}
           aria-label="Collapse remote agent settings"

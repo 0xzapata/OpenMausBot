@@ -1,7 +1,5 @@
-/** Webhook wire shapes — triggers and delivery attempts as they ride the
- * REST snapshot and the `webhook` / `webhook.attempt` live frames. Moved
- * verbatim from the client's mirrors (src/lib/webhooks.ts); the client file
- * re-exports these under the same names. */
+/** Webhook wire shapes: triggers and delivery attempts as they ride the REST
+ * snapshot and the `webhook` / `webhook.attempt` live frames. */
 import type { RoutineRunOn } from "./routines.ts";
 
 export interface WebhookTrigger {
@@ -16,6 +14,10 @@ export interface WebhookTrigger {
   updatedAt: number;
   lastReceivedAt?: number;
   lastRunId?: string;
+  /** delivery:"post" only: the stable thread this webhook's messages land in,
+   *  created on first delivery and reused after, never the bot's
+   *  currently-selected thread. */
+  resultsThreadId?: string;
   deliveryCount: number;
   verificationPending?: boolean;
   verifiedAt?: number;

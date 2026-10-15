@@ -27,7 +27,6 @@ const store = vi.hoisted(() => ({ state: {} as Record<string, unknown>, api: vi.
 vi.mock("@/state/store", () => ({
   api: store.api,
   useStore: () => ({ state: store.state, dispatch: vi.fn() }),
-  useStreaming: () => ({ streaming: {} }),
 }));
 vi.mock("@/lib/analytics", () => ({ emailGateDone: () => false }));
 vi.mock("./Spotlight", () => ({ Spotlight: () => null }));
@@ -55,7 +54,6 @@ beforeEach(() => {
     config: { onboarding: { ...record, hintsSeen: withTourFinished(record) } },
     welcomeOpen: false,
     selectedId: "bot-1",
-    // an approval card is on screen: the first spotlight it explains
     bots: [{ id: "bot-1", threadId: "t-1", busy: false, messages: [{ kind: "options", card: { requestId: "r", tool: "Bash", answered: false } }] }],
   };
 });
@@ -65,6 +63,21 @@ describe("first-conversation spotlights", () => {
     render(false);
     for (const effect of fixture.effects) effect();
     expect(render(false)?.type).toBe(Spotlight);
+  });
+
+  it("let the approval tip go once the approval it explains is answered", () => {
+    store.api.mockResolvedValue({});
+    render(false);
+    for (const effect of fixture.effects) effect();
+    expect(render(false)?.type).toBe(Spotlight);
+
+    const bots = store.state.bots as Array<{ busy: boolean; messages: Array<{ card: { answered: string | false } }> }>;
+    bots[0].busy = true;
+    bots[0].messages[0].card.answered = "allow";
+    expect(render(false)).toBeNull();
+    for (const effect of fixture.effects) effect();
+    expect(render(false)).toBeNull();
+    expect(store.api).toHaveBeenCalledWith("/api/config", expect.objectContaining({ method: "PUT", body: expect.stringContaining("spot.approval") }));
   });
 
   it("stay away from a hosted member, who could never dismiss them for good", () => {

@@ -67,9 +67,11 @@ export interface WebhookManagerOptions {
   }) => { id: string };
   cancelQueued?: (webhookId: string, message: string) => void;
   pendingRuns?: (webhookId: string) => number;
-  /** Sink for delivery:"post" webhooks: the payload text lands in the bot's chat. */
-  post?: (botId: string, text: string) => void;
-  /** The execution store commits this identity together with the queued run. */
+  /** delivery:"post" sink: lands in the trigger's own stable thread, never a caller-supplied one. */
+  post?: (botId: string, threadId: string, text: string) => void;
+  /** Absent, every post delivery fails with 503 rather than falling back to an ambient thread
+   *  (https://github.com/milind-soni/OpenMausBot/issues/2071). */
+  resolvePostThread?: (trigger: WebhookTrigger, forceNew: boolean) => string | undefined;
   findRun?: (webhookId: string, deliveryId: string) => { id: string } | null;
 }
 
@@ -83,9 +85,7 @@ const MAX_ATTEMPTS = 2_000;
 const MAX_EVENT_CHARS = 48_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 10;
-/** Unfinished (queued, running or waiting) runs one webhook may hold before
- * new deliveries are refused with 429. A webhook can set its own limit; one
- * fanning out a project manager's events needs more than a CI hook does. */
+const UNAUTHORIZED_REASON = "Invalid webhook URL or secret";
 export const DEFAULT_MAX_PENDING_RUNS = 3;
 export const MAX_PENDING_RUNS_LIMIT = 50;
 const maxPendingRunsSchema = z.number().int().min(1).max(MAX_PENDING_RUNS_LIMIT);
@@ -102,7 +102,6 @@ const triggerInputSchema = z.object({
   enabled: z.boolean().optional(),
   verificationPending: z.boolean().optional(),
   eventTypes: eventTypesSchema,
-  /** `null` goes back to the default. */
   maxPendingRuns: maxPendingRunsSchema.nullable().optional(),
 });
 const triggerPatchSchema = triggerInputSchema.partial();
@@ -125,13 +124,13 @@ const storedWebhookSchema = z.object({
   updatedAt: z.number().finite().nonnegative(),
   lastReceivedAt: z.number().finite().nonnegative().optional(),
   lastRunId: z.string().optional(),
+  resultsThreadId: z.string().min(1).optional(),
   deliveryCount: z.number().int().nonnegative(),
   verificationPending: z.boolean().optional(),
   verifiedAt: z.number().finite().nonnegative().optional(),
   verificationSample: verificationSampleSchema.optional(),
   eventTypes: eventTypesSchema,
-  // A hand-edited value out of range falls back to the default instead of
-  // making the whole webhooks file unreadable.
+  // A hand-edited value out of range falls back to the default instead of making the file unreadable.
   maxPendingRuns: maxPendingRunsSchema.optional().catch(undefined),
   secretHash: z.string().regex(/^[a-f0-9]{64}$/),
 });
@@ -289,6 +288,8 @@ function eventPrompt(trigger: StoredWebhookTrigger, event: WebhookEvent, receive
   ].join("\n");
 }
 
+type AttemptDetails = Pick<WebhookAttempt, "outcome" | "statusCode"> & Partial<Pick<WebhookAttempt, "deliveryId" | "runId" | "reason">>;
+
 export class WebhookManager {
   private readonly file: string;
   private readonly now: () => number;
@@ -297,6 +298,9 @@ export class WebhookManager {
   private deliveries: DeliveryReceipt[] = [];
   private attempts: WebhookAttempt[] = [];
   private rate = new Map<string, number[]>();
+  private unauthorized = new Map<string, number>();
+  /** Saves are refused while set, so an empty state never overwrites an unreadable file. */
+  private unreadable = false;
 
   constructor(options: WebhookManagerOptions) {
     this.options = options;
@@ -308,10 +312,17 @@ export class WebhookManager {
       this.webhooks = parsed.data.webhooks;
       this.deliveries = parsed.data.deliveries.slice(-MAX_DELIVERIES);
       this.attempts = (parsed.data.attempts ?? []).slice(-MAX_ATTEMPTS);
-    } catch {
+    } catch (error) {
       this.webhooks = [];
       this.deliveries = [];
       this.attempts = [];
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.unreadable = true;
+        // JSON.parse errors can echo a fragment of the input, so they never reach the log.
+        const reason = error instanceof SyntaxError ? "invalid JSON"
+          : error instanceof Error ? error.message : "unable to read webhooks";
+        console.error(`webhooks: ignoring unreadable ${this.file}: ${reason}`);
+      }
     }
   }
 
@@ -324,6 +335,7 @@ export class WebhookManager {
   }
 
   create(input: JsonValue): CreatedWebhook {
+    this.assertWritable();
     const clean = cleanInput(parseTriggerInput(input));
     if (this.options.botState(clean.botId) === "missing") fail(400, "That MAUS no longer exists");
     const now = this.now();
@@ -344,6 +356,7 @@ export class WebhookManager {
   }
 
   update(id: string, value: JsonValue): WebhookTrigger | null {
+    this.assertWritable();
     const trigger = this.webhooks.find((candidate) => candidate.id === id);
     if (!trigger) return null;
     const patch = parseTriggerPatch(value);
@@ -372,12 +385,14 @@ export class WebhookManager {
   }
 
   remove(id: string): boolean {
+    this.assertWritable();
     const at = this.webhooks.findIndex((candidate) => candidate.id === id);
     if (at === -1) return false;
     const [trigger] = this.webhooks.splice(at, 1);
     this.deliveries = this.deliveries.filter((delivery) => !delivery.key.startsWith(`${trigger.endpointId}:`));
     this.attempts = this.attempts.filter((attempt) => attempt.webhookId !== trigger.id);
     this.rate.delete(trigger.endpointId);
+    this.unauthorized.delete(trigger.id);
     this.options.cancelQueued?.(trigger.id, "The webhook was deleted before this delivery started");
     this.save();
     this.options.emit?.({ kind: "webhook.deleted", webhookId: id });
@@ -385,6 +400,7 @@ export class WebhookManager {
   }
 
   rotateSecret(id: string): { webhook: WebhookTrigger; secret: string } | null {
+    this.assertWritable();
     const trigger = this.webhooks.find((candidate) => candidate.id === id);
     if (!trigger) return null;
     const secret = newSecret();
@@ -446,6 +462,29 @@ export class WebhookManager {
     return this.recordRejectedForTrigger(trigger, statusCode, reason, event);
   }
 
+  /** Anyone who reaches the receiver can send a wrong secret: one rolling record per webhook, saved with the next real change. */
+  recordUnauthorized(endpointId: string, event: Partial<WebhookEvent> = {}): WebhookAttempt | null {
+    const trigger = this.webhooks.find((candidate) => candidate.endpointId === endpointId);
+    if (!trigger) return null;
+    const at = this.attempts.findLastIndex((attempt) =>
+      attempt.webhookId === trigger.id && attempt.outcome === "rejected" && attempt.statusCode === 401);
+    if (at === -1) {
+      this.unauthorized.set(trigger.id, 1);
+      return this.appendAttempt(trigger, event, { outcome: "rejected", statusCode: 401, reason: UNAUTHORIZED_REASON, deliveryId: event.deliveryId });
+    }
+    const count = (this.unauthorized.get(trigger.id) ?? 1) + 1;
+    this.unauthorized.set(trigger.id, count);
+    const attempt = this.buildAttempt(trigger, event, {
+      outcome: "rejected",
+      statusCode: 401,
+      reason: `${UNAUTHORIZED_REASON} (${count} requests)`,
+      deliveryId: event.deliveryId,
+    }, this.attempts[at]!.id);
+    this.attempts[at] = attempt;
+    this.options.emit?.({ kind: "webhook.attempt", attempt: { ...attempt } });
+    return attempt;
+  }
+
   private dispatch(trigger: StoredWebhookTrigger, event: WebhookEvent): WebhookReceiveResult {
     if (!trigger.enabled) fail(409, "This webhook is paused");
     if (this.options.botState(trigger.botId) === "missing") fail(410, "The assigned MAUS no longer exists");
@@ -484,8 +523,7 @@ export class WebhookManager {
       }
     }
 
-    // A sender retrying an already-accepted delivery must remain idempotent
-    // even while this webhook's queue is full. Only new work consumes a slot.
+    // A retry of an accepted delivery stays idempotent even while the queue is full.
     const maxPendingRuns = trigger.maxPendingRuns ?? DEFAULT_MAX_PENDING_RUNS;
     const pendingRuns = this.options.pendingRuns?.(trigger.id) ?? 0;
     if (pendingRuns >= maxPendingRuns) {
@@ -499,17 +537,19 @@ export class WebhookManager {
     this.rate.set(trigger.endpointId, recent);
 
     const deliveryId = requestedDeliveryId || randomUUID();
-    // delivery:"post": the payload text becomes the bot's own chat message — no task,
-    // no model turn. For notification-style webhooks (a scheduled brief, an alert)
-    // that should read like the bot said it. Dedup/rate/attempt bookkeeping is shared.
     if (trigger.delivery === "post") {
-      // Never fall through to a task run: a stored post webhook on a server
-      // without a post sink is a configuration error, not a run request.
+      // Never fall through to a task run.
       if (!this.options.post) fail(503, "This server cannot post webhook messages to chat");
+      const threadId = this.options.resolvePostThread?.(trigger, false);
+      if (!threadId) fail(503, "This server could not resolve a destination thread for this delivery");
+      if (threadId !== trigger.resultsThreadId) {
+        trigger.resultsThreadId = threadId;
+        trigger.updatedAt = now;
+      }
       const raw = event.payload as { text?: unknown } | null;
       const text =
         raw && typeof raw === "object" && typeof raw.text === "string" && raw.text.trim() ? raw.text : serializePayload(event.payload);
-      this.options.post(trigger.botId, text.slice(0, 20000));
+      this.options.post(trigger.botId, threadId, text.slice(0, 20000));
       this.deliveries.push({ key: `${trigger.endpointId}:${deliveryId}`, runId: "post", at: now });
       if (this.deliveries.length > MAX_DELIVERIES) this.deliveries.splice(0, this.deliveries.length - MAX_DELIVERIES);
       trigger.lastReceivedAt = now;
@@ -587,10 +627,23 @@ export class WebhookManager {
   private appendAttempt(
     trigger: StoredWebhookTrigger,
     event: Partial<WebhookEvent>,
-    details: Pick<WebhookAttempt, "outcome" | "statusCode"> & Partial<Pick<WebhookAttempt, "deliveryId" | "runId" | "reason">>,
+    details: AttemptDetails,
+  ): WebhookAttempt {
+    const attempt = this.buildAttempt(trigger, event, details);
+    this.attempts.push(attempt);
+    if (this.attempts.length > MAX_ATTEMPTS) this.attempts.splice(0, this.attempts.length - MAX_ATTEMPTS);
+    this.options.emit?.({ kind: "webhook.attempt", attempt: { ...attempt } });
+    return attempt;
+  }
+
+  private buildAttempt(
+    trigger: StoredWebhookTrigger,
+    event: Partial<WebhookEvent>,
+    details: AttemptDetails,
+    id: string = randomUUID(),
   ): WebhookAttempt {
     const attempt: WebhookAttempt = {
-      id: randomUUID(),
+      id,
       webhookId: trigger.id,
       receivedAt: this.now(),
       outcome: details.outcome,
@@ -601,9 +654,6 @@ export class WebhookManager {
     if (details.deliveryId) attempt.deliveryId = details.deliveryId.slice(0, 200);
     if (details.runId) attempt.runId = details.runId;
     if (details.reason) attempt.reason = details.reason;
-    this.attempts.push(attempt);
-    if (this.attempts.length > MAX_ATTEMPTS) this.attempts.splice(0, this.attempts.length - MAX_ATTEMPTS);
-    this.options.emit?.({ kind: "webhook.attempt", attempt: { ...attempt } });
     return attempt;
   }
 
@@ -611,7 +661,12 @@ export class WebhookManager {
     this.options.emit?.({ kind: "webhook", webhook: publicTrigger(trigger) });
   }
 
+  private assertWritable(): void {
+    if (this.unreadable) throw Object.assign(new Error("Saved webhooks could not be read. Repair webhooks.json before changing them."), { status: 503 });
+  }
+
   private save(): void {
+    if (this.unreadable) return;
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(
       this.file,

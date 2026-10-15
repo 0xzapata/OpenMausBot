@@ -28,7 +28,7 @@ export interface CloudLendingState {
   busy: boolean;
   connected?: boolean;
   /** Why lending is not connected, for localized copy. */
-  problem?: "connect-first" | "not-cloud" | "waiting" | "paused" | "signed-out" | "account-changed" | "machine-changed" | "closed";
+  problem?: "connect-first" | "not-cloud" | "waiting" | "paused" | "signed-out" | "account-changed" | "machine-changed";
   error?: string;
 }
 export interface CloudLendingSnapshot {

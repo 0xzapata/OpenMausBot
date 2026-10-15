@@ -1,12 +1,7 @@
-// Google Antigravity through its official ACP server. The protocol mechanics
-// stay in the shared ACP core; this file only supplies Antigravity's managed
-// runtime, isolated Google profile, model/mode configuration, and OAuth.
-//
-// The previous community `agy` print-mode bridge mutated the user's global
-// ~/.gemini MCP config and could not surface interactive approvals. Official
-// ACP mounts MCP servers per session and uses the same trusted approval cards
-// as OpenMausBot's other ACP engines.
+// Google Antigravity through its official ACP server: managed runtime, isolated Google profile,
+// model/mode configuration and OAuth.
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
+import { antigravityAccount } from "./antigravity-account.ts";
 import type {
   DriverCreateInput,
   ModelCatalog,
@@ -18,7 +13,6 @@ import { createAcpDriver, type AcpConfig, type AcpSupport } from "./acp/core.ts"
 import {
   AntigravityAuthController,
   antigravityProfileAuthenticated,
-  catalogFromAntigravityConfigOptions,
   prepareAntigravityProfile,
   probeAntigravityModels,
   validateAntigravityRuntime,
@@ -29,6 +23,7 @@ import {
   resolveAntigravityRuntime,
 } from "./antigravity-runtime.ts";
 import { resolveAntigravityReleaseAsset } from "./antigravity-release.ts";
+import { VERIFICATION_TEMP_KEY, scheduleAntigravityTempSweep } from "./antigravity-temp.ts";
 import { augmentedPath } from "../env-path.ts";
 
 export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
@@ -40,16 +35,10 @@ export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
   ],
 };
 
-/** Antigravity's own session modes: `yolo` for Full access, `auto_edit` for
- * auto-accept edits, `default` otherwise (Ask, and Auto, which it has no
- * reviewer for). */
+/** Antigravity's session modes: `yolo` for Full, `auto_edit` for auto-accept edits, `default` otherwise (it has no reviewer for Auto). */
 export function antigravityPermissionMode(fullAuto: boolean, approvalMode?: ApprovalMode): "yolo" | "auto_edit" | "default" {
   if (fullAuto) return "yolo";
   return approvalMode === "edits" ? "auto_edit" : "default";
-}
-
-export function antigravityModelsFromSession(value: unknown): ModelCatalog | null {
-  return catalogFromAntigravityConfigOptions(value, STATIC_ANTIGRAVITY_MODELS.default);
 }
 
 const managedAsset = resolveAntigravityReleaseAsset();
@@ -70,6 +59,10 @@ const support: AcpSupport = {
   images: true,
   spawnArgs: () => [],
   selectModel: { configId: "model" },
+  // Google's server reads its new-session default from this variable (agy_acp_server 1.1.1
+  // model_selection.get_default_model_id); a later switch re-fetches the model list (1.3-1.8 s).
+  sessionModelEnv: "AGY_ACP_DEFAULT_MODEL",
+  sessionScopedApproval: true,
   resumeMethod: "resume",
   clientFileSystem: true,
   redactStderr: true,
@@ -79,6 +72,7 @@ const support: AcpSupport = {
   resolveCommand: async (env, config, instanceId) => {
     const runtime = await resolveAntigravityRuntime(config.cli, env);
     const profile = await prepareAntigravityProfile({ instanceId, runtime, baseEnv: env });
+    if (profile.tempDirectory) scheduleAntigravityTempSweep(instanceId);
     return {
       command: runtime.executablePath,
       args: process.platform === "linux" ? ["--uid="] : [],
@@ -119,6 +113,7 @@ const support: AcpSupport = {
         state: "available",
         version: runtime.version,
         authenticated: await antigravityProfileAuthenticated(profile),
+        account: await antigravityAccount(profile.tokenPath),
       };
     } catch (error) {
       return { state: "unavailable", reason: error instanceof Error ? error.message : String(error) };
@@ -145,11 +140,12 @@ export const AntigravityDriver: ProviderDriver<AcpConfig> = {
   ...AcpAntigravityDriver,
   async create(input: DriverCreateInput<AcpConfig>): Promise<ProviderInstance> {
     const base = await AcpAntigravityDriver.create(input);
+    scheduleAntigravityTempSweep(input.instanceId);
+    scheduleAntigravityTempSweep(VERIFICATION_TEMP_KEY);
     const auth = new AntigravityAuthController();
     let installFailure: string | undefined;
     const runtimeAndProfile = async () => {
-      // Match the ACP driver's discovery/chat environment. A GUI launch's
-      // raw PATH may omit an official runtime that the model picker found.
+      // A GUI launch's raw PATH may omit the official runtime the model picker found.
       const environment = { ...process.env, ...input.environment, PATH: augmentedPath() };
       const runtime = await resolveAntigravityRuntime(input.config.cli, environment);
       const profile = await prepareAntigravityProfile({
@@ -167,8 +163,6 @@ export const AntigravityDriver: ProviderDriver<AcpConfig> = {
       snapshot: async () => {
         const snapshot = await base.snapshot();
         if (snapshot.state === "available") installFailure = undefined;
-        // A failed first install has no promoted executable yet. Preserve
-        // why it failed across closing/reopening setup in this app session.
         return snapshot.state === "unavailable" && installFailure
           ? { ...snapshot, reason: installFailure }
           : snapshot;

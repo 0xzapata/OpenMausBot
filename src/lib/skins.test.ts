@@ -1,6 +1,3 @@
-// The registry and the stylesheet are two halves of one contract: a skin listed
-// here without a matching CSS block renders as whatever was active before, with
-// no error anywhere. That failure is silent, so it gets a test.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -22,8 +19,6 @@ describe("skins", () => {
   });
 
   it("registers every stylesheet block", () => {
-    // SAFETY: the assertion only fits toContain()'s parameter type — the
-    // assertion IS the check, and an unregistered block fails the test.
     for (const id of blocks) expect(SKIN_IDS).toContain(id as (typeof SKIN_IDS)[number]);
   });
 
@@ -43,10 +38,22 @@ describe("skins", () => {
   it("selects a code-only light or dark palette in every nearest skin", () => {
     for (const id of SKIN_IDS) {
       const body = css.match(new RegExp(`\\[data-skin="${id}"\\]\\s*\\{([^}]*)\\}`))?.[1] ?? "";
-      const scheme = ["atelier", "lagoon", "linen", "daylight"].includes(id) ? "light" : "dark";
+      const scheme = ["atelier", "lagoon", "linen", "daylight", "meadow"].includes(id) ? "light" : "dark";
       expect(body).toContain(`--code-color-scheme: ${scheme};`);
     }
     expect(css).toMatch(/\.chat-md \.shiki\s*\{\s*color-scheme:\s*var\(--code-color-scheme\);\s*\}/);
+  });
+
+  it("adds Meadow without moving or replacing the original eight", () => {
+    expect(SKIN_IDS).toContain("meadow");
+    expect(SKIN_IDS.slice(0, 8)).toEqual([
+      "midnight", "atelier", "foundry", "lagoon", "graphite", "linen", "dusk", "daylight",
+    ]);
+    expect(DEFAULT_SKIN).toBe("midnight");
+  });
+
+  it("gives Meadow's dark bubble its own inverted context", () => {
+    expect(css).toMatch(/@scope \(\[data-skin="meadow"\]\) to \(\[data-skin\]\)\s*\{\s*\.bg-bubble-user\s*\{/);
   });
 
   it("describes each skin exactly once", () => {

@@ -3,6 +3,7 @@ import { profilePatchSchema, fitsOnOneLine } from "./bot-profile.ts";
 import { EFFORT_LEVELS } from "../shared/wire.ts";
 import { isModelVariant } from "./contracts.ts";
 import { normalizeCronSchedule } from "../shared/routine-schedule.ts";
+import { parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
 const strings = (max: number, length: number) => z.array(z.string().max(length)).max(max);
 const clock = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
@@ -17,8 +18,7 @@ export const botDefaultModelSchema = z.object({
 }).strict().refine(value => value.effort === undefined || value.variant === undefined,
   "choose either a model variant or an effort level");
 
-// Preferences only. Consent flags, live grants, bot IDs and execution state
-// cannot be stored here and therefore cannot be replayed as permission grants.
+// Preferences only: consent flags, live grants, bot IDs and execution state can never be replayed as permission grants.
 export const botDefaultsProfileSchema = profilePatchSchema.extend({
   name: z.string().max(100).refine(fitsOnOneLine, "name must fit on one line").optional(),
   section: z.string().trim().max(60).optional(),
@@ -39,7 +39,11 @@ export const botDefaultsProfileSchema = profilePatchSchema.extend({
   browser: z.boolean().optional(),
   browserProfile: z.string().max(100).nullable().optional(),
   mcpServers: strings(100, 100).nullable().optional(),
+  toolScope: z.custom<ToolScope>((value) => value !== undefined && parseToolScope(value).ok, "Invalid tool selection")
+    .transform((value) => { const parsed = parseToolScope(value); return parsed.ok ? parsed.scope! : value; }).nullable().optional(),
   parkDirectMessages: z.boolean().optional(),
+  /** At creation, so a copy of a bot kept off the helper model is off it from its first moment. */
+  helperModel: z.boolean().optional(),
 }).strict();
 
 const scheduleSchema = z.discriminatedUnion("type", [
@@ -102,8 +106,6 @@ export type BotDefaultsProfile = NewBotDefaults["profile"];
 export type BotRoutineTemplate = NewBotDefaults["routines"][number];
 export type BotSkillTemplate = NewBotDefaults["skills"][number];
 
-/** Explicit values (including empty values) win. A resolved renderer draft
- * opts out so deleted fields and template extras are not restored on POST. */
 export function resolveBotCreationDefaults(saved: NewBotDefaults | undefined, body: Record<string, unknown>) {
   if (body.useDefaults !== undefined && typeof body.useDefaults !== "boolean") {
     throw Object.assign(new Error("useDefaults must be true or false"), { status: 400 });

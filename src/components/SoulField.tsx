@@ -1,8 +1,3 @@
-// The SOUL.md editor: the bot's standing instructions, byte-counted
-// against the server cap, with a banner when the file on disk was edited
-// outside the app. Edits go to the record through the normal bot patch;
-// the server writes the mirror. A draft that is over the cap stays local
-// and is never sent, so the counter is the only thing that turns red.
 import { useEffect, useState } from "react";
 
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
@@ -17,9 +12,11 @@ type SoulRead = { soul: string; revision: string; bytes: number; limit: number; 
 export function SoulField({
   bot,
   onPatch,
+  simple,
 }: {
   bot: Bot;
   onPatch: (patch: { soul?: string; description?: string }) => void;
+  simple?: { label: string; placeholder: string };
 }) {
   const { dispatch, flushBotPatches } = useStore();
   const { request: api } = useBotEditor();
@@ -28,18 +25,11 @@ export function SoulField({
   const [info, setInfo] = useState<SoulRead | null>(null);
   const [resolving, setResolving] = useState(false);
 
-  // A new bot, or a server-side change (drift resolved, another client),
-  // replaces the draft. While the user types, the draft leads.
   useEffect(() => {
     setDraft(bot.soul ?? "");
   }, [bot.id, bot.soul]);
 
-  // Mirror path, drift state, and file text don't depend on the soul text
-  // itself, so this must not key off bot.soul: onPatch updates it
-  // optimistically on every keystroke, which would refetch on every
-  // keystroke. bot.soulDrift changes whenever the server's drift state
-  // changes, and resolve() below already calls refresh() explicitly after
-  // Apply/Discard, so nothing is lost by dropping bot.soul here.
+  // Must not key off bot.soul: onPatch updates it on every keystroke, which would refetch per keystroke.
   const refresh = () => {
     return flushBotPatches(bot.id)
       .then(() => api(`/api/bots/${bot.id}/soul`))
@@ -76,10 +66,10 @@ export function SoulField({
   return (
     <div className="block">
       <div className="mb-1.5 flex items-center justify-between gap-3">
-        <label htmlFor={`bot-soul-${bot.id}`} className="text-[13px] text-ink-secondary">
-          Standing instructions (SOUL.md)
+        <label htmlFor={`bot-soul-${bot.id}`} className={simple ? "text-[12px] text-ink-secondary" : "text-[13px] text-ink-secondary"}>
+          {simple ? simple.label : "Standing instructions (SOUL.md)"}
         </label>
-        {canMigrate && (
+        {!simple && canMigrate && (
           <button
             type="button"
             disabled={resolving}
@@ -109,21 +99,25 @@ export function SoulField({
       )}
       <textarea
         id={`bot-soul-${bot.id}`}
-        className={cn(inputCls, "min-h-[220px] resize-y font-mono leading-relaxed", over && "ring-2 ring-red-500/60")}
-        placeholder="Who this bot is and the rules it never breaks. Keep it short; put step-by-step procedure into a skill."
+        className={cn(
+          inputCls,
+          simple ? "min-h-[140px] resize-y rounded-xl text-[14px] leading-relaxed" : "min-h-[220px] resize-y font-mono leading-relaxed",
+          over && "ring-2 ring-red-500/60",
+        )}
+        placeholder={simple ? simple.placeholder : "Who this bot is and the rules it never breaks. Keep it short; put step-by-step procedure into a skill."}
         aria-invalid={over || undefined}
         disabled={resolving}
         value={draft}
         onChange={(e) => change(e.target.value)}
       />
-      <div className="mt-1.5 flex items-start justify-between gap-3 text-[11px] text-ink-secondary">
+      {(!simple || over) && <div className="mt-1.5 flex items-start justify-between gap-3 text-[11px] text-ink-secondary">
         <span>
-          In this bot’s context on every turn.{info?.file ? <> Mirrored to <span className="break-all">{info.file}</span>.</> : null}
+          {!simple && <>In this bot’s context on every turn.{info?.file ? <> Mirrored to <span className="break-all">{info.file}</span>.</> : null}</>}
         </span>
         <span className={cn("shrink-0 tabular-nums", over && "font-medium text-red-500")}>
           {bytes.toLocaleString()} / {limit.toLocaleString()} bytes{over ? " — not saved" : ""}
         </span>
-      </div>
+      </div>}
     </div>
   );
 }

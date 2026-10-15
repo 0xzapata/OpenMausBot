@@ -1,13 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { newBotDefaultsSchema } from "./new-bot-defaults.ts";
+import { newBotDefaultsSchema, resolveBotCreationDefaults } from "./new-bot-defaults.ts";
 import { parseConfigPatch } from "./config.ts";
 
 describe("new-bot templates", () => {
-  it("stores Full as a preference without accepting reusable consent or identity", () => {
-    expect(newBotDefaultsSchema.parse({ profile: { name: "", approvalMode: "full" } }).profile)
-      .toEqual({ name: "", approvalMode: "full" });
-    for (const field of ["id", "threadId", "approvalGrant", "confirmFullAccess", "acknowledgeLocalAuto", "acknowledgePeerScope", "busy"]) {
+  it("preserves restricted and empty tool defaults while allowing an explicit owner reset", () => {
+    const defaults = newBotDefaultsSchema.parse({ profile: { toolScope: { allow: ["native:read", "native:read"] } } });
+    expect(defaults.profile).toEqual({ toolScope: { allow: ["native:read"] } });
+    expect(resolveBotCreationDefaults(defaults, {}).profile).toEqual({ toolScope: { allow: ["native:read"] } });
+    expect(resolveBotCreationDefaults(defaults, { settings: { toolScope: { allow: [] } } }).profile).toEqual({ toolScope: { allow: [] } });
+    expect(resolveBotCreationDefaults(defaults, { settings: { toolScope: null } }).profile).toEqual({ toolScope: null });
+    expect(newBotDefaultsSchema.safeParse({ profile: { toolScope: { deny: ["mcp:*:read"] } } }).success).toBe(false);
+  });
+  it("stores Full as a plain preference, with no consent field, and creates new bots with it", () => {
+    const defaults = newBotDefaultsSchema.parse({ profile: { name: "", approvalMode: "full" } });
+    expect(defaults.profile).toEqual({ name: "", approvalMode: "full" });
+    expect(resolveBotCreationDefaults(defaults, { name: "Ada" }).profile).toEqual({ name: "Ada", approvalMode: "full" });
+    expect(resolveBotCreationDefaults(defaults, { settings: { approvalMode: "ask" } }).profile).toEqual({ approvalMode: "ask" });
+    for (const field of ["id", "threadId", "approvalGrant", "acknowledgeLocalAuto", "acknowledgePeerScope", "busy"]) {
       expect(newBotDefaultsSchema.safeParse({ profile: { [field]: true } }).success, field).toBe(false);
+    }
+  });
+
+  it("takes the helper-model switch in the request that creates a bot, as a boolean and nothing else", () => {
+    expect(resolveBotCreationDefaults(undefined, { settings: { helperModel: false } }).profile).toEqual({ helperModel: false });
+    // beside a tool selection, as the sidebar's Duplicate sends them
+    expect(resolveBotCreationDefaults(undefined, { settings: { toolScope: { allow: [] }, helperModel: false } }).profile).toEqual({ toolScope: { allow: [] }, helperModel: false });
+    for (const wrong of ["false", 0, null]) {
+      expect(() => resolveBotCreationDefaults(undefined, { settings: { helperModel: wrong } }), JSON.stringify(wrong)).toThrow();
     }
   });
 

@@ -1,8 +1,5 @@
-// A stand-in for cloudflare/control-plane for tests of `openmausbot login`
-// and `serve --tunnel`: the routes the desktop's control-plane client uses,
-// answering in the shapes its validators accept. Authorization is only "is
-// this a credential this stub issued". Records every call so a test can
-// assert what the client did, not only what it got.
+// A stand-in for cloudflare/control-plane for `openmausbot login` and `serve --tunnel` tests: the routes
+// the desktop's client uses, accepting only credentials it issued, recording every call.
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 
@@ -23,9 +20,10 @@ export interface ControlPlaneStub {
   /** "METHOD /path", in order. */
   calls: string[];
   installations: Map<string, StubInstallation>;
-  /** An installation the control plane already knows, as a fleet would create
-   * one before starting a container: returns its credential. */
+  /** An installation the control plane already knows (as a fleet creates one): returns its credential. */
   seedInstallation(name?: string): string;
+  /** Idle reclaim: the endpoint reads as gone until the next provision hands out a new connector token. */
+  reclaim(): string;
   close(): Promise<void>;
 }
 
@@ -44,6 +42,8 @@ export async function startControlPlaneStub(options: { otp?: string; endpointUrl
   const otp = options.otp ?? "24681357";
   const endpointUrl = options.endpointUrl ?? "https://c-stub.openmausbot.invalid";
   const connectorToken = `stub-connector-${randomBytes(48).toString("base64url")}`;
+  let issuedConnectorToken = connectorToken;
+  let reclaimedUntilProvision: string | null = null;
   const accountTokens = new Set<string>();
   const installations = new Map<string, StubInstallation>();
   const calls: string[] = [];
@@ -126,9 +126,16 @@ export async function startControlPlaneStub(options: { otp?: string; endpointUrl
       return inst ? send(200, { installation: publicView(inst), credentialExpiresAt: Date.now() + NINETY_DAYS }) : send(401, { error: "unauthorized" });
     }
     if (path === "/v1/installations/self/endpoint") {
-      if (!byCredential()) return send(401, { error: "unauthorized" });
-      if (method === "GET") return send(200, { endpoint: endpoint() });
-      if (method === "POST") return send(200, { endpoint: endpoint(), connectorToken });
+      const inst = byCredential();
+      if (!inst) return send(401, { error: "unauthorized" });
+      if (method === "GET") return send(200, { endpoint: reclaimedUntilProvision ? null : endpoint() });
+      if (method === "POST") {
+        const body = await readJson(req);
+        if (typeof body.appVersion === "string") inst.appVersion = body.appVersion;
+        if (reclaimedUntilProvision) issuedConnectorToken = reclaimedUntilProvision;
+        reclaimedUntilProvision = null;
+        return send(200, { endpoint: endpoint(), connectorToken: issuedConnectorToken });
+      }
       if (method === "DELETE") return send(204);
     }
     const one = /^\/v1\/installations\/([^/]+)$/.exec(path);
@@ -153,6 +160,10 @@ export async function startControlPlaneStub(options: { otp?: string; endpointUrl
       const inst: StubInstallation = { id: randomUUID(), clientInstanceId: randomUUID(), name, platform: "linux", appVersion: null, credential: newCredential() };
       installations.set(inst.id, inst);
       return inst.credential;
+    },
+    reclaim: () => {
+      reclaimedUntilProvision = `stub-connector-${randomBytes(48).toString("base64url")}`;
+      return reclaimedUntilProvision;
     },
     close: () => new Promise<void>((done) => server.close(() => done())),
   };

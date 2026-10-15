@@ -13,14 +13,11 @@ const routineTemplate = (routine: Routine): BotRoutineTemplate => ({
   attachments: routine.attachments,
 });
 
-/** One dialog owns one draft. No workspace writes or synthetic bots in the
- * global store; even an unsupported child request fails closed locally. */
 export class BotCreationDraft {
   readonly id = `draft-${crypto.randomUUID()}`;
   template: NewBotDefaults;
-  consent: Pick<BotUpdatePatch, "confirmFullAccess" | "acknowledgeLocalAuto"> & { acknowledgePeerScope?: boolean } = {};
+  consent: Pick<BotUpdatePatch, "acknowledgeLocalAuto"> & { acknowledgePeerScope?: boolean } = {};
   routines: Routine[];
-  /** A preset chosen in New bot: the server adds its skills and notes. */
   preset?: ChosenPreset;
   avatarFile?: File;
   private avatarObjectUrl?: string;
@@ -31,19 +28,19 @@ export class BotCreationDraft {
   }
 
   get bot(): Bot {
-    const { computer, cwd, peers, ...profile } = this.template.profile;
+    const { computer, cwd, peers, toolScope, ...profile } = this.template.profile;
     return {
       id: this.id, threadId: this.id, name: "", title: "", description: "", soul: "",
       color: "green", notifications: true, unread: false, messages: [],
       modelSelection: { instanceId: "", model: "" }, ...profile,
       computer: computer ?? undefined, cwd: cwd ?? undefined, peers: peers ?? undefined,
+      toolScope: toolScope ?? undefined,
     };
   }
 
   patch(value: BotUpdatePatch & Partial<BotDefaultsProfile> & { acknowledgePeerScope?: boolean }) {
-    const { confirmFullAccess, acknowledgeLocalAuto, acknowledgePeerScope, applyToAllThreads: _all,
+    const { acknowledgeLocalAuto, acknowledgePeerScope, applyToAllThreads: _all, keepThreadModels: _keep,
       autoApprove, ...profile } = value;
-    if (confirmFullAccess !== undefined) this.consent.confirmFullAccess = confirmFullAccess;
     if (acknowledgeLocalAuto !== undefined) this.consent.acknowledgeLocalAuto = acknowledgeLocalAuto;
     if (acknowledgePeerScope !== undefined) this.consent.acknowledgePeerScope = acknowledgePeerScope;
     if (autoApprove !== undefined && profile.approvalMode === undefined) profile.approvalMode = autoApprove ? "auto" : "ask";
@@ -53,7 +50,6 @@ export class BotCreationDraft {
 
   setModel(modelSelection: ModelSelection) { this.patch({ modelSelection }); }
 
-  /** Remember (or forget) the preset New bot started from. */
   choosePreset(preset: ChosenPreset | undefined) {
     this.preset = preset;
     this.changed();
@@ -147,7 +143,6 @@ export class BotCreationDraft {
       this.routines = [...this.routines.filter(item => item.id !== routine.id), routine];
       this.changed(); result = { routine };
     } else throw new Error("This operation requires a created bot");
-    // The scoped transport implements these existing endpoint response shapes.
     return result as T;
   };
 }
