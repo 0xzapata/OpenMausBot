@@ -24,7 +24,7 @@ beforeAll(async () => {
   url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 });
 afterAll(async () => { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); });
-const connection = (kind: "browser" | "computer" | "data" = "browser") => ({ url, token: "scoped-capability", kind });
+const connection = (kind: "browser" | "computer" | "data" | "highlevel" = "browser") => ({ url, token: "scoped-capability", kind });
 const frame = (method: string, params: unknown = {}) => ({ jsonrpc: "2.0", id: 1, method, params });
 
 describe("harness MCP capability proxy", () => {
@@ -43,6 +43,19 @@ describe("harness MCP capability proxy", () => {
     expect(requests.at(-1)).toEqual({ path: "/api/internal/browser/mcp", auth: "Bearer scoped-capability", body: { method: "tools/list", params: {} } });
     payload = { result: { content: [{ type: "image", data: "jpeg", mimeType: "image/jpeg" }] } };
     await expect(harnessMcpRequest(frame("tools/call", { name: "agent_browser_snapshot" }), connection())).resolves.toMatchObject({ result: { content: [{ type: "image", data: "jpeg" }] } });
+  });
+
+  it("sends HighLevel calls to their own harness route with the CRM instructions", async () => {
+    status = 200;
+    payload = { result: { tools: [{ name: "HIGHLEVEL_GET_CONTACT" }], instructions: "crm" } };
+    await expect(harnessMcpRequest(frame("initialize"), connection("highlevel"))).resolves.toMatchObject({ result: { serverInfo: { name: "openmausbot-highlevel" }, instructions: expect.stringContaining("never send SMS") } });
+    await expect(harnessMcpRequest(frame("tools/list"), connection("highlevel"))).resolves.toEqual({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "HIGHLEVEL_GET_CONTACT" }], instructions: "crm" } });
+    expect(requests.at(-1)).toEqual({ path: "/api/internal/highlevel/mcp", auth: "Bearer scoped-capability", body: { method: "tools/list", params: {} } });
+    status = 401;
+    payload = { error: "the internal turn capability has expired" };
+    const refused = await harnessMcpRequest(frame("tools/call", { name: "HIGHLEVEL_ADD_NOTE", arguments: {} }), connection("highlevel")) as any;
+    expect(refused.result.isError).toBe(true);
+    expect(refused.result.content[0].text).toContain("never message anyone through the CRM");
   });
 
   it("sends the cloud computer's calls to its own harness route", async () => {
