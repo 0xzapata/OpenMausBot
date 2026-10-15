@@ -51,6 +51,7 @@ export function AppNotices({ quiet = false, viewer = null, now = Date.now }: { q
   const [account, setAccount] = useState<CloudAccountState | null>(null);
   const plan = useCloudPlanSnapshot(planBridge);
   const [offer, setOffer] = useState<CloudOffer | null | undefined>(undefined);
+  const [offerFor, setOfferFor] = useState<string | null>(null);
   const [organization, setOrganization] = useState<boolean | null>(window.ogb?.organization ? null : false);
   const [closed, setClosed] = useState(false);
   const [introOpen, setIntroOpen] = useState(false);
@@ -58,7 +59,7 @@ export function AppNotices({ quiet = false, viewer = null, now = Date.now }: { q
   const [toast, setToast] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [popupOpen, setPopupOpen] = useState(false);
+  const [popupShown, setPopupShown] = useState(false);
   const updater = useUpdaterState();
   useEffect(() => {
     if (!bridge) return;
@@ -82,19 +83,20 @@ export function AppNotices({ quiet = false, viewer = null, now = Date.now }: { q
   const stage = introStage(record, now());
   const trialDue = cloudTrialNotice(plan);
   const popupAllowed = Boolean(bridge) && brandStatus().source !== "file" && !viewer?.cloudHome && state.config?.cloudHome !== true;
-  const popupPending = popupAllowed && (popupOpen || !noticeSeen(record, CLOUD_PRO_UPDATE_NOTICE));
-  const popupState = popupPending ? cloudProPopupView(account, bridge?.offer ? offer : null) : null;
-  const popupView = typeof popupState === "object" ? popupState : null;
-  const popupBlocked = useOtherDialogOpen(popupPending) || Boolean(state.liveCall && state.liveCall.status !== "ended");
+  const popupPending = popupAllowed && !noticeSeen(record, CLOUD_PRO_UPDATE_NOTICE);
   const wantOffer = Boolean(bridge?.offer) && ((introAllowed && view !== null && buyOfferAllowed(view) && stage !== "done") || trialDue?.state === "active"
     || (popupPending && view !== null && buyOfferAllowed(view)));
   const offerKey = wantOffer ? `${view?.kind}:${JSON.stringify(account?.offer ?? null)}` : null;
   useEffect(() => {
     if (!offerKey || !bridge?.offer) return;
     let active = true;
-    void bridge.offer().then(next => { if (active) setOffer(next); }, () => { if (active) setOffer(null); });
+    const answer = (next: CloudOffer | null) => { if (active) { setOffer(next); setOfferFor(offerKey); } };
+    void bridge.offer().then(answer, () => answer(null));
     return () => { active = false; };
   }, [offerKey, bridge]);
+  const popupState = popupPending ? cloudProPopupView(account, !bridge?.offer ? null : offerFor === offerKey ? offer : undefined) : null;
+  const popupView = typeof popupState === "object" ? popupState : null;
+  const popupBlocked = useOtherDialogOpen(popupPending) || Boolean(state.liveCall && state.liveCall.status !== "ended");
 
   const trial = plan?.trial;
   const key = trial ? trialKey(trial) : null;
@@ -121,8 +123,7 @@ export function AppNotices({ quiet = false, viewer = null, now = Date.now }: { q
       : Boolean(kind && !noticeSeen(record, CLOUD_NOTICE_CARD[kind].dismissed)),
     [STAR_NOTICE]: Boolean(bridge) && brandStatus().source !== "file" && usedBefore(state.bots),
   }, id => id === CLOUD_INTRO ? stage === "done" && !introOpen
-    : id === CLOUD_PRO_UPDATE_NOTICE ? noticeSeen(record, id) && !popupOpen
-    : id === STAR_NOTICE || id === PRODUCT_HUNT_NOTICE ? noticeSeen(record, id) : false) : null;
+    : id === CLOUD_PRO_UPDATE_NOTICE || id === STAR_NOTICE || id === PRODUCT_HUNT_NOTICE ? noticeSeen(record, id) : false) : null;
 
   const shownKey = notice === CLOUD_TRIAL_NOTICE ? key : notice;
   useEffect(() => {
@@ -135,8 +136,8 @@ export function AppNotices({ quiet = false, viewer = null, now = Date.now }: { q
     } else if (notice === CLOUD_TRIAL_NOTICE && trialOpen !== shownKey) {
       setTrialOpen(shownKey);
       void planBridge?.noticeSeen?.().catch(() => {});
-    } else if (shownKey === CLOUD_PRO_UPDATE_NOTICE && !popupOpen && popupView) {
-      setPopupOpen(true);
+    } else if (shownKey === CLOUD_PRO_UPDATE_NOTICE && !popupShown && popupView) {
+      setPopupShown(true);
       reportCloudProPopup("shown", popupView);
     }
   }, [shownKey]);
@@ -151,15 +152,16 @@ export function AppNotices({ quiet = false, viewer = null, now = Date.now }: { q
   if (!notice) return null;
 
   if (notice === CLOUD_PRO_UPDATE_NOTICE && popupView && bridge) {
-    const done = (action: CloudProPopupAction) => { reportCloudProPopup(action, popupView); save(CLOUD_PRO_UPDATE_NOTICE); };
-    const browse = (action: CloudProPopupAction, open: () => Promise<unknown>) => { done(action); setFailed(false); void open().then(close, () => setFailed(true)); };
+    const report = (action: CloudProPopupAction) => reportCloudProPopup(action, popupView);
+    const end = () => { save(CLOUD_PRO_UPDATE_NOTICE); close(); };
+    const browse = (action: CloudProPopupAction, open: () => Promise<unknown>) => { report(action); setFailed(false); void open().then(end, () => setFailed(true)); };
     const { primary } = popupView;
-    const upgrade = () => { done("upgrade"); close(); dispatch({ type: "openCloudAdd", source: CLOUD_PRO_POPUP_SOURCE }); };
+    const upgrade = () => { report("upgrade"); end(); dispatch({ type: "openCloudAdd", source: CLOUD_PRO_POPUP_SOURCE }); };
     return <CloudProPopup view={popupView} failed={failed}
       onPrimary={primary.via === "checkout" ? upgrade : () => browse(primary.action, () => bridge.openDashboard())}
       onSeePlans={() => browse("see_plans", () => openExternalLink(withSource(PRICING_URL, CLOUD_PRO_POPUP_SOURCE)))}
-      onNotNow={() => { done("not_now"); close(); }}
-      onClose={() => { done("close"); close(); }} />;
+      onNotNow={() => { report("not_now"); end(); }}
+      onClose={() => { report("close"); end(); }} />;
   }
 
   if (notice === CLOUD_INTRO && offer) {

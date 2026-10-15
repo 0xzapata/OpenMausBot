@@ -414,16 +414,30 @@ describe("the Cloud Pro popup after the update", () => {
     }
   });
 
-  it("when the browser can't open, it stays with the reason; closing it then still ends it", async () => {
-    account = paid(); bridges.cloud.openDashboard.mockRejectedValueOnce(new Error("no browser"));
+  it("when the browser can't open, it stays with the reason and is not yet done; closing it ends it", async () => {
+    account = paid(); bridges.cloud.openDashboard.mockRejectedValue(new Error("no browser"));
     await launch();
     press("Manage plan"); await flush();
     const html = render();
     expect(html).toContain(POPUP); expect(html).toContain("Could not open your browser. Please try again.");
-    expect(storage.get(CLOUD_PRO_UPDATE_NOTICE)).toBe("1");
+    expect(popupEvents("manage")).toEqual([["cloud_pro_popup", { action: "manage", plan: "pro", signed_in: true }]]);
+    expect(storage.get(CLOUD_PRO_UPDATE_NOTICE)).toBeUndefined(); await flush(); expect(hints()).not.toContain(CLOUD_PRO_UPDATE_NOTICE);
+    expect(await launch(), "a reload brings it back").toContain(POPUP);
+    expect(popupEvents("shown")).toHaveLength(2);
     press("Close");
     expect(popupEvents("close")).toEqual([["cloud_pro_popup", { action: "close", plan: "pro", signed_in: true }]]);
-    expect(render()).toBe("");
+    expect(storage.get(CLOUD_PRO_UPDATE_NOTICE)).toBe("1"); expect(render()).toBe("");
+  });
+
+  it("never shows one account's offer for another while the new one loads", async () => {
+    offer = TRIAL_OFFER;
+    expect(await launch()).toContain("Start free trial");
+    account = free; let answer!: (next: CloudOffer) => void;
+    bridges.cloud.offer.mockImplementation(() => new Promise<CloudOffer>(resolve => { answer = resolve; }));
+    expect(await settle(), "the signed-out trial is not shown for the signed-in account").not.toContain("Free for 7 days");
+    answer({ ...PLAIN_OFFER }); await flush();
+    const html = await settle();
+    expect(html).toContain("Upgrade to Cloud Pro"); expect(html).not.toContain("Free for 7 days");
   });
 
   it("Not now, the X, Escape and a click outside end it for good and never say who it was", async () => {
