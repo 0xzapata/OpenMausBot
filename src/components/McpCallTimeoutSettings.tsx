@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   MAX_MCP_CALL_TIMEOUT_MINUTES,
   MIN_MCP_CALL_TIMEOUT_MINUTES,
+  mcpCallTimeoutMinutes,
   parseMcpCallTimeoutMinutes,
 } from "@/lib/mcp-call-timeout";
 import { api, useStore, type ConfigStatus } from "@/state/store";
@@ -10,7 +11,7 @@ import { t } from "@/lib/i18n";
 
 export function McpCallTimeoutSettings() {
   const { state, dispatch } = useStore();
-  const confirmedMinutes = state.config?.mcp.callTimeoutMinutes ?? 10;
+  const confirmedMinutes = mcpCallTimeoutMinutes(state.config);
   const [value, setValue] = useState(String(confirmedMinutes));
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
@@ -36,7 +37,7 @@ export function McpCallTimeoutSettings() {
         body: JSON.stringify({ mcp: { callTimeoutMinutes: parsed.minutes } }),
       });
       dispatch({ type: "configStatus", config });
-      setValue(String(config.mcp.callTimeoutMinutes));
+      setValue(String(mcpCallTimeoutMinutes(config)));
       setDirty(false);
       setError("");
     } catch (cause) {

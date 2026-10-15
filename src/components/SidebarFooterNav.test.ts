@@ -11,8 +11,6 @@ const fixture = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: () => {} }));
 vi.mock("@/state/store", () => ({ useStore: () => ({ state: fixture.state, dispatch: fixture.dispatch }) }));
-// The footer reads the shared layout store itself; the store's own tests cover
-// the storage default, so only the rendering under a chosen layout is pinned here.
 vi.mock("@/lib/sidebar-preferences", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/sidebar-preferences")>(),
   useSidebarToolsLayout: () => fixture.toolsLayout,
@@ -27,11 +25,10 @@ function nodes(value: ReactNode): ReactElement<Props>[] {
     return [node, ...nodes(node.props.children)];
   });
 }
-// toolsLayout defaults to rows: a fresh install never stores the key.
-function render(density: SidebarDensity, toolsLayout: SidebarToolsLayout = "rows") {
+function render(density: SidebarDensity, { toolsLayout = "rows", ...extra }: { collapsed?: boolean; onToggleCollapsed?: () => void; toolsLayout?: SidebarToolsLayout } = {}) {
   fixture.toolsLayout = toolsLayout;
   let tree!: ReturnType<typeof SidebarFooterNav>;
-  function Capture() { tree = SidebarFooterNav({ density }); return tree; }
+  function Capture() { tree = SidebarFooterNav({ density, onToggleCollapsed: () => {}, ...extra }); return tree; }
   const html = renderToStaticMarkup(createElement(Capture));
   return { html, nodes: nodes(tree) };
 }
@@ -97,7 +94,7 @@ describe("sidebar footer places", () => {
     fixture.advanced = true;
     const { nodes: tree, html } = render("comfortable");
     expect(html).toContain(">Team map</span>");
-    expect(html).not.toContain(">Tools<");
+    expect(html).not.toContain("aria-haspopup");
     const row = tree.find((node) => node.props.id === "team-map")!;
     (row.props.onClick as () => void)();
     expect(fixture.dispatch).toHaveBeenCalledWith({ type: "showTeamMap" });
@@ -110,6 +107,63 @@ describe("sidebar footer places", () => {
       expect(html).toContain(`aria-label="${label}" title="${label}"`);
       expect(html).not.toContain(`>${label}</span>`);
     }
+  });
+});
+
+describe("Tools header", () => {
+  it.each(["comfortable", "compact"] as const)("labels the three places with a Tools header, expanded by default (%s)", (density) => {
+    fixture.advanced = true;
+    const { html } = render(density);
+    expect(html).toContain(">Tools<");
+    expect(html).toContain('aria-expanded="true"');
+    expect(html.indexOf(">Tools<")).toBeLessThan(html.indexOf('data-sidebar-nav="routines"'));
+    for (const id of ["routines", "triggers", "team-map"]) expect(html).toContain(`data-sidebar-nav="${id}"`);
+  });
+
+  it("keeps the Tools label and hides the rows when collapsed", () => {
+    fixture.advanced = true;
+    const { html } = render("comfortable", { collapsed: true });
+    expect(html).toContain(">Tools<");
+    expect(html).toContain('aria-expanded="false"');
+    for (const id of ["routines", "triggers", "team-map"]) expect(html).not.toContain(`data-sidebar-nav="${id}"`);
+  });
+
+  it("toggles through the header", () => {
+    fixture.advanced = true;
+    const onToggleCollapsed = vi.fn();
+    const { nodes: tree } = render("comfortable", { onToggleCollapsed });
+    const header = tree.find((node) => typeof node.props.onToggle === "function")!;
+    (header.props.onToggle as () => void)();
+    expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the failed-routine dot on the header only while collapsed", () => {
+    fixture.advanced = true;
+    fixture.state.routineRuns = [{ id: "r", status: "failed", scheduledFor: 1 }];
+    const collapsed = render("comfortable", { collapsed: true }).html;
+    expect(collapsed).toContain('data-testid="section-alert"');
+    expect(collapsed).not.toContain('data-testid="routines-attention"');
+    const expanded = render("comfortable").html;
+    expect(expanded).not.toContain('data-testid="section-alert"');
+    expect(expanded).toContain('data-testid="routines-attention"');
+  });
+
+  it("shows no dot on a collapsed header when nothing needs you", () => {
+    fixture.advanced = true;
+    expect(render("comfortable", { collapsed: true }).html).not.toContain('data-testid="section-alert"');
+  });
+
+  it("draws no Tools header in the avatars-only density or in Simple mode", () => {
+    fixture.advanced = true;
+    expect(render("icons").html).not.toContain(">Tools<");
+    fixture.advanced = false;
+    expect(render("comfortable").html).toBe("");
+  });
+
+  it("keeps the guided tour's tools anchor on the header and rows together", () => {
+    fixture.advanced = true;
+    expect(render("comfortable").html).toContain('data-tour="tools"');
+    expect(render("comfortable", { collapsed: true }).html).toContain('data-tour="tools"');
   });
 });
 
@@ -129,7 +183,7 @@ describe("Apps beside the profile", () => {
 describe("toolbar tools layout", () => {
   it.each(["comfortable", "compact"] as const)("toolbar renders the places as icon buttons with labels (%s)", (density) => {
     fixture.advanced = true;
-    const { html } = render(density, "toolbar");
+    const { html } = render(density, { toolsLayout: "toolbar" });
     expect(html).toContain('class="flex flex-row gap-1"');
     expect(html).not.toContain("flex-col");
     for (const label of ["Routines", "Triggers", "Team map"]) {
@@ -141,7 +195,7 @@ describe("toolbar tools layout", () => {
   it("toolbar keeps tour anchors and aria-current", () => {
     fixture.advanced = true;
     fixture.state.activeView = "routines";
-    const { html } = render("comfortable", "toolbar");
+    const { html } = render("comfortable", { toolsLayout: "toolbar" });
     expect(html).toContain('data-tour="tools"');
     expect(html).toMatch(/data-tour="nav-automations" data-sidebar-nav="routines"/);
     expect(html).toMatch(/data-tour="team-tools" data-sidebar-nav="team-map"/);
@@ -157,31 +211,31 @@ describe("toolbar tools layout", () => {
   it("toolbar shows the routines attention dot and clears it once seen", () => {
     fixture.advanced = true;
     fixture.state.routineRuns = [{ id: "r", status: "failed", scheduledFor: 1 }];
-    expect(render("comfortable", "toolbar").html).toContain('data-testid="routines-attention"');
+    expect(render("comfortable", { toolsLayout: "toolbar" }).html).toContain('data-testid="routines-attention"');
     fixture.state.routineRuns = [{ id: "r", status: "failed", scheduledFor: 1, seenAt: 1 }];
-    expect(render("comfortable", "toolbar").html).not.toContain('data-testid="routines-attention"');
+    expect(render("comfortable", { toolsLayout: "toolbar" }).html).not.toContain('data-testid="routines-attention"');
   });
 
   it("toolbar shows Team map only in Advanced mode", () => {
     fixture.advanced = true;
-    expect(render("comfortable", "toolbar").html.match(/data-sidebar-nav="/g)).toHaveLength(3);
+    expect(render("comfortable", { toolsLayout: "toolbar" }).html.match(/data-sidebar-nav="/g)).toHaveLength(3);
     fixture.advanced = false;
-    expect(render("comfortable", "toolbar").html).toBe("");
+    expect(render("comfortable", { toolsLayout: "toolbar" }).html).toBe("");
   });
 
   it("icons density ignores the tools layout", () => {
     fixture.advanced = true;
     const rows = render("icons").html;
-    expect(render("icons", "toolbar").html).toBe(rows);
-    expect(rows).toContain('class="flex flex-col gap-0.5"');
+    expect(render("icons", { toolsLayout: "toolbar" }).html).toBe(rows);
+    expect(rows).toContain('class="flex flex-col items-center gap-1"');
   });
 
   it("rows layout renders exactly as before", () => {
     fixture.advanced = true;
     const unset = render("comfortable").html;
-    expect(render("comfortable", "rows").html).toBe(unset);
-    expect(unset).toContain('<nav data-tour="tools"');
-    expect(unset).toContain('class="flex flex-col gap-0.5"');
+    expect(render("comfortable", { toolsLayout: "rows" }).html).toBe(unset);
+    expect(unset).toContain('<div data-tour="tools">');
+    expect(unset).toContain('<nav aria-label="Tools" class="flex flex-col gap-0.5">');
     expect(unset).not.toContain("flex-row");
     for (const label of ["Routines", "Triggers", "Team map"]) {
       expect(unset).toContain(`>${label}</span>`);

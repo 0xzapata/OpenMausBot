@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Check,
   CheckCircle2,
   ClipboardPaste,
   FlaskConical,
@@ -25,26 +26,24 @@ import { api, useStore, type ConfigStatus } from "@/state/store";
 
 import { Switch } from "./SettingsPrimitives";
 import { WhopIcon } from "./WhopIcon";
+import { McpResultBudgetField, resultBudgetDraft, withResultBudget, type McpMessage, type McpResultBudgetDraft, type McpResultBudgetListing } from "./McpResultBudgetField";
 import { WHOP_MCP_URL, isWhopServer, whopServerName } from "@/lib/whop-integration";
 
-/** A server this computer starts (a command) or one reached at a URL —
- * the two shapes the server stores. Secrets arrive as names only. */
-interface StdioMcpListing {
+/** Security: secrets arrive as names only. */
+interface StdioMcpListing extends McpResultBudgetListing {
   name: string;
   command: string;
   args: string[];
   envKeys: string[];
   enabled: boolean;
 }
-interface RemoteMcpListing {
+interface RemoteMcpListing extends McpResultBudgetListing {
   name: string;
   type: "http" | "sse";
   url: string;
   headerKeys: string[];
   enabled: boolean;
-  /** present when the server uses OAuth sign-in */
   auth?: "signed-in" | "needs-sign-in";
-  /** a sign-in app registered in advance; its secret arrives as a boolean */
   oauth?: McpOAuthClientListing;
 }
 interface McpOAuthClientListing {
@@ -53,8 +52,6 @@ interface McpOAuthClientListing {
   clientSecretConfigured: boolean;
   redirectUri: string;
 }
-/** managedBy: the enrolled organisation has not approved this server, so it
- * stays configured but never reaches bots. */
 export type McpServerListing = (StdioMcpListing | RemoteMcpListing) & { managedBy?: string };
 
 export function isRemoteMcpListing(server: McpServerListing): server is RemoteMcpListing {
@@ -63,7 +60,7 @@ export function isRemoteMcpListing(server: McpServerListing): server is RemoteMc
 
 type McpTransport = "stdio" | "remote";
 
-interface McpDraft {
+interface McpDraft extends McpResultBudgetDraft {
   name: string;
   transport: McpTransport;
   command: string;
@@ -75,26 +72,37 @@ interface McpDraft {
   oauthClientId: string;
   oauthClientSecret: string;
   oauthScopes: string;
-  /** drop the saved client secret on save */
   oauthForgetSecret: boolean;
 }
 
-interface ProbeResult {
+export interface ProbeResult {
   ok: boolean;
   tools?: Array<{ name: string; description?: string }>;
+  total?: number;
   error?: string;
-  /** the server answered 401 and offers an OAuth sign-in */
   auth?: "required";
 }
 
-interface McpMessage {
-  key: LocaleKey;
-  params?: Record<string, string | number>;
+export async function signedInToolsCheck(
+  name: string,
+  request: (path: string, init?: RequestInit) => Promise<ProbeResult>,
+  signal: AbortSignal,
+): Promise<ProbeResult> {
+  let tested: ProbeResult;
+  try {
+    tested = await request(`/api/mcp/servers/${name}/test`, { method: "POST", signal });
+  } catch (cause) {
+    if (signal.aborted) throw cause;
+    tested = { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
+  }
+  if (tested.ok) return tested;
+  const reason = (tested.error ?? "").trim();
+  return { ...tested, error: t("whop.testFailed", { reason: reason && !/[.!?]$/.test(reason) ? `${reason}.` : reason }) };
 }
 
 const EMPTY_DRAFT: McpDraft = {
   name: "", transport: "stdio", command: "", args: "", env: "", type: "http", url: "", headers: "",
-  oauthClientId: "", oauthClientSecret: "", oauthScopes: "", oauthForgetSecret: false,
+  oauthClientId: "", oauthClientSecret: "", oauthScopes: "", oauthForgetSecret: false, resultBudget: "",
 };
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -123,8 +131,6 @@ export function parseMcpEnvironment(
   return { ok: true, env };
 }
 
-/** `Name: value` per line, the way headers are written everywhere. A blank
- * value beside a saved header keeps the saved value, as with env above. */
 export function parseMcpHeaders(
   value: string,
   savedKeys: readonly string[] = [],
@@ -145,9 +151,6 @@ export function parseMcpHeaders(
   return { ok: true, headers };
 }
 
-/** The sign-in app part of a URL server's request, or undefined without a
- * client ID. A blank secret beside a saved one keeps it (write-only),
- * unless the person chose to remove it. */
 export function parseMcpOAuthClient(
   input: { clientId: string; clientSecret: string; scopes: string; forgetSecret: boolean },
   saved?: { clientSecretConfigured: boolean },
@@ -163,17 +166,17 @@ export function parseMcpOAuthClient(
   };
 }
 
-function probeToolsLabel(tools: ProbeResult["tools"]): string {
+function probeToolsLabel(tools: ProbeResult["tools"], total?: number): string {
   if (!tools?.length) return t("mcp.probe.noTools");
-  const names = tools.map((tool) => tool.name).join(", ");
-  return tools.length === 1
+  const count = Math.max(total ?? 0, tools.length);
+  const names = tools.map((tool) => tool.name).join(", ") + (count > tools.length ? ", …" : "");
+  return count === 1
     ? t("mcp.probe.toolsOne", { names })
-    : t("mcp.probe.toolsMany", { count: tools.length, names });
+    : t("mcp.probe.toolsMany", { count, names });
 }
 
 function draftFor(server: McpServerListing): McpDraft {
-  // Values are intentionally never returned by the server. A blank value
-  // beside an existing key is a write-only “keep saved value” placeholder.
+  // Security: the server never returns values; a blank value beside a saved key keeps it (write-only).
   if (isRemoteMcpListing(server)) {
     return {
       ...EMPTY_DRAFT,
@@ -184,6 +187,7 @@ function draftFor(server: McpServerListing): McpDraft {
       headers: server.headerKeys.map((key) => `${key}: `).join("\n"),
       oauthClientId: server.oauth?.clientId ?? "",
       oauthScopes: server.oauth?.scopes.join(" ") ?? "",
+      resultBudget: resultBudgetDraft(server),
     };
   }
   return {
@@ -192,21 +196,18 @@ function draftFor(server: McpServerListing): McpDraft {
     command: server.command,
     args: server.args.join("\n"),
     env: server.envKeys.map((key) => `${key}=`).join("\n"),
+    resultBudget: resultBudgetDraft(server),
   };
 }
 
-/** `embedded`: a section of the Apps pop-up's one scrolling view, rather
- * than a page that owns its own scroll. */
 export function McpServersPanel({ embedded = false, whopCard = false, hideWhop = false, refreshKey = 0, onWhopConnection }: {
   embedded?: boolean;
-  /** Use the same OAuth lifecycle as a normal app tile, without MCP controls. */
   whopCard?: boolean;
   hideWhop?: boolean;
   refreshKey?: number;
   onWhopConnection?: (connected: boolean) => void;
 } = {}) {
   const { state: store, dispatch } = useStore();
-  // While enrolled with custom servers off, only approved servers can be added.
   const policy = store.config?.managedPolicy;
   const restricted = Boolean(policy && !policy.mcp.allowCustom);
   const [servers, setServers] = useState<McpServerListing[] | null>(null);
@@ -216,7 +217,6 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
   const [error, setError] = useState<string | McpMessage | null>(null);
   const [notice, setNotice] = useState<(McpMessage & { stateKey?: LocaleKey }) | null>(null);
   const [probe, setProbe] = useState<Record<string, ProbeResult>>({});
-  /** the server whose browser sign-in is open, and how to cancel it */
   const [signingIn, setSigningIn] = useState<string | null>(null);
   const signInAbort = useRef<AbortController | null>(null);
   const signInComplete = useRef<((result: McpSignInStatus) => void) | null>(null);
@@ -232,8 +232,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
   const whopConnected = Boolean(whopServer?.enabled && isRemoteMcpListing(whopServer) && whopServer.auth === "signed-in");
   useEffect(() => { if (servers !== null) onWhopConnection?.(whopConnected); }, [servers, whopConnected, onWhopConnection]);
 
-  // Paste-to-add: the same block Claude Code, Cursor and Claude Desktop
-  // write. The server applies the form's rules and adds them switched off.
+  // Paste-to-add takes the mcpServers block Claude Code, Cursor and Claude Desktop write.
   const importServers = async () => {
     if (!importText.trim()) return;
     const generation = ++loadGeneration.current;
@@ -288,7 +287,6 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
     setDraft(EMPTY_DRAFT);
   };
 
-  /** The request body for the draft, or the message that stops it. */
   const draftBody = (
     existing: McpServerListing | undefined,
   ): { ok: true; body: Record<string, unknown> } | { ok: false; error: McpMessage } => {
@@ -314,7 +312,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
   const save = async () => {
     const name = draft.name.trim();
     const existing = editing === "new" ? undefined : servers?.find((server) => server.name === editing);
-    const prepared = draftBody(existing);
+    const prepared = withResultBudget(draft.resultBudget, () => draftBody(existing));
     if (!prepared.ok) {
       setError(prepared.error);
       return;
@@ -413,11 +411,11 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
       if (!mounted.current || controller.signal.aborted) return;
       if (result.phase === "succeeded") {
         if (isRemoteMcpListing(server) && isWhopServer(server)) {
-          // Connecting explicitly enables Whop only after OAuth and discovery succeed.
-          const tested: ProbeResult = await api(`/api/mcp/servers/${server.name}/test`, { method: "POST" });
-          if (controller.signal.aborted) return;
+          setSignInFlow({ ...result, flowId: null, authorizationUrl: null });
+          const tested = await signedInToolsCheck(server.name, api, controller.signal);
+          if (controller.signal.aborted || !mounted.current) return;
           setProbe((current) => ({ ...current, [server.name]: tested }));
-          if (!tested.ok) throw new Error(t("whop.testFailed"));
+          if (!tested.ok) return;
           const enabled = await api(`/api/mcp/servers/${server.name}`, { method: "PATCH", body: JSON.stringify({ enabled: true }) });
           if (!mounted.current) return;
           setServers(enabled.servers ?? []);
@@ -535,32 +533,43 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
   const savedOAuth = editingServer && isRemoteMcpListing(editingServer) ? editingServer.oauth : undefined;
   const secretKept = Boolean(savedOAuth?.clientSecretConfigured && !draft.oauthForgetSecret);
 
+  function renderPasteBack(server: McpServerListing) {
+    return (
+      <>
+        <label className="mt-3 block" htmlFor={`mcp-callback-${server.name}`}>{t("mcp.auth.callbackUrl")}</label>
+        <input id={`mcp-callback-${server.name}`} type="text" value={callbackUrl} disabled={completingSignIn} onChange={(event) => setCallbackUrl(event.target.value)}
+          autoComplete="off" spellCheck={false} placeholder="http://127.0.0.1:…/mcp-oauth/callback?…"
+          className="mt-1 w-full rounded-lg border border-hairline bg-inset px-3 py-2 text-ink outline-none focus:border-accent" />
+        <button type="button" disabled={!callbackUrl.trim() || completingSignIn} aria-busy={completingSignIn} onClick={() => void completeSignIn()}
+          className="mt-2 inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 font-medium text-white disabled:opacity-40">
+          {completingSignIn && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
+          {t(completingSignIn ? "mcp.auth.completing" : "mcp.auth.complete")}
+        </button>
+      </>
+    );
+  }
+
   function renderSignIn(server: McpServerListing) {
     return signingIn === server.name && (
       <div className="mt-3 space-y-3 rounded-lg bg-raised px-3 py-3 text-[12px] text-ink-secondary">
         <div role="status" className="flex items-center gap-2">
-          <Loader2 size={13} className="animate-spin" /> {t("mcp.auth.waiting")}
+          <Loader2 size={13} className="animate-spin" /> {t(signInFlow?.phase === "succeeded" ? "whop.loadingTools" : "mcp.auth.waiting")}
         </div>
         {signInFlow?.authorizationUrl && mcpSignInLink(signInFlow.authorizationUrl) && (
           <button type="button" onClick={() => void openExternalLink(signInFlow.authorizationUrl!).catch(() => setCallbackError(t("mcp.auth.openFailed")))} className="text-accent hover:underline">
             {t("mcp.auth.openAgain")}
           </button>
         )}
-        {signInFlow?.flowId && (
-          <details>
-            <summary className="cursor-pointer font-medium text-ink">{t("mcp.auth.otherComputer")}</summary>
-            <p className="mt-2 leading-relaxed">{t("mcp.auth.otherComputerHint")}</p>
-            <label className="mt-3 block" htmlFor={`mcp-callback-${server.name}`}>{t("mcp.auth.callbackUrl")}</label>
-            <input id={`mcp-callback-${server.name}`} type="text" value={callbackUrl} disabled={completingSignIn} onChange={(event) => setCallbackUrl(event.target.value)}
-              autoComplete="off" spellCheck={false} placeholder="http://127.0.0.1:…/mcp-oauth/callback?…"
-              className="mt-1 w-full rounded-lg border border-hairline bg-inset px-3 py-2 text-ink outline-none focus:border-accent" />
-            <button type="button" disabled={!callbackUrl.trim() || completingSignIn} aria-busy={completingSignIn} onClick={() => void completeSignIn()}
-              className="mt-2 inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 font-medium text-white disabled:opacity-40">
-              {completingSignIn && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
-              {t(completingSignIn ? "mcp.auth.completing" : "mcp.auth.complete")}
-            </button>
-          </details>
-        )}
+        {signInFlow?.flowId && (signInFlow.pasteBack
+          ? <div>
+              <p className="leading-relaxed text-ink">{t("mcp.auth.pasteBackHint")}</p>
+              {renderPasteBack(server)}
+            </div>
+          : <details>
+              <summary className="cursor-pointer font-medium text-ink">{t("mcp.auth.otherComputer")}</summary>
+              <p className="mt-2 leading-relaxed">{t("mcp.auth.otherComputerHint")}</p>
+              {renderPasteBack(server)}
+            </details>)}
         {callbackError && <p role="alert" className="text-danger">{callbackError}</p>}
       </div>
     );
@@ -570,29 +579,34 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
     const result = whopServer && probe[whopServer.name];
     const failed = error || (result && !result.ok ? result.error : null);
     const pending = busy !== null || signingIn !== null;
-    return <div data-app-tile="whop" className="glass-card flex min-h-[132px] min-w-0 flex-col rounded-2xl p-4">
-      <div className="flex items-start gap-3">
+    return <div data-app-tile="whop" className="flex min-w-0 flex-col rounded-xl px-2 py-2 transition-colors hover:bg-raised/40">
+      <div className="flex items-center gap-3">
         <WhopIcon />
-        <div className="min-w-0 flex-1"><div className="text-[14px] font-medium text-ink">Whop</div><p className="mt-0.5 line-clamp-1 text-[12px] text-ink-secondary" title={t("whop.description")}>{t("whop.description")}</p></div>
-      </div>
-      <div className="mt-auto flex items-center justify-between gap-2 pt-3">
-        <span className="text-[12px] font-medium text-success">{whopConnected ? t("apps.connected") : ""}</span>
-        {signingIn ? <button type="button" onClick={() => signInAbort.current?.abort()} className="rounded-full bg-control px-3 py-1.5 text-[12px] text-ink">{t("mcp.auth.cancel")}</button> :
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[14px] font-semibold leading-5 text-ink">Whop</span>
+            {whopConnected && <Check size={13} strokeWidth={2.5} className="shrink-0 text-success" aria-label={t("apps.connected")} />}
+          </div>
+          <p className="truncate text-[12.5px] leading-[18px] text-ink-secondary" title={t("whop.description")}>{t("whop.description")}</p>
+        </div>
+        {signingIn ? <button type="button" onClick={() => signInAbort.current?.abort()} className="inline-flex h-7 shrink-0 items-center rounded-full bg-control/80 px-3 text-[13px] font-medium leading-5 text-ink">{t("mcp.auth.cancel")}</button> :
           <button type="button" aria-label={t(whopConnected ? "whop.disconnect" : "whop.connect")}
             disabled={pending || (servers !== null && !whopConnected && (Boolean(whopServer?.managedBy) || (restricted && !policy?.mcp.allowlist.length)))}
             onClick={() => void (servers === null ? load() : whopConnected && whopServer ? signOut(whopServer) : connectWhop())}
-            className="flex min-w-[80px] items-center justify-center gap-1.5 rounded-full bg-control px-3 py-1.5 text-[12px] text-ink hover:bg-raised-hover disabled:opacity-40">
-            {pending ? <Loader2 size={13} className="animate-spin" /> : servers === null ? t("connectors.action.retry") : t(whopConnected ? "connectors.disconnect" : "connectors.action.connect")}
+            className="inline-flex h-7 min-w-[64px] shrink-0 items-center justify-center gap-2 rounded-full bg-control/80 px-3 text-[13px] font-medium leading-5 text-ink hover:bg-raised-hover disabled:opacity-40">
+            {pending ? <Loader2 size={14} className="animate-spin" /> : servers === null ? t("connectors.action.retry") : t(whopConnected ? "connectors.disconnect" : "connectors.action.connect")}
           </button>}
       </div>
-      {failed && <p role="alert" className="mt-3 text-[12px] text-danger">{typeof failed === "string" ? failed : t(failed.key, failed.params)}</p>}
+      <div className="ps-[52px]">
+      {failed && <p role="alert" className="mt-1.5 text-[12px] text-danger">{typeof failed === "string" ? failed : t(failed.key, failed.params)}</p>}
       {whopServer && renderSignIn(whopServer)}
-      <details className="mt-3 text-[12px] text-ink-secondary">
+      <details className="mt-1 text-[12px] text-ink-secondary">
         <summary className="cursor-pointer">{t("whop.access")}</summary>
         <p className="mt-2 leading-relaxed">{t("whop.notice")}</p>
         <p className="mt-2 leading-relaxed">{t("whop.accessHint")}</p>
         <div className="mt-2 flex flex-wrap gap-2">{(store.bots ?? []).filter((bot) => !bot.hidden).map((bot) => <button key={bot.id} type="button" onClick={() => { dispatch({ type: "togglePlugins", open: false }); dispatch({ type: "toggleSettings", open: true, section: "access", botId: bot.id }); }} className="rounded-lg bg-control px-2.5 py-1.5 text-ink hover:bg-raised-hover">{t("whop.botSettings", { name: bot.name })}</button>)}</div>
       </details>
+      </div>
     </div>;
   }
 
@@ -605,8 +619,6 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
       className={embedded ? "" : "min-h-0 flex-1 overflow-y-auto px-6 pb-7 pt-5 sm:px-8"}
     >
       <div className={embedded ? "" : "mx-auto max-w-[840px]"}>
-        {/* wraps by the room it has, not the window: inside a pop-up a wide
-            window can still leave too little for the intro and the buttons */}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-[1_1_280px]">
             <h3 id="mcp-servers-title" className="text-[15px] font-semibold text-ink">{t("mcp.title")}</h3>
@@ -633,7 +645,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
                 setError(null);
                 setNotice(null);
               }}
-              className="flex items-center gap-1.5 rounded-lg bg-control px-3 py-2 text-[12.5px] font-medium text-ink hover:bg-raised-hover disabled:opacity-40"
+              className="ui-button"
             >
               <ClipboardPaste size={14} /> {t("mcp.import")}
             </button>
@@ -856,6 +868,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
               </label>
                 </>
               )}
+              <McpResultBudgetField value={draft.resultBudget} onChange={(resultBudget) => setDraft((current) => ({ ...current, resultBudget }))} />
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={closeEditor} className="rounded-lg px-3 py-2 text-[12.5px] text-ink-secondary hover:bg-raised">{t("mcp.cancel")}</button>
@@ -953,7 +966,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
                   {result && signingIn !== server.name && (
                     <div role="status" className={cn("mt-3 rounded-lg px-3 py-2 text-[12px]", result.ok ? "bg-success/10 text-success" : result.auth === "required" ? "bg-warning/10 text-warning" : "bg-danger/10 text-danger")}>
                       {result.auth === "required" ? t("mcp.auth.required") : result.ok ? (
-                        <span className="flex items-start gap-2"><CheckCircle2 size={14} className="mt-px shrink-0" /> {t("mcp.probe.connected")} {probeToolsLabel(result.tools)}</span>
+                        <span className="flex items-start gap-2"><CheckCircle2 size={14} className="mt-px shrink-0" /> {t("mcp.probe.connected")} {probeToolsLabel(result.tools, result.total)}</span>
                       ) : result.error}
                     </div>
                   )}
@@ -967,11 +980,6 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
   );
 }
 
-/** The one Claude-only setting on this page, in the words a person would
- * use. Claude bots normally see just the servers listed here; this switch
- * also gives them the MCP servers and connectors of this machine's own
- * Claude Code setup — what Codex bots already do with their config. Saved
- * on the workspace; the next message picks it up. */
 function ClaudeMcpSwitch() {
   const { state, dispatch } = useStore();
   const enabled = claudeUserMcpEnabled(state.config);

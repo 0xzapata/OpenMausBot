@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_MCP_CALL_TIMEOUT_MINUTES, MIN_MCP_CALL_TIMEOUT_MINUTES, parseMcpCallTimeoutMinutes } from "./mcp-call-timeout";
+import {
+  DEFAULT_MCP_CALL_TIMEOUT_MINUTES,
+  MAX_MCP_CALL_TIMEOUT_MINUTES,
+  MIN_MCP_CALL_TIMEOUT_MINUTES,
+  mcpCallTimeoutMinutes,
+  parseMcpCallTimeoutMinutes,
+} from "./mcp-call-timeout";
 
 describe("parseMcpCallTimeoutMinutes", () => {
   it("accepts a whole number within the bounds", () => {
@@ -24,5 +30,19 @@ describe("parseMcpCallTimeoutMinutes", () => {
     expect(parseMcpCallTimeoutMinutes(String(MIN_MCP_CALL_TIMEOUT_MINUTES - 1)).ok).toBe(false);
     expect(parseMcpCallTimeoutMinutes(String(MAX_MCP_CALL_TIMEOUT_MINUTES + 1)).ok).toBe(false);
     expect(parseMcpCallTimeoutMinutes("1440").ok).toBe(false);
+  });
+});
+
+describe("mcpCallTimeoutMinutes", () => {
+  it("reads the server's confirmed timeout", () => {
+    expect(mcpCallTimeoutMinutes({ mcp: { callTimeoutMinutes: 30 } })).toBe(30);
+  });
+
+  it("falls back to the 10-minute default when a server (an older one) sends no mcp section", () => {
+    expect(DEFAULT_MCP_CALL_TIMEOUT_MINUTES).toBe(10);
+    expect(mcpCallTimeoutMinutes({})).toBe(10);
+    expect(mcpCallTimeoutMinutes({ mcp: {} })).toBe(10);
+    expect(mcpCallTimeoutMinutes(null)).toBe(10);
+    expect(mcpCallTimeoutMinutes(undefined)).toBe(10);
   });
 });
