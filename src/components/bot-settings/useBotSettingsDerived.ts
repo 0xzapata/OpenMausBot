@@ -4,6 +4,7 @@ import { stateForBot } from "@/lib/mascot";
 import { useStore, type Bot } from "@/state/store";
 import { approvalModeFor } from "../../../shared/approval-mode";
 import { connectorGrantsState, type ConnectorGrantsState } from "@/lib/connector-grants";
+import { highLevelConnected, useHighLevelStatus } from "@/lib/highlevel-status";
 
 export type BotPatch = Partial<
   Pick<
@@ -60,7 +61,9 @@ export function useBotSettingsDerived(bot: Bot) {
   const trustedModesAvailable = Boolean(window.ogb?.approvals && capabilities.host.packaged);
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
   const canUseConnectedApps = engine?.capabilities?.composioMcp === true;
-  const connectedAppsConfigured = state.config?.composio?.configured === true;
+  // A native HighLevel connection counts as a connected app even where the Composio service is not set up (a Cloud home).
+  const highlevel = useHighLevelStatus();
+  const connectedAppsConfigured = state.config?.composio?.configured === true || highLevelConnected(highlevel);
   const connectedAppsEnabled = bot.composio !== false;
   const connectorGrantState: ConnectorGrantsState = connectorGrantsState(bot);
   const canUseBrowser = engine?.capabilities?.browserMcp === true;
