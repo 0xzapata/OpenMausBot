@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { planAccountLink } from "../../../shared/connector-account-link";
+
 interface InstallationRow {
   id: string;
   composio_user_id: string;
@@ -92,9 +94,8 @@ const MULTI_ACCOUNT_CONFIG = {
   require_explicit_selection: true,
 } as const;
 // Workers on the free plan get 50 subrequests per request, and the connected
-// inventory runs two paginated sweeps back to back — 20 pages each keeps the
-// worst case at ~40 fetches with headroom for the session lookup. At 100
-// accounts per page nobody real is near the ceiling.
+// inventory runs two paginated sweeps back to back: 20 pages each leaves
+// headroom for the session lookup.
 const MAX_CONNECTED_ACCOUNT_PAGES = 20;
 const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 /** Composio's catalog cursor is base64 of the page and limit. */
@@ -209,16 +210,13 @@ async function createSession(env: Env, userId: string) {
   return parseSession(sessionWireSchema.parse(await response.json()));
 }
 
-/** Session ids this isolate already tried to upgrade once. If the fresh
- *  Session STILL doesn't echo multi-account, Composio isn't granting it —
- *  serve single-account behavior instead of recreating a Session and writing
- *  D1 on every request. */
+/** Session ids this isolate already tried to upgrade once. If the fresh Session
+ *  still doesn't echo multi-account, Composio isn't granting it. */
 const multiAccountUpgradeAttempted = new Set<string>();
 
-/** A Session's MCP URL and headers are fixed for its id, so the MCP relay
- *  reuses one this isolate verified recently instead of re-reading it from
- *  Composio before every JSON-RPC message. Lookups use the session_id D1
- *  returned for the request, so a replaced Session never hits a stale entry. */
+/** A Session's MCP URL and headers are fixed for its id, so the relay reuses a
+ *  recent verification. Keyed by the session_id D1 returned, so a replaced
+ *  Session never hits a stale entry. */
 const VERIFIED_SESSION_TTL_MS = 5 * 60_000;
 const VERIFIED_SESSION_LIMIT = 1_000;
 const verifiedSessions = new Map<string, { session: ComposioSession; verifiedAt: number }>();
@@ -245,10 +243,8 @@ function verifiedSession(sessionId: string | null) {
   return undefined;
 }
 
-/** last_seen_at only shows an installation is still in use, and nothing reads
- *  it more finely, so it is not worth a D1 write on every request. Ten
- *  minutes is still precise enough for an idle-installation sweep over
- *  installations_last_seen_idx. */
+/** last_seen_at only shows an installation is still in use; ten minutes is
+ *  precise enough for the idle-installation sweep. */
 const LAST_SEEN_INTERVAL_MS = 10 * 60_000;
 
 function touchLastSeen(installation: InstallationRow, env: Env, ctx: ExecutionContext) {
@@ -281,8 +277,7 @@ async function verifySession(installation: InstallationRow, env: Env, ctx: Execu
     return session;
   }
   if (!session?.multiAccountConfigured) {
-    // Connected accounts are attached to this stable Composio user ID. A new
-    // Session upgrades legacy installations without relinking OAuth grants.
+    // Connected accounts are attached to this stable Composio user ID.
     session = await createSession(env, installation.composio_user_id);
     multiAccountUpgradeAttempted.add(session.sessionId);
     await env.DB.prepare("UPDATE installations SET session_id = ?, last_seen_at = ? WHERE id = ?")
@@ -348,14 +343,10 @@ async function proxyMcp(request: Request, installation: InstallationRow, env: En
   };
   let response = await forward(session);
   if (reused && !incomingMcpSession && (response.status === 404 || response.status === 410)) {
-    // Composio dropped the Session after this isolate verified it. With no
-    // mcp-session-id (normally an initialize, but also any message the
-    // desktop server sends after losing its transport-session map), the
-    // client has nothing to re-initialize, so do what an uncached request
-    // would: look the Session up again (replacing it if it is gone) and
-    // resend once. A 404 or 410 from the MCP URL means nothing was dispatched.
-    // With an mcp-session-id, the 404 passes through and the client
-    // re-initializes, as before.
+    // Composio dropped the Session after this isolate verified it. Without an
+    // mcp-session-id the client has nothing to re-initialize, so look the
+    // Session up again and resend once (a 404 or 410 from the MCP URL
+    // dispatched nothing). With one, the 404 passes through.
     forgetSession(session.sessionId);
     await response.body?.cancel();
     session = await verifySession(installation, env, ctx);
@@ -374,8 +365,7 @@ async function proxyMcp(request: Request, installation: InstallationRow, env: En
 }
 
 async function catalog(env: Env, url: URL) {
-  // The catalog runs past a thousand toolkits, so pass the caller's cursor
-  // through — dropping it capped the marketplace at one page.
+  // The catalog runs past a thousand toolkits, so pass the caller's cursor through.
   const params = new URLSearchParams({ limit: "500", sort_by: "usage" });
   const cursor = url.searchParams.get("cursor");
   if (cursor && CATALOG_CURSOR.test(cursor)) params.set("cursor", cursor);
@@ -565,23 +555,20 @@ async function authorize(
   // work, with the alias guardrails degrading to first-account behavior.
   const accounts = await listConnectedAccounts(env, installation.composio_user_id, [slug]).catch(() => []);
   const serviceAccounts = accounts.filter((account) => account.toolkit?.slug?.toLowerCase() === slug);
-  const usableAccounts = serviceAccounts.filter((account) => /^(active|initiated|initializing|pending)$/i.test(account.status ?? ""));
-  if (usableAccounts.length >= MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit) {
-    return json({ error: `${slug} already has the maximum of ${MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit} accounts` }, 409);
-  }
-  if (serviceAccounts.length > 0 && !alias) {
-    if (serviceAccounts.every((account) => /^(initializing|initiated|expired)$/i.test(account.status ?? ""))) {
-      // Keep abandoned flows/grants intact; a unique alias cannot replace them.
-      alias = `omb-retry-${crypto.randomUUID()}`;
-    } else {
-      return json({ error: "Add an account alias so the existing connection is not replaced" }, 400);
-    }
-  }
-  if (alias && serviceAccounts.some((account) => account.alias?.trim().toLowerCase() === alias.toLowerCase())) {
-    return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
+  const plan = planAccountLink(
+    slug,
+    serviceAccounts,
+    alias,
+    MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit,
+    () => `omb-retry-${crypto.randomUUID()}`,
+  );
+  if (!plan.ok) return json({ error: plan.error }, plan.status);
+  for (const id of plan.replace) {
+    const removed = await composioRequest(env, `/connected_accounts/${encodeURIComponent(id)}?revoke_on_delete=true`, { method: "DELETE" });
+    if (!removed.ok) return json({ error: await upstreamError(removed, "Removing the earlier sign-in failed") }, 502);
   }
   const linkRequest: AccountLinkRequest = { toolkit: slug };
-  if (alias) linkRequest.alias = alias;
+  if (plan.alias) linkRequest.alias = plan.alias;
   const response = await composioRequest(env, `/tool_router/session/${encodeURIComponent(session.sessionId)}/link`, {
     method: "POST",
     body: JSON.stringify(linkRequest),

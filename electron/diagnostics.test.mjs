@@ -17,10 +17,7 @@ const {
   CREDENTIAL_ENV_NAMES,
 } = require("./diagnostics.mjs");
 
-// The desktop shell cannot import TypeScript, so its credential list is a
-// hand copy of server/config.ts WORKSPACE_CREDENTIAL_ENV. This test is the
-// drift alarm: a name added server-side without updating the copy here would
-// otherwise ship an unredacted export path.
+// The desktop credential list is a hand copy of server/config.ts WORKSPACE_CREDENTIAL_ENV; this test is the drift alarm.
 describe("credential env parity with server/config.ts", () => {
   it("matches WORKSPACE_CREDENTIAL_ENV exactly", () => {
     const config = readFileSync(new URL("../server/config.ts", import.meta.url), "utf8");
@@ -108,6 +105,21 @@ describe("buildDiagnosticsReport", () => {
     for (const secret of ["opaque-broker-value", "opaque-password-value", "private-cookie", "private-tracker", "private-session", "private-tracking"]) {
       expect(redacted).not.toContain(secret);
     }
+  });
+
+  it("masks Groq keys in diagnostic log exports while retaining useful status", () => {
+    const key = `gsk_${"a".repeat(48)}`;
+    const otherKey = `gsk_${"b".repeat(48)}`;
+    const workspaceKey = "opaque-groq-fixture-key";
+    const report = buildDiagnosticsReport({
+      appInfo,
+      configSummary: { groq: { configured: true } },
+      logTail: `Groq HTTP 401: invalid key ${key}\nspawn env OMB_GROQ_API_KEY=${workspaceKey}`,
+      updaterLogTail: `upstream rejected ${otherKey}`,
+    });
+    for (const secret of [key, otherKey, workspaceKey]) expect(report).not.toContain(secret);
+    expect(report).toContain("groq.configured=true");
+    expect(report).toContain("Groq HTTP 401");
   });
 
   it("includes privacy-safe desktop crash metadata separately from the server log", () => {

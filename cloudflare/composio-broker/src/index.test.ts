@@ -280,47 +280,101 @@ describe("connected-apps broker boundaries", () => {
     expect(JSON.parse(String(linkCall?.init?.body))).toEqual({ toolkit: "gmail", alias: "second" });
   });
 
-  it("retries only unfinished or expired accounts without replacing grants", async () => {
+  function accountFixture(installationUser: string) {
     const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
     const { env, ctx } = testEnv(fetchCalls);
-    const installation = { id: "retry-install", composio_user_id: "retry-user", session_id: "trs_retry", disabled_at: null };
-    let accounts: Array<{ id: string; status?: string; alias?: string; toolkit: { slug: string } }> = [];
+    const installation = { id: "retry-install", composio_user_id: installationUser, session_id: "trs_retry", disabled_at: null };
+    const fixture = {
+      accounts: [] as Array<{ id: string; status?: string; alias?: string; toolkit: { slug: string } }>,
+      deleteStatus: 200,
+      authorize: (alias?: string) => authorize("gmail", alias, installation, env as never, ctx as never),
+      links: () => fetchCalls.filter((call) => call.url.endsWith("/link"))
+        .map((call) => JSON.parse(String(call.init?.body)) as { toolkit: string; alias?: string }),
+      deletes: () => fetchCalls.filter((call) => call.init?.method === "DELETE").map((call) => call.url),
+      fetchCalls,
+    };
     vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       fetchCalls.push({ url, init });
+      if (init?.method === "DELETE") return Response.json({ success: fixture.deleteStatus === 200 }, { status: fixture.deleteStatus });
       if (url.includes("/connected_accounts")) {
-        expect(new URL(url).searchParams.get("user_ids")).toBe("retry-user");
-        return Response.json({ items: accounts });
+        expect(new URL(url).searchParams.get("user_ids")).toBe(installationUser);
+        return Response.json({ items: fixture.accounts });
       }
       if (url.endsWith("/link")) return Response.json({ redirect_url: "https://connect.composio.dev/link/gmail" });
-      return Response.json(session("trs_retry", "retry-user"));
+      return Response.json(session("trs_retry", installationUser));
     });
-    const linkBodies = () => fetchCalls.filter((call) => call.url.endsWith("/link"))
-      .map((call) => JSON.parse(String(call.init?.body)) as { toolkit: string; alias?: string });
+    return fixture;
+  }
 
-    for (const status of ["INITIALIZING", "initiated", "EXPIRED"]) {
-      accounts = [{ id: "old", alias: "original", status, toolkit: { slug: "Gmail" } }];
+  it("retries without a label while no account works, and asks for one beside a working account", async () => {
+    const fixture = accountFixture("retry-user");
+    for (const status of ["INITIALIZING", "initiated", "EXPIRED", "FAILED", "INACTIVE", "PENDING", "unknown"]) {
+      fixture.accounts = [{ id: "old", alias: "original", status, toolkit: { slug: "Gmail" } }];
       for (let attempt = 0; attempt < 2; attempt++) {
-        const response = await authorize("gmail", undefined, installation, env as never, ctx as never);
-        expect(response.status).toBe(200);
+        const response = await fixture.authorize();
+        expect(response.status, status).toBe(200);
         await expect(response.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail" });
-        expect(linkBodies().at(-1)).toEqual({ toolkit: "gmail", alias: expect.stringMatching(/^omb-retry-[0-9a-f-]{36}$/) });
+        expect(fixture.links().at(-1)).toEqual({ toolkit: "gmail", alias: expect.stringMatching(/^omb-retry-[0-9a-f-]{36}$/) });
       }
-      expect(accounts[0].alias).toBe("original");
     }
-    expect(new Set(linkBodies().map((body) => body.alias)).size).toBe(6);
-    const successfulLinks = linkBodies().length;
-    for (const status of ["ACTIVE", "PENDING", "FAILED", "INACTIVE", "REVOKED", "unknown", undefined]) {
-      accounts = [{ id: "protected", status, toolkit: { slug: "gmail" } }];
-      const response = await authorize("gmail", undefined, installation, env as never, ctx as never);
+    expect(new Set(fixture.links().map((body) => body.alias)).size).toBe(14);
+    expect(fixture.deletes()).toEqual([]);
+    const successfulLinks = fixture.links().length;
+    for (const status of ["ACTIVE", undefined]) {
+      fixture.accounts = [{ id: "expired", status: "EXPIRED", toolkit: { slug: "gmail" } }, { id: "protected", status, toolkit: { slug: "gmail" } }];
+      const response = await fixture.authorize();
       expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "Add an account alias so the existing connection is not replaced" });
     }
-    accounts = [{ id: "old", alias: "Original", status: "EXPIRED", toolkit: { slug: "gmail" } }];
-    expect((await authorize("gmail", "original", installation, env as never, ctx as never)).status).toBe(409);
-    accounts = Array.from({ length: 5 }, (_, id) => ({ id: String(id), status: "INITIALIZING", toolkit: { slug: "gmail" } }));
-    expect((await authorize("gmail", undefined, installation, env as never, ctx as never)).status).toBe(409);
-    expect(linkBodies()).toHaveLength(successfulLinks);
-    expect(fetchCalls.filter((call) => /^(DELETE|PATCH)$/.test(call.init?.method ?? ""))).toHaveLength(0);
+    fixture.accounts = Array.from({ length: 5 }, (_, id) => ({ id: String(id), status: "INITIALIZING", toolkit: { slug: "gmail" } }));
+    expect((await fixture.authorize()).status).toBe(409);
+    expect(fixture.links()).toHaveLength(successfulLinks);
+    expect(fixture.deletes()).toEqual([]);
+  });
+
+  it("links a toolkit whose only account failed to sign in", async () => {
+    const fixture = accountFixture("failed-user");
+    fixture.accounts = [{ id: "ca_failed", status: "FAILED", toolkit: { slug: "gmail" } }];
+    const response = await fixture.authorize();
+    expect(response.status).toBe(200);
+    expect(fixture.links()).toHaveLength(1);
+    expect(fixture.deletes()).toEqual([]);
+  });
+
+  it("frees a label held by an account that is not active, and keeps one a working account holds", async () => {
+    const fixture = accountFixture("label-user");
+    fixture.accounts = [
+      { id: "ca_old_work", alias: "work", status: "INITIATED", toolkit: { slug: "gmail" } },
+      { id: "ca_personal", alias: "personal", status: "ACTIVE", toolkit: { slug: "gmail" } },
+    ];
+    const replaced = await fixture.authorize("Work");
+    expect(replaced.status).toBe(200);
+    expect(fixture.deletes()).toEqual(["https://backend.composio.dev/api/v3.1/connected_accounts/ca_old_work?revoke_on_delete=true"]);
+    expect(fixture.links()).toEqual([{ toolkit: "gmail", alias: "Work" }]);
+    const order = fixture.fetchCalls.map((call) => call.init?.method === "DELETE" ? "delete" : call.url.endsWith("/link") ? "link" : "other");
+    expect(order.indexOf("delete")).toBeLessThan(order.indexOf("link"));
+
+    fixture.accounts = [{ id: "ca_work", alias: "work", status: "ACTIVE", toolkit: { slug: "gmail" } }];
+    const taken = await fixture.authorize("work");
+    expect(taken.status).toBe(409);
+    await expect(taken.json()).resolves.toEqual({ error: 'Account alias "work" is already in use for gmail' });
+    fixture.accounts = [{ id: "ca_unknown", alias: "work", toolkit: { slug: "gmail" } }];
+    expect((await fixture.authorize("work")).status).toBe(409);
+    expect(fixture.deletes()).toHaveLength(1);
+    expect(fixture.links()).toHaveLength(1);
+
+    const working = Array.from({ length: 4 }, (_, id) => ({ id: `ca_${id}`, alias: `other-${id}`, status: "ACTIVE", toolkit: { slug: "gmail" } }));
+    fixture.accounts = [{ id: "ca_old_work", alias: "work", status: "INITIATED", toolkit: { slug: "gmail" } }, ...working];
+    expect((await fixture.authorize("work")).status).toBe(200);
+    fixture.accounts.push({ id: "ca_4", alias: "other-4", status: "ACTIVE", toolkit: { slug: "gmail" } });
+    expect((await fixture.authorize("work")).status).toBe(409);
+    expect(fixture.links()).toHaveLength(2);
+
+    fixture.accounts = [{ id: "ca_old_work", alias: "work", status: "EXPIRED", toolkit: { slug: "gmail" } }];
+    fixture.deleteStatus = 500;
+    expect((await fixture.authorize("work")).status).toBe(502);
+    expect(fixture.links()).toHaveLength(2);
   });
 
   it("pages the catalog by forwarding a well-formed cursor only", async () => {
@@ -372,9 +426,6 @@ describe("connected-apps broker boundaries", () => {
     expect(() => normalizeAccountAlias("bad\nalias")).toThrow(/printable/i);
   });
 
-  // Composio prefixes slugs that would otherwise lead with a digit, so
-  // 1Password arrives as `_1password`. The catalog lists those toolkits, so
-  // routing them to the 404 branch stranded every one of them at Connect.
   it("routes underscore-prefixed toolkit slugs instead of 404ing them", async () => {
     const token = "a".repeat(64);
     const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
@@ -556,10 +607,8 @@ describe("MCP relay Session reuse", () => {
     expect((await relay.mcp("mcp-1")).calls).toEqual(["MCP trs_dropped_new"]);
   });
 
-  // The desktop server drops mcp-session-id when it no longer knows which
-  // backend a transport session belongs to (after a restart, for example). An
-  // uncached request would look the Session up and deliver the message, so
-  // reuse must not turn that into a failure.
+  // The desktop server drops mcp-session-id when it no longer knows a transport
+  // session's backend (after a restart, say).
   it("still delivers a message without an mcp-session-id when Composio dropped the Session", async () => {
     const relay = relayHarness("trs_server_restart");
     await relay.mcp();
