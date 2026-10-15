@@ -142,10 +142,10 @@ export function track(event: string, props?: Record<string, unknown>) {
 }
 
 // Sends a personal identifier, so it is gated on analyticsEnabled(), not on opt_out_capturing() alone.
-export function identifyEmail(email: string) {
+export function identifyEmail(email: string, { submitted = true }: { submitted?: boolean } = {}) {
   whenReady((ph) => {
     ph.identify(email, { email });
-    ph.capture("email_submitted");
+    if (submitted) ph.capture("email_submitted");
   });
 }
 

@@ -1163,11 +1163,32 @@ notice queue (below), on this computer's page and on My Cloud's own page.
 
 #### One card at a time: the notice queue
 
-`components/AppNotices.tsx` is the one place for the cards at the bottom left
-(`lib/notices.ts`), asked in order, one on screen at a time, and none after
-one closes until another launch:
+`components/AppNotices.tsx` is the one place for the Cloud Pro popup and the
+cards at the bottom left (`lib/notices.ts`), asked in order, one on screen at a
+time, and none after one closes until another launch:
 
-1. **The card after the update** (`CloudTrialIntro`, id `cloud-trial-intro-v1`):
+1. **The Cloud Pro popup** (`CloudProPopup`, id `cloud-pro-update-2026-10`):
+   one centered dialog, once, on every installed desktop app whatever its
+   plan (a new install once its onboarding is done); never in a remote
+   client's window (the computer it connects to gets it), on a Cloud home or
+   on a branded build, which sells no Cloud. It waits while the plan or the
+   Admin's offer is loading and while another dialog or a call is open, and,
+   when the Cloud can't be reached, for a later launch. Its main button
+   follows the plan, and nothing in it leaves the app: with none, **Start free
+   trial** (while the Admin offers one) or **Upgrade to Cloud Pro** opens the
+   Add a Cloud dialog (source `update_popup`), and so does **Compare plans**
+   (the dialog lists every plan); on any plan (a trial, Personal, Pro, Max or
+   one that needs attention) **Manage plan** opens Settings → MausBot Cloud,
+   and there is no Compare plans. Personal → Pro is not self-serve yet, so
+   Personal gets Manage plan rather than an Upgrade that would end at "write
+   to us". Its numbers are the Admin's. Any button, its X,
+   Escape or a click outside end it for good (browser storage and the
+   workspace's hint record). It takes focus at its title, keeps Tab inside
+   and gives focus back when it closes. `cloud_pro_popup`
+   ([docs/analytics.md](analytics.md)) counts it, and a click by someone
+   signed in to MausBot Cloud first ties their analytics to their Cloud
+   account's email.
+2. **The card after the update** (`CloudTrialIntro`, id `cloud-trial-intro-v1`):
    MausBot Cloud's free trial for someone signed out or with no plan who
    has used the app before this launch, only while the Admin offers a trial
    (it waits for one). Its numbers are the Admin's: the trial's days, the
@@ -1178,17 +1199,17 @@ one closes until another launch:
    Add a Cloud dialog, **Show me how** lights the server menu (below), **Sign
    in to your Cloud plan** (signed out) only hides it for now. Never on a
    branded build or a desktop signed in with an organization.
-2. **The free trial's notice** (above), on this computer's page and on My
+3. **The free trial's notice** (above), on this computer's page and on My
    Cloud's own page (its only entry there, after its engine sign-in and setup
    checklist).
-3. **This computer's My Cloud card** (`CloudNotice`): a ready My Cloud for
+4. **This computer's My Cloud card** (`CloudNotice`): a ready My Cloud for
    someone with a plan, or **Sign in again** where the sign-in ended (Not now
    kept per card).
-4. **Star us on GitHub**, asked once.
+5. **Star us on GitHub**, asked once.
 
 None of them shows over setup (the welcome flow, the tour), a dialog, Settings,
-the Add a Cloud dialog or its tip, busy work, or an update being offered; none
-takes focus, and each is announced once to a screen reader.
+the Add a Cloud dialog or its tip, busy work, or an update being offered; no
+card in the corner takes focus, and each is announced once to a screen reader.
 
 How the app holds the answer (`electron/cloud-account.mjs`): it asks every
 minute (every 15 seconds while the Cloud is set up or a payment is linked),
@@ -1204,7 +1225,8 @@ again** (one step, the plan unaffected) instead of offering a plan. A `401` or
 `403` page from anything in between (Cloudflare's bot check, a proxy), or any
 other refusal, is a failed check like a dropped connection: it never ends the
 sign-in. Nobody signed in with a paid plan, in payment trouble, with a payment
-being linked, or whose state is unknown is offered a plan anywhere in the app.
+being linked, or whose state is unknown is offered a plan anywhere in the app;
+the Cloud Pro popup sends them to Settings → MausBot Cloud instead.
 
 In the Server menu, **My Cloud** goes through the same connection as
 **Open My Cloud** (no pairing code to type); when it cannot, the app
@@ -1237,9 +1259,10 @@ malformed session summary or grant is treated as none.
 ## Add a Cloud
 
 The one way to buy MausBot Cloud in the app, the same for every way in:
-the card after the update, **Show me how**, **Add a Cloud…** in the server
-menu (the sidebar's and the menu bar's Server menu), Settings (the Cloud card
-in General, and MausBot Cloud), and the routine screen's note.
+the Cloud Pro popup, the card after the update, **Show me how**, **Add a
+Cloud…** in the server menu (the sidebar's and the menu bar's Server menu),
+Settings (the Cloud card in General, and MausBot Cloud), and the routine
+screen's note.
 
 - **The menu item.** Main adds **Add a Cloud…** under the saved servers only
   for the installed app on this computer (never a dev build, companion mode or
@@ -1311,7 +1334,8 @@ in General, and MausBot Cloud), and the routine screen's note.
   again, `429` says to use the open checkout or wait, anything else says
   nothing was charged; `404`/`405`/`501` is an Admin before the route.
   `source` is one of `app_card`, `app_howto`, `app_menu`, `app_settings`,
-  `app_routines` (main refuses any other, and any plan the offer doesn't sell).
+  `app_routines`, `update_popup` (main refuses any other, and any plan the
+  offer doesn't sell).
 - **Interest** `POST /api/cloud/desktop/interest` `{kind: "another_cloud"}` → `{ok: true}`.
 - Every signed-in request carries this app's version in `x-openmausbot-version`.
 
