@@ -1,7 +1,10 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   PINNED_CIRCLES_KEY,
+  PINNED_CIRCLE_ORDER_KEY,
   SIDEBAR_ATTENTION_PINNED_KEY,
   UNIVERSAL_PINS_KEY,
   SIDEBAR_COLLAPSED_SECTIONS_KEY,
@@ -10,6 +13,7 @@ import {
   SIDEBAR_SECTION_ORDER_KEY,
   clampSidebarWidth,
   loadPinnedCircles,
+  loadPinnedCircleOrder,
   loadUniversalPins,
   loadSidebarAttentionPinned,
   loadCollapsedSections,
@@ -22,12 +26,14 @@ import {
   parseSidebarDensity,
   saveCollapsedSections,
   savePinnedCircles,
+  setPinnedCircleOrder,
   saveUniversalPins,
   saveSectionOrder,
   saveSidebarAttentionPinned,
   saveSidebarDensity,
   saveSidebarWidth,
   toggleCollapsedSection,
+  usePinnedCircleOrder,
 } from "./sidebar-preferences";
 import { userSectionId } from "./sidebar-layout";
 
@@ -152,6 +158,20 @@ describe("pinned circles preference", () => {
     expect(loadPinnedCircles(null)).toBe(false);
     expect(() => savePinnedCircles(true, { setItem: () => { throw new Error("blocked"); } })).not.toThrow();
     expect(() => savePinnedCircles(true, null)).not.toThrow();
+  });
+});
+
+describe("pinned circle order", () => {
+  it("keeps one deduplicated order, ignores a malformed list, and keeps the order for the session when storage is blocked", () => {
+    const setItem = vi.fn();
+    setPinnedCircleOrder(["b", "a", "a"], { setItem });
+    expect(setItem).toHaveBeenCalledWith(PINNED_CIRCLE_ORDER_KEY, JSON.stringify(["b", "a"]));
+    expect(loadPinnedCircleOrder({ getItem: () => JSON.stringify(["b", "a"]) })).toEqual(["b", "a"]);
+    expect(loadPinnedCircleOrder({ getItem: () => "nope" })).toEqual([]);
+    expect(loadPinnedCircleOrder({ getItem: () => { throw new Error("blocked"); } })).toEqual([]);
+    expect(() => setPinnedCircleOrder(["c", "b"], { setItem: () => { throw new Error("blocked"); } })).not.toThrow();
+    function Probe() { return createElement("i", null, usePinnedCircleOrder().join(",")); }
+    expect(renderToStaticMarkup(createElement(Probe))).toBe("<i>c,b</i>");
   });
 });
 

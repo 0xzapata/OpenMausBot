@@ -132,9 +132,9 @@ import { ShortcutHint } from "./ShortcutHint";
 import { roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { useAdvancedMode } from "@/lib/interface-mode";
-import { PinnedBotRoster } from "./PinnedCircleThreads";
+import { PinnedBotRoster, PinnedCircleThreadSection } from "./PinnedCircleThreads";
 
-export { PinnedBotCircle, PinnedCircleThreadPanel } from "./PinnedCircleThreads";
+export { PinnedBotCircle, PinnedCircleThreadPanel, PinnedCircleThreadSection } from "./PinnedCircleThreads";
 
 /** Coupled to electron/window-chrome.mjs: trafficLightPosition.y = 16 and 14px-tall buttons. */
 export const MAC_TRAFFIC_LIGHT_CENTER_Y = 23;
@@ -1161,33 +1161,6 @@ export function botRowProps(
 function useVisibleMessages(bot: Bot): Message[] {
   const { messages, activeLeafId } = bot;
   return useMemo(() => visibleMessages({ messages, activeLeafId }), [messages, activeLeafId]);
-}
-
-export function PinnedCircleThreadSection({
-  bots,
-  collapsed,
-  onToggle,
-  row,
-}: {
-  bots: Bot[];
-  collapsed: boolean;
-  onToggle: () => void;
-  row: (bot: Bot) => BotRowProps;
-}) {
-  const name = t("sidebar.section.pinned");
-  return (
-    <div data-sidebar-pinned-circle-threads="" className="flex flex-col gap-0.5 pt-3">
-      <SidebarSectionHeader
-        name={name}
-        collapsed={collapsed}
-        attention={collapsed ? sidebarSectionAttention(bots, []) : undefined}
-        onToggle={onToggle}
-        reorderable={false}
-        dragging={false}
-      />
-      {!collapsed && bots.map((bot) => <BotListItem key={bot.id} {...row(bot)} />)}
-    </div>
-  );
 }
 
 export const BotListItem = memo(function BotListItem(props: BotRowProps) {

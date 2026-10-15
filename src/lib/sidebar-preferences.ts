@@ -12,6 +12,7 @@ export const SIDEBAR_COLLAPSED_SECTIONS_KEY = "openmausbot.sidebarCollapsedSecti
 export const SIDEBAR_SECTION_ORDER_KEY = "openmausbot.sidebarSectionOrder.v1";
 export const PINNED_CIRCLES_KEY = "openmausbot.pinnedCircles";
 export const UNIVERSAL_PINS_KEY = "openmausbot.universalPins";
+export const PINNED_CIRCLE_ORDER_KEY = "openmausbot.pinnedCircleOrder.v1";
 
 export function parseSidebarDensity(value: string | null): SidebarDensity {
   switch (value) {
@@ -206,6 +207,29 @@ export function usePinnedCircles(): boolean {
   return useSyncExternalStore(subscribePinnedCircles, loadPinnedCircles, () => false);
 }
 
+let sessionPinnedCircleOrder: string[] | undefined;
+const pinnedCircleOrderListeners = new Set<() => void>();
+
+function subscribePinnedCircleOrder(listener: () => void): () => void {
+  pinnedCircleOrderListeners.add(listener);
+  return () => { pinnedCircleOrderListeners.delete(listener); };
+}
+
+export function loadPinnedCircleOrder(storage?: Pick<Storage, "getItem"> | null): string[] {
+  return loadStringList(PINNED_CIRCLE_ORDER_KEY, storage);
+}
+
+export function setPinnedCircleOrder(ids: string[], storage?: Pick<Storage, "setItem"> | null): void {
+  sessionPinnedCircleOrder = saveStringList(PINNED_CIRCLE_ORDER_KEY, ids, storage);
+  for (const listener of pinnedCircleOrderListeners) listener();
+}
+
+const currentPinnedCircleOrder = (): string[] => (sessionPinnedCircleOrder ??= loadPinnedCircleOrder());
+
+export function usePinnedCircleOrder(): string[] {
+  return useSyncExternalStore(subscribePinnedCircleOrder, currentPinnedCircleOrder, currentPinnedCircleOrder);
+}
+
 export function parseUniversalPins(value: string | null): boolean {
   return value === "true";
 }
@@ -305,15 +329,16 @@ function saveStringList(
   key: string,
   values: string[],
   storage?: Pick<Storage, "setItem"> | null,
-): void {
+): string[] {
+  const safe = [
+    ...new Set(values.filter((value) => value.length > 0 && value.length <= 240)),
+  ].slice(0, 100);
   try {
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
-    const safe = [
-      ...new Set(values.filter((value) => value.length > 0 && value.length <= 240)),
-    ].slice(0, 100);
     target?.setItem(key, JSON.stringify(safe));
   } catch {
   }
+  return safe;
 }
 
 export function loadCollapsedSections(storage?: Pick<Storage, "getItem"> | null): string[] {
