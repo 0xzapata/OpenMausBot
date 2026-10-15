@@ -346,6 +346,7 @@ export function ComputerPanel({
   const [dataRequest, setDataRequest] = useState<{ id: string; requestId: number }>();
   const androidStatus = useAndroidUsbDevices();
   const androidConnected = androidStatus.devices.length > 0;
+  const androidScanned = androidStatus.scanned !== false;
   const panelView: ComputerPanelView = advanced
     ? storedPanelView === "files" || (storedPanelView === "android" && !androidConnected)
       ? "computer"
@@ -447,11 +448,12 @@ export function ComputerPanel({
   }, [bot.id]);
 
   useEffect(() => {
+    if (!androidScanned) return;
     if (!androidConnected && storedPanelView === "android") {
       setPanelView("computer");
       writeComputerPanelView(bot.id, "computer");
     }
-  }, [androidConnected, bot.id, storedPanelView]);
+  }, [androidConnected, androidScanned, bot.id, storedPanelView]);
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computer]);
