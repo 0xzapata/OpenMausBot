@@ -5,6 +5,11 @@ import type { ModelCatalog, ProviderErrorCode } from "../../contracts.ts";
 import { titleCaseModelId } from "../../contracts.ts";
 import { execCli } from "../../procs.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
+import type { AcpQuestionRequest } from "./question-requests.ts";
+import {
+  capAnswerEcho, formatQuestionAnswers, MAX_QUESTIONS, parseChoices, parseProtocolAskQuestions, pickedOptionLabels, questionAnswersById,
+  repeatsQuestionText,
+} from "../../../shared/ask-question.ts";
 
 /** Cursor keeps two model namespaces: `cursor-agent models` and `--model` use flat slugs (`auto`,
  * `gpt-5.3-codex`), while the ACP session advertises parameterised ids (`default[]`,
@@ -341,8 +346,55 @@ export function classifyCursorError(error: unknown): ProviderErrorCode | undefin
   return undefined;
 }
 
+/** Cursor's AskQuestion blocks on `cursor/ask_question` (cursor.com/docs/cli/acp; cursor-agent 2026.10.01, no sessionId).
+ * Cursor answers by option id only, so a reply with any own words goes back whole as `skipped` with the answers as the
+ * reason, which Cursor hands the model verbatim: a typed answer is never forced onto an option. */
+export const CURSOR_ASK_QUESTION: AcpQuestionRequest = {
+  cancelled: { outcome: { outcome: "cancelled" } },
+  parse(params) {
+    const raw = (params as { questions?: unknown } | null)?.questions;
+    if (!Array.isArray(raw) || raw.length > MAX_QUESTIONS) return null;
+    const parsed = parseProtocolAskQuestions(raw.map((entry) =>
+      entry && typeof entry === "object"
+        ? { id: entry.id, question: entry.prompt, options: entry.options, multiSelect: entry.allowMultiple === true }
+        : entry));
+    if (!parsed || repeatsQuestionText(parsed)) return null;
+    const rawOptions = new Map<string, unknown[]>(raw.flatMap((entry) =>
+      entry && typeof entry.id === "string" && Array.isArray(entry.options) ? [[entry.id, entry.options]] : []));
+    // Card labels are trimmed and capped: never guess when two options normalize alike.
+    const optionId = (questionId: string, label: string): string | null => {
+      const matches = (rawOptions.get(questionId) ?? []).filter((option) => parseChoices([option], 1)?.[0] === label);
+      const id = matches.length === 1 ? (matches[0] as { id?: unknown }).id : null;
+      return typeof id === "string" ? id : null;
+    };
+    const questions = parsed.map(({ question }) => question);
+    return {
+      questions,
+      answered(message) {
+        const byId = questionAnswersById(message, parsed);
+        const answers: Array<{ questionId: string; selectedOptionIds: string[] }> = [];
+        let ownWords = false;
+        for (const { id, question } of parsed) {
+          const reply = byId[id];
+          if (reply === undefined) continue;
+          const { labels, other } = pickedOptionLabels(reply, question);
+          const selectedOptionIds = labels.map((label) => optionId(id, label));
+          if (other !== undefined || selectedOptionIds.some((selected) => selected === null)) ownWords = true;
+          else answers.push({ questionId: id, selectedOptionIds: selectedOptionIds as string[] });
+        }
+        if (ownWords) {
+          const reason = formatQuestionAnswers(questions, parsed.map(({ id }) => byId[id] ? [byId[id]] : []));
+          return { outcome: { outcome: "skipped", reason: capAnswerEcho(reason) } };
+        }
+        return answers.length ? { outcome: { outcome: "answered", answers } } : null;
+      },
+    };
+  },
+};
+
 const support = (run: typeof execCli): AcpSupport => ({
   driverKind: "cursorAgent",
+  questionRequests: { "cursor/ask_question": CURSOR_ASK_QUESTION },
   displayName: "Cursor",
   models: STATIC_CURSOR_MODELS,
   // Other coding agents can install a generic `agent` shim; `cursor-agent` is unambiguous.

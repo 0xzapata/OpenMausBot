@@ -57,7 +57,8 @@ import { supportsApprovalMode } from "../../../shared/approval-mode.ts";
 import { MAX_QUESTION_TEXT, parseAskQuestions, parseChoices, questionAnswersByQuestion } from "../../../shared/ask-question.ts";
 
 import { appendNative } from "../native.ts";
-import { acpShellRequest, answersAlone, permissionLaunchCwd } from "../permission-command.ts";
+import { acpSessionOperationKey, acpShellRequest, answersAlone, permissionLaunchCwd } from "../permission-command.ts";
+import { openQuestionRequest, questionRequestFor, type AcpQuestionRequest } from "./question-requests.ts";
 import { commandSummary, toolDetailPreview } from "../../tool-summary.ts";
 import { extractMcpImages } from "../../mcp-tool-images.ts";
 import { redactSecretsInText } from "../../redact.ts";
@@ -176,6 +177,7 @@ interface AcpSession {
 
 /** Per-CLI specifics plugged into the shared ACP runtime. */
 export interface AcpSupport {
+  questionRequests?: Readonly<Record<string, AcpQuestionRequest>>;
   /** Verified native catalog parameters, applied before both new and restored sessions. */
   toolScopeSessionParams?(turn: SendTurnInput, initializeResult: unknown, hasMcp: boolean,
     context: { config: AcpConfig; env: Record<string, string | undefined>; cwd: string }): Record<string, unknown>;
@@ -452,26 +454,6 @@ function decodeAcpConfig(defaultCli: string) {
       workspace: typeof o.workspace === "string" ? o.workspace : undefined,
     };
   };
-}
-
-function sessionOperationKey(toolCall: any): string | null {
-  const rawInput = toolCall?.rawInput;
-  const command = typeof rawInput?.command === "string" ? rawInput.command : undefined;
-  const hasInput = rawInput && typeof rawInput === "object" && Object.keys(rawInput).length > 0;
-  if (!command && !hasInput) return null;
-  const stable = (value: unknown): unknown =>
-    Array.isArray(value)
-      ? value.map(stable)
-      : value && typeof value === "object"
-        ? Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, stable((value as Record<string, unknown>)[key])]))
-        : value;
-  return JSON.stringify(stable({
-    kind: toolCall?.kind,
-    title: toolCall?.title,
-    command,
-    input: rawInput,
-    locations: toolCall?.locations,
-  }));
 }
 
 /** Hermes writes its whole `--version` banner to stderr with an empty stdout. */
@@ -963,6 +945,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             void handleClientFileRequest(msg);
             return;
           }
+          const question = questionRequestFor(support.questionRequests, msg.method);
+          if (question) return openQuestionRequest(msg, question, current, send, emit, () => base(threadId, current.turnId));
           if (msg.method !== "session/request_permission") {
           // An unanswered server request blocks the agent.
             return send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });
@@ -995,7 +979,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
           }
           const kind = String(toolCall.kind ?? "");
-          const operationKey = isQuestion || current.controlsHost ? null : sessionOperationKey(toolCall);
+          const operationKey = isQuestion || current.controlsHost ? null : acpSessionOperationKey(toolCall);
           if (operationKey && answersAlone(toolCall.rawInput?.command) && sessionAllows.get(threadId)?.has(operationKey)) {
             const allow = optionFor("allow");
             if (allow) {
@@ -1240,9 +1224,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               const current = session.current;
               if (!current) {
               // Between turns nothing is brokered; the agent must never block on an unanswered request.
+                const question = questionRequestFor(support.questionRequests, msg.method);
                 send(msg.method === "session/request_permission"
                   ? { jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }
-                  : { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });
+                  : question
+                    ? { jsonrpc: "2.0", id: msg.id, result: question.cancelled }
+                    : { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });
               } else {
                 handleServerRequest(msg, current);
               }
