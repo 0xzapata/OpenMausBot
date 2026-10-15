@@ -31,9 +31,11 @@ const api = async (method: string, path: string, body?: unknown, token = admin) 
   evidence.push({ method, path, result });
   return result;
 };
+// Below Full access, so sends reach the outbound card and the daily allowance.
 const bot = async (name: string) => {
   const created = await api("POST", "/api/bots", { name });
   expect(created.status, JSON.stringify(created.body)).toBe(201);
+  expect((await api("PATCH", `/api/bots/${created.body.bot.id}`, { approvalMode: "ask" })).status).toBe(200);
   return created.body.bot;
 };
 const mint = async (botId: string, threadId: string, kind = "connectors") => {
@@ -150,23 +152,19 @@ it("keeps activity, shared memory and policy changes admin-only", async () => {
   expect((await api("PATCH", `/api/bots/${b.id}`, { fallback: [{ instanceId: "claude", model: " " }] })).status).toBe(400);
 });
 
-it("asks in Full, refuses denied sends, and rechecks scopes after an approval", async () => {
+it("sends in Full without a card, and still refuses an app outside the bot's scope", async () => {
   const b = fullBot;
   const fleet = await api("GET", "/api/bots");
   expect(fleet.body.bots.find((row: any) => row.id === b.id).approvalMode).toBe("full");
   const token = await mint(b.id, b.threadId);
   const before = relayed.length;
-  const denied = relay(token, "GMAIL_SEND_DRAFT", { draft_id: "fixture" });
-  let card = await pending(b.threadId);
-  await api("POST", `/api/threads/${b.threadId}/respond`, { requestId: card.card.requestId, behavior: "deny" });
-  expect((await denied).body.result.isError).toBe(true);
-  expect(relayed).toHaveLength(before);
-  const held = relay(token, "GMAIL_SEND_EMAIL");
-  card = await pending(b.threadId);
+  expect((await relay(token, "GMAIL_SEND_EMAIL", { to: "first@fixture.test" })).body.result.isError).not.toBe(true);
+  expect((await relay(token, "COMPOSIO_REMOTE_WORKBENCH", { code_to_execute: "print(1)" })).body.result.isError).not.toBe(true);
+  expect(relayed).toHaveLength(before + 2);
+  expect((await cards(b.threadId)).some((row: any) => row.card?.outboundRequest)).toBe(false);
   await api("PATCH", `/api/bots/${b.id}`, { connectorScopes: { apps: { gmail: "read" } } });
-  await api("POST", `/api/threads/${b.threadId}/respond`, { requestId: card.card.requestId, behavior: "allow" });
-  expect((await held).body.result.isError).toBe(true);
-  expect(relayed).toHaveLength(before);
+  expect((await relay(token, "GMAIL_SEND_EMAIL")).body.result.isError).toBe(true);
+  expect(relayed).toHaveLength(before + 2);
 });
 
 it("shows each outbound batch recipient and amount with explicit preview truncation before consent", async () => {

@@ -169,7 +169,6 @@ export function PermissionsSection({
   );
 }
 
-/** Security: separate from the approval level because Full access does not bypass it. */
 function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: OutboundPolicy) => void }) {
   const policy = bot.outbound ?? DEFAULT_OUTBOUND_POLICY;
   const [today, setToday] = useState<number | null>(null);
@@ -206,7 +205,7 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
       <div className="text-[15px] font-medium text-ink">Sending on your behalf</div>
       <div className="mt-0.5 text-[13px] text-ink-secondary">
         Emails, messages, posts, invites, and payments through connected apps. Reading and drafting never count.
-        This applies at every approval level, including Full access.
+        Full access sends without asking.
       </div>
       <div className="mt-3 flex gap-1 rounded-lg bg-inset p-0.5">
         {(
