@@ -10,8 +10,6 @@ import {
   Box,
   Check,
   Cloud,
-  Database,
-  FolderOpen,
   Sparkles,
   Globe,
   Hand,
@@ -21,7 +19,6 @@ import {
   Moon,
   Power,
   Settings,
-  Smartphone,
   X,
 } from "lucide-react";
 import { api, ApiError, currentTaskBot, useStore, type Bot, type ConfigStatus } from "@/state/store";
@@ -60,7 +57,9 @@ import {
   resolveBoatPanelAction,
   shouldPollCloudPreview,
 } from "@/lib/local-computer";
+import { moveBetweenTabs, PANEL_TABS, panelTabProps, TAB_PANEL_FOCUS, tabPanelProps } from "./computer-panel-tabs";
 import {
+  computerPanelTabs,
   readComputerPanelView,
   resolveComputerPanelView,
   writeComputerPanelView,
@@ -161,9 +160,6 @@ function readPanelWidth(): number {
   }
   return PANEL_DEFAULT_WIDTH;
 }
-
-const panelTabId = (view: ComputerPanelView) => `computer-panel-tabs-tab-${view}`;
-const panelTabPanelId = (view: ComputerPanelView) => `computer-panel-tabs-panel-${view}`;
 
 export function ComputerPanel({
   bot: profileBot,
@@ -350,6 +346,7 @@ export function ComputerPanel({
   const [dataRequest, setDataRequest] = useState<{ id: string; requestId: number }>();
   const androidStatus = useAndroidUsbDevices();
   const androidConnected = androidStatus.devices.length > 0;
+  const panelTabs = computerPanelTabs({ advanced, androidConnected });
   const panelView = resolveComputerPanelView(storedPanelView, { advanced, androidConnected });
   const browserAvailableHere = browserAvailable(state.config);
   const browserEnabled = builtInBrowserEnabled(state.config) && bot.browser !== false
@@ -1264,33 +1261,9 @@ export function ComputerPanel({
     active ? "bg-raised text-ink shadow-sm" : "text-ink-secondary hover:text-ink",
   );
 
-  const panelNavTabs: ComputerPanelView[] = [
-    "computer",
-    ...(advanced ? (["routines"] as const) : []),
-    ...(advanced && androidConnected ? (["android"] as const) : []),
-    "browser",
-    "data",
-    ...(!advanced ? (["files"] as const) : []),
-  ];
-  // Keyboard entry lands on the selected trigger, or on the first one when the
-  // selected view has no trigger in this row.
-  const tabStop = panelNavTabs.includes(panelView) ? panelView : panelNavTabs[0];
-  const tabIndexFor = (view: ComputerPanelView) => (view === tabStop ? 0 : -1);
-  const onTabRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    const step = event.key === "ArrowRight" ? 1
-      : event.key === "ArrowLeft" ? -1
-      : event.key === "Home" ? "first"
-      : event.key === "End" ? "last" : null;
-    if (step === null) return;
-    event.preventDefault();
-    const at = panelNavTabs.findIndex((view) => panelTabId(view) === (event.target as HTMLElement).id);
-    const next = step === "first" ? panelNavTabs[0]
-      : step === "last" ? panelNavTabs[panelNavTabs.length - 1]
-      : panelNavTabs[((at === -1 ? panelNavTabs.indexOf(tabStop) : at) + step + panelNavTabs.length) % panelNavTabs.length];
-    if (next === "browser") setError(null);
-    selectPanelView(next);
-    document.getElementById(panelTabId(next))?.focus();
+  const chooseTab = (view: ComputerPanelView) => {
+    if (view === "browser") setError(null);
+    selectPanelView(view);
   };
 
   const emptyState = {
@@ -1355,95 +1328,19 @@ export function ComputerPanel({
               <Settings size={18} />
             </button>
           )}
-          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-1 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" role="tablist" aria-label={t("computer.tabsAria")} onKeyDown={onTabRowKeyDown}>
-            <button
-              id={panelTabId("computer")}
-              role="tab"
-              aria-selected={panelView === "computer"}
-              aria-controls={panelTabPanelId("computer")}
-              tabIndex={tabIndexFor("computer")}
-              title={t("computer.tab.computer")}
-              onClick={() => selectPanelView("computer")}
-              className={tabClass(panelView === "computer")}
-            >
-              <Monitor size={13} /> {t("computer.tab.computer")}
-              {placeLive && isComputerPlace(livePlace) && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid="computer-tab-live" />}
-            </button>
-            {panelNavTabs.includes("routines") && (
-            <button
-              type="button"
-              id={panelTabId("routines")}
-              role="tab"
-              aria-selected={panelView === "routines"}
-              aria-controls={panelTabPanelId("routines")}
-              tabIndex={tabIndexFor("routines")}
-              title={t("computer.tab.routines")}
-              onClick={() => selectPanelView("routines")}
-              className={tabClass(panelView === "routines")}
-            ><CalendarClock size={13} />{t("computer.tab.routines")}</button>
-            )}
-            {panelNavTabs.includes("android") && (
-            <button
-              id={panelTabId("android")}
-              role="tab"
-              aria-selected={panelView === "android"}
-              aria-controls={panelTabPanelId("android")}
-              tabIndex={tabIndexFor("android")}
-              title={t("computer.tab.android")}
-              onClick={() => selectPanelView("android")}
-              className={tabClass(panelView === "android")}
-            >
-              <Smartphone size={13} /> {t("computer.tab.android")}
-            </button>
-            )}
-            {(
-            <button
-              data-tour="computer-browser"
-              id={panelTabId("browser")}
-              role="tab"
-              aria-selected={panelView === "browser"}
-              aria-controls={panelTabPanelId("browser")}
-              tabIndex={tabIndexFor("browser")}
-              title={t("computer.tab.browser")}
-              onClick={() => {
-                setError(null);
-                selectPanelView("browser");
-              }}
-              className={tabClass(panelView === "browser")}
-            >
-              <Globe size={13} /> {t("computer.tab.browser")}
-              {placeLive && livePlace === "browser" && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid="browser-tab-live" />}
-            </button>
-            )}
-            <button
-              type="button"
-              data-tour="computer-data"
-              id={panelTabId("data")}
-              role="tab"
-              aria-selected={panelView === "data"}
-              aria-controls={panelTabPanelId("data")}
-              tabIndex={tabIndexFor("data")}
-              title={t("computer.tab.data")}
-              onClick={() => selectPanelView("data")}
-              className={tabClass(panelView === "data")}
-            >
-              <Database size={13} /> {t("computer.tab.data")}
-            </button>
-            {panelNavTabs.includes("files") && (
-            <button
-              type="button"
-              id={panelTabId("files")}
-              role="tab"
-              aria-selected={panelView === "files"}
-              aria-controls={panelTabPanelId("files")}
-              tabIndex={tabIndexFor("files")}
-              title={t("computer.tab.files")}
-              onClick={() => selectPanelView("files")}
-              className={tabClass(panelView === "files")}
-            >
-              <FolderOpen size={13} /> {t("computer.tab.files")}
-            </button>
-            )}
+          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-1 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" role="tablist" aria-label={t("computer.tabsAria")} onKeyDown={(event) => moveBetweenTabs(event, panelTabs, chooseTab)}>
+            {panelTabs.map((view) => {
+              const { Icon, label, tour } = PANEL_TABS[view];
+              const live = !placeLive ? undefined
+                : view === "computer" && isComputerPlace(livePlace) ? "computer-tab-live"
+                : view === "browser" && livePlace === "browser" ? "browser-tab-live" : undefined;
+              return (
+                <button key={view} type="button" data-tour={tour} {...panelTabProps(view, view === panelView)} title={t(label)} onClick={() => chooseTab(view)} className={tabClass(view === panelView)}>
+                  <Icon size={13} /> {t(label)}
+                  {live && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid={live} />}
+                </button>
+              );
+            })}
           </div>
           <button
             onClick={() => dispatch({ type: "toggleComputer", open: false })}
@@ -1457,11 +1354,11 @@ export function ComputerPanel({
       </div>
 
       {panelView === "routines" ? (
-        <div role="tabpanel" id={panelTabPanelId("routines")} aria-labelledby={panelTabId("routines")} tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
+        <div {...tabPanelProps("routines")} className={cn("min-h-0 flex-1 overflow-y-auto px-4 pb-4", TAB_PANEL_FOCUS)}>
           <RoutinesSection key={bot.id} bot={bot} routines={botRoutines} runs={state.routineRuns} defaultRunOn={cloudRoutineReady ? "cloud" : "maus"} />
         </div>
       ) : panelView === "browser" && browserEnabled ? (
-        <div role="tabpanel" id={panelTabPanelId("browser")} aria-labelledby={panelTabId("browser")} tabIndex={0} className="flex min-h-0 flex-1 flex-col px-4 pb-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
+        <div {...tabPanelProps("browser")} className={cn("flex min-h-0 flex-1 flex-col px-4 pb-4", TAB_PANEL_FOCUS)}>
           {browserSwitchRow}
           {signInHelp?.place === "browser" && <div className="-mt-1 mb-3">{signInBanner()}</div>}
           <BrowserPanel bot={bot} signIn={signInRequest} />
@@ -1472,7 +1369,7 @@ export function ComputerPanel({
           )}
         </div>
       ) : panelView === "browser" ? (
-        <div role="tabpanel" id={panelTabPanelId("browser")} aria-labelledby={panelTabId("browser")} tabIndex={0} className="flex-1 overflow-y-auto px-5 pb-5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60" data-testid="browser-off">
+        <div {...tabPanelProps("browser")} className={cn("flex-1 overflow-y-auto px-5 pb-5", TAB_PANEL_FOCUS)} data-testid="browser-off">
           {browserSwitchRow}
           <div className="mt-2 flex flex-col items-center gap-3 rounded-xl bg-card px-6 py-8 text-center">
             <Globe size={22} className="text-ink-secondary" aria-hidden="true" />
@@ -1488,21 +1385,21 @@ export function ComputerPanel({
           </div>
         </div>
       ) : panelView === "data" ? (
-        <div role="tabpanel" id={panelTabPanelId("data")} aria-labelledby={panelTabId("data")} tabIndex={0} className="flex min-h-0 flex-1 flex-col overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
+        <div {...tabPanelProps("data")} className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", TAB_PANEL_FOCUS)}>
           <Suspense fallback={<div className="flex flex-1 items-center justify-center text-[13px] text-ink-secondary" role="status">{t("data.loading")}</div>}>
             <DataPanel key={bot.id} bot={bot} requestedCard={dataRequest} />
           </Suspense>
         </div>
       ) : panelView === "files" ? (
-        <div role="tabpanel" id={panelTabPanelId("files")} aria-labelledby={panelTabId("files")} tabIndex={0} className="flex min-h-0 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
+        <div {...tabPanelProps("files")} className={cn("flex min-h-0 flex-1 flex-col", TAB_PANEL_FOCUS)}>
           <ComputerFilesPane bot={bot} />
         </div>
       ) : panelView === "android" && androidConnected ? (
-        <div role="tabpanel" id={panelTabPanelId("android")} aria-labelledby={panelTabId("android")} tabIndex={0} className="flex-1 overflow-y-auto px-4 pt-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
+        <div {...tabPanelProps("android")} className={cn("flex-1 overflow-y-auto px-4 pt-2", TAB_PANEL_FOCUS)}>
           <AndroidDevicePanel status={androidStatus} />
         </div>
       ) : (
-      <div role="tabpanel" id={panelTabPanelId("computer")} aria-labelledby={panelTabId("computer")} tabIndex={0} className="flex-1 overflow-y-auto px-5 pb-5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
+      <div {...tabPanelProps("computer")} className={cn("flex-1 overflow-y-auto px-5 pb-5", TAB_PANEL_FOCUS)}>
           <div className="mb-1.5 mt-2 flex items-center justify-between text-[13px] text-ink-secondary">
             <span>{t("computer.screenOf", { name: bot.name })}</span>
             {currentTeamComputer && <span className="text-[11px]">{autoView.short}</span>}
