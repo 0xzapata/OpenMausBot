@@ -644,7 +644,9 @@ export interface AppState {
   liveCallVersion: number;
   liveCallLookupSeq: number;
   selectedId: string;
-  activeView: "chat" | "team-map" | "routines";
+  activeView: "chat" | "team-map" | "routines" | "files";
+  /** Folders a finished move left on this computer, for Files to offer sharing. */
+  filesSuggest: string[] | null;
   routines: Routine[];
   routineRuns: RoutineRun[];
   routinesLoadState: "loading" | "ready" | "error";
@@ -787,6 +789,7 @@ export type Action =
   | { type: "sectionDeleted"; section: string; sections: string[] }
   | { type: "showRoutines"; section?: "schedule" | "logs"; view?: "calendar" | "list"; botId?: string; routineId?: string; runStatus?: RoutineRunStatusFilter }
   | { type: "showTeamMap" }
+  | { type: "showFiles"; suggest?: string[] }
   | { type: "showChat" }
   | { type: "routinesHydrated"; routines: Routine[]; runs: RoutineRun[] }
   | { type: "routinesLoadFailed" }
@@ -1136,16 +1139,12 @@ export function reducer(state: AppState, action: Action): AppState {
     case "showChat":
       return state.activeView === "chat" ? state : { ...state, activeView: "chat" };
     case "showTeamMap":
+    case "showFiles":
       return {
         ...state,
-        activeView: "team-map",
-        settingsOpen: false,
-        computerOpen: false,
-        inspectorOpen: false,
-        activityOpen: false,
-        appSettingsOpen: false,
-        pluginsOpen: false,
-        triggersOpen: false,
+        activeView: action.type === "showFiles" ? "files" : "team-map",
+        filesSuggest: action.type === "showFiles" && action.suggest?.length ? action.suggest : null,
+        settingsOpen: false, computerOpen: false, inspectorOpen: false, activityOpen: false, appSettingsOpen: false, pluginsOpen: false, triggersOpen: false,
       };
     case "routinesHydrated":
       return { ...state, routines: action.routines, routineRuns: trimRoutineRuns(action.runs), routinesLoadState: "ready" };
@@ -2073,6 +2072,7 @@ export const initialState: AppState = {
   routineRuns: [],
   routinesLoadState: "loading",
   routinesFocus: { nonce: 0 },
+  filesSuggest: null,
   webhooks: [],
   webhookAttempts: [],
   webhookIngress: null,
@@ -2522,7 +2522,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
 
     const wrapped: React.Dispatch<Action> = (action) => {
-      if (["select", "newTask", "switchTask", "newGroupTask", "switchGroupTask", "showChat", "showRoutines", "showTeamMap"].includes(action.type)) selectionRevision++;
+      if (["select", "newTask", "switchTask", "newGroupTask", "switchGroupTask", "showChat", "showRoutines", "showTeamMap", "showFiles"].includes(action.type)) selectionRevision++;
       // Pin before any await or optimistic state change.
       action = pinBotThreadAction(action, stateRef.current.bots);
       if (action.type === "taskSwitched") action = { ...action, bot: withTaskWrites(action.bot) as Bot };
