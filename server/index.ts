@@ -392,6 +392,7 @@ import { connectedAppsForSetup, expandSetupTurnText, setupModeActive, setupSyste
 import type { SkillRequestCardData } from "../shared/skill-request.ts";
 import { checkSoulDrift, readSoulDrift, soulFile, writeSoulMirror } from "./bot-folder.ts";
 import {
+  botPersona,
   buildSystemPrompt,
   userProfileSystemPrompt,
   cloudHomePrompt,
@@ -3449,13 +3450,7 @@ const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) 
 };
 
 function previewSystemPrompt(bot: BotRecord) {
-  const persona = [
-    `You are ${bot.name}, a personal bot in OpenMausBot.`,
-    bot.title && `Role: ${bot.title}.`,
-    bot.description && `About: ${bot.description}`,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const persona = botPersona(bot);
   const instance = registry.get(bot.modelSelection.instanceId);
   const caps = instance?.adapter.capabilities;
   const teamComputer = inheritedTeamComputer(bot);
@@ -8817,13 +8812,7 @@ async function startTurn(
       };
       let dispatchContext = decideContext(plannedConfig);
 
-      const persona = [
-        `You are ${bot.name}, a personal bot in OpenMausBot.`,
-        bot.title && `Role: ${bot.title}.`,
-        bot.description && `About: ${bot.description}`,
-      ]
-        .filter(Boolean)
-        .join(" ");
+      const persona = botPersona(bot);
 
       {
         const drift = checkSoulDrift(bot.id, bot.soul ?? "", bot.soulHash ?? "");

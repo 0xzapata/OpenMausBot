@@ -38,6 +38,12 @@ export function replyStylePrompt(style: ReplyStyle | undefined): string {
   return isConversational(style) ? CONVERSATIONAL_STYLE_PROMPT : "";
 }
 
+export function botPersona(bot: { name: string; title?: string; description?: string }): string {
+  return [`You are ${bot.name}, a personal bot in OpenMausBot.`, bot.title && `Role: ${bot.title}.`, bot.description && `About: ${bot.description}`]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function buildSystemPrompt(
   persona: string,
   soul: string,
