@@ -1,6 +1,7 @@
-import type { KeyboardEvent } from "react";
+import { useEffect, type KeyboardEvent } from "react";
 import { CalendarClock, Database, FolderOpen, Globe, Monitor, Smartphone, type LucideIcon } from "lucide-react";
-import type { ComputerPanelView } from "@/lib/computer-panel-view";
+import { readComputerPanelView, writeComputerPanelView, type ComputerPanelView } from "@/lib/computer-panel-view";
+import type { AndroidUsbDevicesStatus } from "./AndroidDevicePanel";
 import type { LocaleKey } from "@/locales";
 
 export const PANEL_TABS: Record<ComputerPanelView, { Icon: LucideIcon; label: LocaleKey; tour?: string }> = {
@@ -48,4 +49,20 @@ export function moveBetweenTabs(
   event.preventDefault();
   select(next);
   document.getElementById(tabId(next))?.focus();
+}
+
+export function useAndroidTabFallback(
+  botId: string,
+  status: AndroidUsbDevicesStatus,
+  setView: (view: ComputerPanelView) => void,
+): void {
+  // A failed or missing adb also reports no devices, so only a clean check proves the phone is gone.
+  const confirmedGone = status.scanned && status.devices.length === 0
+    && status.reasonCode !== "adb-unavailable" && status.reasonCode !== "adb-failed";
+  useEffect(() => {
+    // Read storage, not render state: a focus effect in the same commit may have stored a newer view.
+    if (!confirmedGone || readComputerPanelView(botId) !== "android") return;
+    setView("computer");
+    writeComputerPanelView(botId, "computer");
+  }, [botId, confirmedGone, setView]);
 }

@@ -57,7 +57,7 @@ import {
   resolveBoatPanelAction,
   shouldPollCloudPreview,
 } from "@/lib/local-computer";
-import { moveBetweenTabs, PANEL_TABS, panelTabProps, TAB_PANEL_FOCUS, tabPanelProps } from "./computer-panel-tabs";
+import { moveBetweenTabs, PANEL_TABS, panelTabProps, TAB_PANEL_FOCUS, tabPanelProps, useAndroidTabFallback } from "./computer-panel-tabs";
 import {
   computerPanelTabs,
   readComputerPanelView,
@@ -443,12 +443,7 @@ export function ComputerPanel({
     };
   }, [bot.id]);
 
-  useEffect(() => {
-    if (!androidConnected && storedPanelView === "android") {
-      setPanelView("computer");
-      writeComputerPanelView(bot.id, "computer");
-    }
-  }, [androidConnected, bot.id, storedPanelView]);
+  useAndroidTabFallback(bot.id, androidStatus, setPanelView);
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computer]);
