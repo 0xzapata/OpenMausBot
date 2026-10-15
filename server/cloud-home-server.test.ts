@@ -87,6 +87,11 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
       claude: { driver: "claudeAgent", displayName: "Claude", config: { cli } },
     },
   }));
+  // Moved here from a Windows PC by a release that left the PC's data folder in memory.
+  mkdirSync(join(dataDir, ".backups"));
+  writeFileSync(join(dataDir, ".backups", "last-restore.json"), JSON.stringify({ restored: true, id: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }));
+  mkdirSync(join(dataDir, "workspaces", "moved"), { recursive: true });
+  writeFileSync(join(dataDir, "workspaces", "moved", "MEMORY.md"), "The register is C:\\Users\\Ada\\.openmausbot\\files\\register.xlsx.\n");
   // The web UI's pages (a stand-in for the built app).
   mkdirSync(join(home, "web"));
   writeFileSync(join(home, "web", "index.html"), "<!doctype html><title>OpenMausBot</title>");
@@ -139,6 +144,12 @@ it("boots with a gateway's settings, says once that it ignores them, and never l
   expect(log).not.toContain(token);
   expect(log).not.toContain(secret);
   for (const includedToken of includedTokens) expect(log).not.toContain(includedToken);
+});
+
+it("rewrites the data folder of the computer it was moved from before anything reads it", () => {
+  const dataDir = join(home, ".openmausbot");
+  expect(readFileSync(join(dataDir, "workspaces", "moved", "MEMORY.md"), "utf8")).toBe(`The register is ${dataDir}/files/register.xlsx.\n`);
+  expect(JSON.parse(readFileSync(join(dataDir, ".backups", "last-restore.json"), "utf8")).pathsRewritten).toBe(true);
 });
 
 it("offers the included computers, voice and decisions with no key, and never shows or saves their tokens", async () => {
