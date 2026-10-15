@@ -104,6 +104,7 @@ const { ComputerPanel } = await import("./ComputerPanel");
 const { ComputerFilesPane } = await import("./ComputerFilesPane");
 const { CloudBackendPicker } = await import("./CloudBackendPicker");
 const { LocalComputerAutoWarning } = await import("./LocalComputerAutoWarning");
+const { ApiKeyRow } = await import("./ApiKeys");
 
 afterAll(() => vi.unstubAllGlobals());
 
@@ -424,6 +425,13 @@ describe("Where the bot works", () => {
     const user = render(makeBot({ computer: "cloud" }));
     expect(placeLine(user)).toBe("A cloud computer here needs your own Boat key, a paid service. Ask an Admin to change it.");
     expect(user.nodes.some((node) => node.props["data-testid"] === "place-action")).toBe(false);
+  });
+
+  it("saves a Boat key pasted into the panel as one from the Computer panel", () => {
+    fixture.config = { ...fixture.config, box: { configured: false } };
+    fixture.seed = { phase: "unconfigured", resolved: { botId: "scout", threadId: "thread-scout", computer: "cloud", cloudBackend: "box" } };
+    const rows = render(makeBot({ computer: "cloud" })).nodes.filter((node) => node.type === ApiKeyRow);
+    expect(rows.map((node) => ({ section: node.props.section, via: node.props.via }))).toEqual([{ section: "box", via: "computer_panel" }]);
   });
 
   it("dispatches exactly what the Advanced picker dispatches for each place", () => {

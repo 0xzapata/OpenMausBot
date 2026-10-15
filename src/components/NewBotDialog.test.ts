@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ effects: [] as EffectCallback[], dispatch: vi.fn(), api: vi.fn(), create: vi.fn(), setDraft: vi.fn(), ready: false, hook: 0, admin: false,
-  profile: {} as Record<string, unknown>, choice: {} as { role?: string; preset?: { id: string; skills: string[]; notes: string[] } }, track: vi.fn() }));
+  profile: {} as Record<string, unknown>, track: vi.fn() }));
 vi.mock("@/lib/analytics", () => ({ track: fixture.track }));
 vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => fixture.admin }));
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: {} }) }));
@@ -15,7 +15,6 @@ vi.mock("react", async importOriginal => {
     if (fixture.ready && index === 1) {
       const draft = state[0] as { bot: { name: string }; patch: (patch: { name: string }) => void };
       if (draft.bot.name !== "Fixture") draft.patch({ name: "Fixture", ...fixture.profile });
-      Object.assign(draft, fixture.choice);
     }
     if (index === 1) return [state[0], fixture.setDraft];
     return fixture.ready && index === 3 ? [true, state[1]] : state;
@@ -29,12 +28,27 @@ vi.mock("@/state/store", async importOriginal => {
   return { ...store, api: fixture.api, BotEditorStore: () => null, useStore: () => ({ state: store.initialState, dispatch: fixture.dispatch }) };
 });
 import { LocalNewBotDialog as NewBotDialog, CompanionNewBotDialog, NewBotDialog as RoutedNewBotDialog } from "./NewBotDialog";
+import { Select } from "./Select";
+import type { BotCreationDraft } from "@/lib/bot-creation-draft";
 
 type Node = ReactElement<{ children?: ReactNode; role?: string; "aria-label"?: string; onClick?: () => void; onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void; disabled?: boolean }>;
 function nodes(value: ReactNode): Node[] {
   if (!isValidElement(value)) return [];
   const node = value as Node;
   return [node, ...Children.toArray(node.props.children).flatMap(nodes)];
+}
+// One component's own output, without rendering the components inside it.
+function output(element: Node): Node[] {
+  let tree: ReactNode = null;
+  function Capture() { tree = (element.type as (props: unknown) => ReactNode)(element.props); return null; }
+  renderToStaticMarkup(createElement(Capture));
+  return nodes(tree);
+}
+const named = (name: string) => (node: Node) => typeof node.type === "function" && node.type.name === name;
+function chooseStartingRole(dialog: Node[], value: string) {
+  const role = output(dialog.find(named("DraftSection"))!).find(named("StartingRole"))!;
+  const select = output(role).find(node => node.type === Select)!;
+  (select.props as unknown as { onChange: (event: { target: { value: string } }) => void }).onChange({ target: { value } });
 }
 function render(defaultsMode = false, onCreated?: () => void | Promise<void>) {
   let tree!: ReturnType<typeof NewBotDialog>;
@@ -45,7 +59,7 @@ function render(defaultsMode = false, onCreated?: () => void | Promise<void>) {
 beforeEach(() => {
   fixture.effects = []; fixture.dispatch.mockReset(); fixture.api.mockReset();
   fixture.ready = false; fixture.admin = false; fixture.create.mockReset(); fixture.setDraft.mockReset(); fixture.profile = {};
-  fixture.choice = {}; fixture.track.mockReset();
+  fixture.track.mockReset();
   fixture.api.mockReturnValue(new Promise(() => {}));
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -159,17 +173,30 @@ describe("bot draft dialog", () => {
   });
 
   it.each([
-    [{}, { source: "blank" }],
-    [{ role: "research" }, { source: "template", template: "research" }],
-    [{ role: "a role from a newer build" }, { source: "template", template: "other" }],
-    [{ role: "coder", preset: { id: "My secret preset", skills: [], notes: [] } }, { source: "preset" }],
-  ])("reports one bot_created per create, saying where it started (%j)", async (choice, props) => {
+    [["research"], { source: "template", template: "research" }],
+    [["coder", ""], { source: "blank" }],
+    [[], { source: "blank" }],
+  ])("reports the starting role chosen in the dialog (%j) once the bot is created", async (choices, props) => {
+    vi.stubGlobal("window", {});
     fixture.ready = true;
-    fixture.choice = choice;
     fixture.create.mockResolvedValue({ bot: { id: "created", name: "Fixture" }, warnings: [] });
-    render().nodes.filter(node => node.type === "button").at(-1)!.props.onClick!();
+    const dialog = render().nodes;
+    for (const value of choices) chooseStartingRole(dialog, value);
+    dialog.filter(node => node.type === "button").at(-1)!.props.onClick!();
     await vi.waitFor(() => expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleNewBot", open: false }));
     expect(fixture.track.mock.calls).toEqual([["bot_created", props]]);
+  });
+
+  it("reports a preset chosen after a starting role as the start, never naming the preset", async () => {
+    vi.stubGlobal("window", {});
+    fixture.ready = true;
+    fixture.create.mockResolvedValue({ bot: { id: "created", name: "Fixture" }, warnings: [] });
+    const dialog = render().nodes;
+    chooseStartingRole(dialog, "coder");
+    (dialog.find(named("DraftSection"))!.props as unknown as { draft: BotCreationDraft }).draft.choosePreset({ id: "My secret preset", skills: [], notes: [] });
+    dialog.filter(node => node.type === "button").at(-1)!.props.onClick!();
+    await vi.waitFor(() => expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleNewBot", open: false }));
+    expect(fixture.track.mock.calls).toEqual([["bot_created", { source: "preset" }]]);
   });
 
   it("reports nothing when saving the defaults for new bots, or when creating fails", async () => {

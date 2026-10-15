@@ -1,4 +1,7 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +29,7 @@ function ready(patch: Partial<AppState> = {}): AppState {
     routinesLoadState: "ready",
     config: { box: { configured: false }, composio: { configured: false }, vps: { configured: false, sshAlias: "" }, rooms: { turnTimeoutMinutes: 30 }, localVm: { mode: "shared", maxInstances: 1 } } as ConfigStatus,
     instances: [{ instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude", snapshot: { state: "available", authenticated: true }, models: { default: "", options: [] } } as InstanceInfo],
+    webhookIngress: { available: true, baseUrl: "http://127.0.0.1:8800" },
     ...patch,
   };
 }
@@ -110,13 +114,58 @@ describe("useUsageSnapshot", () => {
     expect(fixture.connectedApps).not.toHaveBeenCalled();
   });
 
-  it("waits for the config, the routines and the engine list", async () => {
-    for (const early of [ready({ config: null }), ready({ instances: [] }), ready({ routinesLoadState: "loading" }), ready({ hydrated: undefined })]) {
+  it("waits for the config, the routines, the webhooks and the engine list", async () => {
+    for (const early of [ready({ config: null }), ready({ instances: [] }), ready({ routinesLoadState: "loading" }), ready({ hydrated: undefined }), ready({ webhookIngress: null })]) {
       await draw(early);
       expect(fixture.track).not.toHaveBeenCalled();
       expect(fixture.api).not.toHaveBeenCalled();
     }
     await draw(ready());
     expect(sent()).toHaveLength(1);
+  });
+});
+
+describe("what the snapshot asks this page's app", () => {
+  const asked: string[] = [];
+  const bridges = {
+    companion: { state: async () => { asked.push("companion"); return { devices: [{ id: "p1" }, { id: "p2" }] }; } },
+    cloudAccount: { state: async () => { asked.push("cloudAccount"); return { status: "signed-out" }; } },
+    cloudPlan: { state: async () => { asked.push("cloudPlan"); return { status: "paid", tier: "max" }; } },
+  };
+  beforeEach(() => { asked.length = 0; });
+
+  it("asks the desktop app's own window for paired phones and the Cloud account", async () => {
+    vi.stubGlobal("ogb", { remoteClient: { active: false }, ...bridges });
+    await draw(ready());
+    expect(asked.sort()).toEqual(["cloudAccount", "companion"]);
+    expect(sent()[0]![1]).toMatchObject({ phones_paired: 2, cloud_plan: "none", remote_client: false });
+  });
+
+  it("asks a Cloud page shown in the desktop app for its own plan only", async () => {
+    vi.stubGlobal("ogb", bridges);
+    await draw(ready({ config: { ...ready().config!, cloudHome: true } }));
+    expect(asked).toEqual(["cloudPlan"]);
+    expect(sent()[0]![1]).toMatchObject({ cloud_plan: "max", cloud_home: true });
+    expect(sent()[0]![1]).not.toHaveProperty("phones_paired");
+  });
+
+  it("asks nothing of the desktop app as a remote client, and does not wait for webhooks it never loads", async () => {
+    vi.stubGlobal("ogb", { remoteClient: { active: true }, ...bridges });
+    await draw(ready({ webhookIngress: null }));
+    expect(asked).toEqual([]);
+    expect(sent()[0]![1]).toMatchObject({ cloud_plan: "unknown", remote_client: true });
+    expect(sent()[0]![1]).not.toHaveProperty("webhooks");
+  });
+
+  it("asks nothing in a plain browser", async () => {
+    await draw(ready({ config: { ...ready().config!, cloudHome: true } }));
+    expect(asked).toEqual([]);
+    expect(sent()[0]![1]).toMatchObject({ cloud_plan: "unknown", platform: "browser" });
+  });
+
+  it("runs in the app shell, so every app page sends it", () => {
+    const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "App.tsx"), "utf8");
+    const shell = app.slice(app.indexOf("function Shell("), app.indexOf("\nfunction ", app.indexOf("function Shell(") + 1));
+    expect(shell).toMatch(/\n {2}useUsageSnapshot\(\);\n/);
   });
 });

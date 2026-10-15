@@ -8,7 +8,8 @@ sent.
 
 - `posthog-js` loads only while the switch is on. With the switch off, the library is never downloaded and nothing is
   sent.
-- Autocapture, pageviews and surveys are off. Events come only from the calls listed on this page.
+- Autocapture, pageviews, surveys and feature flags are off. Events come only from the calls listed on this page, and
+  switching analytics back on sends no event of its own.
 - Every event carries `app_version` (for example `0.1.112`) and `surface`: `local` for the desktop app's own window,
   `server` for a page a server serves (MausBot Cloud, a self-hosted server, or the app in a browser).
 - PostHog adds its standard device facts to every event: operating system, browser and its version, device type,
@@ -43,14 +44,15 @@ Properties are counts, `true` or `false`, or words from fixed lists in the app's
 
 | List | Values |
 | --- | --- |
-| Key provider | `anthropic`, `openai`, `openrouter`, `openai_compat`, `xai`, `mistral`, `cerebras`, `groq`, `meta`, `boat`, `composio`, `opencode_go`, `custom_endpoint`, `elevenlabs`, `fish_audio`, `jev`, `openrouter_decider`, `openai_image`, `xai_image`, `custom_image`, `openai_live` |
+| Key provider | `anthropic`, `openai`, `openrouter`, `openai_compat`, `xai`, `mistral`, `cerebras`, `groq`, `meta`, `boat`, `composio`, `opencode_go`, `custom_endpoint`, `elevenlabs`, `fish_audio`, `jev`, `openrouter_decider`, `openai_image`, `custom_image`, `openai_live` |
 | Engine | `claude`, `codex`, `gemini`, `cursor`, `opencode`, `qwen`, `hermes`, `cline`, `custom_acp`, `pi`, `openai_compat`, `grok`, `grok_api`, `kimi`, `droid`, `antigravity`, `minimax`, `mistral`, `cerebras`, `groq`, `meta`, `muse_code` |
 | App | The 24 apps Connected apps lists by default: `slack`, `github`, `gmail`, `googlecalendar`, `googlesheets`, `googledocs`, `googledrive`, `notion`, `linear`, `sentry`, `posthog`, `discord`, `twitter`, `reddit`, `zapier`, `hubspot`, `salesforce`, `jira`, `asana`, `trello`, `dropbox`, `airtable`, `figma`, `stripe`. Every other app is `other`. |
 | Starting role | `assistant`, `inbox`, `research`, `coder`, `community`, `ops` |
 | Cloud plan | `personal`, `pro`, `max` |
 
 An engine is named by the kind of engine it is, never by the account or endpoint it runs on: two Claude accounts both
-report `claude`.
+report `claude`. A page that may not list the engines (a member's, a Cloud guest's or a paired device's) names the
+engines the app ships with, and any engine account added later as `other`.
 
 ## The daily snapshot
 
@@ -68,13 +70,13 @@ use their own Boat key, and how many bots run on cloud computers, without sendin
 
 | Property | Type | Meaning |
 | --- | --- | --- |
-| `key_providers` | list of key providers | Providers with your own key saved: the model providers and an OpenAI-compatible key when set; `boat` for your own Boat key (not one included with a plan); `composio` for a self-hosted Composio project; `opencode_go`; `elevenlabs` or `fish_audio` for your own voice key; `jev` or `openrouter_decider` for your own decision-model key; `openai_image`, `xai_image`, `custom_image` for avatar images; `openai_live` for live calls |
+| `key_providers` | list of key providers | Providers with your own key saved: the model providers and an OpenAI-compatible key when set; `boat` for your own Boat key (not one included with a plan); `composio` for a self-hosted Composio project; `opencode_go`; `elevenlabs` or `fish_audio` for your own voice key; `jev` or `openrouter_decider` for your own decision-model key; `openai_image` or `custom_image` for your own avatar-image key (an xAI key counts once, as `xai`); `openai_live` for live calls |
 | `key_count` | count | How many entries `key_providers` has |
 | `has_boat_key` | true/false | Your own Boat key is saved |
 | `cloud_computer_source` | `own_key`, `included`, `none` | Where cloud computers come from: your own Boat key (it wins when both exist), a Cloud plan, or nowhere |
 | `cloud_computers` | count | Cloud computers this install manages for bots and team computers; `0` without a Boat account; left out while the Boat account is changing or when the provider could not be read |
 | `team_computers` | count | Team computers |
-| `bots` | count | Bots |
+| `bots` | count | Bots, not counting archived ones (no bot count below includes them) |
 | `bots_cloud_boat`, `bots_cloud_vps` | count | Bots set to work on a cloud computer, on Boat or on your VPS |
 | `bots_local_vm`, `bots_this_computer`, `bots_browser`, `bots_off`, `bots_auto` | count | Bots set to work on a Local VM, on this computer, in the browser only, nowhere, or left on Auto |
 | `rooms` | count | Rooms |
@@ -119,6 +121,7 @@ use their own Boat key, and how many bots run on cloud computers, without sendin
 | `app_first_open` | The first time this app page starts with analytics on | `platform`: `desktop`, `browser` |
 | `app_opened` | Each time this app page starts with analytics on | `platform`: `desktop`, `browser` |
 | `email_submitted` | You shared your email on the first-run screen; your events are tied to that email from then on | none |
+| `$identify` | PostHog's own event, sent with `email_submitted` to tie your events to that email | `$set`: `email`, the email you shared; `$anon_distinct_id`: the random id your events had before |
 | `email_skipped` | You skipped the email on the first-run screen | none |
 | `onboarding_step` | A first-run tour step is shown | `step`: `hello`, `reel`, `engines`, `permissions`, `phone`, `bot`; `replay`: true/false |
 | `onboarding_completed` | The first-run tour ends | `reason`: `completed`, `skipped`; `at`: the step it ended on; `replay`: true/false |
@@ -132,9 +135,9 @@ use their own Boat key, and how many bots run on cloud computers, without sendin
 | `team_scouted` | The app suggests a team for a project folder | `signals`: count |
 | `bot_created` | You create a bot in the New bot dialog | `source`: `blank`, `template` (a starting role), `preset`; `template`: starting role, only when `source` is `template` |
 | `api_key_saved` | You save a key in Settings → API keys, in the Computer panel, from a bot's request in a chat, or by adding an OpenAI-compatible server | `provider`: key provider; `via`: `settings`, `computer_panel`, `chat_request`; `result`: `ok` (the provider accepted it), `rejected` (the provider refused it), `unverified` (saved, not checked), `error` (not saved) |
-| `api_key_removed` | You clear a key in Settings → API keys or the Computer panel | `provider`: key provider; `via`: `settings`, `computer_panel` |
+| `api_key_removed` | You clear a key of your own in Settings → API keys or the Computer panel | `provider`: key provider; `via`: `settings`, `computer_panel` |
 | `engine_signed_in` | You finish signing in to an engine inside the app | `engine`: `claude`, `codex`, `grok`; `method`: `code`, `device_code`, `browser` |
-| `connector_connect` | A Connect you started in Connected apps ends | `app`: app; `result`: `connected`, `failed`, `expired`, `timed_out` (no answer within two minutes) |
+| `connector_connect` | A Connect you started in Connected apps ends | `app`: app; `result`: `connected` (the account it added works), `failed` or `expired` (that account failed or expired), `timed_out` (neither within two minutes) |
 | `app_snapshot` | Once a day, as described above | The properties in the snapshot table |
 | `cloud_card_shown` | The MausBot Cloud card is shown | `variant`: `signed_out`, `free` |
 | `cloud_card_action` | You act on the MausBot Cloud card | `action`: `start`, `howto`, `signin`, `not_now`, `close` |
@@ -145,7 +148,7 @@ use their own Boat key, and how many bots run on cloud computers, without sendin
 | `cloud_setup_started` | A new Cloud starts its first job | none |
 | `cloud_intent_submitted` | You tell a new Cloud what to do first | `idea`: `digest`, `watch`, `research`, `plan`, or none for your own words; `edited`: true/false |
 | `cloud_intent_skipped` | You skip that question | none |
-| `product_hunt_card` | You act on the Product Hunt card | `action`: `upvote`, `close` |
+| `product_hunt_card` | You act on the Product Hunt card | `action`: `upvote`, `not_now`, `close` |
 
 `api_key_saved` reports `ok` for a key the server checks with its provider before saving it (Boat, Composio,
 ElevenLabs, Fish Audio), and for a model provider key whose test passed right after saving. A key nothing checks before

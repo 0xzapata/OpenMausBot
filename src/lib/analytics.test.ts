@@ -9,13 +9,16 @@ const ph = vi.hoisted(() => {
     loads: 0,
     fail: false,
     initThrows: false,
+    storedOptOut: false,
     calls: [] as string[],
     options: [] as Record<string, unknown>[],
     registered: [] as Record<string, unknown>[],
+    unregistered: [] as string[],
+    optIns: [] as unknown[],
     module: () => {
       if (ph.fail) throw new Error("chunk failed to load");
       ph.loads += 1;
-      let optedOut = false;
+      let optedOut = ph.storedOptOut;
       return {
         default: {
           init: (_token: string, options: Record<string, unknown>) => {
@@ -24,15 +27,17 @@ const ph = vi.hoisted(() => {
             ph.options.push(options);
           },
           has_opted_out_capturing: () => optedOut,
-          opt_in_capturing: () => {
+          opt_in_capturing: (options?: unknown) => {
             optedOut = false;
             ph.calls.push("opt_in_capturing");
+            ph.optIns.push(options);
           },
           opt_out_capturing: () => {
             optedOut = true;
             ph.calls.push("opt_out_capturing");
           },
           register: (properties: Record<string, unknown>) => { ph.calls.push("register"); ph.registered.push(properties); },
+          unregister: (key: string) => void ph.unregistered.push(key),
           capture: (event: string) => void ph.calls.push(`capture ${event}`),
           identify: (id: string) => void ph.calls.push(`identify ${id}`),
         },
@@ -57,9 +62,12 @@ beforeEach(() => {
   ph.loads = 0;
   ph.fail = false;
   ph.initThrows = false;
+  ph.storedOptOut = false;
   ph.calls = [];
   ph.options = [];
   ph.registered = [];
+  ph.unregistered = [];
+  ph.optIns = [];
 });
 // Restored in afterEach: an inline restore would be skipped when an assertion fails mid-test.
 afterEach(() => vi.stubGlobal("localStorage", baseStorage));
@@ -174,7 +182,7 @@ describe("loading the client", () => {
     expect(fresh.analyticsSurface()).toBe("server");
   });
 
-  it("initialises once, with autocapture and surveys off", async () => {
+  it("initialises once, with autocapture, surveys and feature flags off", async () => {
     const fresh = await freshAnalytics();
     const first = fresh.initAnalytics();
     expect(fresh.initAnalytics()).toBe(first);
@@ -183,7 +191,23 @@ describe("loading the client", () => {
 
     expect(ph.calls).toEqual(OPENED);
     expect(ph.options).toHaveLength(1);
-    expect(ph.options[0]).toMatchObject({ autocapture: false, disable_surveys: true });
+    expect(ph.options[0]).toMatchObject({ autocapture: false, disable_surveys: true, advanced_disable_flags: true });
+  });
+
+  it("forgets the first page's address that PostHog stored for the person", async () => {
+    const fresh = await freshAnalytics();
+    await fresh.initAnalytics();
+    expect(ph.unregistered).toEqual(["$initial_person_info", "$initial_referrer_info", "$initial_campaign_params"]);
+  });
+
+  it("opts back in without PostHog's own $opt_in event, at start and from Settings", async () => {
+    ph.storedOptOut = true;
+    const fresh = await freshAnalytics();
+    await fresh.initAnalytics();
+    fresh.setAnalyticsEnabled(false);
+    fresh.setAnalyticsEnabled(true);
+    expect(ph.calls.filter((call) => call.startsWith("opt_"))).toEqual(["opt_in_capturing", "opt_out_capturing", "opt_in_capturing"]);
+    expect(ph.optIns).toEqual([{ captureEventName: false }, { captureEventName: false }]);
   });
 
   it("sends no address: no URL, host, path, referrer or campaign, on the event or on the person", async () => {

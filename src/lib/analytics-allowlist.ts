@@ -1,6 +1,7 @@
 // Security: every value a product event carries is a count, a boolean, or a word from one of these lists. A key, a name,
 // an id, a URL or any other string the person or a server chose becomes "other" before it can reach track().
 import { BOT_ROLES } from "@/lib/bot-roles";
+import { BUILT_IN_INSTANCE_DRIVERS } from "@/lib/built-in-instances";
 import { CURATED_CONNECTOR_SLUGS } from "../../shared/connector-curated";
 import type { CredentialTargetId } from "../../shared/credential-request";
 
@@ -13,8 +14,8 @@ export function allow<const T extends string>(value: unknown, list: readonly T[]
 
 export const KEY_PROVIDER = [
   "anthropic", "openai", "openrouter", "openai_compat", "xai", "mistral", "cerebras", "groq", "meta", "boat", "composio",
-  "opencode_go", "custom_endpoint", "elevenlabs", "fish_audio", "jev", "openrouter_decider", "openai_image", "xai_image",
-  "custom_image", "openai_live",
+  "opencode_go", "custom_endpoint", "elevenlabs", "fish_audio", "jev", "openrouter_decider", "openai_image", "custom_image",
+  "openai_live",
 ] as const;
 export type KeyProvider = (typeof KEY_PROVIDER)[number];
 
@@ -51,13 +52,16 @@ export function engineForDriver(driverKind: unknown): Engine | "other" {
   return (typeof driverKind === "string" && ENGINE_BY_DRIVER.get(driverKind)) || "other";
 }
 
+const BUILT_IN_DRIVER = new Map(Object.entries(BUILT_IN_INSTANCE_DRIVERS));
+
 /** Never the instance id: added accounts carry a random id, and config.json lets people name instances. */
 export function engineSlug(
   instances: ReadonlyArray<{ instanceId: string; driverKind: string }>,
   instanceId: unknown,
 ): Engine | "other" {
-  const instance = typeof instanceId === "string" ? instances.find((candidate) => candidate.instanceId === instanceId) : undefined;
-  return engineForDriver(instance?.driverKind);
+  if (typeof instanceId !== "string") return "other";
+  const instance = instances.find((candidate) => candidate.instanceId === instanceId);
+  return engineForDriver(instance ? instance.driverKind : BUILT_IN_DRIVER.get(instanceId));
 }
 
 export const APP: readonly string[] = CURATED_CONNECTOR_SLUGS;

@@ -440,9 +440,9 @@ export function PluginsPanel() {
     }
   };
 
-  const startPolling = (slug: string) => {
+  const startPolling = (slug: string, before: ConnectorStatus | undefined) => {
     polls.current.get(slug)?.();
-    const stop = pollConnector(() => refreshStatus([slug]).then((services) => services[slug]), (result) => {
+    const stop = pollConnector(before, () => refreshStatus([slug]).then((services) => services[slug]), (result) => {
       if (polls.current.get(slug) === stop) polls.current.delete(slug);
       connectorConnect(slug, result);
     });
@@ -477,7 +477,7 @@ export function PluginsPanel() {
       }));
       setAliasSlug(null);
       setAliasDraft("");
-      startPolling(slug);
+      startPolling(slug, status[slug]);
       if (!await launch.open(url) && opening.current === launch) {
         setError({ key: "connectors.popupBlockedContinue" });
       }

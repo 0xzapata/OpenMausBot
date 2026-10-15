@@ -22,7 +22,7 @@ export type CloudPlanFacts = { plan: "personal" | "pro" | "max" | "other" | "non
 export interface UsageInput {
   config: ConfigStatus;
   instances: readonly InstanceInfo[];
-  bots: ReadonlyArray<Pick<Bot, "computer" | "cloudBackend">>;
+  bots: ReadonlyArray<Pick<Bot, "computer" | "cloudBackend" | "hidden">>;
   groups: ReadonlyArray<Pick<Group, "dm">>;
   sections?: readonly string[];
   /** null while the routine list is not loaded. */
@@ -62,7 +62,6 @@ function keyProviders(config: ConfigStatus): KeyProvider[] {
     [ownDecider && config.decider?.provider === "jev", "jev"],
     [ownDecider && config.decider?.provider === "openrouter", "openrouter_decider"],
     [config.imageGen?.openaiConfigured, "openai_image"],
-    [config.imageGen?.xaiConfigured, "xai_image"],
     [config.imageGen?.customKeyConfigured, "custom_image"],
     [config.live?.configured, "openai_live"],
   ];
@@ -105,7 +104,8 @@ function deviceFacts(sessions: UsageInput["sessions"], companionDevices: number 
 }
 
 export function buildUsageSnapshot(input: UsageInput): EventProps {
-  const { config, bots, groups, instances } = input;
+  const { config, groups, instances } = input;
+  const bots = input.bots.filter((bot) => bot.hidden !== true);
   const keys = keyProviders(config);
   const ready = instances.filter(engineReady);
   const place = (computer: Bot["computer"]) => tally(bots, (bot) => bot.computer === computer);
@@ -171,8 +171,12 @@ export function cloudPlanFromSnapshot(snapshot: CloudPlanSnapshot | null | undef
   return { plan: "unknown" };
 }
 
-export function snapshotReady(state: Pick<AppState, "connected" | "hydrated" | "config" | "routinesLoadState" | "instances">): boolean {
-  return state.connected && state.hydrated === true && state.config !== null && state.routinesLoadState !== "loading" && state.instances.length > 0;
+export function snapshotReady(
+  state: Pick<AppState, "connected" | "hydrated" | "config" | "routinesLoadState" | "instances" | "webhookIngress">,
+  loadsWebhooks: boolean,
+): boolean {
+  return state.connected && state.hydrated === true && state.config !== null && state.routinesLoadState !== "loading"
+    && state.instances.length > 0 && (!loadsWebhooks || state.webhookIngress !== null);
 }
 
 export interface UsageSources {

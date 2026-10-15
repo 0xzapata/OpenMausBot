@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ConfigSection } from "@/components/ApiKeys";
 import { BOT_ROLES } from "@/lib/bot-roles";
+import { BUILT_IN_INSTANCE_DRIVERS } from "@/lib/built-in-instances";
 import { CURATED_CONNECTOR_SLUGS } from "../../shared/connector-curated";
 import { CREDENTIAL_TARGETS } from "../../shared/credential-request";
 import { TOOL_SCOPE_SUPPORT } from "../../shared/tool-scope-support";
@@ -48,6 +49,19 @@ describe("engine slugs", () => {
     expect(engineSlug(instances, "grok")).toBe("grok_api");
     for (const instanceId of ["future", "proto", "missing", undefined, null, 7]) expect(engineSlug(instances, instanceId)).toBe("other");
     for (const value of HOSTILE) expect(engineForDriver(value)).toBe("other");
+  });
+
+  it("names a built-in instance's engine for a viewer who cannot list instances, and nothing else", () => {
+    expect(engineSlug([], "claude")).toBe("claude");
+    expect(engineSlug([], "chatgpt")).toBe("codex");
+    expect(engineSlug([], "xaiApi")).toBe("grok_api");
+    expect(engineSlug([], "openrouter")).toBe("openai_compat");
+    expect(engineSlug([], "gemini")).toBe("gemini");
+    for (const instanceId of ["claude-3f0c2b1e-9d1a-4c55-8a51-0a3a6f1e2b7c", "Ada's work Claude", "company-claude", "__proto__", "toString", "constructor", ""]) {
+      expect(engineSlug([], instanceId), instanceId).toBe("other");
+    }
+    for (const [instanceId, driverKind] of Object.entries(BUILT_IN_INSTANCE_DRIVERS)) expect(engineSlug([], instanceId), instanceId).toBe(engineForDriver(driverKind));
+    expect(Object.values(BUILT_IN_INSTANCE_DRIVERS).map(engineForDriver)).not.toContain("other");
   });
 });
 

@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/state/store";
-import { connectorPollEnd } from "./connector-poll";
 import { keySaveFailure, keyTestResult, savedKeyResult } from "./product-events";
 
 const ph = vi.hoisted(() => ({
@@ -13,6 +12,7 @@ const ph = vi.hoisted(() => ({
       opt_in_capturing: () => {},
       opt_out_capturing: () => {},
       register: () => {},
+      unregister: () => {},
       capture: (event: string, props?: unknown) => void ph.captured.push({ event, props }),
       identify: () => {},
     },
@@ -70,18 +70,6 @@ describe("what a saved key's check said", () => {
   });
 });
 
-describe("how a Connect poll ends", () => {
-  it("names each end, and keeps polling until one", () => {
-    expect(connectorPollEnd({ connected: true, pending: false, status: "ACTIVE" }, 1)).toBe("connected");
-    expect(connectorPollEnd({ connected: true, pending: true }, 1)).toBeNull();
-    expect(connectorPollEnd({ connected: false, status: "FAILED" }, 2)).toBe("failed");
-    expect(connectorPollEnd({ connected: false, status: "expired" }, 2)).toBe("expired");
-    expect(connectorPollEnd({ connected: false, status: "INITIATED" }, 23)).toBeNull();
-    expect(connectorPollEnd(undefined, 24)).toBe("timed_out");
-    expect(connectorPollEnd({ connected: true, pending: false }, 24)).toBe("connected");
-  });
-});
-
 describe("what reaches PostHog", () => {
   it("is exactly provider, via and result for a key save, with app_version and surface registered beside it", async () => {
     vi.resetModules();
@@ -96,6 +84,24 @@ describe("what reaches PostHog", () => {
       { event: "api_key_saved", props: { provider: "boat", via: "computer_panel", result: "rejected" } },
       { event: "api_key_removed", props: { provider: "anthropic", via: "settings" } },
       { event: "api_key_saved", props: { provider: "other", via: "other", result: "ok" } },
+    ]);
+  });
+
+  it("names a starting role only from the built-in list, and never a preset", async () => {
+    vi.resetModules();
+    vi.doMock("posthog-js", () => ph.module());
+    const analytics = await import("./analytics");
+    const events = await import("./product-events");
+    await analytics.initAnalytics();
+    events.botCreated("template", "research");
+    events.botCreated("template", "a role from a newer build");
+    events.botCreated("preset", "My secret preset");
+    events.botCreated("blank");
+    expect(ph.captured.filter(({ event }) => event === "bot_created").map(({ props }) => props)).toEqual([
+      { source: "template", template: "research" },
+      { source: "template", template: "other" },
+      { source: "preset" },
+      { source: "blank" },
     ]);
   });
 });

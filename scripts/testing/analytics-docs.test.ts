@@ -1,4 +1,5 @@
-// docs/analytics.md is the promise of what the app sends: every product event the app can send is listed there.
+// docs/analytics.md is the promise of what the app sends: its Events table has a row for exactly the product events the
+// app can send, and the docs site shows the same page.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -17,11 +18,29 @@ function sentEvents(): string[] {
   return [...events].sort();
 }
 
+/** The event names in the first column of the "## Events" table; one row may name several. */
+function eventRows(docs: string): string[] {
+  const start = docs.indexOf("\n## Events\n");
+  const end = docs.indexOf("\n## ", start + 1);
+  return docs.slice(start, end === -1 ? undefined : end).split("\n")
+    .filter((line) => line.startsWith("| `"))
+    .flatMap((line) => [...line.split("|")[1]!.matchAll(/`([^`]+)`/g)].map((match) => match[1]!));
+}
+
+const read = (path: string) => readFileSync(new URL(path, ROOT), "utf8");
+
 describe("docs/analytics.md", () => {
-  it("lists every event the app sends", () => {
+  it("has an Events row for every event the app sends, and for no other", () => {
     const events = sentEvents();
     expect(events).toEqual(expect.arrayContaining(["app_opened", "app_snapshot", "api_key_saved", "message_sent", "email_submitted"]));
-    const docs = readFileSync(new URL("docs/analytics.md", ROOT), "utf8");
-    expect(events.filter((event) => !docs.includes(`\`${event}\``)), "Add each event to docs/analytics.md").toEqual([]);
+    const rows = eventRows(read("docs/analytics.md"));
+    expect(rows.filter((event) => !event.startsWith("$")).sort(), "Give each event its own row in docs/analytics.md").toEqual(events);
+    expect(rows.filter((event) => event.startsWith("$")), "PostHog's own events the app causes").toEqual(["$identify"]);
+  });
+
+  it("is the page the docs site shows", () => {
+    const docs = read("docs/analytics.md");
+    const site = read("apps/docs/content/docs/security/analytics.mdx");
+    expect(site.slice(site.indexOf("\n---\n", 3) + "\n---\n".length)).toBe(docs.slice(docs.indexOf("\n") + 1));
   });
 });

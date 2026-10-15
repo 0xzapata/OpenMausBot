@@ -5,7 +5,9 @@ import {
   APP, CLOUD_COMPUTER_SOURCE, CLOUD_PLAN, CONNECTORS_MODE, DECIDER, EDITION, ENGINE, KEY_PROVIDER, LOCAL_VM_MODE, PLATFORM,
   TRIAL_CREDIT, VOICE,
 } from "./analytics-allowlist";
-import { buildUsageSnapshot, type SnapshotState, type UsageInput, type UsageSources } from "./usage-snapshot";
+import {
+  buildUsageSnapshot, cloudPlanFromAccount, cloudPlanFromSnapshot, type SnapshotState, type UsageInput, type UsageSources,
+} from "./usage-snapshot";
 
 const HOSTILE = "sk-ant-api03-HOSTILE-0123456789";
 const DAY = Date.parse("2026-10-15T09:00:00.000Z");
@@ -20,6 +22,7 @@ const ph = vi.hoisted(() => ({
       opt_in_capturing: () => {},
       opt_out_capturing: () => {},
       register: () => {},
+      unregister: () => {},
       capture: (event: string, props?: Record<string, unknown>) => void ph.captured.push({ event, props: props ?? {} }),
       identify: () => {},
     },
@@ -351,10 +354,48 @@ describe("what counts as a key, a computer source and an app", () => {
     expect(buildUsageSnapshot(minimal({}, { apps: { services, authoritative: true } }))).toMatchObject({ apps: ["gmail"], apps_connected: 1 });
   });
 
+  it("counts one xAI key once, though avatar images can use it too", () => {
+    const imageGen = { configured: false, provider: "openai" as const, openaiConfigured: false, xaiConfigured: true, customKeyConfigured: false };
+    expect(buildUsageSnapshot(minimal({ xai: { configured: true }, imageGen }))).toMatchObject({ key_providers: ["xai"], key_count: 1 });
+  });
+
+  it("leaves archived bots out of every bot count", () => {
+    const bots = [{ computer: "cloud", hidden: true }, { computer: "cloud", cloudBackend: "vps", hidden: true }, { computer: "local", hidden: false }, { computer: "cloud" }] as UsageInput["bots"];
+    expect(buildUsageSnapshot(minimal({}, { bots }))).toMatchObject({ bots: 2, bots_cloud_boat: 1, bots_cloud_vps: 0, bots_this_computer: 1 });
+  });
+
   it("never passes a number the server sent unless it is a count", () => {
     const sent = buildUsageSnapshot(minimal({}, { computers: { cloudComputers: -1, teamComputers: "3" }, companionDevices: 1.5 }));
     expect(sent).not.toHaveProperty("cloud_computers");
     expect(sent).not.toHaveProperty("team_computers");
     expect(sent).not.toHaveProperty("phones_paired");
+  });
+});
+
+describe("the Cloud plan", () => {
+  const trial = { state: "active", tier: "pro", endsAt: 1, amount: 4900, chargeAt: 1, holdUntil: null };
+  const entitlement = (patch: Record<string, unknown>) => ({ plan: "pro", status: "active", expiresAt: null, version: 1, ...patch });
+
+  it("reads a desktop's Cloud account: unknown while it cannot tell, none when signed out or not paying", () => {
+    expect(cloudPlanFromAccount({ status: "signed-out", message: "restoring" })).toEqual({ plan: "unknown" });
+    expect(cloudPlanFromAccount({ status: "signed-out" })).toEqual({ plan: "none" });
+    for (const status of ["connecting", "reauth-required", "unavailable"] as const) expect(cloudPlanFromAccount({ status }), status).toEqual({ plan: "unknown" });
+    expect(cloudPlanFromAccount(null)).toEqual({ plan: "unknown" });
+    const connected = (patch: Record<string, unknown>, extra: Record<string, unknown> = {}) => cloudPlanFromAccount({ status: "connected", entitlement: entitlement(patch), ...extra } as never);
+    expect(connected({})).toEqual({ plan: "pro", trial: false });
+    expect(connected({ tier: "personal" }, { trial })).toEqual({ plan: "personal", trial: true });
+    expect(connected({ tier: "a-tier-from-a-newer-admin" })).toEqual({ plan: "other", trial: false });
+    expect(connected({ tier: "max", status: "inactive" })).toEqual({ plan: "none", trial: false });
+    expect(connected({ plan: "free" }, { trial })).toEqual({ plan: "none", trial: true });
+  });
+
+  it("reads a Cloud page's own plan, where a paid plan whose payment needs attention counts as none", () => {
+    expect(cloudPlanFromSnapshot({ status: "paid" })).toEqual({ plan: "pro", trial: false });
+    expect(cloudPlanFromSnapshot({ status: "paid", tier: "max" })).toEqual({ plan: "max", trial: false });
+    expect(cloudPlanFromSnapshot({ status: "paid", tier: "a-tier-from-a-newer-admin" })).toEqual({ plan: "other", trial: false });
+    expect(cloudPlanFromSnapshot({ status: "attention", tier: "pro", trial } as never)).toEqual({ plan: "none", trial: true });
+    expect(cloudPlanFromSnapshot({ status: "none" })).toEqual({ plan: "none", trial: false });
+    for (const status of ["checking", "signin"] as const) expect(cloudPlanFromSnapshot({ status }), status).toEqual({ plan: "unknown" });
+    expect(cloudPlanFromSnapshot(undefined)).toEqual({ plan: "unknown" });
   });
 });

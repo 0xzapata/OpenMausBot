@@ -18,11 +18,13 @@ const SECTIONS: Record<
     body: (value: string, firstKey: boolean) => unknown;
     flag: (config: ConfigStatus) => boolean;
     included?: (config: ConfigStatus) => boolean;
+    ownKey?: (config: ConfigStatus) => boolean;
   }
 > = {
   composio: {
     body: (v) => ({ composio: { apiKey: v } }),
     flag: (c) => c.composio.configured,
+    ownKey: (c) => c.composio.mode === "self-hosted",
   },
   box: {
     body: (v) => ({ box: { token: v } }),
@@ -272,6 +274,7 @@ export function ApiKeyRow({
 
   const configured = state.config ? SECTIONS[section].flag(state.config) : false;
   const included = state.config ? SECTIONS[section].included?.(state.config) === true : false;
+  const ownKey = state.config ? (SECTIONS[section].ownKey ?? SECTIONS[section].flag)(state.config) : false;
   const clearing = !value.trim() && configured;
   const credential = credentialCopy(section);
 
@@ -325,8 +328,9 @@ export function ApiKeyRow({
         const nowConfigured = SECTIONS[section].flag(status);
         onSaved?.(nowConfigured);
         const provider = SECTION_PROVIDER[section];
-        if (!next) keyRemoved(provider, via);
-        else if (testProvider && nowConfigured) void test().then((result) => keySaved(provider, via, result));
+        if (!next) {
+          if (ownKey) keyRemoved(provider, via);
+        } else if (testProvider && nowConfigured) void test().then((result) => keySaved(provider, via, result));
         else keySaved(provider, via, savedKeyResult(provider));
       })
       .catch((e) => {

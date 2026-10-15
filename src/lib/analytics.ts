@@ -42,7 +42,7 @@ export function setAnalyticsEnabled(enabled: boolean) {
       client?.opt_out_capturing();
       break;
     case "opt-in":
-      client?.opt_in_capturing();
+      client?.opt_in_capturing({ captureEventName: false });
       break;
     case "init":
       void initAnalytics();
@@ -82,9 +82,15 @@ function start(posthog: PostHog) {
     save_campaign_params: false,
     disable_capture_url_hashes: true,
     before_send: withoutLocation,
+    // Security: posthog-js 1.415 posts /flags on load and every 5 minutes, even after opt_out_capturing(), with the stored
+    // person properties (the first page's URL and referrer), and before_send never sees it. The app reads no flags.
+    advanced_disable_flags: true,
   });
+  // Security: posthog-js 1.415 stores the first page's URL and referrer under these keys while save_referrer or
+  // save_campaign_params is on, and keeps them after both are turned off.
+  for (const key of ["$initial_person_info", "$initial_referrer_info", "$initial_campaign_params"]) posthog.unregister(key);
   // opt_out_capturing() persists in PostHog's own storage, so a later opt-in would boot opted out.
-  if (posthog.has_opted_out_capturing()) posthog.opt_in_capturing();
+  if (posthog.has_opted_out_capturing()) posthog.opt_in_capturing({ captureEventName: false });
   client = posthog;
   posthog.register({ app_version: appVersion(), surface: analyticsSurface() });
   const platform = navigator.userAgent.includes("Electron") ? "desktop" : "browser";
