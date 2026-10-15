@@ -12,10 +12,7 @@ export const SIDEBAR_COLLAPSED_SECTIONS_KEY = "openmausbot.sidebarCollapsedSecti
 export const SIDEBAR_SECTION_ORDER_KEY = "openmausbot.sidebarSectionOrder.v1";
 export const PINNED_CIRCLES_KEY = "openmausbot.pinnedCircles";
 export const UNIVERSAL_PINS_KEY = "openmausbot.universalPins";
-export const PINNED_CIRCLE_ORDER_UNIVERSAL_KEY = "openmausbot.pinnedCircleOrder.universal.v1";
-export const PINNED_CIRCLE_ORDER_SECTION_KEY = "openmausbot.pinnedCircleOrder.section.v1";
-
-export type PinnedCircleGrid = "universal" | "section";
+export const PINNED_CIRCLE_ORDER_KEY = "openmausbot.pinnedCircleOrder.v1";
 
 export function parseSidebarDensity(value: string | null): SidebarDensity {
   switch (value) {
@@ -45,15 +42,9 @@ export function saveSidebarDensity(
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(SIDEBAR_DENSITY_KEY, density);
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
-    // The in-memory React state still makes the control useful this session.
   }
 }
 
-// The sidebar and Settings → Appearance both read and change the density, so
-// it lives in one renderer store rather than in either component's state.
-// A session choice survives storage that rejects writes; another window's
-// storage event supersedes it.
 let densitySessionChoice: SidebarDensity | undefined;
 const densityListeners = new Set<() => void>();
 
@@ -120,7 +111,6 @@ export function saveSidebarWidth(width: number, storage?: Pick<Storage, "setItem
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(SIDEBAR_WIDTH_KEY, String(width));
   } catch {
-    // A blocked local store does not prevent resizing this session.
   }
 }
 
@@ -145,8 +135,6 @@ export function saveSidebarAttentionPinned(
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(SIDEBAR_ATTENTION_PINNED_KEY, String(pinned));
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
-    // The in-memory React state still makes the control useful this session.
   }
 }
 
@@ -154,8 +142,6 @@ export function parsePinnedCircles(value: string | null): boolean {
   return value === "true";
 }
 
-/** Session choice when storage rejects the write. Injected storage in tests
- * does not touch it, so a blocked localStorage cannot leak across cases. */
 let sessionPinnedCircles: boolean | undefined;
 const pinnedCircleListeners = new Set<() => void>();
 
@@ -208,8 +194,6 @@ export function savePinnedCircles(
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(PINNED_CIRCLES_KEY, enabled ? "true" : "false");
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
-    // The in-memory React state still makes the control useful this session.
   }
 }
 
@@ -221,6 +205,29 @@ export function setPinnedCircles(enabled: boolean): void {
 
 export function usePinnedCircles(): boolean {
   return useSyncExternalStore(subscribePinnedCircles, loadPinnedCircles, () => false);
+}
+
+let sessionPinnedCircleOrder: string[] | undefined;
+const pinnedCircleOrderListeners = new Set<() => void>();
+
+function subscribePinnedCircleOrder(listener: () => void): () => void {
+  pinnedCircleOrderListeners.add(listener);
+  return () => { pinnedCircleOrderListeners.delete(listener); };
+}
+
+export function loadPinnedCircleOrder(storage?: Pick<Storage, "getItem"> | null): string[] {
+  return loadStringList(PINNED_CIRCLE_ORDER_KEY, storage);
+}
+
+export function setPinnedCircleOrder(ids: string[], storage?: Pick<Storage, "setItem"> | null): void {
+  sessionPinnedCircleOrder = saveStringList(PINNED_CIRCLE_ORDER_KEY, ids, storage);
+  for (const listener of pinnedCircleOrderListeners) listener();
+}
+
+const currentPinnedCircleOrder = (): string[] => (sessionPinnedCircleOrder ??= loadPinnedCircleOrder());
+
+export function usePinnedCircleOrder(): string[] {
+  return useSyncExternalStore(subscribePinnedCircleOrder, currentPinnedCircleOrder, currentPinnedCircleOrder);
 }
 
 export function parseUniversalPins(value: string | null): boolean {
@@ -279,7 +286,6 @@ export function saveUniversalPins(
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
     target?.setItem(UNIVERSAL_PINS_KEY, enabled ? "true" : "false");
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
   }
 }
 
@@ -323,17 +329,16 @@ function saveStringList(
   key: string,
   values: string[],
   storage?: Pick<Storage, "setItem"> | null,
-): void {
+): string[] {
+  const safe = [
+    ...new Set(values.filter((value) => value.length > 0 && value.length <= 240)),
+  ].slice(0, 100);
   try {
     const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
-    const safe = [
-      ...new Set(values.filter((value) => value.length > 0 && value.length <= 240)),
-    ].slice(0, 100);
     target?.setItem(key, JSON.stringify(safe));
   } catch {
-    // Private browsing and locked-down webviews may reject localStorage.
-    // In-memory React state still keeps the interaction useful this session.
   }
+  return safe;
 }
 
 export function loadCollapsedSections(storage?: Pick<Storage, "getItem"> | null): string[] {
@@ -360,24 +365,4 @@ export function saveSectionOrder(
   storage?: Pick<Storage, "setItem"> | null,
 ): void {
   saveStringList(SIDEBAR_SECTION_ORDER_KEY, ids, storage);
-}
-
-function pinnedCircleOrderKey(grid: PinnedCircleGrid): string {
-  return grid === "universal" ? PINNED_CIRCLE_ORDER_UNIVERSAL_KEY : PINNED_CIRCLE_ORDER_SECTION_KEY;
-}
-
-/** Order of one circle grid on this computer. Empty means today's pin order. */
-export function loadPinnedCircleOrder(
-  grid: PinnedCircleGrid,
-  storage?: Pick<Storage, "getItem"> | null,
-): string[] {
-  return loadStringList(pinnedCircleOrderKey(grid), storage);
-}
-
-export function savePinnedCircleOrder(
-  grid: PinnedCircleGrid,
-  ids: string[],
-  storage?: Pick<Storage, "setItem"> | null,
-): void {
-  saveStringList(pinnedCircleOrderKey(grid), ids, storage);
 }

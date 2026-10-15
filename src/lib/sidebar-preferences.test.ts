@@ -1,9 +1,10 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   PINNED_CIRCLES_KEY,
-  PINNED_CIRCLE_ORDER_SECTION_KEY,
-  PINNED_CIRCLE_ORDER_UNIVERSAL_KEY,
+  PINNED_CIRCLE_ORDER_KEY,
   SIDEBAR_ATTENTION_PINNED_KEY,
   UNIVERSAL_PINS_KEY,
   SIDEBAR_COLLAPSED_SECTIONS_KEY,
@@ -25,13 +26,14 @@ import {
   parseSidebarDensity,
   saveCollapsedSections,
   savePinnedCircles,
-  savePinnedCircleOrder,
+  setPinnedCircleOrder,
   saveUniversalPins,
   saveSectionOrder,
   saveSidebarAttentionPinned,
   saveSidebarDensity,
   saveSidebarWidth,
   toggleCollapsedSection,
+  usePinnedCircleOrder,
 } from "./sidebar-preferences";
 import { userSectionId } from "./sidebar-layout";
 
@@ -160,16 +162,16 @@ describe("pinned circles preference", () => {
 });
 
 describe("pinned circle order", () => {
-  it("stores each grid separately and ignores a malformed list", () => {
+  it("keeps one deduplicated order, ignores a malformed list, and keeps the order for the session when storage is blocked", () => {
     const setItem = vi.fn();
-    savePinnedCircleOrder("universal", ["b", "a", "a"], { setItem });
-    savePinnedCircleOrder("section", ["c"], { setItem });
-    expect(setItem).toHaveBeenNthCalledWith(1, PINNED_CIRCLE_ORDER_UNIVERSAL_KEY, JSON.stringify(["b", "a"]));
-    expect(setItem).toHaveBeenNthCalledWith(2, PINNED_CIRCLE_ORDER_SECTION_KEY, JSON.stringify(["c"]));
-    expect(loadPinnedCircleOrder("universal", { getItem: () => JSON.stringify(["b", "a"]) })).toEqual(["b", "a"]);
-    expect(loadPinnedCircleOrder("section", { getItem: () => "nope" })).toEqual([]);
-    expect(loadPinnedCircleOrder("universal", { getItem: () => { throw new Error("blocked"); } })).toEqual([]);
-    expect(() => savePinnedCircleOrder("section", ["c"], { setItem: () => { throw new Error("blocked"); } })).not.toThrow();
+    setPinnedCircleOrder(["b", "a", "a"], { setItem });
+    expect(setItem).toHaveBeenCalledWith(PINNED_CIRCLE_ORDER_KEY, JSON.stringify(["b", "a"]));
+    expect(loadPinnedCircleOrder({ getItem: () => JSON.stringify(["b", "a"]) })).toEqual(["b", "a"]);
+    expect(loadPinnedCircleOrder({ getItem: () => "nope" })).toEqual([]);
+    expect(loadPinnedCircleOrder({ getItem: () => { throw new Error("blocked"); } })).toEqual([]);
+    expect(() => setPinnedCircleOrder(["c", "b"], { setItem: () => { throw new Error("blocked"); } })).not.toThrow();
+    function Probe() { return createElement("i", null, usePinnedCircleOrder().join(",")); }
+    expect(renderToStaticMarkup(createElement(Probe))).toBe("<i>c,b</i>");
   });
 });
 

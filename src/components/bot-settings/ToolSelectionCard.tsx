@@ -9,8 +9,7 @@ import { inputCls } from "./field";
 type Draft = { custom: boolean; onlyListed: boolean; allow: string; deny: string };
 const lines = (text: string) => text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
 
-/** Direct, acknowledged saves: rejected restrictions must not appear saved
- * in the optimistic update queue. AccessSection keys this editor by bot ID. */
+/** Direct, acknowledged saves: a rejected restriction must never appear saved in the optimistic queue. */
 export function ToolSelectionCard({ bot, engineKind }: { bot: Bot; engineKind?: string }) {
   const { request } = useBotEditor();
   const saved = parseToolScope(bot.toolScope);
