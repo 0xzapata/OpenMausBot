@@ -37,6 +37,11 @@ test("checks a folder before sharing: too broad, private, MausBot's own, or alre
   mkdirSync(join(s.home, "Documents", "MausBot"), { recursive: true });
   assert.equal((await s.service.check(s.home)).refusal, "too-broad");
   assert.equal((await s.service.check(join(s.home, ".ssh"))).refusal, "private");
+  for (const cli of [".claude", ".codex", ".gemini", ".grok"]) {
+    mkdirSync(join(s.home, cli, "skills"), { recursive: true });
+    assert.equal((await s.service.check(join(s.home, cli))).refusal, "private");
+    assert.equal((await s.service.check(join(s.home, cli, "skills"))).refusal, "private");
+  }
   assert.equal((await s.service.check(join(s.home, ".openmausbot", "files"))).refusal, "app-data");
   assert.equal((await s.service.check(join(s.home, "Documents"))).refusal, "app-data");
   assert.equal((await s.service.check(join(s.home, "nope"))).refusal, "not-a-folder");

@@ -16,7 +16,8 @@ const LONG_POLL_MS = 60_000;
 const BACKOFF_MS = [1_000, 3_000, 8_000, 15_000, 30_000];
 const CHECK_FILES_MAX = 100_000, CHECK_MS = 3_000;
 // Keys and settings: never shared, wherever they sit.
-const PRIVATE = [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".local", ".npm", "Library", "AppData", ".openmausbot"];
+// Folders that hold keys or sign-ins, including the AI CLIs' own homes (their login files live there).
+const PRIVATE = [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".local", ".npm", "Library", "AppData", ".openmausbot", ".claude", ".codex", ".gemini", ".grok"];
 
 const pathKey = (value, platform) => {
   const slashed = value.replaceAll("\\", "/").replace(/\/+$/, "");
