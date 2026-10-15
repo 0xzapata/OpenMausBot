@@ -143,3 +143,7 @@ export function rememberHeldMessage(
 export function heldMemberLine(name: string): string {
   return `${name} is held (stopped by you) — @mention it or say resume`;
 }
+
+export function isHeldMemberLine(text: string): boolean {
+  return text.endsWith(" is held (stopped by you) — @mention it or say resume");
+}

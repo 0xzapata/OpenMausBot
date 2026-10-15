@@ -247,6 +247,48 @@ describe("ApprovalCard profile proposals", () => {
 });
 
 describe("ApprovalCard learned skills", () => {
+  it("names the teammates on a shared learned-skill receipt and who kept their own", () => {
+    const message: Message = {
+      id: "skill-receipt",
+      role: "bot",
+      kind: "options",
+      at: 1,
+      card: {
+        title: 'Skill "rough-cut" enabled',
+        subtitle: "Cuts a rough edit.",
+        options: [],
+        answered: "allow",
+        autoApplied: true,
+        requestId: "skill-receipt",
+        tool: "stage_skill",
+        skillRequest: {
+          version: 1,
+          requestId: "skill-receipt",
+          botId: "bot-1",
+          threadId: "thread-1",
+          stagedId: "staged-1",
+          action: "create",
+          name: "rough-cut",
+          gist: "Cuts a rough edit.",
+          warnings: [],
+          createdAt: 1,
+          shared: {
+            library: "installed",
+            sha256: "ab".repeat(32),
+            sharedAt: 1,
+            assigned: [{ botId: "bot-1", name: "Cutter" }, { botId: "bot-2", name: "Colorist" }],
+            skipped: [{ botId: "bot-3", name: "Sound", reason: "has its own skill" }],
+          },
+        },
+      },
+    };
+    const markup = renderToStaticMarkup(createElement(ApprovalCard, { message, threadId: "thread-1" }));
+    expect(markup).toContain("shared with Colorist");
+    expect(markup).not.toContain("shared with Cutter");
+    expect(markup).toContain("not shared with Sound");
+    expect(markup).not.toContain("Share with team");
+  });
+
   it("maps create and update choices to approval while keeping refusals denied", () => {
     expect(skillRequestBehavior("Enable")).toBe("allow");
     expect(skillRequestBehavior("Update")).toBe("allow");
@@ -515,14 +557,19 @@ describe("ApprovalCard outbound holds", () => {
     expect(html).toContain("Create linear comment ×2");
     expect(html).not.toContain("LINEAR CREATE LINEAR COMMENT");
     expect(html).not.toContain("LINEAR_CREATE_LINEAR_COMMENT");
-    expect(html).toContain("issueId");
+    expect(html).not.toContain("issueId");
+    expect(html).toContain('class="sr-only"');
     expect(html).toContain("Waiting for your answer below");
   });
 
-  it("keeps the settled status line", () => {
+  it("settles into one quiet line", () => {
     const html = renderToStaticMarkup(createElement(ApprovalCard, { bot, message: outboundMessage("allow") }));
-    expect(html).toContain("Send to Linear?");
-    expect(html).toContain("Allowed");
+    expect(html).toContain('data-approval-row="settled"');
+    expect(html).toContain("Send to Linear</span>");
+    expect(html).toContain("· Create linear comment ×2");
+    expect(html).toContain("· Allowed");
+    expect(html).not.toContain("issueId");
+    expect(html).not.toContain("always asks first");
   });
 
   it("heads the composer strip the same way", () => {
@@ -640,5 +687,104 @@ describe("ApprovalCard for a change that applied on its own", () => {
     const confirmed = routineCard(createRoutineOperation, { name: "Backlog review" });
     confirmed.card = { ...confirmed.card!, autoApplied: undefined, options: ["Confirm", "Cancel"] };
     expect(render(confirmed)).toContain("Routine scheduled");
+  });
+});
+
+describe("one approval, one card", () => {
+  const visibleRow = (html: string) => html.slice(0, html.indexOf('id="approval-details-'));
+  const command = (answered?: string): Message => ({
+    id: "shell-card",
+    role: "bot",
+    kind: "options",
+    at: 1,
+    card: {
+      title: "Approval needed",
+      subtitle: "git status",
+      options: ["Allow", "Deny"],
+      requestId: "r-shell",
+      tool: "shell",
+      ...(answered ? { answered } : {}),
+    },
+  });
+  const proxy = (answered?: string): Message => ({
+    id: "proxy-card",
+    role: "bot",
+    kind: "options",
+    at: 1,
+    card: {
+      title: "Send on your behalf?",
+      subtitle: 'Composio · Proxy execute\n{"code_to_execute":"res, err = run_composio_tool(\\"GITHUB_GET_A_COMMIT\\", {})"}',
+      options: ["Allow", "Deny"],
+      requestId: "r-proxy",
+      tool: "COMPOSIO_PROXY_EXECUTE",
+      heldCode: "approval.held.outbound",
+      held: "This sends something on your behalf, so it always asks first.",
+      outboundRequest: { tool: "COMPOSIO_PROXY_EXECUTE", app: "Composio", calls: [{ app: "Composio", label: "Proxy execute" }] },
+      ...(answered ? { answered } : {}),
+    },
+  });
+
+  it("keeps a waiting command to one line in the transcript, the composer holds the decision", () => {
+    const line = renderToStaticMarkup(createElement(ApprovalCard, { bot: { name: "Dev" }, message: command() }));
+    expect(line).toContain('data-approval-row="pending"');
+    expect(line).toContain("Dev wants to run a command");
+    expect(line).toContain("git status");
+    expect(line).not.toContain("<pre");
+    expect(line).not.toContain("rounded-2xl");
+    expect(line).toContain('class="sr-only"');
+    expect(line).not.toContain("<button");
+
+    const [pending] = pendingApprovals([command()]);
+    const panel = renderToStaticMarkup(createElement(PendingApprovalPanel, { pending: pending!, count: 1, index: 0, botName: "Dev" }));
+    const row = visibleRow(panel);
+    expect(row).toContain("Dev wants to run");
+    expect(row).toMatch(/<code[^>]*><span class="truncate">git status<\/span><\/code>/);
+    expect(panel).toContain('aria-label="Pending approval"');
+    expect(panel).not.toContain("Command approval requested");
+    expect(row).not.toContain("<pre");
+    expect(row).toContain('aria-expanded="false"');
+    expect(panel).toMatch(/id="approval-details-r-shell" hidden=""/);
+  });
+
+  it("keeps a waiting line visible when the composer has no answer for it", () => {
+    const orphan: Message = { ...command(), card: { ...command().card!, requestId: undefined } };
+    const line = renderToStaticMarkup(createElement(ApprovalCard, { bot: { name: "Dev" }, message: orphan }));
+    expect(line).not.toContain("sr-only");
+    expect(line).toContain("Waiting for your answer below");
+  });
+
+  it("settles a command into a quiet line with the outcome", () => {
+    const line = renderToStaticMarkup(createElement(ApprovalCard, { bot: { name: "Dev" }, message: command("deny") }));
+    expect(line).toContain('data-approval-row="settled"');
+    expect(line).toContain("· Denied");
+  });
+
+  it("names code run on Composio plainly and keeps the code behind Details", () => {
+    const line = renderToStaticMarkup(createElement(ApprovalCard, { bot: { name: "Ursa" }, message: proxy("allow") }));
+    expect(line).toContain("Run code on Composio</span>");
+    expect(line).toContain("· Allowed");
+    expect(line).not.toContain("Proxy execute");
+    expect(line).not.toContain("code_to_execute");
+    expect(line).not.toContain("always asks first");
+
+    const [pending] = pendingApprovals([proxy()]);
+    const panel = renderToStaticMarkup(createElement(PendingApprovalPanel, { pending: pending!, count: 1, index: 0, botName: "Ursa" }));
+    const row = visibleRow(panel);
+    expect(row).toContain("Run code on Composio?");
+    expect(row).not.toContain("code_to_execute");
+    expect(row).toContain('aria-label="Details"');
+    expect(row).toContain(">May send</span>");
+    expect(row).toContain('title="This runs code that could send or change things in your apps, so it always asks first."');
+    expect(panel).not.toContain("This sends something");
+    expect(panel.slice(panel.indexOf('id="approval-details-'))).toContain("code_to_execute");
+  });
+
+  it("keeps a real send's arguments under the composer details", () => {
+    const send: Message = { ...proxy(), card: { ...proxy().card!, subtitle: 'Slack · Send message\n{"text":"hi"}', tool: "SLACK_SEND_MESSAGE",
+      outboundRequest: { tool: "SLACK_SEND_MESSAGE", app: "Slack", calls: [{ app: "Slack", label: "Send message" }] } } };
+    const [pending] = pendingApprovals([send]);
+    const panel = renderToStaticMarkup(createElement(PendingApprovalPanel, { pending: pending!, count: 1, index: 0 }));
+    expect(panel).toContain("Send to Slack?");
+    expect(panel).toContain("{&quot;text&quot;:&quot;hi&quot;}");
   });
 });

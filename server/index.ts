@@ -11,11 +11,13 @@ import { extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
 
 import { z } from "zod";
-import { selectReplay, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
+import { selectReplay, replayToolCalls, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
 import { draftSummary, foldPoint } from "./compaction-summary.ts";
-import { compactBudget, contextWindowFor, shouldCompact } from "./context-budget.ts";
+import { compactBudget, compactionReading, contextWindowFor, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker, roomResetNote } from "./room-context.ts";
+import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
+import { createRoomSessions } from "./host/room-sessions.ts";
 import { provenRequestPerson, SharedComputers, sharedComputerOperation, sharedComputerRegistration } from "./shared-computers.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation, type CloudLendingTurn } from "./cloud-lending.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -51,7 +53,8 @@ import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signIn
 
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { RoomMemberLock } from "./room-member-lock.ts";
-import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode } from "./auto-approve.ts";
+import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode, undeliveredApprovalTool } from "./auto-approve.ts";
+import { bindSafetyFloor, denyAtSafetyFloor, heldAtSafetyFloor, safetyFloorOn } from "./safety-floor-gate.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
 import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
@@ -83,6 +86,7 @@ import {
   avatarImageStatus,
 } from "./avatar-image.ts";
 import { fitsOnOneLine, parseBotProfilePatch } from "./bot-profile.ts";
+import { routeDirectTurn } from "./turn-route.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, effectiveRoomTurnTimeoutMinutes, parseConversationTurnTimeout, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { roomTurnEnd, type RoomClaimEnd } from "./room-turn-end.ts";
@@ -116,6 +120,7 @@ import { hostTimeZone, takesTurnClock, turnClockLine, withTurnClock } from "./tu
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { createCacheKeepWarm, type KeepWarmStatus, type KeepWarmTarget } from "./cache-keepwarm.ts";
 import { createSkillReview, turnToolSteps } from "./skill-review.ts";
+import { createSideJobs, helperSelection } from "./side-jobs.ts";
 import type { CaptureTurn, RoomLine } from "./memory-capture.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
@@ -175,7 +180,6 @@ import {
   vpsSshAlias,
   browserEngineAttachCdpUrl,
   DATA_DIR, EVENTS_DIR,
-  skillsLibraryEnabled,
   customMcpServers,
   onConfigSaved,
   CLAUDE_API_INSTANCE,
@@ -194,7 +198,6 @@ import type { RequestAuth } from "./request-auth.ts";
 import { onKeyRejectionChange } from "./key-rejections.ts";
 import { assertWithinBudget, noteSpend, spendAlertText, spendState, takeSpendAlert } from "./spend.ts";
 import { fleetAvailable, fleetSocketPath } from "./fleet-client.ts";
-import { entitled } from "./enterprise.ts";
 import { HOSTED_CONTRACT_HEADER, HOSTED_CONTRACT_METADATA, HOSTED_CONTRACT_VERSION } from "./hosted-contract.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildMentionNotification, buildNotification, buildSpendNotification, type Notification } from "./notify.ts";
@@ -210,6 +213,7 @@ import {
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
+import { createQuotaSwitchHost } from "./host/quota-switch.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
   addDisabledMcpServer,
@@ -217,6 +221,7 @@ import {
   listMcpServers,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
+import { attachCustomMcp } from "./mcp-result-budget.ts";
 import { MCP_OAUTH_CALLBACK_PATH, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
@@ -233,16 +238,19 @@ import type { GroupGoalRunCardData, GroupGoalRunStatus } from "../shared/group-g
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
-import { readMessageText, recallMessages, recentMessages, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
+import { readMessageText, recallMessages, recentMessages, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing, logNotification } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
-import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentContext, incidentText, RETRY_BLOCKED, type Incident, type IncidentKind } from "./incidents.ts";
+import { chiefEscalationsEnabled, NEEDS_INPUT_GATE, peerApprovalGate, RAISED_GATE } from "./escalations.ts";
+import { createChiefNotices } from "./host/chief-notices.ts";
+import { needsInputQuestion } from "./runtime-coordinator.ts";
+import { RETRY_BLOCKED } from "./incidents.ts";
 
 const SESSION_READ_MAX_CHARS = 8_000;
 import { promptWithReply, transcriptText } from "./replies.ts";
 import type { DataContext } from "./data-context.ts";
 import { promptWithDataContext } from "../shared/data-context.ts";
-import { admit, DRAIN_COALESCE_MAX_ITEMS } from "./admission.ts";
+import { admit } from "./admission.ts";
 import {
   drainSteeredMessages,
   hasQueuedSteeredMessages,
@@ -287,6 +295,8 @@ import { threadModelFallback, type ThreadEngine } from "./thread-model.ts";
 import { computerEngineMoveText, removedComputerInstanceIds, writeComputerEngineMoveLines } from "./computer-engine-removal.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
+import { createRoomAccess } from "./host/room-access.ts";
+import { createRoomJobs, parallelRoomJobsEnabled, type RoomRoundLine } from "./host/room-jobs.ts";
 import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
 import { pageSize, slimMessage } from "./host/message-pages.ts";
@@ -322,7 +332,6 @@ import { TurnWatchdog } from "./turn-watchdog.ts";
 import { TurnResources, type TurnOwner } from "./turn-resources.ts";
 import {
   ensureWorkspace,
-  ensureTaskWorkspace,
   workspaceLocationsPrompt,
   supportsWorkspaceFiles,
   updateMemory,
@@ -356,7 +365,6 @@ import {
   getStagedSkillWrite,
   installOrgSkill,
   installSkill,
-  resolveBotSkills,
   parseSkillMd,
   scanSkillText,
   listSkills,
@@ -372,6 +380,10 @@ import {
   undoSkillWrite,
 } from "./skills.ts";
 import { fetchSkillFromSource } from "./skill-fetch.ts";
+import { ensureTaskWorkspaceWithSkills } from "./skill-task-links.ts";
+import { parseSkillManageReferences, previousSkillVersion, skillCardCopy, skillRequestReferences } from "./skill-request-card.ts";
+import { skillReferencesSha256 } from "./skill-storage.ts";
+import { createSkillsLibraryHost } from "./host/skills-library.ts";
 import { pickBotName } from "./names.ts";
 import { botSkillTemplateSchema, newBotDefaultsSchema } from "./new-bot-defaults.ts";
 import { expandLearnTurnText, learnSource } from "./skill-learn.ts";
@@ -411,7 +423,7 @@ import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { RepeatDetector, callKey, toolItemKey } from "./repeat-detector.ts";
+import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
 import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -464,15 +476,16 @@ import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./
 import { assertModelVariantSupported, memberTurnSelection } from "./member-turn.ts";
 import { WebhookManager } from "./webhooks.ts";
 import type { WebhookTrigger } from "../shared/webhooks.ts";
-import { SPAWNED_PROXIES } from "./proxy-paths.ts";
+import { AGENTS_NODE_FLAG, SPAWNED_PROXIES } from "./proxy-paths.ts";
+import { AGENTS_PROXY_ENV, agentsProxyLaunch, agentsToolBridgeEnv, applyAgentsBridge, bridgedToolTitle, turnEngine } from "./agents-bridge-switch.ts";
 import { harnessMcpTokenEnv } from "./harness-mcp-token.ts";
 import {
   loadBundledSkills,
   loadUserSkills,
   mergeSkills,
-  readLibrarySkillFile,
   renderSkillInstructions,
   selectBundledSkills,
+  skillsLibraryEnabled,
 } from "./skill-library.ts";
 import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
@@ -500,7 +513,7 @@ import {
 } from "./turn-dispatch-guard.ts";
 import { createGracefulShutdown } from "./graceful-shutdown.ts";
 import { acquireDataDirLeaseForProcess } from "./data-dir-lease.ts";
-import { createWorkspaceAccess, describeEdition, editionStatus, hostedWorkspaceConfiguration, hostedWorkspaceConfigured, LICENSE_WARN_DAYS, licenseWarning, sharedWorkspaceFullAccessConfigured, loadEnterpriseLayer, workspaceMembership, type EditionStatus, type WorkspaceAccess } from "./enterprise.ts";
+import { createWorkspaceAccess, describeEdition, editionStatus, entitled, hostedWorkspaceConfiguration, hostedWorkspaceConfigured, LICENSE_WARN_DAYS, licenseWarning, sharedWorkspaceFullAccessConfigured, loadEnterpriseLayer, workspaceMembership, type EditionStatus, type WorkspaceAccess } from "./enterprise.ts";
 import { environmentDescriptor, loadEnvironmentId, serverVersion } from "./environment.ts";
 import { WorkspaceBackupMaintenance } from "./workspace-backup-maintenance.ts";
 import { createWorkspaceBackupRoutes, isWorkspaceBackupSessionControl } from "./workspace-backup-http.ts";
@@ -577,11 +590,15 @@ import { createBotSettingsRoutes } from "./routes/bot-settings.ts";
 import { createBotPatchRoutes } from "./routes/bot-patch.ts";
 import { createBotLifecycleRoutes } from "./routes/bot-lifecycle.ts";
 import { createBotSkillsRoutes } from "./routes/bot-skills.ts";
+import { createSkillShareRoutes } from "./routes/skill-share.ts";
 import { createTeamContextRoutes } from "./routes/team-context.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createBrowserSiteRoutes } from "./routes/browser-sites.ts";
+import { createInternalSignInRoutes } from "./routes/sign-in.ts";
+import { createInternalThreadRoutes } from "./routes/internal-threads.ts";
 import { createBrowserEvidenceRoutes } from "./routes/browser-evidence.ts";
 import { createSignInCardRoutes } from "./routes/sign-in-cards.ts";
+import { createInternalEscalateRoutes } from "./routes/internal-escalate.ts";
 import { createRoomHoldRoutes } from "./routes/room-holds.ts";
 import { createGroupRoutes } from "./routes/groups.ts";
 import { createChannelRoutes } from "./routes/channels.ts";
@@ -600,6 +617,7 @@ import { createComputerRoutes } from "./routes/computers.ts";
 import { createStatusRoutes } from "./routes/status.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
+import { createNotificationRoutes } from "./routes/notifications.ts";
 import { createUsageRoutes } from "./routes/usage.ts";
 import { createBotMessageRoutes } from "./routes/bot-messages.ts";
 import { createThreadRoutes } from "./routes/threads.ts";
@@ -753,6 +771,7 @@ if (hostedModels) {
 }
 bindThreadLogCapProvider(() => threadEventLogMaxBytes(cfg));
 bindDecisionRetention(() => decisionRetentionDays(cfg.decisions?.retentionDays));
+bindSafetyFloor(() => cfg);
 const decider = createDecider({ config: () => cfg, dataDir: DATA_DIR });
 const customDomainVerifier = createCustomDomainVerifier({ environmentId: ENVIRONMENT_ID });
 const emailSignIn = createEmailSignIn({
@@ -1530,7 +1549,7 @@ function bookTurnUsage(row: Omit<UsageRow, "at" | "costSource">, tokensReported 
   const state = spendState(cfg, DATA_DIR);
   const alert = takeSpendAlert(DATA_DIR, state);
   if (alert && state) {
-    broadcast({ kind: "notify", notification: buildSpendNotification({ id: row.botId, name: row.botName }, notificationThreadId, spendAlertText(alert, state)) }, { adminOnly: true });
+    broadcast({ kind: "notify", notification: logNotification(buildSpendNotification({ id: row.botId, name: row.botName }, notificationThreadId, spendAlertText(alert, state))) }, { adminOnly: true });
   }
 }
 
@@ -1574,18 +1593,6 @@ function resyncOpenCodeProviderKeys(): void {
 await registry.load(providerConfigs(), decorateHostedProvider);
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
-
-const listBotSkills = (bot: BotRecord) =>
-  skillsLibraryEnabled(cfg) ? resolveBotSkills(bot.id, bot.assignedSkills) : listSkills(bot.id);
-const readBotSkillFile = (bot: BotRecord, name: string): string | null => {
-  const own = readSkillFile(bot.id, name);
-  if (own !== null || !skillsLibraryEnabled(cfg)) return own;
-  // Private wins collisions: a private skill that no longer verifies must not fall through to a same-named library skill.
-  if (listSkills(bot.id).some((skill) => skill.name === name)) return null;
-  // The library fallback is by assignment only, never by name alone.
-  if (!bot.assignedSkills?.includes(name)) return null;
-  return readLibrarySkillFile(name);
-};
 
 type UtilityParentPort = {
   on(event: "message", listener: (event: { data?: object }) => void): void;
@@ -2007,10 +2014,7 @@ const phoneSecretEnvelopeSchema = z.object({
   encapsulatedKey: z.string().regex(/^[A-Za-z0-9_-]{87}$/),
   ciphertext: z.string().regex(/^[A-Za-z0-9_-]{23,5483}$/),
 }).strict();
-const agentsProxyPath = SPAWNED_PROXIES.agents;
 const phoneProxyPath = SPAWNED_PROXIES.phone;
-// in the packaged app process.execPath is Electron — run the proxy as node
-const AGENTS_NODE_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
 
 function agentsIntegration(
   botId: string,
@@ -2034,10 +2038,9 @@ function agentsIntegration(
     ...(hostFiles && !CLOUD_HOME && !HOSTED_WORKSPACE ? { deliversSavedFiles: true } : {}),
   });
   return {
-    command: process.execPath,
-    args: [agentsProxyPath],
+    ...agentsProxyLaunch(),
     env: {
-      ...AGENTS_NODE_FLAG,
+      ...AGENTS_PROXY_ENV,
       OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
       OMB_BOT_ID: botId,
       OMB_THREAD_ID: threadId,
@@ -2053,6 +2056,7 @@ function agentsIntegration(
         return tts.voiceReady(cfg, speaking?.voice) && speaking?.voiceNotes !== false ? "1" : "0";
       })(),
       OMB_CHIEF_OF_STAFF: store.bot(botId)?.chiefOfStaff === true ? "1" : "0",
+      OMB_ESCALATIONS: chiefEscalationsEnabled(cfg) ? "1" : "0",
     },
   };
 }
@@ -2321,6 +2325,7 @@ function settleDirectFollowup(generation: string | undefined, outcome: DirectTur
 }
 // A running conversation keeps its exact bot settings: another thread or a changed default must not retarget its tools.
 const directTurnBots = new Map<string, BotRecord>();
+const routedTurnModels = new Map<string, string>();
 const turnPromptBytes = new Map<string, { stable: number; volatile: number }>();
 let providerFleetReloading = false;
 const turnResources = new TurnResources();
@@ -2506,7 +2511,7 @@ function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
   return task;
 }
 
-async function interruptDirectThread(botId: string, threadId: string): Promise<void> {
+async function interruptDirectThread(botId: string, threadId: string, cause?: string): Promise<void> {
   if (store.taskByThread(botId, threadId)?.activity === "parked.computer") store.setTaskActivity(botId, threadId, "idle");
   const requestOwner = directRequestOwners.get(threadId);
   if (requestOwner) {
@@ -2514,7 +2519,7 @@ async function interruptDirectThread(botId: string, threadId: string): Promise<v
     if (requestOwner.messageId) store.patchMessage(threadId, requestOwner.messageId, { requestCancelled: true });
   }
   stopParkedCards(threadId);
-  noteTeammatesLeftRunning(threadId, coordinator.stopAwaitingDirect(threadId));
+  noteTeammatesLeftRunning(threadId, coordinator.stopAwaitingDirect(threadId, cause));
   const owner = botForThread(botId, threadId);
   const generation = directTurnGenerationByThread.get(threadId);
   cancelDirectTurnDispatch(botId, threadId);
@@ -3338,6 +3343,8 @@ const store = new Store(
   (selection) => withNewBotEffort(selection, cfg.newBots?.effort, registry.get(selection.instanceId)?.adapter.capabilities.effortLevels),
   (instanceId) => registry.cliTarget(instanceId)?.driverKind,
 );
+const skillsHost = createSkillsLibraryHost({ store, cfg, appendSkillRequestCard });
+const { listBotSkills, readBotSkillFile } = skillsHost;
 const cloudHealth = CLOUD_HOME ? createCloudHealth({ store, bus, dataDir: DATA_DIR, eventsDir: EVENTS_DIR, version: serverVersion(), image: process.env.OMB_CLOUD_IMAGE,
   engines: () => registry.instances().map((instance) => ({ instanceId: instance.instanceId, driverKind: instance.driverKind, snapshot: registry.lastSnapshot(instance.instanceId) })),
   connectors: () => composio.configured(cfg) ? composio.connectedServices(cfg) : null,
@@ -3455,7 +3462,7 @@ function previewSystemPrompt(bot: BotRecord) {
   });
   const peers = reachablePeers(store.bots, bot);
   const coordination = bot.chiefOfStaff
-    ? chiefOfStaffSystemPrompt(bot.id, store.bots, true)
+    ? chiefOfStaffSystemPrompt(bot.id, store.bots, true, chiefEscalationsEnabled(cfg))
     : peers.length > 0
       ? peerRosterSystemPrompt(peers)
       : "";
@@ -3497,7 +3504,7 @@ function previewSystemPrompt(bot: BotRecord) {
     teamAvailabilityPart(agentsMounted && coordination ? peers : []),
     { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: agentsMounted, fileTools: Boolean(privateWorkspace), enabled: bot.memoryEnabled !== false }) },
     { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? bot.assignedSkills : undefined) : "" },
-  ]);
+  ], agentsMounted ? { env: agentsToolBridgeEnv(cfg, bot, instance && turnEngine(instance, providerConfigs(), registry.lastSnapshot(instance.instanceId), bot.cwd ?? undefined)) } : undefined, { replyStyle: bot.replyStyle });
   const totalBytes = built.sections.reduce((n, s) => n + s.bytes, 0);
   return {
     sections: built.sections,
@@ -4081,6 +4088,7 @@ type GroupTurnOperation = {
   cancellation: AbortController;
   providerHandshakePending: boolean;
   queuedQueueIds?: string[];
+  line?: RoomRoundLine;
   goalRun?: {
     runId: string;
     cardMessageId: string;
@@ -4364,39 +4372,9 @@ const channelTaskBlocked = (group: GroupRecord) =>
 
 // Load coordination state before registering store listeners or recovering routines: recovery can emit room changes synchronously.
 const groupQueues = new Map<string, Promise<void>>();
-function roomRootProblem(node: Pick<HandoffView, "groupId" | "threadId" | "botId">): string | undefined {
-  const group = node.groupId ? store.group(node.groupId) : undefined;
-  const bot = store.bot(node.botId);
-  if (!bot || bot.hidden) return "The addressed agent no longer exists";
-  if (!group || !(group.dm ? group.threadId === node.threadId : store.groupTaskByThread(group.id, node.threadId))) return "Destination room task no longer exists";
-  if (!group.memberIds.includes(bot.id)) return "The addressed agent is no longer a member of this room";
-  return undefined;
-}
-function roomHandoffProblem(node: Pick<HandoffView, "groupId" | "threadId" | "botId"> & Partial<Pick<HandoffView, "kind">>, parent?: Pick<HandoffView, "groupId" | "threadId" | "botId">): string | undefined {
-  const group = node.groupId ? store.group(node.groupId) : undefined;
-  const bot = store.bot(node.botId);
-  if (!bot || bot.hidden) return "The addressed agent no longer exists";
-  if (node.groupId && (!group || group.dm || !store.groupTaskByThread(group.id, node.threadId))) return "Destination room task no longer exists";
-  if (!node.groupId && !store.taskByThread(bot.id, node.threadId)) return "Destination bot task no longer exists";
-  if (group && !group.memberIds.includes(bot.id)) return "The addressed agent is no longer a member of this room";
-    // Every reader matters: the sender's grant never gives a specialist another team's transcript.
-  const outsideSection = (room: GroupRecord, speaker: BotRecord) => room.memberIds.some(id => {
-    const member = store.bot(id);
-    return member && !canAccessTeam(speaker, member.section) && !coordinatorSupervises(member, speaker);
-  });
-  if (group && outsideSection(group, bot)) return "Destination room includes a member outside the agent's section";
-  if (group && roomSetupPending(group)) return "Destination room setup is unfinished";
-  if (parent) {
-    const from = store.bot(parent.botId);
-    const source = parent.groupId ? store.group(parent.groupId) : undefined;
-    if (!from || from.hidden || (parent.groupId ? !source || !source.memberIds.includes(from.id) || !store.groupTaskByThread(source.id, parent.threadId) : !store.taskByThread(from.id, parent.threadId))) return "Source membership or task was removed";
-      // Supervision alone never grants a direct chat or another room's access.
-    const sharedSupervisor = source && group && source.id === group.id && parent.threadId === node.threadId && coordinatorSupervises(bot, from);
-    if ((!canAccessTeam(from, bot.section) && !sharedSupervisor) || (source && outsideSection(source, from))) return "Room work cannot cross the sender's section boundary";
-    if (source && group && source.id === group.id && parent.threadId !== node.threadId) return "Same-room work must stay in the originating conversation";
-    if (!peerAllowed(from, bot)) return "The recipient is not an allowed peer of the sender";
-  }
-}
+const { roomRootProblem, roomHandoffProblem, roomSetupPending, laneRoomThread } = createRoomAccess({ store });
+const roomJobs = createRoomJobs({ store, coordinator: { all: () => coordinator.all() }, cfg, laneRoomThread,
+  operations: groupId => groupTurnOperations.get(groupId) ?? [], speakerOf: threadId => groupSpeakers.get(threadId)?.botId });
 
 // Claude reuses a session's first system prompt across --resume, so assignment bodies and results must travel in the user turn.
 function coordinationSystemInstructions(): string {
@@ -4806,6 +4784,8 @@ function publicGroupState(record: GroupRecord): WireGroup {
     busyBotId: currentSpeaker?.botId ?? (activeWorking ? record.busyBotId : null),
     ...(currentSpeaker?.since ? { turnStartedAt: currentSpeaker.since } : {}),
     working: groupIsWorking(record) || openHandoffs.length > 0,
+    // Always present, so a frame with nobody waiting clears the last one.
+    queue: roomJobs.roomLineOf(record),
   };
 }
 
@@ -5271,6 +5251,7 @@ store.onChange((change) => {
       directRequestOwners.delete(change.threadId);
       stoppedTurns.delete(change.threadId);
       turnStops.forget(change.threadId);
+      repeats.settle(change.threadId);
       routines?.forgetRoutineRequestReceiptsForThread(change.threadId);
       // A deleted destination must not strand an approval: keep each run's snapshot.
       for (const run of routines?.listRuns() ?? []) {
@@ -5703,10 +5684,6 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 }
 
 const lastReply = new Map<string, string>();
-function turnFailureCause(event: { threadId: string; turnId?: string; ok: boolean; stopReason?: string | null }): string | undefined {
-  if (event.ok) return undefined;
-  return turnStops.read(event.threadId, event.turnId)?.error ?? (event.stopReason?.trim() || undefined);
-}
 const stoppedTurns = new Map<string, string | undefined>();
 const settlingTurns = new Set<string>();
 const sessionModelByThread = new Map<string, string>();
@@ -5722,7 +5699,7 @@ const QUIET_TURN_NEWS: ReadonlySet<Notification["kind"]> = new Set(["done", "tur
 
 function notify(notification: Notification | null) {
   if (notification && QUIET_TURN_NEWS.has(notification.kind) && quietTurnThreads.has(notification.threadId)) return;
-  if (notification) broadcast({ kind: "notify", notification });
+  if (notification) broadcast({ kind: "notify", notification: logNotification(notification) });
 }
 
 const roomTurnLevels = createRoomTurnLevels();
@@ -5733,8 +5710,6 @@ const routedRoomReplies = new Map<string, { botId: string; routedBy: RoutedBy }>
 // Providers report cumulative-within-turn numbers; the final value folds into the task's tally at settle.
 const turnUsage = new Map<string, { input: number; output: number; cachedInput?: number }>();
 const turnContext = new Map<string, { tokens?: number; window?: number }>();
-
-const repeats = new RepeatDetector({ thresholds: [5, 10, 20], maxKeysPerThread: 256 });
 
 const TURN_STALL_MS = Math.max(60_000, Number(process.env.OMB_TURN_STALL_MS) || 20 * 60_000);
 const STALL_CAUSE = `no activity for ${Math.round(TURN_STALL_MS / 60_000)} minutes — the turn was stopped`;
@@ -5870,35 +5845,21 @@ bus.subscribe((event: RuntimeEvent) => {
   }
 });
 
+const sideJobs = createSideJobs({
+  bot: (botId) => store.bot(botId),
+  instance: (instanceId) => registry.get(instanceId),
+  refusal: (instance) => policyModelRefusal(instance),
+  helper: cacheUntilConfigChanges((config) => helperSelection(config)),
+  ...(hostedModels ? { modelAllowed: (selection: ModelSelection) => hostedModels.allows(selection) } : {}),
+  assertWithinBudget: () => assertWithinBudget(cfg, DATA_DIR),
+  book: bookTurnUsage,
+  log: (line) => console.log(line),
+});
+
 const memoryUpkeep = createMemoryUpkeep({
   bots: () => store.bots,
   bot: (id) => store.bot(id) ?? undefined,
-  engine: (botId) => {
-    const bot = store.bot(botId);
-    const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
-    // an engine the organisation disallows never receives memory text
-    if (!bot || !instance || policyModelRefusal(instance)) return null;
-    const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
-    return generate ? {
-      generateText: async (prompt, options) => {
-        assertWithinBudget(cfg, DATA_DIR);
-        const threadId = `memory-${randomUUID()}`;
-        return generate(prompt, { ...options, onUsage: (usage) => bookTurnUsage({
-          botId: bot.id,
-          botName: bot.name,
-          threadId,
-          instanceId: instance.instanceId,
-          driverKind: instance.driverKind,
-          model: usage.model,
-          input: usage.input ?? 0,
-          output: usage.output ?? 0,
-          ...(usage.cachedInput !== undefined ? { cachedInput: usage.cachedInput } : {}),
-          costUsd: usage.costUsd ?? null,
-          trigger: { kind: "bot", botId: bot.id },
-        }, usage.input !== undefined && usage.output !== undefined, bot.threadId) });
-      },
-    } : {};
-  },
+  engine: (botId) => sideJobs.text("memory", botId),
   busy: (botId) => botHasActiveTurn(botId),
   addToAboutMe: (from, texts) => {
     const current = cfg.profile?.aboutMe ?? "";
@@ -6114,52 +6075,28 @@ const skillReview = createSkillReview({
   enabled: () => skillReviewEnabled(cfg),
   threshold: () => skillReviewSteps(cfg),
   bot: (botId) => store.bot(botId) ?? undefined,
-  engine: (botId) => {
-    const bot = store.bot(botId);
-    const instance = bot ? registry.get(bot.modelSelection.instanceId) : undefined;
-    if (!bot || !instance || policyModelRefusal(instance) || instance.adapter.capabilities.agentsMcp !== true) return null;
-    const generate = (instance.generateText ?? instance.generateMemoryText)?.bind(instance);
-    if (!generate) return null;
-    return {
-      generateText: async (prompt, options) => {
-        assertWithinBudget(cfg, DATA_DIR);
-        const threadId = `skill-review-${randomUUID()}`;
-        return generate(prompt, { ...options, onUsage: (usage) => bookTurnUsage({
-          botId: bot.id,
-          botName: bot.name,
-          threadId,
-          instanceId: instance.instanceId,
-          driverKind: instance.driverKind,
-          model: usage.model,
-          input: usage.input ?? 0,
-          output: usage.output ?? 0,
-          ...(usage.cachedInput !== undefined ? { cachedInput: usage.cachedInput } : {}),
-          costUsd: usage.costUsd ?? null,
-          trigger: { kind: "bot", botId: bot.id },
-        }, usage.input !== undefined && usage.output !== undefined, bot.threadId) });
-      },
-    };
-  },
+  engine: (botId) => sideJobs.text("skill-review", botId),
   busy: (botId) => workspaceMaintenance.active || botHasActiveTurn(botId),
   transcript: (botId, threadId) => {
     const owned = connectorThread(botId, threadId);
     if (!owned || selfApplyBlocked(threadId)) return null;
     return { messages: store.activePath(threadId), room: Boolean(owned.group) };
   },
-  skills: (botId) => listSkills(botId).map((skill) => ({
+  skills: (botId) => skillsHost.reviewSkills(botId, listSkills(botId).map((skill) => ({
     name: skill.name,
     description: skill.description,
     editable: skill.editable,
     enabled: skill.enabled,
     sha256: skill.sha256,
     ...(skill.editable ? { body: readSkillFile(botId, skill.name) } : {}),
-  })),
-  currentSha: (botId, name) => listSkills(botId).find((skill) => skill.name === name)?.sha256 ?? null,
+  }))),
+  currentSha: (botId, name) => listSkills(botId).find((skill) => skill.name === name)?.sha256 ?? skillsHost.sharedSha(botId, name),
   apply: (botId, threadId, change) => {
     const bot = store.bot(botId);
     if (!bot) return { ok: false, error: "unknown bot" };
     const direct = appliesDirectly(botId, threadId, botId);
     if (!direct) return { ok: false, error: "this conversation cannot apply skill changes without review" };
+    if (change.action === "update" && skillsHost.editable(botId, change.name)) return skillsHost.applyReviewUpdate(bot, threadId, change, direct);
     const staged = stageSkillWrite(botId, {
       action: change.action,
       targetName: change.action === "update" ? change.name : undefined,
@@ -6205,7 +6142,7 @@ bus.subscribe((event: RuntimeEvent) => {
     const tools = messages
       .filter((message) => message.kind === "activity" && message.turnId === event.turnId && message.tool?.name)
       .map((message) => message.tool!.name);
-    const line = turnOutcomeLine({ ok: event.ok, reply: reply?.text, stopReason: turnFailureCause(event), tools });
+    const line = turnOutcomeLine({ ok: event.ok, reply: reply?.text, stopReason: turnStops.failureCause(event), tools });
     if (!line) return;
     // A room fewer people can see than this bot leaves no line: session_search would hand it to anyone who sees the bot.
     const room = store.groupByThread(event.threadId);
@@ -6254,6 +6191,7 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
   const payload = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
   const threadId = capability.threadId;
   const chip = (text: string) => store.appendMessage(threadId, { role: "bot", kind: "activity", tool: { name: text, ok: true } });
+  if (name === "PreCompact" || (name === "SessionStart" && payload.source === "compact")) roomSessions.distrust(threadId, capability.botId);
   if (name === "PreCompact") {
     const trigger = payload.trigger === "manual" ? "manual" : "auto";
     chip(`context compaction started (${trigger})`);
@@ -7183,7 +7121,7 @@ bus.subscribe((event: RuntimeEvent) => {
   const privateImageEvent = event.type === "item.completed" && event.itemType === "assistant_image";
   if (!privateImageEvent) {
     // Exact executable input is internal; the bus's persistence redactor does not scrub the live event.
-    const publicEvent = event.type === "request.opened" ? { ...event, command: undefined } : event;
+    const publicEvent = event.type === "request.opened" ? { ...event, command: undefined, commandLine: undefined } : event;
     broadcast({ kind: "runtime", event: publicEvent });
   }
   const routineRun = privateImageEvent ? null : (routines?.handleRuntimeEvent(event) ?? null);
@@ -7223,7 +7161,7 @@ bus.subscribe((event: RuntimeEvent) => {
   };
 
   if (coordinatorVisibleText) pushAssistantText(coordinatorVisibleText, completedTurnId);
-  if (bot) handoffs.onEvent(event);
+  if (bot) handoffs.onEvent(event); else roomSessions.onEvent(event);
 
   if (event.turnId) liveTurnByThread.set(event.threadId, event.turnId);
   const requestOwner = bot ? directRequestOwners.get(event.threadId) : undefined;
@@ -7288,7 +7226,7 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "item.started":
       if (event.itemType === "tool") {
-        const name = event.title ?? "tool";
+        const name = bridgedToolTitle(event.threadId, event.title ?? "tool", event.input);
         const message = pushMessage({
           role: "bot",
           kind: "activity",
@@ -7324,11 +7262,11 @@ bus.subscribe((event: RuntimeEvent) => {
         ? null
         : providerToolAllowKey(providerInstanceId, event.tool, configuredMcp);
       const verdict = permission && asker && event.requestId
-        ? autoVerdict(effectiveApprovalMode, event.tool, {
+        ? heldAtSafetyFloor(event, autoVerdict(effectiveApprovalMode, event.tool, {
           requiresExplicitApproval: event.requiresExplicitApproval,
           commandAllowed: Boolean(command && commandAllowlist.matches(asker.id, command)),
           toolAllowed: Boolean(toolAllowKey && asker.alwaysAllow?.includes(toolAllowKey)),
-        })
+        }))
         : null;
       // Claude accepts --permission-mode auto for any model but silently starts in Manual where auto is unavailable (Haiku 4.5, Sonnet 4.5, an org that disabled it).
       if (
@@ -7362,22 +7300,16 @@ bus.subscribe((event: RuntimeEvent) => {
           (sourceGeneration !== undefined && directTurnGenerationByThread.get(event.threadId) === sourceGeneration) ||
           (sourceSpeaker !== undefined && groupSpeakers.get(event.threadId) === sourceSpeaker)
         );
+        // Security: a never-list command is denied in place of any automatic allow.
+        if (denyAtSafetyFloor({ event, requestId, bot: asker, adapter: instance?.adapter, isCurrent, say: pushMessage,
+          release: () => watchdog.setWaitingOnHuman(event.threadId, false) })) break;
         // The chip is written only AFTER the provider takes the answer.
         void (async () => {
           const outcome = await deliverFullAccessApproval(instance?.adapter, event.threadId, requestId, event.turnId, isCurrent);
           if (!isCurrent()) return;
           if (outcome !== "allowed-once") {
             watchdog.setWaitingOnHuman(event.threadId, false);
-            if (outcome !== "unavailable") pushMessage({
-              role: "bot", kind: "activity",
-              tool: outcome === "rejected"
-                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist"
-                  ? "the saved command permission"
-                  : verdict.source === "tool-allowlist"
-                    ? "the saved tool permission"
-                    : "Full access"}.`, ok: false }
-                : failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting."),
-            });
+            if (outcome !== "unavailable") pushMessage({ role: "bot", kind: "activity", tool: undeliveredApprovalTool(outcome, verdict.source) });
             return;
           }
           pushMessage({
@@ -7594,11 +7526,16 @@ bus.subscribe((event: RuntimeEvent) => {
         turnResourceOwners.get(event.threadId)?.computerParkedOn !== undefined;
       const capContinues = !event.ok && turnStops.read(event.threadId, completedTurnId)?.handoffPath !== undefined;
       // Judged now: an assignment reports its own failure, and has ended by the time the thread settles.
-      const broken = !event.ok && !stopped && !lazyClaimAlreadyReported && !computerParked && !capContinues && !routines?.runForThread(event.threadId) &&
-        !coordinator.assignerOf(event.threadId) ? bot ?? (speaker ? store.bot(speaker.botId) : undefined) : undefined;
-      const failureDetail = turnFailureCause(event) ?? "the run ended without a result";
+      const failed = !event.ok && !stopped && !lazyClaimAlreadyReported && !computerParked && !capContinues && !routines?.runForThread(event.threadId);
+      const broken = failed && !coordinator.assignerOf(event.threadId) ? bot ?? (speaker ? store.bot(speaker.botId) : undefined) : undefined;
+      const failureDetail = turnStops.failureCause(event) ?? "the run ended without a result";
       // Filed once the thread has settled, so the Chief's retry finds it free.
       const fileIncident = () => { if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: failureDetail }); };
+      if (failed && bot) void quotaSwitch.turnFailed(bot, event, internal);
+      else if (bot && event.ok) quotaSwitch.turnSucceeded(bot, event.threadId);
+      const question = bot && event.ok && !stopped && completedTurnId && chiefEscalationsEnabled(cfg) ? needsInputQuestion(store.activePath(event.threadId)
+        .findLast((message) => message.role === "bot" && message.kind === "text" && message.turnId === completedTurnId)?.text ?? "") : undefined;
+      if (bot && question !== undefined) reportEscalation({ kind: "needs-input", bot, threadId: event.threadId, gate: NEEDS_INPUT_GATE, reason: question, alreadyNotified: false });
       const lastReported = turnUsage.get(event.threadId);
       turnUsage.delete(event.threadId);
       const lastContext = turnContext.get(event.threadId);
@@ -7631,7 +7568,9 @@ bus.subscribe((event: RuntimeEvent) => {
           settleTrackedRequest(event.threadId);
         };
         const tokens = event.usage ?? lastReported;
-        const contextModel = store.taskByThread(bot.id, event.threadId)?.modelSelection?.model ?? bot.modelSelection.model;
+        const routedModel = routedTurnModels.get(event.threadId);
+        routedTurnModels.delete(event.threadId);
+        const contextModel = routedModel ?? store.taskByThread(bot.id, event.threadId)?.modelSelection?.model ?? bot.modelSelection.model;
         store.addTaskUsage(bot.id, event.threadId, {
           input: tokens?.input,
           output: tokens?.output,
@@ -7644,7 +7583,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // A provider that omitted a context measurement must not reuse a stale reading from another model or a pre-compaction session.
         const measuredSelection = directTurnBots.get(event.threadId)?.modelSelection ?? selection;
         store.patchTask(bot.id, event.threadId, { lastContextModel: Number.isFinite(lastContext?.tokens) && (lastContext?.tokens ?? 0) > 0
-          ? `${measuredSelection.instanceId}:${measuredSelection.model}` : undefined });
+          ? `${measuredSelection.instanceId}:${routedModel ?? measuredSelection.model}` : undefined });
         const promptBytes = turnPromptBytes.get(event.threadId);
         turnPromptBytes.delete(event.threadId);
         bookTurnUsage({
@@ -7653,7 +7592,7 @@ bus.subscribe((event: RuntimeEvent) => {
           threadId: event.threadId,
           instanceId: selection.instanceId,
           driverKind: registry.get(selection.instanceId)?.driverKind ?? "unknown",
-          model: selection.model,
+          model: routedModel ?? selection.model,
           input: tokens?.input ?? 0,
           output: tokens?.output ?? 0,
           ...(typeof tokens?.cachedInput === "number" ? { cachedInput: tokens.cachedInput } : {}),
@@ -7711,7 +7650,7 @@ bus.subscribe((event: RuntimeEvent) => {
         const tokens = event.usage ?? lastReported;
         const speakingBot = store.bot(speaker.botId);
         const selection = speakingBot?.modelSelection;
-        roomMemberContexts.record(event.threadId, speaker.botId, lastContext, selection?.model, selection && registry.get(selection.instanceId)?.models);
+        roomMemberContexts.record(event.threadId, speaker.botId, compactionReading(registry.get(event.providerInstanceId ?? selection?.instanceId ?? "")?.adapter.capabilities, lastContext), selection?.model, selection && registry.get(selection.instanceId)?.models);
         const promptBytes = turnPromptBytes.get(event.threadId);
         turnPromptBytes.delete(event.threadId);
         bookTurnUsage({
@@ -7841,7 +7780,12 @@ function runtimeWorkPending(threadId: string): boolean {
         && coordinator.children(root.id).some(child => child.reply !== "none" && child.createdAt >= (root.startedAt ?? 0)))));
 }
 
-const incidentLedger = new IncidentLedger();
+const { reportIncident, reportEscalation, incidentRefused, incidentLastAt } = createChiefNotices({
+  store, notify, threadBusy, botAtThreadCapacity, startTurn,
+  assignerOf: (threadId) => coordinator.assignerOf(threadId),
+  groupTurnActive: (botId) => Boolean(activeGroupTurnForBot(botId)),
+  escalationsEnabled: () => chiefEscalationsEnabled(cfg),
+});
 
 function turnAnswers(threadId: string, opts?: {
   cardContinuation?: boolean; requestMessageId?: string; coordination?: { id: string };
@@ -7867,82 +7811,6 @@ function turnAnswers(threadId: string, opts?: {
     incident: reports.length > 0,
     quiet: reports.length > 0 && reports.length === lines.length && reports.every(line => line.queueId && line.peerAsk?.incident?.notified),
   };
-}
-
-function incidentRefused(chief: BotRecord, incidentsThreadId: string, asks: ReadonlyArray<Message["peerAsk"]>, why: string): void {
-  const refused = `the incident could not reach ${chief.name} — ${why}`;
-  store.appendMessage(incidentsThreadId, { role: "bot", kind: "activity", tool: failedTurnTool(refused) });
-  const lines = store.messagesFor(incidentsThreadId);
-  for (const ask of asks) {
-    if (!ask?.incident || ask.incident.notified) continue;
-    const bot = store.bot(ask.botId);
-    if (!bot) continue;
-    const { threadId } = ask.incident;
-    const chip = lines.findLast(line => line.kind === "activity" && line.tool?.ok === false && line.threadRef?.threadId === threadId)?.tool?.name;
-    const group = store.groupByThread(threadId);
-    notify(buildNotification("incident", bot, threadId, chip ?? refused, {
-      avatarUrl: bot.avatarUrl,
-      ...(group ? { group: { id: group.id, name: group.name } } : {}),
-    }));
-  }
-}
-
-function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: string; detail: string }): void {
-  const { bot, threadId } = input;
-  const task = store.taskByThread(bot.id, threadId);
-  if (coordinator.assignerOf(threadId)) return;
-  const group = store.groupByThread(threadId);
-  const incident: Incident = {
-    kind: input.kind,
-    bot,
-    threadId,
-    title: task?.title ?? null,
-    room: group?.name ?? null,
-    detail: redactSecretsInText(input.detail),
-    ...incidentContext(store.messagesFor(threadId)),
-  };
-  const count = incidentLedger.note(threadId);
-  if (count.muted) return;
-  const chief = chiefForBot(store.bots, bot);
-  const alreadyNotified = input.kind === "could-not-start" || input.kind === "routine-failed";
-  const tellThePerson = () => {
-    if (alreadyNotified) return;
-    notify(buildNotification("incident", bot, threadId, incidentChip(incident), {
-      avatarUrl: bot.avatarUrl,
-      ...(group ? { group: { id: group.id, name: group.name } } : {}),
-    }));
-  };
-  if (!chief) {
-    tellThePerson();
-    return;
-  }
-  const incidents = store.tasks(chief.id).find((candidate) => candidate.title === INCIDENTS_THREAD_TITLE && !candidate.archivedAt)
-    ?? store.createTask(chief.id, INCIDENTS_THREAD_TITLE, false, undefined, { botId: chief.id, name: chief.name, at: Date.now() });
-  if (!incidents || incidents.threadId === threadId) {
-    tellThePerson();
-    return;
-  }
-  store.appendMessage(incidents.threadId, {
-    role: "bot",
-    kind: "activity",
-    tool: { name: incidentChip(incident), ok: false },
-    threadRef: { botId: bot.id, threadId, title: task?.title ?? (group ? group.name : `${bot.name}'s conversation`) },
-  });
-  const text = incidentText(incident, count);
-  const peerAsk = { botId: bot.id, name: bot.name, unattended: true,
-    incident: { threadId, ...(alreadyNotified ? { notified: true } : {}) } };
-  const decision = admit("incident", {}, {
-    threadBusy: threadBusy(chief.id, incidents.threadId),
-    atCapacity: botAtThreadCapacity(chief.id),
-    groupTurn: Boolean(activeGroupTurnForBot(chief.id)),
-  });
-  if (decision.action === "queue") {
-    queueSteeredMessage(chief.id, incidents.threadId, text, { reason: decision.reason, unattended: true, peerAsk });
-    return;
-  }
-  void startTurn(chief.id, text, { threadId: incidents.threadId, unattended: true, peerAsk }).catch((error) => {
-    incidentRefused(chief, incidents.threadId, [peerAsk], error instanceof Error ? error.message : String(error));
-  });
 }
 
 // Provider sessions only know their own turns' messages, so a harness-appended result marks the task for one replay; the unique suffix keeps a newer marker through a racing replay.
@@ -8016,7 +7884,7 @@ async function compactConversation(input: {
   });
   const history = selected.transcript.filter(entry => entry.id);
   if (!history.length) return;
-  const measurement = task.lastContextModel === `${instance.instanceId}:${model}` && !task.rewound ? task.usage?.context : undefined;
+  const measurement = compactionReading(instance.adapter.capabilities, task.lastContextModel === `${instance.instanceId}:${model}` && !task.rewound ? task.usage?.context : undefined);
   const window = contextWindowFor(model, instance.models, measurement?.window);
   const bytes = history.reduce((n, entry) => n + Buffer.byteLength(entry.text), 0);
   let floor = task.contextFloor;
@@ -8024,8 +7892,7 @@ async function compactConversation(input: {
     floor = measurement.tokens;
     store.patchTask(bot.id, threadId, { contextFloor: floor });
   }
-  const nativeCompactAt = instance.driverKind === "claudeAgent"
-    ? Number(autoCompactWindow({ ...process.env, ...cfg.instances?.[instance.instanceId]?.environment })) : undefined;
+  const nativeCompactAt = nativeCompactTokens(instance);
   if (!manual && !shouldCompact({ contextTokens: measurement?.tokens, estimatedBytes: bytes,
     budget: compactBudget(window, cfg.context?.compactAt, nativeCompactAt), floor, window, nativeCompactAt })) return;
   const fold = manual ? { folded: history, firstKeptId: "" } : foldPoint(history);
@@ -8038,7 +7905,7 @@ async function compactConversation(input: {
   const controller = new AbortController();
   compactionControllers.set(threadId, { generation, controller });
   try {
-    const summary = await draftSummary(fold.folded, { signal: controller.signal, generateText: instance.generateText?.bind(instance) });
+    const summary = await draftSummary(fold.folded, { signal: controller.signal, generateText: sideJobs.text("compaction", bot.id, { instance })?.generateText });
     if (!directTurnClaimIsCurrent(bot.id, generation, threadId)) throw new DirectTurnSetupCancelled("context summarization stopped");
     controller.signal.throwIfAborted();
     if (prefix !== JSON.stringify(store.activePath(threadId).slice(0, messages.length))) {
@@ -8062,28 +7929,30 @@ const handoffs = new Handoffs({
   replies: (threadId, turnId) => store.activePath(threadId)
     .filter((m) => m.role === "bot" && m.kind === "text" && !m.from && m.turnId === turnId).map((m) => m.id),
 });
+const roomSessions = createRoomSessions({ settings: () => cfg.context, messagesFor: (threadId) => store.messagesFor(threadId) });
+const nativeCompactTokens = (instance: { driverKind: string; instanceId: string }) => instance.driverKind === "claudeAgent" ? Number(autoCompactWindow({ ...process.env, ...cfg.instances?.[instance.instanceId]?.environment })) : undefined;
 
-
-// Keyed on tool + arguments: Claude's item.started carries only a bare tool name, which is never counted.
-bus.subscribe((event: RuntimeEvent) => {
-  if (shouldIgnoreProviderEvent(event)) return;
-  if (event.type === "turn.completed" || event.type === "session.exited") return void repeats.settle(event.threadId);
-  let key: string | null = null, shown: string | undefined; // shown: the title only, never the input the key counts on
-  if (event.type === "item.started" && event.itemType === "tool") {
-    key = toolItemKey(event.title, event.input);
-    shown = event.title?.trim();
-  } else if (event.type === "request.opened" && event.requestType === "permission") key = callKey(event.tool, event.summary);
-  if (!key) return;
-  const { threshold } = repeats.record(event.threadId, key);
-  if (!threshold) return;
-  const [tool, ...rest] = key.split(":");
-  const args = shown ?? rest.join(":");
-  store.appendMessage(event.threadId, {
-    role: "bot",
-    kind: "activity",
-    tool: { name: `Same call repeated ${threshold}× — ${tool}: ${args.slice(0, 80)}${args.length > 80 ? "…" : ""} — it may be stuck`, ok: false },
-  });
+const loopingEngine = (threadId: string, bot = store.botByThread(threadId)) => bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined;
+const repeats = createLoopGuard({
+  settings: () => loopGuardSettings(cfg),
+  append: (threadId, tool) => void store.appendMessage(threadId, { role: "bot", kind: "activity", tool }),
+  live: (threadId) => { const bot = store.botByThread(threadId); return Boolean(bot && threadBusy(bot.id, threadId)); },
+  waiting: (threadId) => watchdog.waiting(threadId),
+  canSteer: (threadId) => {
+    const engine = loopingEngine(threadId);
+    return admit("direct-busy", { pendingComputerSelection: Boolean(computerSelectionTurns.get(threadId)?.selected),
+      engineCanSteer: Boolean(engine?.capabilities.queueing && engine.steer) }).action === "steer";
+  },
+  steer: async (threadId, note) => (await loopingEngine(threadId)?.steer?.(threadId, note)) ?? "refused",
+  interrupt: async (threadId, cause) => {
+    const bot = store.botByThread(threadId);
+    if (!bot) return;
+    turnStops.stopping(threadId, liveTurnByThread.get(threadId), cause);
+    routines?.failThread(threadId, `${cause.charAt(0).toUpperCase()}${cause.slice(1)}`);
+    await interruptDirectThread(bot.id, threadId, cause);
+  },
 });
+bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) repeats.onEvent(event); });
 
 // Registered after the main fold, so busy is already false here; not gated on event.ok, since queued messages are the user's own words.
 bus.subscribe((event: RuntimeEvent) => {
@@ -8711,9 +8580,10 @@ async function startTurn(
     botId, text: resolvedImages.text, images: turnImages.length, depth: commsDepth, card: Boolean(opts?.cardContinuation), spoken,
   }));
   const instanceId = instance.instanceId;
-  const model = bot.modelSelection.model;
-  const effort = bot.modelSelection.effort;
-  const variant = bot.modelSelection.variant;
+  const automated = commsDepth > 0 || opts?.automationSource !== undefined
+    || Boolean(opts?.unattended || opts?.cardContinuation || opts?.peerAsk || opts?.coordination || opts?.compactOnly || opts?.computerSelectionContinuation);
+  const route = routeDirectTurn(bot, task, store.activePath(threadId), resolvedImages, instance, automated);
+  const { model, effort, variant } = route;
   assertModelVariantSupported({ variant, effort }, instance.adapter.capabilities);
   if (effort && !instance.adapter.capabilities.effortLevels?.includes(effort)) {
     throw Object.assign(
@@ -8753,6 +8623,9 @@ async function startTurn(
     queueMicrotask(drainQueuedSends);
     return userMessage;
   }
+  if (route.quickModel) routedTurnModels.set(threadId, model);
+  else routedTurnModels.delete(threadId);
+  if (route.quickModel && !opts?.cardContinuation && userMessage.quickModel !== route.quickModel) userMessage = store.patchMessage(threadId, userMessage.id, { quickModel: route.quickModel }) ?? userMessage;
   const recoveryUserMessageId = opts?.coordination
     ? store.activePath(threadId).findLast(m => m.role === "user" && m.kind === "text")?.id
     : userMessage.id;
@@ -8861,7 +8734,7 @@ async function startTurn(
       const contextOrder = context.map(m => m.id);
       const replayable = context.filter(m => !skipTranscript.has(m.id));
       const record = latestCompaction(activeMessages);
-      const selection = selectReplay(context, { budgetBytes: cfg.context?.rebuildBytes ?? DEFAULT_REBUILD_BYTES, excludedIds: skipTranscript, compaction: record });
+      const selection = selectReplay(context, { budgetBytes: cfg.context?.rebuildBytes ?? DEFAULT_REBUILD_BYTES, excludedIds: skipTranscript, compaction: record, tools: replayToolCalls(activeMessages, cfg.context) });
       const transcript = selection.transcript.map(({ role, text }) => ({ role, text }));
       const contextReset = selection.compacted > 0 && record?.id !== task.appliedCompactionId;
       if (contextReset) store.patchTask(bot.id, threadId, { resumeCursors: {} });
@@ -8904,7 +8777,7 @@ async function startTurn(
         const { block: unseenBlock, placed } = unseen && !handedStale ? renderUnseen(unseen) : { block: "", placed: [] };
         const { turnText: contextTurnText, resume } = buildTurnContext({
           text: userTurnText,
-          transcript,
+          transcript: selection.inline,
           rewound,
           fresh: fresh || contextReset,
           externallyUpdated: Boolean(externalContextMarker) || handedStale,
@@ -8915,8 +8788,8 @@ async function startTurn(
         // The driver may fall back to one fresh session when the provider no longer honours the cursor; this is what it sends there.
         const recoveryIsReplay = resumeCursor !== undefined && externalUpdate && transcript.length > 0;
         const recoveryText = resumeCursor === undefined ? undefined : recoveryIsReplay
-          ? buildTurnContext({ text: userTurnText, transcript, rewound: false, fresh: false, externallyUpdated: true, replaysNatively: false }).turnText
-          : buildRecoveryText({ text: userTurnText, transcript });
+          ? buildTurnContext({ text: userTurnText, transcript: selection.inline, rewound: false, fresh: false, externallyUpdated: true, replaysNatively: false }).turnText
+          : buildRecoveryText({ text: userTurnText, transcript: selection.inline });
         const carried = [...skipTranscript];
         const windowIds = selection.representedIds;
         return {
@@ -8967,15 +8840,14 @@ async function startTurn(
       }
       // User MCP servers' tools are never pre-allowed: every call rides the normal permission flow.
       if (instance.adapter.capabilities.customMcp === true) {
-        const custom = await withMcpSignIn(engineMcpServers(bot), mcpOAuth);
-        if (Object.keys(custom).length) integrations.custom = custom;
+        attachCustomMcp(integrations, await withMcpSignIn(engineMcpServers(bot), mcpOAuth), cfg);
       }
       const worksInWorkspace = supportsWorkspaceFiles(instance.driverKind);
       if (worksInWorkspace) {
         ensureWorkspace(bot.id);
         if (bot.memoryEnabled !== false) beginMemoryTurn(bot.id, threadId);
       }
-      const privateWorkspace = worksInWorkspace ? ensureTaskWorkspace(bot.id, threadId) : undefined;
+      const privateWorkspace = worksInWorkspace ? ensureTaskWorkspaceWithSkills(bot.id, threadId) : undefined;
       const skillInstructions = renderSkillInstructions(selectedSkills, {
         includeRoot: worksInWorkspace,
       });
@@ -9312,7 +9184,7 @@ async function startTurn(
           )
         : [];
       const coordinationPrompt = bot.chiefOfStaff
-        ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents))
+        ? chiefOfStaffSystemPrompt(bot.id, store.bots, Boolean(integrations.agents), chiefEscalationsEnabled(cfg))
         : integrations.agents && sectionPeers.length > 0
           ? peerRosterSystemPrompt(sectionPeers)
           : "";
@@ -9394,6 +9266,8 @@ async function startTurn(
         coordinationNode.parentId ? coordinator.node(coordinationNode.parentId) : undefined))) {
         throw new DirectTurnSetupCancelled("Coordination access changed before dispatch");
       }
+      // The tool bridge is decided here: the folder the turn is launched in is known, and the prompt is not built yet.
+      applyAgentsBridge(threadId, integrations, cfg, bot, turnEngine(instance, providerConfigs(), registry.lastSnapshot(instance.instanceId), cwd));
       const prompt = buildSystemPrompt(persona, liveBot?.soul ?? bot.soul ?? "", [
         { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
         { id: "setup", label: "Setup", text: setupSystemPrompt(setupMode, {
@@ -9427,12 +9301,12 @@ async function startTurn(
         { id: "recent", label: "Recent work", text: recentWorkPrompt(recentWork(recentWorkSources(bot), bot, { userName: cfg.profile?.name?.trim() || "User", currentThreadId: threadId, ...recentWorkFilter() })) },
         { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace, enabled: bot.memoryEnabled !== false, writesRefused: notesRefused }) },
         // liveBot predates awaited setup work; an assignment PUT in that window must still reach this prompt.
-        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined) : "" },
+        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsHost.conversationSkills(store.bot(bot.id) ?? bot, threadId), skillsHost.conversationStartedAt(threadId)) : "" },
         { id: "skill-instructions", label: "Skill instructions", text: skillInstructions },
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
         { id: "webhook", label: "Webhook provenance", text: opts?.automationSource === "webhook" ? WEBHOOK_PROMPT : "" },
         { id: "mentions", label: "Mentions", text: tagged.length ? `The user named these existing teammates: ${tagged.map(b => `${peerName(b.name)} (${b.id})`).join(", ")}. Use coordinate_bots when their contribution is needed; do not substitute native helper agents for these bots.` : "" },
-      ]);
+      ], integrations.agents, { replyStyle: liveBot?.replyStyle ?? bot.replyStyle });
       turnPromptBytes.set(threadId, { stable: Buffer.byteLength(prompt.stable), volatile: Buffer.byteLength(prompt.volatile) });
       // Recall rides in front of this turn's message, never the system prompt, whose volatile half is re-sent whole on any change.
       const recalled = autoRecallPrompt(bot, threadId, resolvedImages.text, {
@@ -9447,12 +9321,13 @@ async function startTurn(
       // Before sendTurn: an adapter may emit the whole turn before it resolves.
       handoffs.dispatching(threadId, dispatchClaimId, dispatchContext.handoff);
       const clock = takesTurnClock(userTurnText) ? turnClockLine(Date.now(), hostTimeZone()) : "";
-      const dispatch = await guardTurnDispatch(instance.adapter.sendTurn({
+      const shareNote = skillsHost.shareNote(bot, threadId, Boolean(privateWorkspace));
+      const dispatch = await guardTurnDispatch(shareNote.after(instance.adapter.sendTurn({
         threadId,
         botId: bot.id,
         startupRecovery: cfg.automaticRecovery?.enabled === true &&
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
-        text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText)),
+        text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
         images: turnImages,
         approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
@@ -9463,7 +9338,7 @@ async function startTurn(
         variant,
         resumeCursor: dispatchContext.resumeCursor,
         sessionReset: dispatchContext.sessionReset,
-        ...(dispatchContext.recoveryText !== undefined ? { recoveryText: withTurnClock(clock, dispatchContext.recoveryText) } : {}),
+        ...(dispatchContext.recoveryText !== undefined ? { recoveryText: withTurnClock(clock, dispatchContext.recoveryText + shareNote.text) } : {}),
         transcript,
         system: prompt.text,
         systemStable: prompt.stable,
@@ -9474,7 +9349,7 @@ async function startTurn(
         mcpFromUserConfig: claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp(),
         mcpCallTimeoutMs: mcpCallTimeoutMinutes(cfg) * 60_000,
         cwd,
-      }), () => !directTurnClaimExists(bot.id, dispatchClaimId, threadId), async () => {
+      })), () => !directTurnClaimExists(bot.id, dispatchClaimId, threadId), async () => {
         await instance.adapter.interruptTurn(threadId).catch(() => {});
       });
       if (dispatch.cancelled) {
@@ -10637,11 +10512,12 @@ function undoSkillCard(botId: string, threadId: string, messageId: string): Undo
   if (request.botId !== botId || request.threadId !== threadId) {
     return { claimed: true, state: "invalid", error: "this skill request belongs to a different bot", status: 403 };
   }
+  if (request.shared) return skillsHost.undoReceipt(botId, threadId, message, { ...request, shared: request.shared });
   const undone = undoSkillWrite(botId, {
     stagedId: request.stagedId,
     name: request.name,
     action: request.action,
-    ...(request.previous ? { previous: { skillMd: request.previous.preview, source: request.previous.source } } : {}),
+    ...(request.previous ? { previous: { skillMd: request.previous.preview, source: request.previous.source, references: request.previous.references ?? [] } } : {}),
   });
   if ("stale" in undone) return { claimed: true, state: "invalid", error: UNDO_STALE, status: 409, stale: true };
   if ("error" in undone) return { claimed: true, state: "invalid", error: undone.error, status: 409 };
@@ -10766,7 +10642,6 @@ roomHandoffTimer.unref();
 function reconcileParkedRoots(): void {
   for (const node of coordinator.active()) reconcileParkedNode(node);
 }
-const GROUP_CONTEXT_MESSAGES = DRAIN_COALESCE_MAX_ITEMS;
 const MAX_GROUP_HOPS = 1;
 
 type GroupMemberTurnOutcome =
@@ -10805,39 +10680,7 @@ function teammateReportContext(requestId: string, readerBotId?: string): string 
   return `${reportNote(bot ?? "Teammate")}\n${JSON.stringify({ bot, task: escapeNotes(node.text), status: node.status, result: escapeNotes(node.result) })}`;
 }
 
-function serializeRoomContext(
-  threadId: string,
-  userName: string,
-  textOverrides?: ReadonlyArray<{ messageId: string; text: string }>,
-  readerBotId?: string,
-): string {
-  const messages = store.messagesFor(threadId);
-  const messagesById = new Map(messages.map((message) => [message.id, message]));
-  const overrides = new Map(textOverrides?.map((override) => [override.messageId, override.text]));
-  const narration = roomTurnNarrationIds(messages);
-  return messages
-    .filter((m) => !narration.has(m.id))
-    .filter((m) => (m.kind === "text" && m.text) || (m.kind === "digest" && m.digest) || m.roomRequest?.phase === "result")
-    .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => {
-      if (m.kind === "digest" && m.digest) {
-        return digestPromptLine(m.digest, m.from ? peerName(m.from.name) : "a bot");
-      }
-      if (m.roomRequest?.phase === "result") {
-        return teammateReportContext(m.roomRequest.id, readerBotId);
-      }
-      const overridden = overrides.get(m.id);
-      const rendered = overridden !== undefined ? { ...m, text: overridden } : m;
-      const person = m.sender?.name ?? userName;
-      const speaker = m.role === "user"
-        ? m.via === "api" ? `${person} (sent through the local API, not typed)` : person
-        : m.from ? peerName(m.from.name) : "Bot";
-      const line = `${speaker}: ${escapeNotes(transcriptText(rendered, messagesById, userName))}`;
-      if (!m.peerPost || !m.from || m.from.botId === readerBotId) return line;
-      return `${peerProvenanceNote({ botName: m.from.name, delivery: "post_to_room", unattended: m.peerPost.unattended })}\n${line}`;
-    })
-    .join("\n");
-}
+const roomTranscript = createRoomTranscript({ store, teammateReportContext });
 
 
 /** Scrubbed of secrets and attachment markup before it leaves this machine. */
@@ -10874,7 +10717,11 @@ function roomRoutingInput(
 const roomPostBudgets = new Map<string, RoomPostBudget>();
 const ROOM_POST_MAX_CHARS = 4_000;
 
-const approvalBus: ApprovalBus = { store, broadcast, notify, autoApply: fullAccessForSource };
+const approvalBus: ApprovalBus = { store, broadcast, notify, autoApply: fullAccessForSource,
+  onPeerApprovalPending: (from, target, action, sourceThreadId, message) => void reportEscalation({
+    kind: "peer-approval", bot: from, threadId: sourceThreadId, gate: peerApprovalGate(action, target.name), reason: message, alreadyNotified: true }) };
+
+const { quotaSwitch, harnessCardOutcome } = createQuotaSwitchHost({ store, coordinator, registry, turnStops, approvalBus, hostedModels, providerConfigs, policyModelRefusal, checkedTaskModelSwitch, threadBusy, directRequestOwners, startOrQueueDirectMessage });
 
 // Peer approvals live only in memory: settle every peer card still open on disk, or it locks the composer forever.
 {
@@ -11058,7 +10905,7 @@ async function runClaimedGroupMemberTurn(
   const resolvedLatestImages = latestUser?.text && !cardContinuation && !latestInBurst
     ? extractTurnImages(latestUser.text)
     : { text: latestUser?.text ?? "", images: [] };
-  const roomContext = serializeRoomContext(
+  const roomWindow = roomTranscript.window(
     threadId,
     userName,
     usesNativeImageInput && latestUser
@@ -11069,6 +10916,7 @@ async function runClaimedGroupMemberTurn(
       : undefined,
     bot.id,
   );
+  const roomContext = roomWindow.text;
   const turnImages = usesNativeImageInput ? [...burstImages, ...resolvedLatestImages.images] : [];
   const skills = availableSkills();
   const selectedSkills = mergeSkills(
@@ -11103,8 +10951,7 @@ async function runClaimedGroupMemberTurn(
     return true;
   }
   if (instance.adapter.capabilities.customMcp === true) {
-    const custom = await withMcpSignIn(engineMcpServers(bot), mcpOAuth);
-    if (Object.keys(custom).length) integrations.custom = custom;
+    attachCustomMcp(integrations, await withMcpSignIn(engineMcpServers(bot), mcpOAuth), cfg);
   }
   // An interrupt during connected-app setup must still stop the queued room operation before it starts a process.
   if (isCancelled?.()) return false;
@@ -11419,14 +11266,15 @@ async function runClaimedGroupMemberTurn(
       : "");
   const liveRosterBlock = !orchestration?.liveRoster || orchestration.resumed ? "" : `\n\n${orchestration.liveRoster}`;
   const heldReplay = heldReplayFor(group.id, threadId, bot.id, userName, roomContext);
-  const text = `${roomContext}\n\n(Reply to the conversation above as ${bot.name}.)${learnBlock}${heldReplay.block}${cardContinuation ? `\n\n${cardContinuation}` : ""}${coordinationReminder}${liveRosterBlock}`;
+  const roomTail = `\n\n(Reply to the conversation above as ${bot.name}.)${learnBlock}${heldReplay.block}${cardContinuation ? `\n\n${cardContinuation}` : ""}${coordinationReminder}${liveRosterBlock}`;
+  const text = roomContext + roomTail;
 
   const worksInWorkspace = supportsWorkspaceFiles(instance.driverKind);
   const workspace = worksInWorkspace ? ensureWorkspace(bot.id) : undefined;
   if (workspace && bot.memoryEnabled !== false) beginMemoryTurn(bot.id, threadId);
   // The room's folder pins at its first dispatch, so a room that already worked somewhere never has its folder moved.
   const cwd = workspace && cloudGuestOpened(threadId)
-    ? ensureTaskWorkspace(bot.id, threadId)
+    ? ensureTaskWorkspaceWithSkills(bot.id, threadId)
     : groupTurnCwd(workspace, () => store.pinGroupCwd(readyGroup.id, threadId));
   {
     const drift = checkSoulDrift(bot.id, bot.soul ?? "", bot.soulHash ?? "");
@@ -11450,6 +11298,7 @@ async function runClaimedGroupMemberTurn(
       });
     }
   }
+  applyAgentsBridge(threadId, integrations, cfg, bot, turnEngine(instance, providerConfigs(), registry.lastSnapshot(instance.instanceId), cwd));
   const roomSystem = buildSystemPrompt(system, store.bot(bot.id)?.soul ?? bot.soul ?? "", [
     { id: "user-profile", label: "About the user", text: userProfileSystemPrompt(cfg.profile) },
     { id: "files", label: "File locations", text: workspace ? workspaceLocationsPrompt(bot.id, cwd, readyBot.cwd, { attachFile: Boolean(integrations.agents) && !CLOUD_HOME && !HOSTED_WORKSPACE }) : "" },
@@ -11467,11 +11316,10 @@ async function runClaimedGroupMemberTurn(
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
     { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (integrations.agents ? TEAM_MEMORY_PROMPT : "") },
     { id: "memory", label: "Memory", text: roomMemory ? `\n${roomMemory.trim()}` : "" },
-    // readyBot predates awaited setup work; an assignment PUT in that window must still reach this prompt.
-    { id: "skills", label: "Skills index", text: workspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined) : "" },
+    { id: "skills", label: "Skills index", text: workspace ? skillsSystemPrompt(bot.id, skillsHost.conversationSkills(bot, threadId), skillsHost.conversationStartedAt(threadId)) : "" },
     { id: "skill-instructions", label: "Skill instructions", text: renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) },
     { id: "playbooks", label: "Playbooks", text: installedPlaybookInstructions(text, bot.playbooks) },
-  ]);
+  ], integrations.agents);
 
   // The startup engine read is part of setup: wait for it before the claim below.
   if (enginesRead) await enginesRead;
@@ -11595,15 +11443,24 @@ async function runClaimedGroupMemberTurn(
       });
     }
     if (roomReset || displaced) broadcast({ kind: "group", group: publicGroupState(store.group(groupId) ?? group) });
-    guardTurnDispatch(instance.adapter.sendTurn({
-        ...(roomReset ? { sessionReset: true } : {}),
+    const roomShareNote = skillsHost.shareNote(bot, threadId, Boolean(workspace));
+    const clock = turnClockLine(Date.now(), hostTimeZone());
+    const roomToolScope = toolScopeForTurn(readyBot.id), roomUserMcp = claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp();
+    const roomSession = roomSessions.dispatch({
+      threadId, botId: readyBot.id, claimId: internalGeneration, instance, guestConfined: roomGuestConfined, reset: Boolean(roomReset), hooks: Boolean(integrations.hooks),
+      context: () => ({ ...roomMemberContexts.forThread(threadId)?.[readyBot.id], compactAt: nativeCompactTokens(instance) }),
+      config: [roomSystem.stable, cwd, readyBot.modelSelection, turnApprovalMode, roomToolScope, roomUserMcp, integrations],
+      window: roomWindow, tail: roomTail, wrap: (body) => withTurnClock(clock, withRecalled(roomRecalled, body + roomShareNote.text)),
+    });
+    guardTurnDispatch(roomShareNote.after(instance.adapter.sendTurn({
+        ...roomSession.send,
         threadId,
         botId: readyBot.id,
-        text: withTurnClock(turnClockLine(Date.now(), hostTimeZone()), withRecalled(roomRecalled, text)),
+        text: roomSession.text,
         ...(roomRecalled ? { recalled: roomRecalled } : {}),
         images: turnImages,
         approvalMode: turnApprovalMode,
-        toolScope: toolScopeForTurn(readyBot.id),
+        toolScope: roomToolScope,
         ...(roomGuestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
         system: roomSystem.text,
         systemStable: roomSystem.stable,
@@ -11611,17 +11468,18 @@ async function runClaimedGroupMemberTurn(
         cwd,
         integrations,
         ...(integrations.browser && browserIsThePlace(roomPlan) ? { preloadBrowserTools: true } : {}),
-        mcpFromUserConfig: claudeUserMcpEnabled(cfg) && !managedPolicy.restrictsMcp(),
+        mcpFromUserConfig: roomUserMcp,
         mcpCallTimeoutMs: mcpCallTimeoutMinutes(cfg) * 60_000,
         ...(instance.instanceId === readyBot.modelSelection.instanceId
           ? memberTurnSelection(readyBot.modelSelection)
           : { model: instance.models.default }),
-      }), () => abandoned || Boolean(isCancelled?.()), async () => {
+      })), () => abandoned || Boolean(isCancelled?.()), async () => {
         // Stop may have landed before the adapter had a process to interrupt: interrupt again now.
         await instance.adapter.interruptTurn(threadId).catch(() => {});
       })
       .then((dispatch) => {
         providerTurnId = dispatch.value.turnId;
+        roomSessions.bindTurn(threadId, internalGeneration, dispatch.value.turnId);
         bindInternalCapabilityToProviderTurn(threadId, internalGeneration, dispatch.value.turnId);
         orchestration?.onTurnStarted?.(dispatch.value.turnId);
         if (abandoned) {
@@ -12432,17 +12290,21 @@ function startGroupTurn(
       }
       const spoken = new Set<string>();
       const skillAuthoringClaim = { claimed: false };
+      if (round.length > 1) operation.line = { pending: round.map(responder => responder.id) };
+      const advanceLine = (current: string | undefined) => {
+        const room = roomJobs.advanceRound(operation, current, spoken) ? store.group(groupId) : undefined;
+        if (room) broadcast({ kind: "group", group: publicGroupState(room) });
+      };
+      advanceLine(undefined);
       for (const responder of round) {
         if (operation.cancelled) break;
         if (spoken.has(responder.id)) continue;
         const verdict = await waitForChatRoomMember(operation, threadId, responder);
         if (verdict === "stop") break;
-        if (verdict === "skip") {
-          spoken.add(responder.id);
-          continue;
-        }
+        if (verdict === "skip") { spoken.add(responder.id); advanceLine(undefined); continue; }
         const stamp = routedBy ? { botId: responder.id, routedBy } : undefined;
         if (stamp) routedRoomReplies.set(threadId, stamp);
+        advanceLine(responder.id);
         let proceed: boolean;
         try {
           proceed = await runGroupMemberTurn(
@@ -12561,19 +12423,6 @@ function deliverCalendarCall(call: CalendarCall, scheduledFor: number): void {
   const messages = [...threadIds].flatMap((threadId) => store.messagesFor(threadId));
   if (messages.some((message) => message.sendId === sendId)) return;
   startGroupTurn(group.id, text, undefined, sendId);
-}
-
-function roomSetupPending(group: GroupRecord): boolean {
-  const hasMarker =
-    Object.prototype.hasOwnProperty.call(group, "setupCompletedAt") ||
-    Object.prototype.hasOwnProperty.call(group, "setupSkippedAt");
-  return (
-    !group.dm &&
-    hasMarker &&
-    group.setupCompletedAt == null &&
-    group.setupSkippedAt == null &&
-    store.messagesFor(group.threadId).length === 0
-  );
 }
 
 function resolveReplyTarget(threadId: string, value: unknown): Message | undefined {
@@ -12739,37 +12588,20 @@ function rejectDeletedThreadSkillStages(cleanups: Array<{ botId: string; stagedI
   for (const cleanup of cleanups) rejectStagedSkillWrite(cleanup.botId, cleanup.stagedId);
 }
 
-function skillCardCopy(staged: { action: "create" | "update"; name: string; gist: string; warnings: string[] }): {
-  title: string;
-  subtitle: string;
-  tool: string;
-} {
-  const warnings = staged.warnings.length ? `\n\nWarnings:\n- ${staged.warnings.join("\n- ")}` : "";
-  return {
-    title: staged.action === "create"
-      ? `Enable skill "${staged.name}"?`
-      : `Update skill "${staged.name}"?`,
-    subtitle: `${staged.gist || staged.name}\n\nAdds one line to the prompt index; the body is read only when used.${warnings}`,
-    tool: "stage_skill",
-  };
-}
-
 function applyOwnStagedSkill(
   from: BotRecord,
   threadId: string,
   staged: Exclude<ReturnType<typeof stageSkillWrite>, { error: string }>,
   direct: DirectApply,
-): ReturnType<typeof applySkillWriteWithReceipt> {
-  const previousSkillMd = staged.action === "update" ? readSkillFile(from.id, staged.name) : null;
-  const previousSource = listSkills(from.id).find((skill) => skill.name === staged.name)?.source;
-  const previous = previousSkillMd !== null && previousSource ? { preview: previousSkillMd, source: previousSource } : undefined;
+): ReturnType<typeof applySkillWriteWithReceipt> & { shared?: string; shareError?: string } {
+  const previous = previousSkillVersion(from.id, staged);
   const applied = applySkillWriteWithReceipt(from.id, staged, () => {
     const receipt = appendSkillRequestCard({ botId: from.id, threadId, staged, applied: true, previous });
     appendDecision(DATA_DIR, { threadId, requestId: receipt.requestId, botId: from.id, botName: from.name,
       tool: "stage_skill", summary: receipt.summary, decision: "auto-approved", source: direct });
   });
   if ("error" in applied) rejectStagedSkillWrite(from.id, staged.id);
-  return applied;
+  return "error" in applied ? applied : skillsHost.afterOwnApply(from.id, threadId, staged, applied);
 }
 
 function appendSkillRequestCard(args: {
@@ -12785,9 +12617,10 @@ function appendSkillRequestCard(args: {
     source: string;
     files: Array<{ path: string; content: string }>;
     sha256: string;
+    referencesSha256?: string;
     warnings: string[];
   };
-}): { requestId: string; summary: string } {
+} & Pick<SkillRequestCardData, "shared">): { requestId: string; summary: string } {
   const requestId = randomUUID();
   const copy = skillCardCopy(args.staged);
   const payload: SkillRequestCardData = {
@@ -12802,9 +12635,10 @@ function appendSkillRequestCard(args: {
     source: args.staged.source,
     preview: args.staged.files.find((file) => file.path === "SKILL.md")?.content ?? "",
     sha256: args.staged.sha256,
+    ...skillRequestReferences(args.staged),
     warnings: args.staged.warnings,
     createdAt: Date.now(),
-    ...(args.applied && args.previous ? { previous: args.previous } : {}),
+    ...(args.applied ? { ...(args.previous ? { previous: args.previous } : {}), ...(args.shared ? { shared: args.shared } : {}) } : {}),
   };
   const from = store.bot(args.botId);
   skillReview.noteSkillChange(args.botId, args.threadId);
@@ -12909,13 +12743,14 @@ function resolveSkillRequest(args: {
     };
   }
   const previewSha256 = createHash("sha256").update(request.preview).digest("hex");
-  if (previewSha256 !== request.sha256) {
+  if (previewSha256 !== request.sha256 || skillReferencesSha256(request.references ?? []) !== request.referencesSha256) {
     return { claimed: true, status: 422, error: "the skill preview changed after review — deny and recreate it" };
   }
   const staged = getStagedSkillWrite(args.botId, request.stagedId);
   if (!staged) {
     const replayed = applyStagedSkillWrite(args.botId, request.stagedId, {
       expectedSha256: request.sha256,
+      expectedReferencesSha256: request.referencesSha256 ?? null,
     });
     if (
       "error" in replayed ||
@@ -12952,12 +12787,14 @@ function resolveSkillRequest(args: {
     staged.action !== request.action ||
     staged.name !== request.name ||
     staged.source !== request.source ||
-    staged.sha256 !== request.sha256
+    staged.sha256 !== request.sha256 ||
+    staged.referencesSha256 !== request.referencesSha256
   ) {
     return { claimed: true, status: 422, error: "the staged skill no longer matches this approval card" };
   }
   const applied = applyStagedSkillWrite(args.botId, request.stagedId, {
     expectedSha256: request.sha256,
+    expectedReferencesSha256: request.referencesSha256 ?? null,
     onApplied: () => {
       const patched = store.patchMessage(args.threadId, message.id, {
         card: { ...card, answered: "allow", held: undefined },
@@ -13511,6 +13348,7 @@ function configStatus() {
     },
     billing: { currency: cfg.billing?.currency ?? "USD", prices: cfg.billing?.prices ?? {} },
     decisions: { retentionDays: decisionRetentionDays(cfg.decisions?.retentionDays) },
+    safetyFloor: { enabled: safetyFloorOn() },
     openaiCompat: { configured: Boolean(cfg.openaiCompat?.key), url: cfg.openaiCompat?.url ?? "" },
     composio: {
       configured: composio.configured(cfg),
@@ -13547,6 +13385,7 @@ function configStatus() {
       skillReview: cfg.features?.skillReview === true,
       skillReviewSteps: skillReviewSteps(cfg),
       skillsLibrary: skillsLibraryEnabled(cfg),
+      shareLearnedSkills: skillsHost.mode(),
       showToolCalls: showToolCallsEnabled(cfg),
       routinesInConversation: routinesInConversationEnabled(cfg),
       browser: builtInBrowserEnabled(cfg),
@@ -13554,6 +13393,7 @@ function configStatus() {
       claudeUserMcp: claudeUserMcpEnabled(cfg),
       autoRecall: autoRecallEnabled(cfg),
       roomMemoryCapture: roomMemoryCaptureEnabled(cfg),
+      parallelRoomJobs: parallelRoomJobsEnabled(cfg),
       llmThreadTitles: llmThreadTitlesEnabled(cfg),
     },
     onboarding: {
@@ -13604,7 +13444,7 @@ function mcpServerBody(body: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!body || typeof body !== "object") return out;
   const record = body as Record<string, unknown>;
-  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled"]) {
+  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled", "resultBudget"]) {
     if (record[key] !== undefined) out[key] = record[key];
   }
   return out;
@@ -13911,7 +13751,7 @@ const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));
 // `routines` is assigned at boot, so it is read per request.
 ROUTES.push(createBotMessageRoutes({
-  store, registry, handoffs, approvalBus, phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
+  store, registry, handoffs, phoneSecretSubmissions, directTurnDispatchClaims, groupSpeakers,
   routines: () => routines,
   desktopManaged: DESKTOP_MANAGED, cloudHome: Boolean(CLOUD_HOME), DirectSendRefused,
   acceptDirectSend, directSendRefusal, startTurn, usageTriggerFor, messageSender, cloudGuestSendRefusal, cloudThreadRefusal,
@@ -13920,7 +13760,7 @@ ROUTES.push(createBotMessageRoutes({
   turnSelection, policyModelRefusal, clearUnattended, drainQueuedSends, answeringCardAs, resolveAndSendTrust, resolveAndSendTeamSetup,
   resolveAndSendRoutine, resolveAndSendProfile, resolveAndSendModel, resolveSkillRequest, sendSkillResolution, answerRequest,
   deliverLateQuestionAnswer, interruptDirectThread, cancelDirectTurnDispatch, revokeInternalCapabilitiesForThread,
-  cancelGroupTurnOperations, closeOpenApprovals,
+  cancelGroupTurnOperations, closeOpenApprovals, harnessCardOutcome,
 }));
 // `let` slots are read per request.
 ROUTES.push(createThreadRoutes({
@@ -13961,6 +13801,8 @@ ROUTES.push(createBotLifecycleRoutes({
   activeGroupTurnForBot, cancelGroupTurnOperations, runningTurnInstance, closeOpenApprovals, deleteBotWithLifecycle,
 }));
 ROUTES.push(createBotSkillsRoutes({ store, cfg, listBotSkills, readBotSkillFile, stagedSkillListing }));
+ROUTES.push(createSkillShareRoutes({ enabled: () => skillsHost.mode() !== "off", botExists: (id) => Boolean(store.bot(id)),
+  cardRefusal: (auth, threadId, requestId) => cardAnswerRefusal(auth, threadId, requestId, "allow"), shareFromReceipt: skillsHost.shareFromReceipt, shareFromBot: skillsHost.shareFromBot }));
 ROUTES.push(createTeamContextRoutes({ store, teamMemory }));
 ROUTES.push(createBotMemoryRoutes({
   bot: (id) => store.bot(id),
@@ -13987,7 +13829,7 @@ ROUTES.push(createBotMemoryRoutes({
     broadcast({ kind: "config", ...configStatus() });
   },
 }));
-ROUTES.push(createDeciderRoutes({ decider, config: () => cfg }));
+ROUTES.push(createDeciderRoutes({ decider, config: () => cfg }), createNotificationRoutes());
 ROUTES.push(createSignInCardRoutes({ settle: settleSignIn, saveLogin: saveLoginFromCard }));
 ROUTES.push(createRoomHoldRoutes({
   group: (id) => store.group(id),
@@ -15048,85 +14890,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           });
         return json(res, 200, { bots });
       }
-      // list_threads: the caller's own threads plus, on reachable peers, only threads it opened; a peer's other threads are its own business.
-      if (method === "GET" && path === "/api/internal/threads") {
-        const from = internalSender;
-        const fromThreadId = internalCapability.threadId;
-        if (!connectorThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source conversation does not belong to sender" });
-        }
-        const rows: Array<{
-          threadId: string; botId: string; botName: string; title: string;
-          state: "running" | "waiting-on-you" | "queued" | "idle" | "closed";
-          unread: boolean; openedAt: number; delegationId?: string; own: boolean;
-        }> = [];
-        const stateOf = (bot: BotRecord, task: TaskRecord) => {
-          if (task.activity === "waiting-on-you" || coordinator.awaitingAnswer(task.threadId)) return "waiting-on-you" as const;
-          if (threadBusy(bot.id, task.threadId)) return "running" as const;
-          if (coordinator.parkedDirect(task.threadId)) return "waiting-on-you" as const;
-          if (queuedThreadPosition(bot.id, task.threadId) !== null) return "queued" as const;
-          if (coordinator.activeDirect(task.threadId)) return "queued" as const;
-          if (task.closedBy) return "closed" as const;
-          return "idle" as const;
-        };
-        // A turn that may use the lent Mac sees only owner-only conversations: a title is words too.
-        const shown = cloudLendingView(internalCapability) ? cloudOwnerOnlyThread : () => true;
-        for (const task of store.tasks(from.id)) {
-          if (!shown(task.threadId)) continue;
-          rows.push({
-            threadId: task.threadId, botId: from.id, botName: from.name, title: task.title,
-            state: stateOf(from, task), unread: task.unread === true, openedAt: task.openedBy?.at ?? task.createdAt,
-            delegationId: task.openedBy?.delegationId, own: true,
-          });
-        }
-        for (const peer of reachablePeers(store.bots, from)) {
-          for (const task of store.tasks(peer.id)) {
-            if (task.openedBy?.botId !== from.id || !shown(task.threadId)) continue;
-            rows.push({
-              threadId: task.threadId, botId: peer.id, botName: peer.name, title: task.title,
-              state: stateOf(peer, task), unread: task.unread === true, openedAt: task.openedBy.at,
-              delegationId: task.openedBy.delegationId, own: false,
-            });
-          }
-        }
-        rows.sort((a, b) => b.openedAt - a.openedAt);
-        return json(res, 200, { threads: rows.slice(0, 100) });
-      }
-      // close_thread folds a thread, never deletes it (a person's confirmed action), and never while it runs.
-      const closeMatch = method === "POST" ? path.match(/^\/api\/internal\/threads\/([\w-]+)\/close$/) : null;
-      if (closeMatch) {
-        const from = internalSender;
-        const fromThreadId = internalCapability.threadId;
-        if (!connectorThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source conversation does not belong to sender" });
-        }
-        const threadId = closeMatch[1]!;
-        const owner = [from, ...reachablePeers(store.bots, from)].find((bot) => store.taskByThread(bot.id, threadId));
-        const task = owner ? store.taskByThread(owner.id, threadId) : undefined;
-        if (!owner || !task) return json(res, 404, { error: "no such thread — call list_threads for the ones you can see" });
-        if (owner.id !== from.id && task.openedBy?.botId !== from.id) {
-          return json(res, 403, { error: "that thread is not yours to close — only the bot that opened it, or its own bot, can" });
-        }
-        if (threadId === fromThreadId) return json(res, 400, { error: "you cannot close the thread you are speaking in — finish your turn instead" });
-        if (coordinator.awaitingAnswer(threadId)) {
-          return json(res, 409, { error: `#${task.title} is waiting on the person's answer to its question — it continues once they reply there, so leave it open` });
-        }
-        if (threadBusy(owner.id, threadId) || queuedThreadPosition(owner.id, threadId) !== null || coordinator.activeDirect(threadId)) {
-          return json(res, 409, { error: `#${task.title} is still running — wait for it to finish (list_threads), or the person can stop it from the app` });
-        }
-        if (task.closedBy) {
-          return json(res, 200, { closed: true, alreadyClosed: true, threadId, title: task.title, botName: owner.name, closedBy: task.closedBy.name });
-        }
-        store.appendMessage(threadId, {
-          role: "bot",
-          kind: "activity",
-          from: { botId: from.id, name: from.name, color: from.color },
-          tool: { name: `Closed by @${from.name}`, ok: true },
-        });
-        if (task.unread) store.patchTask(owner.id, threadId, { unread: false });
-        store.setTaskClosedBy(owner.id, threadId, { botId: from.id, name: from.name, at: Date.now() });
-        return json(res, 200, { closed: true, threadId, title: task.title, botName: owner.name });
-      }
+      if (await dispatchRoutes([createInternalThreadRoutes({
+        store, coordinator, from: internalSender, fromThreadId: internalCapability.threadId,
+        ownsThread: (botId, threadId) => Boolean(connectorThread(botId, threadId)),
+        shown: cloudLendingView(internalCapability) ? cloudOwnerOnlyThread : () => true,
+        threadBusy, queuedThreadPosition,
+      })], { req, res, url, path, method, auth, json, readBody })) return;
       if (method === "POST" && path === "/api/internal/attach-file") {
         const from = internalSender;
         const threadId = internalCapability.threadId;
@@ -15575,7 +15344,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 403, { error: "source conversation does not belong to sender" });
         }
         return json(res, 200, {
-          skills: listBotSkills(from),
+          skills: skillsHost.harnessListing(from.id, listBotSkills(from)),
           staged: listStagedSkillWrites(from.id).map(stagedSkillListing),
         });
       }
@@ -15605,10 +15374,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (action === "update" && !targetName) {
           return json(res, 400, { error: "skill_name is required when action is update" });
         }
+        const references = parseSkillManageReferences(body.references);
+        if ("error" in references) return json(res, 400, references);
+        if (action === "update" && skillsHost.editable(from.id, targetName)) return references.length ? json(res, 400, { error: "A skill shared through the team library cannot keep reference files yet; put that guidance in SKILL.md." }) : json(res, ...skillsHost.harnessUpdate(from, fromThreadId, targetName, skillMd, body.gist, body.base_revision, direct));
         const staged = stageSkillWrite(from.id, {
           action,
           targetName: targetName || undefined,
-          files: [{ path: "SKILL.md", content: skillMd }],
+          files: [{ path: "SKILL.md", content: skillMd }, ...references],
           gist: typeof body.gist === "string" ? body.gist : undefined,
           source: learnSource(source),
         });
@@ -15721,6 +15493,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const mode: NonNullable<HandoffOptions["mode"]> = call.consult ? "consult" : call.reply === "none" ? "notify" : "work";
         const reply: NonNullable<HandoffOptions["reply"]> = call.reply === "none" ? "none" : EXTERNAL ? "poll" : "resume";
         const returns = reply === "none" ? "nothing comes back from it" : reply === "poll" ? "read its result with assignment_status" : "its result will resume you";
+        const lanes = Boolean(destination) && roomJobs.useLanes(destination!, targets[0]!.threadId, targets.length, mode);
         const receipts: PeerDeliveryReceipt[] = [];
         const refused: string[] = [];
         for (const target of targets) {
@@ -15730,6 +15503,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             const recipient = store.bot(target.botId);
             if (!recipient) throw new Error("The recipient no longer exists");
             const continued = destination || fresh ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
+            const lane = destination && lanes ? roomJobs.openLane(destination, target.threadId, target.botId, internalSender, call.message) : undefined;
+            if (lane?.created) createdThread = lane.threadId;
+            if (lane) applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, lane.threadId);
             if (!destination) {
               const opened = { botId: internalSender.id, name: internalSender.name, threadId: address.threadId, at: Date.now() };
               const task = continued ?? (fresh
@@ -15740,8 +15516,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (!continued) createdThread = task.threadId;
               applyDelegatedLevel(internalSender, internalCapability.threadId, recipient, target.threadId);
             }
-            const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, target, call.message, {
-              mode, reply, thread: call.thread, approvalGranted, rework: call.rework, requestBatchKey,
+            const routed = lane ? { botId: target.botId, threadId: lane.threadId } : target;
+            const { node, duplicate } = coordinator.enqueue(address, generation, internalCapability.roomHandoffId, routed, call.message, {
+              mode, reply, thread: lane ? "new" : call.thread, approvalGranted, rework: call.rework, ...(lane ? {} : { requestBatchKey }),
               ...(call.doneWhen ? { doneWhen: call.doneWhen } : {}),
             });
             if (duplicate && createdThread) store.deleteTask(target.botId, createdThread);
@@ -15750,7 +15527,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               if (fresh && !EXTERNAL) internalCapability.openedThreads += 1;
             }
             createdThread = undefined;
-            const title = destination ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
+            const title = destination && !lane ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
             const finished: Partial<Record<HandoffView["status"], string>> = {
               completed: "it already finished and its result stands; send it with rework=true to run it again",
               failed: "it failed; send it with rework=true to retry", cancelled: "it was cancelled; send it with rework=true to retry",
@@ -15763,11 +15540,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               outcome: notSent ? "failed" : !duplicate || node.status === "queued" ? "queued" : "injected",
               detail: notSent ?? (duplicate
                 ? `already sent: it is ${node.status === "queued" ? "queued" : "under way"} and ${returns}`
-                : title
-                  ? `sent to "${title}"; it runs after anything still running there`
-                  : "handed to the coordinator; the teammate's turn has not started yet"),
+                : lane
+                  ? `runs in its own thread "${lane.title}", in parallel with the other room jobs; its result posts in this room and ${returns}`
+                  : title
+                    ? `sent to "${title}"; it runs after anything still running there`
+                    : "handed to the coordinator; the teammate's turn has not started yet"),
               requestId: node.id,
-              ...(destination ? {} : { threadId: node.threadId }),
+              ...(destination && !lane ? {} : { threadId: node.threadId }),
             }));
             if (!duplicate) {
               if (!EXTERNAL) delegatedThisTurn(node.id);
@@ -15775,7 +15554,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 from: { botId: internalSender.id, name: internalSender.name, color: internalSender.color },
                 tool: { name: "Sent to " + recipient.name + (destination && destination.id !== source?.id ? " · " + destination.name : ""), ok: true,
                   ...(call.reason ? { output: call.reason } : {}) },
-                ...(destination ? { comm: { groupId: destination.id, threadId: node.threadId, withBotId: recipient.id, withName: recipient.name, withColor: recipient.color } }
+                ...(destination && !lane ? { comm: { groupId: destination.id, threadId: node.threadId, withBotId: recipient.id, withName: recipient.name, withColor: recipient.color } }
                   : { threadRef: { botId: recipient.id, threadId: node.threadId, title: store.taskByThread(recipient.id, node.threadId)?.title ?? "Teammate work" } }),
               });
             }
@@ -15789,13 +15568,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           }
         }
         const sent = refused.length < receipts.length;
+        const lead = destination && sent ? roomJobs.describeRoomJobs(destination, targets[0]!.threadId, receipts,
+          { senderId: internalSender.id, returns, lanes, awaited: reply !== "none" }) : "";
         if (EXTERNAL) coordinator.endTurn(generation, { ok: sent, text: sent ? "" : refused.join("; ") });
         const message = reply === "none"
           ? "Sent one way. Nothing comes back and nothing resumes you; continue your turn."
           : reply === "poll"
             ? "Handed to the coordinator. Read each result with assignment_status (id: a receipt's requestId, or rootId for the whole call), long-polling with wait_ms."
             : "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait.";
-        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message } : { error: refused.join("; ") }),
+        return { status: sent ? 200 : 409, body: { receipts, ...(sent ? { message: lead ? `${lead} ${message}` : message } : { error: refused.join("; ") }),
           ...(EXTERNAL && sent ? { rootId: generation } : {}) } };
       };
       if (method === "GET" && path === "/api/internal/assignment-status") {
@@ -15902,7 +15683,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const blocked = threadBusy(target.id, threadId) ? (settlingTurns.has(threadId) ? "settling" : "running") : queuedThreadPosition(target.id, threadId) !== null ? "queued" : null;
         if (blocked) return json(res, 409, { error: RETRY_BLOCKED[blocked] });
         // A thread that finished a run since it was last reported has nothing to resume: resuming would redo finished work.
-        const reportedAt = incidentLedger.lastAt(threadId);
+        const reportedAt = incidentLastAt(threadId);
         if (reportedAt !== undefined && store.activePath(threadId).some(line => line.turnSucceeded === true && line.at > reportedAt)) {
           return json(res, 409, { error: "that thread has finished a run since it was reported — there is nothing to retry; read what it did before deciding anything else" });
         }
@@ -15922,6 +15703,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
         return json(res, 200, { started: true, message: `${target.name}'s thread #${task.title} is running again. Its result stays in that thread; you are not woken for it — check later with list_threads or session_search if you need to.` });
       }
+      if (await dispatchRoutes([createInternalEscalateRoutes({
+        readBody: readInternalBody, requireActive: requireActiveInternalCapability,
+        report: (reason) => reportEscalation({ kind: "raised", bot: internalSender, threadId: internalCapability.threadId, gate: RAISED_GATE, reason, alreadyNotified: false }),
+      })], { req, res, url, path, method, auth, json, readBody })) return;
       // post_to_room appends role "bot", never "user" (which would start a round of real turns), starts no turn, and takes membership from the record.
       if (method === "POST" && path === "/api/internal/post-to-room") {
         const body = await readInternalBody();
@@ -16353,11 +16138,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         return json(res, 201, { messageId: message.id, label: target.label });
       }
-      if (method === "POST" && path === "/api/internal/request-sign-in") {
-        const body = await readInternalBody();
-        const result = requestSignIn(internalSender, internalCapability.threadId, body.site, body.reason);
-        return "error" in result ? json(res, result.status, { error: result.error }) : json(res, 201, result);
-      }
+      if (await dispatchRoutes([createInternalSignInRoutes({
+        readBody: readInternalBody,
+        request: (site, reason) => requestSignIn(internalSender, internalCapability.threadId, site, reason),
+      })], { req, res, url, path, method, auth, json, readBody })) return;
       if (method === "POST" && path === "/api/internal/fill-login") {
         const body = await readInternalBody();
         const outcome = await fillLoginForTurn(internalSender, internalCapability, body.username);

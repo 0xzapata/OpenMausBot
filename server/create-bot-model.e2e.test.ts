@@ -37,10 +37,19 @@ it("Chief creation uses the workspace default or a validated explicit model with
       role: "Specialist", instructions: "Complete assigned work.",
       ...(modelSelection === undefined ? {} : { modelSelection }),
     }, expected, token);
-    const idle = () => expect.poll(async () => !(await api("GET", "/api/bots")).bots.find((bot: any) => bot.id === chief.id).busy, { timeout: 20_000 }).toBe(true);
+    const idle = () => expect.poll(async () => (await api("GET", "/api/bots")).bots.every((bot: any) => !bot.busy), { timeout: 20_000 }).toBe(true);
     const apply = async (pending: any) => {
       expect(pending).toMatchObject({ state: "pending", applied: false });
-      const answered = await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: pending.requestId, behavior: "allow" });
+      await idle();
+      // the approval gate also counts turns the bots list does not show; a refused approval changes nothing, so retry it
+      let answered: any;
+      await expect.poll(async () => {
+        const response = await fetch(fixture.info.url + `/api/threads/${chief.threadId}/respond`, { method: "POST",
+          headers: { "content-type": "application/json", origin: fixture.info.url },
+          body: JSON.stringify({ requestId: pending.requestId, behavior: "allow" }) });
+        answered = await response.json();
+        return response.status;
+      }, { timeout: 20_000 }).toBe(200);
       await idle();
       return answered.result.bots[0];
     };

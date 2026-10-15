@@ -2,7 +2,7 @@ import { newId, type ModelSelection } from "./contracts.ts";
 import { botMascotBody } from "../shared/mascot-bodies.ts";
 import { takeImportName } from "../shared/import-name.ts";
 import { MAX_TEAM_BACKUP_BYTES, parseTeamBackup, type BackupTask, type TeamBackup } from "../shared/team-backup.ts";
-import type { BotVisibility } from "../shared/wire.ts";
+import { helperModelAllowed, type BotVisibility } from "../shared/wire.ts";
 import type { BotRecord, GroupRecord, Message, Store, TaskRecord } from "./store.ts";
 import type { Routine, RoutineManager } from "./routines.ts";
 import { redactSecretsInText } from "./redact.ts";
@@ -108,6 +108,8 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
       // Grants travel so the team's shape survives, but the import still lands every bot grant-less.
       ...(bot.connectorTools ? { connectorTools: structuredClone(bot.connectorTools) } : {}),
       ...(bot.toolScope !== undefined ? { toolScope: structuredClone(bot.toolScope) } : {}),
+      // A bot kept off the helper model stays off it wherever its notes and chats land.
+      ...(helperModelAllowed(bot) ? {} : { helperModel: false }),
       memory: memoryFor(bot.id),
       activeTask: bot.threadId, tasks: history(bot),
     })),
@@ -174,7 +176,8 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       bots.push(bot);
       botIds.set(source.key, bot.id);
       store.patchBot(bot.id, { composio: false, computer: "off", browser: false, autoApprove: false,
-        connectorTools: {}, toolScope: source.toolScope, hidden: source.hidden, chiefOfStaff: source.chiefOfStaff, playbooks: source.playbooks });
+        connectorTools: {}, toolScope: source.toolScope, hidden: source.hidden, chiefOfStaff: source.chiefOfStaff, playbooks: source.playbooks,
+        ...(source.helperModel === false ? { helperModel: false } : {}) });
       if (source.memory) restoreMemory(bot.id, source.memory);
     }
     for (const source of backup.bots) {

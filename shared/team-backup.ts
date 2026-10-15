@@ -110,6 +110,8 @@ const backupSchema = z.object({
     connectorTools: connectorTools.optional(),
     toolScope: z.custom<ToolScope>((value) => value !== undefined && parseToolScope(value).ok, "Invalid tool selection")
       .transform((value) => { const parsed = parseToolScope(value); return parsed.ok ? parsed.scope! : value; }).optional(),
+    /** Only false is written and applied: a file can keep a bot off the helper model, never put one on it. */
+    helperModel: z.boolean().optional(),
     memory: memory.optional(),
   })).min(1).max(200),
   groups: z.array(z.preprocess(knownRoomResponder, z.object({

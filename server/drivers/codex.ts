@@ -39,7 +39,7 @@ import { codexBackgroundModel, runCodexOneShot } from "./codex-background-text.t
 import { augmentedPath, splitCliString } from "../env-path.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { appendNative } from "./native.ts";
-import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
+import { answersAlone, permissionLaunchCwd, shellRequest } from "./permission-command.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { codexDeveloperInstructions, syncCodexInstructions } from "./codex-instructions.ts";
 import { volatileContextNote, withContextNote } from "./prompt-split.ts";
@@ -1111,7 +1111,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             : isAdditionalPermission
               ? { permissions: allow ? grantedPermissions(params.permissions) : {}, scope: "turn" }
               : { decision: allow ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" };
-        if (autoAcceptPermissions && isPermission) {
+        const shell = method === "execCommandApproval" || method === "item/commandExecution/requestApproval" ? params.command : undefined;
+        if (autoAcceptPermissions && isPermission && answersAlone(shell)) {
           return send({
             jsonrpc: "2.0",
             id: msg.id,
@@ -1171,10 +1172,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           requestType: isQuestion ? "question" : "permission",
           tool,
           summary,
-          command: method === "execCommandApproval" || method === "item/commandExecution/requestApproval"
-            ? permissionCommand(params.command, params.cwd ?? (
-              !params.threadId || params.threadId === codexThreadId ? commandCwd : undefined
-            )) : undefined,
+          ...shellRequest(shell, params.cwd ?? (
+            !params.threadId || params.threadId === codexThreadId ? commandCwd : undefined
+          )),
           choices,
           ...(protocolQuestions ? { questions: protocolQuestions.map((pair) => pair.question) } : {}),
           approvalScope: controlsHost ? "local-computer" : undefined,

@@ -146,6 +146,8 @@ export interface SendTurnInput {
     dweb?: { url: string };
     /** The user's MCP servers, mounted without any pre-allow; a driver skips a kind it cannot speak. */
     custom?: Record<string, McpServerSpec>;
+    /** Characters of one tool result per `custom` server; 0 = never trim, a missing name = the app default. */
+    customResultBudgets?: Record<string, number>;
   };
   cwd?: string;
   /** Also load the person's own CLI MCP setup (Claude Code user scope, claude.ai connectors). */
@@ -213,6 +215,8 @@ export interface ProviderAdapter {
     hooks?: boolean;
     /** "confined": sendTurn honours `guestConfined`; absent, a guest turn is refused. */
     guestTurns?: "confined";
+    /** "meter": `contextTokens` / `contextWindow` are the engine's own report, shown on the context meter but never used to time compaction. */
+    contextReading?: "meter";
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
@@ -373,6 +377,8 @@ export interface TextGenerationUsage {
 export interface TextGenerationOptions {
   signal?: AbortSignal;
   onUsage?: (usage: TextGenerationUsage) => void;
+  /** Only the helper model setting passes it: one of this instance's models instead of the driver's quick-call choice. */
+  model?: string;
   /** How long the caller will wait; drivers with their own process timer use it instead of their default. */
   timeoutMs?: number;
 }

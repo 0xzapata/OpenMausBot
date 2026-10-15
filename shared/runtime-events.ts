@@ -122,6 +122,9 @@ export type RuntimeEvent = RuntimeEventBase &
          * Used for exact-command grants; never reconstructed from a display
          * summary, tool title, or argv. Absent when either value is unknown. */
         command?: { command: string; cwd: string };
+        /** The shell command line exactly as the engine sent it, even when `command` is absent for want of a cwd.
+         * Read only by the safety floor; no grant is ever made from it, and like `command` it is never broadcast. */
+        commandLine?: string;
         choices?: string[];
         /** A provider's structured ask (Claude's AskUserQuestion): the whole
          * set of questions, each with its own options, so the card can offer

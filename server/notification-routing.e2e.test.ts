@@ -297,6 +297,9 @@ describe("a reply that tags the person", () => {
         groupId: room.id,
         title: "Tagger in Spec Review mentioned you",
         body: "@you three open questions are blocking Section 2 & 3.",
+        id: expect.any(String),
+        at: expect.any(Number),
+        read: false,
       });
       await expect.poll(async () => (await groupState(room.id))?.working, { timeout: 20_000 }).toBe(false);
       const frames = stream.frames.filter(

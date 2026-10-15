@@ -114,6 +114,14 @@ let skillsResponse: unknown = {
       source: "learn:conversation",
       editable: true,
     },
+    {
+      name: "team-cut",
+      description: "SHARED LEARNED INSTRUCTIONS",
+      enabled: true,
+      source: "learn:conversation",
+      editable: true,
+      revision: "0123456789ab",
+    },
   ],
   staged: [{ name: "pending-skill", action: "create", gist: "UNREVIEWED GIST", source: "UNREVIEWED SOURCE" }],
 };
@@ -1918,6 +1926,7 @@ describe("agents-proxy MCP surface", () => {
     expect(listed.result.content[0].text).toContain("file-expense");
     expect(listed.result.content[0].text).toContain("file-expense (disabled, imported)");
     expect(listed.result.content[0].text).toContain("learned-expense (enabled, learned/editable)");
+    expect(listed.result.content[0].text).toContain("team-cut (enabled, learned/editable, shared with your team, revision 0123456789ab)");
     expect(listed.result.content[0].text).toContain("pending-skill");
     expect(listed.result.content[0].text).not.toContain("UNREVIEWED");
     expect(listed.result.content[0].text).not.toContain("PRIVATE LEARNED");
@@ -1949,6 +1958,26 @@ describe("agents-proxy MCP surface", () => {
       skill_name: "file-expense",
     });
     expect(updated.result.content[0].text).toContain("current version remains unchanged");
+
+    expect(manage.inputSchema.properties.references.items.required).toEqual(["path", "content"]);
+    await callTool("skill_manage", {
+      action: "update",
+      skill_name: "file-expense",
+      skill_md: "---\nname: file-expense\ndescription: Files expenses.\n---\n\nFor edge cases, read references/edge-cases.md.\n",
+      references: [{ path: "references/edge-cases.md", content: "# Edge cases\n" }],
+      source: "conversation",
+    });
+    expect(lastSkillStageBody).toMatchObject({
+      references: [{ path: "references/edge-cases.md", content: "# Edge cases\n" }],
+    });
+    await callTool("skill_manage", {
+      action: "update",
+      skill_name: "team-cut",
+      skill_md: "---\nname: team-cut\ndescription: Cuts a rough edit.\n---\n\n# Team cut\n",
+      base_revision: "0123456789ab",
+      source: "conversation",
+    });
+    expect(lastSkillStageBody).toMatchObject({ action: "update", skill_name: "team-cut", base_revision: "0123456789ab" });
 
     lastSkillStageBody = null;
     const missingTarget = await callTool("skill_manage", {
@@ -2209,5 +2238,313 @@ describe("coordinate_bots arguments", () => {
     expect(text).toContain("botIds");
     expect(text).toContain("message");
     expect(lastCoordinateBody).toBeNull();
+  });
+});
+
+// The tool bridge (agents-bridge.ts): a short hot list plus find_tool and
+// use_tool in place of the whole catalog. The tool list is fixed when the
+// proxy starts, so each profile under test is its own child, as above; all
+// of them talk to the same scripted harness, and the main child (a Chief
+// with the same switches and no bridge) is what a bridged call is compared
+// against.
+describe("tool bridge", () => {
+  type Rpc = (method: string, params?: unknown) => Promise<any>;
+  const started: ChildProcess[] = [];
+  function startProxy(env: Record<string, string>): Rpc {
+    const proxy = spawn(process.execPath, [PROXY], {
+      env: {
+        ...childEnv(), TZ: "Asia/Kolkata", OMB_HARNESS_URL: `http://127.0.0.1:${stubPort}`, OMB_BOT_ID: "bot-asker",
+        OMB_THREAD_ID: "thread-asker-routine", OMB_COMMS_TOKEN: TOKEN, OMB_TURN_DEPTH: "0", ...env,
+      },
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    started.push(proxy);
+    const waiting = new Map<number, (message: any) => void>();
+    let nextRequest = 1;
+    let buffer = "";
+    proxy.stdout!.on("data", (chunk) => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (!line.trim()) continue;
+        const message = JSON.parse(line);
+        waiting.get(message.id)?.(message);
+        waiting.delete(message.id);
+      }
+    });
+    return (method, params) => new Promise((resolve, reject) => {
+      const id = nextRequest++;
+      waiting.set(id, resolve);
+      proxy.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      setTimeout(() => { if (waiting.delete(id)) reject(new Error(`${method} timed out`)); }, 10_000).unref?.();
+    });
+  }
+
+  /** The main child's switches: a Chief with skills and shared computers. */
+  const CHIEF = { OMB_SKILL_AUTHORING_ENABLED: "1", OMB_SHARED_COMPUTERS_ENABLED: "1", OMB_CHIEF_OF_STAFF: "1" };
+  const CHIEF_ONLY = ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"];
+  const HOT = ["tool_result_read", "list_room_targets", "coordinate_bots", "list_bots", "list_rooms", "select_computer", "attach_file", "post_to_room", "request_credential", "request_sign_in", "fill_login", "memory_update"];
+  let chief: Rpc;
+  let plain: Rpc;
+  let off: Rpc;
+  const find = (proxy: Rpc, query: unknown) => proxy("tools/call", { name: "find_tool", arguments: { query } });
+  const use = (proxy: Rpc, name: string, args?: unknown) =>
+    proxy("tools/call", { name: "use_tool", arguments: { name, ...(args === undefined ? {} : { arguments: args }) } });
+  const matchesOf = (response: any): Array<{ name: string; description: string; inputSchema: unknown }> => JSON.parse(response.result.content[0].text).matches;
+  const listed = async (proxy: Rpc): Promise<any[]> => (await proxy("tools/list")).result.tools;
+  /** A bridged call that was refused: a failed tool call the model reads,
+   * never a protocol error, and its words. */
+  const refusalOf = (response: any): string => {
+    expect(response.error).toBeUndefined();
+    expect(response.result.isError).toBe(true);
+    return response.result.content[0].text;
+  };
+
+  beforeAll(async () => {
+    chief = startProxy({ ...CHIEF, OMB_AGENTS_TOOL_BRIDGE: "1" });
+    // not a Chief, nothing optional: the defaults, bridged
+    plain = startProxy({ OMB_AGENTS_TOOL_BRIDGE: "1" });
+    off = startProxy({ ...CHIEF, OMB_AGENTS_TOOL_BRIDGE: "0" });
+    for (const proxy of [chief, plain, off]) {
+      expect((await proxy("initialize", { protocolVersion: "2024-11-05" })).result.serverInfo.name).toBe("openmausbot-agents");
+    }
+  });
+  afterAll(async () => { for (const proxy of started) await waitForExit(proxy, { signal: "SIGTERM" }); });
+
+  it("changes nothing while the switch is off or absent: the same list to the byte, and no bridge tools", async () => {
+    const unbridged = await rpc("tools/list");
+    expect(JSON.stringify((await off("tools/list")).result)).toBe(JSON.stringify(unbridged.result));
+    expect(unbridged.result.tools.map((tool: any) => tool.name)).not.toEqual(expect.arrayContaining(["find_tool"]));
+    for (const proxy of [off, rpc]) {
+      for (const name of ["find_tool", "use_tool"]) {
+        const refused = await proxy("tools/call", { name, arguments: { query: "routines", name: "list_routines" } });
+        expect(refused.error).toEqual({ code: -32602, message: `Unknown tool: ${name}` });
+      }
+    }
+  });
+
+  it("lists the hot tools as they were, then find_tool and use_tool", async () => {
+    const unbridged = new Map((await listed(rpc)).map((tool) => [tool.name, tool]));
+    for (const proxy of [chief, plain]) {
+      const tools = await listed(proxy);
+      expect(tools.map((tool) => tool.name)).toEqual([...HOT, "find_tool", "use_tool"]);
+      // unchanged schemas: each hot tool is what the unbridged turn lists
+      for (const tool of tools.slice(0, HOT.length)) expect(JSON.stringify(tool), tool.name).toBe(JSON.stringify(unbridged.get(tool.name)));
+    }
+    // A role changes only what sits behind use_tool, and what find_tool says exists.
+    const describes = async (proxy: Rpc) => (await listed(proxy)).find((tool) => tool.name === "find_tool").description as string;
+    for (const name of CHIEF_ONLY) {
+      expect(await describes(chief), name).toContain(name);
+      expect(await describes(plain), name).not.toContain(name);
+    }
+    expect(await describes(chief)).toContain("propose_routine");
+    expect(await describes(plain)).toContain("propose_routine");
+    // find_tool is a read and carries the marks the catalog's reads do; use_tool claims nothing
+    const [findTool, useTool] = (await listed(chief)).slice(-2);
+    expect(findTool.annotations).toEqual(unbridged.get("list_routines").annotations);
+    expect(findTool.annotations).toMatchObject({ readOnlyHint: true });
+    expect(useTool.annotations).toBeUndefined();
+  });
+
+  it("publishes flat schemas for the two bridge tools", async () => {
+    const tools = new Map((await listed(chief)).map((tool) => [tool.name, tool]));
+    for (const name of ["find_tool", "use_tool"]) {
+      const schema = tools.get(name).inputSchema;
+      expect(JSON.stringify(schema)).not.toMatch(/"(oneOf|anyOf|allOf|const|format)":/);
+      expect(schema.type).toBe("object");
+      expect(schema).not.toHaveProperty("anyOf");
+      expect(schema).not.toHaveProperty("oneOf");
+    }
+    expect(tools.get("find_tool").inputSchema.required).toEqual(["query"]);
+    expect(tools.get("use_tool").inputSchema.required).toEqual(["name"]);
+    // a plain object: the hidden tool's own schema is what checks it
+    expect(tools.get("use_tool").inputSchema.properties.arguments).toEqual({ type: "object", additionalProperties: true, description: expect.any(String) });
+  });
+
+  it("find_tool finds a hidden tool from a natural request, with the description and schema the unbridged turn lists", async () => {
+    const unbridged = new Map((await listed(rpc)).map((tool) => [tool.name, tool]));
+    const matches = matchesOf(await find(chief, "schedule a recurring task every morning"));
+    expect(matches.length).toBeLessThanOrEqual(3);
+    const { name, description, inputSchema } = unbridged.get("propose_routine");
+    expect(matches[0]).toEqual({ name, description, inputSchema });
+    expect(matchesOf(await find(chief, "create a new specialist bot"))[0]!.name).toBe("create_bot");
+    // a search that could not be made is a failed call, told how to search
+    expect(refusalOf(await find(chief, "   "))).toContain('find_tool needs { "query": ');
+  });
+
+  it("find_tool never returns a tool outside this turn's profile", async () => {
+    const profile = new Set((await listed(off)).map((tool) => tool.name).filter((name) => !CHIEF_ONLY.includes(name) && !["skills_list", "skill_manage", "list_shared_computers", "shared_computer"].includes(name)));
+    for (const query of ["create a new specialist bot", "delete a teammate", "set up the team", "save a reusable skill", "use the desktop the user shared", ...CHIEF_ONLY, "skill_manage", "shared_computer"]) {
+      const matches = matchesOf(await find(plain, query));
+      for (const match of matches) {
+        expect(profile.has(match.name), `${query} → ${match.name}`).toBe(true);
+        expect(HOT.includes(match.name), `${query} → ${match.name}`).toBe(false);
+      }
+    }
+  });
+
+  it("use_tool runs a hidden tool end to end, with the request and the result a direct call gives", async () => {
+    const routine = { name: "Morning brief", instructions: "Summarize today's priorities.", schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "friday"] }, timeout_minutes: 15 };
+    // found first, as a bot would, from how a person would ask
+    expect(matchesOf(await find(chief, "schedule a recurring task every morning"))[0]!.name).toBe("propose_routine");
+    lastRoutineRequestBody = null;
+    const direct = await callTool("propose_routine", routine);
+    const directBody = lastRoutineRequestBody;
+    lastRoutineRequestBody = null;
+    lastAuth = undefined;
+    const bridged = await use(chief, "propose_routine", routine);
+    // the same capability, the same request, the same answer
+    expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+    expect(lastRoutineRequestBody).toEqual(directBody);
+    expect(lastRoutineRequestBody).toMatchObject({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", action: "create", routine: { name: "Morning brief", timeoutMinutes: 15 } });
+    expect(bridged.result).toEqual(direct.result);
+    expect(bridged.result.content[0].text).toContain("confirmation card");
+    // a tool that takes nothing, called with no arguments at all
+    lastRoutineQuery = "";
+    const routines = await use(chief, "list_routines");
+    expect(routines.result).toEqual((await callTool("list_routines", {})).result);
+    expect(new URL(lastRoutineQuery, "http://localhost").searchParams.get("fromBotId")).toBe("bot-asker");
+  });
+
+  it("use_tool refuses a name outside the profile in the words a direct call to it is refused with, as a failed call the model can read", async () => {
+    for (const name of ["made_up", "skill_manage", "shared_computer", "send_voice_note", "find_tool", "use_tool"]) {
+      // find_tool and use_tool are this proxy's own, so only the bridged form is unknown
+      if (name !== "find_tool" && name !== "use_tool") {
+        const direct = await plain("tools/call", { name, arguments: {} });
+        expect(direct.error, name).toEqual({ code: -32602, message: `Unknown tool: ${name}` });
+        expect(refusalOf(await use(plain, name, {})), name).toBe(direct.error.message);
+      }
+      expect(refusalOf(await use(plain, name, {})), name).toBe(`Unknown tool: ${name}`);
+    }
+  });
+
+  it("refuses a Chief-only tool to a bot that is not a Chief without reaching the harness, and hands a Chief-only parameter to the harness to refuse", async () => {
+    lastCreateBody = null;
+    lastCreateRoomBody = null;
+    expect(refusalOf(await use(plain, "create_bot", { name: "Scout", role: "Ops", instructions: "Work." }))).toBe("Unknown tool: create_bot");
+    expect(refusalOf(await use(plain, "create_room", { name: "Ops", member_bot_ids: ["bot-helper"] }))).toBe("Unknown tool: create_room");
+    expect(lastCreateBody).toBeNull();
+    expect(lastCreateRoomBody).toBeNull();
+    // A parameter only a Chief has is the harness's to refuse (index.ts
+    // chiefPeerTargetRule), on a bridged call exactly as on a direct one: the
+    // proxy hands both on with the same request.
+    const other = { title: "Lead", reason: "asked", for_bot_id: "bot-helper" };
+    lastProfileRequestBody = null;
+    const direct = await plain("tools/call", { name: "propose_profile", arguments: other });
+    const directBody = lastProfileRequestBody;
+    lastProfileRequestBody = null;
+    const bridged = await use(plain, "propose_profile", other);
+    expect(lastProfileRequestBody).toEqual(directBody);
+    expect(lastProfileRequestBody).toMatchObject({ fromBotId: "bot-asker", forBotId: "bot-helper" });
+    expect(bridged.result).toEqual(direct.result);
+    // A Chief's own turn reaches them through the bridge.
+    const mine = await use(chief, "create_bot", { name: "Scout", role: "Ops", instructions: "Work." });
+    expect(mine.result.isError).toBeFalsy();
+    expect(lastCreateBody).toMatchObject({ name: "Scout", role: "Ops" });
+  });
+
+  it("use_tool is neither stricter nor looser than a direct call: the tool reads its own arguments", async () => {
+    // What a schema would refuse and the tool takes on purpose
+    // (normalizeScheduleInput): a schedule sent as text, "Daily", short
+    // weekday names. Bridged, it makes the request a direct call makes.
+    const lenient = { name: "Brief", instructions: "Summarize the queue.", schedule: JSON.stringify({ type: "Weekly", time: "09:00", weekdays: ["mon", "fri"] }) };
+    lastRoutineRequestBody = null;
+    const direct = await callTool("propose_routine", lenient);
+    const directBody = lastRoutineRequestBody;
+    expect(direct.result.isError).toBeFalsy();
+    lastRoutineRequestBody = null;
+    const bridged = await use(chief, "propose_routine", lenient);
+    expect(lastRoutineRequestBody).toEqual(directBody);
+    expect(lastRoutineRequestBody).toMatchObject({ action: "create", routine: { name: "Brief" } });
+    expect(bridged.result).toEqual(direct.result);
+    // And what the tool itself refuses, it refuses in its own words either way.
+    for (const [name, args] of [
+      ["propose_routine", { name: "Brief", instructions: "Summarize.", schedule: { type: "hourly" } }],
+      ["start_thread", { title: "", message: "x" }],
+      ["post_to_room", {}],
+    ] as const) {
+      const refused = await callTool(name, args);
+      expect(refused.result.isError, name).toBe(true);
+      if (name !== "post_to_room") expect((await use(chief, name, args)).result, name).toEqual(refused.result);
+    }
+    // Only the call's own shape is the bridge's to refuse: a name, and arguments that are an object.
+    for (const shapeless of [{ arguments: {} }, { name: "list_routines", arguments: "{}" }, { name: "list_routines", arguments: [1] }]) {
+      expect(refusalOf(await chief("tools/call", { name: "use_tool", arguments: shapeless })), JSON.stringify(shapeless)).toContain('use_tool needs { "name": ');
+    }
+  });
+
+  it("use_tool runs a listed tool too, through the same path", async () => {
+    lastMemoryBody = null;
+    const remembered = await use(chief, "memory_update", { action: "append", text: "The deploy script lives in scripts/." });
+    expect(remembered.result.isError).toBeFalsy();
+    expect(lastMemoryBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", action: "append", text: "The deploy script lives in scripts/." });
+    lastCoordinateBody = null;
+    const handed = await use(chief, "coordinate_bots", { bot_ids: ["bot-helper"], message: "please review the patch" });
+    expect(handed.result.isError).toBeFalsy();
+    expect(lastCoordinateBody).toMatchObject({ botIds: ["bot-helper"], message: "please review the patch" });
+  });
+
+  it("will not run an outward action under another name: post_to_room is called directly", async () => {
+    // The restart policy reads a turn's tool names to know it already posted.
+    const posts = postCalls;
+    const text = refusalOf(await use(chief, "post_to_room", { group_id: "room-launch", message: "Shipped." }));
+    expect(text).toContain("post_to_room is in your tool list: call it directly");
+    expect(text).toContain("Nothing was run");
+    expect(postCalls).toBe(posts);
+    const direct = await chief("tools/call", { name: "post_to_room", arguments: { group_id: "room-launch", message: "Shipped." } });
+    expect(direct.result.isError).toBeFalsy();
+    expect(postCalls).toBe(posts + 1);
+  });
+
+  it("leaves every limit with the harness: its refusal of a bridged call is the refusal a direct call gets", async () => {
+    // The proxy counts nothing (a warm engine keeps it across turns), so the
+    // per-turn limit on opened threads is the harness's to enforce and to
+    // word, whichever way the call came.
+    const original = threadResponse;
+    threadResponse = { error: "You have already opened 5 threads this turn, which is the limit. Do not retry." };
+    try {
+      const calls = threadCalls;
+      const job = { title: "QA: PR #9", message: "Review pull request 9." };
+      const direct = await callTool("start_thread", job);
+      const directBody = lastThreadBody;
+      const bridged = await use(chief, "start_thread", job);
+      expect(threadCalls).toBe(calls + 2);
+      expect(lastThreadBody).toEqual(directBody);
+      expect(refusalOf(bridged)).toContain("You have already opened 5 threads this turn");
+      expect(bridged.result).toEqual(direct.result);
+    } finally { threadResponse = original; }
+  });
+
+  it("bounds a large result from use_tool as a direct call's is, and keeps a refusal an error", async () => {
+    const original = agentsResponse;
+    agentsResponse = { bots: Array.from({ length: 80 }, (_, i) => ({ id: `bot-${i}`, name: `Fixture-${i}`, title: "x".repeat(400) })) };
+    try {
+      const result = await use(chief, "list_bots", {});
+      const preview = result.result.content[0].text;
+      expect(result.result.isError).toBeFalsy();
+      expect(preview.length).toBeLessThan(17_000);
+      const id = /id "(r-[0-9a-f-]{36})"/.exec(preview)![1];
+      // the notice names tool_result_read, which stays in the list
+      const page = await chief("tools/call", { name: "tool_result_read", arguments: { id, offset: 16_000 } });
+      expect(page.result.isError).toBeFalsy();
+      expect(page.result.content[0].text).toContain("Fixture-");
+    } finally { agentsResponse = original; }
+    computerStatus = 409;
+    computerResponse = { error: `Unavailable: ${"x".repeat(30_000)}` };
+    const refused = await use(chief, "select_computer", {});
+    expect(refused.result.isError).toBe(true);
+    expect(refused.result.content[0].text.length).toBeLessThan(17_000);
+    expect(refused.result.content[0].text).toContain("Unavailable:");
+  });
+
+  it("still answers a hidden tool called by its own name: the profile, not the list, is what a turn may call", async () => {
+    lastRoutineQuery = "";
+    const direct = await chief("tools/call", { name: "list_routines", arguments: {} });
+    expect(direct.result.isError).toBeFalsy();
+    expect(lastRoutineQuery).toContain("fromBotId=bot-asker");
+    // and a name outside the profile called directly is the protocol error it always was
+    expect((await plain("tools/call", { name: "create_bot", arguments: {} })).error).toEqual({ code: -32602, message: "Unknown tool: create_bot" });
   });
 });

@@ -1,7 +1,9 @@
 // One builder for every turn's system prompt, so what a bot receives and the "what the model sees" preview are the same bytes.
 import { soulSystemPrompt } from "./bot-folder.ts";
+import { agentsToolBridged } from "./drivers/agents-bridge.ts";
 import { teammateAvailabilityPrompt, type RosterMember } from "./peer-roster.ts";
 import type { ConnectorToolGrant } from "../shared/wire.ts";
+import { isConversational, type ReplyStyle } from "../shared/reply-style.ts";
 
 export type PromptPart = { id: string; label: string; text: string };
 export type PromptSection = PromptPart & { bytes: number };
@@ -20,14 +22,35 @@ export function teamAvailabilityPart(team: readonly RosterMember[]): PromptPart 
   return { id: "availability", label: "Team availability", text: teammateAvailabilityPrompt(team) };
 }
 
+/** One standing rule for a bridged turn, so every tool name the prompt, a description or a result gives
+ * stays reachable. It names no tools, so it is the same for every turn, and it holds only if the bridge
+ * tools are listed: a selection saved after the prompt is built mounts the agents server unbridged. */
+export const AGENTS_TOOL_BRIDGE_PROMPT =
+  " If find_tool and use_tool are in your tool list, your other OpenMausBot tools are reached through them: for a tool named in these instructions, a tool's description or a tool's result that is not itself in your tool list, call find_tool with a few words about what you need or with the tool's name, which returns its description and exact input schema, then run it with use_tool, giving its name and its arguments; find_tool's own description lists the tools reached this way, and they do exactly what they would if called directly. A tool that is in your tool list is always called directly.";
+
+/** `agents` is the turn's agents integration, if any; only a turn asked to bridge is told about the bridge. */
+
+/** Fixed text in the stable half, so it changes the cached prefix only when the setting flips. */
+export const CONVERSATIONAL_STYLE_PROMPT =
+  "\n\nReply style: conversational. Talk like a person in a chat. Keep replies short unless the person asks for detail. Use plain text with no headings, bullet lists, tables or bold unless the person asks for them or the content truly needs them; code always goes in a fenced code block. Send each distinct point as its own short message, separated by a blank line, in the order you find things. When it helps, end with one brief follow-up question. Match the person's language and roughly the length of their message.\n";
+
+export function replyStylePrompt(style: ReplyStyle | undefined): string {
+  return isConversational(style) ? CONVERSATIONAL_STYLE_PROMPT : "";
+}
+
 export function buildSystemPrompt(
   persona: string,
   soul: string,
   parts: PromptPart[],
+  agents?: { env?: Record<string, string | undefined> },
+  opts?: { replyStyle?: ReplyStyle },
 ): { text: string; sections: PromptSection[]; stable: string; volatile: string } {
   const ordered: PromptPart[] = [
     { id: "persona", label: "Identity", text: persona },
     { id: "soul", label: "Standing instructions (SOUL.md)", text: soulSystemPrompt(soul) },
+    // Right after the soul: on a direct turn, ahead of every section that names a tool.
+    { id: "tool-bridge", label: "Tool search", text: agentsToolBridged(agents) ? AGENTS_TOOL_BRIDGE_PROMPT : "" },
+    { id: "reply-style", label: "Reply style", text: replyStylePrompt(opts?.replyStyle) },
     ...parts,
   ];
   const sections = ordered

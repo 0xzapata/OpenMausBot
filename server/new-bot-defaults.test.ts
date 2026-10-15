@@ -21,6 +21,15 @@ describe("new-bot templates", () => {
     }
   });
 
+  it("takes the helper-model switch in the request that creates a bot, as a boolean and nothing else", () => {
+    expect(resolveBotCreationDefaults(undefined, { settings: { helperModel: false } }).profile).toEqual({ helperModel: false });
+    // beside a tool selection, as the sidebar's Duplicate sends them
+    expect(resolveBotCreationDefaults(undefined, { settings: { toolScope: { allow: [] }, helperModel: false } }).profile).toEqual({ toolScope: { allow: [] }, helperModel: false });
+    for (const wrong of ["false", 0, null]) {
+      expect(() => resolveBotCreationDefaults(undefined, { settings: { helperModel: wrong } }), JSON.stringify(wrong)).toThrow();
+    }
+  });
+
   it("accepts bounded settings and rejects coercion and invalid model combinations", () => {
     expect(parseConfigPatch({ newBotDefaults: { profile: { notifications: false, computer: "off", mcpServers: [] } } })
       .newBotDefaults?.profile).toEqual({ notifications: false, computer: "off", mcpServers: [] });

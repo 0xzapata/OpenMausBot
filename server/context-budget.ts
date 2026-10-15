@@ -12,6 +12,11 @@ export function contextWindowFor(model: string | undefined, catalog?: ModelCatal
   return positive(inferred) ? inferred : DEFAULT_CONTEXT_WINDOW;
 }
 
+/** A "meter" reading (an ACP agent's own usage_update) is shown only; it never times OpenMausBot's compaction. */
+export function compactionReading<T>(capabilities: { contextReading?: "meter" } | undefined, reading: T | undefined): T | undefined {
+  return capabilities?.contextReading === "meter" ? undefined : reading;
+}
+
 /** Leave headroom even for a small local model: an 8k floor would make compaction unreachable on an 8k window. */
 export function compactBudget(window: number, compactAt?: number, nativeCompactAt?: number): number {
   if (!positive(window)) throw new Error("invalid model context window");

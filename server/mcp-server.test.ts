@@ -626,6 +626,21 @@ describe("waiting on a conversation's job", () => {
     }
   });
 
+  it("reads a failed turn that left a quota-switch offer as failed: nothing waits on the offer", async () => {
+    const failure = [
+      { id: "u1", at: 1, role: "user", kind: "text", text: "Summarise the quarter" },
+      { id: "e1", at: 2, role: "bot", kind: "activity", tool: { name: "error: This Claude account has reached its usage limit.", ok: false } },
+    ];
+    const wait = (card: Record<string, unknown>) => handleToolCall("wait_for_conversation", { target_type: "bot", target_id: "bot-1", timeout_seconds: 1 },
+      server({ fleet: bot(), tail: [...failure, { id: "c1", at: 3, role: "bot", kind: "options", card }], jobs: [{ state: "completed", version: "v1" }] }).fetcher);
+    const question = { title: "Which quarter?", subtitle: "", options: ["Q3", "Q4"], requestId: "r1" };
+    expect(await wait(question)).toMatchObject({ status: "needs-user" });
+    expect(await wait({
+      ...question, title: "Claude is out of quota", options: ["Codex", "Not now"], fixedOptions: true,
+      quotaSwitch: { engines: [{ instanceId: "codex", name: "Codex" }], messageId: "u1" },
+    })).toMatchObject({ status: "failed" });
+  });
+
   it("waits on a pinned task and projects the bot as it is at the end", async () => {
     let fleetReads = 0;
     const { fetcher } = server({ thread: "task-a", fleet: undefined, jobs: [{ state: "running", version: "v1" }, { state: "completed", version: "v2" }],
