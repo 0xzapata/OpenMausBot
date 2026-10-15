@@ -21,6 +21,8 @@ import {
   preloadScreens, RemoteAgentSettingsPanel, RemoteDesktopPanel, RoutinesPage, SettingsModal, TeamMapPage, TriggersPanel,
 } from "@/components/lazy-screens";
 import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
+import { NotificationRail, NotificationsPanel } from "@/components/NotificationsPanel";
+import { useNotificationFeed } from "@/lib/notification-preferences";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { AppNotices } from "@/components/AppNotices";
 import { CloudAddDialog } from "@/components/CloudAddDialog";
@@ -53,11 +55,9 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const remoteClient = window.ogb?.remoteClient?.active === true;
   const twoSidePanelsFit = useMediaQuery(TWO_SIDE_PANELS_FIT, true);
   const sidebarAndPanelFit = useMediaQuery(SIDEBAR_AND_PANEL_FIT, true);
-  // md and up the sidebar is always in view (narrower it is a drawer)
   const sidebarInline = useMediaQuery(SIDEBAR_INLINE, false);
   useEffect(() => {
     if (!window.ogb?.environments) return;
-    // A saved server's Computer access panel, or ("copy") its Copy this computer here panel.
     const open = (computerId?: string | null, panel?: "copy") => {
       if (computerId) {
         const target = new URL(window.location.href);
@@ -75,17 +75,12 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
       if (requestedSettings === "organization") dispatch({ type: "toggleAppSettings", open: true, section: "organization" });
       else if (requestedSettings === "cloud") dispatch(CLOUD_LINK_SETTINGS);
-      // The lending menu-bar item: Settings → OpenMausBot Cloud, with no automatic action.
       else if (requestedSettings === "cloud-settings") dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" });
-      // Add a Cloud… in the server menu, plain or reached through Show me how.
       else if (requestedSettings === "cloud-add" || requestedSettings === "cloud-add-howto") dispatch({ type: "openCloudAdd", source: requestedSettings === "cloud-add" ? "app_menu" : "app_howto" });
       else open();
     }
     return window.ogb.environments.onOpenSettings?.(open);
   }, [dispatch]);
-  // "Use your Cloud on your phone" opens the Cloud in this window at
-  // /?desktop-settings=phone: its own phone pairing, in any window, on any
-  // server. It only opens Settings there; no code is made until a click.
   useEffect(() => {
     const rest = takePhonePairingRequest(window.location.href);
     if (rest === null) return;
@@ -93,15 +88,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     dispatch(phonePairingSettingsAction());
   }, [dispatch]);
   useExternalChatLinks(state, dispatch);
-  // Mobile-only drawer state. Above md, none of these properties are emitted
-  // at all — Sidebar scopes every mobile class with max-md: rather than
-  // cancelling them with md:, which would still emit a translate value and
-  // turn the aside into a containing block for its fixed descendants (see
-  // Sidebar.tsx's className comment).
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // Apply this device's language, else the server's default, the moment
-  // either changes; "" follows the system. The epoch bump re-renders
-  // extracted strings — t() reads a module variable, so React needs this nudge.
   const language = effectiveLanguage(useLanguageChoice(), state.config?.language);
   const [, setLocaleEpoch] = useState(0);
   useEffect(() => {
@@ -110,38 +97,25 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   }, [language]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [localVmWorkspaceBotId, setLocalVmWorkspaceBotId] = useState<string | null>(null);
-  // the Browser tab, expanded into the main column (the small preview in
-  // the panel hands off to this and back)
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const previousViewRef = useRef(state.activeView);
   const calendarOriginRef = useRef<"chat" | "team-map">("chat");
   const group = state.groups.find((g) => g.id === state.selectedId);
   const bot = group ? undefined : (state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0]);
-  // A side panel beside the full sidebar leaves the default 1100px window a
-  // ~330px chat. Fold the sidebar to its avatar rail for as long as a panel
-  // is open and the window is not wide enough for all three.
-  const sidePanelOpen = Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen || state.activityOpen);
+  const notificationFeed = useNotificationFeed() && !remoteClient;
+  const sidePanelOpen = (Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen || state.activityOpen)) || (notificationFeed && state.notificationsOpen);
   const collapseSidebar = sidePanelOpen && !sidebarAndPanelFit;
   const calendarFocus = state.activeView === "routines";
-  // Turning Advanced mode off closes the inspector it no longer offers.
   const advanced = useAdvancedMode();
   useEffect(() => {
     if (!advanced && state.inspectorOpen) dispatch({ type: "toggleInspector", open: false });
   }, [advanced, state.inspectorOpen, dispatch]);
 
-  // Nothing on this machine can run a bot. A missing cloud login does not
-  // count — that CLI can still host a local model. Wait for the first
-  // /api/instances response before deciding: an empty list means "not asked
-  // yet", and flashing the setup screen at every launch would be worse.
   const noEngines =
     state.connected &&
     state.instances.length > 0 &&
     !state.instances.some((i) => i.snapshot.state === "available");
-  // An OMB Cloud home with none of the person's own engines signed in yet:
-  // its first run, and every bot until then, is the engine sign-in.
   const cloudSignIn = cloudSignInDue(viewer, state, engineReady);
-  // Before that, its first question: what should it do while you're away. A
-  // job given before any AI waits on the sign-in until an engine can run it.
   const cloudIntent = useCloudIntent();
   const cloudAsk = cloudIntentShown(cloudIntentDue({
     viewer, connected: state.connected, enginesKnown: state.instances.length > 0,
@@ -149,8 +123,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   }), cloudIntent);
   const cloudJobWaiting = Boolean(viewer?.cloudHome && viewer.canSave && cloudIntent.pending);
 
-  // App-wide shortcuts: ⌘N new bot · ⌘1–9 jump to bot · ⌘⇧[ / ⌘⇧] prev/next · ⌘/ or ? shortcuts cheat sheet.
-  // Kept deliberately small; every panel already closes on Esc.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing || state.shortcutsOpen) return;
@@ -189,24 +161,13 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     window.ogb?.setUnreadCount?.(unreadCount);
   }, [unreadCount]);
 
-  // Warm connected-account state as soon as the local server is available.
-  // The modal then opens with the correct Connect/Add account buttons and
-  // quietly revalidates instead of rediscovering every account from scratch.
   useEffect(() => {
     if (!state.connected) return;
     void preloadConnectedApps().catch(() => {});
   }, [state.connected]);
 
-  // Settings, Routines and the other on-request screens stay out of the
-  // launch bundle; fetch them once the first paint is done and the app is idle.
   useEffect(() => preloadScreens(), []);
 
-  // Picking a conversation closes the drawer: on a phone the chat is what you
-  // asked for, and leaving the list up would hide it. Watching activeView too
-  // catches re-selecting the bot that is already current from another view —
-  // the reducer switches the view without changing selectedId. pluginsOpen
-  // and settingsOpen cover the same idea from a different trigger: close the
-  // drawer whenever an action opens something over the chat.
   useEffect(() => {
     setDrawerOpen(false);
   }, [state.selectedId, bot?.threadId, group?.threadId, state.activeView, state.pluginsOpen, state.settingsOpen]);
@@ -260,15 +221,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     state.pluginsOpen ||
     state.triggersOpen;
 
-  // The macOS app menu's Preferences… item lives in the desktop shell, so the
-  // shell signals the request over the bridge (Cmd+, accelerates the item).
-  // Local-shell only: remote server pages never receive the channel, and ogb
-  // is absent in the browser.
-  // "cloud" is openmausbot://cloud (the Cloud page's "Open in the app"):
-  // OMB Cloud, marked as opened by the link so that view signs in or connects.
-  // "cloud-add": Add a Cloud… in the server menu (or openmausbot://cloud while
-  // a checkout this app opened is pending), "cloud-add-howto" the same reached
-  // through Show me how: the Add a Cloud dialog.
   useEffect(() => {
     return window.ogb?.onOpenAppSettings?.(section => dispatch((section === "cloud-add" || section === "cloud-add-howto") && window.ogb?.cloudAccount && !remoteClient
       ? { type: "openCloudAdd", source: section === "cloud-add" ? "app_menu" : "app_howto" }
@@ -279,8 +231,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
           : { type: "toggleAppSettings", open: true, ...(section === "organization" && window.ogb?.organization && !remoteClient ? { section } : {}) }));
   }, [dispatch]);
 
-  // The viewer outlives ComputerPanel and can target any bot, so release control
-  // here (always mounted) when a bot's viewer closes. release() is idempotent.
   useEffect(() => {
     return window.ogb?.desktopViewer?.onState((viewer) => {
       if (viewer.open || !viewer.contextId) return;
@@ -305,10 +255,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner sidebarIndicator={!calendarFocus && (sidebarInline || drawerOpen)} />
-      {/* The one bottom-left card at a time: the card after the update, the
-          free trial's notice (here and on My Cloud), the My Cloud card, the star. */}
       <AppNotices quiet={paletteOpen || drawerOpen || Boolean(localVmWorkspaceBotId)} viewer={viewer} />
       <div className="relative flex min-h-0 flex-1">
       {!calendarFocus && <button
@@ -360,7 +307,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       ) : (
         <main className="relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-3 bg-app text-ink-secondary">
           <WindowDragStrip />
-          {/* a chat link opened with no bots here still says it found nothing */}
           <div className="w-full max-w-md"><ChatNotice notice={state.notice} /></div>
           <Loader2 size={20} className="animate-spin" />
           <div className="text-[14px]">
@@ -373,21 +319,11 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
           )}
         </main>
       )}
-      {/* The panels below are siblings, so their keys must differ even
-          though each is remounted per bot. Two siblings keyed `bot.id`
-          collide in React's keyed reconciliation whenever both are open
-          (Computer panel, then the usage chip): every re-render mounts a
-          fresh settings panel and never removes the previous one, so the
-          panels pile up and Close stops working. */}
-      {/* Bot settings keep the inspector or computer panel open on purpose
-          (their own controls open settings). Two static panels beside the
-          sidebar leave the default 1100px window a sliver of chat, so until
-          the window is wide enough to seat both, settings floats over the
-          chat instead and the other panel is still there when it closes. */}
+      {/* Sibling panels need distinct keys: two keyed `bot.id` collide in React's keyed reconciliation. */}
       {state.settingsOpen && bot && (
         remoteClient
           ? <RemoteAgentSettingsPanel bot={bot} overlay={state.computerOpen && !twoSidePanelsFit} />
-          : <BotSettingsDialog key={`settings:${bot.id}`} bot={bot} overlay={(state.inspectorOpen || state.computerOpen) && !twoSidePanelsFit} />
+          : <BotSettingsDialog key={`settings:${bot.id}`} bot={bot} overlay={(state.inspectorOpen || state.computerOpen || (notificationFeed && state.notificationsOpen)) && !twoSidePanelsFit} />
       )}
       {state.computerOpen && bot && (
         remoteClient ? (
@@ -402,12 +338,11 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       )}
       {!remoteClient && state.inspectorOpen && bot && <InspectorPanel key={bot.threadId} bot={bot} />}
       {!remoteClient && state.activityOpen && bot && <ActivityPanel key={`activity:${bot.id}`} bot={bot} />}
+      {notificationFeed && !calendarFocus && state.notificationsOpen && <NotificationsPanel />}
+      {notificationFeed && !calendarFocus && <NotificationRail />}
       {state.appSettingsOpen && <SettingsModal />}
-      {/* Add a Cloud: the buying journey's one dialog, and Show me how's one step. */}
       <CloudAddDialog />
       <CloudHowTo />
-      {/* On the person's Cloud: its setup checklist, and after it Move to
-          Cloud's one-time card on an empty Cloud (desktop app only). */}
       <CloudSetup viewer={viewer} />
       {state.pluginsOpen && <PluginsPanel />}
       {state.triggersOpen && <TriggersPanel />}
@@ -418,13 +353,9 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
           onClose={() => dispatch({ type: "toggleShortcuts", open: false })}
         />
       )}
-      {/* mounted after the modals: same z-50 tier, so DOM order keeps the
-          palette on top when one of them is open underneath */}
+      {/* After the modals: same z-50 tier, so DOM order keeps the palette on top. */}
       <CommandPalette onOpenChange={setPaletteOpen} />
-      {/* The drawer button comes before every header in the DOM, and a later
-          drag region wins, so on a narrow window the header's drag region
-          swallowed it. This no-drag twin, after the headers, cuts the
-          button's corner back out. It paints nothing and takes no clicks. */}
+      {/* Blink resolves -webkit-app-region in DOM order, so this no-drag twin after the headers cuts the drawer button back out. */}
       {!calendarFocus && <span
         aria-hidden
         data-drawer-button-no-drag
@@ -432,13 +363,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         className="pointer-events-none absolute left-3 top-3 size-[30px] md:hidden"
       />}
       </div>
-      {/* Renderer-drawn caption buttons for the overlay-less frameless
-          Windows window. Deliberately the LAST child of the shell: Blink
-          resolves -webkit-app-region in DOM-walk order, so these no-drag
-          buttons must come after every drag-region header to actually
-          subtract from it — earlier placement let the header's drag region
-          swallow the buttons (dead clicks, no hover). z-40 keeps true
-          modals (z-50, later in DOM) painting above the buttons. */}
+      {/* Last child on purpose: Blink resolves -webkit-app-region in DOM order, so no-drag buttons must follow every drag region. */}
       <WindowCaptionButtons
         visible={capabilities.windowChrome === "win-caption" && Boolean(window.ogb?.windowControls)}
       />

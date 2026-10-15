@@ -1,13 +1,12 @@
 import { useSyncExternalStore } from "react";
 
 export const NOTIFICATION_SOUNDS_KEY = "omb-notification-sounds";
-export const MESSAGE_NOTIFICATIONS_KEY = "omb-message-notifications";
+export const NOTIFICATION_FEED_KEY = "omb-notification-feed";
+export const FINISHED_NOTIFICATIONS_KEY = "omb-finished-notifications";
 
-// Whether desktop/mobile notifications on THIS browser play the alert sound
-// or pop for incoming assistant messages.
-// Stored per client in localStorage, matching thread-preferences.ts.
-let sessionSoundsChoice: boolean | undefined;
-let sessionMessageChoice: boolean | undefined;
+let sessionChoice: boolean | undefined;
+let feedSessionChoice: boolean | undefined;
+let finishedSessionChoice: boolean | undefined;
 const listeners = new Set<() => void>();
 
 function storage(): Storage | undefined {
@@ -18,21 +17,10 @@ function storage(): Storage | undefined {
   }
 }
 
-/** True unless this client has muted notification sounds. */
 export function notificationSoundsEnabled(): boolean {
-  if (sessionSoundsChoice !== undefined) return sessionSoundsChoice;
+  if (sessionChoice !== undefined) return sessionChoice;
   try {
     return storage()?.getItem(NOTIFICATION_SOUNDS_KEY) !== "0";
-  } catch {
-    return true;
-  }
-}
-
-/** True unless this client has disabled notifications for new assistant messages. */
-export function messageNotificationsEnabled(): boolean {
-  if (sessionMessageChoice !== undefined) return sessionMessageChoice;
-  try {
-    return storage()?.getItem(MESSAGE_NOTIFICATIONS_KEY) !== "0";
   } catch {
     return true;
   }
@@ -43,20 +31,11 @@ function notify() {
 }
 
 function onStorage(event: StorageEvent) {
-  if (
-    event.key !== NOTIFICATION_SOUNDS_KEY &&
-    event.key !== MESSAGE_NOTIFICATIONS_KEY &&
-    event.key !== null
-  ) {
-    return;
-  }
+  if (event.key !== NOTIFICATION_SOUNDS_KEY && event.key !== NOTIFICATION_FEED_KEY && event.key !== FINISHED_NOTIFICATIONS_KEY && event.key !== null) return;
   if (event.storageArea && event.storageArea !== storage()) return;
-  if (event.key === NOTIFICATION_SOUNDS_KEY || event.key === null) {
-    sessionSoundsChoice = undefined;
-  }
-  if (event.key === MESSAGE_NOTIFICATIONS_KEY || event.key === null) {
-    sessionMessageChoice = undefined;
-  }
+  sessionChoice = undefined;
+  feedSessionChoice = undefined;
+  finishedSessionChoice = undefined;
   notify();
 }
 
@@ -74,27 +53,13 @@ function subscribe(listener: () => void): () => void {
 }
 
 export function setNotificationSounds(enabled: boolean): void {
-  sessionSoundsChoice = enabled;
+  sessionChoice = enabled;
   try {
     const local = storage();
     const value = enabled ? "1" : "0";
     local?.setItem(NOTIFICATION_SOUNDS_KEY, value);
-    if (local?.getItem(NOTIFICATION_SOUNDS_KEY) === value) sessionSoundsChoice = undefined;
+    if (local?.getItem(NOTIFICATION_SOUNDS_KEY) === value) sessionChoice = undefined;
   } catch {
-    // Session fallback on storage failure
-  }
-  notify();
-}
-
-export function setMessageNotifications(enabled: boolean): void {
-  sessionMessageChoice = enabled;
-  try {
-    const local = storage();
-    const value = enabled ? "1" : "0";
-    local?.setItem(MESSAGE_NOTIFICATIONS_KEY, value);
-    if (local?.getItem(MESSAGE_NOTIFICATIONS_KEY) === value) sessionMessageChoice = undefined;
-  } catch {
-    // Session fallback on storage failure
   }
   notify();
 }
@@ -103,6 +68,53 @@ export function useNotificationSounds(): boolean {
   return useSyncExternalStore(subscribe, notificationSoundsEnabled, () => true);
 }
 
-export function useMessageNotifications(): boolean {
-  return useSyncExternalStore(subscribe, messageNotificationsEnabled, () => true);
+export function notificationFeedEnabled(): boolean {
+  if (feedSessionChoice !== undefined) return feedSessionChoice;
+  try {
+    return storage()?.getItem(NOTIFICATION_FEED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setNotificationFeed(enabled: boolean): void {
+  feedSessionChoice = enabled;
+  try {
+    const local = storage();
+    const value = enabled ? "1" : "0";
+    local?.setItem(NOTIFICATION_FEED_KEY, value);
+    if (local?.getItem(NOTIFICATION_FEED_KEY) === value) feedSessionChoice = undefined;
+  } catch {
+  }
+  notify();
+}
+
+export function useNotificationFeed(): boolean {
+  return useSyncExternalStore(subscribe, notificationFeedEnabled, () => false);
+}
+
+/** Per device: "done" notices only; approvals, questions and warnings always show. */
+export function finishedNotificationsEnabled(): boolean {
+  if (finishedSessionChoice !== undefined) return finishedSessionChoice;
+  try {
+    return storage()?.getItem(FINISHED_NOTIFICATIONS_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+export function setFinishedNotifications(enabled: boolean): void {
+  finishedSessionChoice = enabled;
+  try {
+    const local = storage();
+    const value = enabled ? "1" : "0";
+    local?.setItem(FINISHED_NOTIFICATIONS_KEY, value);
+    if (local?.getItem(FINISHED_NOTIFICATIONS_KEY) === value) finishedSessionChoice = undefined;
+  } catch {
+  }
+  notify();
+}
+
+export function useFinishedNotifications(): boolean {
+  return useSyncExternalStore(subscribe, finishedNotificationsEnabled, () => true);
 }

@@ -20,8 +20,8 @@ the production UI build. It owns a new Chrome profile and installs the pinned
 test browser if necessary. It checks Chrome's parsed manifest and installability
 errors, portrait and landscape safe areas, touch text that avoids automatic
 focus zoom with an aligned mention mirror, a real composer send and reload
-without duplicate messages, and the absence of a service worker before notification
-permission is granted or an offline cache. Screenshots and browser results are saved beside the fixture server log.
+without duplicate messages, and the absence of a service worker or offline
+cache. Screenshots and browser results are saved beside the fixture server log.
 `OMB_WEB_APP_BUILD` can select an already-built UI directory. Neither the user's
 browser profile nor live OpenMausBot data is used.
 
@@ -84,26 +84,3 @@ A production-renderer regression test failed at 15px and passed after this fix.
 This was a simulator, not a physical iPhone. Physical iPhone and Android
 installation, remote HTTPS pairing/revocation and interrupted-network recovery
 remain device-checklist items; none is claimed as performed here.
-
-## Browser message notifications
-
-Settings → Appearance → Browser notifications asks for browser permission only
-after an explicit click. The switch controls new-message and finished-work
-notices on this browser; approvals and warnings retain their existing behavior.
-Provider replies use the server's settled completion notice, not intermediate
-text or terminal patches. Non-provider text is notified once per message.
-
-Browsers that reject the desktop Notification constructor lazily register a
-notification-only worker under `/notifications/`. It does not control pages,
-intercept requests, cache workspace data, or replace an unrelated worker.
-Clicking a notice opens its exact conversation, including a cold launch. There
-is no push subscription: notifications require the app's live connection, and
-a closed or suspended mobile app is not promised to receive new notices.
-
-```sh
-pnpm exec vitest run src/lib/notify.test.ts src/lib/notification-preferences.test.ts src/state/notification-open.test.ts scripts/testing/notification-worker.test.ts
-```
-
-These use synthetic notifications only. OS delivery, Safari/iOS installed-web-app
-permission requirements and Android background suspension need separate device
-qualification; they are not proven by these tests.

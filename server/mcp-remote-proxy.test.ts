@@ -214,7 +214,6 @@ describe("remote MCP tool directory", () => {
     });
     createInterface({ input: child.stdout }).on("line", (line) => { frames.push(JSON.parse(line)); arrived(); });
   }
-  /** The first frame that matches, taken off the queue once it arrives. */
   async function take(match: (frame: Frame) => boolean): Promise<Frame> {
     const deadline = Date.now() + 15_000;
     for (;;) {
@@ -251,7 +250,6 @@ describe("remote MCP tool directory", () => {
     });
     start(mcpStdioServer(spec(fake.url), { directory: { name: "whop" } })!);
     const initialized = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
-    // the server's own instructions pass through, bounded
     expect(initialized.result.instructions.startsWith("Manage a Whop business.\nMore detail.")).toBe(true);
     expect(initialized.result.instructions.length).toBeLessThanOrEqual(INSTRUCTIONS_CHARS);
     const listed = (await request("tools/list")).result.tools;
@@ -265,17 +263,14 @@ describe("remote MCP tool directory", () => {
     const original = catalog.find((tool) => tool.name === "payments_list")!;
     expect(json(await call(DESCRIBE_TOOL, { name: "payments_list" })).inputSchema).toEqual(original.inputSchema);
 
-    // call_tool forwards the tool's own call and returns its result unchanged
     expect((await call(CALL_TOOL, { name: "payments_list", arguments: { company_id: "biz_1" } })).result).toEqual({
       content: [{ type: "text", text: "paid" }], structuredContent: { echoed: { name: "payments_list", arguments: { company_id: "biz_1" } } },
     });
     expect(fake.calls).toEqual([{ name: "payments_list", arguments: { company_id: "biz_1" } }]);
-    // a miss is guidance the model recovers from, not a failed tool call
     const unknown = (await call(CALL_TOOL, { name: "payments_teleport", arguments: {} })).result;
     expect(unknown.isError).toBeUndefined();
     expect(unknown.content[0].text).toContain(SEARCH_TOOL);
     expect(fake.calls).toHaveLength(1);
-    // one read of the catalog served the list, the search, the describe and both calls
     expect(fake.toolsLists).toBe(1);
   });
 
@@ -297,7 +292,6 @@ describe("remote MCP tool directory", () => {
     expect(advice.input).toContain("company_id: string");
     expect(fake.calls).toEqual([]);
     expect((await call(CALL_TOOL, { name: "payments_list", arguments: { company_id: "biz_1", first: 10 } })).result.content[0].text).toBe("remote execution recorded");
-    // a schema the validator cannot compile is the server's to enforce
     expect((await call(CALL_TOOL, { name: "odd_schema", arguments: { id: 7 } })).result.content[0].text).toBe("remote execution recorded");
     expect(fake.calls).toEqual([{ name: "payments_list", arguments: { company_id: "biz_1", first: 10 } }, { name: "odd_schema", arguments: { id: 7 } }]);
   });
@@ -364,7 +358,6 @@ describe("remote MCP tool directory", () => {
       expect((await call(CALL_TOOL, forwarded)).result.content[0].text).toBe("remote execution recorded");
     }
     expect(fake.calls).toEqual(calls);
-    // a plain mistake is still caught, keywords Ajv does not know included
     expect(JSON.parse((await call(CALL_TOOL, { name: "codes_check", arguments: {} })).result.content[0].text).problems).toContain("must have required property 'code'");
     expect(JSON.parse((await call(CALL_TOOL, { name: "notes_tagged", arguments: {} })).result.content[0].text).problems).toContain("must have required property 'id'");
     expect(fake.calls).toEqual(calls);
@@ -417,10 +410,8 @@ describe("remote MCP tool directory", () => {
     expect(listed[0].description).toContain(`${selected.length} tools`);
     const found = json(await call(SEARCH_TOOL, { query: "create payments", limit: 20 })).matches.map((match: { name: string }) => match.name);
     expect(found.every((name: string) => selected.includes(name))).toBe(true);
-    // the gate refuses before the proxy or the server is reached
     const refused = await call(CALL_TOOL, { name: "payments_create", arguments: { company_id: "biz_1" } });
     expect(refused.error).toMatchObject({ code: -32602, message: expect.stringContaining("Tool selection excludes") });
-    // one naming no tool runs nothing: the directory answers it with guidance
     const nameless = (await call(CALL_TOOL, { arguments: {} })).result;
     expect(nameless.isError).toBeUndefined();
     expect(nameless.content[0].text).toContain(SEARCH_TOOL);
@@ -429,7 +420,7 @@ describe("remote MCP tool directory", () => {
     expect(described.result.content[0].text.length).toBeGreaterThan(600);
     expect(JSON.parse(described.result.content[0].text).inputSchema).toEqual(padded.find((tool) => tool.name === "payments_list")!.inputSchema);
     const ran = (await call(CALL_TOOL, { name: "payments_list", arguments: { company_id: "biz_1" } })).result.content[0].text;
-    expect(ran).toContain("[OpenMausBot trimmed this tool result");
+    expect(ran).toContain("⚠️ TRUNCATED by OpenMausBot:");
     expect(fake.calls).toEqual([{ name: "payments_list", arguments: { company_id: "biz_1" } }]);
   });
 
@@ -457,17 +448,14 @@ describe("remote MCP tool directory", () => {
     expect((await request("tools/list")).result.tools).toHaveLength(3);
   });
 
-  /** This machine's environment without its own proxy settings. */
   const withoutProxies = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(https?_proxy|no_proxy|node_use_env_proxy)$/i.test(name)));
 
-  // A throwaway certificate for an https:// fake server, trusted by the
-  // proxy child through NODE_EXTRA_CA_CERTS; undefined without openssl.
+  // A throwaway certificate for an https:// fake, trusted by the proxy child via NODE_EXTRA_CA_CERTS; undefined without openssl.
   const tlsDir = mkdtempSync(join(tmpdir(), "omb-remote-proxy-tls-"));
   const tls = makeTestTls(tlsDir);
   afterAll(() => removeTempDir(tlsDir));
 
-  // The proxy switch is set for https:// servers only (mcp-gate-config.ts):
-  // through CONNECT, which works on Node 24 and 26 alike.
+  // The proxy switch is set for https:// servers only, through CONNECT, which works on Node 24 and 26 alike.
   it.skipIf(!tls)("reaches an internet https server through the person's proxy", async () => {
     fake = await startFakeHttpMcp({ tools: catalog, tls });
     const port = Number(new URL(fake.url).port);
@@ -523,8 +511,6 @@ describe("remote MCP tool directory", () => {
     expect((await request("tools/list")).result.tools).toHaveLength(3);
   });
 
-  // An https:// server switches the proxy on: loopback stays direct only
-  // through the NO_PROXY entries mcpStdioServer adds.
   it.skipIf(!tls)("reaches an https server on this computer directly, past a proxy that could not", async () => {
     fake = await startFakeHttpMcp({ tools: catalog, tls });
     const unreachable = "http://127.0.0.1:9";
@@ -543,8 +529,7 @@ describe("remote MCP tool directory", () => {
     }
   });
 
-  // Node's env-proxy matcher compares an IPv6 host in its bracketed form,
-  // so only the "[::1]" NO_PROXY entry keeps https://[::1] off the proxy.
+  // Node's env-proxy matcher compares an IPv6 host bracketed, so only the "[::1]" NO_PROXY entry keeps https://[::1] direct.
   it.skipIf(!tls)("reaches an https server on IPv6 loopback directly, never through the proxy", async (ctx) => {
     try {
       fake = await startFakeHttpMcp({ tools: catalog, tls, host: "::1" });
@@ -563,8 +548,7 @@ describe("remote MCP tool directory", () => {
       start(descriptor, withoutProxies());
       const answer = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
       expect(tunnels).toEqual([]);
-      // Node 24's fetch checks an https://[::1] certificate against "::1."
-      // and refuses it, proxy or none; Node 26 connects.
+      // Node 24's fetch checks an https://[::1] certificate against "::1." and refuses it; Node 26 connects.
       if (Number(process.versions.node.split(".")[0]) >= 26) expect(answer.result.serverInfo.name).toBe("fake-http-mcp");
     } finally {
       proxy.closeAllConnections();
@@ -572,9 +556,7 @@ describe("remote MCP tool directory", () => {
     }
   });
 
-  // The gate and some engines hand the proxy child this process's whole
-  // environment: a switch set here must not send an http:// server through
-  // the proxy, where Node 24 fails it and Node 26 forwards it.
+  // The gate and some engines hand the proxy child this whole environment; Node 24 fails an http:// request through the proxy.
   it("reaches an http server directly when this process turns the proxy switch on", async () => {
     fake = await startFakeHttpMcp({ tools: catalog });
     const unreachable = "http://127.0.0.1:9";

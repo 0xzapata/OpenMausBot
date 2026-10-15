@@ -18,8 +18,8 @@ The checks cover:
 - User approval permits work; denial, expiry, and cancellation block it.
 - Deleted peers and interrupted threads cancel approvals without attributing
   a decision to the user; late answers cannot revive settled requests.
-- Every hand-off asks first (`coordinate_bots` and its `ask_bot` /
-  `delegate_bot` aliases, from a routine turn or a chat): the refusal names
+- Every hand-off asks first (`coordinate_bots`, from a routine turn or a
+  chat): the refusal names
   each teammate's outcome (`approvals[]`: denied by the user, or expired
   without an answer) and its source, and writes no assignment on the job
   runtime — nothing can dispatch it later (docs/runtime-contract.md §2, §9).

@@ -41,10 +41,8 @@ function render() {
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const text = (node: Node): string => Children.toArray(node.props.children).map(child => typeof child === "string" || typeof child === "number" ? String(child) : isValidElement(child) ? text(child as Node) : "").join("");
 const button = (label: string) => render().nodes.find(node => node.type === "button" && text(node) === label);
-/** Pick a step that is not the current one by its title, from the steps under it. */
 const expand = (title: string) => render().nodes.find(node => node.type === "button" && text(node).startsWith(title))!.props.onClick!();
 const statuses = () => Object.fromEntries(render().nodes.filter(node => node.props["data-cloud-setup-step"]).map(node => [node.props["data-cloud-setup-step"], node.props["data-status"]]));
-/** Run what the component asked for on mount (main's snapshot, the lent-computer check). */
 async function mount() { render(); for (const effect of f.effects) effect(); await flush(); }
 
 const ready = { instanceId: "claude", snapshot: { state: "available", authenticated: true } };
@@ -123,22 +121,18 @@ it("on a new Cloud starts one step in, leads with a first job, and lists the oth
   expect(html).toContain("Set up My Cloud");
   expect(html).toContain("1 of 4 done");
   expect(html).toContain("Give it a first job");
-  // The question fills the chat pane: the card points there rather than repeat it.
   expect(html).toContain("You&#x27;re on this step");
   for (const title of ["Create My Cloud", "Connect your AI", "Bring your bots from this computer"]) expect(html).toContain(title);
   expect(statuses()).toEqual({ cloud: "done", job: "todo", engine: "todo", move: "todo" });
   expect(bridge.state).toHaveBeenCalledOnce();
-  // Plain words, no confirmation dialog, not a modal.
   expect(html).not.toMatch(/workspace|organis/i);
   expect(html).not.toContain('aria-modal="true"');
   expect(html).not.toContain('role="dialog"');
-  // The question already fills the chat pane, so the step does not offer it again.
   expect(button("Give it a job")).toBeUndefined();
 });
 it("connecting an AI is done when any engine can run; its action shows the existing sign-in when it is not on screen", async () => {
   f.state.config.onboarding = { ...EMPTY_ONBOARDING, hintsSeen: [CLOUD_INTENT_ASKED, CLOUD_INTENT_GIVEN] };
   await mount();
-  // In the chat view the Cloud's sign-in already fills the window.
   expect(button("Connect")).toBeUndefined();
   f.state.activeView = "routines";
   button("Connect")!.props.onClick!();
@@ -149,7 +143,6 @@ it("connecting an AI is done when any engine can run; its action shows the exist
 });
 it("a first job is done once given or once a turn has finished there, and Give it a job asks the question again", async () => {
   f.state.instances = [ready];
-  // Skipped the question: the step leads, and asks again from anywhere.
   f.state.config.onboarding = { ...EMPTY_ONBOARDING, hintsSeen: [CLOUD_INTENT_ASKED] };
   await mount();
   expect(statuses().job).toBe("todo");
@@ -177,7 +170,6 @@ it("Hide setup is one click, kept in the Cloud's own settings, and is the move's
   expect(dispatched).toContainEqual({ type: "configStatus", config: expect.objectContaining({ onboarding: expect.objectContaining({ hintsSeen: [CLOUD_SETUP_HIDDEN] }) }) });
   expect(bridge.dismiss).toHaveBeenCalledOnce();
   expect(render().html).not.toContain("data-cloud-setup");
-  // Another device, a reload, cleared browser storage: the Cloud's record decides.
   f.values = []; f.state.config.onboarding = { ...EMPTY_ONBOARDING, hintsSeen: [CLOUD_SETUP_HIDDEN] };
   vi.mocked(bridge.state).mockResolvedValue(overview({ suggest: false }));
   await mount();
@@ -187,7 +179,6 @@ it("Hide setup is one click, kept in the Cloud's own settings, and is the move's
 it("bringing bots opens the copy in place; Copy starts it, and Not now is kept as skipped", async () => {
   await mount();
   expect(render().html).not.toContain("Copy 4 bots and 37 chats");
-  // One step is open at a time: here, signing in.
   expect(button("Copy to My Cloud")).toBeUndefined();
   expand("Bring your bots from this computer");
   button("Copy to My Cloud")!.props.onClick!();
@@ -201,7 +192,6 @@ it("bringing bots opens the copy in place; Copy starts it, and Not now is kept a
   push({ phase: "done", action: "move", destination: CLOUD, moved: { bots: 4, rooms: 1, chats: 37 } });
   expect(statuses().move).toBe("done");
 
-  // Another Cloud, where the person says Not now instead.
   f.values = []; f.effects = [];
   await mount();
   expand("Bring your bots from this computer");
@@ -218,7 +208,6 @@ it("offers bringing bots only in the desktop app", async () => {
   vi.stubGlobal("window", { ogb: { platform: "win32", cloudMove: bridge }, addEventListener: vi.fn(), removeEventListener: vi.fn() });
   await mount();
   expect(Object.keys(statuses()).sort()).toEqual(["cloud", "engine", "job", "move"]);
-  // A browser.
   f.values = [];
   vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   await mount();
@@ -236,7 +225,6 @@ it("minimizes to its progress on this device, and opens again", async () => {
   expect(html).not.toContain("Give it a first job");
   expect(button("Hide setup")).toBeUndefined();
   expect(setItem).toHaveBeenLastCalledWith("omb.cloudSetup.collapsed", "1");
-  // Minimizing is not hiding: the Cloud's record is untouched.
   expect(api).not.toHaveBeenCalledWith("/api/config", expect.anything());
   toggle();
   ({ html } = render());
@@ -259,7 +247,6 @@ it("says the Cloud is ready once, in the session that finished it", async () => 
 });
 
 it("fills its progress from the left by how many steps are done, whichever they are, and picking a step does not move it", async () => {
-  // Brought bots over (step 4) before giving a job or signing in: two steps done, not a gap.
   vi.mocked(bridge.state).mockResolvedValue(overview({ phase: "done", suggest: false }));
   await mount();
   push({ phase: "done", action: "move", destination: CLOUD, moved: { bots: 4, rooms: 1, chats: 37 } });

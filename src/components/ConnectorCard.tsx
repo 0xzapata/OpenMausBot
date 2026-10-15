@@ -1,23 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, PlugZap, RefreshCw } from "lucide-react";
+import { Loader2, PlugZap, RefreshCw, X } from "lucide-react";
 
 import { api, type Message } from "@/state/store";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { reserveConnectionPage, reusableConnectionUrl, type PendingAuthorization } from "@/lib/connector-oauth";
+import { accountAliasTaken, requiresAccountAlias } from "@/lib/connector-status";
 import { mcpSignInLink } from "@/lib/mcp-sign-in";
 import { cn } from "@/lib/cn";
 import { ASK_PRIMARY_BUTTON, ASK_QUIET_BUTTON, AskCard, AskSettledLine } from "./AskCard";
-
-// An app the bot needs you to sign in to. It waits in the shared ask card
-// with one Connect securely button that opens the existing sign-in flow, and
-// folds into one line once the app is connected.
 
 export function ConnectorCard({ botId, threadId, message }: { botId: string; threadId: string; message: Message }) {
   const connector = message.connector!;
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | { key: LocaleKey } | null>(null);
   const [authorization, setAuthorization] = useState<(PendingAuthorization & { target: string }) | null>(null);
+  const [label, setLabel] = useState("");
   const polling = useRef(false);
   const opening = useRef<ReturnType<typeof reserveConnectionPage> | null>(null);
 
@@ -32,6 +30,7 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
     setBusy(false);
     setLocalError(null);
     setAuthorization(null);
+    setLabel("");
     return () => {
       opening.current?.cancel();
       opening.current = null;
@@ -69,7 +68,7 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
 
   if (connector.dismissed) return null;
 
-  const connect = async () => {
+  const connect = async (alias?: string) => {
     if (busy || opening.current) return;
     const launch = reserveConnectionPage();
     opening.current = launch;
@@ -77,11 +76,11 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
     setBusy(true);
     setLocalError(null);
     try {
-      const reusableUrl = reusableConnectionUrl(pendingAuthorization);
+      const reusableUrl = alias ? null : reusableConnectionUrl(pendingAuthorization);
       const createdAt = reusableUrl ? pendingAuthorization!.createdAt : Date.now();
       const result = reusableUrl ? { url: reusableUrl } : await api(`${endpoint}/authorize`, {
           method: "POST",
-          body: JSON.stringify({ threadId }),
+          body: JSON.stringify(alias ? { threadId, alias } : { threadId }),
         });
       if (!isCurrent()) return;
       const url = mcpSignInLink(typeof result.url === "string" ? result.url : null);
@@ -124,12 +123,24 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
   const connected = connector.status === "connected";
   const authorizing = connector.status === "authorizing";
   const error = localError ?? connector.error;
+  const stopped = connector.stopped === true;
+  const errorText = typeof error === "string" ? error : "";
+  const labelNeeded = !authorizing && (requiresAccountAlias(errorText) || accountAliasTaken(errorText));
+
+  if (stopped && !connected) {
+    return (
+      <AskSettledLine icon={<X size={13} />} ariaLabel={connector.label}>
+        <span className="text-ink-secondary">{connector.label}</span>
+        <span> · {t("chat.turnStopped")}</span>
+      </AskSettledLine>
+    );
+  }
 
   if (connected) {
     return (
       <AskSettledLine
         ariaLabel={connector.label}
-        action={!connector.resumed && (
+        action={!connector.resumed && !stopped && (
           <button type="button" onClick={() => void resume()} disabled={busy} className={cn(ASK_QUIET_BUTTON, "text-accent-text")}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             {t("connectors.card.continueTask")}
@@ -140,7 +151,7 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
         <span className="text-ink-secondary" title={connector.resumed ? t("connectors.card.resumed") : t("connectors.card.paused")}>
           {connector.label}
         </span>
-        <span> · {t("connectors.card.connected")}{connector.resumed && ` · ${t("connectors.card.continuing")}`}</span>
+        <span> · {t("connectors.card.connected")}{connector.resumed ? ` · ${t("connectors.card.continuing")}` : stopped ? ` · ${t("chat.turnStopped")}` : ""}</span>
       </AskSettledLine>
     );
   }
@@ -160,7 +171,12 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
             {authorizing && <Loader2 size={12} className="shrink-0 animate-spin" />}
             {authorizing ? t("connectors.card.waiting") : t("connectors.card.requested")}
           </span>
-          <button type="button" onClick={() => void connect()} disabled={busy} className={ASK_PRIMARY_BUTTON}>
+          <button
+            type="button"
+            onClick={() => void connect(labelNeeded ? label.trim() : undefined)}
+            disabled={busy || (labelNeeded && !label.trim())}
+            className={ASK_PRIMARY_BUTTON}
+          >
             {busy || authorizing ? <Loader2 size={14} className="animate-spin" /> : <PlugZap size={14} />}
             {authorizing
               ? t("connectors.card.openAgain")
@@ -172,7 +188,27 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
       }
     >
       <p className="text-[11.5px] text-ink-tertiary">{t("connectors.card.signInHint")}</p>
-      {error && <p role="alert" className="mt-1.5 text-[12px] text-danger">{typeof error === "string" ? error : t(error.key)}</p>}
+      {labelNeeded ? (
+        <form
+          className="mt-1.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (label.trim()) void connect(label.trim());
+          }}
+        >
+          <p role="alert" className="text-[12px] text-danger">
+            {t(requiresAccountAlias(errorText) ? "connectors.aliasNeeded" : "connectors.aliasTaken")}
+          </p>
+          <input
+            value={label}
+            maxLength={64}
+            onChange={(event) => setLabel(event.target.value)}
+            placeholder={t("connectors.aliasPlaceholder")}
+            aria-label={t("connectors.aliasAriaAnother", { service: connector.label })}
+            className="mt-1.5 h-8 w-full rounded-full bg-inset px-3 text-[12.5px] text-ink placeholder:text-ink-secondary focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        </form>
+      ) : error && <p role="alert" className="mt-1.5 text-[12px] text-danger">{typeof error === "string" ? error : t(error.key)}</p>}
       {authorizationUrl && (
         <a href={authorizationUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => {
           if (!reusableConnectionUrl(pendingAuthorization)) {

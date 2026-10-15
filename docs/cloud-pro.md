@@ -291,8 +291,8 @@ Cloud · always on**; in a browser, a plain label says the same.
 A Cloud home is a headless Linux server, so its bots have two places: the
 built-in browser and cloud computers. It never offers **This computer** (that
 would be the server itself) or a **Local VM** (a Fly machine has no container
-runtime). The person's own Mac is reached only when they lend it (**Let My
-Cloud use this Mac**, below), through the shared-computer tools.
+runtime). The person's own computer is reached only when they lend it (**Let My
+Cloud use this computer**, below), through the shared-computer tools.
 
 - Neither place is listed in the Computer panel, the composer's place chip, a
   bot's Works on setting or Settings → Computers (the config answers
@@ -471,9 +471,9 @@ The web UI's pages are sent with `Content-Security-Policy: frame-ancestors
 (`serveStatic`, `server/index.ts`): no other page can frame them. Nothing
 frames the web UI: the desktop app shows it in its own window.
 
-## Let My Cloud use this Mac
+## Let My Cloud use this computer
 
-The Cloud is home: bots and chats live there. The person's Mac is a computer
+The Cloud is home: bots and chats live there. The person's Mac or PC is a computer
 the Cloud can borrow while it is awake. Lending is off until the person turns
 it on, and it exists only between their own desktop app and their own Cloud
 home. Other users (desktop only, self-hosted, hosted team workspaces) keep
@@ -483,7 +483,7 @@ computer sharing exactly as before: off unless a maintainer sets
 ### What the person sees
 
 In **Settings → MausBot Cloud**, the **My Cloud** card has a **Let My Cloud use
-this Mac** switch under **Open My Cloud** (it is part of connecting, not
+this computer** switch under **Open My Cloud** (it is part of connecting, not
 a dialog). Turning it on shows what can be lent; each change applies at once,
 with no confirmation. The switch and the chosen scopes are the consent.
 
@@ -836,7 +836,7 @@ For each service the Admin has configured, it also sets:
 
 | Variable | Fly | Value |
 | --- | --- | --- |
-| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. It keeps Boat's own `/api/box/v1` ending. Bots use it only for cloud computers, as a tool on their own engine; no turn runs on Boat's own agent, so nothing calls its `/prompt`, `/events`, `/prompts/{id}` or `/interrupt` routes. |
+| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. The app speaks Boat's public API v1 (`/sandboxes`, `sandbox` envelopes); this relay still serves Boat's retired box API (`/boxes`, `box` envelopes), so for a base ending in `/api/box/v1` the app translates paths and answers in one place, `server/boat-relay.ts`. A base ending in `/api/v1` gets v1 as it is. Bots use it only for cloud computers, as a tool on their own engine; no turn runs on Boat's own agent, so nothing calls its `/prompt`, `/events`, `/prompts/{id}` or `/interrupt` routes. |
 | `OMB_CLOUD_BOAT_TOKEN` | secret | This machine's Boat relay token (`box_omb_…`). It is not a Boat key and works only through the relay. |
 | `OMB_CLOUD_VOICE_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/voice/v1`, the Admin's voice relay. |
 | `OMB_CLOUD_VOICE_TOKEN` | secret | This machine's voice relay token (`omb_voice_…`). |
@@ -857,7 +857,7 @@ computers belong to this machine on every request.
   that key's cloud computers are deleted: removing a Boat key that still has
   computers is refused). The choice is made on every request.
 - **Each credential goes to one place.** The relays know only the Admin's
-  accounts, so an own key goes only to the provider (`OMB_BOX_API`,
+  accounts, so an own key goes only to the provider (`OMB_BOAT_API`,
   `OMB_ELEVENLABS_API` or `decider.baseUrl` when set, for development and
   tests, else Boat's, ElevenLabs' and Jev's own APIs) and an included token
   only to its relay, whatever those settings say.
@@ -871,7 +871,10 @@ computers belong to this machine on every request.
   JSON). `server/decider/relay.ts` checks each request before it is sent; one
   that does not fit is not sent, and the room falls back as for any other
   decision-model failure. Any other decision job, now or added later, uses
-  only the person's own Jev key until the relay accepts it too.
+  only the person's own Jev key until the relay accepts it too. The relay
+  speaks Jev's API only: included decisions are Jev's, and with OpenRouter
+  selected in **Settings → Decision model** nothing is included (it needs an
+  OpenRouter key of the person's own).
 - **Included decisions are on until switched off.** While the decision model
   runs on the included token, its master switch counts as on unless the person
   switched it off in **Settings → Decision model**; an explicit off always
@@ -1015,6 +1018,74 @@ the timestamp within ±300 s; each nonce refused for 10 minutes; `ttlSeconds`
 defaults to 300 and is capped at 600; nothing about the request (headers, body
 or code) is logged. Nonces live in memory, so a restart forgets them; a
 captured request is still bounded by its five-minute timestamp window and TLS.
+
+## Health: the Admin's signed read
+
+`GET https://<app>.fly.dev/api/cloud/health?after=<cursor>`, signed like
+pairing, with `canonical`
+
+```text
+v1\n<timestamp>\n<nonce>\nGET\n/api/cloud/health?after=<cursor>\n<base64url SHA-256 of the empty body>
+```
+
+The path and query are signed exactly as sent (`cloudRequestSignature` in
+`server/cloud-home.ts`; the same function signs pairing, with `POST` and
+`/api/cloud/pairing`). The Admin polls each Ready home every 5 minutes and
+passes the `cursor` of its last answer, so it gets only what changed. A
+cursor from another boot, or none (`after=0`), reads everything since this
+boot. Answered before the session gate, with its own nonces: a bad health
+signature never counts toward the pairing lockout. `401` (`invalid_signature`,
+`stale_request`, `replayed_request`), `503` (`busy`) and `405` as for pairing.
+
+`200` (`server/cloud-health.ts`, at most 64 KB; incidents that do not fit
+wait for the next read, `truncated: true`):
+
+```json
+{
+  "v": 1, "version": "0.1.110", "image": "registry.fly.io/…@sha256:…", "bootedAt": 1790000000000, "at": 1790000300000,
+  "cursor": "1790000000000.12", "truncated": false,
+  "incidents": [{ "kind": "turn", "code": "rpc_error", "engine": "codex", "count": 3, "firstAt": 1790000100000, "lastAt": 1790000290000,
+    "botId": "<uuid>", "threadId": "<uuid>", "seq": 12 }],
+  "turns": { "started15m": 6, "failed15m": 3, "started24h": 40, "failed24h": 5 },
+  "routines": [{ "routineId": "<uuid>", "status": "failed", "at": 1790000200000, "consecutiveFailures": 2 }],
+  "engines": [{ "kind": "codex", "used": true, "available": true, "authenticated": false, "version": "0.130.0" }],
+  "connectors": { "checkedAt": 1790000000000, "failed": false, "items": [{ "slug": "gmail", "connected": false }] },
+  "browser": { "available": true, "installing": false, "interrupted": 0 },
+  "system": { "totalBytes": 4294967296, "availableBytes": 2147483648, "rssBytes": 314572800, "load1": 0.4, "cpus": 2,
+    "disk": { "totalBytes": 10737418240, "freeBytes": 8589934592 }, "eventLogWritable": true }
+}
+```
+
+**Incidents** come from one tap on the store: every failed-turn row
+(`shared/failed-turn.ts`, the only way a server writes one) is counted in a
+bucket by `kind` (`place` when the row names a place, else `turn`), `code`
+and `engine`, with counts since boot, first and last time, the last bot and
+thread ids, and a sequence number the cursor follows; at most 200 buckets,
+the one quiet longest dropped first. The code is the first that applies: the
+place's state (`shared/place-view.ts`); a cause the server words itself
+(`stalled`, `restart`, `could_not_start`, `incident_undelivered`,
+`approval_undelivered`, `event_log`); the trial credit's refusal
+(`trial_used_up`, …); the turn's stop reason when it says more than "failed"
+(`auth_required`, `shutdown_timeout`, `provider_safety`, `update_required`,
+`spawn_error`, `quota`); the cause's class (`server/drivers/retry.ts`:
+`auth`, `quota`, `rate_limited`, …); the generic stop reason (`rpc_error`);
+else `unknown`. A turn that ends in `shutdown_timeout`, `auth_required`,
+`update_required`, `spawn_error` or `rpc_error` without a failed row of its own
+counts once too. `turns` counts turns started and failed rows per minute;
+`routines` keeps each routine's last outcome and its failures in a row.
+
+**What it never carries:** a failure's words, a bot's name, a thread's title,
+a prompt, a URL, an email address, a token, or an engine's account
+(`ProviderSnapshot.account`). Only fixed codes, counts, times, versions, engine
+kinds, random ids, connector slugs, booleans and machine numbers. Connected
+apps are looked up in the background at most every 30 minutes, so a slow
+provider never holds the answer. Cloud computers are not listed: through the
+Admin's Boat relay that would count as using an included service and hold back
+updates; a cloud computer that fails a turn arrives as its place's code
+(`cc-unavailable`, `cc-no-start`, `cc-provider`, …).
+
+A home from before this answers `404`; the Admin then reads `/api/health`
+and shows its health as Unknown.
 
 ## What the desktop reads from the Admin
 

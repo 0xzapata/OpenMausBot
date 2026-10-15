@@ -25,6 +25,14 @@ describe("workspace backup data boundary", () => {
     expect(restored.instances).toBe(connections.instances);
   });
 
+  it("leaves the helper model with the destination: a restored backup never names one and never clears the destination's", () => {
+    // it names one of this machine's provider instances, and switching it on sends bots' text to that provider
+    const portable = portableWorkspaceConfig({ helper: { instanceId: "claude" }, language: "ja" });
+    expect(portable).toEqual({ language: "ja" });
+    expect(restoredWorkspaceConfig(portable, {})).not.toHaveProperty("helper");
+    expect(restoredWorkspaceConfig(portable, { helper: { instanceId: "openrouter" } }).helper).toEqual({ instanceId: "openrouter" });
+  });
+
   it("keeps the destination's own computer-sharing switch, whatever the backup says", () => {
     const portable = portableWorkspaceConfig({ features: { browser: true, sharedComputers: true } });
     expect(restoredWorkspaceConfig(portable, { features: { sharedComputers: false } }).features).toEqual({ browser: true, sharedComputers: false });
@@ -44,6 +52,13 @@ describe("workspace backup data boundary", () => {
     "webhooks.json.123.05a7b3e0-1234.tmp", "browser-engine-key.12.05a7b3e0-1234.tmp",
   ])("excludes known owned authentication path %s", (path) => {
     expect(excludedWorkspaceAuthPath(path)).toBe(true);
+  });
+
+  it("never exports or restores saved website logins or their key", () => {
+    for (const path of ["logins.json.enc", "logins-key", "logins.json.enc.4242.05a7b3e0-1234-4abc-8def-0123456789ab.tmp", "logins-key.12.05a7b3e0-1234.tmp"]) {
+      expect(excludedWorkspaceAuthPath(path)).toBe(true);
+    }
+    for (const path of ["logins.json", "logins.md", "workspaces/bot/logins.json.enc", "attachments/logins-key"]) expect(excludedWorkspaceAuthPath(path)).toBe(false);
   });
 
   it("never exports or restores MCP sign-in tokens", () => {

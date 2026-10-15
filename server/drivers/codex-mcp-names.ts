@@ -1,20 +1,13 @@
-// MCP server names the user already declared in their own Codex config.
-//
-// Custom MCP servers reach codex as `-c mcp_servers.<name>.…` overrides, and
-// codex merges an override into any same-named table in config.toml. A stdio
-// command laid over a remote `url` entry is "invalid configuration": codex
-// falls back to defaults, config/read fails, and the whole turn dies before
-// the model is even asked. Mounting a colliding server under a name of its
-// own keeps both definitions usable.
+// Custom MCP servers reach codex as `-c mcp_servers.<name>.…` overrides, which codex merges into a
+// same-named config.toml table; a stdio command over a remote `url` is "invalid configuration" and kills
+// the turn, so a colliding server mounts under a name of its own.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const HEADER = /^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))[ \t]*[.\]]/gm;
 
-/** Names declared as `[mcp_servers.<name>]` (or a sub-table of one). Inline
- * tables are not scanned; a collision there still surfaces as codex's own
- * configuration error. */
+/** Inline tables are not scanned; a collision there still surfaces as codex's own configuration error. */
 export function mcpServerNamesInToml(toml: string): Set<string> {
   const names = new Set<string>();
   for (const match of toml.matchAll(HEADER)) {
@@ -24,7 +17,6 @@ export function mcpServerNamesInToml(toml: string): Set<string> {
   return names;
 }
 
-/** Server names in the config.toml of the Codex home this child will use. */
 export function codexConfigMcpServerNames(env: Record<string, string | undefined>): Set<string> {
   const codexHome = env.CODEX_HOME || join(env.HOME || env.USERPROFILE || homedir(), ".codex");
   try {
@@ -34,8 +26,6 @@ export function codexConfigMcpServerNames(env: Record<string, string | undefined
   }
 }
 
-/** The name to mount a custom server under: its own, unless the user's Codex
- * config already has a server by that name. */
 export function mountedMcpServerName(name: string, taken: ReadonlySet<string>): string {
   if (!taken.has(name)) return name;
   let candidate = `${name}_openmausbot`;

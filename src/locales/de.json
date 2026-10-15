@@ -1172,6 +1172,7 @@
   "room.pinHint": "Diese Nachricht oben in der Gruppe anheften",
   "room.fallbackBot": "Bot",
   "room.aBot": "Ein Bot",
+  "room.memberWorkingElsewhere": "{name} arbeitet in einem anderen Thread",
   "room.responder.everyone": "Einfache Nachrichten gehen an alle Gruppenmitglieder; @Erwähnungen haben Vorrang",
   "room.responder.mentions": "Nur ausdrücklich per @ erwähnte Bots antworten",
   "room.responder.lead": "Einfache Nachrichten gehen an {name}; @Erwähnungen haben Vorrang",
@@ -1519,11 +1520,7 @@
   "engineSetup.claude.description": "Melde Claude Code auf diesem Server mit deinem eigenen Claude-Abo an. Öffne die Anmeldeseite von Anthropic im Browser, melde dich an und füge den angezeigten Code hier ein. Kein Terminal, kein Teilen von Passwörtern.",
   "engineSetup.claude.start": "Bei Claude anmelden",
   "engineSetup.claude.starting": "Anmeldung wird vorbereitet…",
-  "engineSetup.claude.open": "Claude-Anmeldeseite öffnen",
-  "engineSetup.claude.codeLabel": "Code von dieser Seite einfügen",
-  "engineSetup.claude.finish": "Anmeldung abschließen",
   "engineSetup.claude.finishing": "Wird mit Claude Code geprüft…",
-  "engineSetup.claude.security": "Füge nur einen Code ein, den du über eine hier gestartete Anmeldung erhalten hast. Er wird einmal an Claude Code auf diesem Server übergeben und nie gespeichert; dein Passwort bleibt bei Anthropic. Bots auf diesem Server teilen sich das Nutzungslimit deines Abos.",
   "engineSetup.claude.connected": "Claude verbunden. Deine Modelle werden aktualisiert.",
   "engineSetup.claude.connectedAccount": "Claude auf diesem Server verbunden",
   "engineSetup.claude.invalidChallenge": "Claude Code hat keinen gültigen Anmeldelink von Anthropic zurückgegeben. Abbrechen und erneut versuchen.",
@@ -1611,5 +1608,11 @@
   "settings.sendKey.subtitle": "Wähle Shift+Enter oder {key}, damit Enter stattdessen eine neue Zeile beginnt – praktisch, wenn deine Eingabemethode Text mit Enter bestätigt, wie bei japanischer Eingabe. {key} sendet bei jeder Wahl. Nur auf diesem Gerät.",
   "computer.files.homeFolder": "Home-Ordner",
   "computer.files.changeDefaultFolder": "Standard ändern",
-  "computer.files.pinnedFolderHint": "Diese Unterhaltung behält ihren aktuellen Ordner. Ändere den Standardordner für neue Unterhaltungen."
+  "computer.files.pinnedFolderHint": "Diese Unterhaltung behält ihren aktuellen Ordner. Ändere den Standardordner für neue Unterhaltungen.",
+  "task.workingElsewhere": "Arbeitet in anderen Threads: {count}",
+  "room.holds.banner": "Von dir gestoppt: {names}. Erwähne einen Bot mit @ oder schreib resume, um ihn zurückzuholen.",
+  "room.holds.resume": "{name} fortsetzen",
+  "room.holds.stop": "{name} stoppen",
+  "room.holds.stopTitle": "Nur {name} stoppen; der Rest des Raums arbeitet weiter",
+  "room.holds.avatarHeld": "{name} – angehalten (von dir gestoppt)"
 }

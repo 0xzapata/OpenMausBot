@@ -1,15 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const sounds = vi.hoisted(() => ({ enabled: true, messages: true }));
+const sounds = vi.hoisted(() => ({ enabled: true, finished: true }));
 vi.mock("./notification-preferences", () => ({
   notificationSoundsEnabled: () => sounds.enabled,
-  messageNotificationsEnabled: () => sounds.messages,
+  finishedNotificationsEnabled: () => sounds.finished,
 }));
 
 import {
   buildNotificationOptions,
-  initNotificationServiceWorker,
-  takeNotificationTarget,
   requestNotificationPermission,
   showNotification,
   type NotifyFrame,
@@ -44,7 +42,7 @@ function installNotification(permission: NotificationPermission, focused = false
 afterEach(() => {
   vi.unstubAllGlobals();
   sounds.enabled = true;
-  sounds.messages = true;
+  sounds.finished = true;
 });
 
 describe("desktop notifications", () => {
@@ -70,15 +68,15 @@ describe("desktop notifications", () => {
     await expect(requestNotificationPermission()).resolves.toBe("granted");
   });
 
-  it("reads fresh permission when browser settings changed while Settings stayed mounted", async () => {
+  it("reports a permission already decided without asking again", async () => {
     const { requestPermission } = installNotification("granted");
     await expect(requestNotificationPermission()).resolves.toBe("granted");
     expect(requestPermission).not.toHaveBeenCalled();
   });
 
-  it("mutes completion notifications without hiding required approval, sign-in or spend notices", () => {
+  it("this device's switch mutes finished-work notices, never approval, sign-in or spend ones", () => {
     const { notices } = installNotification("granted");
-    sounds.messages = false;
+    sounds.finished = false;
     showNotification(frame, vi.fn());
     expect(notices).toHaveLength(0);
     showNotification({ ...frame, kind: "approval" }, vi.fn());
@@ -143,8 +141,6 @@ describe("desktop notifications", () => {
       vi.fn(),
     );
 
-    // one bot across two threads shares a tag, so the platform replaces
-    // rather than stacks; another bot gets its own key
     expect(notices[0]?.options?.tag).toBe(`openmausbot:${frame.botId}`);
     expect(notices[1]?.options?.tag).toBe(`openmausbot:${frame.botId}`);
     showNotification({ ...frame, botId: "bot-2" }, vi.fn());
@@ -160,110 +156,6 @@ describe("desktop notifications", () => {
 
     showNotification(frame, vi.fn(), null);
     expect(notices[1]?.options?.icon).toBeUndefined();
-  });
-});
-
-describe("notification-only worker", () => {
-  function worker() {
-    const sw = Object.assign(new EventTarget(), {
-      register: vi.fn(async () => registration),
-      getRegistration: vi.fn(async (): Promise<unknown> => undefined),
-    });
-    const registration = {
-      active: { scriptURL: "https://workspace.test/sw.js", state: "activated" },
-      showNotification: vi.fn(async () => {}),
-    };
-    vi.stubGlobal("navigator", { serviceWorker: sw });
-    vi.stubGlobal("location", new URL("https://workspace.test/"));
-    return { sw, registration };
-  }
-
-  it("never registers on mount and disposes click listeners across remounts", () => {
-    installNotification("default");
-    const { sw } = worker();
-    const first = vi.fn();
-    const dispose = initNotificationServiceWorker(first);
-    expect(sw.register).not.toHaveBeenCalled();
-    dispose();
-    const second = vi.fn();
-    const stop = initNotificationServiceWorker(second);
-    sw.dispatchEvent(new MessageEvent("message", { data: { type: "openmausbot:notification-click", target: { botId: 123, threadId: "thread-1" } } }));
-    expect(second).not.toHaveBeenCalled();
-    sw.dispatchEvent(new MessageEvent("message", { data: { type: "openmausbot:notification-click", target: { botId: "bot-1", threadId: "thread-1" } } }));
-    expect(first).not.toHaveBeenCalled();
-    expect(second).toHaveBeenCalledOnce();
-    stop();
-  });
-
-  it("lazily displays mobile notifications in a dedicated scope with the exact click target", async () => {
-    installNotification("granted");
-    const { sw, registration } = worker();
-    vi.stubGlobal("Notification", class {
-      static permission = "granted";
-      constructor() { throw new TypeError("Use ServiceWorkerRegistration on mobile"); }
-    });
-    showNotification(frame, vi.fn());
-    await vi.waitFor(() => expect(registration.showNotification).toHaveBeenCalledOnce());
-    expect(sw.register).toHaveBeenCalledWith("/sw.js", { scope: "/notifications/" });
-    expect(registration.showNotification).toHaveBeenCalledWith(frame.title, expect.objectContaining({ data: { botId: frame.botId, threadId: frame.threadId } }));
-  });
-
-  it("does not replace an unrelated worker or use its ready promise", async () => {
-    installNotification("granted");
-    const { sw, registration } = worker();
-    sw.getRegistration.mockResolvedValueOnce({ active: { scriptURL: "https://workspace.test/other-worker.js" } });
-    vi.stubGlobal("Notification", class {
-      static permission = "granted";
-      constructor() { throw new TypeError("mobile"); }
-    });
-    showNotification(frame, vi.fn());
-    await vi.waitFor(() => expect(sw.getRegistration).toHaveBeenCalled());
-    expect(sw.register).not.toHaveBeenCalled();
-    expect(registration.showNotification).not.toHaveBeenCalled();
-  });
-
-  it("waits for first worker activation, without waiting for page control", async () => {
-    installNotification("granted");
-    const { sw, registration } = worker();
-    const installing = Object.assign(new EventTarget(), { state: "installing", scriptURL: "https://workspace.test/sw.js" });
-    sw.getRegistration.mockResolvedValueOnce({ active: null, installing, showNotification: registration.showNotification });
-    vi.stubGlobal("Notification", class {
-      static permission = "granted";
-      constructor() { throw new TypeError("mobile"); }
-    });
-    showNotification(frame, vi.fn());
-    await vi.waitFor(() => expect(sw.getRegistration).toHaveBeenCalledOnce());
-    expect(registration.showNotification).not.toHaveBeenCalled();
-    installing.state = "activated";
-    installing.dispatchEvent(new Event("statechange"));
-    await vi.waitFor(() => expect(registration.showNotification).toHaveBeenCalledOnce());
-    expect(sw.register).not.toHaveBeenCalled();
-  });
-
-  it("contains registration failures without unhandled rejection", async () => {
-    installNotification("granted");
-    const { sw, registration } = worker();
-    sw.register.mockRejectedValueOnce(new Error("insecure origin"));
-    vi.stubGlobal("Notification", class {
-      static permission = "granted";
-      constructor() { throw new TypeError("mobile"); }
-    });
-    showNotification(frame, vi.fn());
-    await vi.waitFor(() => expect(sw.register).toHaveBeenCalledOnce());
-    expect(registration.showNotification).not.toHaveBeenCalled();
-  });
-
-  it("consumes only a valid cold-start notification fragment", () => {
-    const target = { botId: "bot-1", threadId: "thread-1" };
-    const history = { state: null, replaceState: vi.fn() };
-    vi.stubGlobal("history", history);
-    vi.stubGlobal("location", new URL(`https://workspace.test/#notification=${encodeURIComponent(JSON.stringify(target))}`));
-    expect(takeNotificationTarget()).toEqual(target);
-    expect(history.replaceState).toHaveBeenCalledWith(null, "", "/");
-    for (const fragment of ["#notification=%FF", "#notification=%7B%7D", "#unrelated=thing"]) {
-      vi.stubGlobal("location", new URL(`https://workspace.test/${fragment}`));
-      expect(takeNotificationTarget()).toBeNull();
-    }
   });
 });
 

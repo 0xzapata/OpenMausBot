@@ -313,10 +313,29 @@ describe("bot patch queue", () => {
     expect(queue.overlayFor("bot-1")).toEqual({});
   });
 
+  it("sends the shown thread with a bot model change but never folds it into bot state", async () => {
+    const sent: BotUpdatePatch[] = [];
+    const overlays: BotUpdatePatch[] = [];
+    const queue = createBotPatchQueue({
+      send: async (_botId, patch) => {
+        sent.push(patch);
+        return bot();
+      },
+      reconcile: async () => bot(),
+      onAuthoritative: (_bot, overlay) => overlays.push(overlay),
+      onError: vi.fn(),
+    });
+    const modelSelection = { instanceId: "claude", model: "claude-opus-5-5" };
+
+    queue.enqueue("bot-1", { modelSelection, threadId: "shown" }, bot());
+    expect(queue.overlayFor("bot-1")).toEqual({ modelSelection });
+    await queue.flush("bot-1");
+
+    expect(sent).toEqual([{ modelSelection, threadId: "shown" }]);
+    for (const overlay of overlays) expect(overlay).not.toHaveProperty("threadId");
+  });
+
   it("carries acknowledgeLocalAuto to the wire but never into a state overlay", async () => {
-    // The consent flag is the server's proof the local-auto warning dialog was
-    // shown (server/index.ts gate). Coalesced with other edits it must still
-    // reach the HTTP body — and must never fold back into renderer bot state.
     const sent: BotUpdatePatch[] = [];
     const overlays: BotUpdatePatch[] = [];
     const queue = createBotPatchQueue({
@@ -369,6 +388,28 @@ describe("bot patch queue", () => {
     for (const overlay of overlays) expect(overlay).not.toHaveProperty("applyToAllThreads");
   });
 
+  it("never widens a quick switch from Full back to Ask to every thread", async () => {
+    const sent: BotUpdatePatch[] = [];
+    let release!: () => void;
+    const queue = createBotPatchQueue({
+      send: async (_botId, patch) => {
+        sent.push(patch);
+        if (sent.length === 1) await new Promise<void>((resolve) => { release = resolve; });
+        return bot();
+      },
+      reconcile: async () => bot(),
+      onAuthoritative: vi.fn(),
+      onError: vi.fn(),
+    });
+    queue.enqueue("bot-1", { title: "Ops" }, bot());
+    await vi.advanceTimersByTimeAsync(400);
+    queue.enqueue("bot-1", { approvalMode: "full", applyToAllThreads: true }, bot());
+    queue.enqueue("bot-1", { approvalMode: "ask" }, bot());
+    release();
+    await queue.flush("bot-1");
+    expect(sent).toEqual([{ title: "Ops" }, { approvalMode: "ask" }]);
+  });
+
   it("sends null to select Auto but normalizes it to an absent state field", async () => {
     const sent: BotUpdatePatch[] = [];
     const overlays: BotUpdatePatch[] = [];
@@ -414,8 +455,6 @@ describe("bot patch queue", () => {
   });
 
   it("revive undoes a dispose, so StrictMode's dev probe cannot kill saving", async () => {
-    // StrictMode mounts, runs the cleanup once against the same memoized
-    // queue, and mounts again. dispose → revive must leave a working queue.
     const sent: BotUpdatePatch[] = [];
     const queue = createBotPatchQueue({
       send: async (_botId, patch) => {

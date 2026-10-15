@@ -1,6 +1,4 @@
-// Signed-in sites: read from the state file agent-browser saves, signed out
-// of in that file and, for a running browser, over a fake Chrome's DevTools
-// socket. No real engine, Chrome or user profile is involved.
+// No real engine, Chrome or user profile: the state file agent-browser saves, and a fake Chrome DevTools socket.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,10 +100,8 @@ describe("signing a stopped browser out", () => {
       const state = saved(path);
       expect(state.cookies.map((cookie: { domain: string }) => cookie.domain)).toEqual(["www.example.com"]);
       expect(state.origins.map((origin: { origin: string }) => origin.origin)).toEqual(["https://example.com"]);
-      // Everything else about the kept cookie survives the rewrite.
       expect(state.cookies[0]).toMatchObject({ name: "sid", value: "s1", path: "/", httpOnly: true, secure: true });
     }
-    // The mid-save backup held the old logins.
     expect(existsSync(`${current}.previous`)).toBe(false);
   });
 
@@ -187,7 +183,6 @@ describe("signing a running browser out", () => {
       running: true,
       sites: [{ site: "google.com", cookies: 1, storage: 1 }, { site: "www.example.com", cookies: 1, storage: 0 }],
     });
-    // Reading never touches the browser's DevTools socket.
     expect(chrome.calls).toEqual([]);
   });
 
@@ -208,9 +203,7 @@ describe("signing a running browser out", () => {
     expect(cleared).toEqual(expect.arrayContaining(["https://wikipedia.org", "https://en.wikipedia.org"]));
     expect(cleared.some((origin) => origin.includes("example.com"))).toBe(false);
     expect([...chrome.stored.keys()]).toEqual(["https://example.com"]);
-    // Only the Wikipedia tab's sessionStorage is cleared.
     expect(chrome.calls.filter((call) => call.method === "Runtime.evaluate").map((call) => call.sessionId)).toEqual(["on-page-1"]);
-    // The saved file no longer brings Wikipedia back at the next launch.
     expect(saved().cookies.map((entry: { domain: string }) => entry.domain)).toEqual(["www.example.com"]);
   });
 

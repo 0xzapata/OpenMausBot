@@ -98,9 +98,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       console.warn(`CI scope: using all checks because the pull request diff is unavailable: ${error.message}`);
     }
   } else if (process.env.GITHUB_EVENT_NAME === "push") {
-    // A push to main is scoped by its own commits (before..after): a docs-only
-    // merge or the release's version bump skips the runtime jobs. The release
-    // gate never counts such a run as tested (scripts/release-ci.mjs).
+    // A push to main is scoped by its own commits; the release gate never
+    // counts a run that skipped the runtime jobs as tested.
     try {
       const { before, after } = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
       if (![before, after].every((sha) => typeof sha === "string" && SHA.test(sha)) || /^0+$/.test(before)) {

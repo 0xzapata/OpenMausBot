@@ -1,9 +1,10 @@
 # Verifying OpenMausBot
 
-OpenMausBot has one development control surface: `pnpm control:omb`. It is a
-thin command-line adapter over `scripts/mcp-server.ts`, so verification uses
-the same URL validation, task pinning, bounded transcripts, wait states, and
-redaction as external MCP clients.
+OpenMausBot has one development control surface: `pnpm control:omb`. It runs
+the published `openmausbot` verbs (docs/headless-cli.md), which call the MCP
+tools in `scripts/mcp-server.ts`, so verification uses the same URL
+validation, task pinning, bounded transcripts, wait states, and redaction as
+external MCP clients and scripts.
 
 ## Launch
 
@@ -27,7 +28,7 @@ exception: `OMB_OPENAI_LIVE_URL` crosses when it is a loopback
 `http://127.0.0.1:PORT` (the fake GPT-Live that
 `node --experimental-strip-types server/testing/fake-openai-live.ts` prints),
 and `OMB_OPENAI_LIVE_KEY` crosses only with it, so that key can only ever
-reach the fake. `OMB_PRO_PLAN` crosses only as `1`: Live calls need a Pro plan,
+reach the fake. `OMB_PRO_PLAN` crosses only as `1`: Live calls from a phone need a Pro plan,
 and that is how a server the desktop app did not start says so.
 
 Pass the printed URL explicitly from a second terminal:
@@ -43,6 +44,7 @@ recipe from sending messages to the user's running app by accident.
 
 Use only mapped, tested commands:
 
+- [The headless command line](headless-cli.md)
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)
@@ -54,9 +56,12 @@ Use only mapped, tested commands:
 - [Profile proposal and credential-card lifecycle](proposal-cards.md)
 - [Full Access without duplicate approvals](full-access.md)
 - [Exact command allowlist UI and saved rules](command-allowlist.md)
+- [The safety floor: a never-list no grant can allow](safety-floor.md)
 - [Peer approval denial, expiry, and cancellation](peer-approvals.md)
 - [Waiting for an occupied desktop](computer-wait.md)
 - [Chat UI, driven headlessly](chat-ui.md)
+- [Chat widgets](widgets.md)
+- [Chat widgets: prompts to try with a real bot](widget-prompts.md)
 - [Phone web app installation and safe areas](phone-web-app.md)
 - [Welcome flow and guided tour](onboarding.md)
 - [Channels](channels.md)
@@ -147,6 +152,10 @@ and Docker-over-SSH timeout cleanup without contacting a real server.
 The [live browser fixture](browser-live.md) mounts the real Browser panel with
 an explicitly selected native engine and Chrome in a disposable home, covering
 watching, takeover, input, and profile switching.
+
+The [page health and recorded browser steps check](browser-steps.md) drives the
+real engine against a fixture page with failing requests and page errors, and
+reads the recorded steps back through the server.
 
 The [Local VM resume fixture](local-vm-resume.md) checks idle stop, restart
 recovery, guarded resume and the stopped-to-ready Computer panel flow.

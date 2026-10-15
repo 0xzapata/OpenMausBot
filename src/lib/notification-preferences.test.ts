@@ -66,7 +66,6 @@ describe("notification sounds preference", () => {
     preference.setNotificationSounds(false);
     expect(local.getItem(preference.NOTIFICATION_SOUNDS_KEY)).toBe("0");
     expect(preference.useNotificationSounds()).toBe(false);
-    // the non-hook read is what the notification path uses
     expect(preference.notificationSoundsEnabled()).toBe(false);
 
     vi.resetModules();
@@ -150,22 +149,44 @@ describe("notification sounds preference", () => {
   });
 });
 
-describe("message notifications preference", () => {
-  it("defaults on and persists preference changes", async () => {
+describe("notification feed preference", () => {
+  it("defaults off, persists a choice, and leaves the sounds choice alone", async () => {
     let preference = await import("./notification-preferences");
-    expect(preference.useMessageNotifications()).toBe(true);
-    expect(preference.messageNotificationsEnabled()).toBe(true);
-
-    preference.setMessageNotifications(false);
-    expect(local.getItem(preference.MESSAGE_NOTIFICATIONS_KEY)).toBe("0");
-    expect(preference.useMessageNotifications()).toBe(false);
-    expect(preference.messageNotificationsEnabled()).toBe(false);
-
+    expect(preference.useNotificationFeed()).toBe(false);
+    expect(hook.serverSnapshot?.()).toBe(false);
+    preference.setNotificationFeed(true);
+    expect(local.setItem).toHaveBeenCalledWith("omb-notification-feed", "1");
+    expect(preference.notificationSoundsEnabled()).toBe(true);
     vi.resetModules();
     preference = await import("./notification-preferences");
-    expect(preference.messageNotificationsEnabled()).toBe(false);
-    preference.setMessageNotifications(true);
-    expect(local.getItem(preference.MESSAGE_NOTIFICATIONS_KEY)).toBe("1");
-    expect(preference.messageNotificationsEnabled()).toBe(true);
+    expect(preference.notificationFeedEnabled()).toBe(true);
+  });
+
+  it("follows another window's choice", async () => {
+    const preference = await import("./notification-preferences");
+    const listener = vi.fn();
+    expect(preference.useNotificationFeed()).toBe(false);
+    const unsubscribe = hook.subscribe!(listener);
+    local.setItem("omb-notification-feed", "1");
+    storageEvent("omb-notification-feed");
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(preference.notificationFeedEnabled()).toBe(true);
+    unsubscribe();
+  });
+});
+
+describe("finished-work notifications preference", () => {
+  it("defaults on and persists changes", async () => {
+    let preference = await import("./notification-preferences");
+    expect(preference.finishedNotificationsEnabled()).toBe(true);
+    preference.setFinishedNotifications(false);
+    expect(local.getItem(preference.FINISHED_NOTIFICATIONS_KEY)).toBe("0");
+    expect(preference.useFinishedNotifications()).toBe(false);
+    vi.resetModules();
+    preference = await import("./notification-preferences");
+    expect(preference.finishedNotificationsEnabled()).toBe(false);
+    preference.setFinishedNotifications(true);
+    expect(local.getItem(preference.FINISHED_NOTIFICATIONS_KEY)).toBe("1");
+    expect(preference.finishedNotificationsEnabled()).toBe(true);
   });
 });
