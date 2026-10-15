@@ -780,7 +780,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
-        });
+        }, "bot");
         let nextId = 1;
         const privateResponses = new Set<number>();
         const rpcPending = new Map<

@@ -2,7 +2,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
@@ -11,6 +11,7 @@ import { browserBundlePaths } from "./browser-bundle-release.ts";
 import { browserProcessesRunning, browserProcessTree, stopBrowserProcesses } from "./browser-processes.ts";
 import { BROWSER_VIEWPORT_ARGS, browserRuntimeEnv, ownsBrowserViewport } from "./browser-runtime.ts";
 import { SIGN_IN_PROMPT } from "./system-prompt.ts";
+import { gateChromeSettings } from "./browser/egress/gate.ts";
 import {
   AGENT_BROWSER_VERSION,
   agentBrowserReleaseUrl,
@@ -175,6 +176,28 @@ export function browserDaemonFile(env: NodeJS.ProcessEnv, suffix: ".pid" | ".str
   const base = env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "agent-browser") : join(home, ".agent-browser");
   const namespace = env.AGENT_BROWSER_NAMESPACE;
   return join(namespace ? join(base, "namespaces", namespace, "run") : base, `${session}${suffix}`);
+}
+
+function portInFile(path: string): number[] {
+  try {
+    const port = Number(readFileSync(path, "utf8").split("\n", 1)[0]!.trim());
+    return Number.isInteger(port) && port > 0 && port < 65_536 ? [port] : [];
+  } catch { return []; }
+}
+
+/** The stream servers of this machine's agent-browser daemons: agent-browser 0.37 upgrades a WebSocket from any origin. */
+export function agentBrowserStreamPorts(env: NodeJS.ProcessEnv = browserRuntimeEnv({ AGENT_BROWSER_SESSION: "omb" })): number[] {
+  const directory = dirname(browserDaemonFile(env, ".stream"));
+  try { return readdirSync(directory).filter((name) => name.endsWith(".stream")).flatMap((name) => portInFile(join(directory, name))); }
+  catch { return []; }
+}
+
+/** The DevTools ports of the Chromes agent-browser launched, from the profiles it creates in the temp folder. */
+export function agentBrowserDevToolsPorts(temp = tmpdir()): number[] {
+  try {
+    return readdirSync(temp).filter((name) => name.startsWith("agent-browser-chrome-"))
+      .flatMap((name) => portInFile(join(temp, name, "DevToolsActivePort")));
+  } catch { return []; }
 }
 
 const preparedBrowserSessions = new Map<string, Promise<void>>();
@@ -497,6 +520,17 @@ export function browserEngineStatus(options: BrowserLookupOptions = {}): Browser
     : { kind: "unavailable", reason: `agent-browser publishes no build for ${platform}-${arch}`, installable: false };
 }
 
+/** agent-browser 0.37 relaunches a running Chrome without a word when a command's launch settings differ, so every
+ * command for a session must carry these same ones. Chrome fails every connection through port 0. */
+function agentBrowserEgressEnv(env: Record<string, string>, port: number, platform: NodeJS.Platform): Record<string, string> {
+  const gate = gateChromeSettings(port, platform);
+  return {
+    AGENT_BROWSER_PROXY: gate.proxy,
+    AGENT_BROWSER_PROXY_BYPASS: gate.bypass,
+    AGENT_BROWSER_ARGS: [env.AGENT_BROWSER_ARGS, ...gate.args].filter(Boolean).join("\n"),
+  };
+}
+
 /** One isolated, auto-restored session per profile (or bot), page-provided WebMCP tools off, core tools only. */
 export function agentBrowserIntegration(input: {
   binaryPath: string;
@@ -511,6 +545,8 @@ export function agentBrowserIntegration(input: {
   /** The person's own Chrome: agent-browser auto-connects (DevToolsActivePort, then ports 9222/9229) or uses `cdpUrl`, which
    * comes only from workspace config, never the ambient environment. */
   attach?: { cdpUrl?: string };
+  /** The egress gate port a launched Chrome connects through; without one the browser connects nowhere. */
+  egressPort?: number;
 }): { command: string; args: string[]; env: Record<string, string> } {
   const sourceEnv = input.env ?? process.env;
   const env: Record<string, string> = {
@@ -539,6 +575,7 @@ export function agentBrowserIntegration(input: {
       env.AGENT_BROWSER_HEADLESS = "1";
       env.AGENT_BROWSER_HEADED = "0";
     }
+    Object.assign(env, agentBrowserEgressEnv(env, input.egressPort ?? 0, input.platform ?? process.platform));
   }
   // MCP clients may filter the parent env, so the Chrome path is carried explicitly, without unrelated secrets or flags.
   for (const name of ["PATH", "AGENT_BROWSER_EXECUTABLE_PATH"] as const) {

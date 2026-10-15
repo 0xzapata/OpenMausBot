@@ -253,6 +253,16 @@ function daemonSpec(): { spec: BrowserSpawnSpec; busy: string; calls: () => stri
 }
 
 describe("server-owned browser MCP runtime", () => {
+  it("never lets agent_browser_read fetch an address itself, around the browser and its egress gate", async () => {
+    const value = runtime();
+    const daemon = spec();
+    const refused = await value.agentRpc("reader", daemon, "tools/call", { name: "agent_browser_read", arguments: { url: "http://127.0.0.1:8799/api/config" } }) as { isError?: boolean; content: Array<{ text?: string }> };
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toMatch(/Open the address with agent_browser_open first/);
+    const reads = await value.agentRpc("reader", daemon, "tools/call", { name: "agent_browser_read", arguments: {} }) as { isError?: boolean };
+    expect(reads.isError).not.toBe(true);
+  });
+
   it("hands no held secret back to the bot: snapshot, eval, page text, console and network results are all scrubbed", async () => {
     const leaked = "fake-filled-Passw0rd";
     // The default scrubber is the server's registry (shared/redact.ts), as in production.

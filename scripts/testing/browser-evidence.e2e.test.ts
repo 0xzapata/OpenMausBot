@@ -16,6 +16,8 @@ import { agentBrowserIntegration, closeBrowserSession, prepareBrowserSessionStat
 import { relay, RelayPorts, relayTarget } from "../../server/browser-relay.ts";
 import { BrowserRuntime, browserRuntimeEnv, type BrowserSpawnSpec, type BrowserTiming } from "../../server/browser-runtime.ts";
 import { BrowserSteps, type StepContext } from "../../server/browser-steps.ts";
+import { openGate, type EgressGate } from "../../server/browser/egress/gate.ts";
+import { refusalFor } from "../../server/browser/egress/policy.ts";
 import { removeTempDir } from "../../server/testing/cleanup.ts";
 import { launchVerificationServer, runControlOmb } from "../control-omb.ts";
 import { ensureUiBrowser, UI_TOOLS_DIR } from "./control-omb-ui.ts";
@@ -68,6 +70,7 @@ describe("page health and browser steps on the real engine", () => {
   let runtime: BrowserRuntime;
   let evidence: BrowserEvidence;
   let chrome = "";
+  let gate: EgressGate | undefined;
   const timings: BrowserTiming[] = [];
   const session = `omb-ev-${randomBytes(3).toString("hex")}`;
 
@@ -86,8 +89,12 @@ describe("page health and browser steps on the real engine", () => {
     // Unix socket paths must stay short (macOS temp paths are long).
     sockets = mkdtempSync(join(posix ? "/tmp" : tmpdir(), "omb-ev-"));
     mkdirSync(join(home, "tmp"), { recursive: true });
+    // Desktop rules: the fixture page is a local dev server.
+    gate = await openGate({ decide: (destination, addresses) => refusalFor(destination, addresses, {
+      host: "desktop", ownPort: () => false, botPort: async () => false, localNetwork: true, allowed: () => false,
+    }) });
     const integration = agentBrowserIntegration({
-      binaryPath: browser.binary, session, encryptionKey: randomBytes(32).toString("hex"), persistent: false,
+      binaryPath: browser.binary, session, encryptionKey: randomBytes(32).toString("hex"), persistent: false, egressPort: gate.port,
       env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, ...(browser.chrome ? { AGENT_BROWSER_EXECUTABLE_PATH: browser.chrome } : {}) },
     });
     spec = { ...integration, env: { ...integration.env, HOME: home, USERPROFILE: home, TMPDIR: join(home, "tmp"), AGENT_BROWSER_SOCKET_DIR: sockets } };
@@ -111,6 +118,7 @@ describe("page health and browser steps on the real engine", () => {
     await closeBrowserSession(spec.command, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })).catch(() => false);
     await runtime?.closeAll();
     await new Promise((resolve) => server?.close(resolve));
+    await gate?.close();
     await removeTempDir(home);
     await removeTempDir(sockets);
   }, 60_000);
@@ -260,7 +268,8 @@ describe("recorded browser steps through the real server", () => {
     const planPath = join(fixture.info.dataDir, "room-plan.json");
     const evidenceLines = () => { try { return readFileSync(`${planPath}.evidence.jsonl`, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)); } catch { return []; } };
     try {
-      expect((await api("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
+      // A self-hosted server's bots reach this machine's own pages only where an admin allows it.
+      expect((await api("PATCH", "/api/config", { features: { browser: true }, browserEngine: { egress: { allow: ["127.0.0.1"] } } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots", { name: "Visitor" })).body.bot;
       expect((await api("PATCH", `/api/bots/${bot.id}`, { recordBrowserSteps: "yes" })).status).toBe(400);
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "browser", browserProfile: "guest", recordBrowserSteps: true })).status).toBe(200);

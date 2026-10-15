@@ -12,6 +12,11 @@ authentication, and runtime temporary-folder behavior from T3 Code, Copyright
 Selected-text citation matching adapts T3 Code's assistant citation selection,
 Copyright 2026 T3 Tools Inc., used under the MIT License.
 
+The egress gate for the bots' browser (server/browser/egress/) adapts T3 Code's
+public-only SOCKS5 proxy for HTML previews and the Linux listener-ownership
+scan of its preview port scanner, Copyright 2026 T3 Tools Inc., used under the
+MIT License (third_party/t3-code/LICENSE).
+
 Prompt-cache keep-warm (server/cache-keepwarm.ts and
 server/drivers/claude-keepwarm.ts) ports the design of Cache Tax,
 https://github.com/karanb192/claude-code-mods, Copyright (c) 2026 Karan

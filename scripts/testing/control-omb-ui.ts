@@ -22,6 +22,7 @@ import {
   resolveAgentBrowserBinary,
 } from "../../server/browser-engine.ts";
 import { fixtureApi, mountPreview, type MountedPreview } from "./preview-fixture.ts";
+import { credentialStoreFlags } from "../../server/browser/egress/gate.ts";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 /** Gitignored, persistent: the binary and its Chrome download once per checkout. */
@@ -77,6 +78,7 @@ export function sessionEnv(handle: SessionEnv, parentEnv: NodeJS.ProcessEnv = pr
     AGENT_BROWSER_SESSION: handle.session,
     AGENT_BROWSER_HEADLESS: "1",
     AGENT_BROWSER_NO_WEBMCP: "1",
+    AGENT_BROWSER_ARGS: credentialStoreFlags().join("\n"),
   };
   for (const [key, value] of Object.entries(parentEnv)) {
     if (value && PLATFORM_ENV.includes(key.toUpperCase())) env[key.toUpperCase()] = value;

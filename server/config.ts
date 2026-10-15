@@ -20,6 +20,7 @@ import { migrateLegacyFeatureFlags } from "./legacy-feature-flags.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import { deciderConfigSchema, type DeciderConfig } from "./decider/config.ts";
+import { browserEgressConfigSchema, type BrowserEgressConfig } from "./browser/egress/policy.ts";
 import { roomContextSettings } from "./room-context-settings.ts";
 
 const optionalText = z.string().optional();
@@ -81,15 +82,14 @@ export function normalizeVpsConfig(raw: unknown): { sshAlias?: string } {
 }
 
 const vpsConfigSchema = z.object({
-  sshAlias: z.string().refine((value) => value === "" || isValidSshAlias(value), {
-    message: "must be a simple SSH config alias",
-  }).optional(),
+  sshAlias: z.string().refine((value) => value === "" || isValidSshAlias(value), { message: "must be a simple SSH config alias" }).optional(),
 });
 /** `attachCdpUrl`: a running Chrome that My Chrome profiles attach to. Config only, never env: the ambient environment must not redirect a bot's browser. */
 const browserEngineConfigSchema = z.object({
   attachCdpUrl: z.string().trim().max(2048).refine((value) => value === "" || isValidCdpTarget(value),
     { message: "browserEngine.attachCdpUrl must be a CDP port (1-65535) or an http(s)/ws(s) URL" }).optional(),
   idleTimeoutMinutes: z.number().int().min(1).max(60).optional(), // an unused browser closes after this
+  egress: browserEgressConfigSchema.optional(),
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -537,7 +537,7 @@ export interface AppConfig extends HelperConfig {
   features?: { skillAuthoring?: boolean; skillReview?: boolean; skillReviewSteps?: number; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; claudeUserSkills?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean; shareLearnedSkills?: "off" | "ask" | "auto"; roomMemoryCapture?: boolean; parallelRoomJobs?: boolean; chiefEscalations?: boolean; acpPlanLines?: boolean; agentsToolBridge?: boolean };
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[]; firstTurnAt?: string };
   browserProfiles?: BrowserProfile[];
-  browserEngine?: { attachCdpUrl?: string; idleTimeoutMinutes?: number };
+  browserEngine?: { attachCdpUrl?: string; idleTimeoutMinutes?: number; egress?: BrowserEgressConfig };
   instances?: InstanceConfigMap;
 }
 export type BrowserProfile = z.output<typeof browserProfileSchema> & {

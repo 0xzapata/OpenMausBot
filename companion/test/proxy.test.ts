@@ -82,9 +82,12 @@ const device = async (
 };
 
 /** fetch will not set a Host header */
+const CONTROL_TOKEN = "fixture-control-token";
+const controlHeaders = { "x-openmausbot-control-token": CONTROL_TOKEN };
+
 const withHost = (port: number, host: string, path = "/api/health", headers: Record<string, string> = {}) =>
   new Promise<number>((resolve, reject) => {
-    const r = request({ hostname: "127.0.0.1", port, path, headers: { host, ...headers } }, (res) => {
+    const r = request({ hostname: "127.0.0.1", port, path, headers: { host, ...controlHeaders, ...headers } }, (res) => {
       res.resume();
       resolve(res.statusCode ?? 0);
     });
@@ -655,6 +658,7 @@ describe("pairing, end to end", () => {
     const port = (paired.address() as { port: number }).port;
     const control = createControlServer({
       devices: registry,
+      controlToken: () => CONTROL_TOKEN,
       companionPort: port,
       discovery: () => ({ advertising: false, name: "OpenMausBot" }),
       connectedDeviceIds: connections.ids,
@@ -668,7 +672,7 @@ describe("pairing, end to end", () => {
     try {
       expect((await fetch(`${base}/api/bots`)).status).toBe(401);
 
-      const opened = (await (await fetch(`${ctl}/pairing`, { method: "POST" })).json()) as {
+      const opened = (await (await fetch(`${ctl}/pairing`, { method: "POST", headers: controlHeaders })).json()) as {
         code: string;
         token: string;
       };
@@ -735,7 +739,7 @@ describe("pairing, end to end", () => {
       eventStream.resume();
       const eventStreamClosed = new Promise<void>((resolve) => eventStream.once("close", resolve));
 
-      const state = (await (await fetch(`${ctl}/state`)).json()) as {
+      const state = (await (await fetch(`${ctl}/state`, { headers: controlHeaders })).json()) as {
         devices: Array<{ id: string; name: string }>;
         connectedDeviceIds: string[];
       };
@@ -743,7 +747,7 @@ describe("pairing, end to end", () => {
       // By name: `devices[0]` is load order.
       const ada = state.devices.find((d) => d.name === "Ada's iPhone")!;
       expect(state.connectedDeviceIds).toContain(ada.id);
-      const revoked = await fetch(`${ctl}/devices/${ada.id}`, { method: "DELETE" });
+      const revoked = await fetch(`${ctl}/devices/${ada.id}`, { method: "DELETE", headers: controlHeaders });
       expect(revoked.status).toBe(200);
       expect((await revoked.json() as { connectedDeviceIds: string[] }).connectedDeviceIds).not.toContain(ada.id);
       await eventStreamClosed;
@@ -759,6 +763,7 @@ describe("pairing, end to end", () => {
     const { createControlServer } = await import("../src/control.ts");
     const control = createControlServer({
       devices: new DeviceRegistry(),
+      controlToken: () => CONTROL_TOKEN,
       companionPort: 8800,
       discovery: () => ({ advertising: false, name: "OpenMausBot" }),
     });
@@ -783,6 +788,7 @@ describe("pairing, end to end", () => {
 
     const control = createControlServer({
       devices: new DeviceRegistry(),
+      controlToken: () => CONTROL_TOKEN,
       companionPort: 8800,
       discovery: () => ({ advertising: false, name: "OpenMausBot" }),
     });
@@ -806,6 +812,7 @@ describe("pairing, end to end", () => {
     const registry = new DeviceRegistry();
     const control = createControlServer({
       devices: registry,
+      controlToken: () => CONTROL_TOKEN,
       companionPort: 8800,
       discovery: () => ({ advertising: false, name: "OpenMausBot" }),
     });
@@ -815,22 +822,27 @@ describe("pairing, end to end", () => {
     try {
       const evil = await fetch(`${base}/pairing`, {
         method: "POST",
-        headers: { origin: "https://evil.example" },
+        headers: { origin: "https://evil.example", ...controlHeaders },
       });
       expect(evil.status).toBe(403);
+      expect(registry.pairing()).toBe(null);
+
+      // A page served from the control port itself, as a bot's browser would open it, has no token.
+      const tokenless = await fetch(`${base}/pairing`, { method: "POST", headers: { origin: base } });
+      expect(tokenless.status).toBe(403);
       expect(registry.pairing()).toBe(null);
 
       // Browsers send Origin on any write, so the control page's own must pass.
       const ours = await fetch(`${base}/pairing`, {
         method: "POST",
-        headers: { origin: base },
+        headers: { origin: base, ...controlHeaders },
       });
       expect(ours.status).toBe(201);
       expect(registry.pairing()).not.toBe(null);
 
       const stolen = await fetch(`${base}/devices/whatever`, {
         method: "DELETE",
-        headers: { origin: "https://evil.example" },
+        headers: { origin: "https://evil.example", ...controlHeaders },
       });
       expect(stolen.status).toBe(403);
     } finally {
@@ -844,6 +856,7 @@ describe("pairing, end to end", () => {
     const registry = new DeviceRegistry();
     const control = createControlServer({
       devices: registry,
+      controlToken: () => CONTROL_TOKEN,
       companionPort: 8800,
       discovery: () => ({ advertising: false, name: "OpenMausBot" }),
     });

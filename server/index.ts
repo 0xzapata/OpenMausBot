@@ -448,6 +448,7 @@ import { browserEvidence, browserSteps, stepContext } from "./browser-steps.ts";
 import { parseLoginFields, parseTotpField, createLoginRoutes } from "./routes/logins.ts";
 import { savedLoginResumePrompt } from "../shared/logins.ts";
 import { BrowserLive, browserRestartRefusal } from "./browser-live.ts";
+import { browserEgress } from "./browser/egress/registry.ts";
 import {
   agentBrowserIntegration,
   browserEngineEncryptionKey,
@@ -750,7 +751,7 @@ const sharedWorkspaceFullAccessEnabled = () => SHARED_WORKSPACE_FULL_ACCESS && B
 const HOSTED_FULL_ACCESS_REFUSAL = "On a shared company workspace Full access comes only from the operator's dedicated policy";
 if (HOSTED_WORKSPACE) setDefaultApprovalMode("ask");
 // On a shared workspace loopback is a service, not the owner: every bot's shell is a loopback caller too.
-const LOOPBACK = resolveLoopbackTrust({ desktopManaged: DESKTOP_MANAGED, hostedWorkspace: HOSTED_WORKSPACE, cloudHome: Boolean(CLOUD_HOME) });
+const LOOPBACK = resolveLoopbackTrust({ desktopManaged: DESKTOP_MANAGED, hostedWorkspace: HOSTED_WORKSPACE, cloudHome: Boolean(CLOUD_HOME), fromSource: import.meta.url.endsWith(".ts") });
 // The CLI's per-launch secret comes on stdin, never an env var: every engine this server starts inherits its environment.
 let cliOwnerToken: string | undefined;
 if (process.env.OMB_CLI_OWNER_STDIN === "1" && LOOPBACK.trust === "service" && process.stdin) {
@@ -2671,6 +2672,7 @@ const browserRuntime = new BrowserRuntime({
 });
 const browserLive = new BrowserLive({ runtime: browserRuntime });
 const usedBrowserSessions = new Map<string, { command: string; env: Record<string, string> }>();
+browserEgress.configure({ host: DESKTOP_MANAGED ? "desktop" : CLOUD_HOME ? "cloud" : "server", config: () => cfg.browserEngine?.egress });
 // The agent-browser daemon outlives its MCP transport and this server; My Chrome is the person's own.
 const browserSweep = new BrowserSweep({
   engine: () => { const engine = browserEngineStatus(); return engine.kind === "ready" ? engine.binaryPath : null; },
@@ -2714,15 +2716,12 @@ function usesMyChrome(profileId: string | undefined): boolean {
   return Boolean(profileId) && myChromeAvailable()
     && cfg.browserProfiles?.some((profile) => profile.id === profileId && profile.browser === "chrome") === true;
 }
-function browserSessionSpec(binaryPath: string, session: string, profile: string | undefined) {
+function browserSessionSpec(binaryPath: string, session: string, profile: string | undefined, egressPort?: number) {
   const attachCdpUrl = browserEngineAttachCdpUrl(cfg);
   return agentBrowserIntegration({
-    binaryPath,
-    session,
-    encryptionKey: browserEngineEncryptionKey(),
-    persistent: profile !== "guest",
+    binaryPath, session, encryptionKey: browserEngineEncryptionKey(), persistent: profile !== "guest",
     env: { ...process.env, PATH: augmentedPath() },
-    ...(usesMyChrome(profile) ? { attach: attachCdpUrl ? { cdpUrl: attachCdpUrl } : {} } : {}),
+    ...(usesMyChrome(profile) ? { attach: attachCdpUrl ? { cdpUrl: attachCdpUrl } : {} } : { egressPort }),
   });
 }
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
@@ -2737,7 +2736,8 @@ async function browserIntegration(botId: string, profile: string | undefined, tu
   const profileTarget = profile && profile !== "guest" ? browserProfilePartitionTarget(cfg, profile) : null;
   const partitionId = profile === "guest" ? "guest" : (profileTarget?.partitionId ?? "");
   const session = currentBrowserSession(botId, profile);
-  const spec = browserSessionSpec(status.binaryPath, session, profileTarget?.profileId ?? profile);
+  const browserProfileId = profileTarget?.profileId ?? profile;
+  const spec = browserSessionSpec(status.binaryPath, session, browserProfileId, usesMyChrome(browserProfileId) ? undefined : await browserEgress.open(session));
   usedBrowserSessions.set(session, spec);
   await prepareBrowserSessionState(status.binaryPath, session, { env: spec.env, persistent: profile !== "guest" && !attachesToChrome(spec.env), isCurrent: () => {
     const current = store.bot(botId);
@@ -13100,7 +13100,7 @@ async function fillLoginForTurn(bot: BotRecord, capability: InternalCapability, 
   if (engine.kind !== "ready") return { ok: false, text: "The browser is not available on this computer right now. Call request_sign_in instead." };
   const session = currentBrowserSession(current.id, current.browserProfile);
   const profileTarget = current.browserProfile && current.browserProfile !== "guest" ? browserProfilePartitionTarget(cfg, current.browserProfile) : null;
-  const spec = usedBrowserSessions.get(session) ?? browserSessionSpec(engine.binaryPath, session, profileTarget?.profileId ?? current.browserProfile);
+  const spec = usedBrowserSessions.get(session) ?? browserSessionSpec(engine.binaryPath, session, profileTarget?.profileId ?? current.browserProfile, await browserEgress.open(session));
   if (!claimTurnResource(capability, `browser:${session}`)) {
     return { ok: false, text: "Another conversation is using this browser. Wait until it finishes, then call fill_login again." };
   }
@@ -13632,7 +13632,7 @@ const workspaceBackupAccess = {
     const current = resolveRequestAuth(req, {
       sessions, cookieName: SESSION_COOKIE, streamPath: "/api/events",
       url: new URL(req.url ?? "/", `http://localhost:${PORT}`),
-      loopbackMutationToken: desktopMutationToken, companionMutationToken, loopbackTrust: LOOPBACK.trust, cliOwnerToken,
+      loopbackMutationToken: desktopMutationToken, companionMutationToken, loopbackTrust: LOOPBACK.trust, cliOwnerToken, trustLocalBrowser: LOOPBACK.localBrowsers,
     }).auth;
     return Boolean(current?.scopes.includes("admin") && current.kind === original.kind &&
       (current.kind !== "session" || (original.kind === "session" && current.session.id === original.session.id)));
@@ -13877,7 +13877,7 @@ ROUTES.push(createTeamRoutes({
   ...skillExport(skillsHost),
 }));
 ROUTES.push(createBrowserSiteRoutes({
-  target: (which) => {
+  target: async (which) => {
     const engine = browserEngineStatus();
     if (engine.kind !== "ready") return { status: 409, error: engine.reason };
     let session: string;
@@ -13895,7 +13895,7 @@ ROUTES.push(createBrowserSiteRoutes({
       profile = bot.browserProfile;
     }
     if (usesMyChrome(profile)) return { status: 409, error: "This profile uses your own Chrome. Sign in and out of sites there." };
-    return { binaryPath: engine.binaryPath, session, env: browserSessionSpec(engine.binaryPath, session, profile).env, encryptionKey: browserEngineEncryptionKey() };
+    return { binaryPath: engine.binaryPath, session, env: browserSessionSpec(engine.binaryPath, session, profile, await browserEgress.open(session)).env, encryptionKey: browserEngineEncryptionKey() };
   },
   list: (target) => listSignedInSites(target),
   signOut: (target, site) => signOutOfSites(target, site),
@@ -14274,7 +14274,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       companionMutationToken,
       features: { sharedComputers: lendingEnabled() },
       loopbackTrust: LOOPBACK.trust,
-      cliOwnerToken,
+      cliOwnerToken, trustLocalBrowser: LOOPBACK.localBrowsers,
     });
     // The session term slides on use, so re-issue the cookie on every cookie request; handlers that clear it later overwrite this header.
     if (gate.auth?.kind === "session" && gate.auth.via === "cookie") {

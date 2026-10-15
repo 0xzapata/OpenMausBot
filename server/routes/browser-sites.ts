@@ -5,7 +5,7 @@ import { PASS, type RouteHandler } from "./table.ts";
 export type BrowserSitesRef = { profile: string } | { bot: string };
 
 export interface BrowserSitesRouteDeps {
-  target(ref: BrowserSitesRef): BrowserSitesTarget | { status: number; error: string };
+  target(ref: BrowserSitesRef): Promise<BrowserSitesTarget | { status: number; error: string }> | BrowserSitesTarget | { status: number; error: string };
   list(target: BrowserSitesTarget): Promise<SignedInSites>;
   signOut(target: BrowserSitesTarget, site: string | null): Promise<SignedInSites>;
 }
@@ -28,7 +28,7 @@ export function createBrowserSiteRoutes(deps: BrowserSitesRouteDeps): RouteHandl
     if (path === "/api/browser-sites" && method === "GET") {
       const which = ref({ profile: url.searchParams.get("profile") ?? undefined, bot: url.searchParams.get("bot") ?? undefined });
       if (!which) return json(res, 400, { error: "Name one browser profile or one bot." });
-      const target = deps.target(which);
+      const target = await deps.target(which);
       if ("error" in target) return json(res, target.status, { error: target.error });
       res.setHeader("cache-control", "no-store");
       try { return json(res, 200, await deps.list(target)); }
@@ -42,7 +42,7 @@ export function createBrowserSiteRoutes(deps: BrowserSitesRouteDeps): RouteHandl
     const which = body && typeof body === "object" ? ref(body) : null;
     if (!which) return json(res, 400, { error: "Name one browser profile or one bot." });
     if (body.site !== undefined && (typeof body.site !== "string" || !SITE.test(body.site))) return json(res, 400, { error: "site must be a listed site" });
-    const target = deps.target(which);
+    const target = await deps.target(which);
     if ("error" in target) return json(res, target.status, { error: target.error });
     try { return json(res, 200, await deps.signOut(target, body.site ?? null)); }
     catch (error) { return json(res, 503, { error: failure(error) }); }

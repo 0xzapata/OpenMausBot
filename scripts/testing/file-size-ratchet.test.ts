@@ -18,7 +18,7 @@ const LINES: Record<string, number> = {
   // +24 for the HighLevel CRM mount, prompt part and internal handler (logic lives in server/highlevel/*); lower again with the next move-out.
   "server/index.ts": 17705,
   "src/state/store.tsx": 3617,
-  "electron/main.mjs": 3520,
+  "electron/main.mjs": 3498,
   "server/store.ts": 2478,
   "src/components/Sidebar.tsx": 2614,
   "server/drivers/claude.ts": 2168,
@@ -43,7 +43,7 @@ const LINES: Record<string, number> = {
   "src/components/Composer.tsx": 1160,
   "src/components/ModelPicker.tsx": 1204,
   "src/components/PhoneSetupFlow.tsx": 1283,
-  "server/cli.ts": 1125,
+  "server/cli.ts": 1080,
   "src/components/SettingsModal.tsx": 1165,
   "server/drivers/agents-call.ts": 1138,
   "src/components/ChatMarkdown.tsx": 1039,

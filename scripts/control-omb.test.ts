@@ -9,6 +9,13 @@ import { verificationServerEnvironment } from "./control-omb.ts";
 
 const childEnv = (parentEnv: NodeJS.ProcessEnv) => verificationServerEnvironment(parentEnv, join(tmpdir(), "omb-fixture-env"), 9100);
 
+describe("a fixture driven from a real browser", () => {
+  it("trusts this machine's browsers as `pnpm dev` does, unless the caller tests the sign-in", () => {
+    expect(childEnv({}).OMB_DEV_TRUST_LOCAL_BROWSER).toBe("1");
+    expect(childEnv({ OMB_DEV_TRUST_LOCAL_BROWSER: "0" })).not.toHaveProperty("OMB_DEV_TRUST_LOCAL_BROWSER");
+  });
+});
+
 describe("the fixture's fake engine knobs", () => {
   it("lets the Claude fake's knobs and the Codex fake's background-call knobs cross, and nothing else", () => {
     const env = childEnv({

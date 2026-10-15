@@ -35,7 +35,7 @@ export interface ThreadRouteDeps {
   groupUsageReader: Pick<GroupUsageReader, "refresh">;
   hostedWorkspace: boolean;
   sessionCookie: string;
-  loopback: { trust: ResolveOptions["loopbackTrust"] };
+  loopback: { trust: ResolveOptions["loopbackTrust"]; localBrowsers: boolean };
   lendingEnabled(): boolean;
   workspaceAccess(): WorkspaceAccess | null;
   desktopMutationToken(): string | undefined;
@@ -407,7 +407,7 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
       const current = resolveRequestAuth(req, {
         sessions, cookieName: SESSION_COOKIE, streamPath: "/api/events", url,
         loopbackMutationToken: desktopMutationToken, companionMutationToken,
-        features: { sharedComputers: lendingEnabled() }, loopbackTrust: LOOPBACK.trust, cliOwnerToken,
+        features: { sharedComputers: lendingEnabled() }, loopbackTrust: LOOPBACK.trust, cliOwnerToken, trustLocalBrowser: LOOPBACK.localBrowsers,
       });
       if (!current.auth) return json(res, current.status, { error: current.error });
       const currentVisible = visibleTo(viewerFor(current.auth));
