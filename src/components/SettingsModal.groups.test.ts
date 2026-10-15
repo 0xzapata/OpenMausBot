@@ -49,6 +49,8 @@ vi.mock("@/lib/notification-preferences", () => ({
   setNotificationSounds: fixture.setNotificationSounds,
   useNotificationFeed: () => false,
   setNotificationFeed: vi.fn(),
+  useFinishedNotifications: () => true,
+  setFinishedNotifications: vi.fn(),
 }));
 vi.mock("@/lib/interface-mode", () => ({
   useAdvancedMode: () => fixture.advancedMode,

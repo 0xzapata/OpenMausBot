@@ -174,3 +174,19 @@ describe("notification feed preference", () => {
     unsubscribe();
   });
 });
+
+describe("finished-work notifications preference", () => {
+  it("defaults on and persists changes", async () => {
+    let preference = await import("./notification-preferences");
+    expect(preference.finishedNotificationsEnabled()).toBe(true);
+    preference.setFinishedNotifications(false);
+    expect(local.getItem(preference.FINISHED_NOTIFICATIONS_KEY)).toBe("0");
+    expect(preference.useFinishedNotifications()).toBe(false);
+    vi.resetModules();
+    preference = await import("./notification-preferences");
+    expect(preference.finishedNotificationsEnabled()).toBe(false);
+    preference.setFinishedNotifications(true);
+    expect(local.getItem(preference.FINISHED_NOTIFICATIONS_KEY)).toBe("1");
+    expect(preference.finishedNotificationsEnabled()).toBe(true);
+  });
+});

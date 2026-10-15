@@ -60,6 +60,8 @@ vi.mock("@/lib/notification-preferences", () => ({
   setNotificationSounds: fixture.setNotificationSounds,
   useNotificationFeed: () => false,
   setNotificationFeed: fixture.setNotificationFeed,
+  useFinishedNotifications: () => true,
+  setFinishedNotifications: vi.fn(),
 }));
 vi.mock("@/lib/send-key", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/send-key")>(),
