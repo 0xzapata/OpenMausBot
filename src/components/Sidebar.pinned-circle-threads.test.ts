@@ -1,4 +1,4 @@
-import { Children, createElement, isValidElement, type MemoExoticComponent, type ReactElement, type ReactNode } from "react";
+import { Children, createElement, isValidElement, type ComponentProps, type MemoExoticComponent, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -22,7 +22,7 @@ vi.mock("./DesktopCapabilities", () => ({
   useDesktopCapabilities: () => ({}),
 }));
 
-import { BotListItem, botRowProps, PinnedBotCircle, PinnedCircleThreadPanel, PinnedCircleThreadSection, type BotRowProps } from "./Sidebar";
+import { BotListItem, botRowProps, PinnedBotCircle, PinnedCircleThreadPanel, PinnedCircleThreadSection } from "./Sidebar";
 import { PinnedBotRoster } from "./PinnedCircleThreads";
 import { setPinnedCircleOrder } from "@/lib/sidebar-preferences";
 import { PINNED_CIRCLE_DRAG_TYPE } from "@/lib/pinned-circle-order";
@@ -186,7 +186,7 @@ describe("pinned circle order", () => {
   it("drags a circle onto another, or moves it with Alt+Up and Alt+Down", () => {
     vi.stubGlobal("document", { documentElement: { dir: "ltr" } });
     const drag = { reorder: vi.fn(), setDragging: vi.fn(), setDrop: vi.fn() };
-    const circle = (PinnedBotCircle as MemoExoticComponent<(props: BotRowProps & Record<string, unknown>) => ReactNode>).type;
+    const circle = (PinnedBotCircle as MemoExoticComponent<(props: ComponentProps<typeof PinnedBotCircle>) => ReactNode>).type;
     let tree: ReactNode;
     function Capture() { tree = circle({ ...row(atlas), drag, prevId: "comet", nextId: "beacon" }); return tree; }
     renderToStaticMarkup(createElement(Capture));
