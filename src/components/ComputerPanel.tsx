@@ -1265,6 +1265,35 @@ export function ComputerPanel({
     active ? "bg-raised text-ink shadow-sm" : "text-ink-secondary hover:text-ink",
   );
 
+  const panelNavTabs: ComputerPanelView[] = [
+    "computer",
+    ...(advanced ? (["routines"] as const) : []),
+    ...(advanced && androidConnected ? (["android"] as const) : []),
+    "browser",
+    "data",
+    ...(!advanced ? (["files"] as const) : []),
+  ];
+  // Keyboard entry lands on the selected trigger, or on the first one when the
+  // selected view has no trigger in this row.
+  const tabStop = panelNavTabs.includes(panelView) ? panelView : panelNavTabs[0];
+  const tabIndexFor = (view: ComputerPanelView) => (view === tabStop ? 0 : -1);
+  const onTabRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
+      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1
+      : event.key === "Home" ? "first"
+      : event.key === "End" ? "last" : null;
+    if (step === null) return;
+    event.preventDefault();
+    const at = panelNavTabs.findIndex((view) => panelTabId(view) === (event.target as HTMLElement).id);
+    const next = step === "first" ? panelNavTabs[0]
+      : step === "last" ? panelNavTabs[panelNavTabs.length - 1]
+      : panelNavTabs[((at === -1 ? panelNavTabs.indexOf(tabStop) : at) + step + panelNavTabs.length) % panelNavTabs.length];
+    if (next === "browser") setError(null);
+    selectPanelView(next);
+    document.getElementById(panelTabId(next))?.focus();
+  };
+
   const emptyState = {
     checking: t("computer.phase.checking"),
     starting: cloudBackend === "vps" ? t("computer.phase.starting") : cloudView.line,
@@ -1327,35 +1356,38 @@ export function ComputerPanel({
               <Settings size={18} />
             </button>
           )}
-          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-0.5 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" role="tablist" aria-label={t("computer.tabsAria")}>
+          <div className="mx-9 flex min-w-0 gap-0.5 overflow-x-auto rounded-full bg-inset p-0.5 [scrollbar-width:none]" data-tour="computer-tabs" data-testid="computer-tabs" role="tablist" aria-label={t("computer.tabsAria")} onKeyDown={onTabRowKeyDown}>
             <button
               id={panelTabId("computer")}
               role="tab"
               aria-selected={panelView === "computer"}
               aria-controls={panelTabPanelId("computer")}
+              tabIndex={tabIndexFor("computer")}
               onClick={() => selectPanelView("computer")}
               className={tabClass(panelView === "computer")}
             >
               <Monitor size={13} /> {t("computer.tab.computer")}
               {placeLive && isComputerPlace(livePlace) && <span className="size-1.5 animate-pulse rounded-full bg-success" role="img" aria-label={t("place.live")} data-testid="computer-tab-live" />}
             </button>
-            {advanced && (
+            {panelNavTabs.includes("routines") && (
             <button
               type="button"
               id={panelTabId("routines")}
               role="tab"
               aria-selected={panelView === "routines"}
               aria-controls={panelTabPanelId("routines")}
+              tabIndex={tabIndexFor("routines")}
               onClick={() => selectPanelView("routines")}
               className={tabClass(panelView === "routines")}
             ><CalendarClock size={13} />{t("computer.tab.routines")}</button>
             )}
-            {advanced && androidConnected && (
+            {panelNavTabs.includes("android") && (
             <button
               id={panelTabId("android")}
               role="tab"
               aria-selected={panelView === "android"}
               aria-controls={panelTabPanelId("android")}
+              tabIndex={tabIndexFor("android")}
               onClick={() => selectPanelView("android")}
               className={tabClass(panelView === "android")}
             >
@@ -1369,6 +1401,7 @@ export function ComputerPanel({
               role="tab"
               aria-selected={panelView === "browser"}
               aria-controls={panelTabPanelId("browser")}
+              tabIndex={tabIndexFor("browser")}
               onClick={() => {
                 setError(null);
                 selectPanelView("browser");
@@ -1386,18 +1419,20 @@ export function ComputerPanel({
               role="tab"
               aria-selected={panelView === "data"}
               aria-controls={panelTabPanelId("data")}
+              tabIndex={tabIndexFor("data")}
               onClick={() => selectPanelView("data")}
               className={tabClass(panelView === "data")}
             >
               <Database size={13} /> {t("computer.tab.data")}
             </button>
-            {!advanced && (
+            {panelNavTabs.includes("files") && (
             <button
               type="button"
               id={panelTabId("files")}
               role="tab"
               aria-selected={panelView === "files"}
               aria-controls={panelTabPanelId("files")}
+              tabIndex={tabIndexFor("files")}
               onClick={() => selectPanelView("files")}
               className={tabClass(panelView === "files")}
             >
