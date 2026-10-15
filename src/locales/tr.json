@@ -786,7 +786,7 @@
   "settings.sendKey.title": "Mesajları şununla gönder",
   "settings.sendKey.subtitle": "Enter'ın yeni satır başlatması için Shift+Enter veya {key} seçin; giriş yönteminiz metni Japonca girişte olduğu gibi Enter ile onaylıyorsa kullanışlıdır. Hangisini seçerseniz seçin {key} de gönderir. Yalnızca bu cihazda.",
   "settings.userBubbles.title": "Mesajlarımı renklendir",
-  "settings.userBubbles.subtitle": "Bire bir sohbette mesajlarınız o botun rengini kullanır. Metin beyaz kalır. Odalarda nötr balon korunur.",
+  "settings.userBubbles.subtitle": "Bire bir sohbette mesajlarınız o botun renginden bir renk geçişiyle doldurulur. Odalarda nötr balon korunur.",
   "settings.userBubbles.aria": "Mesajlarımı botun rengiyle renklendir",
   "settings.sidebarDensity.subtitle": "Yalnızca bu cihazda, her bir botun ve iş parçacığının kenar çubuğunda ne kadar yer kaplayacağı. Yalnızca avatarlar, kenar çubuğunu başlığından daraltmakla aynıdır.",
   "settings.advancedMode.title": "Gelişmiş mod",

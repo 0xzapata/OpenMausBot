@@ -2186,9 +2186,9 @@ button:disabled.bg-danger {
 .bot-identity[data-bot-color="teal"] { color: var(--identity-teal); }
 .bot-identity[data-bot-color="coral"] { color: var(--identity-coral); }
 
-/* A colored user bubble sets its own tokens inline. Mentions and selection
-   still have to clear white text: the chip keeps a little of the named bot's
-   color, and selection darkens the fill instead of washing it out. */
+.user-bubble-colored {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16);
+}
 .user-bubble-colored .mention-highlight {
   color: var(--color-ink);
   background: color-mix(in srgb, var(--mention-color) 22%, var(--color-inset));
@@ -2196,6 +2196,6 @@ button:disabled.bg-danger {
 }
 .user-bubble-colored::selection,
 .user-bubble-colored *::selection {
-  background-color: color-mix(in srgb, #000000 35%, var(--color-bubble-user));
-  color: #ffffff;
+  background-color: var(--bubble-selection, color-mix(in srgb, #000000 35%, var(--color-bubble-user)));
+  color: var(--bubble-selection-ink, #ffffff);
 }
