@@ -368,6 +368,8 @@ const support: AcpSupport = {
     signInCommand: "hermes setup",
   },
   spawnArgs: () => ["acp"],
+  // Hermes keeps the first MCP server it registers under a name for the process's life, so a new bearer needs a fresh process.
+  restartOnMcpChange: true,
   transformEnv: (env) => {
     // A leftover OPENAI_API_KEY makes Hermes auto-resolve to OpenRouter with no Authorization header.
     delete env.OPENAI_API_KEY;

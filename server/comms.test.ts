@@ -268,6 +268,12 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
             },
             config: { cli: antigravityCli, fullAuto: true },
           },
+          // Hermes shape: keeps the first agents proxy it is offered for the life of the process
+          poolLister: {
+            driver: "hermesAgent",
+            environment: { FAKE_ACP_MODE: "list-peers" },
+            config: { cli: FAKE_CLI, fullAuto: true },
+          },
           // the asker that hands work on with coordinate_bots (mode work)
           askerDelegate: {
             driver: "grokAgent",
@@ -795,6 +801,47 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
           return !current?.busy;
         }, 10_000, "approval helper did not settle during cleanup").catch(() => {});
       }
+    },
+    60_000,
+  );
+
+  it(
+    "keeps OpenMausBot tools authorized for Hermes after Stop issues a new bearer",
+    async () => {
+      // Stop issues a new bearer; a pooled Hermes keeps its first agents server, so the next turn must run on a fresh process.
+      for (const existing of (await api("GET", "/api/bots")).body.bots) {
+        await api("PATCH", `/api/bots/${existing.id}`, { hidden: true });
+      }
+      const helper = (await api("POST", "/api/bots")).body.bot;
+      await api("PATCH", `/api/bots/${helper.id}`, { name: "PoolHelper", modelSelection: { instanceId: "grok", model: "fake-model" } });
+      const asker = (await api("POST", "/api/bots")).body.bot;
+      await api("PATCH", `/api/bots/${asker.id}`, { name: "PoolAsker", modelSelection: { instanceId: "poolLister", model: "fake-model" } });
+
+      const replies = async (count: number) => {
+        const deadline = Date.now() + 25_000;
+        for (;;) {
+          const bot = (await api("GET", "/api/bots")).body.bots.find((b: any) => b.id === asker.id);
+          const done = bot.messages.filter((m: any) => m.kind === "text" && m.role === "bot" && m.text?.startsWith("peers"));
+          if (done.length >= count && !bot.busy) return done;
+          if (Date.now() > deadline) {
+            throw new Error(`turn ${count} never settled: ${JSON.stringify(bot.messages.slice(-4))}\nstderr: ${stderr.slice(-1500)}`);
+          }
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      };
+      const send = async (text: string) =>
+        expect((await api("POST", `/api/bots/${asker.id}/messages`, { text })).status).toBe(202);
+
+      await send("first: who is on the team?");
+      expect((await replies(1))[0].text).toContain("PoolHelper");
+      await send("second: and now?");
+      expect((await replies(2))[1].text).toContain("PoolHelper");
+
+      expect((await api("POST", `/api/bots/${asker.id}/interrupt`)).status).toBe(200);
+      await send("third: after stopping, who is on the team?");
+      const third = (await replies(3))[2];
+      expect(third.text).not.toContain("unauthorized");
+      expect(third.text).toContain("PoolHelper");
     },
     60_000,
   );
