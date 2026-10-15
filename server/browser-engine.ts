@@ -539,14 +539,14 @@ export function agentBrowserIntegration(input: {
   /** Guest sessions must never save cookies or localStorage to disk. */
   persistent?: boolean;
   headless?: boolean;
+  /** The egress gate port a launched Chrome connects through; without one the browser connects nowhere. */
+  egressPort?: number;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   arch?: string;
   /** The person's own Chrome: agent-browser auto-connects (DevToolsActivePort, then ports 9222/9229) or uses `cdpUrl`, which
    * comes only from workspace config, never the ambient environment. */
   attach?: { cdpUrl?: string };
-  /** The egress gate port a launched Chrome connects through; without one the browser connects nowhere. */
-  egressPort?: number;
 }): { command: string; args: string[]; env: Record<string, string> } {
   const sourceEnv = input.env ?? process.env;
   const env: Record<string, string> = {

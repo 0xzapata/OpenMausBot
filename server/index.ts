@@ -2719,9 +2719,9 @@ function usesMyChrome(profileId: string | undefined): boolean {
 function browserSessionSpec(binaryPath: string, session: string, profile: string | undefined, egressPort?: number) {
   const attachCdpUrl = browserEngineAttachCdpUrl(cfg);
   return agentBrowserIntegration({
-    binaryPath, session, encryptionKey: browserEngineEncryptionKey(), persistent: profile !== "guest",
+    binaryPath, session, encryptionKey: browserEngineEncryptionKey(), persistent: profile !== "guest", egressPort,
     env: { ...process.env, PATH: augmentedPath() },
-    ...(usesMyChrome(profile) ? { attach: attachCdpUrl ? { cdpUrl: attachCdpUrl } : {} } : { egressPort }),
+    ...(usesMyChrome(profile) ? { attach: attachCdpUrl ? { cdpUrl: attachCdpUrl } : {} } : {}),
   });
 }
 async function browserIntegration(botId: string, profile: string | undefined, turn?: { threadId: string; generation: string }) {
