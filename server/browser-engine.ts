@@ -578,7 +578,6 @@ export function agentBrowserIntegration(input: {
       env.AGENT_BROWSER_HEADLESS = "1";
       env.AGENT_BROWSER_HEADED = "0";
     }
-    Object.assign(env, agentBrowserEgressEnv(env, input.egressPort ?? 0, input.platform ?? process.platform));
   }
   // MCP clients may filter the parent env, so the Chrome path is carried explicitly, without unrelated secrets or flags.
   for (const name of ["PATH", "AGENT_BROWSER_EXECUTABLE_PATH"] as const) {
@@ -588,7 +587,8 @@ export function agentBrowserIntegration(input: {
   if (!env.AGENT_BROWSER_EXECUTABLE_PATH && bundle && resolve(input.binaryPath) === bundle.engine && completePackage(bundle, existsSync)) {
     env.AGENT_BROWSER_EXECUTABLE_PATH = bundle.chrome;
   }
-  if (!input.attach) Object.assign(env, input.launcher);
+  // The gate goes last, so nothing the launcher sets can route Chrome around it; launcher arguments are kept beside its own.
+  if (!input.attach) Object.assign(env, input.launcher, agentBrowserEgressEnv({ ...env, ...input.launcher }, input.egressPort ?? 0, input.platform ?? process.platform));
   return { command: input.binaryPath, args: ["mcp", "--tools", "core", "--no-webmcp"], env };
 }
 

@@ -823,6 +823,19 @@ describe("what a bot gets", () => {
     for (const key of ["AGENT_BROWSER_PROXY", "AGENT_BROWSER_PROXY_BYPASS", "AGENT_BROWSER_ARGS"]) expect(mine.env).not.toHaveProperty(key);
   });
 
+  it("keeps the prepared Chrome launcher and the gate together, and no launcher setting routes Chrome around the gate", () => {
+    const launcher = { AGENT_BROWSER_EXECUTABLE_PATH: "/d/chrome-launcher.sh", AGENT_BROWSER_HIDE_SCROLLBARS: "0" };
+    const gate = { AGENT_BROWSER_PROXY: "socks5://127.0.0.1:45123", AGENT_BROWSER_PROXY_BYPASS: "<-loopback>" };
+    const spec = agentBrowserIntegration({ binaryPath: "/x", session: "bot-1", encryptionKey: "k", env: {}, launcher, egressPort: 45123, platform: "darwin" });
+    expect(spec.env).toMatchObject({ ...launcher, ...gate });
+    const pushy = agentBrowserIntegration({
+      binaryPath: "/x", session: "bot-1", encryptionKey: "k", env: {}, egressPort: 45123, platform: "darwin",
+      launcher: { ...launcher, AGENT_BROWSER_PROXY: "direct://", AGENT_BROWSER_PROXY_BYPASS: "*", AGENT_BROWSER_ARGS: "--lang=en-IN" },
+    });
+    expect(pushy.env).toMatchObject({ AGENT_BROWSER_EXECUTABLE_PATH: "/d/chrome-launcher.sh", ...gate });
+    expect(pushy.env.AGENT_BROWSER_ARGS!.split("\n")).toEqual(["--lang=en-IN", "--webrtc-ip-handling-policy=disable_non_proxied_udp", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--use-mock-keychain"]);
+  });
+
   it("forwards the explicit Chrome path without copying arbitrary environment or overriding session isolation", () => {
     vi.stubEnv("AGENT_BROWSER_EXECUTABLE_PATH", "/process/chrome");
     const spec = agentBrowserIntegration({
