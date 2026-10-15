@@ -81,8 +81,8 @@ sync.
 - Symbolic links, junctions, and files with more than one hard link, on either side.
 - A Cloud file whose name the PC cannot hold (Name rules). It stays on the Cloud and is listed.
 
-The skip list and the name rules live in one plain JavaScript module, `shared/cloud-sync-rules.mjs` with a `.d.mts`,
-imported by the desktop (`electron/*.mjs` cannot import `shared/*.ts`) and the server.
+The skip list and the name rules live in one plain JavaScript module, `electron/cloud-sync-rules.mjs` with a `.d.mts`.
+The desktop package ships only `electron/**`, and the server imports the module from there (its bundle inlines it).
 
 ## Layout on the Cloud
 
@@ -101,14 +101,15 @@ workspace backup's exclusions (`server/workspace-backup.ts`).
 PC folders are registered and stored: `{ id, kind: "pc", computerId, computerName, pcPath, cloudPath, createdAt }`.
 `computerId` is a random UUID the desktop keeps in its user data, never the hostname. Bot output folders are not
 stored: `GET /api/sync` derives them from `task-workspaces/*/*` folders that hold a file, as
-`{ id: "bot-<botId>-<threadId>", kind: "bot", botId, threadId, botName, title, cloudPath }`, so a new conversation's
-folder appears without a registration step.
+`{ id: "bot-<botId>-<threadId>", kind: "bot", botId, threadId, cloudPath }`, so a new conversation's folder appears
+without a registration step. The desktop names the PC folder from the bot's name and the conversation's title, which
+it reads from the Cloud's `GET /api/bots`.
 
 ## Components
 
 | Unit | Side | Does |
 |---|---|---|
-| `shared/cloud-sync-rules.mjs` | both | skip list, name rules, NFC and case folding, the clash file name |
+| `electron/cloud-sync-rules.mjs` | both | skip list, name rules, NFC and case folding, the clash file name |
 | `electron/cloud-sync-plan.mjs` | desktop | pure three-way planner: base, PC and Cloud listings in, actions out |
 | `electron/cloud-sync-scan.mjs` | desktop | walks a PC folder, stats, hashes what changed, watches for changes |
 | `electron/cloud-sync-state.mjs` | desktop | `userData/cloud-sync/state.db`: base rows, folder map, waiting files, clashes, issues |
@@ -139,7 +140,6 @@ NFC-normalized; the server refuses `..`, NUL, absolute paths and any path that r
 | `GET /api/sync/folders/:id/file?path=` | the bytes, `Range` supported, with `x-omb-sha256` |
 | `POST /api/sync/folders/:id/ops` `{ ops: [{ op: "delete", path, baseSha256 } \| { op: "move", from, to, sha256 }] }` | `{ results: [{ ok: true } \| { conflict: true, current }] }` |
 | `GET /api/sync/trash` / `POST /api/sync/trash/restore` `{ entryId }` | Recently deleted, newest first; restore puts the file back (as a clash copy if the path is taken) |
-| `POST /api/sync/relink` `{ links: [{ kind: "bot" \| "task" \| "room", id, threadId?, pcPath }] }` | sets each `cwd` that is empty or equal to `pcPath` to that folder's Cloud copy |
 
 The upload protocol is Move to Cloud's (`server/cloud-move.ts`): resumable by offset, a repeated part is a no-op,
 proxies that refuse 16 MB get halved parts down to 512 KB, retries at 1/3/8/15/30 s. Unlike the move, many uploads
@@ -198,8 +198,8 @@ creates is not synced (non-goal).
 - **PC:** `fs.watch(folder, { recursive: true })` (Windows and macOS) triggers a pass for that folder after 1 s of quiet;
   a full rescan runs every 5 minutes, at start, on wake (`powerMonitor` `resume`) and when the network returns.
 - **Cloud:** the server watches the sync root and the bot output folders with `fs.watch` (recursive on Linux in Node
-  24), bumps a change cursor in `index.db`, and answers the open `GET /api/sync/changes`. A turn finishing also bumps
-  the cursor for that bot's folder, in case the watcher missed it. Hashes are cached in `index.db` by size and modified
+  24), bumps a change cursor in `index.db`, and answers the open `GET /api/sync/changes`. The desktop's 5-minute full
+  pass lists every Cloud folder too, so a change the watcher missed is still found. Hashes are cached in `index.db` by size and modified
   time, so a listing only hashes what changed.
 - Two transfers run at a time; hashing is streamed.
 
@@ -211,8 +211,8 @@ creates is not synced (non-goal).
 - On `507`, if the plan's disk can still grow, the desktop asks the Admin to grow it in 10 GB steps, through the call
   Move to Cloud uses (`POST /api/cloud/desktop/disk`, within its rate limits), then retries.
 - If it cannot grow, the file **waits**. Files that fit keep syncing. Status: "12 files (1.8 GB) are waiting: My Cloud
-  is full", with **Upgrade** naming the next plan's disk ("Get 50 GB with Pro", from the plan catalog). Waiting files go
-  up by themselves when space appears.
+  is full", with an **Upgrade** button ("Get more space"; naming the next plan's disk waits for project 2's plan
+  catalog). Waiting files go up by themselves when space appears.
 - At 80% of the plan's limit the meter turns amber and the tray/menu says "My Cloud is 80% full".
 - **Upgrade** opens project 2's plan change. Until project 2 ships, it opens the Cloud page in the browser ("Change
   plan: email us" today).
@@ -220,8 +220,10 @@ creates is not synced (non-goal).
 
 ## What bots see
 
-- A bot, task or room linked to a PC folder works in the Cloud copy: its `cwd` is set to the `cloudPath` by
-  `POST /api/sync/relink` (Move, switch on) or by Choose on this PC.
+- A bot or room linked to a PC folder works in the Cloud copy: the desktop sets its `cwd` to the `cloudPath` with the
+  existing `PATCH /api/bots/:id` / `PATCH /api/groups/:id` (`validateBotCwd`), when the switch turns on (Move included)
+  and from Choose on this PC. Registering a folder creates its Cloud copy at once, so the folder exists when the `cwd`
+  is checked. A task already pinned to a folder keeps it; new tasks use the bot's.
 - `cloudHomePrompt` (`server/system-prompt.ts`) gains one line from the registry: "Folders synced from Ash-PC:
   `C:\Users\Ash\Documents\PA` → `/data/Synced/Ash-PC/PA`; … A path on that computer inside one of these means the synced
   copy." At most 20 folders are listed, then a count. Instruction text is never rewritten, so turning sync off leaves
@@ -231,8 +233,8 @@ creates is not synced (non-goal).
 ## Move to Cloud
 
 The move gains one step, **Keep your folders in sync with My Cloud?** (Yes / Not now). With Yes, after the restore
-the desktop registers the linked folders it read from the local server, runs their first sync, then calls
-`POST /api/sync/relink`. Bot ids survive a restore, so the links match. If they do not fit, the move still finishes;
+the desktop registers the linked folders it read from the local server, runs their first sync, then sets the Cloud
+bots' and rooms' `cwd`s to the copies. Bot ids survive a restore, so the links match. If they do not fit, the move still finishes;
 sync waits with the upgrade prompt.
 
 A Cloud moved earlier (Ash's) does the same when the switch is turned on later, from the same local data.
@@ -243,8 +245,9 @@ A Cloud moved earlier (Ash's) does the same when the switch is turned on later, 
   lending. It pauses while the Cloud is signed out or unpaired and resumes when the Cloud account refreshes.
 - It runs while the app runs, with no window open: the Windows tray already keeps the app alive; on macOS a tray item
   shows while sync is on, like the lending indicator.
-- Turning sync on also turns on **Open MausBot when I log in** (`app.setLoginItemSettings`, starting hidden), with its
-  own checkbox to turn it off.
+- Turning sync on also turns on **Open MausBot when I log in** (`app.setLoginItemSettings`), with its own checkbox to
+  turn it off. The app opens as it does when started by hand; starting hidden is a follow-up (`createWindow` has no
+  hidden start today).
 - **Settings → MausBot Cloud → Sync with My Cloud** (`CloudSync.tsx`): the switch, with copy that says every Cloud
   bot can use synced files; the meter; the folder list with each folder's state; Waiting, Clashes and Can't sync
   lists with Open folder; Recently deleted with Restore.
@@ -266,8 +269,8 @@ A Cloud moved earlier (Ash's) does the same when the switch is turned on later, 
   because coding tools on the PC load those files.
 - Only the owner's admin session reaches `/api/sync/*`. Neither side follows links. The Cloud volume is encrypted at
   rest (`ensureVolume`, `encrypted: true`), and transfers are HTTPS.
-- The Cloud health report (`server/cloud-health.ts`) gains counts only: synced bytes, waiting files, clashes. Never
-  names or paths.
+- Sync counts in the Cloud health report (synced bytes, waiting files, clashes; never names or paths) are a follow-up:
+  the Admin's health schema has to accept them first.
 
 ## Errors and recovery
 
@@ -280,9 +283,10 @@ A Cloud moved earlier (Ash's) does the same when the switch is turned on later, 
 
 ## Size ratchets
 
-`server/index.ts` (17,972) and `electron/main.mjs` (3,557) are at their ceilings. The routes register from
-`server/routes/cloud-sync.ts` and the service from `electron/cloud-sync.mjs`, with a net-zero line change in both
-files.
+`server/index.ts` (17,972) and `electron/main.mjs` (3,557) are at their ceilings. The routes need no wiring from
+`index.ts`: `server/routes/table.ts` lists them in `ROUTES`. `index.ts` changes only to pass the synced-folder line to
+`cloudHomePrompt` (its two `./enterprise.ts` imports merge to pay for the import). `main.mjs` makes room by moving
+`recordDesktopCrash` into `electron/diagnostics.mjs`.
 
 ## Testing
 
@@ -291,10 +295,10 @@ files.
    names.
 2. **Cloud** (`server/cloud-sync.test.ts`): registry idempotence, path refusal (traversal, links), upload resume and
    repeated parts, commit `409` and `422`, `507` with the 1 GiB reserve, trash and its 30-day sweep, restore as a clash
-   copy, relink, the change long poll.
+   copy, the change long poll.
 3. **End to end** (`server/cloud-sync.e2e.test.ts`): a real Cloud-home server (as `server/cloud-home-server.test.ts`)
    and the desktop service on two temporary folders: edits both ways, a clash keeping both, delete → trash → restore,
-   an interrupted upload resuming, a full disk making files wait and then sync once space frees, relink after a
+   an interrupted upload resuming, a full disk making files wait and then sync once space frees, bots relinked after a
    move.
 4. **Windows:** the PC-side tests also run on the Windows CI job (Recycle Bin, `\\?\` long paths, name rules, case
    folding).
