@@ -40,6 +40,7 @@ const BROWSER = new Set([
   "Browser.cancelDownload",
   "Browser.close",
   "Browser.getWindowForTarget",
+  "Browser.getWindowBounds",
   "Browser.setWindowBounds",
   "Storage.getCookies",
   "Storage.setCookies",

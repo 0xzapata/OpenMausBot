@@ -10,6 +10,7 @@ import type { CdpTransport } from "./transport.ts";
 
 /** Every headless page is this size, so pictures, boxes and clicks agree. */
 export const VIEWPORT = { width: 1280, height: 720 } as const;
+const FIT_ROUNDS = 3;
 
 export interface BrowserOptions {
   /** The binary's calibrated headed identity, applied to every page, frame and worker. Null in a window, which is natively that identity. */
@@ -141,19 +142,29 @@ export class CdpBrowser implements PageHost {
   /**
    * A headless window's frame differs by platform: --window-size=1280,863 gives
    * a 1280x720 page on macOS and Linux but 1264x712 on Windows (measured), so
-   * each window is measured once and resized until its page is the viewport.
+   * each window is measured and resized, a few rounds at most, until its page
+   * is the viewport.
    */
   async #fitWindow(page: CdpPage): Promise<void> {
     const viewport = this.#options.viewport === undefined ? (this.setup.focusEmulation ? VIEWPORT : null) : this.#options.viewport;
     if (!viewport || page.closed) return;
     const root = this.connection.root;
+    const measure = () => valueInWorld<[number, number]>(page.frames, page.frames.mainFrameId, "[innerWidth, innerHeight]");
     try {
-      const { windowId, bounds } = await root.send<{ windowId: number; bounds: { width?: number; height?: number } }>("Browser.getWindowForTarget", { targetId: page.targetId });
+      const { windowId } = await root.send<{ windowId: number }>("Browser.getWindowForTarget", { targetId: page.targetId });
       if (this.#fittedWindows.has(windowId)) return;
       this.#fittedWindows.add(windowId);
-      const [width, height] = await valueInWorld<[number, number]>(page.frames, page.frames.mainFrameId, "[innerWidth, innerHeight]");
-      if ((width === viewport.width && height === viewport.height) || !bounds.width || !bounds.height) return;
-      await root.send("Browser.setWindowBounds", { windowId, bounds: { width: bounds.width + viewport.width - width, height: bounds.height + viewport.height - height } });
+      let size = await measure();
+      for (let round = 0; round < FIT_ROUNDS && (size[0] !== viewport.width || size[1] !== viewport.height); round++) {
+        const { bounds } = await root.send<{ bounds: { width?: number; height?: number } }>("Browser.getWindowBounds", { windowId });
+        if (!bounds.width || !bounds.height) return;
+        await root.send("Browser.setWindowBounds", { windowId, bounds: { width: bounds.width + viewport.width - size[0], height: bounds.height + viewport.height - size[1] } });
+        const before = size;
+        for (let poll = 0; poll < 20 && size[0] === before[0] && size[1] === before[1]; poll++) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          size = await measure();
+        }
+      }
     } catch (error) {
       if (!isGone(error)) throw error;
     }
