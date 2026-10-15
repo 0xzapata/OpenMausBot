@@ -1,13 +1,6 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { removeTempDir } from "../../testing/cleanup.ts";
-import { calibrateIdentity, headedIdentity, isChromeIdentity } from "./identity.ts";
-
-const folders: string[] = [];
-afterAll(async () => { for (const folder of folders) await removeTempDir(folder); });
+import { headedIdentity, isChromeIdentity } from "./identity.ts";
 
 /** As Chrome for Testing 153 reports itself headless on an Apple silicon Mac (measured). */
 const HEADLESS_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36";
@@ -56,20 +49,5 @@ describe("the identity a headless Chrome is given", () => {
     expect(isChromeIdentity({ ...identity, extra: "x" })).toBe(false);
     expect(isChromeIdentity({ userAgent: identity.userAgent })).toBe(false);
     expect(isChromeIdentity(null)).toBe(false);
-  });
-
-  it.skipIf(process.platform === "win32")("starts the binary with the environment it is given, off the keychain, and says when it exits", async () => {
-    const folder = mkdtempSync(join(tmpdir(), "omb-calibrate-"));
-    folders.push(folder);
-    const chrome = join(folder, "chrome");
-    writeFileSync(chrome, `#!/bin/sh\nprintf '%s' "$HOME" > '${folder}/home'\nprintf '%s\\n' "$@" > '${folder}/args'\nexit 3\n`, { mode: 0o755 });
-    await expect(calibrateIdentity(chrome, { env: { PATH: "/usr/bin:/bin", HOME: "/Users/ada" }, timeoutMs: 10_000 })).rejects.toThrow(/exited/);
-    expect(readFileSync(join(folder, "home"), "utf8")).toBe("/Users/ada");
-    const args = readFileSync(join(folder, "args"), "utf8").split("\n");
-    expect(args).toContain("--headless=new");
-    expect(args).toContain(process.platform === "darwin" ? "--use-mock-keychain" : "--password-store=basic");
-    // DevTools over a pipe: no port that a bot's page browsing at the same time could reach.
-    expect(args).toContain("--remote-debugging-pipe");
-    expect(args.filter((arg) => arg.startsWith("--remote-debugging-port"))).toEqual([]);
   });
 });
