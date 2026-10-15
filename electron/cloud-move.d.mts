@@ -1,3 +1,4 @@
+import type { WorkspaceLeftBehind } from "../shared/workspace-backup.ts";
 export interface MoveContents { bots: number; rooms: number; chats: number }
 /** Which server answered: null from a server from before it said. */
 export interface ServerIdentity { appVersion: string | null; environmentId: string | null }
@@ -29,6 +30,8 @@ export interface CloudMoveStatus extends ServerIdentity {
   busy: boolean;
   job: Record<string, unknown> | null;
   lastRestoreId: string | null;
+  /** What the last restore there could not bring from this computer. */
+  leftBehind: WorkspaceLeftBehind | null;
   rolledBackId: string | null;
   partBytes: number;
 }
@@ -53,6 +56,7 @@ export interface CloudMoveState {
   previous?: boolean;
   /** Routines that were on here and arrived paused on the Cloud. */
   routines?: number;
+  leftBehind?: WorkspaceLeftBehind;
 }
 export interface MoveFit { fit: "now" | "grow" | "never"; neededBytes: number; freeBytes: number; maxBytes?: number; largest?: true; volumeBytes?: number; sizeGb?: number }
 /** What Settings and a server's card read (main adds the parts it knows). */
