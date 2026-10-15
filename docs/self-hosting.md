@@ -537,7 +537,7 @@ this computer: http://127.0.0.1:8799/pair#code=XXXX-XXXX-XXXX
 
 Open it and choose **Connect** (or type the code on the sign-in page); the browser
 keeps its session cookie from then on. `openmausbot` (the guided start) prints
-the same link before it opens the browser. The desktop app is unaffected:
+the same link when it opens the browser. The desktop app is unaffected:
 its window adds the app's own per-launch owner header to every request and
 WebSocket it sends to its server, and no other Electron session may reach the
 server at all.

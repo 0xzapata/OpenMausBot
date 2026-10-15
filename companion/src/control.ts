@@ -2,7 +2,7 @@
 // anywhere else: it is the control plane the companion listener withholds
 // from phones. Every route but the page itself needs the per-launch control
 // token, which only the launching app and the link the sidecar prints carry.
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import type { DeviceRegistry } from "./devices.ts";
@@ -60,6 +60,14 @@ export function originIsLoopback(origin: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/** Null when the desktop app launched this sidecar: it sends the token over its private port, and the control port
+ * opens only then. Standing alone, the token is OMB_CONTROL_TOKEN when a script chose one, else random. */
+export function initialControlToken(env: NodeJS.ProcessEnv, launchedByApp: boolean): string | null {
+  if (launchedByApp) return null;
+  const chosen = env.OMB_CONTROL_TOKEN ?? "";
+  return /^[A-Za-z0-9_-]{43}$/.test(chosen) ? chosen : randomBytes(32).toString("base64url");
 }
 
 function tokenMatches(presented: string | string[] | undefined, expected: string | null): boolean {

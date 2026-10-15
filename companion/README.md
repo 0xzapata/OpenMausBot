@@ -120,6 +120,7 @@ it is switched on, so the opt-in is never implicit.
 | `OMB_WEBHOOK_PORT` | `OMB_PORT` + 1 | the harness's webhook receiver — refused, not used |
 | `OMB_COMPANION_PORT` | `8810` | where devices connect |
 | `OMB_CONTROL_PORT` | `8811` | the pairing page, loopback only, behind a per-launch token |
+| `OMB_CONTROL_TOKEN` | random | that token (43 base64url characters), for a script that starts the sidecar; the desktop app ignores it |
 | `OMB_COMPANION_DIR` | `~/.openmausbot-companion` | paired devices live here |
 | `OMB_COMPANION_NAME` | your name, from the harness | what the phone calls this computer |
 

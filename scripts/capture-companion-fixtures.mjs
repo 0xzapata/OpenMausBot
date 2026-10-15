@@ -5,6 +5,7 @@
 //   node scripts/capture-companion-fixtures.mjs
 //   node scripts/capture-companion-fixtures.mjs --overview-only
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -27,6 +28,8 @@ const CONTROL_PORT = base + 11;
 const HARNESS = `http://127.0.0.1:${HARNESS_PORT}`;
 const SIDECAR = `http://127.0.0.1:${COMPANION_PORT}`;
 const CONTROL = `http://127.0.0.1:${CONTROL_PORT}`;
+const CONTROL_TOKEN = randomBytes(32).toString("base64url");
+const controlHeaders = { "x-openmausbot-control-token": CONTROL_TOKEN };
 
 const PROFILE = { name: "Ada Lovelace", email: "ada@example.com" };
 
@@ -62,11 +65,11 @@ const start = (label, args, env) => {
   return child;
 };
 
-const waitFor = async (url, label, child) => {
+const waitFor = async (url, label, child, headers = {}) => {
   const deadline = Date.now() + 30_000;
   for (;;) {
     try {
-      if ((await fetch(url)).ok) return;
+      if ((await fetch(url, { headers })).ok) return;
     } catch {
     }
     if (child.exitCode !== null) throw new Error(`${label} exited ${child.exitCode}:\n${child.err ?? ""}`);
@@ -155,9 +158,10 @@ async function main() {
     OMB_WEBHOOK_PORT: String(base + 1),
     OMB_COMPANION_PORT: String(COMPANION_PORT),
     OMB_CONTROL_PORT: String(CONTROL_PORT),
+    OMB_CONTROL_TOKEN: CONTROL_TOKEN,
     OMB_COMPANION_DIR: join(home, "companion"),
   });
-  await waitFor(`${CONTROL}/state`, "companion", sidecar);
+  await waitFor(`${CONTROL}/state`, "companion", sidecar, controlHeaders);
 
   console.log("writing:");
   write("unauthorized", (await json(`${SIDECAR}/api/bots`)).body);
@@ -167,7 +171,7 @@ async function main() {
     body: JSON.stringify({ code: "000000", deviceName: "Ada's iPhone" }),
   })).body);
 
-  const { code } = (await json(`${CONTROL}/pairing`, { method: "POST" })).body;
+  const { code } = (await json(`${CONTROL}/pairing`, { method: "POST", headers: controlHeaders })).body;
   const paired = await json(`${SIDECAR}/api/pair`, {
     method: "POST",
     headers: { "content-type": "application/json" },

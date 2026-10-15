@@ -5,11 +5,10 @@
 //   :8811  127.0.0.1  you         pairing and revocation, never off-machine
 //   :8799  127.0.0.1  the harness spoken to as this machine, unmodified
 //   UDS/pipe            one Electron-owned sidecar generation, never TCP
-import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
 import { createAddressWatcher } from "./advertise-watch.ts";
-import { createControlServer, hostCandidates } from "./control.ts";
+import { createControlServer, hostCandidates, initialControlToken } from "./control.ts";
 import { createConnectedDeviceTracker } from "./connected-devices.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { companionEndpointCandidates, hostedCompanionUrl } from "./endpoints.ts";
@@ -32,8 +31,7 @@ const parentPort = (process as NodeJS.Process & {
   parentPort?: { on(event: "message", listener: (event: { data?: unknown }) => void): void };
 }).parentPort;
 let mutationToken: string | null = null;
-// Under Electron the control port opens only once the app has sent its token; standing alone, the token is printed.
-let controlToken: string | null = parentPort ? null : randomBytes(32).toString("base64url");
+let controlToken = initialControlToken(process.env, Boolean(parentPort));
 let controlTokenReceived = (): void => {};
 const controlReady = controlToken ? Promise.resolve() : new Promise<void>((resolve) => { controlTokenReceived = resolve; });
 parentPort?.on("message", ({ data }) => {

@@ -1,7 +1,7 @@
 import { type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { createControlServer, hostCandidates, originIsLoopback } from "../src/control.ts";
+import { createControlServer, hostCandidates, initialControlToken, originIsLoopback } from "../src/control.ts";
 import { DeviceRegistry } from "../src/devices.ts";
 
 let control: Server;
@@ -85,6 +85,16 @@ describe("the per-launch control token", () => {
     expect(page.status).toBe(200);
     expect(page.body).toContain("x-openmausbot-control-token");
     expect(page.body).not.toContain(CONTROL_TOKEN);
+  });
+
+  it("waits for the app's token when the app launched the sidecar, and otherwise takes a script's or makes one", () => {
+    expect(initialControlToken({ OMB_CONTROL_TOKEN: CONTROL_TOKEN }, true)).toBeNull();
+    expect(initialControlToken({ OMB_CONTROL_TOKEN: CONTROL_TOKEN }, false)).toBe(CONTROL_TOKEN);
+    for (const env of [{}, { OMB_CONTROL_TOKEN: "short" }, { OMB_CONTROL_TOKEN: `${"c".repeat(42)}!` }]) {
+      const token = initialControlToken(env, false);
+      expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(token).not.toBe(CONTROL_TOKEN);
+    }
   });
 
   it("fails closed until the launching app has sent it", async () => {
