@@ -146,7 +146,8 @@ it("boots with a gateway's settings, says once that it ignores them, and never l
   for (const includedToken of includedTokens) expect(log).not.toContain(includedToken);
 });
 
-it("rewrites the data folder of the computer it was moved from before anything reads it", () => {
+// Cloud homes are Linux; on Windows the data folder is itself a drive path.
+it.skipIf(process.platform === "win32")("rewrites the data folder of the computer it was moved from before anything reads it", () => {
   const dataDir = join(home, ".openmausbot");
   expect(readFileSync(join(dataDir, "workspaces", "moved", "MEMORY.md"), "utf8")).toBe(`The register is ${dataDir}/files/register.xlsx.\n`);
   expect(JSON.parse(readFileSync(join(dataDir, ".backups", "last-restore.json"), "utf8")).pathsRewritten).toBe(true);
