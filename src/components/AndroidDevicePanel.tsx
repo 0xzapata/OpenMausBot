@@ -33,12 +33,22 @@ export function useAndroidUsbDevices(): AndroidUsbDevicesStatus {
     // Every tick is an adb subprocess, so nothing runs while hidden.
     if (!pageVisible) return;
     let alive = true;
+    // adb checks overlap and can answer out of order, so a check older than
+    // the last one that landed is discarded, completion included.
+    let issued = 0;
+    let answered = 0;
     const refresh = async () => {
+      const check = ++issued;
+      const superseded = () => check < answered;
       try {
         const next = await bridge.status();
-        if (alive) setStatus(next);
+        if (alive && !superseded()) {
+          answered = check;
+          setStatus(next);
+        }
       } catch (cause) {
-        if (alive) {
+        if (alive && !superseded()) {
+          answered = check;
           setStatus({
             available: false,
             devices: [],
@@ -47,7 +57,7 @@ export function useAndroidUsbDevices(): AndroidUsbDevicesStatus {
           });
         }
       } finally {
-        if (alive) setScanned(true);
+        if (alive && !superseded()) setScanned(true);
       }
     };
     void refresh();

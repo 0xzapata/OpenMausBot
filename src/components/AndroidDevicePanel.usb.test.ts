@@ -1,14 +1,20 @@
 // @vitest-environment happy-dom
 // The USB hook separates "a check finished" from "a check answered": `scanned`
 // latches on failure too, and only the status' own reasonCode tells a real
-// empty list apart from an adb failure. The panel's persistence gate reads
-// both, so this file locks that contract.
+// empty list apart from an adb failure. Overlapping checks may answer out of
+// order, so a superseded check is dropped whole. The panel's persistence gate
+// reads all of this, so this file locks that contract.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AndroidUsbDevice } from "@/types/ogb";
 import { useAndroidUsbDevices, type AndroidUsbDevicesStatus } from "./AndroidDevicePanel";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 vi.mock("@/lib/page-visible", () => ({ usePageVisible: () => true }));
+
+const PHONE: AndroidUsbDevice = { serial: "p1", state: "device", connection: "usb", model: "Pixel" };
 
 let root: Root | null = null;
 let latest: AndroidUsbDevicesStatus;
@@ -45,6 +51,7 @@ afterEach(() => {
   root = null;
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("useAndroidUsbDevices", () => {
@@ -81,6 +88,35 @@ describe("useAndroidUsbDevices", () => {
     await draw();
     expect(latest.scanned).toBe(true);
     expect(latest.reasonCode).toBeUndefined();
+    expect(latest.devices.map((device) => device.serial)).toEqual(["p1"]);
+  });
+
+  it("keeps the newest answer when an older check answers late", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const answers: Array<(status: unknown) => void> = [];
+    bridge(() => new Promise((resolve) => answers.push(resolve)));
+    await draw();
+    expect(answers).toHaveLength(1);
+
+    // The next poll starts while the first check is still unanswered.
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      await Promise.resolve();
+    });
+    expect(answers).toHaveLength(2);
+
+    // The newer check lands first and finds the phone.
+    await act(async () => {
+      answers[1]({ available: true, devices: [PHONE] });
+      await Promise.resolve();
+    });
+    expect(latest.devices.map((device) => device.serial)).toEqual(["p1"]);
+
+    // The older, superseded answer must not erase it.
+    await act(async () => {
+      answers[0]({ available: true, devices: [] });
+      await Promise.resolve();
+    });
     expect(latest.devices.map((device) => device.serial)).toEqual(["p1"]);
   });
 });
