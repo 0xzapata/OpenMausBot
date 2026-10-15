@@ -114,6 +114,7 @@ process.env = env;
 const children = new Set();
 const clients = [];
 let server;
+let gate;
 let report;
 let failure;
 let fixtureRequests = 0;
@@ -287,10 +288,16 @@ try {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const url = `http://127.0.0.1:${server.address().port}/`;
+  // The bundled Chrome browses through the egress gate, as every bot browser does; desktop rules let it reach this
+  // local page, like a dev server.
+  const { openGate } = await import("../server/browser/egress/gate.ts");
+  const { refusalFor } = await import("../server/browser/egress/policy.ts");
+  const rules = { host: "desktop", ownPort: () => false, botPort: async () => false, localNetwork: true, allowed: () => false };
+  gate = await openGate({ decide: (target, addresses) => refusalFor(target, addresses, rules) });
   for (const name of ["alpha", "beta"]) {
     const integration = agentBrowserIntegration({ binaryPath: status.binaryPath,
       session: `omb-${name[0]}-${randomBytes(4).toString("hex")}`,
-      encryptionKey: randomBytes(32).toString("hex"), persistent: false, env });
+      encryptionKey: randomBytes(32).toString("hex"), persistent: false, env, egressPort: gate.port });
     assert.equal(resolve(integration.env.AGENT_BROWSER_EXECUTABLE_PATH ?? ""), resolve(paths.chrome), "MCP did not receive bundled Chromium");
     assert.equal(integration.env.AGENT_BROWSER_RESTORE_SAVE, "never");
     // Use the production preparation path. Guest preparation creates only
@@ -382,6 +389,7 @@ finally {
     proc.kill("SIGKILL");
   })));
   if (server?.listening) { server.closeAllConnections(); await new Promise((done) => server.close(done)); }
+  await gate?.close();
   process.removeListener("SIGINT", interrupt);
   process.removeListener("SIGTERM", interrupt);
   if (cleanupErrors.length) failure = new Error(`${failure?.message ?? "Browser test passed"}; browser cleanup failed, isolated fixture retained at ${fixture}: ${cleanupErrors.join("; ")}`);

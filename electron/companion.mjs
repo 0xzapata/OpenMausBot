@@ -1,5 +1,6 @@
 // The companion sidecar is the only part of the app that listens off-machine; the renderer never reaches its control port.
 import { app, utilityProcess } from "electron";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCompanionEntry } from "./companion-entry.mjs";
@@ -14,6 +15,8 @@ const CONTROL_PORT = 8811;
 const COMPANION_PORT = 8810;
 
 let proc = null;
+// New for each sidecar launch and held only by main and the sidecar, so a page served from the control port cannot drive it.
+let controlToken = "";
 let lastError = null;
 let advertisedHostedUrl = null;
 let originTarget = null;
@@ -77,10 +80,11 @@ async function control(method, urlPath, body, { timeoutMs = 4_000 } = {}) {
   const options = {
     method,
     signal: AbortSignal.timeout(timeoutMs),
+    headers: { "x-openmausbot-control-token": controlToken },
   };
   if (body !== undefined) {
     options.body = JSON.stringify(body);
-    options.headers = { "content-type": "application/json" };
+    options.headers["content-type"] = "application/json";
   }
   const res = await fetch(`http://127.0.0.1:${CONTROL_PORT}${urlPath}`, options);
   if (!res.ok && res.status !== 404) throw new Error(`companion control ${res.status}`);
@@ -165,6 +169,7 @@ async function start({ resourcesPath, harnessPort, mutationToken, hostedUrl = nu
     childEnvironment.OMB_PHONE_SECRET_PUBLIC_KEY = secretPublicKey;
   }
 
+  controlToken = randomBytes(32).toString("base64url");
   let child;
   try {
     child = utilityProcess.fork(resolved.entry, [], {
@@ -185,7 +190,7 @@ async function start({ resourcesPath, harnessPort, mutationToken, hostedUrl = nu
   child.once("spawn", () => {
     // Never expose this capability in argv, environment, logs or the renderer.
     try {
-      child.postMessage({ type: "openmausbot:companion-mutation-token", token: mutationToken });
+      child.postMessage({ type: "openmausbot:companion-mutation-token", token: mutationToken, controlToken });
     } catch {
       log?.("companion authorization could not be initialized");
       child.kill();

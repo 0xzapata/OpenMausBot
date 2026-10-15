@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { credentialStoreFlags } from "../server/browser/egress/gate.ts";
 import { launchVerificationServer, runControlOmb } from "./control-omb.ts";
 import { agentBrowser, ensureUiBrowser, sessionEnv } from "./testing/control-omb-ui.ts";
 import { mountPreview, type MountedPreview } from "./testing/preview-fixture.ts";
@@ -83,7 +84,7 @@ try {
   });
   const browser = await ensureUiBrowser();
   mkdirSync(join(fixture.info.dataDir, "tmp"), { recursive: true });
-  const env = { ...sessionEnv({ home: fixture.info.dataDir, session: `ca${process.pid}`, chrome: browser.chrome }), AGENT_BROWSER_SOCKET_DIR: join(fixture.info.dataDir, "ab"), AGENT_BROWSER_ARGS: "--host-resolver-rules=MAP auth.example.test 127.0.0.1", AGENT_BROWSER_IGNORE_HTTPS_ERRORS: "1" };
+  const env = { ...sessionEnv({ home: fixture.info.dataDir, session: `ca${process.pid}`, chrome: browser.chrome }), AGENT_BROWSER_SOCKET_DIR: join(fixture.info.dataDir, "ab"), AGENT_BROWSER_ARGS: [...credentialStoreFlags(), "--host-resolver-rules=MAP auth.example.test 127.0.0.1"].join("\n"), AGENT_BROWSER_IGNORE_HTTPS_ERRORS: "1" };
   const command = (...args: string[]) => agentBrowser(browser.binary, env, args);
   closeBrowser = () => command("close");
   const evaluate = async (js: string) => (await command("eval", js)).result;

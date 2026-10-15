@@ -1,6 +1,8 @@
 // A loopback-only page for pairing and revoking devices. Never serve it
 // anywhere else: it is the control plane the companion listener withholds
-// from phones.
+// from phones. Every route but the page itself needs the per-launch control
+// token, which only the launching app and the link the sidecar prints carry.
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import type { DeviceRegistry } from "./devices.ts";
@@ -9,8 +11,12 @@ import { lanAddresses, lanInterfaces, tailnetName, tailscaleAddress } from "./li
 import { defaultHostName } from "./mdns.ts";
 import { publicNetworks } from "./windows-network.ts";
 
+export const CONTROL_TOKEN_HEADER = "x-openmausbot-control-token";
+
 export interface ControlOptions {
   devices: DeviceRegistry;
+  /** Null until the launching app has sent it: every route but the page answers 403. */
+  controlToken: () => string | null;
   companionPort: number;
   /** HPKE recipient public key shown in pairing QRs; the private key never
    * leaves Electron's encrypted store. */
@@ -54,6 +60,21 @@ export function originIsLoopback(origin: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/** Null when the desktop app launched this sidecar: it sends the token over its private port, and the control port
+ * opens only then. Standing alone, the token is OMB_CONTROL_TOKEN when a script chose one, else random. */
+export function initialControlToken(env: NodeJS.ProcessEnv, launchedByApp: boolean): string | null {
+  if (launchedByApp) return null;
+  const chosen = env.OMB_CONTROL_TOKEN ?? "";
+  return /^[A-Za-z0-9_-]{43}$/.test(chosen) ? chosen : randomBytes(32).toString("base64url");
+}
+
+function tokenMatches(presented: string | string[] | undefined, expected: string | null): boolean {
+  if (!expected || typeof presented !== "string") return false;
+  const left = Buffer.from(presented);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 const json = (res: ServerResponse, status: number, body: unknown) => {
@@ -103,7 +124,7 @@ const readHostedEndpoint = (
     });
   });
 
-const currentHostedUrl = (options: ControlOptions): string | null =>
+const currentHostedUrl = (options: Pick<ControlOptions, "hostedUrl">): string | null =>
   options.hostedUrl?.() ?? null;
 
 /** Best first: the MagicDNS name, the LAN addresses, then the sidecar's mDNS
@@ -124,7 +145,7 @@ export function hostCandidates(
 }
 
 /** Recomputed per request: addresses change when you join another network. */
-export function companionState(options: ControlOptions) {
+export function companionState(options: Omit<ControlOptions, "controlToken">) {
   const interfaces = lanInterfaces();
   const addresses = interfaces.map((entry) => entry.address);
   const tailscale = tailscaleAddress(addresses);
@@ -188,6 +209,9 @@ export function createControlServer(options: ControlOptions): Server {
       const html = page();
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html) });
       return res.end(html);
+    }
+    if (!tokenMatches(req.headers[CONTROL_TOKEN_HEADER], options.controlToken())) {
+      return json(res, 403, { error: "forbidden: open the companion's control page from the link it printed" });
     }
     if (method === "GET" && path === "/state") return json(res, 200, companionState(options));
     if (method === "POST" && path === "/tailscale/refresh" && options.refreshTailscale) {
@@ -315,9 +339,17 @@ const ago = (at) => {
   return h < 24 ? h + " h ago" : Math.round(h / 24) + " d ago";
 };
 
+// The link the companion printed carries the control token in its fragment, which never leaves this page.
+const token = new URLSearchParams(location.hash.slice(1)).get("token") ?? "";
+history.replaceState(null, "", location.pathname);
+
 /** Call the control API and return the state it answers with. */
 async function api(path, method) {
-  const res = await fetch(path, { method: method ?? "GET" });
+  const res = await fetch(path, { method: method ?? "GET", headers: { "x-openmausbot-control-token": token } });
+  if (res.status === 403) {
+    document.querySelector("main").innerHTML = "<h1>OpenMausBot Companion</h1><p class=sub>Open this page from the link the companion printed when it started.</p>";
+    throw new Error("control token required");
+  }
   return res.json();
 }
 

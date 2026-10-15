@@ -1,4 +1,5 @@
 // Loopback requests (Host and Origin both loopback) or paired sessions (bearer, cookie, stream ticket); a session swaps the loopback rule for same-origin (CSRF) and a scope check.
+// Browsers never get loopback trust: a page a bot opens is a browser on this machine too.
 import type { IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
@@ -54,14 +55,23 @@ export function serviceAllowed(method: string, path: string): boolean {
 }
 
 /** Packaged desktop: `owner`. Else OMB_LOOPBACK_TRUST=owner|service; unset, a hosted workspace (any OMB_ADMIN_*)
- * gets `service` and a headless server `owner`. Any other value fails closed. */
+ * gets `service` and a headless server `owner`. Any other value fails closed. `localBrowsers`: see localBrowserTrust. */
 export function resolveLoopbackTrust(input: {
   env?: NodeJS.ProcessEnv;
   desktopManaged: boolean;
   hostedWorkspace: boolean;
   /** A Cloud home's network traffic arrives through its edge proxy, so bare loopback is a bot's shell: always `service`. */
   cloudHome?: boolean;
-}): { trust: LoopbackTrust; reason: string; warning?: string } {
+  /** This server runs from TypeScript source rather than a build. */
+  fromSource?: boolean;
+}): { trust: LoopbackTrust; reason: string; warning?: string; localBrowsers: boolean } {
+  const resolved = loopbackTrust(input);
+  const browsers = localBrowserTrust(input.env ?? process.env, input.fromSource === true && !input.desktopManaged, resolved.trust);
+  const warning = [resolved.warning, browsers.warning].filter(Boolean).join("; ");
+  return { trust: resolved.trust, reason: resolved.reason, ...(warning ? { warning } : {}), localBrowsers: browsers.trusted };
+}
+
+function loopbackTrust(input: Parameters<typeof resolveLoopbackTrust>[0]): { trust: LoopbackTrust; reason: string; warning?: string } {
   const raw = (input.env ?? process.env).OMB_LOOPBACK_TRUST;
   const requested = raw?.trim().toLowerCase();
   if (input.cloudHome) {
@@ -109,6 +119,29 @@ export function isLoopbackHost(host: string | undefined): boolean {
   if (isIP(hostname) === 4) return hostname.startsWith("127.");
   return hostname === "::1" || hostname === "0:0:0:0:0:0:0:1";
 }
+
+/** Browsers send Sec-Fetch-Site and Sec-Fetch-Dest on every request to a loopback address and Origin on every WebSocket
+ * handshake (Chrome 155 sends no Sec-Fetch-* there); a page can remove none of them. Node's fetch (undici) sends
+ * Sec-Fetch-Mode alone, so it does not count; curl, the companion and the desktop app's main process send none. */
+export function fromBrowser(req: IncomingMessage): boolean {
+  const headers = req.headers;
+  if (headers["sec-fetch-site"] !== undefined || headers["sec-fetch-dest"] !== undefined) return true;
+  return headerValue(headers.upgrade)?.toLowerCase() === "websocket" && headers.origin !== undefined;
+}
+
+const LOCAL_BROWSER_TRUST = "OMB_DEV_TRUST_LOCAL_BROWSER";
+
+/** Development only: a server run from a source checkout (`pnpm dev:server`, test fixtures) lets this machine's browsers in
+ * as before, because Vite's dev proxy forwards them; a packaged, bundled, hosted or service-trust server ignores it. */
+function localBrowserTrust(env: NodeJS.ProcessEnv, fromSource: boolean, trust: LoopbackTrust): { trusted: boolean; warning?: string } {
+  if (env[LOCAL_BROWSER_TRUST] !== "1") return { trusted: false };
+  if (!fromSource || trust !== "owner") {
+    return { trusted: false, warning: `${LOCAL_BROWSER_TRUST} is ignored: it applies only to a development server run from source with owner trust` };
+  }
+  return { trusted: true, warning: `${LOCAL_BROWSER_TRUST}=1: browsers on this machine act as the owner (development only)` };
+}
+
+export const BROWSER_SIGN_IN = "unauthorized: this browser is not signed in. Open the sign-in link that openmausbot serve or openmausbot pair prints on this computer, or pair it with a code from Settings → Remote access";
 
 export function isAllowedOrigin(origin: string | undefined | null): boolean {
   if (!origin) return true; // non-browser clients (CLIs, curl, tests) send none
@@ -341,6 +374,8 @@ export interface ResolveOptions {
   loopbackTrust?: LoopbackTrust;
   /** Under `service`: a per-launch secret from `openmausbot serve` over stdin (never env, which other children read); it opens only pairing codes. */
   cliOwnerToken?: string;
+  /** resolveLoopbackTrust's `localBrowsers`: a development server lets this machine's browsers use loopback trust. */
+  trustLocalBrowser?: boolean;
 }
 
 const CLI_OWNER_HEADER = "x-openmausbot-cli-owner";
@@ -428,11 +463,10 @@ export function resolveRequestAuth(req: IncomingMessage, options: ResolveOptions
       ) return deny(403, "forbidden: invalid companion request");
       return { auth: { kind: "loopback", scopes: LOOPBACK_SCOPES }, status: 401, error: "" };
     }
-    if (
-      options.loopbackMutationToken !== undefined &&
-      mutatingPublicRoute(method, path) &&
-      !secureTokenMatch(headerValue(req.headers[DESKTOP_OWNER_HEADER]), options.loopbackMutationToken)
-    ) {
+    const desktopOwner = options.loopbackMutationToken !== undefined &&
+      secureTokenMatch(headerValue(req.headers[DESKTOP_OWNER_HEADER]), options.loopbackMutationToken);
+    if (fromBrowser(req) && !desktopOwner && !options.trustLocalBrowser) return deny(401, BROWSER_SIGN_IN);
+    if (options.loopbackMutationToken !== undefined && mutatingPublicRoute(method, path) && !desktopOwner) {
       return deny(403, "forbidden: this change must come from the desktop app or a paired device");
     }
     if (options.loopbackMutationToken === undefined && options.loopbackTrust === "service") {

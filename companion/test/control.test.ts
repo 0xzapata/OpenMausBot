@@ -1,7 +1,7 @@
 import { type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { createControlServer, hostCandidates, originIsLoopback } from "../src/control.ts";
+import { createControlServer, hostCandidates, initialControlToken, originIsLoopback } from "../src/control.ts";
 import { DeviceRegistry } from "../src/devices.ts";
 
 let control: Server;
@@ -12,14 +12,18 @@ let disconnectedDeviceIds: string[] = [];
 let revokedDeviceIds: string[] = [];
 let tailscaleRefreshes = 0;
 let completedTailscaleRefreshes = 0;
+const CONTROL_TOKEN = "c".repeat(43);
+let controlToken: string | null = CONTROL_TOKEN;
+const withToken = { "x-openmausbot-control-token": CONTROL_TOKEN };
 
 const ask = async (
   method: string,
   path: string,
   headers: Record<string, string> = {},
   body?: string,
+  token: Record<string, string> = withToken,
 ): Promise<{ status: number; body: any }> => {
-  const res = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers, body });
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers: { ...token, ...headers }, body });
   const text = await res.text();
   try {
     return { status: res.status, body: JSON.parse(text) };
@@ -33,6 +37,7 @@ beforeAll(async () => {
   let hostedUrl: string | null = null;
   control = createControlServer({
     devices,
+    controlToken: () => controlToken,
     companionPort: 8810,
     secretPublicKey: () => "BIPBQ12_dWnF1DZLsTZO3Vg0NGjds5-jp9h3jhjr2To7bJelczS0LM82rfXV68PmSJhz2ePosj3fL974XckCpDU",
     hostedUrl: () => hostedUrl,
@@ -61,6 +66,47 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve) => control.close(() => resolve()));
+});
+
+describe("the per-launch control token", () => {
+  it("refuses every route without it, so a page served from the control port cannot pair a device", async () => {
+    for (const [method, path] of [["POST", "/pairing"], ["GET", "/state"], ["DELETE", "/pairing"], ["POST", "/tailscale/refresh"], ["POST", "/devices/x/browser-control"], ["DELETE", "/devices/x"]]) {
+      const tokenless = await ask(method, path, { origin: `http://127.0.0.1:${port}` }, undefined, {});
+      expect(tokenless.status, `${method} ${path}`).toBe(403);
+      expect(JSON.stringify(tokenless.body)).not.toMatch(/omb_pair_|"code"/);
+    }
+    expect((await ask("POST", "/pairing", {}, undefined, { "x-openmausbot-control-token": "d".repeat(43) })).status).toBe(403);
+    expect((await ask("POST", "/pairing", {}, undefined, { "x-openmausbot-control-token": CONTROL_TOKEN.slice(1) })).status).toBe(403);
+    expect(devices.pairing()).toBeNull();
+  });
+
+  it("serves the page itself, which holds no state, without one", async () => {
+    const page = await ask("GET", "/", {}, undefined, {});
+    expect(page.status).toBe(200);
+    expect(page.body).toContain("x-openmausbot-control-token");
+    expect(page.body).not.toContain(CONTROL_TOKEN);
+  });
+
+  it("waits for the app's token when the app launched the sidecar, and otherwise takes a script's or makes one", () => {
+    expect(initialControlToken({ OMB_CONTROL_TOKEN: CONTROL_TOKEN }, true)).toBeNull();
+    expect(initialControlToken({ OMB_CONTROL_TOKEN: CONTROL_TOKEN }, false)).toBe(CONTROL_TOKEN);
+    for (const env of [{}, { OMB_CONTROL_TOKEN: "short" }, { OMB_CONTROL_TOKEN: `${"c".repeat(42)}!` }]) {
+      const token = initialControlToken(env, false);
+      expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(token).not.toBe(CONTROL_TOKEN);
+    }
+  });
+
+  it("fails closed until the launching app has sent it", async () => {
+    controlToken = null;
+    try {
+      expect((await ask("GET", "/state")).status).toBe(403);
+      expect((await ask("POST", "/pairing")).status).toBe(403);
+    } finally {
+      controlToken = CONTROL_TOKEN;
+    }
+    expect(devices.pairing()).toBeNull();
+  });
 });
 
 describe("origins the control server will change state for", () => {

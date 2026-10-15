@@ -68,5 +68,8 @@ describe("the identity a headless Chrome is given", () => {
     const args = readFileSync(join(folder, "args"), "utf8").split("\n");
     expect(args).toContain("--headless=new");
     expect(args).toContain(process.platform === "darwin" ? "--use-mock-keychain" : "--password-store=basic");
+    // DevTools over a pipe: no port that a bot's page browsing at the same time could reach.
+    expect(args).toContain("--remote-debugging-pipe");
+    expect(args.filter((arg) => arg.startsWith("--remote-debugging-port"))).toEqual([]);
   });
 });

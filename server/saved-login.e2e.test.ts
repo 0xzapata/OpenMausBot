@@ -20,6 +20,8 @@ async function browserFixture(url: string) {
   const page = new FakeLoginPage(url, LOGIN_FORM);
   const port = await freePortBlock([0], 19_960, 40);
   const engineArgs: string[][] = [];
+  // The proxy each browser command carries (a version probe starts no browser): a bot's browser goes through its egress gate.
+  const proxies = new Set<string>();
   const bridge = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += String(chunk);
@@ -39,8 +41,9 @@ async function browserFixture(url: string) {
         if (call.name === "agent_browser_eval") return reply({ content: [{ type: "text", text: JSON.stringify(page.window.eval(call.arguments?.script ?? "")) }] });
         return reply({ isError: true, content: [{ type: "text", text: `unknown tool ${call.name}` }] });
       }
-      const { args } = JSON.parse(raw) as { args: string[] };
+      const { args, proxy } = JSON.parse(raw) as { args: string[]; proxy?: string };
       engineArgs.push(args);
+      if (args[0] !== "--version") proxies.add(proxy ?? "none");
       const data = await page.engine(args);
       return reply({ success: true, data: data && "port" in data ? { ...data, port } : data });
     } catch (error) {
@@ -70,7 +73,7 @@ else if (args[0] === "mcp") {
     else bridge("/mcp", message.params).then((text) => answer(message.id, JSON.parse(text)));
   });
 }
-else bridge("/engine", { args }).then((text) => { process.stdout.write(text); process.exit(0); }, () => process.exit(1));
+else bridge("/engine", { args, proxy: process.env.AGENT_BROWSER_PROXY }).then((text) => { process.stdout.write(text); process.exit(0); }, () => process.exit(1));
 `, { mode: 0o755 });
 
   const fixture = await launchVerificationServer({}, undefined, undefined, { binaryPath, executablePath: join(tools, "chrome") }, undefined, { scripted: true });
@@ -88,7 +91,7 @@ else bridge("/engine", { args }).then((text) => { process.stdout.write(text); pr
   };
   const answered = (turn: number, tool: string) => evidence()[turn].evidence.filter((entry: any) => entry.step?.tool === tool).map((entry: any) => entry.response.result);
   return {
-    page, base, planPath, engineArgs, fixture, evidence, api, answered,
+    page, base, planPath, engineArgs, proxies, fixture, evidence, api, answered,
     close: async () => {
       page.close();
       await fixture.close();
@@ -136,6 +139,7 @@ it.skipIf(process.platform === "win32")("saves a login from the sign-in card wit
     expect(filled.content[0].text).toBe(`Filled the username and the password for ${USERNAME} on login.microsoftonline.com and submitted it; the page is now https://example.com/invoices (“Invoices”). Check you are signed in.`);
     expect(page.sent).toEqual([{ email: USERNAME, password: PASSWORD, csrf: "token-not-a-secret" }]);
     expect(page.pressed).toEqual(["Enter"]);
+    expect([...browser.proxies]).toEqual([expect.stringMatching(/^socks5:\/\/127\.0\.0\.1:[1-9]\d*$/u)]);
 
     const logins = await api("GET", "/api/logins");
     expect(logins.body.logins).toEqual([expect.objectContaining({ site: "example.com", hosts: ["example.com", "login.microsoftonline.com"], exactHost: false, source: "card", bots: [bot.id] })]);

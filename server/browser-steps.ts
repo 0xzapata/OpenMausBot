@@ -12,6 +12,7 @@ import {
 import { RelayPorts, RelayTimeout, relay, relayPorts, relayTarget, type RelayTarget } from "./browser-relay.ts";
 import type { BrowserSpawnSpec } from "./browser-runtime.ts";
 import { sanitizeUrl, scrubBrowserResult } from "./browser-tool-shape.ts";
+import { browserEgress } from "./browser/egress/registry.ts";
 
 export interface StepContext {
   botId: string;
@@ -408,6 +409,7 @@ export class BrowserSteps {
       if (ok && tool === "agent_browser_screenshot" && call.args.annotate === true) steps.refs.clear();
       if (ok && tool === "agent_browser_close") {
         steps.running = false;
+        browserEgress.takeNotice(call.session);
         this.health.forget(call.session);
         this.ports.forget(call.session);
         if (state.recorded) await this.write(call, state, { ok, imageSkipped: "no-browser", engineMs });
@@ -453,6 +455,7 @@ export class BrowserSteps {
       const lines = [
         state.late ? healthLine(this.health.visible(call.session, state.late), [], "late", SETTLE_CAP_MS / 1000, pageHost) : null,
         delta ? healthLine(this.health.visible(call.session, delta), recording ? unansweredWorthSaying(pending) : [], state.action ? "after" : "late", SETTLE_CAP_MS / 1000, pageHost) : null,
+        browserEgress.takeNotice(call.session),
       ];
       for (const text of lines) if (text) out.parts.push({ type: "text", text });
       if (state.recorded) {

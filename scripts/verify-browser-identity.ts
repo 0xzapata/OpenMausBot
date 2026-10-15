@@ -12,6 +12,8 @@ import { pathToFileURL } from "node:url";
 import { agentBrowserIntegration, closeBrowserSession, prepareBrowserSessionState, resolveAgentBrowserBinary, setBrowserViewport } from "../server/browser-engine.ts";
 import { BrowserRuntime, browserRuntimeEnv, type BrowserSpawnSpec } from "../server/browser-runtime.ts";
 import { ChromeLauncher } from "../server/browser/chrome/launcher.ts";
+import { openGate } from "../server/browser/egress/gate.ts";
+import { refusalFor } from "../server/browser/egress/policy.ts";
 import { DATA_DIR } from "../server/config.ts";
 import { expectedUserAgent, startIdentityProbe, type ProbeReports, type ReportedIdentity } from "./testing/browser-identity-probe.ts";
 
@@ -139,8 +141,14 @@ export async function verifyBrowserIdentity(options: {
   // Where the launcher adds nothing (OMB_BROWSER_LEGACY_SHELL=1, a headless shell), agent-browser would otherwise look for a
   // browser of its own, such as an installed Google Chrome, instead of the one named here.
   const launcherEnv = launcher.env();
+  // Like every bot browser, this one browses through an egress gate; desktop rules let it reach the loopback probe page.
+  const decided = new Set<number>();
+  const gate = await openGate({ decide: (target, addresses) => {
+    decided.add(target.port);
+    return refusalFor(target, addresses, { host: "desktop", ownPort: () => false, botPort: async () => false, localNetwork: true, allowed: () => false });
+  } });
   const integration = agentBrowserIntegration({
-    binaryPath: options.engine, session, encryptionKey: randomBytes(32).toString("hex"), persistent: false, launcher: launcherEnv,
+    binaryPath: options.engine, session, encryptionKey: randomBytes(32).toString("hex"), persistent: false, launcher: launcherEnv, egressPort: gate.port,
     env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, ...(Object.keys(launcherEnv).length ? {} : { AGENT_BROWSER_EXECUTABLE_PATH: options.chrome }) },
   });
   const spec: BrowserSpawnSpec = { ...integration, env: { ...integration.env, HOME: home, USERPROFILE: home, TMPDIR: profiles, TEMP: profiles, TMP: profiles, AGENT_BROWSER_SOCKET_DIR: sockets } };
@@ -149,7 +157,7 @@ export async function verifyBrowserIdentity(options: {
     applyViewport: (value) => setBrowserViewport(value.command, value.env),
     closeBrowser: (name, value) => closeBrowserSession(value.command, browserRuntimeEnv({ ...value.env, AGENT_BROWSER_SESSION: name })),
   });
-  const probe = await startIdentityProbe();
+  const probe = await startIdentityProbe().catch(async (error: unknown) => { await gate.close(); throw error; });
   const call = (name: string, args: Record<string, unknown>) => runtime.agentRpc(session, spec, "tools/call", { name, arguments: args });
   try {
     await prepareBrowserSessionState(options.engine, session, { env: spec.env, persistent: false });
@@ -158,7 +166,8 @@ export async function verifyBrowserIdentity(options: {
     const reports = await probe.complete(30_000);
     const major = String(reports.page?.high?.uaFullVersion ?? "").split(".")[0] ?? "";
     const expected = expectedUserAgent(major);
-    const readout: IdentityReadout = { chrome: launcher.describe(), expectedUserAgent: expected, reports, checks: identityChecks(reports, expected) };
+    const gated = { check: "the page loaded through the egress gate", pass: decided.has(Number(new URL(probe.url).port)), detail: `the gate decided on ports ${[...decided].join(", ") || "none"}` };
+    const readout: IdentityReadout = { chrome: launcher.describe(), expectedUserAgent: expected, reports, checks: [...identityChecks(reports, expected), gated] };
     writeFileSync(join(options.out, "identity.json"), `${JSON.stringify(readout, null, 2)}\n`);
     const verdicts: PublicVerdict[] = [];
     for (const site of options.publicPages ? PUBLIC_PAGES : []) {
@@ -180,6 +189,7 @@ export async function verifyBrowserIdentity(options: {
     await closeBrowserSession(options.engine, browserRuntimeEnv({ ...spec.env, AGENT_BROWSER_SESSION: session })).catch(() => false);
     await runtime.closeAll();
     await probe.close();
+    await gate.close();
     rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     rmSync(sockets, { recursive: true, force: true });
   }

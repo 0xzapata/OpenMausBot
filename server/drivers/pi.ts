@@ -640,7 +640,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
               ...input.environment,
               OMB_MCP_CONFIG: join(mcpTempDir, "mcp.json"),
             }),
-          });
+          }, "bot");
         } catch (err) {
           try {
             rmSync(mcpTempDir, { recursive: true, force: true });
