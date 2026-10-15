@@ -25,6 +25,58 @@ Profiles, cookies and downloads are user data, never packaged resources.
 The npm/self-hosted distribution stays small and retains its explicit browser
 installation flow. Desktop packaging does not silently enlarge the npm tarball.
 
+## Which Chrome the bots' browser runs
+
+agent-browser still drives every bot browser, but the browser it starts is a
+real Chrome whenever this machine has one, chosen once per machine
+(`server/browser/chrome/resolve.ts`):
+
+1. The person's installed **Google Chrome**, unless an organization manages it
+   (`/Library/Managed Preferences/com.google.Chrome.plist`, the
+   `HKLM\SOFTWARE\Policies\Google\Chrome` key, or a JSON file in
+   `/etc/opt/chrome/policies/managed`). Bots get their own profiles; the
+   person's Chrome profile is never touched.
+2. Otherwise **Chrome for Testing** 153.0.8010.47, downloaded once into
+   `tools/chrome/` in the data directory at first launch, checked against its
+   pinned size and SHA-256 before it is unpacked, and moved into place in one
+   rename. Only platforms with a pin download (Apple silicon Macs today;
+   `scripts/pin-chrome-for-testing.ts` measures more). A browser call made
+   during the download waits up to 45 seconds, then says how far it got.
+3. A Linux desktop without Google Chrome, and a platform without a pin, keep
+   the bundled headless shell. That stays the machine's choice; it never
+   changes while the server runs.
+
+Servers and the Docker image name their browser with
+`AGENT_BROWSER_EXECUTABLE_PATH` (the image's Chrome for Testing), or use the
+Chrome for Testing `agent-browser install` put in place. `OMB_CHROME_PATH`
+names one explicitly. An `OMB_AGENT_BROWSER_PATH` engine keeps its own choice
+unless a Chrome is named too.
+
+**Identity.** The chosen Chrome reports exactly what it reports headed, read
+from the binary itself once per version: its own user agent without
+"HeadlessChrome", and its own client hints (brands, full version list,
+platform version, architecture). agent-browser runs a generated launcher
+(`browser/chrome-launcher.sh`, `.cmd` on Windows) that adds
+`--disable-blink-features=AutomationControlled`, that user agent, the primary
+display's size and, when OMB knows it, the language; on a server it also
+passes the server's `TZ`. A bot's Chrome never touches the person's keychain
+or keyring (`--use-mock-keychain` on macOS, `--password-store=basic` on
+Linux), and on macOS it always runs with the person's own home, so no
+"keychain cannot be found" dialog can appear. A second DevTools connection gives every page,
+cross-site frame and worker the matching client hints before it runs.
+Nothing is invented: Chrome for Testing reports Chromium brands, Google Chrome
+its own. `OMB_BROWSER_SCREEN`, `OMB_BROWSER_LANG` and `OMB_BROWSER_TIMEZONE`
+override the display, language and zone.
+
+`openmausbot browser status`, the server's startup log and the
+`browserEngine.chrome` field of its configuration status name the choice, for
+example `Google Chrome 155 (installed)`. **Rollback:** start the server with
+`OMB_BROWSER_LEGACY_SHELL=1` to run exactly the previous engine.
+
+`node --experimental-strip-types scripts/verify-browser-identity.ts --public`
+checks what sites see, in a throwaway home: the identity on a loopback probe
+page, then the four public bot-test pages, read-only.
+
 ## Signed-in sites and My Chrome
 
 Each built-in browser lists its signed-in sites (Settings → Browser profiles,

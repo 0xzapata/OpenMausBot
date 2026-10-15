@@ -361,6 +361,9 @@ export class BrowserLive {
     const resetting = this.sessionResets.get(viewer.session);
     if (resetting) await resetting;
     await this.runtime.settled(viewer.session);
+    await this.runtime.launchReady(viewer.spec).catch((error: unknown) => {
+      throw new BrowserLiveError(error instanceof Error ? error.message : "The browser is not ready yet.", 503);
+    });
     let status = await this.command(viewer, ["stream", "status"], STATUS_PROBE_MS);
     if (status.enabled !== true) {
       try { status = await this.command(viewer, ["stream", "enable"]); }
@@ -375,6 +378,7 @@ export class BrowserLive {
     if (ownsBrowserViewport(viewer.spec.env ?? {})) {
       await this.command(viewer, [...BROWSER_VIEWPORT_ARGS], VIEWPORT_TIMEOUT_MS).catch(() => undefined);
     }
+    await this.runtime.launched(viewer.session, viewer.spec);
     return port;
   }
 

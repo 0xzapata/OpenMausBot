@@ -75,6 +75,8 @@ beforeEach(() => {
     withHumanAction: vi.fn(async (_session: string, _owner: string, fn: () => unknown) => fn()),
     watch: vi.fn(() => () => {}),
     settled: vi.fn(async () => {}),
+    launchReady: vi.fn(async () => {}),
+    launched: vi.fn(async () => {}),
   } as unknown as BrowserRuntime;
   live = new BrowserLive({ runtime });
   SocketFixture.instances = [];
@@ -182,6 +184,7 @@ describe("authenticated browser viewer relay", () => {
     execute.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const res = new ResponseFixture();
     const opening = live.open({ botId: "b", session: "profile-a", owner: "admin-a", isCurrent: () => true, res: res as unknown as ServerResponse, spec: { command: "/engine" } });
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
     await a.action({ type: "take" });
     expect(res.headersSent).toBe(false); expect(res.chunks).toHaveLength(0);
     finish(output(ready)); await opening;
@@ -207,6 +210,20 @@ describe("authenticated browser viewer relay", () => {
     expect(execute.mock.calls.map((call) => call[1])).toEqual([
       ["stream", "status", "--json", "--no-webmcp"], ["stream", "enable", "--json", "--no-webmcp"], ["open", "--json", "--no-webmcp"],
     ]);
+  });
+  it("waits for the prepared Chrome before the engine may start it, and gives it its identity once it runs", async () => {
+    const order: string[] = [];
+    vi.mocked(runtime.launchReady).mockImplementation(async () => { order.push("ready"); });
+    vi.mocked(runtime.launched).mockImplementation(async () => { order.push("launched"); });
+    execute.mockImplementation(async (_command: string, args: string[]) => { order.push(args[0] === "stream" ? `stream ${args[1]}` : args[0]!); return output({ ...ready, connected: false }); });
+    await open();
+    expect(order).toEqual(["ready", "stream status", "open", "launched"]);
+    expect(runtime.launched).toHaveBeenCalledWith("profile-a", expect.objectContaining({ command: "/trusted/agent-browser" }));
+  });
+  it("tells the viewer why the browser cannot start yet, and starts nothing", async () => {
+    vi.mocked(runtime.launchReady).mockRejectedValue(new Error("Getting the browser ready (52 of 182 MB). Try again in a minute."));
+    await expect(open()).rejects.toThrow("Getting the browser ready (52 of 182 MB). Try again in a minute.");
+    expect(execute).not.toHaveBeenCalled();
   });
   it("fails closed on missing ports and sanitizes CLI errors without ending an unwritten error response", async () => {
     execute.mockResolvedValueOnce(output({ enabled: true, connected: true, port: null }));
