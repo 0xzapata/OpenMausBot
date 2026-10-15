@@ -3,7 +3,7 @@ import { Rocket, Star } from "lucide-react";
 import type { CloudAccountState } from "../../electron/cloud-account.mjs";
 import type { CloudOffer } from "../../electron/cloud-home.mjs";
 import { api, CLOUD_LINK_SETTINGS, useStore } from "@/state/store";
-import { APP_REPOSITORY, openExternalLink, PRICING_URL, withSource } from "@/lib/app-links";
+import { APP_REPOSITORY } from "@/lib/app-links";
 import { track } from "@/lib/analytics";
 import { brandStatus } from "@/lib/brand";
 import { buyOfferAllowed, cloudNoticeKind, cloudPlanView, cloudTrialNotice, cloudTrialView, offerTrialDays, personalAmount } from "@/lib/cloud-plan";
@@ -154,12 +154,12 @@ export function AppNotices({ quiet = false, viewer = null, now = Date.now }: { q
   if (notice === CLOUD_PRO_UPDATE_NOTICE && popupView && bridge) {
     const report = (action: CloudProPopupAction) => reportCloudProPopup(action, popupView);
     const end = () => { save(CLOUD_PRO_UPDATE_NOTICE); close(); };
-    const browse = (action: CloudProPopupAction, open: () => Promise<unknown>) => { report(action); setFailed(false); void open().then(end, () => setFailed(true)); };
-    const { primary } = popupView;
-    const upgrade = () => { report("upgrade"); end(); dispatch({ type: "openCloudAdd", source: CLOUD_PRO_POPUP_SOURCE }); };
-    return <CloudProPopup view={popupView} failed={failed}
-      onPrimary={primary.via === "checkout" ? upgrade : () => browse(primary.action, () => bridge.openDashboard())}
-      onSeePlans={() => browse("see_plans", () => openExternalLink(withSource(PRICING_URL, CLOUD_PRO_POPUP_SOURCE)))}
+    // Nothing here leaves the app: buying goes to the Add a Cloud dialog, managing to Settings → MausBot Cloud.
+    const plans = (action: CloudProPopupAction) => { report(action); end(); dispatch({ type: "openCloudAdd", source: CLOUD_PRO_POPUP_SOURCE }); };
+    const manage = () => { report("manage"); end(); dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" }); };
+    return <CloudProPopup view={popupView}
+      onPrimary={popupView.primary.via === "checkout" ? () => plans("upgrade") : manage}
+      onSeePlans={() => plans("see_plans")}
       onNotNow={() => { report("not_now"); end(); }}
       onClose={() => { report("close"); end(); }} />;
   }

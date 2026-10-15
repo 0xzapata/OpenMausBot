@@ -375,7 +375,9 @@ describe("the Cloud Pro popup after the update", () => {
     expect(identifyEmail).not.toHaveBeenCalled();
 
     press("Compare plans"); await flush();
-    expect(window.ogb?.openExternal).toHaveBeenCalledWith("https://www.openmausbot.com/pricing?src=update_popup");
+    // Compare plans stays in the app: the Add a Cloud dialog lists every plan.
+    expect(f.dispatch).toHaveBeenCalledWith({ type: "openCloudAdd", source: "update_popup" });
+    expect(window.ogb?.openExternal).not.toHaveBeenCalled();
     expect(identifyEmail).toHaveBeenCalledWith("person@example.test", { submitted: false });
     expect(popupEvents("see_plans")).toEqual([["cloud_pro_popup", { action: "see_plans", plan: "none", signed_in: true }]]);
     expect(lastOrder(vi.mocked(identifyEmail))).toBeLessThan(lastOrder(vi.mocked(track)));
@@ -391,42 +393,28 @@ describe("the Cloud Pro popup after the update", () => {
     expect(lastOrder(vi.mocked(identifyEmail))).toBeLessThan(lastOrder(vi.mocked(track)));
   });
 
-  it("a trial or Pro/Max plan gets Manage plan on the Plan page, a Personal plan Upgrade to Cloud Pro there; never a checkout", async () => {
+  it("a trial or any plan gets Manage plan in Settings → MausBot Cloud, in the app; no Compare plans, never a checkout or the browser", async () => {
     const cases = [
       { state: paid({ trial: trial("active") }), plan: "trial", label: "Manage plan", action: "manage", line: "Pro free trial · verified by MausBot Cloud" },
       { state: paid(), plan: "pro", label: "Manage plan", action: "manage", line: "Pro active · verified by MausBot Cloud" },
       { state: tierPlan("max"), plan: "max", label: "Manage plan", action: "manage", line: "Max active · verified by MausBot Cloud" },
-      { state: tierPlan("personal"), plan: "personal", label: "Upgrade to Cloud Pro", action: "upgrade", line: "Personal active · verified by MausBot Cloud" },
+      { state: tierPlan("personal"), plan: "personal", label: "Manage plan", action: "manage", line: "Personal active · verified by MausBot Cloud" },
     ];
     for (const { state, plan, label, action, line } of cases) {
       vi.clearAllMocks(); fresh(); account = state;
       const html = await launch();
       expect(html, plan).toContain(POPUP); expect(html, plan).toContain(label); expect(html, plan).toContain(line);
-      for (const gone of ["Start free trial", "Free for", "/month"]) expect(html, plan).not.toContain(gone);
+      for (const gone of ["Start free trial", "Free for", "/month", "Compare plans", "Upgrade to Cloud Pro"]) expect(html, plan).not.toContain(gone);
       expect(popupEvents("shown"), plan).toEqual([["cloud_pro_popup", { action: "shown", plan, signed_in: true }]]);
       press(label); await flush();
-      expect(bridges.cloud.openDashboard, plan).toHaveBeenCalledOnce();
+      expect(f.dispatch, plan).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "cloudAccount" });
+      expect(bridges.cloud.openDashboard, plan).not.toHaveBeenCalled(); expect(window.ogb?.openExternal, plan).not.toHaveBeenCalled();
       expect(f.dispatch, plan).not.toHaveBeenCalledWith(expect.objectContaining({ type: "openCloudAdd" }));
       expect(identifyEmail, plan).toHaveBeenCalledWith("person@example.test", { submitted: false });
       expect(popupEvents(action), plan).toEqual([["cloud_pro_popup", { action, plan, signed_in: true }]]);
       expect(storage.get(CLOUD_PRO_UPDATE_NOTICE), plan).toBe("1"); expect(render(), plan).toBe("");
       expect(bridges.cloud.offer, plan).not.toHaveBeenCalled();
     }
-  });
-
-  it("when the browser can't open, it stays with the reason and is not yet done; closing it ends it", async () => {
-    account = paid(); bridges.cloud.openDashboard.mockRejectedValue(new Error("no browser"));
-    await launch();
-    press("Manage plan"); await flush();
-    const html = render();
-    expect(html).toContain(POPUP); expect(html).toContain("Could not open your browser. Please try again.");
-    expect(popupEvents("manage")).toEqual([["cloud_pro_popup", { action: "manage", plan: "pro", signed_in: true }]]);
-    expect(storage.get(CLOUD_PRO_UPDATE_NOTICE)).toBeUndefined(); await flush(); expect(hints()).not.toContain(CLOUD_PRO_UPDATE_NOTICE);
-    expect(await launch(), "a reload brings it back").toContain(POPUP);
-    expect(popupEvents("shown")).toHaveLength(2);
-    press("Close");
-    expect(popupEvents("close")).toEqual([["cloud_pro_popup", { action: "close", plan: "pro", signed_in: true }]]);
-    expect(storage.get(CLOUD_PRO_UPDATE_NOTICE)).toBe("1"); expect(render()).toBe("");
   });
 
   it("never shows one account's offer for another while the new one loads", async () => {

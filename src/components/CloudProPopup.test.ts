@@ -63,9 +63,9 @@ describe("what the popup offers, by plan", () => {
     expect((cloudProPopupView(free, costlier) as CloudProPopupView).points).toContain("Cloud computers and voice included");
   });
 
-  it("a plan: the Plan page in the browser, Upgrade to Cloud Pro below Pro and Manage plan from Pro up, never a checkout or a price", () => {
+  it("a plan: Manage plan in Settings → MausBot Cloud for every plan, no Compare plans, never a checkout, a price or the browser", () => {
     const cases: Array<[CloudAccountState, string, string, string | null]> = [
-      [onPlan("personal"), "personal", "Upgrade to Cloud Pro", "Personal active · verified by MausBot Cloud"],
+      [onPlan("personal"), "personal", "Manage plan", "Personal active · verified by MausBot Cloud"],
       [onPlan("pro", { trial: running }), "trial", "Manage plan", "Pro free trial · verified by MausBot Cloud"],
       [onPlan("pro"), "pro", "Manage plan", "Pro active · verified by MausBot Cloud"],
       [onPlan(undefined), "pro", "Manage plan", "Pro active · verified by MausBot Cloud"],
@@ -78,7 +78,7 @@ describe("what the popup offers, by plan", () => {
     ];
     for (const [account, plan, label, current] of cases) {
       const view = cloudProPopupView(account, TRIAL_OFFER) as CloudProPopupView;
-      expect(view, plan).toMatchObject({ primary: { via: "plan-page", label, action: label === "Manage plan" ? "manage" : "upgrade" }, plan, current, badge: null, price: null, moneyBack: null });
+      expect(view, plan).toMatchObject({ primary: { via: "settings", label, action: "manage" }, seePlans: false, plan, current, badge: null, price: null, moneyBack: null });
       expect(view.signedIn, plan).toBe(account.status === "connected");
     }
   });
@@ -133,8 +133,9 @@ describe("the popup as a dialog", () => {
     button("Start free trial").click(); expect(actions.onPrimary).toHaveBeenCalledOnce();
     button("Compare plans").click(); expect(actions.onSeePlans).toHaveBeenCalledOnce();
     button("Not now").click(); expect(actions.onNotNow).toHaveBeenCalledOnce();
-    show({ failed: true });
-    expect(container.querySelector('[role="alert"]')!.textContent).toBe("Could not open your browser. Please try again.");
+    // A payer has no plans to compare in the app yet: no Compare plans link.
+    show({ view: cloudProPopupView(onPlan("pro"), TRIAL_OFFER) as CloudProPopupView });
+    expect([...container.querySelectorAll("button")].map(item => item.textContent)).not.toContain("Compare plans");
   });
 
   it("knows when another dialog is open, and notices it opening and closing", () => {

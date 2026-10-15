@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Check, Crown, X } from "lucide-react";
+import { Check, Crown, X } from "lucide-react";
 import type { CloudAccountState } from "../../electron/cloud-account.mjs";
 import type { CloudOffer } from "../../electron/cloud-home.mjs";
 import { identifyEmail, track } from "@/lib/analytics";
@@ -13,7 +13,10 @@ export const CLOUD_PRO_POPUP_SOURCE = "update_popup" satisfies CloudSource;
 export type CloudProPopupAction = "shown" | "upgrade" | "manage" | "see_plans" | "not_now" | "close";
 
 export interface CloudProPopupView {
-  primary: { action: "upgrade" | "manage"; label: string; via: "checkout" | "plan-page" };
+  /** Everything stays in the app: buyers go to the Add a Cloud dialog, payers to Settings → MausBot Cloud. */
+  primary: { action: "upgrade" | "manage"; label: string; via: "checkout" | "settings" };
+  /** Compare plans, for someone who can buy: the dialog lists every plan. A payer has nothing to compare there yet. */
+  seePlans: boolean;
   plan: CloudPlanFacts["plan"] | "trial";
   signedIn: boolean;
   email: string | null;
@@ -39,6 +42,7 @@ export function cloudProPopupView(account: CloudAccountState | null, offer: Clou
     return {
       ...who,
       primary: { action: "upgrade", via: "checkout", label: t(intro ? "cloudIntro.start" : "cloudProPopup.upgrade") },
+      seePlans: true,
       badge: intro?.badge ?? null,
       points: intro?.points ?? included,
       price: intro?.price ?? t("pro.fromPrice", { price: usd(Math.min(...offer.plans.map(plan => plan.amount)) / 100) }),
@@ -48,9 +52,9 @@ export function cloudProPopupView(account: CloudAccountState | null, offer: Clou
   }
   return {
     ...who,
-    primary: facts.plan === "personal"
-      ? { action: "upgrade", via: "plan-page", label: t("cloudProPopup.upgrade") }
-      : { action: "manage", via: "plan-page", label: t("cloudProPopup.manage") },
+    // Every plan manages in the app. Personal → Pro is not self-serve yet, so no "Upgrade" that ends at "email us".
+    primary: { action: "manage", via: "settings", label: t("cloudProPopup.manage") },
+    seePlans: false,
     badge: null,
     points: included,
     price: null,
@@ -84,8 +88,8 @@ export function useOtherDialogOpen(watch: boolean): boolean {
 
 const PRIMARY = "inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[14px] font-medium text-accent-ink hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus";
 
-export function CloudProPopup({ view, failed = false, onPrimary, onSeePlans, onNotNow, onClose }: {
-  view: CloudProPopupView; failed?: boolean; onPrimary: () => void; onSeePlans: () => void; onNotNow: () => void; onClose: () => void;
+export function CloudProPopup({ view, onPrimary, onSeePlans, onNotNow, onClose }: {
+  view: CloudProPopupView; onPrimary: () => void; onSeePlans: () => void; onNotNow: () => void; onClose: () => void;
 }) {
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
@@ -123,14 +127,11 @@ export function CloudProPopup({ view, failed = false, onPrimary, onSeePlans, onN
         {view.moneyBack && <p className="text-[12.5px] text-ink-secondary">{view.moneyBack}</p>}
       </div>
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <button type="button" className={PRIMARY} onClick={onPrimary}>
-          {view.primary.label}{view.primary.via === "plan-page" && <ArrowUpRight size={14} aria-hidden="true" />}
-        </button>
-        <button type="button" className="inline-flex items-center gap-1 py-2 text-[13px] text-ink-secondary underline underline-offset-2 hover:text-ink" onClick={onSeePlans}>
-          {t("pro.seePlans")}<ArrowUpRight size={14} aria-hidden="true" />
-        </button>
+        <button type="button" className={PRIMARY} onClick={onPrimary}>{view.primary.label}</button>
+        {view.seePlans && <button type="button" className="inline-flex items-center gap-1 py-2 text-[13px] text-ink-secondary underline underline-offset-2 hover:text-ink" onClick={onSeePlans}>
+          {t("pro.seePlans")}
+        </button>}
       </div>
-      {failed && <p role="alert" className="mt-2 text-[12.5px] text-danger">{t("notice.openFailed")}</p>}
       <div className="mt-3 flex items-center justify-between gap-3">
         <p className="text-[11.5px] text-ink-secondary">{t("pro.disclaimer")}</p>
         <NotNowButton onClick={onNotNow} />

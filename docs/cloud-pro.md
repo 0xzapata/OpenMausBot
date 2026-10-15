@@ -1174,12 +1174,14 @@ time, and none after one closes until another launch:
    on a branded build, which sells no Cloud. It waits while the plan or the
    Admin's offer is loading and while another dialog or a call is open, and,
    when the Cloud can't be reached, for a later launch. Its main button
-   follows the plan: with none, **Start free trial** (while the Admin offers
-   one) or **Upgrade to Cloud Pro** opens the Add a Cloud dialog (source
-   `update_popup`); on Personal **Upgrade to Cloud Pro**, and on a trial, Pro,
-   Max or a plan that needs attention **Manage plan**, open the Plan page in
-   the browser. **Compare plans** opens the pricing page
-   (`?src=update_popup`). Its numbers are the Admin's. Any button, its X,
+   follows the plan, and nothing in it leaves the app: with none, **Start free
+   trial** (while the Admin offers one) or **Upgrade to Cloud Pro** opens the
+   Add a Cloud dialog (source `update_popup`), and so does **Compare plans**
+   (the dialog lists every plan); on any plan (a trial, Personal, Pro, Max or
+   one that needs attention) **Manage plan** opens Settings → MausBot Cloud,
+   and there is no Compare plans. Personal → Pro is not self-serve yet, so
+   Personal gets Manage plan rather than an Upgrade that would end at "write
+   to us". Its numbers are the Admin's. Any button, its X,
    Escape or a click outside end it for good (browser storage and the
    workspace's hint record). It takes focus at its title, keeps Tab inside
    and gives focus back when it closes. `cloud_pro_popup`
@@ -1224,7 +1226,7 @@ again** (one step, the plan unaffected) instead of offering a plan. A `401` or
 other refusal, is a failed check like a dropped connection: it never ends the
 sign-in. Nobody signed in with a paid plan, in payment trouble, with a payment
 being linked, or whose state is unknown is offered a plan anywhere in the app;
-the Cloud Pro popup sends them to their Plan page instead.
+the Cloud Pro popup sends them to Settings → MausBot Cloud instead.
 
 In the Server menu, **My Cloud** goes through the same connection as
 **Open My Cloud** (no pairing code to type); when it cannot, the app
