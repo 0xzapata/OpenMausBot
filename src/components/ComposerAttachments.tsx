@@ -10,6 +10,8 @@ import {
   type PasteAttachment,
 } from "@/lib/composer-attachments";
 import { AttachmentPreviewDialog, previewImage, type PreviewImage } from "./AttachmentPreview";
+import { CitationBadge } from "./CitationUI";
+import type { CitationAttachment } from "@/lib/citations";
 
 /** Electron 32 removed File.path — only the preload can name a file. */
 export function pathForFile(file: File): string {
@@ -20,6 +22,7 @@ export function ComposerAttachments({
   items,
   onAdd,
   onRemove,
+  onChangeCitation,
   onDisplayInChatBox,
   allowImages = true,
   notice,
@@ -30,6 +33,7 @@ export function ComposerAttachments({
   items: Attachment[];
   onAdd: (attachments: Attachment[]) => void;
   onRemove: (id: string) => void;
+  onChangeCitation: (citation: CitationAttachment) => void;
   onDisplayInChatBox: (attachment: PasteAttachment) => void;
   allowImages?: boolean;
   notice: string | null;
@@ -119,10 +123,17 @@ export function ComposerAttachments({
         </div>
       )}
 
-      {items.some((a) => a.kind !== "citation") && (
+      {items.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
           {items.map((a) =>
-            a.kind === "citation" ? null : a.kind === "paste" ? (
+            a.kind === "citation" ? (
+              <CitationBadge
+                key={a.id}
+                citation={a}
+                onChange={onChangeCitation}
+                onRemove={() => onRemove(a.id)}
+              />
+            ) : a.kind === "paste" ? (
               <Chip
                 key={a.id}
                 label="PASTED"
