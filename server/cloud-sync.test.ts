@@ -159,7 +159,8 @@ it("a copy from the person's computer is read-only for bots", async () => {
   expect(readFileSync(join(folder.cloudPath, "brief.md"), "utf8")).toBe("v2");
 });
 
-it("answers 503 for a folder part or a file it cannot read, rather than leaving it out of the listing", async () => {
+// chmod cannot make a file unreadable on Windows (no POSIX mode bits), so this case is POSIX-only.
+it.skipIf(process.platform === "win32")("answers 503 for a folder part or a file it cannot read, rather than leaving it out of the listing", async () => {
   const { sync, folder } = setup();
   await put(sync, folder.id, "sub/a.txt", "one", null);
   await put(sync, folder.id, "b.txt", "two", null);
