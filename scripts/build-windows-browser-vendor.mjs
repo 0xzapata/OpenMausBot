@@ -97,7 +97,7 @@ export async function buildWindowsBrowserVendor(output) {
     mkdirSync(output, { recursive: true });
     const asset = "agent-browser-win32-x64.exe";
     copyFileSync(binary, join(output, asset));
-    const testArtifacts = command("cargo", ["test", "--locked", "--release", "--no-run", "--message-format=json", "--manifest-path", "cli/Cargo.toml", "--target", WINDOWS_VENDOR_TARGET], source, { capture: true })
+    const testArtifacts = command("cargo", ["test", "--bin", "agent-browser", "--locked", "--release", "--no-run", "--message-format=json", "--manifest-path", "cli/Cargo.toml", "--target", WINDOWS_VENDOR_TARGET], source, { capture: true })
       .split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.reason === "compiler-artifact" && entry.profile?.test && entry.executable);
     assert.equal(testArtifacts.length, 1, "Expected one native vendor regression-test binary");
     copyFileSync(testArtifacts[0].executable, join(output, "agent-browser-tests.exe"));
