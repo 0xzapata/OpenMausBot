@@ -4,6 +4,7 @@ import {
   validateAttachmentUploadId, type SavedAttachment,
 } from "../attachments.ts";
 import { deliveredCopy } from "../bot-attachment.ts";
+import { readDocumentPreview } from "../document-preview.ts";
 import { memberBot, memberGroup, type Viewer, type VisibleSet } from "../bot-visibility.ts";
 import type { ComputerControl } from "../computer-control.ts";
 import type { AppConfig } from "../config.ts";
@@ -220,6 +221,19 @@ export function createThreadRoutes(deps: ThreadRouteDeps): RouteHandler {
           res.setHeader("x-openmausbot-folder", "1");
           res.setHeader("cache-control", "private, no-store");
           return json(res, 200, listing);
+        }
+      }
+      if (method === "POST" && (body as { preview?: unknown } | null)?.preview === true) {
+        try {
+          res.setHeader("cache-control", "private, no-store");
+          res.setHeader("cdn-cache-control", "no-store");
+          res.setHeader("cloudflare-cdn-cache-control", "no-store");
+          res.setHeader("pragma", "no-cache");
+          res.setHeader("vary", "Authorization");
+          res.setHeader("x-content-type-options", "nosniff");
+          return json(res, 200, await readDocumentPreview(file));
+        } finally {
+          await file.handle.close();
         }
       }
       if ((streamsMessageImage || botAttachment?.kind === "image") && !file.mime.startsWith("image/")) {
