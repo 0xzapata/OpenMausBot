@@ -1,10 +1,27 @@
+import { fromMarkdown } from "mdast-util-from-markdown";
+
 import type { Notification, NotifyKind } from "../shared/notification.ts";
 import { personMentionExcerpt } from "../shared/person-mention.ts";
 
 export type { Notification, NotifyKind } from "../shared/notification.ts";
 
+type MarkdownNode = {
+  type: string;
+  value?: string;
+  children?: MarkdownNode[];
+};
+
+const inlineContainers = new Set(["paragraph", "heading", "emphasis", "strong", "delete", "link", "linkReference"]);
+
+function plainText(node: MarkdownNode): string {
+  if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
+  if (node.type === "code") return "";
+  const between = inlineContainers.has(node.type) ? "" : " ";
+  return (node.children ?? []).map(plainText).join(between);
+}
+
 export function summarize(text: string, max = 140): string {
-  const line = text.replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+  const line = plainText(fromMarkdown(text) as MarkdownNode).replace(/\s+/g, " ").trim();
   return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
 }
 
