@@ -13125,7 +13125,7 @@ describe("message pages", () => {
       path: join(home, ".openmausbot", "attachments", "shared-notes.pdf"), preview: true,
     });
     expect(pdf.status).toBe(200);
-    expect(pdf.body.kind).toBe("download");
+    expect(pdf.body.kind).toBe("pdf");
     expect(pdf.body).not.toHaveProperty("text");
   });
 
