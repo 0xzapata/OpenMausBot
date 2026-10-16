@@ -578,36 +578,40 @@ function LocalFileLink({ filePath, name, children, message }: { filePath: string
     return <span title="Unavailable legacy file reference" className="break-words text-ink-secondary">{children}</span>;
   }
   if (open) {
+    // A chip names the file only; the host path stays out of the DOM (see the security note above).
+    const label = name ?? fileName(filePath);
     return (
-      <span dir="ltr" className="inline-flex flex-wrap items-center gap-x-1.5 [unicode-bidi:isolate]">
-        <TableFileButton path={filePath} name={name ?? fileName(filePath)} message={message} />
-        <button
-          type="button"
-          onClick={() => open(filePath, message)}
-          title={t("document.open")}
-          className="inline-flex items-center gap-1 break-words text-start text-accent underline decoration-accent/40 hover:decoration-accent"
-        >
-          {children}
-          <FileText size={12} className="shrink-0" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          onClick={() => void save.save()}
-          disabled={save.state === "saving"}
-          title="Save a copy"
-          aria-label="Save a copy"
-          className="inline-flex items-center gap-1 text-[12px] text-ink-secondary underline decoration-hairline hover:decoration-ink-secondary disabled:cursor-wait"
-        >
-          {save.state === "saving" ? (
-            <LoaderCircle size={12} className="shrink-0 animate-spin" aria-hidden="true" />
-          ) : save.state === "saved" ? (
-            <Check size={12} className="shrink-0 text-success" aria-hidden="true" />
-          ) : save.state === "failed" ? (
-            <RotateCcw size={12} className="shrink-0" aria-hidden="true" />
-          ) : (
-            <Download size={12} className="shrink-0" aria-hidden="true" />
-          )}
-        </button>
+      <span dir="ltr" className="inline-flex flex-wrap items-center gap-x-1.5 align-baseline [unicode-bidi:isolate]">
+        <TableFileButton path={filePath} name={label} message={message} />
+        <span className="inline-flex max-w-full items-center rounded-full border border-hairline bg-inset text-[0.88em] text-ink">
+          <button
+            type="button"
+            onClick={() => open(filePath, message)}
+            title={t("document.open")}
+            className="inline-flex min-w-0 items-center gap-1 rounded-s-full py-0.5 ps-2 pe-1 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          >
+            <FileText size={12} className="shrink-0" aria-hidden="true" />
+            <span className="truncate">{label}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void save.save()}
+            disabled={save.state === "saving"}
+            title="Save a copy"
+            aria-label="Save a copy"
+            className="inline-flex items-center rounded-e-full py-0.5 ps-1 pe-2 text-ink-secondary hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-wait"
+          >
+            {save.state === "saving" ? (
+              <LoaderCircle size={12} className="shrink-0 animate-spin" aria-hidden="true" />
+            ) : save.state === "saved" ? (
+              <Check size={12} className="shrink-0 text-success" aria-hidden="true" />
+            ) : save.state === "failed" ? (
+              <RotateCcw size={12} className="shrink-0" aria-hidden="true" />
+            ) : (
+              <Download size={12} className="shrink-0" aria-hidden="true" />
+            )}
+          </button>
+        </span>
         {save.state === "failed" && (
           <span role="alert" className="text-[12px] text-danger">{saveFailureText(save)}</span>
         )}

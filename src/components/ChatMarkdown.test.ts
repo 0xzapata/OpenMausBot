@@ -30,6 +30,7 @@ import { StoreProvider } from "@/state/store";
 import { setLocale } from "@/lib/i18n";
 import { ThreadRefsContext } from "./ThreadRefs";
 import * as AttachmentPreview from "./AttachmentPreview";
+import { DocumentWorkspace } from "./DocumentWorkspace";
 
 vi.mock("react", async (importOriginal) => {
   const react = await importOriginal<typeof React>();
@@ -624,6 +625,17 @@ describe("ChatMarkdown attachments", () => {
     expect(html).toContain('title="Save a copy"');
     expect(html).not.toContain("/Users/milind/report.md");
     expect(html).not.toContain("C:/Users/Maus/report.md");
+  });
+
+  it("shows a local file as a filename chip that opens the preview panel", () => {
+    const html = renderToStaticMarkup(createElement(DocumentWorkspace, { scope: "bot:b:t", children: createElement(ChatMarkdown, {
+      text: "[/Users/milind/.openmausbot/report.md](/Users/milind/.openmausbot/report.md)",
+      message: { threadId: "thread-1", messageId: "message-1" },
+    }) }));
+    expect(html).toContain("rounded-full");
+    expect(html).toContain('<span class="truncate">report.md</span>');
+    expect(html).toContain('aria-label="Save a copy"');
+    expect(html).not.toContain("/Users/milind");
   });
 
   it("says an image with no source is unavailable in the person's language", () => {
