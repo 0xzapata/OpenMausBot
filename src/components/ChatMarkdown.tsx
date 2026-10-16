@@ -595,6 +595,7 @@ function LocalFileLink({ filePath, name, children, message }: { filePath: string
           onClick={() => void save.save()}
           disabled={save.state === "saving"}
           title="Save a copy"
+          aria-label="Save a copy"
           className="inline-flex items-center gap-1 text-[12px] text-ink-secondary underline decoration-hairline hover:decoration-ink-secondary disabled:cursor-wait"
         >
           {save.state === "saving" ? (
@@ -607,6 +608,14 @@ function LocalFileLink({ filePath, name, children, message }: { filePath: string
             <Download size={12} className="shrink-0" aria-hidden="true" />
           )}
         </button>
+        {save.state === "failed" && (
+          <span role="alert" className="text-[12px] text-danger">{saveFailureText(save)}</span>
+        )}
+        {save.state === "failed" && save.outsideWorkspace && (
+          <span className="inline-flex flex-wrap items-center gap-x-1.5 text-[12px]">
+            <OutsideWorkspaceFile filePath={filePath} />
+          </span>
+        )}
       </span>
     );
   }
