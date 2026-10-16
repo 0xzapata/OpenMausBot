@@ -103,6 +103,12 @@ describe("summarize", () => {
     expect(summarize("   padded   ")).toBe("padded");
   });
 
+  it("drops Markdown marks and keeps the words", () => {
+    expect(summarize("**Done** see [report](https://x.y/r.md) and `npm test`")).toBe("Done see report and npm test");
+    expect(summarize("# Title\n- one\n- two")).toBe("Title one two");
+    expect(summarize("line1  \nline2")).toBe("line1 line2");
+  });
+
   it("clamps long text with an ellipsis", () => {
     const long = summarize("x".repeat(400));
     expect(long).toHaveLength(140);
