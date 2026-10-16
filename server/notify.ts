@@ -16,6 +16,7 @@ const inlineContainers = new Set(["paragraph", "heading", "emphasis", "strong", 
 function plainText(node: MarkdownNode): string {
   if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
   if (node.type === "code") return "";
+  if (node.type === "break") return " ";
   const between = inlineContainers.has(node.type) ? "" : " ";
   return (node.children ?? []).map(plainText).join(between);
 }
