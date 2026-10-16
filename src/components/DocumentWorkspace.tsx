@@ -2,12 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Copy, Download, FileText, LoaderCircle, RotateCcw, X } from "lucide-react";
-import { useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
+import { requestMessageFile, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
 import { t } from "@/lib/i18n";
 import "./document-workspace.css";
 
 type Selection = { path: string; message: MessageAttachmentContext; opener: HTMLElement | null };
-type Preview = { name: string; bytes: number; kind: "markdown" | "text" | "download"; text?: string; truncated: boolean };
+type Preview = { name: string; bytes: number; kind: "markdown" | "text" | "pdf" | "download"; text?: string; truncated: boolean };
 const DocumentContext = createContext<((path: string, message: MessageAttachmentContext) => void) | null>(null);
 /** Return the enclosing task's preview opener, or null for download-only hosts. */
 export const useDocumentPreview = () => useContext(DocumentContext);
@@ -41,6 +41,7 @@ export function DocumentWorkspace({ scope, children }: { scope: string; children
  * focus ownership; narrow layouts trap focus until the reader is dismissed. */
 function DocumentPanel({ selection, onClose, narrow }: { selection: Selection; onClose: () => void; narrow: boolean }) {
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [copyStatus, setCopyStatus] = useState("");
@@ -76,6 +77,7 @@ function DocumentPanel({ selection, onClose, narrow }: { selection: Selection; o
   useEffect(() => {
     const controller = new AbortController();
     setPreview(null);
+    setPdfUrl(null);
     setError("");
     void (async () => {
       try {
@@ -88,13 +90,22 @@ function DocumentPanel({ selection, onClose, narrow }: { selection: Selection; o
           throw new Error(response.status === 403 ? t("document.denied") : response.status === 404 ? t("document.missing") : response.status === 413 ? t("document.tooLarge") : t("document.failed"));
         }
         const body = await response.json() as Preview;
-        if (!controller.signal.aborted) setPreview(body);
+        if (controller.signal.aborted) return;
+        setPreview(body);
+        // An iframe cannot send the Authorization header, so PDF bytes ride a blob URL.
+        if (body.kind === "pdf") {
+          const bytes = await (await requestMessageFile(selection.path, selection.message, controller.signal)).blob();
+          if (controller.signal.aborted) return;
+          setPdfUrl(URL.createObjectURL(new Blob([bytes], { type: "application/pdf" })));
+        }
       } catch (failure) {
         if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : t("document.failed"));
       }
     })();
     return () => controller.abort();
   }, [selection.path, selection.message.threadId, selection.message.messageId, attempt]);
+
+  useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl); }, [pdfUrl]);
 
   /** Copy only the bounded preview; saving remains the route to the complete file. */
   const copy = async () => {
@@ -125,7 +136,10 @@ function DocumentPanel({ selection, onClose, narrow }: { selection: Selection; o
         </div> : !preview ? <div className="document-state" role="status"><LoaderCircle className="animate-spin" size={24} />{t("document.loading")}</div>
           : preview.kind === "download" ? <div className="document-state"><FileText size={32} /><p>{t("document.unsupported")}</p>
             <button type="button" onClick={() => void save.save()} disabled={save.state === "saving"}><Download size={14} />{t("document.save")}</button>
-          </div> : <>
+          </div> : preview.kind === "pdf" ? <>
+            {pdfUrl ? <iframe src={pdfUrl} title={name} className="h-full w-full" /> :
+              <div className="document-state" role="status"><LoaderCircle className="animate-spin" size={24} />{t("document.loading")}</div>}
+          </> : <>
             {preview.truncated && <p role="status" className="mb-5 rounded bg-inset p-3 text-sm text-ink-secondary">{t("document.truncated")}</p>}
             {preview.text === "" ? <p className="text-ink-secondary">{t("document.empty")}</p> : preview.kind === "markdown" ?
               <article className="document-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{

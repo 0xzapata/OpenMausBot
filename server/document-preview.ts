@@ -7,7 +7,7 @@ export const DOCUMENT_PREVIEW_MAX_BYTES = 256 * 1024;
 export interface DocumentPreview {
   name: string;
   bytes: number;
-  kind: "markdown" | "text" | "download";
+  kind: "markdown" | "text" | "pdf" | "download";
   text?: string;
   truncated: boolean;
 }
@@ -19,9 +19,13 @@ const TEXT_EXTENSIONS = new Set([".txt", ".log", ".csv", ".tsv", ".json", ".yaml
 export async function readDocumentPreview(file: OpenedMessageFile): Promise<DocumentPreview> {
   const extension = extname(file.name).toLowerCase();
   const kind = extension === ".md" || extension === ".markdown" ? "markdown"
-    : TEXT_EXTENSIONS.has(extension) ? "text" : "download";
+    : TEXT_EXTENSIONS.has(extension) ? "text"
+    : extension === ".pdf" ? "pdf" : "download";
   const base: DocumentPreview = { name: file.name, bytes: file.bytes, kind, truncated: false };
   if (kind === "download") return base;
+  // Chromium renders PDFs natively from bytes the panel fetches itself; the
+  // file route's MESSAGE_FILE_MAX_BYTES already bounds them.
+  if (kind === "pdf") return base;
   const buffer = Buffer.alloc(Math.min(file.bytes, DOCUMENT_PREVIEW_MAX_BYTES));
   let read = 0;
   while (read < buffer.length) {

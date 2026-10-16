@@ -1,8 +1,8 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, describe, expect, it } from "vitest";
-import { openMessageFile } from "./message-file.ts";
+import { MESSAGE_FILE_MAX_BYTES, openMessageFile } from "./message-file.ts";
 import { DOCUMENT_PREVIEW_MAX_BYTES, readDocumentPreview } from "./document-preview.ts";
 
 const root = mkdtempSync(join(tmpdir(), "omb-documents-"));
@@ -29,13 +29,22 @@ describe("document preview", () => {
     expect(result.text).toBe("a".repeat(DOCUMENT_PREVIEW_MAX_BYTES - 1));
   });
 
-  it("leaves office, PDF, HTML, binary and non-UTF8 files download-only", async () => {
-    for (const name of ["report.pdf", "report.docx", "page.html", "page.svg"]) {
+  it("leaves office, HTML, binary and non-UTF8 files download-only", async () => {
+    for (const name of ["report.docx", "page.html", "page.svg"]) {
       expect(await preview(name, "<script>untrusted()</script>")).toMatchObject({ kind: "download" });
       expect(await preview(name, "data")).not.toHaveProperty("text");
     }
     expect(await preview("binary.txt", Buffer.from([1, 0, 3]))).toMatchObject({ kind: "download" });
     expect(await preview("legacy.txt", Buffer.from([0xff, 0xfe, 65, 0]))).toMatchObject({ kind: "download" });
+  });
+
+  it("previews PDFs as metadata and refuses oversize PDFs", async () => {
+    const under = await preview("report.pdf", "%PDF-1.7 small");
+    expect(under).toMatchObject({ kind: "pdf", truncated: false });
+    expect(under).not.toHaveProperty("text");
+    writeFileSync(join(root, "big.pdf"), Buffer.alloc(0));
+    truncateSync(join(root, "big.pdf"), MESSAGE_FILE_MAX_BYTES + 1);
+    await expect(openMessageFile("big.pdf", [root])).rejects.toMatchObject({ status: 413 });
   });
 
   it("keeps a pinned worktree bounded and handles relative paths with spaces", async () => {

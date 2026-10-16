@@ -2164,6 +2164,8 @@ function createWindow({ deferNavigation = false } = {}) {
     ...windowChromeOptions(process.platform),
     webPreferences: {
       contextIsolation: true,
+      // Chromium's built-in PDF viewer for the chat document panel.
+      plugins: true,
       preload: path.join(__dirname, "preload.cjs"),
       additionalArguments: [...desktopCompanionRendererArguments(rendererOrigin(), desktopRemoteAccess),
         ...(app.isPackaged && !desktopRemoteAccess ? ["--omb-company-desktop=1"] : [])],
