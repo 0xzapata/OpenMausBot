@@ -13,6 +13,7 @@ import { initAnalytics } from "@/lib/analytics";
 import { parseComputerHelp } from "@/lib/computer-control";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
+import { DocumentWorkspace } from "@/components/DocumentWorkspace";
 import { GroupView } from "@/components/GroupView";
 import { SIDEBAR_AND_PANEL_FIT, SIDEBAR_INLINE, TWO_SIDE_PANELS_FIT, useMediaQuery } from "@/lib/use-media-query";
 import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
@@ -305,9 +306,13 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       ) : noEngines ? (
         <NoEngines />
       ) : group ? (
-        <GroupView key={group.id} group={group} />
+        <DocumentWorkspace scope={`group:${group.id}:${group.threadId}`}>
+          <GroupView key={group.id} group={group} />
+        </DocumentWorkspace>
       ) : bot ? (
-        <ChatView bot={bot} />
+        <DocumentWorkspace scope={`bot:${bot.id}:${bot.threadId}`}>
+          <ChatView bot={bot} />
+        </DocumentWorkspace>
       ) : (
         <main className="relative flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-3 bg-app text-ink-secondary">
           <WindowDragStrip />
